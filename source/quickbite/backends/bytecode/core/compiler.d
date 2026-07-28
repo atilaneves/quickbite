@@ -16,8 +16,10 @@ package(quickbite.backends.bytecode) struct Compilation {
 // core that sees DMD types.
 package(quickbite.backends.bytecode) Compilation compile(
     imported!"dmd.func".FuncDeclaration entry,
+    in string[] archiveImportPaths = null,
 ) {
     auto compiler = new Compiler;
+    compiler._archiveImportPaths = archiveImportPaths;
     compiler.registerFunction(entry);
     // A literal-false assert directly in a unittest body must throw
     // "unittest failure" (DMD's _d_unittest hook); the same assert in a
@@ -55,6 +57,13 @@ private struct Compiler {
     import dmd.statement: Catch, Statement;
 
     private Program* _program;
+    // Import paths whose modules are defined by a separately compiled
+    // archive already loaded into the process: a function declared under one
+    // of these is compiled as a native call regardless of its parsed body
+    // (see `isArchiveBackedFunction`), since that body is a source-rewrite
+    // artifact and the archive's own compiled definition is the one that
+    // actually runs.
+    private const(string)[] _archiveImportPaths;
     private FuncDeclaration[] _functions;
     private size_t[FuncDeclaration] _functionIndices;
     private ushort[imported!"dmd.dclass".ClassDeclaration] _classIndices;
@@ -208,6 +217,30 @@ private struct Compiler {
             _inUnittestEntry = false;
 
         auto function_ = _functions[index];
+
+        // A receiver-less archive-backed function's direct call always goes
+        // through `compileCall`'s native-leaf path and never reaches here;
+        // any archive-backed function that does reach `compileFunctionBody`
+        // was therefore registered by address instead -- `&s.method`
+        // (`emitDelegateValue`), `&freeFunction` (`functionPointer`), or
+        // virtual-dispatch table registration. Compiling the body here would
+        // run the archive module's stale rewritten source, exactly what
+        // this mechanism exists to never do; decline unconditionally,
+        // regardless of receiver kind or entry point.
+        if (isArchiveBackedFunction(function_)) {
+            import std.conv: text;
+
+            throw new Exception(text(
+                "`",
+                function_.ident is null
+                    ? text(function_.toPrettyChars)
+                    : function_.ident.toString,
+                "` is an archive-backed function reached by address: ",
+                "routing it through the native bridge or its stale ",
+                "rewritten source is unsupported",
+            ));
+        }
+
         _code = null;
         _locals = null;
         _staticArrayLocals = null;
@@ -272,6 +305,13 @@ private struct Compiler {
         if (layout.hasClassThis) {
             _hasClassThis = true;
             _classThisOffset = layout.classThisOffset;
+            // A nested function (an IIFE guarding a `@trusted` block is the
+            // common druntime shape) that reads the enclosing class method's
+            // `this` receives it through the same captured-frame-offset
+            // mechanism as any other captured outer local, mirroring the
+            // struct-receiver case just above.
+            if (function_.vthis !is null)
+                _capturedOffsets[function_.vthis] = layout.classThisOffset;
         }
         if (function_.parameters !is null)
             foreach (parameterIndex; 0 .. function_.parameters.length) {
@@ -4437,6 +4477,80 @@ private struct Compiler {
         return result;
     }
 
+    // A struct method whose entire body is `return &this.field;` (or the
+    // equivalent DMD lowering of `return this.field.ptr;` for a static-array
+    // field, an `AddrExp` over a `DotVarExp` on `ThisExp`) returns a pointer
+    // that must alias the receiver's own storage. The ordinary call
+    // mechanism instead copies the receiver by value into the callee's own
+    // frame (so field mutations can be written back) and computes the
+    // address relative to that copy; because the machine places every
+    // direct callee's frame at the same offset past the caller's own frame
+    // (`base + callerFrameSize`), a second sibling call sharing the same
+    // caller reuses that exact memory before the first call's returned
+    // pointer is read, aliasing the two "receiver" addresses together. Skip
+    // the call and compute the address directly against the receiver's own
+    // stable caller-frame location instead.
+    private Operand* tryReceiverFieldAddressCall(
+        CallExp call,
+        FuncDeclaration function_,
+    ) {
+        if (thisStructDeclaration(function_) is null)
+            return null;
+        if (!isPointerType(call.type))
+            return null;
+        // Only a bare `return &this.field;` body qualifies: any preceding
+        // statement could have side effects (e.g. `++count; return
+        // &count;`), and this fast path never calls `compileCall`, so it
+        // must not skip anything that runs before the return.
+        if (!isBareReturnStatement(function_.fbody))
+            return null;
+        // A call with arguments would need those argument expressions
+        // evaluated; this fast path has no call-argument emission at all.
+        if (call.arguments !is null && call.arguments.length > 0)
+            return null;
+
+        auto returned = provenFinalReturnExpression(function_.fbody);
+        auto address = returned is null ? null : returned.isAddrExp;
+        if (address is null)
+            return null;
+        auto dot = address.e1.isDotVarExp;
+        if (dot is null || dot.e1.isThisExp is null)
+            return null;
+        auto field = dot.var.isVarDeclaration;
+        if (field is null || !field.isField)
+            return null;
+
+        const receiverOffset = methodReceiverOffset(call);
+        const pointer = allocateBytes(cast(uint) size_t.sizeof, size_t.sizeof);
+        _code ~= Instruction(
+            Op.frameAddress,
+            pointer,
+            cast(ushort) (receiverOffset + field.offset),
+        );
+        auto result = new Operand;
+        *result = Operand(
+            pointer, ScalarType.ulong_, true, pointerElementScalar(call.type),
+        );
+        return result;
+    }
+
+    // True when `statement` is exactly a single `return` statement (through
+    // any wrapping `ScopeStatement`/single-element `CompoundStatement`), with
+    // nothing preceding it. `tryReceiverFieldAddressCall` requires this: it
+    // has no mechanism to compile a preceding statement's side effects.
+    private bool isBareReturnStatement(Statement statement) {
+        if (statement is null)
+            return false;
+        if (auto scope_ = statement.isScopeStatement)
+            return isBareReturnStatement(scope_.statement);
+        if (auto compound = statement.isCompoundStatement) {
+            if (compound.statements is null || compound.statements.length != 1)
+                return false;
+            return isBareReturnStatement((*compound.statements)[0]);
+        }
+        return statement.isReturnStatement !is null;
+    }
+
     private Operand classMethodReceiver(CallExp call) {
         import std.conv: text;
 
@@ -4928,6 +5042,17 @@ private struct Compiler {
             );
             return Operand(destination, ScalarType.void_);
         }
+
+        // A struct-typed field (`MonitorProxy m_proxy` in `Mutex`) lives
+        // inline in the class block rather than behind a separate pointer:
+        // its own address is the field's address, with no load to perform.
+        // Mark it as a further-dereferenceable pointer so a nested `.field`
+        // hop (`this.m_proxy.link`) resolves against it.
+        if (field.type.toBasetype.ty == TY.Tstruct)
+            return Operand(
+                classFieldAddress(field), ScalarType.ulong_, true,
+                ScalarType.void_,
+            );
 
         const fieldScalar = scalarType(field.type);
         const elementSize = size(fieldScalar);
@@ -8105,6 +8230,13 @@ private struct Compiler {
             if (auto broadcast = tryStaticArrayBroadcast(slice, assign.e2))
                 return *broadcast;
 
+        // `arr[lo .. hi] = rhs` for a static array: write through a real
+        // pointer into `arr`'s own frame storage instead of a throwaway heap
+        // copy.
+        if (auto slice = assign.e1.isSliceExp)
+            if (auto store = tryStaticArraySliceAssign(slice, assign.e2))
+                return *store;
+
         // `arr[lo .. hi] = rhs` for a dynamic array: copy the rhs elements into
         // the existing backing memory (write-through to the original array).
         if (auto slice = assign.e1.isSliceExp)
@@ -9581,6 +9713,105 @@ private struct Compiler {
         return result;
     }
 
+    // `arr[lo .. hi] = rhs` where `arr` is a static array and the rhs is
+    // itself a slice: `arr` otherwise resolves through
+    // `dynamicArrayDescriptorOrNull` into a throwaway heap copy
+    // (`compileStaticArrayAsDynamicInto`), so writing the destination through
+    // that descriptor would never reach `arr`'s real frame storage. Build the
+    // destination directly from a real pointer into `arr`'s own memory
+    // instead, the same way `tryDynamicArrayElementAssign` already does for a
+    // single element (`staticArrayElementPointer`). Null if `slice.e1` is not
+    // a static-array location, or its element isn't one of the widths
+    // `sliceCopyOp` copies correctly (1 or 4 bytes; wider elements still need
+    // general slice-copy support).
+    private Operand* tryStaticArraySliceAssign(
+        SliceExp slice,
+        Expression rhs,
+    ) {
+        // `tryStaticArrayRuntimeAddress` resolves a `DotVarExp` to any
+        // struct field's own frame offset, static array or not (e.g. a
+        // `char*` field): guard with the same static-array type check
+        // `tryStaticArrayRuntimeIndex`/`tryStaticArrayRuntimeElementAssign`
+        // already require, or a non-array field's address would be
+        // misread as if it were the field's own array storage.
+        if (!indexesStaticArray(slice.e1))
+            return null;
+
+        auto base = tryStaticArrayRuntimeAddress(slice.e1);
+        if (base is null)
+            return null;
+
+        if (arrayElementIsArray(slice.e1.type))
+            return null;
+
+        const elementType = dynamicArrayElementType(slice.e1.type);
+        const elementSize = size(elementType);
+        if (elementSize != 1 && elementSize != 4)
+            return null;
+
+        const length = staticArrayLength(slice.e1.type);
+        const bounds = allocateBytes(2 * size_t.sizeof, size_t.sizeof);
+        const lo = slice.lwr is null
+            ? compileSizeConstant(0)
+            : compileExpression(slice.lwr).offset;
+        _code ~= Instruction(Op.copy, bounds, lo, cast(ushort) size_t.sizeof);
+        const hi = slice.upr is null
+            ? compileSizeConstant(length)
+            : compileExpression(slice.upr).offset;
+        _code ~= Instruction(
+            Op.copy,
+            cast(ushort) (bounds + size_t.sizeof),
+            hi,
+            cast(ushort) size_t.sizeof,
+        );
+
+        // Bounds check `[lo .. hi]` against the array's own known length the
+        // same way a dynamic-array sub-slice does (`Op.subSlice*`'s
+        // `validateSubSlice`, matching compiled D's `RangeError` wording
+        // byte for byte): build a throwaway {pointer, length} descriptor over
+        // `base` and go through `subSliceOp` instead of the unchecked
+        // `pointerSliceOp`, so an out-of-range bound throws instead of
+        // silently writing past the array's frame storage.
+        const sourceDescriptor =
+            allocateBytes(sliceDescriptorSize, size_t.sizeof);
+        _code ~= Instruction(
+            Op.copy, sourceDescriptor, base.offset, cast(ushort) size_t.sizeof,
+        );
+        _code ~= Instruction(
+            Op.copy,
+            cast(ushort) (sourceDescriptor + size_t.sizeof),
+            compileSizeConstant(length),
+            cast(ushort) size_t.sizeof,
+        );
+
+        const destination = allocateBytes(sliceDescriptorSize, size_t.sizeof);
+        _code ~= Instruction(
+            subSliceOp(elementSize), destination, sourceDescriptor, bounds,
+        );
+
+        if (elementSize == uint.sizeof &&
+            rhs.type !is null &&
+            rhs.type.toBasetype.isTypeBasic !is null) {
+            const value = compileExpression(rhs);
+            _code ~= Instruction(Op.sliceFill4, destination, value.offset);
+
+            auto result = new Operand;
+            *result = Operand.init;
+            return result;
+        }
+
+        const source = compileSourceSlice(elementType, rhs);
+        _code ~= Instruction(
+            sliceCopyOp(elementSize),
+            destination,
+            source,
+        );
+
+        auto result = new Operand;
+        *result = Operand.init;
+        return result;
+    }
+
     // `arr[lo .. hi] = rhs` or `p[lo .. hi] = rhs`: form the destination
     // sub-slice descriptor sharing the array or raw pointer's backing memory,
     // materialise the rhs into a source descriptor, and emit a write-through
@@ -10045,6 +10276,11 @@ private struct Compiler {
 
         auto function_ = callFunction(call);
 
+        if (function_ !is null)
+            if (auto receiverAddress =
+                    tryReceiverFieldAddressCall(call, function_))
+                return *receiverAddress;
+
         if (auto expression = immediateLambdaReturn(call))
             return compileExpression(expression);
 
@@ -10136,11 +10372,32 @@ private struct Compiler {
             return *native;
 
         const layout = parameterLayout(function_);
-        if (function_.fbody is null && !layout.hasClassThis)
+        const isArchiveBacked = isArchiveBackedFunction(function_);
+        // Neither path below is safe for a receiver-bearing archive-backed
+        // method: `tryCompileNativeCall` never resolves a receiver, so a
+        // struct method reaches the native call with no `this` argument at
+        // all, and a class method (`layout.hasClassThis`, which skips the
+        // native-call attempt below) falls through to `registerFunction`
+        // and compiles the archive module's stale rewritten source body --
+        // exactly what an archive-backed function's whole point is to never
+        // do. Decline loudly rather than crash or run the wrong body.
+        if (isArchiveBacked && (layout.hasThis || layout.hasClassThis))
+            throw new Exception(text(
+                "`",
+                function_.ident is null
+                    ? expressionChars(call)
+                    : function_.ident.toString,
+                "` is an archive-backed method: routing a receiver-bearing ",
+                "call through the native bridge or its stale rewritten ",
+                "source is unsupported",
+            ));
+
+        const isNativeLeaf = function_.fbody is null || isArchiveBacked;
+        if (isNativeLeaf && !layout.hasClassThis)
             if (auto native = tryCompileNativeCall(call, function_, layout))
                 return *native;
 
-        if (function_.fbody is null && !layout.hasClassThis)
+        if (isNativeLeaf && !layout.hasClassThis)
             throw new Exception(text(
                 "`",
                 function_.ident is null
@@ -10218,6 +10475,7 @@ private struct Compiler {
                 "Missing bytecode parameter layout for call: ",
                 expressionChars(call),
             ));
+
         if (call.arguments !is null)
             foreach (argumentIndex; 0 .. call.arguments.length) {
                 const slot = cast(ushort)
@@ -10326,6 +10584,32 @@ private struct Compiler {
         return Operand(destination, returnType.scalar);
     }
 
+    // A function declared under an archive import path is defined by a
+    // separately compiled archive already loaded into the process: its
+    // parsed body (if any) is a source-rewrite artifact from parsing the
+    // snippet's on-disk import, not the definition that actually runs.
+    private bool isArchiveBackedFunction(FuncDeclaration function_) {
+        import std.algorithm.searching: any, startsWith;
+        import std.path: absolutePath, buildNormalizedPath, dirSeparator;
+
+        if (_archiveImportPaths.length == 0)
+            return false;
+
+        auto module_ = function_.getModule;
+        if (module_ is null)
+            return false;
+
+        const path =
+            module_.srcfile.toString.idup.absolutePath.buildNormalizedPath;
+        // Match whole path components: a bare prefix check would classify a
+        // sibling directory like <root>-extra/ as under <root>.
+        return _archiveImportPaths.any!((root) {
+            const normalised = root.absolutePath.buildNormalizedPath;
+            return path == normalised ||
+                path.startsWith(normalised ~ dirSeparator);
+        });
+    }
+
     // A null return always falls through to the call site's unconditional
     // no-available-source throw, never a different path, so it is safe to
     // emit earlier arguments before a later one turns out unsupported.
@@ -10337,22 +10621,23 @@ private struct Compiler {
         import dmd.astenums: TY;
 
         const returnTy = function_.type.toBasetype.nextOf.toBasetype.ty;
-        if ((returnTy != TY.Tbool &&
-             returnTy != TY.Tint32 && returnTy != TY.Tint64 &&
-             returnTy != TY.Tuns64 &&
-             returnTy != TY.Tfloat64 && returnTy != TY.Tvoid &&
-             returnTy != TY.Tpointer && returnTy != TY.Tarray &&
-             returnTy != TY.Tstruct) ||
-            call.arguments is null)
+        if (returnTy != TY.Tbool &&
+            returnTy != TY.Tint32 && returnTy != TY.Tint64 &&
+            returnTy != TY.Tuns64 &&
+            returnTy != TY.Tfloat64 && returnTy != TY.Tvoid &&
+            returnTy != TY.Tpointer && returnTy != TY.Tarray &&
+            returnTy != TY.Tstruct)
             return null;
 
-        const argumentArea = allocateNativeArgumentArea(call.arguments.length);
-        auto argumentTypes = new Type[call.arguments.length];
-        auto outParameterOffsets = new ushort[call.arguments.length];
+        // `call.arguments` is null, not merely empty, for a no-argument call.
+        const argumentCount = call.arguments is null ? 0 : call.arguments.length;
+        const argumentArea = allocateNativeArgumentArea(argumentCount);
+        auto argumentTypes = new Type[argumentCount];
+        auto outParameterOffsets = new ushort[argumentCount];
         // Every argument must be a scalar `int`/`long`/`size_t`, a
         // string-literal `const(char)*`, a `&local` out parameter, or a
         // pointer local passed by value; any other shape bails.
-        foreach (index; 0 .. call.arguments.length) {
+        foreach (index; 0 .. argumentCount) {
             auto argument = (*call.arguments)[index];
             const slot = cast(ushort)
                 (argumentArea + index * nativeArgumentSlotSize);

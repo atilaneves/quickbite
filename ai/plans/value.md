@@ -913,9 +913,13 @@ cross-references; document order is execution priority.
 ### Item 5 — Make the authority switch
 
 `AggregateValue` remains
-   `RuntimeValue`-typed; its consumers plus the direct `RuntimeValue`
-   aggregate paths enumerated in decision 7 must change together with
-   whole-value reconstruction to host-address aggregate handles. In the same
+   `RuntimeValue`-typed. Its consumer boundary includes aggregate equality,
+   length and indexing, field reads, class/struct type metadata, class
+   exception construction/dispatch, truthiness, and class casts; its consumers
+   plus the direct
+   `RuntimeValue` aggregate paths enumerated in decision 7 must change
+   together with whole-value reconstruction to host-address aggregate handles.
+   In the same
    operation, native storage becomes local/frame, `ref`/`out`/capture,
    pointer-dereference, and cross-frame-write authority; all data-pointer arms
    become the one host-address arm; and cells and aliases are deleted. Do not
@@ -923,8 +927,12 @@ cross-references; document order is execution priority.
    dynamic arrays: the former needs parallel copies and the latter leaves a
    second authority; `NativeArray`'s FFI address is only a dynamic-array
    shortcut. Function and delegate handles remain separate non-data
-   categories. Expression results need immediate scalars, native handles,
-   locations, callables, and execution metadata only.
+   categories. `AggregateValue` is the only migration boundary for ordinary
+   aggregate reads in execution paths (including class dispatch/member lookup
+   and array-op length/indexing); boxed-era promotion and mirror internals
+   remain outside it until the combined switch deletes them. Expression
+   results need immediate scalars, native handles, locations, callables, and
+   execution metadata only.
 
    Implement decision 15 in bounded, independently green preparatory slices,
    then replace boxed local authority coherently (decision 17):
@@ -936,11 +944,20 @@ cross-references; document order is execution priority.
      through a variable, fields, indexing, pointer/class dereference, and
      address-of. `this` has an arm but no reachable caller, since DMD slots
      `vthis` as neither a parameter nor a body local and `resolveBase`
-     therefore always declines it. `ref`/`out` and captured-variable
+     therefore always declines it. Established, unpromoted native-scalar
+     bindings read through their owning frame slot rather than the boxed
+     local mirror and `&local` carries that slot's host address. `ref`/`out`
+     native-scalar bindings read and write their filled reference slot
+     directly. Captured-variable
      reference slots exist, as do loads and stores through places for scalars,
      enums, pointers, `real`, structs, unions, slices, class object bodies,
      and dataseg storage, each verified against the still-authoritative boxed
-     value on write. Composition gaps carried to the switch:
+     value on write. A runtime-indexed `ref`/`out` argument records each
+     index while its ordinary argument walk evaluates it, and reference-slot
+     binding reuses those results rather than evaluating any subexpression a
+     second time. Source-less synthetic calls have no such result and retain
+     the existing silent-refusal contract. Composition gaps carried to the
+     switch:
      `placeOfLvalue` refuses a `SliceExp` assignment target and a `SymOffExp`
      naming a function; a captured-variable slot cannot resolve a relay
      through a non-referencing intermediate activation.

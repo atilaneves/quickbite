@@ -1155,6 +1155,144 @@ static foreach (backend; Matrix!()) {
 }
 
 static foreach (backend; Matrix!()) {
+    @("staticArray.partialSliceAssignmentFromDynamicArrayWritesThroughRealStorage." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            int seed(int value) {
+                return value;
+            }
+
+            unittest {
+                char[8] buff = "--------";
+                size_t start = cast(size_t) seed(2);
+                size_t stop = start + 2;
+
+                buff[start .. stop] = "xy";
+
+                assert(buff[0] == '-');
+                assert(buff[1] == '-');
+                assert(buff[2] == 'x');
+                assert(buff[3] == 'y');
+                assert(buff[4] == '-');
+            }
+        });
+    }
+}
+
+static foreach (backend; Matrix!()) {
+    @("staticArray.structFieldPartialSliceAssignmentWritesThroughRealStorage." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct Buffer {
+                char[8] bytes;
+            }
+
+            int seed(int value) {
+                return value;
+            }
+
+            unittest {
+                Buffer buffer;
+                size_t start = cast(size_t) seed(1);
+                size_t stop = start + 2;
+
+                buffer.bytes[start .. stop] = "xy";
+
+                assert(buffer.bytes[0] == char.init);
+                assert(buffer.bytes[1] == 'x');
+                assert(buffer.bytes[2] == 'y');
+                assert(buffer.bytes[3] == char.init);
+            }
+        });
+    }
+}
+
+static foreach (backend; Matrix!()) {
+    @("staticArray.partialSliceAssignmentFromDynamicArrayOfIntsWritesThroughRealStorage." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            int seed(int value) {
+                return value;
+            }
+
+            unittest {
+                int[4] values;
+                int[] source = [seed(10), seed(20)];
+                size_t start = cast(size_t) seed(1);
+                size_t stop = start + source.length;
+
+                values[start .. stop] = source[];
+
+                assert(values[0] == 0);
+                assert(values[1] == 10);
+                assert(values[2] == 20);
+                assert(values[3] == 0);
+            }
+        });
+    }
+}
+
+// The static-array bounded sub-slice write-through path above went straight
+// to an unchecked `pointerSlice` opcode, silently writing past the array's
+// own frame storage for an out-of-range upper bound instead of raising the
+// `RangeError` compiled D raises. Bounds check it the same way a
+// dynamic-array sub-slice does (`Op.subSlice*`'s `validateSubSlice`).
+// `Ctfe`'s own compile-time bounds check reports its own divergent wording;
+// see the sibling pin below.
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.diverges, "see sibling pin below (Ctfe)"),
+)) {
+    @("staticArray.partialSliceAssignmentPastLengthThrowsRangeError." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            int seed(int value) {
+                return value;
+            }
+
+            unittest {
+                char[8] buff = "--------";
+                size_t start = cast(size_t) seed(6);
+                size_t stop = start + 4;
+
+                buff[start .. stop] = "xyzw";
+            }
+        }).shouldThrowWithMessage(
+            "slice [6 .. 10] extends past source array of length 8",
+        );
+    }
+}
+
+static foreach (backend; AliasSeq!(Ctfe)) {
+    @("staticArray.partialSliceAssignmentPastLengthThrowsRangeError." ~
+        backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            int seed(int value) {
+                return value;
+            }
+
+            unittest {
+                char[8] buff = "--------";
+                size_t start = cast(size_t) seed(6);
+                size_t stop = start + 4;
+
+                buff[start .. stop] = "xyzw";
+            }
+        }).shouldThrowWithMessage(
+            "slice `[6..10]` exceeds array bounds `[0..8]`",
+        );
+    }
+}
+
+static foreach (backend; Matrix!()) {
     @("staticArray.nestedElementReadWithRuntimeIndicesReadsRealArray." ~
         backend.stringof)
     @Tags(backend.stringof)
