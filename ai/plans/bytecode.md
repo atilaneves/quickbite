@@ -359,32 +359,23 @@ in-repo `SystemLinker`-oracle test include `Bytecode` and pass. In particular:
   failure into the smallest D-language fixture backed by `SystemLinker`, then
   follow the normal approval rule before adding or changing that test.
 
-Continue through the remaining `Because.unconfirmed` queue in this order,
-re-reading the matrices before each promotion because the source may have
-changed:
-
-1. `runTests.archiveBackedImportLinksFromArchive.Bytecode`: register and call
-   the separately compiled archive symbol through the bytecode native bridge,
-   instead of compiling the rewritten source body.
-2. `concurrency.thisTid.Bytecode`: after its single-threaded atomic load of
-   `std.concurrency`'s module-held scheduler reference and TypeInfo equality,
-   `registryLock`'s `new Mutex` reaches its `MonitorProxy` field. Support the
-   host-backed synchronisation primitive without treating single-threaded VM
-   execution as permission to elide its compiled-D initialisation semantics.
-
-This list is a starting order, not a substitute for repository discovery.
-After it is empty, search all backend matrices and characterization pins for
-remaining Bytecode exclusions. Preserve only exclusions that are genuine
-oracle characterizations or architectural non-goals with an explicit reason.
-An unsupported implementation is not, by itself, a permanent divergence from
-the compiled-D oracle.
+There is no ordered starter queue anymore. Continue by searching all backend
+matrices and characterization pins for remaining Bytecode exclusions.
+Preserve only exclusions that are genuine oracle characterizations or
+architectural non-goals with an explicit reason. An unsupported
+implementation is not, by itself, a permanent divergence from the compiled-D
+oracle.
 
 Reconfirm these live aggregate limitations against the current source when a
 row reaches them:
 
-- Scalar slice fill is limited to 4-byte basic elements; other widths,
-  aggregate elements, and static-array slice fills still need general
-  semantics.
+- Scalar slice fill is limited to 4-byte basic elements; other widths and
+  aggregate elements still need general semantics. Static-array bounded
+  sub-slice assignment (`arr[lo .. hi] = rhs`, both a plain local and a
+  struct field) now writes through the array's own frame storage for 1- and
+  4-byte elements when `rhs` is itself a slice; wider elements (`sliceCopyOp`
+  only distinguishes 1 vs. 4 bytes) and a bare scalar broadcast into a
+  non-4-byte element still need general semantics.
 - Dynamic-array and string sub-slices reject an upper bound beyond the source
   length and a lower bound greater than the upper bound; pointer-slice bounds
   remain unchecked.
@@ -401,6 +392,44 @@ row reaches them:
   descriptors, so a pointer taken into one row (`&outer[i][j]`) is valid
   within that row, but a flat pointer walk across rows diverges from compiled
   D's contiguous layout.
+- Static-array bounded sub-slice assignment does not detect overlap with its
+  own rhs when the rhs is a sub-slice of the same array (`buff[1..4] =
+  buff[0..3]`): `compileSourceSlice` routes a static-array rhs through
+  `compileStaticArrayAsDynamicInto`, which heap-copies it before the shared
+  `sliceCopy` opcode's pointer-range overlap check ever runs, so the check
+  never sees the true aliasing (unlike the dynamic-array path, whose rhs
+  descriptor shares the real backing pointer).
+
+`concurrency.thisTid.Bytecode` (`tests/ut/backends/runner/sys/concurrency.d`)
+stays `Omit!(Bytecode, Because.unconfirmed, ...)`. `Scheduler.thisInfo`'s
+`atomicLoad(scheduler)` (an 8-byte `Scheduler` reference) is usually served
+by the already-supported `RDX`/`RAX` atomic-load inline-asm shape
+(`tryCompileAtomicLoadAsm`, `compiler.d`), but order-dependently -- confirmed
+with `bin/ut --seed 543485028` -- the same call site is sometimes compiled
+with a second, distinct shape using 32-bit `EDX`/`EAX` value registers
+instead, which the bytecode core does not recognise. Why the same 8-byte
+load takes either shape is not yet characterized; do not add a same-shaped
+`EDX`/`EAX` opcode without first confirming (e.g. against a disassembled
+`SystemLinker` build of this exact fixture) that a 4-byte-wide native atomic
+read is actually the correct oracle behaviour for this call, rather than a
+truncation of the real 8-byte reference.
+
+`file.createWriteRead.Bytecode` (`tests/ut/backends/runner/sys/file.d`) stays
+`Omit!(Bytecode, Because.refusal, "Unsupported ref argument in bytecode
+core: (*this._p).refs")`. Two blockers, in order: (1)
+`atomicOp!"+="(_p.refs, 1)` passes `_p.refs` (a field reached by
+dereferencing the pointer field `File.Impl* _p`) as a `ref` argument, and
+`referenceOffset` (`compiler.d`) has no case for a `ref` argument reached
+through a dereferenced pointer field -- only a plain local, a `this`/
+struct-field lvalue, and a bare pointer dereference are handled; and, once
+that is addressed, (2) `std.stdio.File`'s refcounting is `shared`, and DMD's
+`core.atomic` lowers `atomicOp!"+="` on this platform to inline x86 asm
+(`lock xchg` followed by a plain store) rather than a compiler intrinsic; the
+bytecode core has no inline-asm support at all. Candidate fixes for (2):
+implement the specific `lock`-prefixed read-modify-write/store instruction
+sequence `core.atomic` emits, or recognise `atomicOp`/`atomicLoad`/
+`atomicStore` by symbol (like the `std.math` builtins) and lower them to
+dedicated VM atomic ops instead of compiling the inline asm body.
 
 ### TDD and handoff discipline
 

@@ -2180,6 +2180,73 @@ static foreach (backend; Matrix!(
     }
 }
 
+// `with (s) { ... }` lowers an unqualified field to `(*__withSym).field`;
+// this must alias the direct `s.value` argument's live storage rather than
+// composing a separate copy, so both increments land on the same `int`.
+// `referenceOffset`'s `_withDerefBases` live-aliasing path handles this.
+// `Interpreter` fails this same fixture with its own, separate composition
+// bug (unconfirmed/uncharacterized).
+static foreach (backend; Matrix!(
+    Omit!(Interpreter, Because.unconfirmed,
+        "Interpreter also produces 1 instead of 2 here, via its own " ~
+        "separate ref-argument composition path -- not characterized yet"),
+)) {
+    @("with.fieldRefArgumentAliasesLiveStorage." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct Holder {
+                int value;
+            }
+
+            void bumpBoth(ref int x, ref int y) {
+                x = x + 1;
+                y = y + 1;
+            }
+
+            unittest {
+                Holder s;
+                s.value = 0;
+                with (s) bumpBoth(s.value, value);
+                assert(s.value == 2);
+            }
+        });
+    }
+}
+
+// Sibling of the fixture above: a `with`-statement field `ref` argument to a
+// function that mutates then throws. Live aliasing must leave the mutation
+// visible unconditionally, since it lands directly in the caller's frame
+// storage during the call, regardless of how the call itself unwinds.
+static foreach (backend; Matrix!()) {
+    @("with.fieldRefArgumentWriteBackSurvivesUnwind." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct Holder {
+                int value;
+            }
+
+            void bumpThenThrow(ref int x) {
+                x = x + 1;
+                throw new Exception("boom");
+            }
+
+            unittest {
+                Holder s;
+                s.value = 0;
+                with (s) {
+                    try {
+                        bumpThenThrow(value);
+                    } catch (Exception e) {
+                    }
+                }
+                assert(s.value == 1);
+            }
+        });
+    }
+}
+
 // A cell-promoted local (address taken, so `scalarCells` -- not the frame slot
 // -- is authoritative for it) passed as a `ref` argument. The frame slot is
 // deliberately left stale by `writeBackLocalPointerTargets`, while the boxed
@@ -3422,6 +3489,141 @@ static foreach (backend; Matrix!()) {
             unittest {
                 U u;
                 assert(u.s.e == E.a);
+            }
+        });
+    }
+}
+
+
+// A `return`-scope struct method whose body reduces to `return
+// &this.field;` (DMD's lowering of `return this.field.ptr;` for a
+// static-array field) returns a pointer that must alias the receiver's own
+// storage, not a transient copy. `std.internal.cstring.tempCString`'s
+// `TempCStringBuffer` (`@disable this(this)`, NRVO-constructed through a
+// `= void` factory) exposed this: bytecode core's calling convention copies
+// a struct receiver into the callee's own frame (so field writes can be
+// written back), and the machine places every direct callee's frame at the
+// same offset past the caller's own frame (`base + callerFrameSize`,
+// `core/machine.d`'s `call`/`callIndirect` case). Two such `.ptr`-style
+// calls as sibling arguments to the same call therefore share that one
+// reused frame: the second call's own receiver copy overwrites the memory
+// the first call's still-unread returned pointer points into, so both
+// pointers end up reading the second receiver's bytes.
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.inexpressible,
+        "DMD's CTFE interpreter refuses to read through a pointer into a " ~
+        "`= void`-initialized array once part of it is still uninitialized"),
+)) {
+    @("pointer.siblingReturnScopeReceiverCallsDoNotAlias." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct Buf {
+                @disable this();
+                @disable this(this);
+                char[8] _buff;
+
+                @property const(char)* ptr() const return {
+                    return _buff.ptr;
+                }
+
+                static Buf trustedVoidInit() { Buf res = void; return res; }
+            }
+
+            Buf make(char c) {
+                auto res = Buf.trustedVoidInit();
+                res._buff[0] = c;
+                res._buff[1] = 0;
+                return res;
+            }
+
+            int identity(const(char)* a, const(char)* b) {
+                return (*a == 'x' && *b == 'y') ? 1 : 0;
+            }
+
+            unittest {
+                assert(identity(make('x').ptr, make('y').ptr) == 1);
+            }
+        });
+    }
+}
+
+// A struct method whose entire body is `return p;` (a plain pointer FIELD
+// GETTER, not `&this.field`) must return the pointer VALUE stored in the
+// field, not the field's own address. `tryReceiverFieldAddressCall` matched
+// any bare `DotVarExp` return on `this`, including one that never went
+// through an `AddrExp`, and replaced it with the receiver's field address --
+// wrong for a method that already returns a pointer.
+static foreach (backend; Matrix!()) {
+    @("pointer.receiverFieldGetterReturnsStoredPointerNotFieldAddress." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct Holder {
+                int* p;
+                int* get() { return p; }
+            }
+
+            unittest {
+                int value = 42;
+                Holder h;
+                h.p = &value;
+                assert(*h.get() == 42);
+            }
+        });
+    }
+}
+
+// A struct method matching `tryReceiverFieldAddressCall`'s return shape but
+// with a side-effecting statement before the final `return &this.field;`
+// must still run that statement: the fast path never calls `compileCall`, so
+// it must decline whenever anything precedes the return.
+static foreach (backend; Matrix!()) {
+    @("pointer.receiverFieldAddressCallRunsPrecedingSideEffect." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct Counter {
+                int count;
+                int* next() { ++count; return &count; }
+            }
+
+            unittest {
+                Counter c;
+                c.next();
+                assert(c.count == 1);
+            }
+        });
+    }
+}
+
+// A struct method matching `tryReceiverFieldAddressCall`'s return shape but
+// called with an argument must still evaluate that argument: the fast path
+// has no call-argument emission at all, so an argument with a side effect
+// (here mutating a `ref` parameter) was silently skipped.
+static foreach (backend; Matrix!()) {
+    @("pointer.receiverFieldAddressCallEvaluatesItsArgument." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct Box {
+                int value;
+                int* addr(int ignored) { return &value; }
+            }
+
+            int bump(ref int calls) {
+                return ++calls;
+            }
+
+            unittest {
+                Box b;
+                int calls;
+                b.addr(bump(calls));
+                assert(calls == 1);
             }
         });
     }
