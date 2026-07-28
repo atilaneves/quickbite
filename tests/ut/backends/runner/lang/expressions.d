@@ -6878,10 +6878,7 @@ static foreach (backend; Matrix!()) {
 // `p` aliases `c`'s real storage, so the direct write is visible through
 // `*p`. Other backends omitted per the omit-don't-pin convention
 // (unconfirmed there).
-static foreach (backend; Matrix!(
-    Omit!(Bytecode, Because.unconfirmed,
-        "throws its own unrelated \"Unsupported assignment in bytecode core: c.arr[0] = one()\" for this shape, not a wrong value"),
-)) {
+static foreach (backend; Matrix!()) {
     @("pointer.classStaticArrayFieldElementWrittenDirectlyIsVisibleThroughEarlierPointer." ~
         backend.stringof)
     @Tags(backend.stringof)
@@ -6927,10 +6924,7 @@ static foreach (backend; Matrix!(
 // aliases `c`'s real storage, so the write is visible through `*p`.
 // `Ctfe`/`LLVMJit` omitted per the omit-don't-pin convention (unconfirmed
 // there), matching the struct sibling fixture's own backend set.
-static foreach (backend; Matrix!(
-    Omit!(Bytecode, Because.unconfirmed,
-        "throws its own unrelated \"Unsupported assignment in bytecode core: c.arr[0] = one()\" for this shape, not a wrong value"),
-)) {
+static foreach (backend; Matrix!()) {
     @("pointer.classStaticArrayFieldElementWrittenByForeachRefIsVisibleThroughEarlierPointer." ~
         backend.stringof)
     @Tags(backend.stringof)
@@ -6968,10 +6962,7 @@ static foreach (backend; Matrix!(
 // of the nested-struct-field one. Other backends omitted per the
 // omit-don't-pin convention, matching the other class fixtures' own backend
 // set.
-static foreach (backend; Matrix!(
-    Omit!(Bytecode, Because.unconfirmed,
-        "throws its own unrelated \"Unsupported assignment in bytecode core: c.arr[0] = one()\" for this shape, not a wrong value"),
-)) {
+static foreach (backend; Matrix!()) {
     @("pointer.classArrayFieldElementWrittenThroughPointerIsVisibleDirectly." ~
         backend.stringof)
     @Tags(backend.stringof)
@@ -7010,10 +7001,7 @@ static foreach (backend; Matrix!(
 // fell through to the `fieldSnapshotAllocationIds` refusal check (also duped)
 // instead of aliasing. SystemLinker is the oracle; Bytecode omitted per the
 // omit-Bytecode convention.
-static foreach (backend; Matrix!(
-    Omit!(Bytecode, Because.unconfirmed,
-        "throws its own unrelated \"Unsupported assignment in bytecode core: c.arr[0] = one()\" for this shape, not a wrong value"),
-)) {
+static foreach (backend; Matrix!()) {
     @("pointer.classArrayFieldWriteThroughPointerInCalleeIsVisibleToCaller." ~
         backend.stringof)
     @Tags(backend.stringof)

@@ -2377,6 +2377,8 @@ private struct Compiler {
                 return *element;
             if (auto element = tryDynamicArrayIndex(index))
                 return *element;
+            if (auto element = tryClassStaticArrayFieldElement(index))
+                return *element;
             if (auto element = tryStaticArrayRuntimeIndex(index))
                 return *element;
             return compileStaticArrayIndex(index);
@@ -2884,6 +2886,26 @@ private struct Compiler {
             *result = DynamicArrayLocal(offset, elementType, elementIsArray);
             result.isStaticArrayView = true;
             result.staticArrayOffset = *staticArray;
+            return result;
+        }
+
+        // `c.arr` where `arr` is a static-array field of a class instance:
+        // the class-field counterpart of the struct-field branch above,
+        // redirected through a real runtime pointer since the field's
+        // storage lives in the class's own heap block, not this frame.
+        if (auto classField = classStaticArrayFieldOf(expression)) {
+            const elementType = dynamicArrayElementType(expression.type);
+            const elementIsArray = arrayElementIsArray(expression.type);
+            const offset = allocateBytes(sliceDescriptorSize, size_t.sizeof);
+            const basePointer = classFieldAddress(*classField);
+            compileClassStaticArrayAsDynamicInto(
+                offset, elementType, expression.type, basePointer,
+            );
+            auto result = new DynamicArrayLocal;
+            *result = DynamicArrayLocal(offset, elementType, elementIsArray);
+            result.isStaticArrayView = true;
+            result.staticArrayViewIsClassField = true;
+            result.staticArrayOffset = basePointer;
             return result;
         }
 
@@ -5498,6 +5520,11 @@ private struct Compiler {
         if (auto staticArray = staticArrayViewOffset(source)) {
             _dynamicArrayLocals[variable].isStaticArrayView = true;
             _dynamicArrayLocals[variable].staticArrayOffset = *staticArray;
+        } else if (auto classField = classStaticArrayViewFieldOf(source)) {
+            _dynamicArrayLocals[variable].isStaticArrayView = true;
+            _dynamicArrayLocals[variable].staticArrayViewIsClassField = true;
+            _dynamicArrayLocals[variable].staticArrayOffset =
+                classFieldAddress(*classField);
         }
         compileDynamicArrayInto(
             offset, elementType, source, elementIsArray);
@@ -5930,6 +5957,57 @@ private struct Compiler {
                 cast(ushort) (*sourceOffset + elementIndex * sourceElementSize),
                 destination,
                 index,
+            );
+        }
+    }
+
+    // The class-field counterpart of `compileStaticArrayAsDynamicInto`:
+    // builds the same throwaway heap copy, but reads each element through
+    // `basePointer` (a real runtime pointer, `classFieldAddress`) with
+    // `Op.pointerLoad*` instead of a folded frame offset with `Op.copy`,
+    // since the source field's storage lives in the class's own heap block.
+    private void compileClassStaticArrayAsDynamicInto(
+        in ushort destination,
+        in ScalarType elementType,
+        Type sourceType,
+        in ushort basePointer,
+    ) {
+        auto sourceElementType = sourceType.toBasetype.nextOf;
+        const sourceElementSize =
+            cast(uint) staticArraySize(sourceElementType);
+        const elementSize = elementType == ScalarType.void_ ||
+                arrayElementIsArray(sourceType)
+            ? sourceElementSize
+            : cast(uint) size(elementType);
+
+        const count =
+            cast(uint) staticArraySize(sourceType) / sourceElementSize;
+        _code ~= Instruction(
+            Op.allocArray,
+            destination,
+            cast(ushort) elementSize,
+            cast(ushort) count,
+        );
+
+        foreach (elementIndex; 0 .. count) {
+            const elementPointer =
+                allocateBytes(cast(uint) size_t.sizeof, size_t.sizeof);
+            _code ~= Instruction(
+                Op.addInt8,
+                elementPointer,
+                basePointer,
+                compileSizeConstant(elementIndex * sourceElementSize),
+            );
+            const loaded = allocateBytes(elementSize, elementSize);
+            _code ~= Instruction(
+                pointerLoadOp(elementSize),
+                loaded,
+                elementPointer,
+                compileSizeConstant(0),
+            );
+            const index = compileSizeConstant(elementIndex);
+            _code ~= Instruction(
+                indexStoreOp(elementSize), loaded, destination, index,
             );
         }
     }
@@ -6552,16 +6630,24 @@ private struct Compiler {
             return result;
         }
 
+        // `&c.arr[i]`: the class-field counterpart of the `indexesStaticArray`
+        // branch above -- the field's storage lives in the class's own heap
+        // block, addressed via `classFieldAddress` (a real runtime pointer)
+        // instead of a folded frame offset.
+        if (index.e1.isDotVarExp !is null &&
+            index.type.toBasetype.ty != TY.Tsarray &&
+            index.type.toBasetype.ty != TY.Tstruct)
+            if (auto pointer = tryClassStaticArrayElementPointer(index))
+                return pointer;
+
         auto descriptor = dynamicArrayDescriptorOrNull(index.e1);
         if (descriptor is null)
             return null;
 
         if (descriptor.isStaticArrayView) {
             auto result = new Operand;
-            *result = staticArrayElementPointer(
-                descriptor.staticArrayOffset, index.e2, index.type,
-                sliceLengthSlot(*descriptor),
-            );
+            *result =
+                staticArrayViewElementPointer(*descriptor, index.e2, index.type);
             return result;
         }
 
@@ -6618,6 +6704,31 @@ private struct Compiler {
         );
         return advanceStaticArrayPointer(
             basePointerOperand, indexExpression, elementType, lengthSlot,
+        );
+    }
+
+    // The real element pointer for a `DynamicArrayLocal` static-array view
+    // (`__r[i]` inside `foreach (ref e; arr) ...`'s lowered loop): a local's
+    // or struct field's base is a frame offset, resolved via
+    // `Op.frameAddress` (`staticArrayElementPointer`); a class field's base
+    // is already a runtime pointer (`classFieldAddress`), used directly.
+    private Operand staticArrayViewElementPointer(
+        in DynamicArrayLocal descriptor,
+        Expression indexExpression,
+        Type elementType,
+    ) {
+        const lengthSlot = sliceLengthSlot(descriptor);
+        if (descriptor.staticArrayViewIsClassField)
+            return advanceStaticArrayPointer(
+                Operand(
+                    descriptor.staticArrayOffset, ScalarType.ulong_, true,
+                    ScalarType.void_,
+                ),
+                indexExpression, elementType, lengthSlot,
+            );
+        return staticArrayElementPointer(
+            descriptor.staticArrayOffset, indexExpression, elementType,
+            lengthSlot,
         );
     }
 
@@ -6764,6 +6875,69 @@ private struct Compiler {
             return null;
 
         auto pointer = tryStaticArrayRuntimeAddress(index);
+        if (pointer is null)
+            return null;
+
+        auto result = new Operand;
+        *result = storeThroughPointer(*pointer, compileSizeConstant(0), rhs);
+        return result;
+    }
+
+    // `c.arr[i]`'s element address: `classFieldAddress(field) + i *
+    // elementSize`, computed at runtime since the field's storage lives in
+    // the class's own heap block rather than an inline frame offset (unlike
+    // the analogous struct-field case `tryStaticArrayElement`/
+    // `locateStaticArrayElement` already handle via `tryStructField`). Null
+    // if `index.e1` is not a class static-array field access.
+    private Operand* tryClassStaticArrayElementPointer(IndexExp index) {
+        auto dot = index.e1.isDotVarExp;
+        if (dot is null)
+            return null;
+
+        auto field = classStaticArrayFieldOf(dot);
+        if (field is null)
+            return null;
+
+        auto result = new Operand;
+        *result = advanceStaticArrayPointer(
+            Operand(
+                classFieldAddress(*field), ScalarType.ulong_, true,
+                ScalarType.void_,
+            ),
+            index.e2, index.type,
+            compileSizeConstant(staticArrayLength(index.e1.type)),
+        );
+        return result;
+    }
+
+    // `c.arr[i]` read for a class static-array field: null (falling through
+    // to `tryStaticArrayRuntimeIndex`/`compileStaticArrayIndex`'s struct/local
+    // handling, or the "Unsupported" fallback) if `index.e1` is not one, or
+    // the element itself is a sub-array/struct (not yet a scalar leaf).
+    private Operand* tryClassStaticArrayFieldElement(IndexExp index) {
+        import dmd.astenums: TY;
+
+        const ty = index.type.toBasetype.ty;
+        if (ty == TY.Tsarray || ty == TY.Tstruct || ty == TY.Tarray)
+            return null;
+
+        auto pointer = tryClassStaticArrayElementPointer(index);
+        if (pointer is null)
+            return null;
+
+        auto result = new Operand;
+        *result = loadThroughPointer(*pointer, compileSizeConstant(0));
+        return result;
+    }
+
+    // `c.arr[i] = rhs` for a class static-array field: the class-field
+    // counterpart of `tryStaticArrayElement`/`tryStaticArrayRuntimeElementAssign`.
+    // Null if `index.e1` is not one.
+    private Operand* tryClassStaticArrayFieldElementAssign(
+        IndexExp index,
+        Expression rhs,
+    ) {
+        auto pointer = tryClassStaticArrayElementPointer(index);
         if (pointer is null)
             return null;
 
@@ -8275,6 +8449,13 @@ private struct Compiler {
                     tryStaticArrayRuntimeElementAssign(index, assign.e2))
                 return *store;
 
+        // `c.arr[i] = rhs` for a class static-array field element: the
+        // class-field counterpart of the two static-array assignments above.
+        if (auto index = assign.e1.isIndexExp)
+            if (auto store =
+                    tryClassStaticArrayFieldElementAssign(index, assign.e2))
+                return *store;
+
         // `matrix[] = [...]` broadcasts a one-dimensional row literal to each
         // row of a multidimensional static array in place.
         if (auto slice = assign.e1.isSliceExp)
@@ -9480,10 +9661,8 @@ private struct Compiler {
         // into the static array's own inline frame offset instead, the same
         // element address `tryPointerToElement` computes for `&arr[i]`.
         if (descriptor.isStaticArrayView) {
-            const pointer = staticArrayElementPointer(
-                descriptor.staticArrayOffset, index.e2, index.type,
-                sliceLengthSlot(*descriptor),
-            );
+            const pointer =
+                staticArrayViewElementPointer(*descriptor, index.e2, index.type);
             auto viewResult = new Operand;
             *viewResult =
                 storeThroughPointer(pointer, compileSizeConstant(0), rhs);
@@ -10134,6 +10313,46 @@ private struct Compiler {
                 return staticArrayOffsetOf(slice.e1);
 
         return staticArrayOffsetOf(expression);
+    }
+
+    // The class-field counterpart of `staticArrayOffsetOf`: a static-array
+    // field reached through a class pointer, or null if `expression` is not
+    // one. Unlike a struct's static-array field (an inline frame offset
+    // `staticArrayOffsetOf` folds at compile time), the field's storage
+    // lives in the class's own heap block, so callers address it through
+    // `classFieldAddress` (a real runtime pointer) instead.
+    private ClassPointerField* classStaticArrayFieldOf(Expression expression) {
+        import dmd.astenums: TY;
+
+        if (auto cast_ = expression.isCastExp)
+            return classStaticArrayFieldOf(cast_.e1);
+
+        // The receiver's static type must already be a class before probing
+        // further: `tryClassPointerField` unconditionally compiles `dot.e1`
+        // to check whether it yields a pointer, which throws for a plain
+        // struct local (structs are addressed through `_structLocals`, never
+        // `compileExpression`) rather than simply failing to match.
+        if (auto dot = expression.isDotVarExp)
+            if (dot.e1.type !is null &&
+                dot.e1.type.toBasetype.ty == TY.Tclass)
+                if (auto field = tryClassPointerField(dot))
+                    if (field.type.toBasetype.ty == TY.Tsarray)
+                        return field;
+
+        return null;
+    }
+
+    private ClassPointerField* classStaticArrayViewFieldOf(
+        Expression expression,
+    ) {
+        if (auto cast_ = expression.isCastExp)
+            return classStaticArrayViewFieldOf(cast_.e1);
+
+        if (auto slice = expression.isSliceExp)
+            if (slice.lwr is null && slice.upr is null)
+                return classStaticArrayFieldOf(slice.e1);
+
+        return classStaticArrayFieldOf(expression);
     }
 
     private Operand compileEqualExpression(Expression expression) {
@@ -13862,6 +14081,12 @@ private struct DynamicArrayLocal {
     ushort structSize;
     bool isStaticArrayView;
     ushort staticArrayOffset;
+    // When set, `staticArrayOffset` is not a frame-relative array offset
+    // (resolved via `Op.frameAddress`) but a frame slot already holding a
+    // real runtime pointer (`classFieldAddress`) to the view's first
+    // element, because the underlying static array is a class field living
+    // in the class's own heap block rather than inline in this frame.
+    bool staticArrayViewIsClassField;
 }
 
 // A delegate local (`auto d = () => this.field;`): a 16-byte slot holding a
