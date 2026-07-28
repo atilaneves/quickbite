@@ -4139,10 +4139,7 @@ static foreach (backend; Matrix!()) {
 // authoritative after an element field becomes addressable. Pointer and ref
 // mutations must both be visible through a whole-field copy and a whole-object
 // argument.
-static foreach (backend; Matrix!(
-    Omit!(Bytecode, Because.unconfirmed,
-        "does not yet support taking the address of a class array field element"),
-)) {
+static foreach (backend; Matrix!()) {
     @("class.structSliceFieldReadsAuthoritativeStorage." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -4178,10 +4175,7 @@ static foreach (backend; Matrix!(
 // A class static-array field whose elements are structs keeps its inline
 // element storage authoritative after an element field becomes addressable.
 // The mutation must remain visible through whole-field and whole-object reads.
-static foreach (backend; Matrix!(
-    Omit!(Bytecode, Because.unconfirmed,
-        "does not yet support taking the address of a class array field element"),
-)) {
+static foreach (backend; Matrix!()) {
     @("class.structStaticArrayFieldReadsAuthoritativeStorage." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {

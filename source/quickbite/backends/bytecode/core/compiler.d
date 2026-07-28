@@ -3420,6 +3420,19 @@ private struct Compiler {
             }
 
         if (auto dot = expression.isDotVarExp) {
+            // A ref local bound to a field within a class array field's
+            // element (`ref int r = c.arr[i].field;`): the class-field
+            // counterpart of the array-element case below, checked first
+            // since `tryStructField` would otherwise resolve the element
+            // through a throwaway copy (its struct-of-structs array-element
+            // case has no class-heap counterpart), aliasing the copy instead
+            // of the field's real storage.
+            if (auto element = tryClassArrayFieldElementFieldPointer(dot)) {
+                _locals[variable] = element.pointer;
+                _refLocalPointers[variable] = scalarType(element.type);
+                return true;
+            }
+
             if (auto field = tryStructField(dot)) {
                 if (variable.type.toBasetype.ty == TY.Tstruct) {
                     _structLocals[variable] = StructLocal(
@@ -3827,6 +3840,26 @@ private struct Compiler {
             );
             return;
         }
+
+        // `T[N] dest = c.arr`: the class-field counterpart of the frame-to-
+        // frame copy above -- `arr`'s storage lives in the class's own heap
+        // block, addressed through a real runtime pointer
+        // (`classFieldAddress`) rather than a frame offset, so the copy
+        // reads through that pointer instead. Limited to the sizes
+        // `pointerLoadOp` supports, matching every other fixed-size
+        // pointer-read block copy in this module.
+        if (auto classField = classStaticArrayFieldOf(source))
+            if (totalSize == 1 || totalSize == 2 || totalSize == 4 ||
+                totalSize == 8 || totalSize == 16)
+            {
+                _code ~= Instruction(
+                    pointerLoadOp(totalSize),
+                    offset,
+                    classFieldAddress(*classField),
+                    compileSizeConstant(0),
+                );
+                return;
+            }
 
         if (auto literal = arrayLiteralOf(source)) {
             compileStaticArrayLiteral(offset, variable.type, literal);
@@ -6946,6 +6979,108 @@ private struct Compiler {
         return result;
     }
 
+    // `c.arr[i]`'s element address for a class dynamic-array (slice) field:
+    // the slice-field counterpart of `tryClassStaticArrayElementPointer`.
+    // Unlike a static-array field, whose element storage lives inline in the
+    // class's own heap block, a slice field's element storage lives wherever
+    // its own `.ptr` word (loaded through `classFieldAddress`) already
+    // points, so that pointer is loaded first and then advanced by `i *
+    // elementSize` the same way. Null if `index.e1` is not a class
+    // slice-field access.
+    private Operand* tryClassSliceFieldElementPointer(IndexExp index) {
+        import dmd.astenums: TY;
+
+        auto dot = index.e1.isDotVarExp;
+        if (dot is null ||
+            dot.e1.type is null ||
+            dot.e1.type.toBasetype.ty != TY.Tclass)
+            return null;
+
+        auto field = tryClassPointerField(dot);
+        if (field is null || field.type.toBasetype.ty != TY.Tarray)
+            return null;
+
+        const descriptor = allocateBytes(sliceDescriptorSize, size_t.sizeof);
+        _code ~= Instruction(
+            Op.pointerLoad16, descriptor, classFieldAddress(*field),
+            compileSizeConstant(0),
+        );
+        const basePointer =
+            allocateBytes(cast(uint) size_t.sizeof, size_t.sizeof);
+        _code ~= Instruction(
+            Op.copy, basePointer, descriptor, cast(ushort) size_t.sizeof,
+        );
+
+        auto result = new Operand;
+        *result = advanceStaticArrayPointer(
+            Operand(basePointer, ScalarType.ulong_, true, ScalarType.void_),
+            index.e2, index.type,
+            sliceLengthSlot(DynamicArrayLocal(descriptor, ScalarType.void_)),
+        );
+        return result;
+    }
+
+    // `c.arr[i].field`'s real runtime address for a field within an element
+    // of a class array field (static-array or slice) of structs -- the
+    // class-field counterpart of `tryStructField`'s struct-of-structs
+    // array-element case, which folds to a compile-time frame offset that
+    // does not exist for a class field's heap storage. `dot.e1` is the
+    // element access (`c.arr[i]`); its real runtime element pointer,
+    // computed by `tryClassStaticArrayElementPointer` or
+    // `tryClassSliceFieldElementPointer` depending on which kind of array
+    // field it is, is advanced by the leaf field's own offset within the
+    // element struct. Returned alongside the field's own type so callers can
+    // derive the pointed-at scalar type either as a pointer element (`&`) or
+    // a `ref`-local's own type. Null if `dot.e1` is not a class array field
+    // element access.
+    private ClassArrayFieldElementField* tryClassArrayFieldElementFieldPointer(
+        DotVarExp dot,
+    ) {
+        import dmd.astenums: TY;
+
+        auto field = dot.var.isVarDeclaration;
+        if (field is null)
+            return null;
+
+        auto index = dot.e1.isIndexExp;
+        if (index is null)
+            return null;
+
+        auto arrayDot = index.e1.isDotVarExp;
+        if (arrayDot is null ||
+            arrayDot.e1.type is null ||
+            arrayDot.e1.type.toBasetype.ty != TY.Tclass)
+            return null;
+
+        auto arrayField = arrayDot.var.isVarDeclaration;
+        if (arrayField is null)
+            return null;
+
+        Operand* elementPointer;
+        if (arrayField.type.toBasetype.ty == TY.Tsarray)
+            elementPointer = tryClassStaticArrayElementPointer(index);
+        else if (arrayField.type.toBasetype.ty == TY.Tarray)
+            elementPointer = tryClassSliceFieldElementPointer(index);
+        if (elementPointer is null)
+            return null;
+
+        const pointer = allocateBytes(cast(uint) size_t.sizeof, size_t.sizeof);
+        _code ~= Instruction(
+            Op.addInt8, pointer, elementPointer.offset,
+            compileSizeConstant(cast(uint) field.offset),
+        );
+        auto result = new ClassArrayFieldElementField;
+        *result = ClassArrayFieldElementField(pointer, field.type);
+        return result;
+    }
+
+    // A located class array field element field: its real runtime pointer
+    // and DMD type, returned by `tryClassArrayFieldElementFieldPointer`.
+    private static struct ClassArrayFieldElementField {
+        ushort pointer;
+        Type type;
+    }
+
     // `&local` / `&base.field`: the native address of a scalar local's frame
     // slot (or a struct field's inline slot), yielding an `int*`-style pointer
     // operand over the pointed-at element type. Null if the operand is not a
@@ -7116,6 +7251,22 @@ private struct Compiler {
                 pointedType = declaration.type;
             }
         } else if (auto dot = target.isDotVarExp) {
+            // `&c.arr[i].field`: a class array field's element storage has no
+            // frame offset for `tryStructField`'s generic struct-field path
+            // to fold into (it lives in the class's own heap block, or
+            // wherever a slice field's `.ptr` points), so it is checked
+            // first, ahead of `tryStructField`'s otherwise-matching but
+            // address-unsound copy-based element read.
+            if (auto element = tryClassArrayFieldElementFieldPointer(dot)) {
+                auto result = new Operand;
+                *result = Operand(
+                    element.pointer,
+                    ScalarType.ulong_,
+                    true,
+                    pointerElementScalar(address.type),
+                );
+                return result;
+            }
             if (auto field = tryStructField(dot)) {
                 slot = field.offset;
                 pointedType = field.type;
