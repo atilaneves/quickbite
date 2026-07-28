@@ -145,6 +145,25 @@ static foreach (backend; Matrix!()) {
 }
 
 static foreach (backend; Matrix!()) {
+    @("exception.catchBindingIdentityMatchesPointerDereference." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            unittest {
+                Exception* p;
+
+                try {
+                    throw new Exception("x");
+                } catch (Exception e) {
+                    p = &e;
+                    assert(*p is e);
+                }
+            }
+        });
+    }
+}
+
+static foreach (backend; Matrix!()) {
     @("exception.catchSkipsNonMatchingSiblingException." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {

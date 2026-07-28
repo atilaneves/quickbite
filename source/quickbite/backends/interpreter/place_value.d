@@ -647,9 +647,13 @@ public void writeValue(
         return;
     }
 
-    if (isFloatingBaseEnum(type))
-    {
-        place.storeScalar(value);
+    if (isFloatingBaseEnum(type)) {
+        auto enumType = type.isTypeEnum;
+        auto baseType = floatingEnumBaseType(enumType);
+        if (isRealType(baseType))
+            writeRealBits(place.address, typeByteSize(baseType), value.asReal);
+        else
+            place.storeScalar(value);
         return;
     }
 
@@ -709,6 +713,11 @@ public void writeValue(
                 ~ "class place requires an object pointer or null",
             );
         place.storeReference(pointerAddress(value));
+        return;
+    }
+
+    if (type.isTypeAArray !is null && value == Value.null_) {
+        zeroBytes(place.address, typeByteSize(type));
         return;
     }
 

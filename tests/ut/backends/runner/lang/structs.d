@@ -27,6 +27,55 @@ static foreach (backend; Matrix!()) {
     }
 }
 
+static foreach (backend; Matrix!(
+    Omit!(Bytecode, Because.inexpressible,
+        "bytecode core does not support function-pointer calls with arguments"),
+)) {
+    @("struct.functionPointerFieldPreservesCallable." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            static int increment(int value) {
+                return value + 1;
+            }
+
+            struct S {
+                int function(int) fp;
+            }
+
+            unittest {
+                S value;
+                value.fp = &increment;
+                assert(value.fp(2) == 3);
+            }
+        });
+    }
+}
+
+static foreach (backend; Matrix!(
+    Omit!(Bytecode, Because.inexpressible,
+        "bytecode core does not support delegate-typed aggregate fields"),
+)) {
+    @("struct.liveDelegateFieldPreservesCallable." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            unittest {
+                int captured = 4;
+                int add(int x) { return x + captured; }
+
+                struct S {
+                    int delegate(int) f;
+                }
+
+                S s;
+                s.f = &add;
+                assert(s.f(2) == 6);
+            }
+        });
+    }
+}
+
 static foreach (backend; Matrix!()) {
     @("struct.multipleScalarFields." ~ backend.stringof)
     @Tags(backend.stringof)

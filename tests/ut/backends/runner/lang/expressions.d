@@ -542,6 +542,26 @@ static foreach (backend; Matrix!(
     }
 }
 
+
+static foreach (backend; Matrix!()) {
+    @("enum.realBaseAssignmentWritesUnderlyingValue." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            enum E : real {
+                a = 1.5L,
+                b = 2.5L,
+            }
+
+            unittest {
+                E e = E.a;
+                e = E.b;
+                assert(cast(real) e == 2.5L);
+            }
+        });
+    }
+}
+
 static foreach (backend; Matrix!(
     Omit!(Interpreter, Because.diverges,
         "see Interpreter pin below; passes the real assertions instead " ~
@@ -1203,6 +1223,35 @@ static foreach (backend; Matrix!()) {
 
             unittest {
                 assert(recurse(3) == 31);
+            }
+        });
+    }
+}
+
+static foreach (backend; Matrix!(
+    Omit!(Bytecode, Because.inexpressible,
+        "bytecode core does not support function-pointer values loaded " ~
+        "through pointer dereference"),
+)) {
+    @("pointer.functionPointerDereferencePreservesCallable." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            unittest {
+                auto result = () {
+                    static int f(int x) {
+                        return x + 1;
+                    }
+
+                    int function(int) fp = &f;
+                    auto p = &fp;
+                    auto q = *p;
+                    assert(q !is null);
+                    return 1;
+                }();
+
+                assert(result == 1);
             }
         });
     }

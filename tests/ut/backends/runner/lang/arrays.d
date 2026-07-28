@@ -1777,6 +1777,23 @@ static foreach (backend; Matrix!()) {
     }
 }
 
+static foreach (backend; Matrix!(
+    Omit!(Bytecode, Because.inexpressible, "nested associative-array operand"),
+)) {
+    @("assocArray.nestedLookupDereferencesAssociativeArrayPointee." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            unittest {
+                int[int][int] a = [1: [2: 3]];
+
+                assert(a[1][2] == 3);
+            }
+        });
+    }
+}
+
 static foreach (backend; Matrix!()) {
     @("assocArray.equalityComparesRuntimeEntries." ~ backend.stringof)
     @Tags(backend.stringof)

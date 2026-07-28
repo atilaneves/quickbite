@@ -13346,7 +13346,12 @@ private struct Compiler {
                 layout.blockSize =
                     (layout.blockSize + pointerAlign - 1) & ~(pointerAlign - 1);
                 layout.offsets ~= cast(ushort) layout.blockSize;
-                layout.isReference ~= false;
+                layout.isReference ~= parameter.isReference;
+                if (parameter.isReference)
+                    layout.refParameters ~= RefParameter(
+                        cast(ushort) layout.blockSize,
+                        pointerAlign,
+                    );
                 layout.blockSize += pointerAlign;
                 continue;
             }
