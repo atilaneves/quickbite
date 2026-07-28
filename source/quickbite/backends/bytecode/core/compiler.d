@@ -6843,6 +6843,11 @@ private struct Compiler {
 
         ushort slot;
         Type pointedType;
+        // A scalar `ref` parameter may share its caller storage with another
+        // `ref` parameter of the same call; `refParameterAddress` resolves
+        // the shared group's identity slot at runtime, giving `&first ==
+        // &second` for two `ref` parameters bound to the same lvalue.
+        bool isRefParameter;
         auto target = address.e1;
         while (auto cast_ = target.isCastExp)
             target = cast_.e1;
@@ -6851,6 +6856,7 @@ private struct Compiler {
             auto declaration = variable.var.isVarDeclaration;
             if (declaration is null)
                 return null;
+            isRefParameter = declaration.isReference;
             if (auto descriptor = declaration in _dynamicArrayLocals) {
                 slot = descriptor.offset;
                 pointedType = declaration.type;
@@ -6913,7 +6919,11 @@ private struct Compiler {
             return null;
 
         const pointer = allocateBytes(cast(uint) size_t.sizeof, size_t.sizeof);
-        _code ~= Instruction(Op.frameAddress, pointer, slot);
+        _code ~= Instruction(
+            isRefParameter ? Op.refParameterAddress : Op.frameAddress,
+            pointer,
+            slot,
+        );
         auto result = new Operand;
         *result = Operand(
             pointer,

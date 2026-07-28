@@ -383,8 +383,7 @@ row reaches them:
   view-preservation, and closure combination.
 - Struct aliases and whole-local assignment do not yet cover a static-array
   whole-object pointer receiver, a class array-field-element pointer
-  receiver, repeated/aliased ref-argument address identity, captured structs,
-  postblits, or `opAssign` semantics.
+  receiver, captured structs, postblits, or `opAssign` semantics.
 - Static arrays of dynamic arrays copy each element's full 16-byte slice
   descriptor; nested mutation and general stale-cell reconciliation remain
   incomplete.

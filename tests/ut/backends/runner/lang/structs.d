@@ -2443,10 +2443,7 @@ static foreach (backend; Matrix!()) {
 
 // Two ref parameters bound from the same plain variable denote one storage
 // location, so taking either parameter's address must produce equal pointers.
-static foreach (backend; Matrix!(
-    Omit!(Bytecode, Because.unconfirmed,
-        "does not yet preserve repeated ref-argument address identity"),
-)) {
+static foreach (backend; Matrix!()) {
     @("struct.repeatedRefArgumentPreservesAddressIdentity." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
