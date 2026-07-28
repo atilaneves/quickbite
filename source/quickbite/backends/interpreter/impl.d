@@ -1067,7 +1067,10 @@ private struct Walker {
     // DMD declaration inspection is `@system`; the returned address is still
     // restricted to storage owned by the frame/module/native binding tables.
     private void* addressableBindingBase(VarDeclaration variable) @trusted {
-        return bindingPlace(refLocalStorageVariable(variable)).address;
+        variable = refLocalStorageVariable(variable);
+        if (auto address = variable in nativeRefLocalAddresses)
+            return *address;
+        return bindingPlace(variable).address;
     }
 
 
@@ -2023,6 +2026,9 @@ private struct Walker {
 
             const pointer = addressOfExpression(with_.exp, EXP.address);
             storeBinding(with_.wthis, pointer);
+            if (!hasMirrorSlot(with_.wthis) &&
+                with_.wthis !in nativeRefLocalAddresses)
+                fallbackLocalAddress(with_.wthis);
             runStatement(with_._body);
         } else {
             runStatement(with_._body);
@@ -2408,7 +2414,7 @@ private struct Walker {
             return runVectorExpression(vector);
 
         if (auto vectorArray = expression.isVectorArrayExp)
-            return runExpression(vectorArray.e1);
+            return runVectorArrayExpression(vectorArray);
 
         if (expression.isThisExp !is null) {
             if (!hasThis)
@@ -4565,6 +4571,18 @@ private struct Walker {
         imported!"dmd.expression".Expression argument,
         out EvaluatedReferenceArgument evaluated,
     ) {
+        if (argument.isDotVarExp !is null) {
+            import dmd.tokens: EXP;
+            import quickbite.backends.interpreter.place: Place;
+            import quickbite.backends.interpreter.place_value: readValue;
+
+            const address = addressOfExpression(argument, EXP.address);
+            if (address.isPointer) {
+                evaluated.address = address.pointerAddress;
+                return readValue(Place(evaluated.address, argument.type));
+            }
+        }
+
         if (auto pointer = argument.isPtrExp)
             if (auto conditional = pointer.e1.isCondExp) {
                 auto selected = isTruthy(runExpression(conditional.econd))
@@ -6995,6 +7013,7 @@ private struct Walker {
     ) {
         import quickbite.backends.interpreter.aggregate_value: AggregateValue;
         import quickbite.backends.interpreter.layout: staticArrayLength;
+        import quickbite.backends.interpreter.native_aggregate: NativeAggregate;
 
         auto staticArray = vector.to.basetype.toBasetype.isTypeSArray;
         if (staticArray is null)
@@ -7007,7 +7026,28 @@ private struct Walker {
         foreach (_; 0 .. length)
             elements ~= value;
 
-        return AggregateValue.reconstructArray(vector.to.basetype, elements);
+        const array = AggregateValue.reconstructArray(vector.to.basetype, elements);
+        auto native = AggregateValue.native(array);
+        return Value.nativeAggregateValue(NativeAggregate(
+            vector.type,
+            native.storage,
+            native.retained,
+        ));
+    }
+
+    private Value runVectorArrayExpression(
+        imported!"dmd.expression".VectorArrayExp vectorArray,
+    ) {
+        import quickbite.backends.interpreter.aggregate_value: AggregateValue;
+        import quickbite.backends.interpreter.native_aggregate: NativeAggregate;
+
+        const vector = runExpression(vectorArray.e1);
+        auto native = AggregateValue.native(vector);
+        return Value.nativeAggregateValue(NativeAggregate(
+            vectorArray.type,
+            native.storage,
+            native.retained,
+        ));
     }
 
     private Value runAssignExpression(imported!"dmd.expression".BinExp assign) {
@@ -9529,6 +9569,30 @@ private struct Walker {
         if (expression.isSliceExp !is null)
             return true;
 
+        if (auto var = expression.isVarExp)
+            if (auto variable = var.var.isVarDeclaration)
+                if (variable._init !is null)
+                    if (auto initializer = variable._init.isExpInitializer)
+                        return containsSliceValue(initializer.exp);
+
+        return false;
+    }
+
+    private bool containsSliceValue(
+        imported!"dmd.expression".Expression expression,
+    ) {
+        if (expression is null)
+            return false;
+        if (expression.isSliceExp !is null)
+            return true;
+        if (auto cast_ = expression.isCastExp)
+            return containsSliceValue(cast_.e1);
+        if (auto construct = expression.isConstructExp)
+            return containsSliceValue(construct.e2);
+        if (auto assign = expression.isAssignExp)
+            return containsSliceValue(assign.e2);
+        if (auto comma = expression.isCommaExp)
+            return containsSliceValue(comma.e2);
         return false;
     }
 

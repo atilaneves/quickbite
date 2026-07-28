@@ -125,6 +125,9 @@ public imported!"quickbite.backends.interpreter.runtime_value".Value readValue(
     if (arrayType !is null)
         return AggregateValue.copyFromAddress(type, place.address);
 
+    if (type.isTypeVector !is null)
+        return AggregateValue.copyFromAddress(type, place.address);
+
     auto sliceType = type.isTypeDArray;
     if (sliceType !is null)
         return AggregateValue.copyFromAddress(type, place.address);
@@ -335,6 +338,12 @@ private bool sameBaseType(
 ) @trusted {
     import dmd.astenums: TY;
     import dmd.typesem: mutableOf;
+
+    auto lhsVector = lhs.toBasetype.isTypeVector;
+    auto rhsVector = rhs.toBasetype.isTypeVector;
+    if (lhsVector !is null || rhsVector !is null)
+        return lhsVector !is null && rhsVector !is null &&
+            mutableOf(lhsVector.basetype).equals(mutableOf(rhsVector.basetype));
 
     // `mutableOf` removes the outer qualifier, but DMD is not required to
     // intern the resulting wrapper (notably for a const AA field).  Semantic

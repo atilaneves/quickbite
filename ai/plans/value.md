@@ -362,6 +362,8 @@ checked fact; do not relearn them.
   semantic analysis).
 - A static array's element count comes from `TypeSArray.dim` — the DMD
   field that IS the fact — never re-derived by dividing byte sizes.
+- A vector wrapper and its embedded static array are typed views over the same
+  DMD-layout bytes; converting through `.array` changes the view, not storage.
 - One deliberate scalar-codec split remains at the libffi seam: a direct
   native return / closure-result buffer is widened to at least `ffi_arg`
   and requires a sign/zero-extended whole-buffer splat that a

@@ -28,11 +28,11 @@ public string indexOutOfBoundsMessage(
 ) @safe pure {
     import std.conv: text;
 
-    if (runningCalledFunction)
-        return compiledIndexOutOfBoundsMessage(index, length);
+    if (isSlice)
+        return text("index ", index, " exceeds array length ", length);
 
-    return isSlice
-        ? text("index ", index, " exceeds array length ", length)
+    return runningCalledFunction
+        ? compiledIndexOutOfBoundsMessage(index, length)
         : text("array index ", index, " is out of bounds `[0..", length, "]`");
 }
 
