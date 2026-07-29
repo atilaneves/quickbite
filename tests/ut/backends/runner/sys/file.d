@@ -12,7 +12,8 @@ import std.conv: text;
 static foreach (backend; Matrix!(
     Omit!(Ctfe, Because.inexpressible, "needs the host filesystem, which CTFE cannot access"),
     Omit!(Bytecode, Because.refusal,
-        "Unsupported ref argument in bytecode core: (*this._p).refs"),
+        "Unsupported inline asm instruction sequence: core.atomic's " ~
+        "lock-xchg atomicOp!\"+=\" lowering has no bytecode core support"),
 )) {
     @("file.createWriteRead." ~ backend.stringof)
     @Tags(backend.stringof)

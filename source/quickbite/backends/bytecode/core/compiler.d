@@ -221,6 +221,20 @@ private struct Compiler {
         ushort valueSize;
     }
 
+    // The struct-pointer counterpart of `ClassFieldRefWriteBack`: a scalar
+    // `ref` argument reached through a struct pointer (`setTo(carrier.value,
+    // ...)` where `carrier` is `Holder*`, which DMD represents as
+    // `(*carrier).value`). The field's heap storage has no caller-frame
+    // offset of its own either, so the same mirror-and-writeback pattern
+    // applies, keyed on the same `pointerSlot`/`fieldOffset` pair.
+    private static struct StructPointerFieldRefWriteBack {
+        ushort valueOffset;
+        ushort addressOffset;
+        ushort pointerSlot;
+        ushort fieldOffset;
+        ushort valueSize;
+    }
+
     private static struct MethodReceiver {
         ushort offset;
         ushort writeBackFrameIndex;
@@ -11275,6 +11289,7 @@ private struct Compiler {
         DynamicArrayRefWriteBack[] dynamicArrayRefWriteBacks;
         StructPointerRefWriteBack[] structPointerRefWriteBacks;
         ClassFieldRefWriteBack[] classFieldRefWriteBacks;
+        StructPointerFieldRefWriteBack[] structPointerFieldRefWriteBacks;
         if (call.arguments !is null &&
             nextArgumentIndex + call.arguments.length > layout.offsets.length)
             throw new Exception(text(
@@ -11332,6 +11347,13 @@ private struct Compiler {
                         classFieldRefWriteBacks,
                     ))
                         continue;
+                if (layout.isReference[nextArgumentIndex + argumentIndex])
+                    if (emitStructPointerFieldRefArgument(
+                        slot,
+                        (*call.arguments)[argumentIndex],
+                        structPointerFieldRefWriteBacks,
+                    ))
+                        continue;
                 emitCallArgument(
                     slot,
                     layout.isReference[nextArgumentIndex + argumentIndex],
@@ -11374,6 +11396,13 @@ private struct Compiler {
                 compileSizeConstant(0),
             );
         foreach (writeBack; classFieldRefWriteBacks)
+            _code ~= Instruction(
+                pointerStoreOp(writeBack.valueSize),
+                writeBack.valueOffset,
+                writeBack.addressOffset,
+                compileSizeConstant(0),
+            );
+        foreach (writeBack; structPointerFieldRefWriteBacks)
             _code ~= Instruction(
                 pointerStoreOp(writeBack.valueSize),
                 writeBack.valueOffset,
@@ -12613,6 +12642,90 @@ private struct Compiler {
             cast(ushort) size(ScalarType.uint_),
         );
         writeBacks ~= ClassFieldRefWriteBack(
+            valueOffset,
+            addressOffset,
+            field.pointerSlot,
+            field.fieldOffset,
+            valueSize,
+        );
+        return true;
+    }
+
+    // The struct-pointer counterpart of `emitClassFieldRefArgument`: a scalar
+    // `ref` argument reached through a struct pointer field
+    // (`setTo(carrier.value, ...)`). `tryStructPointerField` resolves DMD's
+    // `(*carrier).value` lowering back to the pointer's frame slot and the
+    // field's byte offset; the field's heap storage has no caller-frame
+    // offset of its own, so it needs the same mirror-into-a-fresh-slot and
+    // writeback-through-the-real-address pattern as a class field.
+    private bool emitStructPointerFieldRefArgument(
+        in ushort slot,
+        Expression argument,
+        ref StructPointerFieldRefWriteBack[] writeBacks,
+    ) {
+        import dmd.astenums: TY;
+
+        auto dot = argument.isDotVarExp;
+        if (dot is null)
+            return false;
+
+        // `with (s) { ... value ... }` lowers an unqualified field to
+        // `(*__withSym).value`, the same shape as a genuine struct-pointer
+        // field, but `__withSym` aliases `s`'s own frame storage directly
+        // (`_withDerefBases`) rather than a heap pointer. Mirroring it into a
+        // copy here would give it a different storage identity than a direct
+        // `s.value` argument to the same call, breaking their required
+        // aliasing; decline so `referenceOffset`'s `_withDerefBases`-aware
+        // path resolves it to the real frame offset instead.
+        auto base = dot.e1;
+        if (auto deref = base.isPtrExp)
+            base = deref.e1;
+        if (auto variable = base.isVarExp)
+            if (auto declaration = variable.var.isVarDeclaration)
+                if (declaration in _withDerefBases)
+                    return false;
+
+        auto field = tryStructPointerField(dot);
+        if (field is null)
+            return false;
+
+        const ty = field.type.toBasetype.ty;
+        if (ty == TY.Tstruct || ty == TY.Tsarray || ty == TY.Tarray ||
+            ty == TY.Taarray)
+            return false;
+
+        const valueSize = cast(ushort) size(scalarType(field.type));
+        if (valueSize != 1 && valueSize != 4 && valueSize != 8)
+            return false;
+
+        foreach (writeBack; writeBacks)
+            if (writeBack.pointerSlot == field.pointerSlot &&
+                writeBack.fieldOffset == field.fieldOffset &&
+                writeBack.valueSize == valueSize) {
+                _code ~= Instruction(
+                    Op.loadConstant,
+                    slot,
+                    constantIndex(writeBack.valueOffset),
+                    cast(ushort) size(ScalarType.uint_),
+                );
+                return true;
+            }
+
+        const valueOffset = allocateBytes(valueSize, valueSize);
+        const addressOffset = structFieldAddress(*field);
+        _code ~= Instruction(
+            pointerLoadOp(valueSize),
+            valueOffset,
+            addressOffset,
+            compileSizeConstant(0),
+        );
+        _code ~= Instruction(
+            Op.loadConstant,
+            slot,
+            constantIndex(valueOffset),
+            cast(ushort) size(ScalarType.uint_),
+        );
+        writeBacks ~= StructPointerFieldRefWriteBack(
             valueOffset,
             addressOffset,
             field.pointerSlot,

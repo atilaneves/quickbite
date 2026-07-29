@@ -2117,12 +2117,11 @@ static foreach (backend; Matrix!()) {
 // non-null and so past the `address is null` guard -- and then dereferenced
 // it in `assertReferenceBind`: SIGSEGV on a perfectly legal program.
 // Composition must consult what the write side actually DID for the base
-// variable, not assume a slot it never filled. `Bytecode` refuses a class
-// field as a `ref` argument.
-static foreach (backend; Matrix!(
-    Omit!(Bytecode, Because.refusal,
-        "Unsupported ref argument in bytecode core: holder.value"),
-)) {
+// variable, not assume a slot it never filled. `Bytecode` resolves the
+// class field's real heap address (`emitClassFieldRefArgument`) and mirrors
+// it through a fresh frame slot for the call, independent of this mirror
+// mechanism.
+static foreach (backend; Matrix!()) {
     @("refArgument.classFieldArgumentWithDeclinedClassMirror." ~
         backend.stringof)
     @Tags(backend.stringof)
@@ -2151,11 +2150,11 @@ static foreach (backend; Matrix!(
 // the field reached through the pointer (`PtrExp`/`DotVarExp`). Same rule --
 // the address is composed from a slot the write side may never have filled,
 // so composition must decline rather than deref whatever the slot happens to
-// hold. `Bytecode` refuses a pointer-carried field as a `ref` argument.
-static foreach (backend; Matrix!(
-    Omit!(Bytecode, Because.refusal,
-        "Unsupported ref argument in bytecode core: (*carrier).value"),
-)) {
+// hold. `Bytecode` resolves the field's real address through the pointer
+// (`emitStructPointerFieldRefArgument`, `tryStructPointerField`) and mirrors
+// it through a fresh frame slot for the call, independent of this mirror
+// mechanism.
+static foreach (backend; Matrix!()) {
     @("refArgument.pointerCarriedFieldArgumentComposesSafely." ~
         backend.stringof)
     @Tags(backend.stringof)
@@ -2287,11 +2286,9 @@ static foreach (backend; Matrix!()) {
 // verifying against the boxed argument then fires "reference slot bind
 // diverged from boxed argument" on a correct program: the verify decision must
 // re-derive the write side's own current decline, not merely "was it ever
-// established". `Bytecode` refuses a class field as a `ref` argument.
-static foreach (backend; Matrix!(
-    Omit!(Bytecode, Because.refusal,
-        "Unsupported ref argument in bytecode core: first.value"),
-)) {
+// established". `Bytecode` resolves the class field's real heap address
+// (`emitClassFieldRefArgument`) independent of this mirror mechanism.
+static foreach (backend; Matrix!()) {
     @("refArgument.classFieldArgumentAfterAliasedIdentityDecline." ~
         backend.stringof)
     @Tags(backend.stringof)
@@ -2326,11 +2323,10 @@ static foreach (backend; Matrix!(
 // Composition crossing a class body must therefore decline verification the
 // same way the ordinary read path does, or the bind asserts "reference slot
 // bind diverged from boxed argument" on a correct program. `Bytecode`
-// refuses a class field as a `ref` argument.
-static foreach (backend; Matrix!(
-    Omit!(Bytecode, Because.refusal,
-        "Unsupported ref argument in bytecode core: parent.child.x"),
-)) {
+// resolves the class field's real heap address through the chained
+// `DotVarExp` receiver (`emitClassFieldRefArgument`, `tryClassPointerField`)
+// independent of this mirror mechanism.
+static foreach (backend; Matrix!()) {
     @("refArgument.nestedClassFieldArgumentAfterCalleeRewroteSharedBody." ~
         backend.stringof)
     @Tags(backend.stringof)

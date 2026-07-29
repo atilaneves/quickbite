@@ -421,21 +421,19 @@ read is actually the correct oracle behaviour for this call, rather than a
 truncation of the real 8-byte reference.
 
 `file.createWriteRead.Bytecode` (`tests/ut/backends/runner/sys/file.d`) stays
-`Omit!(Bytecode, Because.refusal, "Unsupported ref argument in bytecode
-core: (*this._p).refs")`. Two blockers, in order: (1)
-`atomicOp!"+="(_p.refs, 1)` passes `_p.refs` (a field reached by
-dereferencing the pointer field `File.Impl* _p`) as a `ref` argument, and
-`referenceOffset` (`compiler.d`) has no case for a `ref` argument reached
-through a dereferenced pointer field -- only a plain local, a `this`/
-struct-field lvalue, and a bare pointer dereference are handled; and, once
-that is addressed, (2) `std.stdio.File`'s refcounting is `shared`, and DMD's
-`core.atomic` lowers `atomicOp!"+="` on this platform to inline x86 asm
-(`lock xchg` followed by a plain store) rather than a compiler intrinsic; the
-bytecode core has no inline-asm support at all. Candidate fixes for (2):
-implement the specific `lock`-prefixed read-modify-write/store instruction
-sequence `core.atomic` emits, or recognise `atomicOp`/`atomicLoad`/
-`atomicStore` by symbol (like the `std.math` builtins) and lower them to
-dedicated VM atomic ops instead of compiling the inline asm body.
+`Omit!(Bytecode, Because.refusal, "Unsupported inline asm instruction
+sequence: ...")`. `atomicOp!"+="(_p.refs, 1)` passes `_p.refs` (a field
+reached by dereferencing the pointer field `File.Impl* _p`) as a `ref`
+argument; `emitStructPointerFieldRefArgument` (`compiler.d`) now resolves
+that shape. The remaining blocker: `std.stdio.File`'s refcounting is
+`shared`, and DMD's `core.atomic` lowers `atomicOp!"+="` on this platform to
+inline x86 asm (`lock xchg` followed by a plain store) rather than a
+compiler intrinsic; the bytecode core has no inline-asm support at all.
+Candidate fixes: implement the specific `lock`-prefixed read-modify-write/
+store instruction sequence `core.atomic` emits, or recognise `atomicOp`/
+`atomicLoad`/`atomicStore` by symbol (like the `std.math` builtins) and
+lower them to dedicated VM atomic ops instead of compiling the inline asm
+body.
 
 ### TDD and handoff discipline
 
