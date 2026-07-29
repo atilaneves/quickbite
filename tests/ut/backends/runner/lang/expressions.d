@@ -2248,13 +2248,10 @@ static foreach (backend; Matrix!(
 // A scalar and a struct `__gshared` global, each mutated across several
 // separate calls -- every intervening read re-verifies the mirror against
 // the just-written boxed value. `Ctfe` cannot read or write dataseg storage
-// at all (compile-time execution has no such storage to access); `Bytecode`
-// does not yet support a struct-typed dataseg variable.
+// at all (compile-time execution has no such storage to access).
 static foreach (backend; Matrix!(
     Omit!(Ctfe, Because.inexpressible,
         "CTFE cannot read or write dataseg (__gshared/static) storage"),
-    Omit!(Bytecode, Because.refusal,
-        "Unsupported variable in bytecode core: quickbiteDatasegPoint"),
 )) {
     @("dataseg.moduleScalarAndStructMirroredAcrossWrites." ~ backend.stringof)
     @Tags(backend.stringof)
@@ -2440,14 +2437,10 @@ static foreach (backend; Matrix!(
 // identically, via their shared `isPlaceComposable` gate, so this global
 // never enters the mirror at all and keeps using the existing boxed
 // `locals` path exclusively. `Ctfe` cannot read or write dataseg storage at
-// all (compile-time execution has no such storage to access); `Bytecode`
-// does not yet support a dynamic-array field access on a dataseg struct.
+// all (compile-time execution has no such storage to access).
 static foreach (backend; Matrix!(
     Omit!(Ctfe, Because.inexpressible,
         "CTFE cannot read or write dataseg (__gshared/static) storage"),
-    Omit!(Bytecode, Because.refusal,
-        "Unsupported dynamic array access in bytecode core: " ~
-        "quickbiteDatasegWithArray.data"),
 )) {
     @("dataseg.mirrorRefusedShapeDeclinesOnBothSides." ~ backend.stringof)
     @Tags(backend.stringof)

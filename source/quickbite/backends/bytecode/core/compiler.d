@@ -168,6 +168,7 @@ private struct Compiler {
     private ModuleScalarVariable[VarDeclaration] _moduleScalarVariables;
     private ModuleDynamicArrayVariable[VarDeclaration]
         _moduleDynamicArrayVariables;
+    private ModuleStructVariable[VarDeclaration] _moduleStructVariables;
     // Scalar locals' frame offsets, kept across functions (unlike `_locals`,
     // which is reset per function). A nested struct's method reads a captured
     // enclosing local through the struct's context pointer, which records the
@@ -4855,6 +4856,8 @@ private struct Compiler {
         ushort structOffset;
         ushort frameIndexOffset;
         ushort structSize;
+        bool writeBackThroughModule;
+        ushort moduleOffset;
     }
 
     // Resolve `base.field` (a DotVarExp over a struct lvalue) to the field's
@@ -4891,6 +4894,36 @@ private struct Compiler {
                         structOffset,
                         frameIndexOffset,
                         structSize,
+                    );
+                    return result;
+                }
+
+        // A module-level (`__gshared`/`static`) struct variable's field
+        // (`quickbiteDatasegPoint.x`): materialise the whole block from
+        // `_program.moduleData` into a fresh frame slot, the module
+        // counterpart of the captured-context branch above; a write through
+        // this field writes the whole block back through `Op.storeModule`
+        // instead of `Op.frameStore`.
+        if (auto variable = dot.e1.isVarExp)
+            if (auto declaration = variable.var.isVarDeclaration)
+                if (auto moduleVariable = moduleStructVariableOrNull(declaration)) {
+                    const structOffset = allocateStructBlock(dot.e1.type);
+                    _code ~= Instruction(
+                        Op.loadModule,
+                        structOffset,
+                        moduleVariable.offset,
+                        moduleVariable.size,
+                    );
+                    auto result = new StructField;
+                    *result = StructField(
+                        cast(ushort) (structOffset + field.offset),
+                        field.type,
+                        false,
+                        structOffset,
+                        0,
+                        moduleVariable.size,
+                        true,
+                        moduleVariable.offset,
                     );
                     return result;
                 }
@@ -4962,15 +4995,23 @@ private struct Compiler {
     }
 
     private void writeBackStructField(in StructField field) {
-        if (!field.writeBackThroughFrame)
+        if (field.writeBackThroughFrame) {
+            _code ~= Instruction(
+                Op.frameStore,
+                field.structOffset,
+                field.frameIndexOffset,
+                field.structSize,
+            );
             return;
+        }
 
-        _code ~= Instruction(
-            Op.frameStore,
-            field.structOffset,
-            field.frameIndexOffset,
-            field.structSize,
-        );
+        if (field.writeBackThroughModule)
+            _code ~= Instruction(
+                Op.storeModule,
+                field.structOffset,
+                field.moduleOffset,
+                field.structSize,
+            );
     }
 
     // The inline frame base of any struct-valued expression: a struct lvalue's
@@ -9687,6 +9728,42 @@ private struct Compiler {
             elementIsArray,
         );
         return declaration in _moduleDynamicArrayVariables;
+    }
+
+    // A module-level struct (`Point p;`) reserves `Type.size()` bytes at
+    // `Type.alignsize()` in `_program.moduleData`, the struct counterpart of
+    // `ModuleScalarVariable`/`ModuleDynamicArrayVariable`. Unlike those two,
+    // field access does not resolve through this function's returned offset
+    // directly: `tryStructField` materialises the whole block into a fresh
+    // frame slot (`Op.loadModule`) and writes it back (`Op.storeModule`) after
+    // any field write, the same pattern already used for a captured struct's
+    // context-pointer indirection.
+    private ModuleStructVariable* moduleStructVariableOrNull(
+        VarDeclaration declaration,
+    ) {
+        if (declaration is null || !declaration.isDataseg ||
+            declaration.isImmutable)
+        {
+            return null;
+        }
+
+        import dmd.astenums: TY;
+
+        if (declaration.type.toBasetype.ty != TY.Tstruct)
+            return null;
+
+        if (auto existing = declaration in _moduleStructVariables)
+            return existing;
+
+        if (!moduleVariableHasDefaultInitializer(declaration))
+            return null;
+
+        const size = cast(ushort) staticArraySize(declaration.type);
+        const offset =
+            allocateModuleBytes(size, staticArrayAlign(declaration.type));
+        _moduleStructVariables[declaration] =
+            ModuleStructVariable(offset, size);
+        return declaration in _moduleStructVariables;
     }
 
     private bool moduleVariableHasDefaultInitializer(
@@ -15209,6 +15286,14 @@ private struct ModuleDynamicArrayVariable {
     ushort offset;
     imported!"quickbite.backends.bytecode.core.program".ScalarType elementType;
     bool elementIsArray;
+}
+
+// A module-level (`__gshared`/`static`) struct variable's own inline block
+// storage in `_program.moduleData`, the struct counterpart of
+// `ModuleScalarVariable`.
+private struct ModuleStructVariable {
+    ushort offset;
+    ushort size;
 }
 
 private struct ExceptionStringField {
