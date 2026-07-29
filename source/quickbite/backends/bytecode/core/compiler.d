@@ -5024,6 +5024,18 @@ private struct Compiler {
         return result;
     }
 
+    // Whether `dot.e1` is the direct module-struct variable `tryStructField`
+    // resolves through its `Op.loadModule`/`Op.storeModule` whole-block copy
+    // (`gp.x`, not a nested chain like `gp.inner.x`), for callers that need to
+    // know before invoking `tryStructField` itself.
+    private bool isModuleStructFieldTarget(DotVarExp dot) {
+        auto variable = dot.e1.isVarExp;
+        if (variable is null)
+            return false;
+        return moduleStructVariableOrNull(variable.var.isVarDeclaration)
+            !is null;
+    }
+
     // The enclosing-frame struct variable `expression` reads as a receiver
     // for field access -- the enclosing method's own `this` (only when this
     // function has none of its own), or an outer local captured into this
@@ -8697,10 +8709,23 @@ private struct Compiler {
 
         // `base.field += rhs` on an inline struct field (e.g. a `with (subject)`
         // body's `(*__withSym).field`): add into the field's own frame slot.
-        if (auto dot = compoundAssignDotVar(addAssign.e1))
+        // A module-struct field's whole-block copy (`tryStructField`'s
+        // `Op.loadModule`) must be taken after the rhs runs: the rhs may
+        // itself write this exact field by name (`gp.x += f()` where `f`
+        // writes `gp.x` directly), and that write has to already be in the
+        // copy this read-modify-write reads, or the post-op `Op.storeModule`
+        // writeback below clobbers it with a stale snapshot.
+        if (auto dot = compoundAssignDotVar(addAssign.e1)) {
+            const isModuleField = isModuleStructFieldTarget(dot);
+            Operand earlyRhsValue;
+            if (isModuleField)
+                earlyRhsValue = compileExpression(addAssign.e2);
+
             if (auto field = tryStructField(dot)) {
                 const lvalueType = scalarType(field.type);
-                const rhsValue = compileExpression(addAssign.e2);
+                const rhsValue = isModuleField
+                    ? earlyRhsValue
+                    : compileExpression(addAssign.e2);
                 if (!isCompoundIntegerScalar(lvalueType) ||
                     !isCompoundIntegerScalar(rhsValue.type))
                     throw new Exception(text(
@@ -8743,6 +8768,7 @@ private struct Compiler {
                 writeBackStructField(*field);
                 return Operand(field.offset, lvalueType);
             }
+        }
 
         // `box.field += rhs` through a class reference (e.g. `Throwable.next`'s
         // `++tail._refcount`): load the field, add the rhs, and store the

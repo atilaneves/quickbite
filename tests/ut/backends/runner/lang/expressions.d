@@ -2387,6 +2387,45 @@ static foreach (backend; Matrix!(
     }
 }
 
+// A module struct field's compound assignment (`+=`) whose right-hand side
+// call itself writes that same field directly by name: the addition must
+// read whatever the call already wrote to the field, not a copy taken
+// before the call ran, and the writeback afterward must land the correctly
+// computed sum -- not a stale pre-call value that erases the call's own
+// write. `Ctfe` cannot read or write dataseg storage at all (compile-time
+// execution has no such storage to access).
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.inexpressible,
+        "CTFE cannot read or write dataseg (__gshared/static) storage"),
+    Omit!(Interpreter, Because.diverges,
+        "computes 6 instead of 101: reads a stale pre-call copy of the " ~
+        "field, oblivious to writeDirectFieldAndReturnOne's direct write; " ~
+        "a pre-existing gap in a different backend, unrelated to this fix"),
+)) {
+    @("dataseg.moduleStructFieldCompoundAssignReflectsRhsDirectWrite." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct Point { int x; int y; }
+
+            __gshared Point quickbiteDatasegCompoundPoint;
+
+            int writeDirectFieldAndReturnOne() {
+                quickbiteDatasegCompoundPoint.x = 100;
+                return 1;
+            }
+
+            unittest {
+                quickbiteDatasegCompoundPoint.x = 5;
+                quickbiteDatasegCompoundPoint.x +=
+                    writeDirectFieldAndReturnOne();
+                assert(quickbiteDatasegCompoundPoint.x == 101);
+            }
+        });
+    }
+}
+
 // A heap struct's own constructor runs on a CHILD `Walker` (`impl.d`'s
 // `runNewStructPointerExpression`), and a dataseg write it performs lands
 // in the ONE shared `module_table.ModuleTable` block every frame resolves

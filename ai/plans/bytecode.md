@@ -415,6 +415,18 @@ row reaches them:
   `Tsarray`/`Taarray`/`Tdelegate` variables and pointer/complex-double dataseg
   variables remain entirely unsupported (`moduleScalarVariableOrNull` still
   declines them).
+- A module-struct field's compound assignment (`gp.x += rhs`) now compiles
+  `rhs` before `tryStructField` materialises the field's whole-block copy,
+  the same reordering the module-array `~=` fix below applies: `rhs` may
+  itself write that exact field by name (`gp.x += f()` where `f` writes
+  `gp.x` directly), and the direct write must land in real module storage
+  before the copy this read-modify-write reads from is taken, or the
+  post-op `Op.storeModule` writeback clobbers it with a stale sum. The
+  identical shape through a class reference (`gc.x += f()`,
+  `tryClassPointerField`) is unfixed and predates this module-struct
+  support; a class field is heap-referenced storage with no whole-block
+  copy to reorder around, so it needs its own fix, not an extension of
+  this one.
 - A module-level dynamic array's single-element `~=` (`compileAppendElement`)
   now compiles the appended value before materialising the target's
   descriptor when the target is a module variable, so a reentrant append
