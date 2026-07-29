@@ -1547,10 +1547,11 @@ package(quickbite.backends.bytecode) RunResult run(
                 ++ip;
                 break;
 
-            case call, callIndirect:
+            case call, callIndirect, callIndirectDynamic:
                 // A direct `call` carries the callee's function index in
-                // `instruction.a`; an indirect `callIndirect` reads it from the
-                // size_t slot at that frame offset (the function-pointer value).
+                // `instruction.a`; an indirect `callIndirect`/
+                // `callIndirectDynamic` reads it from the size_t slot at that
+                // frame offset (the function-pointer or delegate value).
                 const calleeIndex = instruction.op == call
                     ? instruction.a
                     : cast(ushort) scalarValue!size_t(
@@ -1559,6 +1560,19 @@ package(quickbite.backends.bytecode) RunResult run(
 
                 if (program.functions[calleeIndex].code.length == 0)
                     compileFunction(calleeIndex);
+
+                // `callIndirectDynamic` built its argument area from a
+                // delegate-typed parameter's declared type alone, assuming a
+                // pointer-sized context word; a struct-receiver callee needs
+                // its whole receiver block there instead, so trusting that
+                // convention would misread the context word as a bogus
+                // caller-frame offset. Reject it rather than corrupt memory.
+                if (instruction.op == callIndirectDynamic &&
+                    program.functions[calleeIndex].hasThis)
+                    throw new Exception(
+                        "Unsupported delegate-parameter call in bytecode " ~
+                        "core: the callee is a struct-receiver method",
+                    );
 
                 const calleeBase =
                     base + program.functions[functionIndex].frameSize;

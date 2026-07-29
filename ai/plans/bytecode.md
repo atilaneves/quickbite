@@ -447,16 +447,23 @@ store instruction sequence `core.atomic` emits, or recognise `atomicOp`/
 lower them to dedicated VM atomic ops instead of compiling the inline asm
 body.
 
-`lambda.passedToNestedFunctionSeesCapturedContext.Bytecode`
-(`tests/ut/backends/runner/lang/expressions.d`) stays `Omit!(Bytecode,
-Because.refusal, "Unsupported type in bytecode core: int delegate(int)")`: a
-delegate-typed LOCAL/field already works (`delegate.nestedCallUsesCapturedValue`
-is promoted); only a delegate-typed PARAMETER (`int applyTwice(int
-delegate(int) f)`) is refused. The delegate value itself (a
-`{functionIndex, context}` pair, `compileDelegateDeclaration`) is already a
-known bytecode shape for locals; the gap is parameter-passing and the
-call-through-a-delegate-parameter expression, not the delegate
-representation itself.
+A delegate-typed PARAMETER is now a plain 16-byte `{functionIndex, context}`
+by-value parameter (`appendParameterLayoutEntry`, `compiler.d`), and calling
+through one dispatches via the new `Op.callIndirectDynamic` opcode, whose
+argument area is built from the delegate's declared type alone (no known
+`FuncDeclaration`). This is sound only for a nested function/lambda or a
+class method, whose context is always one pointer-sized word matching the
+delegate pair's own context word; a struct-receiver method's context is
+instead a caller-frame-relative offset into a whole receiver block that only
+resolves correctly when the delegate is called from the same frame that
+created it (`compileDelegateCall`'s existing `hasThis` handling), so
+`callIndirectDynamic` checks the resolved callee's `CompiledFunction.hasThis`
+at run time and rejects it with a diagnostic rather than misreading the
+context word. Making a struct-receiver delegate callable through a dynamic
+parameter (or through any local passed across frames) needs the receiver
+encoded as something frame-independent -- a real pointer to the receiver
+block rather than a frame-relative offset -- which changes how every struct
+method receives `this`, not just this call path.
 
 ### TDD and handoff discipline
 

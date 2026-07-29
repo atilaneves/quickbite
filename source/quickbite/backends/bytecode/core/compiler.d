@@ -104,6 +104,11 @@ private struct Compiler {
     // known only at run time.
     private ushort[VarDeclaration] _lazyDelegateLocals;
     private bool[VarDeclaration] _lazyDelegateDeclarations;
+    // A delegate-typed parameter's 16-byte `{functionIndex, context}` slot;
+    // unlike `_delegateLocals`, its target is a run-time value with no known
+    // `FuncDeclaration`, so calling through it uses the declared delegate
+    // type's parameter list rather than a specific callee's layout.
+    private ushort[VarDeclaration] _delegateParameterLocals;
     private FuncDeclaration[VarDeclaration] _staticDelegateAssocArrays;
     private FuncDeclaration _latestStaticDelegateAssocArrayFunction;
     // Locals whose 8-byte slot holds a raw `size_t` pointer to a heap-allocated
@@ -297,6 +302,7 @@ private struct Compiler {
         _assocArrayLocals = null;
         _delegateLocals = null;
         _lazyDelegateLocals = null;
+        _delegateParameterLocals = null;
         _structLocals = null;
         _structPointerLocals = null;
         _classPointerLocals = null;
@@ -410,6 +416,16 @@ private struct Compiler {
                     continue;
                 }
 
+                // A delegate-typed parameter is a caller-supplied 16-byte
+                // `{functionIndex, context}` pair whose actual callee is a
+                // run-time value; calling through it dispatches by that
+                // pair's own function-index word rather than a statically
+                // known `FuncDeclaration`.
+                if (parameter.type.toBasetype.ty == TY.Tdelegate) {
+                    _delegateParameterLocals[parameter] = offset;
+                    continue;
+                }
+
                 _locals[parameter] = offset;
                 if (isPointerType(parameter.type))
                     _pointerLocals[parameter] =
@@ -461,6 +477,7 @@ private struct Compiler {
             layout.blockSize,
             functionResultType(function_),
             layout.refParameters.dup,
+            layout.hasThis,
         );
         return cast(ushort) index;
     }
@@ -3825,6 +3842,36 @@ private struct Compiler {
         }
 
         return DelegateInitializer.init;
+    }
+
+    // The frame offset of a delegate-typed expression's 16-byte
+    // `{functionIndex, context}` pair: an already-materialised delegate
+    // local or parameter reuses its own slot; any other delegate expression
+    // (a lambda literal, `&freeFunction`, `&receiver.method`) is built fresh.
+    private ushort delegateOperandOffset(Expression argument) {
+        import std.conv: text;
+
+        while (auto cast_ = argument.isCastExp)
+            argument = cast_.e1;
+
+        if (auto variable = argument.isVarExp)
+            if (auto declaration = variable.var.isVarDeclaration) {
+                if (auto existing = declaration in _delegateLocals)
+                    return existing.offset;
+                if (auto existing = declaration in _delegateParameterLocals)
+                    return *existing;
+            }
+
+        auto delegate_ = delegateInitializer(argument);
+        if (delegate_.function_ is null)
+            throw new Exception(text(
+                "Unsupported delegate argument in bytecode core: ",
+                expressionChars(argument),
+            ));
+
+        const offset = allocateBytes(delegateValueSize, size_t.sizeof);
+        emitDelegateValue(offset, delegate_.function_, delegate_.contextOffset);
+        return offset;
     }
 
     private ushort delegateContextOffset(
@@ -11338,6 +11385,14 @@ private struct Compiler {
             if (auto delegateLocal = delegateLocalOf(call))
                 return compileDelegateCall(*delegateLocal, call);
 
+        // `f()` through a delegate-typed PARAMETER: the callee's target is a
+        // run-time value with no statically known `FuncDeclaration`, so the
+        // call site builds its argument layout from the delegate's declared
+        // type instead of a specific callee.
+        if (function_ is null)
+            if (auto offset = delegateParameterOffsetOf(call))
+                return compileDynamicDelegateCall(*offset, call);
+
         // `fp()` through a function-pointer value: the callee is not a named
         // `FuncDeclaration` but a function-pointer expression. Dispatch through
         // the run-time index it holds.
@@ -12042,6 +12097,19 @@ private struct Compiler {
         return declaration in _delegateLocals;
     }
 
+    // The frame offset of the delegate-typed PARAMETER invoked by `f(...)`,
+    // or null if `call` is not a call through one. Unlike `delegateLocalOf`,
+    // there is no known `FuncDeclaration` behind this slot.
+    private ushort* delegateParameterOffsetOf(CallExp call) {
+        auto variable = call.e1 is null ? null : call.e1.isVarExp;
+        if (variable is null)
+            return null;
+        auto declaration = variable.var.isVarDeclaration;
+        if (declaration is null)
+            return null;
+        return declaration in _delegateParameterLocals;
+    }
+
     private LazyDelegateSource* lazyDelegateLocalOf(CallExp call) {
         if (call.arguments !is null && call.arguments.length != 0)
             return null;
@@ -12207,6 +12275,69 @@ private struct Compiler {
                 : allocateBytes(size(returnType), 8);
         _code ~= Instruction(
             Op.callIndirect, delegateLocal.offset, argumentArea, destination,
+        );
+        return Operand(destination, returnType.scalar);
+    }
+
+    // `f(...)` through a delegate-typed PARAMETER: the callee is a run-time
+    // value, so there is no specific `FuncDeclaration` whose own frame layout
+    // the argument area could be built from (as `compileDelegateCall` does
+    // for a delegate local). Every callee reachable through a delegate VALUE
+    // is either a struct method (a receiver-block context, not modelled
+    // here), a class method, or a nested function/lambda -- the latter two
+    // both carry a single pointer-sized context word at frame offset 0,
+    // ahead of the declared parameters, matching the delegate pair's own
+    // `context` word verbatim. Building the argument area from the declared
+    // delegate type alone therefore lines up with the real callee's own
+    // registered layout for those two shapes.
+    private Operand compileDynamicDelegateCall(
+        in ushort descriptorOffset,
+        CallExp call,
+    ) {
+        import dmd.astenums: STC;
+
+        auto functionType = call.e1.type.toBasetype.isTypeDelegate
+            .next.toBasetype.isTypeFunction;
+
+        ParameterLayout layout;
+        layout.blockSize = cast(uint) size_t.sizeof;
+        if (functionType.parameterList.parameters !is null)
+            foreach (parameter; *functionType.parameterList.parameters) {
+                const isReference = (parameter.storageClass &
+                    (STC.ref_ | STC.out_ | STC.auto_)) != STC.none;
+                appendParameterLayoutEntry(
+                    layout, parameter.type, isReference,
+                );
+            }
+
+        const argumentArea = allocateBytes(layout.blockSize, size_t.sizeof);
+        _code ~= Instruction(
+            Op.copy,
+            argumentArea,
+            cast(ushort) (descriptorOffset + size_t.sizeof),
+            cast(ushort) size_t.sizeof,
+        );
+
+        if (call.arguments !is null)
+            foreach (argumentIndex; 0 .. call.arguments.length) {
+                const slot = cast(ushort)
+                    (argumentArea + layout.offsets[argumentIndex]);
+                emitCallArgument(
+                    slot,
+                    layout.isReference[argumentIndex],
+                    (*call.arguments)[argumentIndex],
+                );
+            }
+
+        const returnType = resultType(call.type);
+        const destination =
+            (!returnType.isArray &&
+                !returnType.isStruct &&
+                returnType.scalar == ScalarType.void_)
+                ? cast(ushort) 0
+                : allocateBytes(size(returnType), 8);
+        _code ~= Instruction(
+            Op.callIndirectDynamic, descriptorOffset, argumentArea, destination,
         );
         return Operand(destination, returnType.scalar);
     }
@@ -12569,6 +12700,15 @@ private struct Compiler {
                 slot,
                 *source,
                 cast(ushort) staticArraySize(argument.type),
+            );
+            return;
+        }
+
+        if (argument.type !is null &&
+            argument.type.toBasetype.ty == TY.Tdelegate) {
+            const source = delegateOperandOffset(argument);
+            _code ~= Instruction(
+                Op.copy, slot, source, cast(ushort) delegateValueSize,
             );
             return;
         }
@@ -14542,6 +14682,76 @@ private struct Compiler {
         return _zeroRealConstantIndex;
     }
 
+    // Appends one type-driven parameter entry to `layout`: a dynamic array,
+    // struct/static array, delegate, or scalar occupies its own inline slot
+    // at its natural alignment, with a `ref` parameter additionally recorded
+    // for the machine's writeback pass. Shared between `parameterLayout`'s
+    // no-bound-`VarDeclaration` fallback (an extern signature known only by
+    // type) and a call through a delegate-typed parameter, where the callee
+    // is likewise known only by its declared type.
+    private void appendParameterLayoutEntry(
+        ref ParameterLayout layout,
+        Type type,
+        in bool isReference,
+    ) {
+        import dmd.astenums: TY;
+
+        if (type.toBasetype.ty == TY.Tarray) {
+            enum descriptorAlign = cast(uint) size_t.sizeof;
+            layout.blockSize = (layout.blockSize +
+                descriptorAlign - 1) & ~(descriptorAlign - 1);
+            layout.offsets ~= cast(ushort) layout.blockSize;
+            layout.isReference ~= isReference;
+            if (isReference)
+                layout.refParameters ~= RefParameter(
+                    cast(ushort) layout.blockSize, sliceDescriptorSize,
+                );
+            layout.blockSize += sliceDescriptorSize;
+            return;
+        }
+
+        if (type.toBasetype.ty == TY.Tstruct || type.toBasetype.ty == TY.Tsarray) {
+            const aggregateAlign = staticArrayAlign(type);
+            const aggregateBytes = cast(uint) staticArraySize(type);
+            layout.blockSize = (layout.blockSize +
+                aggregateAlign - 1) & ~(aggregateAlign - 1);
+            layout.offsets ~= cast(ushort) layout.blockSize;
+            layout.isReference ~= isReference;
+            if (isReference)
+                layout.refParameters ~= RefParameter(
+                    cast(ushort) layout.blockSize, aggregateBytes,
+                );
+            layout.blockSize += aggregateBytes;
+            return;
+        }
+
+        if (type.toBasetype.ty == TY.Tdelegate) {
+            enum delegateAlign = cast(uint) size_t.sizeof;
+            layout.blockSize = (layout.blockSize +
+                delegateAlign - 1) & ~(delegateAlign - 1);
+            layout.offsets ~= cast(ushort) layout.blockSize;
+            layout.isReference ~= isReference;
+            if (isReference)
+                layout.refParameters ~= RefParameter(
+                    cast(ushort) layout.blockSize, delegateValueSize,
+                );
+            layout.blockSize += delegateValueSize;
+            return;
+        }
+
+        const scalar = scalarType(type);
+        const alignment = size(scalar);
+        layout.blockSize = (layout.blockSize +
+            alignment - 1) & ~(alignment - 1);
+        layout.offsets ~= cast(ushort) layout.blockSize;
+        layout.isReference ~= isReference;
+        if (isReference)
+            layout.refParameters ~= RefParameter(
+                cast(ushort) layout.blockSize, size(scalar),
+            );
+        layout.blockSize += size(scalar);
+    }
+
     private ParameterLayout parameterLayout(FuncDeclaration function_) {
         import dmd.astenums: TY;
 
@@ -14599,52 +14809,7 @@ private struct Compiler {
                 const isReference =
                     (parameter.storageClass &
                         (STC.ref_ | STC.out_ | STC.auto_)) != STC.none;
-
-                if (parameter.type.toBasetype.ty == TY.Tarray) {
-                    enum descriptorAlign = cast(uint) size_t.sizeof;
-                    layout.blockSize = (layout.blockSize +
-                        descriptorAlign - 1) & ~(descriptorAlign - 1);
-                    layout.offsets ~= cast(ushort) layout.blockSize;
-                    layout.isReference ~= isReference;
-                    if (isReference)
-                        layout.refParameters ~= RefParameter(
-                            cast(ushort) layout.blockSize,
-                            sliceDescriptorSize,
-                        );
-                    layout.blockSize += sliceDescriptorSize;
-                    continue;
-                }
-
-                if (parameter.type.toBasetype.ty == TY.Tstruct ||
-                    parameter.type.toBasetype.ty == TY.Tsarray) {
-                    const aggregateAlign = staticArrayAlign(parameter.type);
-                    const aggregateBytes =
-                        cast(uint) staticArraySize(parameter.type);
-                    layout.blockSize = (layout.blockSize +
-                        aggregateAlign - 1) & ~(aggregateAlign - 1);
-                    layout.offsets ~= cast(ushort) layout.blockSize;
-                    layout.isReference ~= isReference;
-                    if (isReference)
-                        layout.refParameters ~= RefParameter(
-                            cast(ushort) layout.blockSize,
-                            aggregateBytes,
-                        );
-                    layout.blockSize += aggregateBytes;
-                    continue;
-                }
-
-                const scalar = scalarType(parameter.type);
-                const alignment = size(scalar);
-                layout.blockSize = (layout.blockSize +
-                    alignment - 1) & ~(alignment - 1);
-                layout.offsets ~= cast(ushort) layout.blockSize;
-                layout.isReference ~= isReference;
-                if (isReference)
-                    layout.refParameters ~= RefParameter(
-                        cast(ushort) layout.blockSize,
-                        size(scalar),
-                    );
-                layout.blockSize += size(scalar);
+                appendParameterLayoutEntry(layout, parameter.type, isReference);
             }
             return layout;
         }
@@ -14730,6 +14895,23 @@ private struct Compiler {
                         cast(ushort) layout.blockSize, pointerAlign,
                     );
                 layout.blockSize += pointerAlign;
+                continue;
+            }
+
+            // A by-value delegate parameter is a 16-byte `{functionIndex,
+            // context}` pair copied into the callee frame, matching the same
+            // pair a delegate local or field holds.
+            if (parameter.type.toBasetype.ty == TY.Tdelegate) {
+                enum delegateAlign = cast(uint) size_t.sizeof;
+                layout.blockSize =
+                    (layout.blockSize + delegateAlign - 1) & ~(delegateAlign - 1);
+                layout.offsets ~= cast(ushort) layout.blockSize;
+                layout.isReference ~= parameter.isReference;
+                if (parameter.isReference)
+                    layout.refParameters ~= RefParameter(
+                        cast(ushort) layout.blockSize, delegateValueSize,
+                    );
+                layout.blockSize += delegateValueSize;
                 continue;
             }
 
