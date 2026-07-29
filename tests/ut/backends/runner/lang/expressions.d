@@ -7087,21 +7087,19 @@ static foreach (backend; Matrix!()) {
     }
 }
 
-// Cross-frame pointer-identity follow-up (54d0bb99's own
-// deferred gap): `nestedFieldAddressAllocations` memoizes `&s.inner.x`'s
-// allocation id only within the SAME `Walker` frame -- a nested function
-// closing over `s` (the identical `VarDeclaration`, no rebind at all) runs
-// in its own child frame, and since that memo map was never duped into a
-// child frame, re-taking `&s.inner.x` from inside the nested function
-// minted a brand-new id instead of returning the outer frame's own
-// memoized one. Real D shares the exact same stack storage between an
-// outer function and a nested function closing over its locals, so the two
-// addresses must compare equal. SystemLinker is the oracle; Ctfe/Bytecode/
-// LLVMJit omitted per the omit-don't-pin convention (unconfirmed there).
-static foreach (backend; Matrix!(
-    Omit!(Bytecode, Because.unconfirmed,
-        "throws its own unrelated \"Unsupported expression in bytecode core: &s.inner.x\" for this shape, not a wrong value"),
-)) {
+// Cross-frame pointer-identity follow-up: `&s.inner.x` inside a nested
+// function closing over `s` used to fail two ways. A pointer-typed local
+// (`int* q;`) was never registered in `_capturedOffsets` at all (every other
+// local-declaration path does this but `compilePointerDeclaration` didn't),
+// so assigning through a captured pointer local from a nested function threw
+// "Unsupported assignment". Past that, `&s.inner.x` itself resolved through
+// `tryStructField`'s captured-receiver branch, which materialises a fresh
+// COPY of `s` in the nested function's own frame for ordinary reads/writes;
+// taking `Op.frameAddress` of that copy's offset addressed the copy, not the
+// outer frame's real storage. Real D shares the exact same stack storage
+// between an outer function and a nested function closing over its locals,
+// so the two addresses must compare equal. SystemLinker is the oracle.
+static foreach (backend; Matrix!()) {
     @("pointer.addressOfNestedStructFieldIsStableAcrossNestedFunctionCall." ~
         backend.stringof)
     @Tags(backend.stringof)

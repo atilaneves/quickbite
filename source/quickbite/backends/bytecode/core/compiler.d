@@ -3650,6 +3650,7 @@ private struct Compiler {
             initializerExpression(initializer.exp).isNullExp !is null) {
             _locals[variable] = offset;
             _pointerLocals[variable] = pointerElementScalar(variable.type);
+            _capturedOffsets[variable] = offset;
             _code ~= Instruction(
                 Op.loadConstant,
                 offset,
@@ -3674,6 +3675,7 @@ private struct Compiler {
             declaredElement.toBasetype.ty == TY.Tdelegate
             ? pointer.pointerElement
             : pointerElementScalar(variable.type);
+        _capturedOffsets[variable] = offset;
         // A `S* p = new S(...)` pointer addresses a heap struct block; record the
         // struct declaration so `p.field` resolves through the pointer.
         if (auto structDeclaration = structPointerDeclaration(variable.type))
@@ -4871,6 +4873,30 @@ private struct Compiler {
                 if (declaration.type.toBasetype.ty == TY.Tstruct)
                     if (declaration !in _structLocals)
                         return declaration;
+
+        return null;
+    }
+
+    // The captured-frame offset of `expression`'s field, when `expression`
+    // is a (possibly multi-level) field access chain whose ultimate receiver
+    // is a captured outer local (`capturedStructReceiver`) -- `s.field` or
+    // `s.inner.field` -- or null if it is not such a chain. This is the
+    // offset a captured scalar's own address already resolves through
+    // (`tryAddressOfCaptured`); reusing it for a field gives `&s.field` the
+    // same real outer-frame storage as `&s` itself, rather than the address
+    // of a copy.
+    private ushort* capturedFieldFrameOffset(Expression expression) {
+        if (auto receiver = capturedStructReceiver(expression))
+            if (auto captured = receiver in _capturedOffsets)
+                return captured;
+
+        if (auto dot = expression.isDotVarExp)
+            if (auto field = dot.var.isVarDeclaration)
+                if (auto baseOffset = capturedFieldFrameOffset(dot.e1)) {
+                    auto result = new ushort;
+                    *result = cast(ushort) (*baseOffset + field.offset);
+                    return result;
+                }
 
         return null;
     }
@@ -7463,6 +7489,35 @@ private struct Compiler {
                 );
                 return result;
             }
+            // `&s.field`/`&s.inner.field` where the ultimate receiver `s` is
+            // a captured outer local: `tryStructField`'s captured-receiver
+            // branch below reads the field from a fresh block materialised
+            // in THIS frame (for ordinary value reads/writes-with-writeback),
+            // so taking `Op.frameAddress` of that block's offset would
+            // address the copy, not the shared storage a nested function and
+            // its enclosing frame must alias. Resolve the field's real
+            // address through the same runtime-index mechanism a captured
+            // scalar's own address already uses, checked first for that
+            // reason.
+            if (_hasNestedContext)
+                if (auto fieldOffset = capturedFieldFrameOffset(dot)) {
+                    const pointer = allocateBytes(
+                        cast(uint) size_t.sizeof, size_t.sizeof,
+                    );
+                    _code ~= Instruction(
+                        Op.frameIndexAddress,
+                        pointer,
+                        capturedFrameIndex(*fieldOffset),
+                    );
+                    auto result = new Operand;
+                    *result = Operand(
+                        pointer,
+                        ScalarType.ulong_,
+                        true,
+                        pointerElementScalar(address.type),
+                    );
+                    return result;
+                }
             if (auto field = tryStructField(dot)) {
                 slot = field.offset;
                 pointedType = field.type;
