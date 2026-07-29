@@ -406,15 +406,6 @@ row reaches them:
   it, and any writeback would clobber the stored address instead of the
   pointee.
 
-`class.aliasedVariableArrayFieldWriteIsVisibleThroughOriginal.Bytecode`
-(`expressions.d`) has a stale omit: its noted cause (`classCellFieldValue`/
-`writeClassCellScalarFields`, named in the fixture's own comment) no longer
-exists anywhere in `source/quickbite/backends/bytecode/`, and deleting the
-`Because.unconfirmed` omit and running the row in isolation now passes.
-Re-verify against the full suite (some other row's fix already covers this
-shape) and promote by deleting the omit; update the fixture's stale comment
-to match whatever mechanism actually fixed it.
-
 `concurrency.thisTid.Bytecode` (`tests/ut/backends/runner/sys/concurrency.d`)
 stays `Omit!(Bytecode, Because.unconfirmed, ...)`. `Scheduler.thisInfo`'s
 `atomicLoad(scheduler)` (an 8-byte `Scheduler` reference) is usually served

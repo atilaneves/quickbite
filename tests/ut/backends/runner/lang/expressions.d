@@ -2997,22 +2997,10 @@ static foreach (backend; Matrix!()) {
     }
 }
 
-// Same-frame plain-variable class aliasing, non-scalar field:
-// `classCellFieldValue` -- the DIRECT (non-pointer) class-field
-// read's authoritative-cell dispatcher -- only consults the shared
-// `classCells` cell for a `native_scalar.isNativeScalarType` field; a
-// scalar-element static-array field still falls back to the boxed `locals`
-// mirror, which the OTHER alias's write never touches. `c2.arr[0] = 99;`
-// already reaches the shared cell (the write side's
-// `writeClassCellScalarFields` widens every scalar-element static-array
-// field), but reading `c.arr[0]` back through the ORIGINAL
-// alias, with no `&`/pointer involved, still sees the stale independent copy.
-// Only Interpreter and SystemLinker (the oracle) are pinned here per the
-// omit-don't-pin convention.
-static foreach (backend; Matrix!(
-    Omit!(Bytecode, Because.unconfirmed,
-        "throws its own unrelated \"Unsupported assignment in bytecode core: c2.arr[0] = ninetyNine()\" for this shape, not a wrong value"),
-)) {
+// Same-frame plain-variable class aliasing, non-scalar field: `c2.arr[0] =
+// 99;` writes through `c2`'s alias, and reading `c.arr[0]` back through the
+// ORIGINAL alias, with no `&`/pointer involved, must see the same write.
+static foreach (backend; Matrix!()) {
     @("class.aliasedVariableArrayFieldWriteIsVisibleThroughOriginal." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
