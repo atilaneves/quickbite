@@ -7287,13 +7287,9 @@ static foreach (backend; Matrix!()) {
 // one level deeper, mirroring `pointer.
 // addressOfNestedStructFieldWriteThroughUpdatesField`'s shape but with a
 // class RECEIVER instead of a struct one -- `inner` is a (non-union) struct
-// FIELD of class `C`, and `x` is a scalar field of `inner`. Other backends
-// omitted per the omit-don't-pin convention, matching the other class
-// fixtures' own backend set.
-static foreach (backend; Matrix!(
-    Omit!(Bytecode, Because.unconfirmed,
-        "throws its own unrelated \"Unsupported type in bytecode core: Inner\" for this shape, not a wrong value"),
-)) {
+// FIELD of class `C`, and `x` is a scalar field of `inner`. SystemLinker is
+// the oracle.
+static foreach (backend; Matrix!()) {
     @("pointer.nestedClassStructFieldWrittenDirectlyIsVisibleThroughEarlierPointer." ~
         backend.stringof)
     @Tags(backend.stringof)
@@ -7336,13 +7332,8 @@ static foreach (backend; Matrix!(
 // nestedClassStructFieldWrittenDirectlyIsVisibleThroughEarlierPointer` above
 // -- write THROUGH `&c.inner.x`, then read `c.inner.x` directly -- mirroring
 // `pointer.addressOfNestedStructFieldWriteThroughUpdatesField`'s shape but
-// with a class RECEIVER instead of a struct one. Other backends omitted per
-// the omit-don't-pin convention, matching the other class fixtures' own
-// backend set.
-static foreach (backend; Matrix!(
-    Omit!(Bytecode, Because.unconfirmed,
-        "throws its own unrelated \"Unsupported type in bytecode core: Inner\" for this shape, not a wrong value"),
-)) {
+// with a class RECEIVER instead of a struct one. SystemLinker is the oracle.
+static foreach (backend; Matrix!()) {
     @("pointer.nestedClassStructFieldWrittenThroughPointerIsVisibleDirectly." ~
         backend.stringof)
     @Tags(backend.stringof)
@@ -7372,23 +7363,11 @@ static foreach (backend; Matrix!(
     }
 }
 
-// Cross-frame follow-up: the
-// nested-class-struct-field sibling of `pointer.
-// classArrayFieldWriteThroughPointerInCalleeIsVisibleToCaller` above. The
-// caller takes `&c.inner.x` (promoting a `classCells` entry and a
-// `nestedClassStructFieldPointerVariables`/`...OuterFieldIndices`/
-// `...InnerFieldIndices` reverse-lookup entry in the CALLER's own frame),
-// then passes the pointer into a callee that writes through it. The callee's
-// own child `Walker` dupes `classCells` (so the cell's bytes are shared) but,
-// before this slice, never duped the reverse-lookup maps themselves, so the
-// callee's `writeThroughNestedClassStructFieldPointer` reverse-lookup missed
-// and the write fell through to the `fieldSnapshotAllocationIds` refusal
-// check (also duped) instead of aliasing. SystemLinker is the oracle;
-// Bytecode omitted per the omit-Bytecode convention.
-static foreach (backend; Matrix!(
-    Omit!(Bytecode, Because.unconfirmed,
-        "throws its own unrelated \"Unsupported type in bytecode core: Inner\" for this shape, not a wrong value"),
-)) {
+// Cross-frame follow-up: the nested-class-struct-field sibling of `pointer.
+// classArrayFieldWriteThroughPointerInCalleeIsVisibleToCaller` above -- the
+// caller takes `&c.inner.x`, then passes the pointer into a callee that
+// writes through it. SystemLinker is the oracle.
+static foreach (backend; Matrix!()) {
     @("pointer.nestedClassStructFieldWriteThroughPointerInCalleeIsVisibleToCaller." ~
         backend.stringof)
     @Tags(backend.stringof)
