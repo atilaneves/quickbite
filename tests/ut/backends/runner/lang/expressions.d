@@ -3044,13 +3044,8 @@ static foreach (backend; Matrix!(
 // (the write side's `writeClassCellScalarFields` already recurses one level
 // into a struct-typed field), but
 // reading `c.inner.x` back through the ORIGINAL alias, with no `&`/pointer
-// involved, still sees the stale independent copy. Only Interpreter and
-// SystemLinker (the oracle) are pinned here per the omit-don't-pin
-// convention.
-static foreach (backend; Matrix!(
-    Omit!(Bytecode, Because.unconfirmed,
-        "throws its own unrelated \"Unsupported type in bytecode core: Inner\" for this shape, not a wrong value"),
-)) {
+// involved, still sees the stale independent copy on Interpreter.
+static foreach (backend; Matrix!()) {
     @("class.aliasedVariableStructFieldWriteIsVisibleThroughOriginal." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {

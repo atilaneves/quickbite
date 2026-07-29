@@ -405,12 +405,17 @@ row reaches them:
   would misbind the callee to the pointer's raw bytes instead of dereferencing
   it, and any writeback would clobber the stored address instead of the
   pointee.
-- A struct-typed field inside a class (`class C { Inner inner; }`) is
-  unsupported: the general field-type dispatch has no `TY.Tstruct` case for a
-  class field, so reading or writing it throws "Unsupported type in bytecode
-  core: Inner" rather than computing a wrong value
-  (`expressions.d`'s `class.aliasedVariableStructFieldWriteIsVisibleThroughOriginal`
-  Bytecode omit).
+- `&a[i].inner.x` (a nested struct field of a dynamic-array-of-struct element)
+  computes a stale address: `pointer.arrayElementNestedStructFieldWrittenDirectlyIsVisibleThroughEarlierPointer.Bytecode`
+  (`expressions.d`) is red with `1 != 99`, confirmed by removing its
+  `Because.unconfirmed` omit. `tryAddressOfLocal`'s `DotVarExp` branch
+  (`compiler.d`) has cases for a class array-field element
+  (`tryClassArrayFieldElementFieldPointer`) and a struct slice-field element
+  (`tryStructSliceFieldElementFieldPointer`) ahead of the generic
+  `tryStructField` fallback, but none of them, nor `tryStructField` itself,
+  resolve a field reached through an `IndexExp` receiver on a dynamic array of
+  structs; trace what address `tryStructField(dot)` actually folds into for
+  this shape and give it the element's own runtime address instead.
 
 `concurrency.thisTid.Bytecode` (`tests/ut/backends/runner/sys/concurrency.d`)
 stays `Omit!(Bytecode, Because.unconfirmed, ...)`. `Scheduler.thisInfo`'s
