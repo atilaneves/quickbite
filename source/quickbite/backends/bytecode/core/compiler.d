@@ -255,6 +255,21 @@ private struct Compiler {
         ushort valueSize;
     }
 
+    // A `ref` argument bound to a `ref`-local that is itself
+    // `_refLocalPointers`-backed (an alias to an array element, a scalar
+    // class field, or a field reached through a class/struct slice field's
+    // element): the local's own frame slot holds the pointee's runtime
+    // address rather than the pointee itself, so (mirroring
+    // `ClassFieldRefWriteBack`) the value is mirrored into a fresh frame
+    // slot for the call and copied back through that address afterward. The
+    // address slot itself is the match key: two arguments naming the same
+    // ref-local share one mirror slot.
+    private static struct RefLocalPointerRefWriteBack {
+        ushort valueOffset;
+        ushort addressOffset;
+        ushort valueSize;
+    }
+
     private static struct MethodReceiver {
         ushort offset;
         ushort writeBackFrameIndex;
@@ -11509,6 +11524,7 @@ private struct Compiler {
         ClassFieldRefWriteBack[] classFieldRefWriteBacks;
         StructPointerFieldRefWriteBack[] structPointerFieldRefWriteBacks;
         ModuleScalarRefWriteBack[] moduleScalarRefWriteBacks;
+        RefLocalPointerRefWriteBack[] refLocalPointerRefWriteBacks;
         if (call.arguments !is null &&
             nextArgumentIndex + call.arguments.length > layout.offsets.length)
             throw new Exception(text(
@@ -11538,6 +11554,13 @@ private struct Compiler {
                     );
                     continue;
                 }
+                if (layout.isReference[nextArgumentIndex + argumentIndex])
+                    if (emitRefLocalPointerArgument(
+                        slot,
+                        (*call.arguments)[argumentIndex],
+                        refLocalPointerRefWriteBacks,
+                    ))
+                        continue;
                 if (layout.isReference[nextArgumentIndex + argumentIndex])
                     if (emitRefReturnedDynamicArrayElementArgument(
                         slot,
@@ -11635,6 +11658,13 @@ private struct Compiler {
                 compileSizeConstant(0),
             );
         foreach (writeBack; structPointerFieldRefWriteBacks)
+            _code ~= Instruction(
+                pointerStoreOp(writeBack.valueSize),
+                writeBack.valueOffset,
+                writeBack.addressOffset,
+                compileSizeConstant(0),
+            );
+        foreach (writeBack; refLocalPointerRefWriteBacks)
             _code ~= Instruction(
                 pointerStoreOp(writeBack.valueSize),
                 writeBack.valueOffset,
@@ -13165,6 +13195,75 @@ private struct Compiler {
             field.pointerSlot,
             field.fieldOffset,
             valueSize,
+        );
+        return true;
+    }
+
+    // A `ref` argument that is itself a `ref`-local aliasing an array
+    // element, a scalar class field, or a field reached through a class/
+    // struct slice field's element (`_refLocalPointers`): the local's frame
+    // slot holds that pointee's runtime address, computed once when the
+    // local was declared, rather than the pointee's value. Passing the
+    // local's own offset onward (the plain `_locals` path in
+    // `referenceOffsetOrNull`) would bind the callee to the address bytes
+    // themselves and let any writeback clobber the stored address instead of
+    // the pointee, so this mirrors the field-reached-through-a-pointer
+    // pattern above: read the current value through the address into a
+    // fresh slot for the call, and write it back through that same address
+    // afterward.
+    private bool emitRefLocalPointerArgument(
+        in ushort slot,
+        Expression argument,
+        ref RefLocalPointerRefWriteBack[] writeBacks,
+    ) {
+        auto variable = argument.isVarExp;
+        if (variable is null)
+            return false;
+
+        auto declaration = variable.var.isVarDeclaration;
+        if (declaration is null)
+            return false;
+
+        auto element = declaration in _refLocalPointers;
+        if (element is null)
+            return false;
+
+        auto existing = declaration in _locals;
+        if (existing is null)
+            return false;
+
+        const valueSize = cast(ushort) size(*element);
+        if (valueSize != 1 && valueSize != 4 && valueSize != 8)
+            return false;
+
+        const addressOffset = *existing;
+        foreach (writeBack; writeBacks)
+            if (writeBack.addressOffset == addressOffset &&
+                writeBack.valueSize == valueSize) {
+                _code ~= Instruction(
+                    Op.loadConstant,
+                    slot,
+                    constantIndex(writeBack.valueOffset),
+                    cast(ushort) size(ScalarType.uint_),
+                );
+                return true;
+            }
+
+        const valueOffset = allocateBytes(valueSize, valueSize);
+        _code ~= Instruction(
+            pointerLoadOp(valueSize),
+            valueOffset,
+            addressOffset,
+            compileSizeConstant(0),
+        );
+        _code ~= Instruction(
+            Op.loadConstant,
+            slot,
+            constantIndex(valueOffset),
+            cast(ushort) size(ScalarType.uint_),
+        );
+        writeBacks ~= RefLocalPointerRefWriteBack(
+            valueOffset, addressOffset, valueSize,
         );
         return true;
     }

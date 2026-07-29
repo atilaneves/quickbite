@@ -4470,6 +4470,78 @@ static foreach (backend; Matrix!()) {
     }
 }
 
+// A `ref` local bound to a dynamic-array element holds the element's runtime
+// address in its own frame slot rather than the element's value. Passing that
+// local onward as another function's `ref` argument must still reach the
+// array element, not the stored address.
+static foreach (backend; Matrix!()) {
+    @("arrays.refLocalElementArgumentMutatesSource." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            void increment(ref int value) {
+                value += 1;
+            }
+
+            void bump(ref int value) {
+                increment(value);
+            }
+
+            int[] build(int first, int second, int third) {
+                int[] result;
+                result ~= first;
+                result ~= second;
+                result ~= third;
+                return result;
+            }
+
+            unittest {
+                auto values = build(10, 20, 30);
+                ref int element = values[1];
+                bump(element);
+                assert(values[1] == 21);
+            }
+        });
+    }
+}
+
+// A `ref` local bound directly to a scalar class field is the same
+// address-holding shape as the array-element case above. Passing it onward
+// as another function's `ref` argument must still reach the field, not the
+// local's own stored address.
+static foreach (backend; Matrix!()) {
+    @("class.refLocalFieldArgumentMutatesSource." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            void increment(ref int value) {
+                value += 1;
+            }
+
+            void bump(ref int value) {
+                increment(value);
+            }
+
+            class Counter {
+                int value;
+            }
+
+            Counter create(int initial) {
+                auto counter = new Counter();
+                counter.value = initial;
+                return counter;
+            }
+
+            unittest {
+                auto counter = create(10);
+                ref int field = counter.value;
+                bump(field);
+                assert(counter.value == 11);
+            }
+        });
+    }
+}
+
 // `this`-reached class aliasing: a METHOD mutating `this.x` must be visible to
 // another caller-side alias of the SAME object through the shared class
 // cell, exactly like the `combine(a, b)` cross-frame aliasing case above,

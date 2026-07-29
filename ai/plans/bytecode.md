@@ -398,13 +398,6 @@ row reaches them:
   `sliceCopy` opcode's pointer-range overlap check ever runs, so the check
   never sees the true aliasing (unlike the dynamic-array path, whose rhs
   descriptor shares the real backing pointer).
-- `referenceOffset` resolves a `VarExp` ref-argument through `_locals` with no
-  check against `_refLocalPointers`; a `ref` local whose slot holds a real
-  heap address rather than a value (scalar class-field ref locals, and
-  array-field-element ref locals) passed onward as another `ref` argument
-  would misbind the callee to the pointer's raw bytes instead of dereferencing
-  it, and any writeback would clobber the stored address instead of the
-  pointee.
 - A `__gshared`/`static` module-level dynamic-array variable
   (`moduleDynamicArrayVariableOrNull`, `compiler.d`) only has storage when its
   declared initializer is absent or an explicit `null`; a non-null module
@@ -417,6 +410,15 @@ row reaches them:
   `Tsarray`/`Taarray`/`Tdelegate` variables and pointer/complex-double dataseg
   variables remain entirely unsupported (`moduleScalarVariableOrNull` still
   declines them).
+- `referenceOffsetOrNull`'s `isPtrExp` branch (`compiler.d`) only cancels a
+  dereference back to the pointee's real storage when the pointer operand is
+  a folded `*&lvalue` (`symOffsetOrNull`); for a genuine runtime pointer value
+  (a plain pointer local, parameter, or field holding an address computed
+  earlier) the fallback `loadThroughPointer` reads the pointee into a fresh
+  frame slot and returns that copy's offset, so passing `*p` onward as
+  another function's `ref` argument writes back into the copy instead of
+  through `p`. `bump(*p)` after `int* p = &value;` returns `10`, not `11`, on
+  `Bytecode` against the `SystemLinker` oracle.
 
 `concurrency.thisTid.Bytecode` (`tests/ut/backends/runner/sys/concurrency.d`)
 stays `Omit!(Bytecode, Because.unconfirmed, ...)`. `Scheduler.thisInfo`'s
