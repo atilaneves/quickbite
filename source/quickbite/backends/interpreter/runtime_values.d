@@ -19,7 +19,7 @@ public imported!"quickbite.backends.interpreter.runtime_value".Value integerValu
         // holding the address, so comparisons against it behave like
         // compiled D.
         case Tpointer:
-            return Value.nativePointerValue(cast(void*) value);
+            return Value.pointerValue(cast(void*) value);
         case Tbool:
             return Value(value != 0);
         case Tint8:
@@ -212,9 +212,9 @@ public imported!"quickbite.backends.interpreter.runtime_value".Value defaultValu
         case Tstruct:
             return structDefaultValue(type.isTypeStruct);
         case Tarray:
-            return AggregateValue.reconstructArray([]);
+            return AggregateValue.reconstructArray(variableType, []);
         case Taarray:
-            return Value.assocArrayValue([], []);
+            return Value.null_;
         case Tvoid:
         case Tint128:
         case Tuns128:
@@ -256,7 +256,7 @@ private imported!"quickbite.backends.interpreter.runtime_value".Value staticArra
     foreach (_; 0 .. length)
         elements ~= defaultValue(staticArray.nextOf);
 
-    return AggregateValue.reconstructArray(elements);
+    return AggregateValue.reconstructArray(staticArray, elements);
 }
 
 private imported!"quickbite.backends.interpreter.runtime_value".Value structDefaultValue(
@@ -268,15 +268,11 @@ private imported!"quickbite.backends.interpreter.runtime_value".Value structDefa
     if (structType is null || structType.sym is null)
         throw new Exception("Unsupported DMD default value.");
 
-    const typeName = structType.sym.ident is null
-        ? ""
-        : structType.sym.ident.toString.idup;
-
     Value[] fields;
     foreach (field; structType.sym.fields)
         fields ~= defaultValue(field.type);
 
-    return AggregateValue.reconstructStruct(typeName, fields);
+    return AggregateValue.reconstructStruct(structType, fields);
 }
 
 private imported!"quickbite.backends.interpreter.runtime_value".Value scalarDefaultValue(

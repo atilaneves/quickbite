@@ -739,7 +739,7 @@ static foreach (backend; Matrix!(
 // ffi.md §35.10: a body-less libc call taking a union-typed out-pointer. The
 // glibc `pthread_mutexattr_t` is `union { byte[N] __size; int __align; }`, so
 // passing `&attr` marshals a union toNative. `canMarshalToNative`
-// (ffi_marshal.d) refuses unions and `canRepresentCall`'s out-cell check
+// (native_call_adapter.d) refuses unions and `canRepresentCall`'s out-cell check
 // (core.d) rejects the whole call, so the Interpreter degrades to the
 // no-available-source refusal today even though the union bytes round-trip
 // byte-faithfully. Reading the type back through `gettype` proves the bytes

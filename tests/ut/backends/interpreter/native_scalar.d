@@ -233,7 +233,7 @@ unittest {
 unittest {
     auto bytes = new ubyte[](8);
 
-    writeScalar(Type.tvoidptr, bytes, Value.nativePointerValue(null))
+    writeScalar(Type.tvoidptr, bytes, Value.pointerValue(null))
         .shouldThrow!Exception;
 }
 

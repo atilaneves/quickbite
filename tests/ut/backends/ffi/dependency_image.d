@@ -2878,7 +2878,7 @@ unittest {
 }
 
 // Characterization pin for native class-handle GC visibility (ffi.md §34.12):
-// a returned class reference reifies as an opaque NativePointer whose raw
+// a returned class reference reifies as an opaque Pointer whose raw
 // `void*` field lives inside a boxed Value, and every place the interpreter
 // keeps Values (the locals AA, the host stack) is GC-scanned memory — so a
 // collection between the factory call and a later use keeps the object alive,
@@ -2970,7 +2970,7 @@ unittest {
 // through a second (ffi.md §35.10), mirroring externCScalarOutParameter but
 // with a union behind the pointer. `Handle*` passed as `&handle` is an
 // out-struct-pointer whose pointed-to type is a union, so `canMarshalToNative`
-// (ffi_marshal.d) refuses it toNative and `canRepresentCall`'s out-cell check
+// (native_call_adapter.d) refuses it toNative and `canRepresentCall`'s out-cell check
 // (core.d) rejects the call: the Interpreter degrades to the
 // no-available-source refusal today even though the sentinel byte would
 // round-trip. SystemLinker is the behaviour oracle; the Interpreter leg is red

@@ -14164,7 +14164,8 @@ private struct Compiler {
                 layout.isReference ~= parameter.isReference;
                 if (parameter.isReference)
                     layout.refParameters ~= RefParameter(
-                        cast(ushort) layout.blockSize, pointerAlign,
+                        cast(ushort) layout.blockSize,
+                        pointerAlign,
                     );
                 layout.blockSize += pointerAlign;
                 continue;
