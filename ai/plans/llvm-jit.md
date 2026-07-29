@@ -560,10 +560,10 @@ package via `source/`, and that package re-exports `LLVMJit` unconditionally,
 so the ORC symbols are referenced even though the bench and REPL never select
 the backend. Without it, `ci.sh`'s `bin/bench.sh` and `ninja bin/qb` steps
 fail to link (undefined `LLVMOrc*` symbols). Locally, the global bare
-`libLLVM.so` symlink (→ `libLLVM.so.22.1`) lets plain `-lLLVM` resolve it. The
-GitHub Ubuntu runner instead has the bare symlink in LLVM 18's versioned
-library directory, so CI exports `llvm-config-18 --libdir` through
-`LIBRARY_PATH`. Regenerate with `dub run reggae --compiler=ldc -- -b ninja`.
+`libLLVM.so` symlink (→ `libLLVM.so.22.1`) lets the canonical plain `-lLLVM`
+resolve it. The `unittest-cov` configuration additionally searches
+`/usr/lib/llvm-18/lib`, where Ubuntu 24.04 provides its fallback bare symlink.
+Regenerate with `dub run reggae --compiler=ldc -- -b ninja`.
 
 ## Verification
 
