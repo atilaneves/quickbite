@@ -327,53 +327,6 @@ private struct Walker {
 
     private bool[VarDeclaration] mirrorEstablished;
 
-    // Per-variable snapshot of `object_table.ObjectTable.generation` for
-    // every identity `mirrorClassToFrame`'s established graph composed --
-    // this variable's own top-level identity and every nested class-typed
-    // field's identity, transitively -- taken right after the write that
-    // set `mirrorEstablished[variable]` true. Closes the gap
-    // `mirrorEstablished` alone leaves open: that flag pins THIS
-    // variable's own write/verify decision, but says nothing about the
-    // SHARED, identity-keyed storage (`classObjectTable`) it vouches for --
-    // storage a DIFFERENT binding's mirror write (another local aliasing a
-    // NESTED identity through a `DotVarExp`, a sibling top-level local
-    // sharing a nested identity, or a callee's own parameter mirror in a
-    // DIFFERENT activation, since `classObjectTable` is one instance for
-    // the whole execution -- its own field comment) can legitimately
-    // rewrite AFTER this variable's mirror last established. Confirmed by
-    // three fixtures (`class.sharedNestedBodyRewrittenBySiblingBindingDoesNotCrash`,
-    // `...ByDotVarAliasDoesNotCrash`, `...AcrossActivationDoesNotCrash`):
-    // each rewrites a NESTED identity of an established graph through a
-    // second binding, which used to reach `assertClassBodyValue`'s final
-    // byte comparison with `value` still holding the FIRST binding's own
-    // stale snapshot of that field -- a guaranteed "class body mirror
-    // diverged from boxed local" `AssertError` on a correct guest program
-    // (the boxed staleness that causes it is itself a pre-existing,
-    // documented gap -- `ai/plans/value.md`'s Cell coherence "Known gaps"
-    // -- the crash was never inevitable, only this mirror's own re-
-    // verification of stale bytes was).
-    //
-    // `assertClassBodyValue` checks each identity's CURRENT `classObjectTable.
-    // generation` against what is recorded here before asserting its bytes;
-    // a mismatch means some other write reached that identity in between,
-    // so this skips the assertion for that identity (and, since a
-    // rewritten body's own field values are no longer what `value`
-    // describes, does not recurse into its fields either) rather than
-    // comparing bytes the write side never actually vouched for. Recorded
-    // by `recordClassMirrorGenerations`, called only from
-    // `mirrorClassToFrame`'s own successful (non-`Value.null_`) write path,
-    // right after `writeClassBody` returns -- so every generation recorded
-    // here is the POST-write value, matching what `assertClassBodyValue`
-    // will later re-read via the identical `classObjectTable.generation`.
-    // Not consulted for a `Value.null_` local (`assertClassFrameMirror`'s
-    // own null arm never reaches `assertClassBodyValue`), so left
-    // unrecorded on that path. Not duped into a child frame by
-    // `forkLegacyFrameStateInto`, for the identical reason
-    // `mirrorEstablished` above is not (its own field comment): a
-    // fresh activation starts with nothing established, so an absent entry
-    // (`generation(identity) != recordedGenerations.get(identity, size_t.max)`,
-    // always true) is already the correct "nothing recorded yet" answer.
-    private size_t[size_t][VarDeclaration] classMirrorGenerations;
 
 
 
@@ -431,26 +384,9 @@ private struct Walker {
     // was bound, captured alongside `lazyArgumentLocals` so `runLazyArgument`
     // can swap `_activationFrame` to it too -- see the comment there.
     private FrameBlock[VarDeclaration] lazyArgumentFrames;
-    // The caller's own `mirrorEstablished`/`classMirrorGenerations`
-    // FIELDS (not their values) at the moment the `lazy` argument was bound,
-    // captured alongside `lazyArgumentLocals`/`lazyArgumentFrames` so
-    // `runLazyArgument` can swap the mirror bookkeeping to the caller's own
-    // storage for the duration of the thunk too -- see that function's own
-    // comment for why a `setLocal` inside the thunk needs this in addition
-    // to `locals`/`_activationFrame`. Captured as a POINTER to the field,
-    // never the AA value itself: an empty `bool[VarDeclaration]`/
-    // `size_t[size_t][VarDeclaration]` is `null`, so copying the VALUE at
-    // bind time would not alias the caller's map -- a first write during the
-    // thunk would silently allocate a fresh table on the callee's own copy
-    // instead of the caller's real field, leaving the caller's own map
-    // exactly as stale as before. `runLazyArgument` swaps through the
-    // pointer at both ends (read the caller's current value in, write
-    // whatever the thunk produced -- new table or not -- back out), so this
-    // is correct whether or not the caller's map was already non-null when
-    // the lazy argument was bound.
+    // The caller's own `mirrorEstablished` field is captured by pointer so a
+    // lazy thunk updates the caller's write decision.
     private bool[VarDeclaration]*[VarDeclaration] lazyArgumentMirrorEstablished;
-    private size_t[size_t][VarDeclaration]*[VarDeclaration]
-        lazyArgumentClassMirrorGenerations;
     private bool[VarDeclaration] uninitializedLocals;
     // `= void` is binding state, not a copied call-frame value. Ref writes
     // clear the caller's address directly, so forwarding cannot leave the
@@ -485,8 +421,7 @@ private struct Walker {
     // `place_value.d` stays pure composition parameterized by a
     // caller-supplied policy (the same shape `lvalue_place.placeOfLvalue`'s
     // `resolveBase`/`evalIndex` already use); `&resolveObjectBody` is that
-    // delegate, shared by `mirrorClassToFrame` and `assertClassFrameMirror`
-    // below so neither can resolve an identity differently from the other.
+    // delegate used by `mirrorClassToFrame`.
     private void* resolveObjectBody(
         size_t identity,
         imported!"dmd.dclass".ClassDeclaration class_,
@@ -1035,8 +970,8 @@ private struct Walker {
     // frame slot for a true stack local, or `moduleTable`'s own
     // module-lifetime block for a dataseg variable -- the address
     // `mirrorPlace` below pairs with `variable`'s own declared type, and
-    // that `mirrorSliceToFrame`/`mirrorClassToFrame` (and their
-    // `assertFrameMirror` siblings) use directly for a slice header or a
+    // that `mirrorSliceToFrame`/`mirrorClassToFrame` use directly for a slice
+    // header or a
     // class reference, which are not `place_value`-composed values of
     // their own declared type the way `mirrorPlace` composes for. Callers
     // are expected to have already checked `hasMirrorSlot`.
@@ -1112,53 +1047,7 @@ private struct Walker {
         auto bodyAddress = classObjectTable.storageFor(identity, classType.sym);
         writeClassBody(Place(bodyAddress, classType), value, &resolveObjectBody);
         Place(mirrorAddress(variable), classType).storeReference(bodyAddress);
-        classMirrorGenerations[variable] = null;
-        recordClassMirrorGenerations(variable, classType.sym, value, identity);
         return true;
-    }
-
-    // Populates `classMirrorGenerations[variable]` with `classObjectTable.
-    // generation(identity)` for `identity` and every nested class-typed
-    // field's own identity, transitively -- the identical graph
-    // `classBodyShapeMatches`/`writeClassBody` already proved acyclic and
-    // just composed, walked again here (cheaply: no allocation, no
-    // resolution, just a map read per identity) because recording a
-    // generation snapshot needs `value`'s own field values, which this
-    // function's caller (`mirrorClassToFrame`) already has but `writeClassBody`
-    // itself does not hand back. `classMirrorGenerations[variable]`'s own
-    // field comment carries the full rationale for why this snapshot exists
-    // and how `assertClassBodyValue` consumes it. Guards against re-walking
-    // a DAG's shared identity twice (`identity in classMirrorGenerations[variable]`)
-    // the same way `classBodyShapeMatchesImpl`'s own `visiting` set does for
-    // a live cycle -- the graph is already proven acyclic by the time this
-    // runs, so this is only ever a DAG-sharing short-circuit, never a cycle
-    // guard of its own.
-    private void recordClassMirrorGenerations(
-        VarDeclaration variable,
-        imported!"dmd.dclass".ClassDeclaration class_,
-        in Value value,
-        size_t identity,
-    ) {
-        import quickbite.backends.interpreter.layout: classFields, declaredType;
-
-        classMirrorGenerations[variable][identity] = classObjectTable.generation(identity);
-
-        foreach (index, field; classFields(class_)) {
-            auto fieldClassType = declaredType(field).isTypeClass;
-            if (fieldClassType is null)
-                continue;
-
-            auto fieldValue = AggregateValue.classFieldAt(value, index);
-            if (fieldValue == Value.null_)
-                continue;
-
-            const nestedIdentity = AggregateValue.classIdentity(fieldValue);
-            if (nestedIdentity in classMirrorGenerations[variable])
-                continue;
-
-            recordClassMirrorGenerations(
-                variable, fieldClassType.sym, fieldValue, nestedIdentity);
-        }
     }
 
     private bool classBodyShapeMatches(
@@ -1250,294 +1139,6 @@ private struct Walker {
         return true;
     }
 
-    private void assertFrameMirror(VarDeclaration variable, in Value value) {
-        import quickbite.backends.interpreter.place_value: valueMatchesPlace, writeValue;
-        import quickbite.backends.interpreter.place: placeAt;
-        import quickbite.backends.interpreter.layout: typeByteSize, typeHasPointers;
-        import quickbite.backends.interpreter.native_block: NativeBlock;
-
-        if (!hasMirrorSlot(variable))
-            return;
-
-        if (variable.type.toBasetype.isTypeDArray !is null) {
-            assertFrameSliceMirror(variable, value);
-            return;
-        }
-
-        if (variable.type.toBasetype.isTypeClass !is null) {
-            assertClassFrameMirror(variable, value);
-            return;
-        }
-
-        if (!valueMatchesPlace(variable.type, value))
-            return;
-
-        // The expected bytes: `value` written through the identical
-        // `place_value.writeValue` composition into a scratch block of the
-        // local's own byte size, rather than a second, hand-rolled encoding
-        // -- the only way the two can ever disagree is a real divergence
-        // between what `setLocal` mirrored earlier and `value` now.
-        //
-        // Scan policy comes from `layout.typeHasPointers` over `variable.
-        // type` itself, never a hardcoded `no` -- the Containers contract
-        // (`value.md`) takes no default for exactly this reason: under-
-        // scanning is the unsafe direction, so a forgotten argument must
-        // never silently choose it. This is not merely future-proofing:
-        // `isPlaceComposable` accepts a pointer type as a leaf and a
-        // pointer-bearing struct/union/array through it (`allFieldsComposable`
-        // recursing per field), so `variable.type` reaching here can
-        // genuinely carry a live host address today -- `writeValue` has
-        // just written one into this very scratch a few lines below,
-        // whenever `value` itself is a native pointer.
-        const length = typeByteSize(variable.type);
-        const scan = typeHasPointers(variable.type)
-            ? NativeBlock.Scan.conservative : NativeBlock.Scan.no;
-        auto scratch = NativeBlock.allocate(length, scan);
-        writeValue(placeAt(scratch, variable.type), value);
-
-        assert(
-            frameBytesAt(mirrorAddress(variable), length) == scratch.bytes,
-            "frame mirror diverged from boxed local",
-        );
-    }
-
-    private void assertFrameSliceMirror(VarDeclaration variable, in Value value) {
-        import quickbite.backends.interpreter.native_array: NativeArray;
-
-        if (!AggregateValue.isArray(value))
-            return;
-
-        const nativeAddress = AggregateValue.nativeArrayAddress(value);
-        if (nativeAddress is null && AggregateValue.elementCount(value) != 0)
-            return;
-
-        auto arrayType = variable.type.toBasetype.isTypeDArray;
-        auto array = NativeArray.borrow(
-            arrayType.next, cast(void*) nativeAddress, AggregateValue.elementCount(value));
-
-        // `Scan.conservative`, unconditionally, rather than reusing the
-        // composable path's `Scan.no` scratch above: unlike a composable
-        // value's scratch (which `writeValue` never writes a live GC pointer
-        // into), `writeSliceHeader` itself refuses to write a GC-visible
-        // block address into an unscanned destination -- see its own
-        // comment. A conservatively scanned scratch is always an accepted
-        // destination for it, whether or not this particular `nativeAddress`
-        // happens to be GC-visible.
-        auto scratch = NativeBlock.allocate(
-            NativeArray.sliceHeaderByteLength, NativeBlock.Scan.conservative);
-        array.writeSliceHeader(scratch, 0);
-
-        assert(
-            frameBytesAt(mirrorAddress(variable), NativeArray.sliceHeaderByteLength)
-                == scratch.bytes,
-            "frame slice mirror diverged from boxed local",
-        );
-    }
-
-    private void assertClassFrameMirror(VarDeclaration variable, in Value value) {
-        if (!mirrorEstablished.get(variable, false))
-            return;
-
-        auto classType = variable.type.toBasetype.isTypeClass;
-
-        if (value == Value.null_) {
-            assertClassReferenceMirror(variable, classType, null);
-            return;
-        }
-
-        const identity = AggregateValue.classIdentity(value);
-
-        // `mirrorEstablished[variable]` is only ever set `true` right
-        // after a real write (`mirrorClassToFrame`'s own header comment),
-        // and `value` here is bit-identical to the value that write ran
-        // with (`setLocal` is the sole writer of `locals`, and always calls
-        // `mirrorToFrame` with the SAME value immediately afterwards -- see
-        // `mirrorEstablished`'s own field comment), so `identity`
-        // cannot be 0 and `classObjectTable.has(identity)` cannot be
-        // `false` here in practice: that write already resolved this exact
-        // identity through `storageFor`. Checked anyway, as a read-only
-        // decline rather than an unguarded `opIndex` -- a verify step must
-        // never risk a crash of its own (`RangeError` on a missing key) to
-        // save one `has` call.
-        if (!classObjectTable.has(identity))
-            return;
-
-        auto bodyAddress = (*classObjectTable)[identity].address;
-        assertClassReferenceMirror(variable, classType, bodyAddress);
-        assertClassBodyValue(
-            classType, value, identity, classMirrorGenerations.get(variable, null));
-    }
-
-    // Recursively verifies `value`'s composed bytes against the REAL object
-    // body `classObjectTable` already holds for `identity`, at every depth
-    // an object graph can reach -- the class counterpart of
-    // `assertFrameMirror`'s own `writeValue`-into-scratch comparison for a
-    // single composable local, generalized past one object.
-    //
-    // Deliberately NOT a call to `place_value.writeClassBody` the way
-    // `mirrorClassToFrame` makes: `writeClassBody`'s resolver, for a
-    // class-typed field, hands back the REAL nested object's address and
-    // then WRITES into it -- correct for `mirrorClassToFrame` (it is
-    // supposed to mutate real storage), wrong for an assertion, which must
-    // not mutate the very body it is comparing against. So a class-typed
-    // field here reads the nested object's own stable address straight out
-    // of `classObjectTable` (`has`/`opIndex`, never `storageFor` --see
-    // their own use below for why this never allocates), stores that
-    // reference into THIS level's scratch, and recurses into ANOTHER
-    // scratch-vs-real comparison one level down, rather than composing
-    // into the real nested body at all.
-    //
-    // No cycle guard of its own: `mirrorEstablished`
-    // (`assertClassFrameMirror`'s own gate, checked before this is ever
-    // reached) guarantees the WRITE side already ran `classBodyShapeMatches`
-    // over this identical value and found it acyclic, before `writeClassBody`
-    // composed it -- a cycle reaching here would mean the two disagree, an
-    // invariant this function trusts rather than re-checks, the same way
-    // `writeClassBody` trusts its own callers once `classBodyShapeMatches`
-    // has run.
-    //
-    // `recordedGenerations` is `classMirrorGenerations[variable]` from the
-    // caller (`assertClassFrameMirror`), threaded down unchanged through
-    // every recursive call: the snapshot `object_table.ObjectTable.
-    // generation` took, per identity, right after `mirrorClassToFrame`'s own
-    // write composed this whole graph. Before touching `identity`'s real
-    // bytes at all, this checks that snapshot against the identity's CURRENT
-    // generation -- a mismatch means some OTHER `storageFor` call (another
-    // binding's mirror write reaching this SAME shared identity, in this
-    // frame or a completely different activation -- `classMirrorGenerations`'
-    // own field comment) has rewritten this body since, so `value`'s cached
-    // copy of it is no longer what the real bytes hold. Skipping the
-    // assertion (and the recursion into this identity's own fields, since a
-    // rewritten body's field values are no longer described by `value`
-    // either) is the fix: comparing bytes the write side never actually
-    // vouched for is exactly the false-crash shape three fixtures found
-    // (`class.sharedNestedBodyRewrittenBySiblingBindingDoesNotCrash` and its
-    // two siblings, `classMirrorGenerations`'s own field comment).
-    private void assertClassBodyValue(
-        imported!"dmd.mtype".TypeClass classType,
-        in Value value,
-        in size_t identity,
-        in size_t[size_t] recordedGenerations,
-    ) {
-        import quickbite.backends.interpreter.layout: classFields, classInstanceByteSize;
-        import quickbite.backends.interpreter.native_block: NativeBlock;
-        import quickbite.backends.interpreter.place: Place;
-        import quickbite.backends.interpreter.place_value: writeValue;
-
-        const recordedGeneration = recordedGenerations.get(identity, size_t.max);
-        if (classObjectTable.generation(identity) != recordedGeneration)
-            return;
-
-        // Scanned conservatively, unconditionally -- not derived from
-        // `layout.typeHasPointers` over any one field, the same choice
-        // `object_table.allocateBlock` makes for the real body this
-        // scratch mirrors, and for the identical reason: every class
-        // instance begins with a vtable pointer (and monitor field) at
-        // offset 0 regardless of its own declared fields' types, so there
-        // is no non-pointer-carrying shape for a class body to check for.
-        // A pointer- or class-typed field also writes a genuine host
-        // address into this scratch's own field region -- a real,
-        // present-day reason to scan, not merely future-proofing.
-        const length = classInstanceByteSize(classType.sym);
-        auto scratch = NativeBlock.allocate(length, NativeBlock.Scan.conservative);
-        auto scratchPlace = Place(scratch.address, classType);
-
-        foreach (index, field; classFields(classType.sym)) {
-            auto fieldPlace = scratchPlace.field(field);
-            auto fieldValue = AggregateValue.classFieldAt(value, index);
-            auto fieldClassType = fieldPlace.type.isTypeClass;
-
-            if (fieldClassType is null) {
-                writeValue(fieldPlace, fieldValue);
-                continue;
-            }
-
-            if (fieldValue == Value.null_) {
-                fieldPlace.storeReference(null);
-                continue;
-            }
-
-            const nestedIdentity = AggregateValue.classIdentity(fieldValue);
-
-            if (!classObjectTable.has(nestedIdentity))
-                return;
-
-            auto nestedAddress = (*classObjectTable)[nestedIdentity].address;
-            fieldPlace.storeReference(nestedAddress);
-            assertClassBodyValue(
-                fieldClassType, fieldValue, nestedIdentity, recordedGenerations);
-        }
-
-        // `classObjectTable[identity]` (not the frame) is the actual body
-        // -- `(*classObjectTable)` because the shared table is reached
-        // through a pointer (see its own field comment). No all-zero skip
-        // here (contrast the pre-`mirrorEstablished` history of this
-        // function): `assertClassFrameMirror`'s own `mirrorEstablished`
-        // check already guarantees this exact `value`'s own
-        // `mirrorClassToFrame` write ran `writeClassBody` over this same
-        // body, so `actual` genuinely reflects that write, not a
-        // never-touched GC-zeroed block -- comparing it for real is the
-        // whole point.
-        assert(
-            (*classObjectTable)[identity].bytes == scratch.bytes,
-            "class body mirror diverged from boxed local",
-        );
-    }
-
-    // The frame-slot reference comparison both `assertClassFrameMirror`
-    // arms above share: `expected` (a body's own address, or `null`)
-    // written through the identical `place.Place.storeReference`
-    // `mirrorClassToFrame` itself writes with, into a pointer-width
-    // scratch block, rather than a second, hand-rolled encoding.
-    //
-    // Scanned conservatively, unconditionally: unlike the two scratches
-    // above, this one is not merely shaped like it could someday hold a
-    // pointer -- `expected` genuinely IS a live `ObjectTable`-owned
-    // address whenever `value` is a non-null class object, in the
-    // caller's very next line. Other roots also keep that body alive
-    // right now (the real frame slot `mirrorClassToFrame` already wrote,
-    // and `classObjectTable`'s own map), so nothing is actually freed by
-    // an unscanned scratch today -- but the Containers contract picks
-    // scan policy from what the block holds, not from a "something else
-    // probably roots it too" argument, since that is exactly the kind of
-    // reasoning a forgotten argument skips.
-    private void assertClassReferenceMirror(
-        VarDeclaration variable,
-        imported!"dmd.mtype".TypeClass classType,
-        void* expected,
-    ) {
-        import quickbite.backends.interpreter.place: Place;
-        import quickbite.backends.interpreter.native_block: NativeBlock;
-
-        auto scratch = NativeBlock.allocate((void*).sizeof, NativeBlock.Scan.conservative);
-        Place(scratch.address, classType).storeReference(expected);
-
-        const actual = frameBytesAt(mirrorAddress(variable), (void*).sizeof);
-
-        // No all-zero skip here (contrast the pre-`mirrorEstablished`
-        // history of this function, when this ran off a RE-DERIVED
-        // decision that could disagree with what `mirrorClassToFrame`
-        // actually did): `assertClassFrameMirror`'s own
-        // `mirrorEstablished` check already guarantees `variable`'s
-        // OWN last write genuinely stored a reference into this exact
-        // slot -- for this exact `value` -- so a real divergence is the
-        // only way `actual` can now disagree with `scratch`.
-        assert(
-            actual == scratch.bytes,
-            "frame class reference mirror diverged from boxed local",
-        );
-    }
-
-    // Reinterprets `length` bytes at `address` as a byte slice, for the
-    // raw comparison `assertFrameMirror` needs -- pointer arithmetic on a
-    // raw address is not `@safe`; this is the `@trusted` boundary, mirroring
-    // `place.d`'s own `placeBytes`. `address` is always a frame slot's own
-    // address and `length` its own `layout.typeByteSize`, so the returned
-    // slice spans exactly that slot's bytes.
-    private static ubyte[] frameBytesAt(void* address, in size_t length) pure nothrow @trusted {
-        return (cast(ubyte*) address)[0 .. length];
-    }
-
     private void bindCatchVariable(
         imported!"dmd.statement".Catch catch_,
         in Value object,
@@ -1547,6 +1148,12 @@ private struct Walker {
 
         setLocal(catch_.var, nativeExceptionCatchObject(catch_, object));
         uninitializedLocals.remove(catch_.var);
+    }
+
+
+    // `assertReferenceBind` compares exactly a reference slot's typed bytes.
+    private static ubyte[] frameBytesAt(void* address, in size_t length) pure nothrow @trusted {
+        return (cast(ubyte*) address)[0 .. length];
     }
 
     private void throwInterpretedException(
@@ -3235,7 +2842,6 @@ private struct Walker {
             locals,
             _activationFrame,
             &mirrorEstablished,
-            &classMirrorGenerations,
             evaluatedArguments,
         );
         try {
@@ -3285,7 +2891,6 @@ private struct Walker {
         child.lazyArgumentLocals = lazyArgumentLocals.dup;
         child.lazyArgumentFrames = lazyArgumentFrames.dup;
         child.lazyArgumentMirrorEstablished = lazyArgumentMirrorEstablished.dup;
-        child.lazyArgumentClassMirrorGenerations = lazyArgumentClassMirrorGenerations.dup;
         child.fallbackLocalStorage = fallbackLocalStorage.dup;
 
         // A reference relay can name DMD's hidden `vthis`, which has no
@@ -5485,7 +5090,6 @@ private struct Walker {
             locals,
             _activationFrame,
             &mirrorEstablished,
-            &classMirrorGenerations,
             evaluatedArguments,
         );
 
@@ -5610,7 +5214,6 @@ private struct Walker {
             locals,
             _activationFrame,
             &mirrorEstablished,
-            &classMirrorGenerations,
             evaluatedArguments,
         );
         child.bindThisReferenceAddress(function_, child.thisValue);
@@ -5861,7 +5464,6 @@ private struct Walker {
         Value[VarDeclaration] callerLocals = null,
         FrameBlock callerFrame = FrameBlock.init,
         bool[VarDeclaration]* callerMirrorEstablished = null,
-        size_t[size_t][VarDeclaration]* callerMirrorGenerations = null,
         in EvaluatedReferenceArgument[] evaluatedArguments = null,
     ) {
         if (arguments.length == 0) {
@@ -5886,7 +5488,6 @@ private struct Walker {
                     callerLocals,
                     callerFrame,
                     callerMirrorEstablished,
-                    callerMirrorGenerations,
                 );
                 continue;
             }
@@ -6009,13 +5610,9 @@ private struct Walker {
         // rewrote these bytes, in an activation that has since returned,
         // while every boxed value naming the object through some OTHER
         // binding still carries the pre-call field. The ordinary read path
-        // survives that state only because `assertClassBodyValue` consults
-        // `classMirrorGenerations`; a bind has no such per-binding
-        // generation snapshot to consult -- the base variable is still
-        // `mirrorEstablished` and owned by no cell -- so it declines the
-        // whole shape instead. The slot is still filled: the body IS the
-        // right storage, it is the boxed comparison value that is allowed
-        // to be stale.
+        // survives that state because the authoritative class body is read
+        // directly. The slot is still filled; only its boxed comparison
+        // value may be stale.
         bool bindNotVerifiable = lvalueCrossesClassBody(argumentExpression);
 
         void* address = cast(void*) evaluatedAddress;
@@ -6394,7 +5991,6 @@ private struct Walker {
         Value[VarDeclaration] callerLocals,
         FrameBlock callerFrame,
         bool[VarDeclaration]* callerMirrorEstablished,
-        size_t[size_t][VarDeclaration]* callerMirrorGenerations,
     ) {
         // Same fresh-binding rule as `bindFunctionParameters`: a lazy
         // parameter is still a new
@@ -6415,12 +6011,6 @@ private struct Walker {
                 )
                     lazyArgumentMirrorEstablished[parameter] =
                         *capturedMirrorEstablished;
-                if (
-                    auto capturedMirrorGenerations =
-                        variable in lazyArgumentClassMirrorGenerations
-                )
-                    lazyArgumentClassMirrorGenerations[parameter] =
-                        *capturedMirrorGenerations;
                 return;
             }
         }
@@ -6432,7 +6022,6 @@ private struct Walker {
         lazyArgumentLocals[parameter] = callerLocals;
         lazyArgumentFrames[parameter] = callerFrame;
         lazyArgumentMirrorEstablished[parameter] = callerMirrorEstablished;
-        lazyArgumentClassMirrorGenerations[parameter] = callerMirrorGenerations;
     }
 
     private Value runLazyArgument(VarDeclaration variable) {
@@ -6452,14 +6041,10 @@ private struct Walker {
         if (capturedMirrorEstablished is null)
             throw new Exception("Unsupported eval call.");
 
-        auto capturedMirrorGenerations = variable in lazyArgumentClassMirrorGenerations;
-        if (capturedMirrorGenerations is null)
-            throw new Exception("Unsupported eval call.");
 
         auto savedLocals = locals;  // mutated below while evaluating the thunk
         auto savedFrame = _activationFrame;
         auto savedMirrorEstablished = mirrorEstablished;
-        auto savedMirrorGenerations = classMirrorGenerations;
         scope(exit) {
             // Write whatever the thunk produced -- the SAME table mutated in
             // place, or (see `lazyArgumentMirrorEstablished`'s own field
@@ -6470,11 +6055,9 @@ private struct Walker {
             // `setLocal` actually recorded, not this activation's unrelated
             // bookkeeping.
             *(*capturedMirrorEstablished) = mirrorEstablished;
-            *(*capturedMirrorGenerations) = classMirrorGenerations;
             locals = savedLocals;
             _activationFrame = savedFrame;
             mirrorEstablished = savedMirrorEstablished;
-            classMirrorGenerations = savedMirrorGenerations;
         }
 
         // No `.dup`: see the comment on `bindLazyFunctionParameter`. `locals`
@@ -6482,16 +6065,13 @@ private struct Walker {
         // and `_activationFrame` becomes the caller's own frame so a mutation
         // the thunk performs (`setLocal`) mirrors into the slot the caller
         // will actually read afterwards, instead of the callee's unrelated
-        // frame silently discarding it. `mirrorEstablished`/
-        // `classMirrorGenerations` swap the same way, through the captured
-        // pointers, so `setLocal`'s own `mirrorClassToFrame` call records its
+        // frame silently discarding it. `mirrorEstablished` swaps through its captured pointer, so `setLocal`'s own `mirrorClassToFrame` call records its
         // write/decline decision into the CALLER's bookkeeping instead of
         // this activation's own (see `bindLazyFunctionParameter`'s header for
         // why that divergence is unsafe).
         locals = *captured;
         _activationFrame = *capturedFrame;
         mirrorEstablished = *(*capturedMirrorEstablished);
-        classMirrorGenerations = *(*capturedMirrorGenerations);
         return runLazyArgumentExpression(*expression);
     }
 
@@ -7489,7 +7069,6 @@ private struct Walker {
             locals,
             _activationFrame,
             &mirrorEstablished,
-            &classMirrorGenerations,
             evaluatedArguments,
         );
         if (function_.vthis !is null) {
@@ -7605,7 +7184,6 @@ private struct Walker {
             locals,
             _activationFrame,
             &mirrorEstablished,
-            &classMirrorGenerations,
             evaluatedArguments,
         );
 

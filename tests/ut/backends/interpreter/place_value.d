@@ -1773,7 +1773,7 @@ unittest {
 
 // No capability, no class: a caller with no identity namespace of its own
 // receives the native body address, which is the authoritative identity.
-@("place_value.readValue.declinesClassWithoutAnIdentityCapability")
+@("place_value.readValue.returnsClassBodyAddressWithoutAnIdentityCapability")
 unittest {
     auto classType = classTypeOf(q{ class C { int x; } }, "C");
     auto bodyBlock = NativeBlock.allocate(

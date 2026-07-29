@@ -519,10 +519,9 @@ in (length == real.sizeof)
 // Writes `value` into `length` bytes at `address`, with the padding bytes
 // (6 of them on this host, past the 10 significant ones) DETERMINISTIC --
 // always zero -- rather than whatever was already at `address`. The
-// verified frame mirror compares whole slots RAW BYTE by raw byte
-// (`ai/plans/value.md`'s Layout authority contract), so two writes of the
-// same `real` must produce identical bytes, padding included, or `impl.d`'s
-// `assertFrameMirror` fires as a hard failure. What guarantees that is
+// native storage must preserve deterministic padding bytes, so two writes of
+// the same `real` produce identical byte representations. What guarantees that
+// is
 // composing the bytes in a fresh LOCAL and copying the whole local over,
 // never assigning into the destination in place: `place_value.d`'s own
 // `writeRealBits` unit test writes the same value into two destinations
@@ -1014,9 +1013,8 @@ out (result; !result || isPlaceComposable(type))
 // writer, recursing the identical dispatch `writeValue` does so the two
 // cannot drift. Only the union arm needs it (see `isComposableUnion`):
 // everywhere else a byte no field or element owns is padding nothing reads,
-// and both the mirror slot and `assertFrameMirror`'s comparison scratch
-// start out zeroed (`NativeBlock.allocate`'s own contract), so untouched
-// padding compares equal on both sides.
+// and fresh native blocks start out zeroed (`NativeBlock.allocate`'s own
+// contract), so untouched padding has a deterministic representation.
 //
 // A native scalar, a `real`, and a pointer each write exactly their own
 // `typeByteSize` (`native_scalar.writeScalar`, `writeRealBits`,
@@ -1290,9 +1288,8 @@ private bool fieldsAreDisjoint(
 // which this predicate can see (it takes a `ClassDeclaration`, not a
 // `Value`), and neither of which is a TYPE question in the first place.
 // `impl.d`'s `classBodyShapeMatches` is the value-level counterpart that
-// catches those, called identically alongside this predicate by both
-// `mirrorClassToFrame` and `assertClassFrameMirror` before either ever
-// reaches `writeClassBody`. Answering `true` here unconditionally, rather
+// catches those before `mirrorClassToFrame` reaches `writeClassBody`.
+// Answering `true` here unconditionally, rather
 // than recursing into the referenced class's OWN `isClassBodyComposable`,
 // is also what keeps this a plain, terminating TYPE-shape walk: DMD class
 // declarations are free to reference themselves directly

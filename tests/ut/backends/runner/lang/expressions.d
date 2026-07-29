@@ -2590,7 +2590,7 @@ static foreach (backend; Matrix!(
     Omit!(Ctfe, Because.unconfirmed),
     Omit!(LLVMJit, Because.unconfirmed),
 )) {
-    @("pointer.structWriteThroughNonFittingScalarCellPointerWritesMemoryCharacterization." ~
+    @("pointer.structWriteThroughNonFittingScalarCellPointerWritesMemory." ~
         backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -2614,7 +2614,7 @@ static foreach (backend; Matrix!(
 // Keep a direct Interpreter characterization alongside the matrix row: the
 // cast pointer writes its complete struct layout over the original scalar.
 static foreach (backend; AliasSeq!(Interpreter)) {
-    @("pointer.structWriteThroughNonFittingScalarCellPointerWritesMemory." ~
+    @("pointer.structWriteThroughNonFittingScalarCellPointerWritesMemoryCharacterization." ~
         backend.stringof)
     @Tags(backend.stringof)
     unittest {
