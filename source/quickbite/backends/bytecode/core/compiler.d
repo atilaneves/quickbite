@@ -6855,18 +6855,10 @@ private struct Compiler {
         // this pointer alone is `&outer[i]`.
         if (descriptor.elementIsArray &&
             index.type.toBasetype.ty == TY.Tsarray) {
-            const inner = allocateBytes(sliceDescriptorSize, size_t.sizeof);
-            _code ~= Instruction(
-                Op.indexLoad16, inner, descriptor.offset, indexSlot.offset,
-            );
-            const pointer =
-                allocateBytes(cast(uint) size_t.sizeof, size_t.sizeof);
-            _code ~= Instruction(
-                Op.copy, pointer, inner, cast(ushort) size_t.sizeof,
-            );
             auto result = new Operand;
             *result = Operand(
-                pointer, ScalarType.ulong_, true, descriptor.elementType,
+                innerArrayRowPointer(*descriptor, indexSlot.offset),
+                ScalarType.ulong_, true, descriptor.elementType,
             );
             return result;
         }
@@ -6876,6 +6868,28 @@ private struct Compiler {
             descriptor.offset, descriptor.elementType, indexSlot.offset,
         );
         return result;
+    }
+
+    // The runtime address of `outer[i]`'s separately heap-allocated inner row
+    // (see `tryPointerToElement`'s `elementIsArray` branch): read the row's
+    // own 16-byte slice descriptor out of `outer`'s backing store and take its
+    // `.ptr` field. Shared with row assignment so writing a whole new row's
+    // worth of values lands in the same heap block a pointer taken earlier
+    // still addresses, instead of a fresh, differently addressed block.
+    private ushort innerArrayRowPointer(
+        in DynamicArrayLocal descriptor,
+        in ushort indexSlot,
+    ) {
+        const inner = allocateBytes(sliceDescriptorSize, size_t.sizeof);
+        _code ~= Instruction(
+            Op.indexLoad16, inner, descriptor.offset, indexSlot,
+        );
+        const pointer =
+            allocateBytes(cast(uint) size_t.sizeof, size_t.sizeof);
+        _code ~= Instruction(
+            Op.copy, pointer, inner, cast(ushort) size_t.sizeof,
+        );
+        return pointer;
     }
 
     private Operand staticArrayElementPointer(
@@ -10144,6 +10158,8 @@ private struct Compiler {
         IndexExp index,
         Expression rhs,
     ) {
+        import dmd.astenums: TY;
+
         auto descriptor = dynamicArrayDescriptorOrNull(index.e1);
         if (descriptor is null)
             return null;
@@ -10161,6 +10177,31 @@ private struct Compiler {
             *viewResult =
                 storeThroughPointer(pointer, compileSizeConstant(0), rhs);
             return viewResult;
+        }
+
+        // `outer[i] = row` where `outer`'s element is itself a static array
+        // (`int[2][]`): the row is a separately heap-allocated inner array
+        // (`tryPointerToElement`'s `elementIsArray` branch), so the whole-row
+        // assignment must write through its existing `.ptr` field rather than
+        // storing raw row bytes into `outer`'s own 16-byte-per-row backing
+        // store; the latter both corrupts the stored row descriptor and
+        // leaves any pointer taken into the row before this assignment
+        // (`&outer[i]`) pointing at stale, unwritten memory.
+        if (descriptor.elementIsArray &&
+            index.type.toBasetype.ty == TY.Tsarray) {
+            const savedDollarLength = _activeDollarLength;
+            _activeDollarLength = sliceLengthSlot(*descriptor);
+            const indexSlot = compileExpression(index.e2);
+            _activeDollarLength = savedDollarLength;
+
+            const pointer = Operand(
+                innerArrayRowPointer(*descriptor, indexSlot.offset),
+                ScalarType.ulong_, true, ScalarType.void_,
+            );
+            auto rowResult = new Operand;
+            *rowResult =
+                storeThroughPointer(pointer, compileSizeConstant(0), rhs);
+            return rowResult;
         }
 
         const value = compileExpression(rhs);

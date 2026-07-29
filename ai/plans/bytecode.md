@@ -405,16 +405,15 @@ row reaches them:
   would misbind the callee to the pointer's raw bytes instead of dereferencing
   it, and any writeback would clobber the stored address instead of the
   pointee.
-- `pointer.staticArrayElementWrittenDirectlyIsVisibleThroughEarlierPointer.Bytecode`
-  (`expressions.d`) is red with a wrong value (`-1849532000 != 99`, not a
-  refusal), confirmed by removing its `Because.unconfirmed` omit:
-  `int[2][] a = [...]; int[2]* p = &a[0]; a[0] = [99, 99];` then `(*p)[0]`
-  should read 99. `tryDynamicArrayElementAssign` (`compiler.d`) has no
-  `elementIsArray`-aware branch for assigning a whole row of a `T[N][]`,
-  unlike its `isStaticArrayView` branch just above it; trace what
-  `indexStoreOp`/`compileExpression(rhs)` actually write for this element
-  shape and give the assignment the row's own real address (the same one
-  `&a[0]` resolves to) instead of a fresh, differently addressed block.
+
+`class.aliasedVariableArrayFieldWriteIsVisibleThroughOriginal.Bytecode`
+(`expressions.d`) has a stale omit: its noted cause (`classCellFieldValue`/
+`writeClassCellScalarFields`, named in the fixture's own comment) no longer
+exists anywhere in `source/quickbite/backends/bytecode/`, and deleting the
+`Because.unconfirmed` omit and running the row in isolation now passes.
+Re-verify against the full suite (some other row's fix already covers this
+shape) and promote by deleting the omit; update the fixture's stale comment
+to match whatever mechanism actually fixed it.
 
 `concurrency.thisTid.Bytecode` (`tests/ut/backends/runner/sys/concurrency.d`)
 stays `Omit!(Bytecode, Because.unconfirmed, ...)`. `Scheduler.thisInfo`'s

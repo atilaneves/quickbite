@@ -7124,10 +7124,7 @@ static foreach (backend; Matrix!()) {
 // snapshot) instead of 99; confirmed via an unnamed scratch probe with the
 // identical body before the fixture was given its real name and committed.
 // SystemLinker is the oracle.
-static foreach (backend; Matrix!(
-    Omit!(Bytecode, Because.unconfirmed,
-        "computes a wrong value for this shape (`-1849532000 != 99`), not a refusal"),
-)) {
+static foreach (backend; Matrix!()) {
     @("pointer.staticArrayElementWrittenDirectlyIsVisibleThroughEarlierPointer." ~
         backend.stringof)
     @Tags(backend.stringof)
