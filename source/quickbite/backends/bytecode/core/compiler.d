@@ -12818,6 +12818,26 @@ private struct Compiler {
                 return field.offset;
 
         if (auto deref = argument.isPtrExp) {
+            // `*&p` / `*&buf[2]`: for a `ref` argument (`keepLvalue`), DMD's
+            // own `optimize.d` (`visitPtr`) folds `&p` straight to a
+            // `SymOffExp` (variable plus byte offset) before the `PtrExp`
+            // ever sees a plain `VarExp`/`IndexExp`. The address-of and the
+            // dereference must cancel back to the variable's own storage;
+            // treating the `SymOffExp` as a generic pointer value and
+            // loading through it (the fallback below) would instead bind to
+            // a fresh copy of whatever that storage currently holds.
+            if (auto symOff = deref.e1.isSymOffExp)
+                if (auto declaration = symOff.var.isVarDeclaration) {
+                    if (auto existing = declaration in _locals)
+                        return cast(ushort) (*existing + symOff.offset);
+                    if (auto existing = declaration in _dynamicArrayLocals)
+                        return cast(ushort) (existing.offset + symOff.offset);
+                    if (auto existing = declaration in _staticArrayLocals)
+                        return cast(ushort) (*existing + symOff.offset);
+                    if (auto existing = declaration in _structLocals)
+                        return cast(ushort) (existing.offset + symOff.offset);
+                }
+
             const pointer = compileExpression(deref.e1);
             if (pointer.isPointer)
                 return loadThroughPointer(pointer, compileSizeConstant(0))

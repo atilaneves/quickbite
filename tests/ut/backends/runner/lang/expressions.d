@@ -7588,11 +7588,7 @@ static foreach (backend; AliasSeq!(Interpreter)) {
 // `bindReferenceSlot`) meets a `PtrExp` over a `SymOffExp`, where the
 // address-of and the dereference must cancel rather than compose into two
 // dereferences of `p`'s slot.
-static foreach (backend; Matrix!(
-    Omit!(Bytecode, Because.unconfirmed,
-        "binds a `ref` argument written `*&p` to what `p` points at rather " ~
-        "than to `p` itself"),
-)) {
+static foreach (backend; Matrix!()) {
     @("pointer.refArgumentThroughDerefOfAddressOfRebindsTheVariable." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -7622,11 +7618,7 @@ static foreach (backend; Matrix!(
 // to, which the `ref` bind must apply directly to `buf`'s own storage
 // (`ai/plans/value.md`'s Layout authority contract) rather than re-derive as
 // an element index.
-static foreach (backend; Matrix!(
-    Omit!(Bytecode, Because.unconfirmed,
-        "binds a `ref` argument written `*&buf[2]` to the array's first " ~
-        "element rather than to element 2"),
-)) {
+static foreach (backend; Matrix!()) {
     @("pointer.refArgumentThroughDerefOfArrayElementAddressWritesThatElement." ~
         backend.stringof)
     @Tags(backend.stringof)
