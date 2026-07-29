@@ -4392,12 +4392,7 @@ static foreach (backend; Matrix!()) {
 
 // Taking an element address through a ref static-array local reaches the
 // source's storage rather than promoting an independent alias snapshot.
-static foreach (backend; Matrix!(
-    Omit!(Bytecode, Because.unconfirmed,
-        "blocked on static-array-vs-array-literal `==` comparison, " ~
-            "unrelated to ref-local aliasing: reproduces identically for " ~
-            "a plain non-ref static array"),
-)) {
+static foreach (backend; Matrix!()) {
     @("pointer.staticArrayRefLocalElementUsesSourceStorage." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -4429,11 +4424,16 @@ static foreach (backend; Matrix!(
     Omit!(Ctfe, Because.refusal,
         "DMD CTFE refuses the nested static-array element pointer cast"),
     Omit!(Bytecode, Because.unconfirmed,
-        "blocked on static-array-vs-array-literal `==` comparison, " ~
-            "unrelated to ref-local aliasing or assignment: whole-value " ~
-            "static-array-local assignment itself is supported now, but " ~
-            "`source == [[...], [...]]` reproduces the same cast gap " ~
-            "blocking pointer.staticArrayRefLocalElementUsesSourceStorage"),
+        "the static-array-vs-array-literal `==` cast gap is fixed, but " ~
+            "the nested (`int[2][2]`) case exposes a representation " ~
+            "mismatch: the static-array side's dynamic-array view " ~
+            "(`compileStaticArrayAsDynamicInto`) stores each inner " ~
+            "`int[2]` as a raw 8-byte block (the `int[2][]` shape other " ~
+            "callers need), while DMD's `_d_assert_fail` rendering casts " ~
+            "the literal side to the fully-dynamic `int[][]` shape (16-byte " ~
+            "nested slice descriptors); comparing the two produces garbage, " ~
+            "not an exception -- unrelated to ref-local aliasing or " ~
+            "assignment, both of which work correctly"),
 )) {
     @("staticArray.refLocalAssignmentMutatesSource." ~ backend.stringof)
     @Tags(backend.stringof)

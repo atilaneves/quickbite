@@ -5954,6 +5954,37 @@ private struct Compiler {
             return false;
 
         const count = literal.elements is null ? 0 : literal.elements.length;
+
+        // A nested array-of-arrays literal (`[[1, 2], [3, 4]]`): each element
+        // is itself an array, stored as a 16-byte descriptor, mirroring
+        // `compileDynamicArrayInto`'s own array-of-arrays literal handling.
+        // `variable.type` (the hoisted stack temp's own declared type) names
+        // the literal's true shape; `elementType`'s deepest-leaf-scalar
+        // convention can't distinguish this from the flat case on its own.
+        if (arrayElementIsArray(variable.type)) {
+            _code ~= Instruction(
+                Op.allocArray,
+                destination,
+                cast(ushort) sliceDescriptorSize,
+                cast(ushort) count,
+            );
+
+            foreach (elementIndex; 0 .. count) {
+                const inner =
+                    allocateBytes(sliceDescriptorSize, size_t.sizeof);
+                compileDynamicArrayInto(
+                    inner, elementType, (*literal.elements)[elementIndex],
+                );
+                _code ~= Instruction(
+                    Op.indexStore16,
+                    inner,
+                    destination,
+                    compileSizeConstant(elementIndex),
+                );
+            }
+            return true;
+        }
+
         const elementSize = size(elementType);
         _code ~= Instruction(
             Op.allocArray,
@@ -13388,10 +13419,15 @@ private struct Compiler {
         return false;
     }
 
-    // `assert(a == b)` / `assert(a[] != b[])` over dynamic-array operands:
-    // build a slice descriptor for each operand, compare them element-wise, and
-    // assert the result; on failure each operand renders as `[e0, e1, ...]`.
-    // Null if either operand is not a dynamic-array value.
+    // `assert(a == b)` / `assert(a[] != b[])` over dynamic-array operands,
+    // and a mixed dynamic/static-array comparison (`staticArray == [a, b]`;
+    // DMD hoists the array-literal side into a stack temp and casts it to a
+    // slice, `arrayDescriptorOffset` builds a slice view over the static
+    // side): build a slice descriptor for each operand, compare them
+    // element-wise, and assert the result; on failure each operand renders
+    // as `[e0, e1, ...]`. Null if either operand is not an array value, or
+    // both are static arrays (`tryStaticArrayComparisonAssert`'s direct
+    // block compare handles that case without a heap copy).
     private bool tryArrayComparisonAssert(
         in string op,
         Expression lhs,
@@ -13399,8 +13435,13 @@ private struct Compiler {
     ) {
         import dmd.astenums: TY;
 
-        if (lhs.type.toBasetype.ty != TY.Tarray ||
-            rhs.type.toBasetype.ty != TY.Tarray)
+        const lhsTy = lhs.type.toBasetype.ty;
+        const rhsTy = rhs.type.toBasetype.ty;
+        if (lhsTy != TY.Tarray && lhsTy != TY.Tsarray)
+            return false;
+        if (rhsTy != TY.Tarray && rhsTy != TY.Tsarray)
+            return false;
+        if (lhsTy == TY.Tsarray && rhsTy == TY.Tsarray)
             return false;
 
         // A genuine `string` comparison renders as a quoted string
