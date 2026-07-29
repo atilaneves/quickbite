@@ -270,6 +270,19 @@ private struct Compiler {
         ushort valueSize;
     }
 
+    // A `ref` argument that dereferences a genuine runtime pointer value
+    // (`bump(*p)` where `p` is a plain pointer local/parameter/field holding
+    // an address computed earlier, not a folded `*&lvalue`): the pointee's
+    // real storage is only reachable through that runtime address, so
+    // (mirroring `RefLocalPointerRefWriteBack`) the value is mirrored into a
+    // fresh frame slot for the call and written back through the same
+    // address afterward.
+    private static struct PointerDereferenceRefWriteBack {
+        ushort valueOffset;
+        ushort addressOffset;
+        ushort valueSize;
+    }
+
     private static struct MethodReceiver {
         ushort offset;
         ushort writeBackFrameIndex;
@@ -11525,6 +11538,7 @@ private struct Compiler {
         StructPointerFieldRefWriteBack[] structPointerFieldRefWriteBacks;
         ModuleScalarRefWriteBack[] moduleScalarRefWriteBacks;
         RefLocalPointerRefWriteBack[] refLocalPointerRefWriteBacks;
+        PointerDereferenceRefWriteBack[] pointerDereferenceRefWriteBacks;
         if (call.arguments !is null &&
             nextArgumentIndex + call.arguments.length > layout.offsets.length)
             throw new Exception(text(
@@ -11559,6 +11573,13 @@ private struct Compiler {
                         slot,
                         (*call.arguments)[argumentIndex],
                         refLocalPointerRefWriteBacks,
+                    ))
+                        continue;
+                if (layout.isReference[nextArgumentIndex + argumentIndex])
+                    if (emitPointerDereferenceRefArgument(
+                        slot,
+                        (*call.arguments)[argumentIndex],
+                        pointerDereferenceRefWriteBacks,
                     ))
                         continue;
                 if (layout.isReference[nextArgumentIndex + argumentIndex])
@@ -11665,6 +11686,13 @@ private struct Compiler {
                 compileSizeConstant(0),
             );
         foreach (writeBack; refLocalPointerRefWriteBacks)
+            _code ~= Instruction(
+                pointerStoreOp(writeBack.valueSize),
+                writeBack.valueOffset,
+                writeBack.addressOffset,
+                compileSizeConstant(0),
+            );
+        foreach (writeBack; pointerDereferenceRefWriteBacks)
             _code ~= Instruction(
                 pointerStoreOp(writeBack.valueSize),
                 writeBack.valueOffset,
@@ -13263,6 +13291,70 @@ private struct Compiler {
             cast(ushort) size(ScalarType.uint_),
         );
         writeBacks ~= RefLocalPointerRefWriteBack(
+            valueOffset, addressOffset, valueSize,
+        );
+        return true;
+    }
+
+    // A `ref` argument that dereferences a genuine runtime pointer value
+    // (`bump(*p)` where `p` is a plain pointer local/parameter/field holding
+    // an address computed earlier): unlike `*&lvalue`, DMD does not fold this
+    // shape into a `SymOffExp` the caller's own storage can be named by a
+    // compile-time frame offset, so `referenceOffsetOrNull`'s fallback would
+    // otherwise bind the callee to a fresh copy of the pointee instead of the
+    // pointee itself. Mirrors `emitRefLocalPointerArgument`: read the current
+    // value through the pointer into a fresh slot for the call, and write it
+    // back through that same pointer afterward.
+    private bool emitPointerDereferenceRefArgument(
+        in ushort slot,
+        Expression argument,
+        ref PointerDereferenceRefWriteBack[] writeBacks,
+    ) {
+        auto deref = argument.isPtrExp;
+        if (deref is null)
+            return false;
+
+        // `*&lvalue`: `referenceOffsetOrNull`'s `symOffsetOrNull` branch
+        // already cancels the address-of and the dereference back to the
+        // lvalue's own storage; that path needs no mirror-and-writeback.
+        if (deref.e1.isSymOffExp !is null)
+            return false;
+
+        const pointer = compileExpression(deref.e1);
+        if (!pointer.isPointer)
+            return false;
+
+        const valueSize = cast(ushort) size(pointer.pointerElement);
+        if (valueSize != 1 && valueSize != 4 && valueSize != 8)
+            return false;
+
+        const addressOffset = pointer.offset;
+        foreach (writeBack; writeBacks)
+            if (writeBack.addressOffset == addressOffset &&
+                writeBack.valueSize == valueSize) {
+                _code ~= Instruction(
+                    Op.loadConstant,
+                    slot,
+                    constantIndex(writeBack.valueOffset),
+                    cast(ushort) size(ScalarType.uint_),
+                );
+                return true;
+            }
+
+        const valueOffset = allocateBytes(valueSize, valueSize);
+        _code ~= Instruction(
+            pointerLoadOp(valueSize),
+            valueOffset,
+            addressOffset,
+            compileSizeConstant(0),
+        );
+        _code ~= Instruction(
+            Op.loadConstant,
+            slot,
+            constantIndex(valueOffset),
+            cast(ushort) size(ScalarType.uint_),
+        );
+        writeBacks ~= PointerDereferenceRefWriteBack(
             valueOffset, addressOffset, valueSize,
         );
         return true;

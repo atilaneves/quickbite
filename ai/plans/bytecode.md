@@ -410,15 +410,6 @@ row reaches them:
   `Tsarray`/`Taarray`/`Tdelegate` variables and pointer/complex-double dataseg
   variables remain entirely unsupported (`moduleScalarVariableOrNull` still
   declines them).
-- `referenceOffsetOrNull`'s `isPtrExp` branch (`compiler.d`) only cancels a
-  dereference back to the pointee's real storage when the pointer operand is
-  a folded `*&lvalue` (`symOffsetOrNull`); for a genuine runtime pointer value
-  (a plain pointer local, parameter, or field holding an address computed
-  earlier) the fallback `loadThroughPointer` reads the pointee into a fresh
-  frame slot and returns that copy's offset, so passing `*p` onward as
-  another function's `ref` argument writes back into the copy instead of
-  through `p`. `bump(*p)` after `int* p = &value;` returns `10`, not `11`, on
-  `Bytecode` against the `SystemLinker` oracle.
 
 `concurrency.thisTid.Bytecode` (`tests/ut/backends/runner/sys/concurrency.d`)
 stays `Omit!(Bytecode, Because.unconfirmed, ...)`. `Scheduler.thisInfo`'s

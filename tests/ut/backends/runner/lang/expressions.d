@@ -7640,6 +7640,36 @@ static foreach (backend; Matrix!()) {
     }
 }
 
+// A `ref` argument dereferencing a plain pointer LOCAL holding a
+// previously-computed address is a different shape from the two fixtures
+// above: DMD never folds `*p` into a `SymOffExp` here, since `p` is read
+// through an ordinary `VarExp` rather than an inline `&lvalue`. The callee
+// must still write back through the runtime address `p` holds, not a fresh
+// copy of whatever it read.
+static foreach (backend; Matrix!()) {
+    @("pointer.refArgumentThroughStoredPointerWritesThroughPointer." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            int seed() {
+                return 10;
+            }
+
+            void bump(ref int r) {
+                r = r + 1;
+            }
+
+            unittest {
+                int value = seed;
+                int* pointer = &value;
+                bump(*pointer);
+                assert(value == 11);
+            }
+        });
+    }
+}
+
 // A `string` is just an `immutable(char)[]`, so a `string*` dereference must
 // read the same 16-byte {ptr, length} descriptor a `T[]*` dereference (e.g.
 // `int[]*`) already does: `.length` and whole-array equality through the
