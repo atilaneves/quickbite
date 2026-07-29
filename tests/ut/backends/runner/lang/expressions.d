@@ -4325,10 +4325,7 @@ static foreach (backend; Matrix!(
 
 // A plain ref struct local denotes the source's storage, including its
 // address. SystemLinker is the oracle for the shared address identity.
-static foreach (backend; Matrix!(
-    Omit!(Bytecode, Because.unconfirmed,
-        "does not yet preserve ref struct-local address identity"),
-)) {
+static foreach (backend; Matrix!()) {
     @("pointer.structRefLocalPreservesAddressIdentity." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -4485,10 +4482,7 @@ static foreach (backend; Matrix!(
 // A plain ref class local denotes the source reference variable's storage,
 // including its address. SystemLinker is the oracle for the shared address
 // identity.
-static foreach (backend; Matrix!(
-    Omit!(Bytecode, Because.unconfirmed,
-        "does not yet preserve ref class-local address identity"),
-)) {
+static foreach (backend; Matrix!()) {
     @("pointer.classRefLocalPreservesAddressIdentity." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -4510,10 +4504,7 @@ static foreach (backend; Matrix!(
 
 // Assignment through a ref class local rebinds the source reference variable;
 // the alias does not acquire an independent class-reference slot.
-static foreach (backend; Matrix!(
-    Omit!(Bytecode, Because.unconfirmed,
-        "does not yet preserve ref class-local assignment aliasing"),
-)) {
+static foreach (backend; Matrix!()) {
     @("class.refLocalAssignmentRebindsSource." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {

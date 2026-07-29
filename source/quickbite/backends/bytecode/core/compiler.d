@@ -3433,6 +3433,37 @@ private struct Compiler {
                 return true;
             }
 
+        // A ref local bound directly to another struct local (`ref S alias_
+        // = source;`): unlike `S copy = source;` (compileStructDeclaration's
+        // block copy into a fresh frame slot), a ref binding must denote
+        // `source`'s own storage. Alias `variable` to the exact same frame
+        // offset (and struct declaration) in `_structLocals`, the struct
+        // counterpart of the static-array alias above.
+        if (variable.type.toBasetype.ty == TY.Tstruct)
+            if (auto plain = expression.isVarExp)
+                if (auto declaration = plain.var.isVarDeclaration)
+                    if (auto existing = declaration in _structLocals) {
+                        _structLocals[variable] = *existing;
+                        return true;
+                    }
+
+        // A ref local bound directly to another class-typed local (`ref C
+        // alias_ = source;`): a class variable's own storage is a scalar
+        // reference slot inline in this frame, just like any other scalar
+        // local. Alias `variable` to that exact same frame offset rather
+        // than copying the pointer value into a fresh slot, so both
+        // address-of and assignment through `variable` reach the identical
+        // slot `source` uses, not merely its pointee.
+        if (variable.type.toBasetype.ty == TY.Tclass)
+            if (auto plain = expression.isVarExp)
+                if (auto declaration = plain.var.isVarDeclaration)
+                    if (auto existing = declaration in _locals) {
+                        _locals[variable] = *existing;
+                        _classPointerLocals[variable] =
+                            variable.type.toBasetype.isTypeClass.sym;
+                        return true;
+                    }
+
         if (auto dot = expression.isDotVarExp) {
             // A ref local bound to a field within a class array field's
             // element (`ref int r = c.arr[i].field;`): the class-field
