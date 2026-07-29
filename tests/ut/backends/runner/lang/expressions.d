@@ -4405,17 +4405,9 @@ static foreach (backend; Matrix!()) {
 static foreach (backend; Matrix!(
     Omit!(Ctfe, Because.refusal,
         "DMD CTFE refuses the nested static-array element pointer cast"),
-    Omit!(Bytecode, Because.unconfirmed,
-        "the static-array-vs-array-literal `==` cast gap is fixed, but " ~
-            "the nested (`int[2][2]`) case exposes a representation " ~
-            "mismatch: the static-array side's dynamic-array view " ~
-            "(`compileStaticArrayAsDynamicInto`) stores each inner " ~
-            "`int[2]` as a raw 8-byte block (the `int[2][]` shape other " ~
-            "callers need), while DMD's `_d_assert_fail` rendering casts " ~
-            "the literal side to the fully-dynamic `int[][]` shape (16-byte " ~
-            "nested slice descriptors); comparing the two produces garbage, " ~
-            "not an exception -- unrelated to ref-local aliasing or " ~
-            "assignment, both of which work correctly"),
+    Omit!(Bytecode, Because.refusal,
+        "the nested `int[2][2]` `==` comparison is declined (mixed " ~
+            "static/dynamic nested-array shapes are unsupported)"),
 )) {
     @("staticArray.refLocalAssignmentMutatesSource." ~ backend.stringof)
     @Tags(backend.stringof)
