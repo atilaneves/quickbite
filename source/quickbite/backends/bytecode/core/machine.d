@@ -513,6 +513,16 @@ package(quickbite.backends.bytecode) RunResult run(
                 ++ip;
                 break;
 
+            case refParameterAddress:
+                writeFrameAddress(
+                    stack,
+                    base + instruction.a,
+                    base +
+                        refParameterIdentitySlot(frames[$ - 1], instruction.b),
+                );
+                ++ip;
+                break;
+
             case signExtend1to2:
                 const ubyte[short.sizeof] signWidenedShort = scalarBytes(
                     cast(short) scalarValue!byte(stack, base + instruction.b),
@@ -2755,6 +2765,24 @@ private struct RefWriteback {
     size_t callerOffset; // absolute stack offset of the referenced caller slot
     ushort calleeOffset; // the parameter slot's offset within the callee frame
     uint size;
+}
+
+// The callee-frame-relative slot that stands for a scalar `ref` parameter's
+// identity: its own slot, unless it is grouped with other parameters
+// aliasing the same caller storage (`frame.refAliases`), in which case every
+// member of the group must report the group's first slot so `&first ==
+// &second` holds. Reads and writes still go through each parameter's own
+// slot; `synchronizeRefAliases` keeps the group's slots byte-identical
+// between instructions, so redirecting only the address is safe.
+private ushort refParameterIdentitySlot(
+    in Frame frame,
+    in ushort calleeOffset,
+) @safe pure {
+    foreach (group; frame.refAliases)
+        foreach (offset; group.calleeOffsets)
+            if (offset == calleeOffset)
+                return group.calleeOffsets[0];
+    return calleeOffset;
 }
 
 // Parameter slots that denote the same caller storage. The bytecode compiler
