@@ -4448,8 +4448,6 @@ static foreach (backend; Matrix!(
 static foreach (backend; Matrix!(
     Omit!(Ctfe, Because.refusal,
         "DMD CTFE refuses to compare static-array parameter addresses"),
-    Omit!(Bytecode, Because.unconfirmed,
-        "does not yet preserve repeated ref static-array-argument identity"),
 )) {
     @("staticArray.repeatedRefArgumentPreservesAddressIdentity." ~ backend.stringof)
     @Tags(backend.stringof)
