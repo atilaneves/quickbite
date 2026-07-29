@@ -1345,6 +1345,43 @@ static foreach (backend; Matrix!()) {
     }
 }
 
+// A struct method's delegate (`&receiver.value`) passed through a
+// delegate-typed PARAMETER carries a caller-frame-relative receiver offset,
+// not the pointer-sized context word `callIndirectDynamic`'s argument area
+// assumes for a nested function or lambda; the VM checks the resolved
+// callee's `hasThis` and refuses the call instead of misreading that offset
+// as a bogus caller-frame reference.
+static foreach (backend; AliasSeq!(Bytecode)) {
+    @("delegate.structReceiverPassedAsParameterIsRejected." ~ backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct Counter {
+                int field;
+
+                int value(int input) {
+                    return field + input;
+                }
+            }
+
+            int applyOnce(int delegate(int) f) {
+                return f(5);
+            }
+
+            int callStructMethodDelegate(int seed) {
+                Counter counter = Counter(seed + 2);
+                return applyOnce(&counter.value);
+            }
+
+            unittest {
+                assert(callStructMethodDelegate(3) == 10);
+            }
+        }).shouldThrowWithMessage(
+            "Unsupported delegate-parameter call in bytecode core: the " ~
+                "callee is a struct-receiver method",
+        );
+    }
+}
+
 // `int[]` is not `place_value.isPlaceComposable` (its elements live behind
 // a stored pointer, not inline), so a nested function capturing one gets no
 // verified reference-slot shadow for it -- `bindCapturedReferenceSlots`

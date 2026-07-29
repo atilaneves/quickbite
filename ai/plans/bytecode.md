@@ -480,23 +480,25 @@ store instruction sequence `core.atomic` emits, or recognise `atomicOp`/
 lower them to dedicated VM atomic ops instead of compiling the inline asm
 body.
 
-A delegate-typed PARAMETER is now a plain 16-byte `{functionIndex, context}`
-by-value parameter (`appendParameterLayoutEntry`, `compiler.d`), and calling
-through one dispatches via the new `Op.callIndirectDynamic` opcode, whose
-argument area is built from the delegate's declared type alone (no known
-`FuncDeclaration`). This is sound only for a nested function/lambda or a
-class method, whose context is always one pointer-sized word matching the
-delegate pair's own context word; a struct-receiver method's context is
-instead a caller-frame-relative offset into a whole receiver block that only
-resolves correctly when the delegate is called from the same frame that
-created it (`compileDelegateCall`'s existing `hasThis` handling), so
+A delegate-typed PARAMETER is an ordinary 16-byte `{functionIndex, context}`
+by-value parameter; a call through one (`Op.callIndirectDynamic`) builds its
+argument area from the delegate's declared type alone, since there is no
+statically known `FuncDeclaration` behind it. This is sound for a nested
+function/lambda, whose context is always one pointer-sized word matching the
+delegate pair's own context word. A struct-receiver method's context is
+instead a caller-frame-relative offset into a whole receiver block, so
 `callIndirectDynamic` checks the resolved callee's `CompiledFunction.hasThis`
 at run time and rejects it with a diagnostic rather than misreading the
-context word. Making a struct-receiver delegate callable through a dynamic
-parameter (or through any local passed across frames) needs the receiver
-encoded as something frame-independent -- a real pointer to the receiver
-block rather than a frame-relative offset -- which changes how every struct
-method receives `this`, not just this call path.
+context word (`delegate.structReceiverPassedAsParameterIsRejected.Bytecode`,
+`tests/ut/backends/runner/lang/expressions.d`). A class-method delegate
+should carry the same single-word context as a lambda/nested function, but
+that shape is not yet verified through this mechanism: `auto d = &c.m; d()`
+already fails earlier with a pre-existing, unrelated `class this is null`
+error even as a plain local, before reaching a dynamic parameter call at
+all. Making the struct-receiver shape callable needs the receiver encoded as
+something frame-independent -- a real pointer to the receiver block rather
+than a frame-relative offset -- which changes how every struct method
+receives `this`, not just this call path.
 
 ### TDD and handoff discipline
 
