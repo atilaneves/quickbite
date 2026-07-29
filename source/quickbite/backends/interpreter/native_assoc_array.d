@@ -158,6 +158,7 @@ private bool keysEqual(
     imported!"dmd.mtype".Type type,
 ) @safe {
     import quickbite.backends.interpreter.aggregate_value: AggregateValue;
+    import quickbite.backends.interpreter.layout: structFields;
     import quickbite.backends.interpreter.place: Place;
     import quickbite.backends.interpreter.place_value: readValue;
 
@@ -175,6 +176,17 @@ private bool keysEqual(
         foreach (index; 0 .. AggregateValue.elementCount(left))
             if (AggregateValue.elementAt(left, index) !=
                 AggregateValue.elementAt(right, index))
+                return false;
+        return true;
+    }
+
+    if (auto structType = type.isTypeStruct) {
+        foreach (field; structFields(structType))
+            if (!keysEqual(
+                Place(lhs, type).field(field).address,
+                Place(rhs, type).field(field).address,
+                field.type,
+            ))
                 return false;
         return true;
     }

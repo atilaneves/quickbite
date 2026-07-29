@@ -37,14 +37,8 @@ public struct AggregateValue {
 
         auto aggregate = allocateAggregate(type);
         auto destination = placeAt(aggregate.storage, type);
-        foreach (index, field; structFields(structType)) {
+        foreach (index, field; structFields(structType))
             writeValue(destination.field(field), fields[index]);
-            // A union's members are alternate views of one byte region. The
-            // first declared member supplies D's default-init bytes; writing
-            // later member defaults would incorrectly overwrite those bytes.
-            if (structType.sym.isUnionDeclaration !is null)
-                break;
-        }
         return Value.nativeAggregateValue(aggregate);
     }
 

@@ -1010,38 +1010,6 @@ private struct Walker {
             uninitializedBindingAddresses.addresses.remove(address);
     }
 
-    private void mirrorToFrame(VarDeclaration variable, in Value value) {
-        import quickbite.backends.interpreter.place_value: valueMatchesPlace, writeValue;
-
-        // `established` becomes `mirrorEstablished[variable]` on every exit
-        // from this function (`scope(exit)` below) -- `false` unless an arm
-        // actually wrote real storage, so every decline, this function's own
-        // and its arms' alike, records itself as "not established" the same
-        // way a fresh, never-written frame slot already reads. See
-        // `mirrorEstablished`'s own field comment for what reads it.
-        bool established = false;
-        scope(exit) mirrorEstablished[variable] = established;
-
-        if (!hasMirrorSlot(variable))
-            return;
-
-        if (variable.type.toBasetype.isTypeDArray !is null) {
-            established = mirrorSliceToFrame(variable, value);
-            return;
-        }
-
-        if (variable.type.toBasetype.isTypeClass !is null) {
-            established = mirrorClassToFrame(variable, value);
-            return;
-        }
-
-        if (!valueMatchesPlace(variable.type, value))
-            return;
-
-        writeValue(bindingPlace(variable), value);
-        established = true;
-    }
-
     // Whether `variable` has mirror storage to write/verify at all: this
     // activation's own OWNING frame slot for a true stack local
     // (`FrameBlock.hasOwningSlot`), or -- unconditionally -- a
@@ -1091,7 +1059,6 @@ private struct Walker {
     // DMD declaration inspection is `@system`; the returned address is still
     // restricted to storage owned by the frame/module/native binding tables.
     private void* addressableBindingBase(VarDeclaration variable) @trusted {
-        variable = refLocalStorageVariable(variable);
         if (auto address = variable in nativeRefLocalAddresses)
             return *address;
         return bindingPlace(variable).address;
@@ -2522,7 +2489,6 @@ private struct Walker {
 
             // Mutable because frame/layout APIs take DMD declarations.
             auto referenceVariable = variable;
-            variable = refLocalStorageVariable(variable);
 
             // the magic __ctfe variable is true under AST interpretation,
             // matching dmd's own interpreter; the language requires both
@@ -2583,6 +2549,8 @@ private struct Walker {
                 import quickbite.backends.interpreter.place: Place;
                 import quickbite.backends.interpreter.place_value: readValue;
 
+                if (auto delegate_ = cast(void*) *address in nativeDelegateSlots)
+                    return *delegate_;
                 if (auto function_ = *address in nativeFunctionPointerSlots)
                     return *function_;
                 return readValue(Place(*address, declaredType(variable)));
@@ -3356,16 +3324,6 @@ private struct Walker {
             }
     }
 
-    private void dropNativeAggregateCells(VarDeclaration variable) {
-        auto type = variable.type.toBasetype;
-        if (type.isTypeDArray !is null || type.isTypeSArray !is null)
-            dropArrayCell(variable);
-        else if (type.isTypeStruct !is null)
-            dropStructCell(variable);
-        else if (type.isTypeClass !is null)
-            detachClassCell(variable);
-    }
-
     // The child's returned address points into its own frame: a pointer to a
     // `ref` parameter's slot must become the caller's argument lvalue so
     // writes through it reach the argument; any other variable's pointer id
@@ -3587,7 +3545,6 @@ private struct Walker {
         if (variable is null)
             throw new Exception(text("Unsupported eval expression: ", op));
 
-        variable = refLocalStorageVariable(variable);
 
         auto current = variable in locals;
         if (current is null)
@@ -3669,7 +3626,6 @@ private struct Walker {
     ) {
         import quickbite.frontend.dmd.types: isStaticArrayType;
 
-        variable = refLocalStorageVariable(variable);
         materializeDatasegInitializer(variable);
 
         if (hasMirrorSlot(variable)) {
@@ -3825,10 +3781,6 @@ private struct Walker {
     // Resolve that existing identity back to the declaration which owns the
     // storage so reads and assignments through the ref local or parameter do
     // not acquire an independent boxed slot.
-    private VarDeclaration refLocalStorageVariable(VarDeclaration variable) {
-        return variable;
-    }
-
     // Eagerly gives an address-taken native-scalar local an authoritative
     // native-byte cell the first time its address is taken, seeded from
     // whatever value the local currently
@@ -3919,38 +3871,7 @@ private struct Walker {
         }
     }
 
-    private void dropStructCell(VarDeclaration variable) {
-    }
-
-    private void dropClassCell(VarDeclaration variable) {
-    }
-
-    // A reference rebind detaches the variable from its former object but
-    // does not invalidate pointers already taken into that object. Forget the
-    // variable-keyed address memo so a later address-of gets a fresh id;
-    // allocation-id-keyed pointer cells continue owning the old storage.
-    private void detachClassCell(VarDeclaration variable) {
-    }
-
-    private void dropArrayCell(VarDeclaration variable) {
-
-    }
-
-    // Drops the cell families that every fresh local or parameter binding
-    // invalidates. Class cells are deliberately excluded: declarations drop
-    // them separately, while parameter binding retains its existing class
-    // alias state.
-    private void dropNonClassCells(VarDeclaration variable) {
-        dropArrayCell(variable);
-        dropStructCell(variable);
-    }
-
-    // A declaration introduces fresh storage for every cell family. Keep this
-    // separate from `dropNonClassCells`: parameter binding deliberately
-    // preserves class cells because they carry the caller's object alias.
     private void dropDeclarationCells(VarDeclaration variable) {
-        dropNonClassCells(variable);
-        dropClassCell(variable);
         nativeRefLocalAddresses.remove(variable);
         fallbackLocalStorage.remove(variable);
     }
@@ -4507,10 +4428,7 @@ private struct Walker {
                         !call.f.needThis &&
                         tryCallNative(
                             call.f,
-                            nativeCellPointerArguments(
-                                arguments,
-                                nativeArgumentTypes(argumentExpressions),
-                            ),
+                            arguments,
                             nativeArgumentTypes(argumentExpressions),
                             nativeAddressOfLocalArguments(argumentExpressions),
                             nativeOutParameterInputValues(argumentExpressions),
@@ -4635,16 +4553,6 @@ private struct Walker {
         }
 
         throw new Exception("Unsupported eval call.");
-    }
-
-    // A local pointer whose target has native authoritative storage can cross
-    // the FFI seam as that storage's real address. Other local-pointer shapes
-    // remain boxed and retain the existing unsupported diagnostic.
-    private Value[] nativeCellPointerArguments(
-        in Value[] arguments,
-        imported!"dmd.mtype".Type[] argumentTypes,
-    ) {
-        return arguments.dup;
     }
 
     private Value runRefArgumentExpression(
@@ -5291,7 +5199,22 @@ private struct Walker {
     private Value runAssocArrayLvalueCall(
         imported!"dmd.expression".CallExp call,
     ) {
-        const aa = assocArrayArgumentValue((*call.arguments)[0]);
+        auto aaArgument = (*call.arguments)[0];
+        auto aa = assocArrayArgumentValue(aaArgument);
+        if (aa == Value.null_) {
+            import quickbite.backends.interpreter.native_assoc_array: allocateValue;
+
+            aa = Value.nativeAggregateValue(allocateValue(
+                aaArgument.type,
+            ));
+            auto variableExpression = aaArgument.isVarExp;
+            if (variableExpression is null)
+                throw new Exception("Associative-array lvalue needs a variable.");
+            auto variable = variableExpression.var.isVarDeclaration;
+            if (variable is null)
+                throw new Exception("Associative-array lvalue needs a variable.");
+            setLocal(variable, aa);
+        }
         const key = runExpression((*call.arguments)[1]);
         if (isNativeAssocArray(aa)) {
             bool found;
@@ -5385,7 +5308,9 @@ private struct Walker {
     }
 
     private size_t assocArrayLength(in Value value) {
-        return isNativeAssocArray(value)
+        return value == Value.null_
+            ? 0
+            : isNativeAssocArray(value)
             ? nativeAssocArray(value).length
             : value.length;
     }
@@ -5966,7 +5891,6 @@ private struct Walker {
                 continue;
             }
 
-            dropNonClassCells(parameter);
             nativeRefLocalAddresses.remove(parameter);
             fallbackLocalStorage.remove(parameter);
             setLocal(parameter, arguments[index]);
@@ -6260,8 +6184,6 @@ private struct Walker {
             // bytes are allowed to lag the boxed value bind-time
             // verification would compare them against. Fill the slot,
             // never verify it (see `bindNotVerifiable`'s own declaration).
-            if (cellIsAuthorityFor(variable))
-                bindNotVerifiable = true;
             if (uninitialized)
                 bindNotVerifiable = true;
 
@@ -6295,10 +6217,6 @@ private struct Walker {
             "quickbite.backends.interpreter.impl.Walker.callerReferenceBase: "
             ~ "variable has no mirrored caller-side storage",
         );
-    }
-
-    private bool cellIsAuthorityFor(VarDeclaration variable) {
-        return false;
     }
 
     // The call-argument walk records each runtime index before returning the
@@ -6482,7 +6400,6 @@ private struct Walker {
         // parameter is still a new
         // stack slot for its own `VarDeclaration`, so drop any inherited/
         // stale cell.
-        dropNonClassCells(parameter);
         setLocal(parameter, Value.undisplayable);
 
         if (auto variable = lazyExpressionVariable(argumentExpression)) {
@@ -7244,7 +7161,6 @@ private struct Walker {
                 throw new Exception("Unsupported interpreter assignment target.");
             // Mutable because frame/layout APIs take DMD declarations.
             auto referenceVariable = variable;
-            variable = refLocalStorageVariable(variable);
 
             // A native ref local is a borrowed place, including when its
             // referent is a class-reference slot. Assignment must update the
@@ -7836,7 +7752,6 @@ private struct Walker {
             const updatedArray = AggregateValue.withArrayElement(
                 AggregateValue.fieldAt(receiver, fieldIndex), arrayIndex, value);
             writeLocation(dot.e1, AggregateValue.withStructField(receiver, fieldIndex, updatedArray));
-            if (dot.e1.isThisExp !is null)
             return;
         }
 
@@ -7858,7 +7773,6 @@ private struct Walker {
         // storage. Resolve its lvalue before rebuilding the array so direct
         // `alias_[i] = value` updates the source binding, exactly as an
         // element address through the same alias does.
-        variable = refLocalStorageVariable(variable);
 
         if (auto address = referenceVariable in nativeRefLocalAddresses) {
             import quickbite.backends.interpreter.place: Place;
@@ -8136,7 +8050,6 @@ private struct Walker {
         if (variable is null)
             throw new Exception("Unsupported interpreter assignment target.");
 
-        variable = refLocalStorageVariable(variable);
 
         auto current = variable in locals;
         if (current is null)
@@ -8446,7 +8359,17 @@ private struct Walker {
                     ? AggregateValue.elementAt(value, index - lower)
                     : value;
 
-        setLocal(variable, AggregateValue.reconstructArray(variable.type, elements));
+        if (current.isNativeAggregate) {
+            import quickbite.backends.interpreter.place: Place;
+            import quickbite.backends.interpreter.place_value: writeValue;
+
+            auto destination = Place(AggregateValue.native(*current).address,
+                variable.type);
+            foreach (index; lower .. upper)
+                writeValue(destination.index(index), elements[index]);
+        } else {
+            setLocal(variable, AggregateValue.reconstructArray(variable.type, elements));
+        }
         uninitializedLocals.remove(variable);
 
         foreach (index; lower .. upper)
@@ -8732,8 +8655,6 @@ private struct Walker {
         }
         setLocal(variable, current.withAppendedArrayElement(value));
         uninitializedLocals.remove(variable);
-
-        dropArrayCell(variable);
 
         return locals[variable];
     }
@@ -10244,9 +10165,7 @@ private struct Walker {
         }
 
         if (initializer.isNullExp !is null && isAssocArrayType(variable.type)) {
-            import quickbite.backends.interpreter.native_assoc_array: allocateValue;
-
-            auto value = Value.nativeAggregateValue(allocateValue(variable.type));
+            auto value = Value.null_;
             setLocal(variable, value);
             uninitializedLocals.remove(variable);
             return value;
@@ -10265,8 +10184,6 @@ private struct Walker {
             indexInitializer !is null &&
             !isAssocArrayType(indexInitializer.e1.type);
         auto dotInitializer = initializer.isDotVarExp;
-        const isStructFieldAlias = isRefVariable(variable) &&
-            dotInitializer !is null;
         size_t arrayElementAliasIndex;
         Value nativeFieldAliasValue;
         bool hasNativeFieldAlias;
@@ -10447,15 +10364,6 @@ private struct Walker {
     // differently typed views over one NativeArray block so writes through
     // either binding remain visible through the other.
     private Value defaultLocalValue(VarDeclaration variable) {
-        import quickbite.frontend.dmd.types: isAssocArrayType;
-
-        if (isAssocArrayType(variable.type))
-        {
-            import quickbite.backends.interpreter.native_assoc_array: allocateValue;
-
-            return Value.nativeAggregateValue(allocateValue(variable.type));
-        }
-
         return defaultValue(variable);
     }
 

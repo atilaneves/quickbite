@@ -299,7 +299,8 @@ private bool isAliasingLocal(imported!"dmd.declaration".VarDeclaration variable)
 // subtree, in the order the statement tree declares them. Mirrors the
 // statement-tree recursion the interpreter's own walker uses to run a
 // function body (`Walker.runStatement`): compound and compound-declaration
-// blocks, scope statements, if/for/do bodies (`while`/`foreach` are
+// blocks, scope statements, if conditions and branches, for/do bodies
+// (`while`/`foreach` are
 // lowered to `ForStatement` by DMD's own semantic pass, so no separate
 // case is needed for them), try/finally/catch, unrolled loop bodies,
 // labels, switch/case/default, and with-statements.
@@ -370,7 +371,8 @@ private imported!"dmd.declaration".VarDeclaration[] bodyLocals(
         return caseRange.statement is statement ? null : bodyLocals(caseRange.statement);
 
     if (auto if_ = statement.isIfStatement)
-        return bodyLocals(if_.ifbody) ~ bodyLocals(if_.elsebody);
+        return declaredVariables(if_.condition) ~ bodyLocals(if_.ifbody) ~
+            bodyLocals(if_.elsebody);
 
     if (auto with_ = statement.isWithStatement)
         return bodyLocals(with_._body);
@@ -399,4 +401,20 @@ private imported!"dmd.declaration".VarDeclaration[] declaredVariable(
 
     auto variable = declaration.declaration.isVarDeclaration;
     return variable is null ? null : [variable];
+}
+
+
+// Every `VarDeclaration` a `DeclarationExp` introduces within `expression`.
+// DMD lowers `if (T name = value)` to a `CommaExp` whose left operand is the
+// declaration and whose right operand reads the new local.
+private imported!"dmd.declaration".VarDeclaration[] declaredVariables(
+    imported!"dmd.expression".Expression expression,
+) @trusted {
+    if (auto variable = declaredVariable(expression))
+        return variable;
+
+    if (auto comma = expression.isCommaExp)
+        return declaredVariables(comma.e1) ~ declaredVariables(comma.e2);
+
+    return null;
 }

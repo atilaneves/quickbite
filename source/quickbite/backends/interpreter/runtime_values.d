@@ -214,9 +214,7 @@ public imported!"quickbite.backends.interpreter.runtime_value".Value defaultValu
         case Tarray:
             return AggregateValue.reconstructArray(variableType, []);
         case Taarray:
-            import quickbite.backends.interpreter.native_assoc_array: allocateValue;
-
-            return Value.nativeAggregateValue(allocateValue(variableType));
+            return Value.null_;
         case Tvoid:
         case Tint128:
         case Tuns128:

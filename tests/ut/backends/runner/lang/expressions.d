@@ -997,6 +997,33 @@ static foreach (backend; Matrix!()) {
     }
 }
 
+static foreach (backend; Matrix!(
+    Omit!(Bytecode, Because.inexpressible,
+        "bytecode core does not support calls through delegate locals"),
+)) {
+    @("delegate.nestedFunctionReadsCapturedDelegate." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            int seed() {
+                return 3;
+            }
+
+            unittest {
+                int captured = seed();
+                int nested() {
+                    return captured + 1;
+                }
+                int delegate() dg = &nested;
+                int outerRead() {
+                    return dg();
+                }
+                assert(outerRead() == 4);
+            }
+        });
+    }
+}
+
 static foreach (backend; Matrix!()) {
     @("delegate.structMemberCallUsesReceiver." ~ backend.stringof)
     @Tags(backend.stringof)
@@ -3897,6 +3924,36 @@ static foreach (backend; Matrix!()) {
                 parent.child = new Child();
                 parent.child.value = mark(2);
                 assert(parent.child.value == mark(2));
+            }
+        });
+    }
+}
+
+// A condition-declared local owns storage for the whole `if` statement, so a
+// callee's `ref` mutation must still be visible after the call returns.
+static foreach (backend; Matrix!()) {
+    @("ifConditionDeclaration.refMutationPersists." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            int forty1() {
+                return 41;
+            }
+
+            void bump(ref int x) {
+                x += 1;
+            }
+
+            int probe() {
+                if (int v = forty1()) {
+                    bump(v);
+                    return v;
+                }
+                return 0;
+            }
+
+            unittest {
+                assert(probe() == 42);
             }
         });
     }

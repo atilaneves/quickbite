@@ -317,7 +317,7 @@ public bool tryCallNativeClassMember(
 
     if (
         receiverType is null ||
-        !receiver.isPointer && !receiver.isNativeAggregate
+        !receiver.isPointer
     )
         return false;
 
@@ -635,9 +635,11 @@ private final class InterpreterNativeMarshaller: NativeMarshaller {
         import quickbite.backends.interpreter.layout:
             typeByteSize, typeHasPointers;
         import quickbite.backends.interpreter.native_block: NativeBlock;
+        import quickbite.ffi.libffi: ffi_arg;
 
+        const typeSize = typeByteSize(type);
         auto owner = NativeBlock.allocate(
-            typeByteSize(type),
+            typeSize < ffi_arg.sizeof ? ffi_arg.sizeof : typeSize,
             typeHasPointers(type)
                 ? NativeBlock.Scan.conservative
                 : NativeBlock.Scan.no,

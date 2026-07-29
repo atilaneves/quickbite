@@ -2711,6 +2711,31 @@ static foreach (backend; Matrix!(
     }
 }
 
+// A named union initializer can select a member after the first declaration.
+// The selected member, rather than the first member's default bits, must be
+// written to the shared union storage.
+static foreach (backend; Matrix!()) {
+    @("union.namedLaterFieldInitializerWritesSelectedMember." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            union U {
+                float f;
+                int i;
+            }
+
+            int five() {
+                return 5;
+            }
+
+            unittest {
+                U u = { i: five() };
+                assert(u.i == 5);
+            }
+        });
+    }
+}
+
 // SystemLinker (the oracle) zero-initializes a union's whole storage block
 // from its FIRST declared member's own default value, so an untouched
 // sibling scalar reads the first member's bits reinterpreted as its own
@@ -3673,6 +3698,38 @@ static foreach (backend; Matrix!()) {
                 int calls;
                 b.addr(bump(calls));
                 assert(calls == 1);
+            }
+        });
+    }
+}
+
+static foreach (backend; Matrix!(
+    Omit!(Bytecode, Because.inexpressible,
+        "bytecode core does not support postfix increment"),
+)) {
+    @("struct.fixedArrayFieldCompoundAssignmentAndIncrementWriteBack." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct S {
+                int[2] a;
+            }
+
+            int seven() {
+                return 7;
+            }
+
+            int f() {
+                S s;
+                s.a[0] = seven();
+                s.a[0] += seven();
+                s.a[1]++;
+                return s.a[0] + s.a[1];
+            }
+
+            unittest {
+                assert(f() == 15);
             }
         });
     }

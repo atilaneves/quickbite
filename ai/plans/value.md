@@ -681,10 +681,9 @@ bytecode VM.
 
 ### Verification blocker
 
-The full randomized gate currently terminates with `SIGPIPE` in
-`quickbite.backends.native.llvm_jit.writeAll` while its forked JIT child
-writes the result pipe (reproduced with `bin/ut --single --seed 2200402051`).
-An escalated gdb run places the signal in LLVMJit transport, not Interpreter
-native aggregate code. Resume full-gate verification after the LLVMJit child
-exit/reader-lifecycle failure is diagnosed; focused Interpreter and typed
-native-authority tests remain the safe migration feedback path meanwhile.
+The full randomized gate is blocked by a deterministic plain-order Interpreter
+null dereference on an existing test. The previously recorded LLVMJit
+`SIGPIPE` transport failure is no longer the current gate blocker. Resume
+full-gate verification after the Interpreter crash is diagnosed; focused
+Interpreter and typed native-authority tests remain the safe migration
+feedback path meanwhile.
