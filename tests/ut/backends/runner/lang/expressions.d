@@ -4241,10 +4241,7 @@ static foreach (backend; Matrix!()) {
 // element storage authoritative after an element field becomes addressable.
 // Pointer and ref mutations must remain visible through a whole-field copy
 // and a whole-struct argument.
-static foreach (backend; Matrix!(
-    Omit!(Bytecode, Because.unconfirmed,
-        "does not yet support taking the address of a struct array field element"),
-)) {
+static foreach (backend; Matrix!()) {
     @("struct.structSliceFieldReadsAuthoritativeStorage." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {

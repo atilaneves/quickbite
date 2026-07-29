@@ -3495,6 +3495,17 @@ private struct Compiler {
                 return true;
             }
 
+            // A ref local bound to a field within a struct slice field's
+            // element (`ref int r = s.arr[i].field;`): the struct-field
+            // counterpart of the class case above, checked first for the
+            // same reason -- `tryStructField` would otherwise resolve the
+            // element through a throwaway copy.
+            if (auto element = tryStructSliceFieldElementFieldPointer(dot)) {
+                _locals[variable] = element.pointer;
+                _refLocalPointers[variable] = scalarType(element.type);
+                return true;
+            }
+
             if (auto field = tryStructField(dot)) {
                 if (variable.type.toBasetype.ty == TY.Tstruct) {
                     _structLocals[variable] = StructLocal(
@@ -7194,6 +7205,57 @@ private struct Compiler {
         Type type;
     }
 
+    // `s.arr[i].field`'s real runtime address for a field within an element
+    // of a struct's own dynamic-array (slice) field of structs -- the
+    // struct-field counterpart of `tryClassArrayFieldElementFieldPointer`,
+    // needed only for the slice case: a struct's static-array field element
+    // already folds to a real inline frame offset through
+    // `structBaseOffsetOrMaterialise`'s `locateStaticArrayElement` branch
+    // (so `tryStructField` resolves it correctly on its own), but that same
+    // function's dynamic-array branch resolves a slice element through
+    // `loadDynamicArrayElement`'s throwaway copy, aliasing a temporary
+    // instead of the field's real heap storage. `tryPointerToElement`
+    // already derives that real element pointer for `s.arr[i]` alone
+    // (through `dynamicArrayDescriptorOrNull`'s inline-descriptor
+    // struct-field branch); this advances that pointer by the leaf field's
+    // own offset within the element struct. Checked after
+    // `tryClassArrayFieldElementFieldPointer`, which already claims the
+    // class-field case. Null if `dot.e1` is not a dynamic-array-of-structs
+    // element access.
+    private StructArrayFieldElementField* tryStructSliceFieldElementFieldPointer(
+        DotVarExp dot,
+    ) {
+        import dmd.astenums: TY;
+
+        auto field = dot.var.isVarDeclaration;
+        if (field is null)
+            return null;
+
+        auto index = dot.e1.isIndexExp;
+        if (index is null || index.type.toBasetype.ty != TY.Tstruct)
+            return null;
+
+        auto elementPointer = tryPointerToElement(index);
+        if (elementPointer is null)
+            return null;
+
+        const pointer = allocateBytes(cast(uint) size_t.sizeof, size_t.sizeof);
+        _code ~= Instruction(
+            Op.addInt8, pointer, elementPointer.offset,
+            compileSizeConstant(cast(uint) field.offset),
+        );
+        auto result = new StructArrayFieldElementField;
+        *result = StructArrayFieldElementField(pointer, field.type);
+        return result;
+    }
+
+    // A located struct array field element field: its real runtime pointer
+    // and DMD type, returned by `tryStructSliceFieldElementFieldPointer`.
+    private static struct StructArrayFieldElementField {
+        ushort pointer;
+        Type type;
+    }
+
     // `&local` / `&base.field`: the native address of a scalar local's frame
     // slot (or a struct field's inline slot), yielding an `int*`-style pointer
     // operand over the pointed-at element type. Null if the operand is not a
@@ -7377,6 +7439,21 @@ private struct Compiler {
             // first, ahead of `tryStructField`'s otherwise-matching but
             // address-unsound copy-based element read.
             if (auto element = tryClassArrayFieldElementFieldPointer(dot)) {
+                auto result = new Operand;
+                *result = Operand(
+                    element.pointer,
+                    ScalarType.ulong_,
+                    true,
+                    pointerElementScalar(address.type),
+                );
+                return result;
+            }
+            // `&s.arr[i].field`: the struct-field counterpart of the class
+            // case above, checked first for the same reason -- a struct
+            // slice field's element storage has no frame offset for
+            // `tryStructField`'s generic struct-field path to fold into
+            // (only a static-array field's element does).
+            if (auto element = tryStructSliceFieldElementFieldPointer(dot)) {
                 auto result = new Operand;
                 *result = Operand(
                     element.pointer,
