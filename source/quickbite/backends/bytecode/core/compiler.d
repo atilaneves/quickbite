@@ -4977,8 +4977,9 @@ private struct Compiler {
         // (`quickbiteDatasegPoint.x`): materialise the whole block from
         // `_program.moduleData` into a fresh frame slot, the module
         // counterpart of the captured-context branch above; a write through
-        // this field writes the whole block back through `Op.storeModule`
-        // instead of `Op.frameStore`.
+        // this field writes only that field's own bytes back through
+        // `Op.storeModule` (never the whole block, which would clobber any
+        // sibling field written by another statement in between).
         if (auto variable = dot.e1.isVarExp)
             if (auto declaration = variable.var.isVarDeclaration)
                 if (auto moduleVariable = moduleStructVariableOrNull(declaration)) {
@@ -5080,13 +5081,16 @@ private struct Compiler {
             return;
         }
 
-        if (field.writeBackThroughModule)
+        if (field.writeBackThroughModule) {
+            const fieldOffsetInStruct =
+                cast(ushort) (field.offset - field.structOffset);
             _code ~= Instruction(
                 Op.storeModule,
-                field.structOffset,
-                field.moduleOffset,
-                field.structSize,
+                field.offset,
+                cast(ushort) (field.moduleOffset + fieldOffsetInStruct),
+                cast(ushort) staticArraySize(cast(Type) field.type),
             );
+        }
     }
 
     // The inline frame base of any struct-valued expression: a struct lvalue's
@@ -11625,6 +11629,13 @@ private struct Compiler {
                     ))
                         continue;
                 if (layout.isReference[nextArgumentIndex + argumentIndex])
+                    if (emitModuleStructFieldRefArgument(
+                        slot,
+                        (*call.arguments)[argumentIndex],
+                        moduleScalarRefWriteBacks,
+                    ))
+                        continue;
+                if (layout.isReference[nextArgumentIndex + argumentIndex])
                     if (emitConditionalRefArgument(
                         slot,
                         (*call.arguments)[argumentIndex],
@@ -13013,6 +13024,78 @@ private struct Compiler {
         return true;
     }
 
+    // The module-struct counterpart of `emitModuleScalarRefArgument`: a
+    // scalar `ref` argument reached through a module-level struct variable's
+    // own field (`bump(gp.x)`). The field lives at a fixed byte offset from
+    // the struct's own `_program.moduleData` storage, so (mirroring
+    // `emitModuleScalarRefArgument`) its current value is mirrored into a
+    // fresh frame slot for the call and copied back through that same
+    // module offset afterward -- never through `tryStructField`'s whole-block
+    // materialisation, which has no per-argument writeback of its own.
+    private bool emitModuleStructFieldRefArgument(
+        in ushort slot,
+        Expression argument,
+        ref ModuleScalarRefWriteBack[] writeBacks,
+    ) {
+        import dmd.astenums: TY;
+
+        auto dot = argument.isDotVarExp;
+        if (dot is null)
+            return false;
+
+        auto variable = dot.e1.isVarExp;
+        auto declaration =
+            variable is null ? null : variable.var.isVarDeclaration;
+        if (declaration is null)
+            return false;
+
+        auto moduleVariable = moduleStructVariableOrNull(declaration);
+        if (moduleVariable is null)
+            return false;
+
+        auto field = dot.var.isVarDeclaration;
+        if (field is null)
+            return false;
+
+        const ty = field.type.toBasetype.ty;
+        if (ty == TY.Tstruct || ty == TY.Tsarray || ty == TY.Tarray ||
+            ty == TY.Taarray)
+            return false;
+
+        const valueSize = cast(ushort) size(scalarType(field.type));
+        if (valueSize != 1 && valueSize != 4 && valueSize != 8)
+            return false;
+
+        const moduleOffset =
+            cast(ushort) (moduleVariable.offset + field.offset);
+
+        foreach (writeBack; writeBacks)
+            if (writeBack.moduleOffset == moduleOffset) {
+                _code ~= Instruction(
+                    Op.loadConstant,
+                    slot,
+                    constantIndex(writeBack.valueOffset),
+                    cast(ushort) size(ScalarType.uint_),
+                );
+                return true;
+            }
+
+        const valueOffset = allocateBytes(valueSize, valueSize);
+        _code ~= Instruction(
+            Op.loadModule, valueOffset, moduleOffset, valueSize,
+        );
+        _code ~= Instruction(
+            Op.loadConstant,
+            slot,
+            constantIndex(valueOffset),
+            cast(ushort) size(ScalarType.uint_),
+        );
+        writeBacks ~= ModuleScalarRefWriteBack(
+            valueOffset, moduleOffset, valueSize,
+        );
+        return true;
+    }
+
     // A ternary `ref` argument (`setTo(cond ? a : b, ...)`) is a legal D
     // lvalue whose branch is chosen at runtime, so unlike every other
     // composing shape above there is no single compile-time frame offset to
@@ -13739,10 +13822,17 @@ private struct Compiler {
 
         // `append42(buffer.bytes)` / `append42(this.bytes)`: a `ref` to a struct
         // field binds to the field's inline slot (`base + field.offset`), so the
-        // callee's writeback lands in the caller's struct.
+        // callee's writeback lands in the caller's struct. A module-backed
+        // field's slot is a throwaway copy of the whole block instead
+        // (`writeBackThroughModule`) with no per-argument writeback wired
+        // here; decline so an unhandled shape (`emitModuleStructFieldRefArgument`
+        // only covers scalar fields) surfaces as an honest "unsupported ref
+        // argument" instead of silently binding the callee to a copy nothing
+        // ever writes back to.
         if (auto dot = argument.isDotVarExp)
             if (auto field = tryStructField(dot))
-                return &field.offset;
+                if (!field.writeBackThroughModule)
+                    return &field.offset;
 
         // `setTo(arr[1], ...)`: a compile-time-constant index into a static
         // array resolves to the element's own inline frame slot, the same

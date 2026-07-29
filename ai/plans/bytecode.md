@@ -403,10 +403,15 @@ row reaches them:
   declared initializer is absent or an explicit `null`; a non-null module
   array initializer still falls through to "Unsupported variable in bytecode
   core". A module-level struct variable (`ModuleStructVariable`) is supported
-  for the default-initialized case (field access materialises the whole block
-  via `Op.loadModule`/writes it back via `Op.storeModule`, in `tryStructField`/
-  `writeBackStructField`); a non-default struct initializer still falls
-  through to "Unsupported variable in bytecode core". Module-level
+  for the default-initialized case: field access materialises the whole block
+  via `Op.loadModule` but writes back only the touched field's own bytes via
+  `Op.storeModule` (`tryStructField`/`writeBackStructField`), so a sibling
+  field written in between (e.g. by a right-hand-side call) survives; a `ref`
+  argument bound to such a field mirrors just that field into its own fresh
+  slot with its own writeback (`emitModuleStructFieldRefArgument`) rather than
+  reusing the whole-block copy `tryStructField` materialises for plain field
+  access. A non-default struct initializer still falls through to
+  "Unsupported variable in bytecode core". Module-level
   `Tsarray`/`Taarray`/`Tdelegate` variables and pointer/complex-double dataseg
   variables remain entirely unsupported (`moduleScalarVariableOrNull` still
   declines them).

@@ -2280,6 +2280,76 @@ static foreach (backend; Matrix!(
     }
 }
 
+// A `ref` argument bound to a module-level struct's own field
+// (`bump(point.x)`): the generic struct-field `ref`-argument path
+// materialises the whole struct into a throwaway frame copy and would
+// otherwise resolve the argument to an offset inside that copy with no
+// writeback of its own, so the callee's write through the `ref` parameter
+// needs a dedicated mirror-and-writeback path carrying the field's own
+// module offset, exactly as a bare module scalar's `ref` argument already
+// gets. `Ctfe` cannot read or write dataseg storage at all (compile-time
+// execution has no such storage to access).
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.inexpressible,
+        "CTFE cannot read or write dataseg (__gshared/static) storage"),
+)) {
+    @("dataseg.moduleStructFieldRefArgumentWritesThroughToModule." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct Point { int x; int y; }
+
+            __gshared Point quickbiteDatasegRefArgumentPoint;
+
+            void bump(ref int v) {
+                v = v + 1;
+            }
+
+            unittest {
+                quickbiteDatasegRefArgumentPoint.x = 1;
+                bump(quickbiteDatasegRefArgumentPoint.x);
+                assert(quickbiteDatasegRefArgumentPoint.x == 2);
+            }
+        });
+    }
+}
+
+// A module struct field assignment whose right-hand side call itself
+// writes a sibling field of the same struct: the field being assigned is
+// read back from a fresh whole-block copy of the struct, so writing that
+// assignment back must touch only the assigned field's own bytes --
+// writing the whole stale block back instead would silently overwrite
+// whatever the right-hand side call wrote to the sibling field in between.
+// `Ctfe` cannot read or write dataseg storage at all (compile-time
+// execution has no such storage to access).
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.inexpressible,
+        "CTFE cannot read or write dataseg (__gshared/static) storage"),
+)) {
+    @("dataseg.moduleStructFieldWriteBackDoesNotClobberSiblingField." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct Point { int x; int y; }
+
+            __gshared Point quickbiteDatasegSiblingPoint;
+
+            int setYAndReturnSeven() {
+                quickbiteDatasegSiblingPoint.y = 5;
+                return 7;
+            }
+
+            unittest {
+                quickbiteDatasegSiblingPoint.x = setYAndReturnSeven();
+                assert(quickbiteDatasegSiblingPoint.x == 7);
+                assert(quickbiteDatasegSiblingPoint.y == 5);
+            }
+        });
+    }
+}
+
 // A heap struct's own constructor runs on a CHILD `Walker` (`impl.d`'s
 // `runNewStructPointerExpression`), and a dataseg write it performs lands
 // in the ONE shared `module_table.ModuleTable` block every frame resolves
