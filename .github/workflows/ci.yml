@@ -21,6 +21,19 @@ jobs:
         with:
           compiler: ${{ matrix.dc }}
 
+      - name: Install LLVM
+        if: matrix.os == 'ubuntu-24.04'
+        uses: KyleMayes/install-llvm-action@ebc0426251bc40c7cd31162802432c68818ab8f0 # v2.0.9
+        with:
+          version: 21.1.8
+          directory: ${{ runner.temp }}/llvm
+
+      - name: Configure LLVM library paths
+        if: matrix.os == 'ubuntu-24.04'
+        run: |
+          echo "LIBRARY_PATH=$LLVM_PATH/lib${LIBRARY_PATH:+:$LIBRARY_PATH}" >> "$GITHUB_ENV"
+          echo "LD_LIBRARY_PATH=$LLVM_PATH/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}" >> "$GITHUB_ENV"
+
       - name: Run tests
         if: matrix.os != 'ubuntu-24.04'
         run: dub test -q -- -s

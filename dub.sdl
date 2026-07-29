@@ -84,7 +84,6 @@ configuration "unittest-cov" {
     // dmd:frontend and :dmd-backend-vendor both define the same DMD backend
     // symbols; --allow-multiple-definition lets the linker accept either copy.
     lflags "--allow-multiple-definition" platform="linux"
-    lflags "-L/usr/lib/llvm-18/lib" platform="linux"
     // LLVMJit links the ORC JIT in-process. A bare libLLVM.so symlink is
     // installed, so plain -lLLVM resolves the versioned runtime.
     libs "LLVM" platform="linux"
