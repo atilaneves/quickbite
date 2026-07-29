@@ -7740,6 +7740,45 @@ static foreach (backend; Matrix!()) {
     }
 }
 
+// A `ref` argument dereferencing a call-returned pointer whose pointee width
+// `emitPointerDereferenceRefArgument` declines to commit to directly (it only
+// handles 1/4/8-byte pointees; a `short*` pointee is 2 bytes) used to leave
+// the pointer expression's already-emitted bytecode in the stream and then
+// let `referenceOffsetOrNull`'s fallback recompile that same expression from
+// scratch, so a side-effecting pointer expression (a call) ran twice instead
+// of once. `Ctfe` cannot read or write dataseg storage at all; `Interpreter`
+// does not support dereferencing a call-returned pointer as a `ref` argument.
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.inexpressible,
+        "CTFE cannot read or write dataseg (__gshared/static) storage"),
+    Omit!(Interpreter, Because.unconfirmed),
+)) {
+    @("pointer.refArgumentThroughDeclinedPointerWidthCallsPointerExpressionOnce." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            __gshared int quickbiteDeclinedWidthCallCount;
+            __gshared short quickbiteDeclinedWidthValue = 7;
+
+            short* next() {
+                quickbiteDeclinedWidthCallCount =
+                    quickbiteDeclinedWidthCallCount + 1;
+                return &quickbiteDeclinedWidthValue;
+            }
+
+            void bump(ref short r) {
+                r = cast(short)(r + 1);
+            }
+
+            unittest {
+                bump(*next());
+                assert(quickbiteDeclinedWidthCallCount == 1);
+            }
+        });
+    }
+}
+
 // A `string` is just an `immutable(char)[]`, so a `string*` dereference must
 // read the same 16-byte {ptr, length} descriptor a `T[]*` dereference (e.g.
 // `int[]*`) already does: `.length` and whole-array equality through the

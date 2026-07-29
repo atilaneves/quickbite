@@ -13432,14 +13432,19 @@ private struct Compiler {
         if (deref.e1.isSymOffExp !is null)
             return false;
 
-        const pointer = compileExpression(deref.e1);
-        if (!pointer.isPointer)
+        // Decide from `deref.e1`'s static type, before emitting any of its
+        // bytecode: a decline here must leave no instructions behind for the
+        // `referenceOffsetOrNull` fallback to duplicate by recompiling
+        // `deref.e1` from scratch (that would evaluate it, and any side
+        // effect it has, twice).
+        if (!isPointerType(deref.e1.type))
             return false;
 
-        const valueSize = cast(ushort) size(pointer.pointerElement);
+        const valueSize = cast(ushort) size(pointerElementScalar(deref.e1.type));
         if (valueSize != 1 && valueSize != 4 && valueSize != 8)
             return false;
 
+        const pointer = compileExpression(deref.e1);
         const addressOffset = pointer.offset;
         foreach (writeBack; writeBacks)
             if (writeBack.addressOffset == addressOffset &&
