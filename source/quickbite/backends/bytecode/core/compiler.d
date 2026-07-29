@@ -11354,6 +11354,12 @@ private struct Compiler {
                         structPointerFieldRefWriteBacks,
                     ))
                         continue;
+                if (layout.isReference[nextArgumentIndex + argumentIndex])
+                    if (emitConditionalRefArgument(
+                        slot,
+                        (*call.arguments)[argumentIndex],
+                    ))
+                        continue;
                 emitCallArgument(
                     slot,
                     layout.isReference[nextArgumentIndex + argumentIndex],
@@ -12447,6 +12453,16 @@ private struct Compiler {
         if (index is null)
             return false;
 
+        // A compile-time-constant index into a static array (`arr[1]`)
+        // resolves to the element's own inline frame slot in `referenceOffset`
+        // instead: `dynamicArrayDescriptorOrNull` below would still answer a
+        // descriptor for it (`staticArrayOffsetOf`'s whole-array-viewed-as-
+        // dynamic materialisation), but that descriptor is a fresh copy of
+        // the array's bytes, not the array's own storage, so writing back
+        // through it would never reach the caller's element.
+        if (indexesStaticArray(index.e1))
+            return false;
+
         auto descriptor = dynamicArrayDescriptorOrNull(index.e1);
         if (descriptor is null || descriptor.elementType == ScalarType.void_)
             return false;
@@ -12576,6 +12592,63 @@ private struct Compiler {
             valueOffset, pointerOffset, valueSize,
         );
         return true;
+    }
+
+    // A ternary `ref` argument (`setTo(cond ? a : b, ...)`) is a legal D
+    // lvalue whose branch is chosen at runtime, so unlike every other
+    // composing shape above there is no single compile-time frame offset to
+    // bind. DMD's `keepLvalue` semantic for a `ref`-bound conditional yields
+    // `*(cond ? &a : &b)`, each branch folded to a `SymOffExp` by the same
+    // `optimize.d` pass `referenceOffsetOrNull`'s `*&p` case documents; a bare
+    // `cond ? a : b` is accepted too for any lvalue shape that reaches here
+    // unwrapped. Both branches must already resolve to a real caller-frame
+    // address; the ref slot is then filled with whichever branch's address
+    // the runtime condition selects.
+    private bool emitConditionalRefArgument(
+        in ushort slot,
+        Expression argument,
+    ) {
+        auto deref = argument.isPtrExp;
+        auto conditional = deref is null
+            ? argument.isCondExp
+            : deref.e1.isCondExp;
+        if (conditional is null)
+            return false;
+
+        auto trueOffset = conditionalBranchOffsetOrNull(conditional.e1);
+        auto falseOffset = conditionalBranchOffsetOrNull(conditional.e2);
+        if (trueOffset is null || falseOffset is null)
+            return false;
+
+        const condition = compileBoolCondition(conditional.econd);
+        const falseJump = emitJumpIfFalse(condition);
+        _code ~= Instruction(
+            Op.loadConstant,
+            slot,
+            constantIndex(*trueOffset),
+            cast(ushort) size(ScalarType.uint_),
+        );
+        const endJump = emitJump;
+        patchJump(falseJump);
+        _code ~= Instruction(
+            Op.loadConstant,
+            slot,
+            constantIndex(*falseOffset),
+            cast(ushort) size(ScalarType.uint_),
+        );
+        patchJump(endJump);
+        return true;
+    }
+
+    // One branch of a `ref`-bound conditional's `*(cond ? &a : &b)` shape:
+    // unwrap the branch's own address-of before falling back to
+    // `referenceOffsetOrNull` for the underlying lvalue.
+    private ushort* conditionalBranchOffsetOrNull(Expression branch) {
+        if (auto symOff = branch.isSymOffExp)
+            return symOffsetOrNull(symOff);
+        if (auto address = branch.isAddrExp)
+            return referenceOffsetOrNull(address.e1);
+        return referenceOffsetOrNull(branch);
     }
 
     // A `ref` argument bound to a scalar class field (`verify(c.value, ...)`):
@@ -13082,29 +13155,51 @@ private struct Compiler {
     private ushort referenceOffset(Expression argument) {
         import std.conv: text;
 
+        if (auto offset = referenceOffsetOrNull(argument))
+            return *offset;
+
+        throw new Exception(text(
+            "Unsupported ref argument in bytecode core: ",
+            expressionChars(argument),
+        ));
+    }
+
+    // The non-throwing counterpart of `referenceOffset`, for callers (a
+    // conditional `ref` argument's two branches) that need to try a shape and
+    // fall back rather than abort the whole compile.
+    private ushort* referenceOffsetOrNull(Expression argument) {
         if ((argument.isThisExp !is null || argument.isSuperExp !is null) &&
             _hasThis)
-            return _thisLocal.offset;
+            return &_thisLocal.offset;
 
         if (auto variable = argument.isVarExp)
             if (auto declaration = variable.var.isVarDeclaration) {
                 if (auto existing = declaration in _locals)
-                    return *existing;
+                    return existing;
                 if (auto existing = declaration in _dynamicArrayLocals)
-                    return existing.offset;
+                    return &existing.offset;
                 if (auto existing = declaration in _staticArrayLocals)
-                    return *existing;
+                    return existing;
             }
 
         if (auto structOffset = structBaseOffsetOrNull(argument))
-            return *structOffset;
+            return structOffset;
 
         // `append42(buffer.bytes)` / `append42(this.bytes)`: a `ref` to a struct
         // field binds to the field's inline slot (`base + field.offset`), so the
         // callee's writeback lands in the caller's struct.
         if (auto dot = argument.isDotVarExp)
             if (auto field = tryStructField(dot))
-                return field.offset;
+                return &field.offset;
+
+        // `setTo(arr[1], ...)`: a compile-time-constant index into a static
+        // array resolves to the element's own inline frame slot, the same
+        // authority `compileStaticArrayElementAssign` writes through, so the
+        // callee's writeback lands on the actual element rather than a
+        // discarded copy.
+        if (auto index = argument.isIndexExp)
+            if (auto element = tryStaticArrayElement(index))
+                return &element.offset;
 
         if (auto deref = argument.isPtrExp) {
             // `*&p` / `*&buf[2]`: for a `ref` argument (`keepLvalue`), DMD's
@@ -13116,27 +13211,40 @@ private struct Compiler {
             // loading through it (the fallback below) would instead bind to
             // a fresh copy of whatever that storage currently holds.
             if (auto symOff = deref.e1.isSymOffExp)
-                if (auto declaration = symOff.var.isVarDeclaration) {
-                    if (auto existing = declaration in _locals)
-                        return cast(ushort) (*existing + symOff.offset);
-                    if (auto existing = declaration in _dynamicArrayLocals)
-                        return cast(ushort) (existing.offset + symOff.offset);
-                    if (auto existing = declaration in _staticArrayLocals)
-                        return cast(ushort) (*existing + symOff.offset);
-                    if (auto existing = declaration in _structLocals)
-                        return cast(ushort) (existing.offset + symOff.offset);
-                }
+                if (auto offset = symOffsetOrNull(symOff))
+                    return offset;
 
             const pointer = compileExpression(deref.e1);
             if (pointer.isPointer)
-                return loadThroughPointer(pointer, compileSizeConstant(0))
-                    .offset;
+                return new ushort(
+                    loadThroughPointer(pointer, compileSizeConstant(0))
+                        .offset);
         }
 
-        throw new Exception(text(
-            "Unsupported ref argument in bytecode core: ",
-            expressionChars(argument),
-        ));
+        return null;
+    }
+
+    // A `SymOffExp` (a variable's address plus a constant byte offset) folded
+    // by DMD's `optimize.d` from an explicit `&expr`: resolve it back to the
+    // real frame slot it names, across every local storage kind, rather than
+    // treating it as an opaque pointer value.
+    private ushort* symOffsetOrNull(SymOffExp symOff) {
+        auto declaration = symOff.var.isVarDeclaration;
+        if (declaration is null)
+            return null;
+
+        if (auto existing = declaration in _locals)
+            return new ushort(cast(ushort) (*existing + symOff.offset));
+        if (auto existing = declaration in _dynamicArrayLocals)
+            return new ushort(
+                cast(ushort) (existing.offset + symOff.offset));
+        if (auto existing = declaration in _staticArrayLocals)
+            return new ushort(cast(ushort) (*existing + symOff.offset));
+        if (auto existing = declaration in _structLocals)
+            return new ushort(
+                cast(ushort) (existing.offset + symOff.offset));
+
+        return null;
     }
 
     // Recognise std.math builtins via DMD's own classification and emit a VM

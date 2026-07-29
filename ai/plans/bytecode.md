@@ -435,6 +435,21 @@ store instruction sequence `core.atomic` emits, or recognise `atomicOp`/
 lower them to dedicated VM atomic ops instead of compiling the inline asm
 body.
 
+`refArgument.datasegVariableArgument.Bytecode`
+(`tests/ut/backends/runner/lang/structs.d`) stays `Omit!(Bytecode,
+Because.refusal, "Unsupported ref argument in bytecode core: counter")`: a
+`__gshared`/`static` module variable passed as a `ref` argument. Direct reads
+and writes of such a variable already resolve through
+`moduleScalarVariableOrNull`, but its `ModuleScalarVariable.offset` addresses
+`_program.moduleData`, a different memory region than the `ushort` frame
+offsets `referenceOffset`/the ref-slot machinery pass around, so it cannot be
+handed to a callee as one of those offsets directly. The precedented fix is
+the same mirror-into-a-fresh-frame-slot-then-writeback pattern
+`emitStructPointerRefArgument`/`emitClassFieldRefArgument` already use for
+other storage that has no frame offset of its own: a new
+`emitModuleScalarRefArgument` mirrors the module scalar into a fresh slot
+before the call and writes the slot back to `_program.moduleData` afterward.
+
 ### TDD and handoff discipline
 
 - Promote one named existing oracle-backed row, or one tightly related family,

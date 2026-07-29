@@ -1947,13 +1947,8 @@ static foreach (backend; Matrix!(
 // `constantIndex` only accepts DMD's own already-folded integer constant,
 // never a runtime-evaluated one, to avoid evaluating a side-effecting
 // index a second time) composes through `lvalue_place.placeOfLvalue`'s
-// existing `IndexExp` shape. `Bytecode` answers a wrong value rather than
-// refusing, pinned below.
-static foreach (backend; Matrix!(
-    Omit!(Bytecode, Because.diverges,
-        "a write through a `ref` argument written `arr[1]` never reaches " ~
-        "element 1"),
-)) {
+// existing `IndexExp` shape.
+static foreach (backend; Matrix!()) {
     @("refArgument.indexedElementArgumentComposesReferenceSlot." ~
         backend.stringof)
     @Tags(backend.stringof)
@@ -1971,31 +1966,6 @@ static foreach (backend; Matrix!(
                 assert(arr[2] == 3);
             }
         });
-    }
-}
-
-// The `Because.diverges` pin the fixture above owes: Bytecode's own actual
-// answer, hand-listed because no `SystemLinker`-oracle expectation applies
-// to it. Element 1 still holds its initializer after the write, while the
-// elements either side of it are untouched.
-static foreach (backend; AliasSeq!(Bytecode)) {
-    @("refArgument.indexedElementArgumentLeavesTheElementUnwritten." ~
-        backend.stringof)
-    @Tags(backend.stringof)
-    unittest {
-        runBackendSourceFixtureTests!backend(q{
-            void setTo(ref int x, int value) {
-                x = value;
-            }
-
-            unittest {
-                int[3] arr = [1, 2, 3];
-                setTo(arr[1], 99);
-                assert(arr[0] == 1);
-                assert(arr[1] == 99);
-                assert(arr[2] == 3);
-            }
-        }).shouldThrowWithMessage("2 != 99");
     }
 }
 
@@ -2028,13 +1998,8 @@ static foreach (backend; Matrix!()) {
 // than guesses"); `impl.d`'s `bindReferenceSlot` must decline silently --
 // leaving the reference slot unfilled -- rather than propagate that
 // throw, and boxed authority (unaffected either way) must still produce
-// the correct, oracle-matching result. `Bytecode` answers a wrong value
-// rather than refusing, pinned below.
-static foreach (backend; Matrix!(
-    Omit!(Bytecode, Because.diverges,
-        "a write through a `ref` argument written `cond ? a : b` never " ~
-        "reaches `a`"),
-)) {
+// the correct, oracle-matching result.
+static foreach (backend; Matrix!()) {
     @("refArgument.nonComposingShapeArgumentDeclinesSilently." ~
         backend.stringof)
     @Tags(backend.stringof)
@@ -2053,31 +2018,6 @@ static foreach (backend; Matrix!(
                 assert(b == 2);
             }
         });
-    }
-}
-
-// The `Because.diverges` pin the fixture above owes: Bytecode's own actual
-// answer, hand-listed because no `SystemLinker`-oracle expectation applies
-// to it. `a` still holds its initializer after the call.
-static foreach (backend; AliasSeq!(Bytecode)) {
-    @("refArgument.nonComposingShapeArgumentLeavesTheTargetUnwritten." ~
-        backend.stringof)
-    @Tags(backend.stringof)
-    unittest {
-        runBackendSourceFixtureTests!backend(q{
-            void setTo(ref int x, int value) {
-                x = value;
-            }
-
-            unittest {
-                int a = 1;
-                int b = 2;
-                bool cond = true;
-                setTo(cond ? a : b, 55);
-                assert(a == 55);
-                assert(b == 2);
-            }
-        }).shouldThrowWithMessage("1 != 55");
     }
 }
 
