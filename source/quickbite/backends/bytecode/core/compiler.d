@@ -3791,7 +3791,6 @@ private struct Compiler {
     // initialization (`source[] = 0`) emits nothing; a string literal or a
     // copy from another static array copies the bytes into the inline slot.
     private void compileStaticArrayDeclaration(VarDeclaration variable) {
-        import dmd.astenums: TY;
         import std.conv: text;
 
         const totalSize = cast(uint) staticArraySize(variable.type);
@@ -3836,11 +3835,35 @@ private struct Compiler {
 
         auto source = initializerExpression(initializer.exp);
 
+        if (compileStaticArrayValueInto(offset, variable.type, source))
+            return;
+
+        throw new Exception(text(
+            "Unsupported static array initializer in bytecode core: ",
+            declarationChars(variable),
+        ));
+    }
+
+    // Block-copies `source`'s value into the `staticArraySize(type)` bytes of
+    // static-array storage at `offset`, or returns `false` if `source` is not
+    // a recognized static-array value form. Shared by
+    // `compileStaticArrayDeclaration`'s initializer handling and whole-value
+    // static-array assignment (`arr = rhs;`), which denote the same value
+    // forms.
+    private bool compileStaticArrayValueInto(
+        ushort offset,
+        Type type,
+        Expression source,
+    ) {
+        import dmd.astenums: TY;
+
+        const totalSize = cast(uint) staticArraySize(type);
+
         // `char[N] c = "..."`: copy the literal bytes directly into the inline
         // slot rather than building a slice descriptor.
         if (auto string_ = stringLiteralOf(source)) {
             loadStaticString(offset, totalSize, string_);
-            return;
+            return true;
         }
 
         // `T[N] dest = src`: a value-type block copy of all N*sizeof(T) bytes
@@ -3852,7 +3875,7 @@ private struct Compiler {
                 *sourceOffset,
                 cast(ushort) totalSize,
             );
-            return;
+            return true;
         }
 
         // `T[N] dest = c.arr`: the class-field counterpart of the frame-to-
@@ -3872,12 +3895,12 @@ private struct Compiler {
                     classFieldAddress(*classField),
                     compileSizeConstant(0),
                 );
-                return;
+                return true;
             }
 
         if (auto literal = arrayLiteralOf(source)) {
-            compileStaticArrayLiteral(offset, variable.type, literal);
-            return;
+            compileStaticArrayLiteral(offset, type, literal);
+            return true;
         }
 
         if (source.type.toBasetype.ty == TY.Tsarray) {
@@ -3888,18 +3911,15 @@ private struct Compiler {
                 value.offset,
                 cast(ushort) totalSize,
             );
-            return;
+            return true;
         }
 
         // `T[N] dest = src` for an element type with a postblit lowers to a
         // `_d_arrayctor` call: block-copy each element, then run its postblit.
-        if (compileArrayConstructor(offset, variable.type, source))
-            return;
+        if (compileArrayConstructor(offset, type, source))
+            return true;
 
-        throw new Exception(text(
-            "Unsupported static array initializer in bytecode core: ",
-            declarationChars(variable),
-        ));
+        return false;
     }
 
     // A vector local is represented as the same inline bytes as its underlying
@@ -8626,6 +8646,18 @@ private struct Compiler {
             if (auto store =
                     tryClassStaticArrayFieldElementAssign(index, assign.e2))
                 return *store;
+
+        // `arr = rhs;` for a whole static-array-typed local -- including a
+        // ref local aliased to one (`staticArrayOffsetOf` resolves both the
+        // same way, per `_staticArrayLocals`): block-copy the new value into
+        // the local's own frame storage rather than rebinding it. This is
+        // the assignment counterpart of `compileStaticArrayDeclaration`'s
+        // initializer handling.
+        if (assign.e1.isVarExp !is null)
+            if (auto offset = staticArrayOffsetOf(assign.e1))
+                if (compileStaticArrayValueInto(
+                        *offset, assign.e1.type, assign.e2))
+                    return Operand(*offset, ScalarType.void_);
 
         // `matrix[] = [...]` broadcasts a one-dimensional row literal to each
         // row of a multidimensional static array in place.

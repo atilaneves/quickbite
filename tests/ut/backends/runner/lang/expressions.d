@@ -4429,9 +4429,11 @@ static foreach (backend; Matrix!(
     Omit!(Ctfe, Because.refusal,
         "DMD CTFE refuses the nested static-array element pointer cast"),
     Omit!(Bytecode, Because.unconfirmed,
-        "blocked on whole-value assignment through a static-array VarExp " ~
-            "target (`arr = literal;`), unrelated to ref-local aliasing: " ~
-            "reproduces identically for a plain non-ref static array"),
+        "blocked on static-array-vs-array-literal `==` comparison, " ~
+            "unrelated to ref-local aliasing or assignment: whole-value " ~
+            "static-array-local assignment itself is supported now, but " ~
+            "`source == [[...], [...]]` reproduces the same cast gap " ~
+            "blocking pointer.staticArrayRefLocalElementUsesSourceStorage"),
 )) {
     @("staticArray.refLocalAssignmentMutatesSource." ~ backend.stringof)
     @Tags(backend.stringof)
