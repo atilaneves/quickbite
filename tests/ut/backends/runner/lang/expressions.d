@@ -3962,10 +3962,7 @@ static foreach (backend; Matrix!()) {
 // Two ref class parameters bound from the same plain variable denote the same
 // reference slot, so taking either parameter's address must produce equal
 // pointers.
-static foreach (backend; Matrix!(
-    Omit!(Bytecode, Because.unconfirmed,
-        "does not yet preserve repeated ref class-argument address identity"),
-)) {
+static foreach (backend; Matrix!()) {
     @("class.repeatedRefArgumentPreservesAddressIdentity." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -3989,10 +3986,7 @@ static foreach (backend; Matrix!(
 // Two ref parameters bound from the same direct struct field denote one
 // storage location, so taking either parameter's address must produce equal
 // pointers even though the argument is not a plain variable.
-static foreach (backend; Matrix!(
-    Omit!(Bytecode, Because.unconfirmed,
-        "does not yet preserve repeated struct-field ref-argument identity"),
-)) {
+static foreach (backend; Matrix!()) {
     @("structField.repeatedRefArgumentPreservesAddressIdentity." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -4018,10 +4012,7 @@ static foreach (backend; Matrix!(
 
 // Direct fields reached through a source struct and its plain ref alias denote
 // one storage location when passed by ref.
-static foreach (backend; Matrix!(
-    Omit!(Bytecode, Because.unconfirmed,
-        "does not yet preserve aliased struct-field ref-argument identity"),
-)) {
+static foreach (backend; Matrix!()) {
     @("structField.aliasedRefArgumentsPreserveAddressIdentity." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -4048,10 +4039,7 @@ static foreach (backend; Matrix!(
 
 // Two ref parameters bound from the same direct class field denote one
 // storage location, just like the corresponding direct struct-field case.
-static foreach (backend; Matrix!(
-    Omit!(Bytecode, Because.unconfirmed,
-        "does not yet preserve repeated class-field ref-argument identity"),
-)) {
+static foreach (backend; Matrix!()) {
     @("classField.repeatedRefArgumentPreservesAddressIdentity." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -4265,10 +4253,7 @@ static foreach (backend; Matrix!()) {
 // authoritative after an element field becomes addressable. Pointer and ref
 // mutations must both be visible through a whole-field copy and a whole-object
 // argument.
-static foreach (backend; Matrix!(
-    Omit!(Bytecode, Because.unconfirmed,
-        "does not yet support taking the address of a class array field element"),
-)) {
+static foreach (backend; Matrix!()) {
     @("class.structSliceFieldReadsAuthoritativeStorage." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -4304,10 +4289,7 @@ static foreach (backend; Matrix!(
 // A class static-array field whose elements are structs keeps its inline
 // element storage authoritative after an element field becomes addressable.
 // The mutation must remain visible through whole-field and whole-object reads.
-static foreach (backend; Matrix!(
-    Omit!(Bytecode, Because.unconfirmed,
-        "does not yet support taking the address of a class array field element"),
-)) {
+static foreach (backend; Matrix!()) {
     @("class.structStaticArrayFieldReadsAuthoritativeStorage." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -4382,10 +4364,7 @@ static foreach (backend; Matrix!()) {
 // element storage authoritative after an element field becomes addressable.
 // Pointer and ref mutations must remain visible through a whole-field copy
 // and a whole-struct argument.
-static foreach (backend; Matrix!(
-    Omit!(Bytecode, Because.unconfirmed,
-        "does not yet support taking the address of a struct array field element"),
-)) {
+static foreach (backend; Matrix!()) {
     @("struct.structSliceFieldReadsAuthoritativeStorage." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -4424,10 +4403,7 @@ static foreach (backend; Matrix!(
 // A struct cell promoted through one alias is authoritative for the whole
 // value reached through another alias. SystemLinker therefore observes a
 // pointer write when the aliased struct is passed onward as a value.
-static foreach (backend; Matrix!(
-    Omit!(Bytecode, Because.unconfirmed,
-        "does not yet support taking the address of a struct field"),
-)) {
+static foreach (backend; Matrix!()) {
     @("struct.wholeValueAliasReadsAuthoritativeCell." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -4457,10 +4433,7 @@ static foreach (backend; Matrix!(
 
 // A plain ref struct local denotes the source's storage, including its
 // address. SystemLinker is the oracle for the shared address identity.
-static foreach (backend; Matrix!(
-    Omit!(Bytecode, Because.unconfirmed,
-        "does not yet preserve ref struct-local address identity"),
-)) {
+static foreach (backend; Matrix!()) {
     @("pointer.structRefLocalPreservesAddressIdentity." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -4484,8 +4457,6 @@ static foreach (backend; Matrix!(
 static foreach (backend; Matrix!(
     Omit!(Ctfe, Because.refusal,
         "DMD CTFE refuses to compare static-array local addresses"),
-    Omit!(Bytecode, Because.unconfirmed,
-        "does not yet preserve ref static-array-local address identity"),
 )) {
     @("pointer.staticArrayRefLocalPreservesAddressIdentity." ~ backend.stringof)
     @Tags(backend.stringof)
@@ -4503,10 +4474,7 @@ static foreach (backend; Matrix!(
 
 // Element assignment through a ref static-array local writes the source's
 // promoted native storage rather than an independent boxed snapshot.
-static foreach (backend; Matrix!(
-    Omit!(Bytecode, Because.unconfirmed,
-        "does not yet preserve ref static-array-local element aliasing"),
-)) {
+static foreach (backend; Matrix!()) {
     @("staticArray.refLocalElementWriteMutatesSource." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -4529,10 +4497,7 @@ static foreach (backend; Matrix!(
 
 // Taking an element address through a ref static-array local reaches the
 // source's storage rather than promoting an independent alias snapshot.
-static foreach (backend; Matrix!(
-    Omit!(Bytecode, Because.unconfirmed,
-        "does not yet preserve ref static-array-local element addresses"),
-)) {
+static foreach (backend; Matrix!()) {
     @("pointer.staticArrayRefLocalElementUsesSourceStorage." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -4563,8 +4528,9 @@ static foreach (backend; Matrix!(
 static foreach (backend; Matrix!(
     Omit!(Ctfe, Because.refusal,
         "DMD CTFE refuses the nested static-array element pointer cast"),
-    Omit!(Bytecode, Because.unconfirmed,
-        "does not yet preserve ref static-array-local assignment aliasing"),
+    Omit!(Bytecode, Because.refusal,
+        "the nested `int[2][2]` `==` comparison is declined (mixed " ~
+            "static/dynamic nested-array shapes are unsupported)"),
 )) {
     @("staticArray.refLocalAssignmentMutatesSource." ~ backend.stringof)
     @Tags(backend.stringof)
@@ -4591,8 +4557,6 @@ static foreach (backend; Matrix!(
 static foreach (backend; Matrix!(
     Omit!(Ctfe, Because.refusal,
         "DMD CTFE refuses to compare static-array parameter addresses"),
-    Omit!(Bytecode, Because.unconfirmed,
-        "does not yet preserve repeated ref static-array-argument identity"),
 )) {
     @("staticArray.repeatedRefArgumentPreservesAddressIdentity." ~ backend.stringof)
     @Tags(backend.stringof)
@@ -4616,10 +4580,7 @@ static foreach (backend; Matrix!(
 // A plain ref class local denotes the source reference variable's storage,
 // including its address. SystemLinker is the oracle for the shared address
 // identity.
-static foreach (backend; Matrix!(
-    Omit!(Bytecode, Because.unconfirmed,
-        "does not yet preserve ref class-local address identity"),
-)) {
+static foreach (backend; Matrix!()) {
     @("pointer.classRefLocalPreservesAddressIdentity." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -4641,10 +4602,7 @@ static foreach (backend; Matrix!(
 
 // Assignment through a ref class local rebinds the source reference variable;
 // the alias does not acquire an independent class-reference slot.
-static foreach (backend; Matrix!(
-    Omit!(Bytecode, Because.unconfirmed,
-        "does not yet preserve ref class-local assignment aliasing"),
-)) {
+static foreach (backend; Matrix!()) {
     @("class.refLocalAssignmentRebindsSource." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -6060,10 +6018,7 @@ static foreach (backend; Matrix!()) {
 
 // A ref local bound to a direct scalar class field denotes the same storage
 // as an earlier pointer to that field. SystemLinker is the oracle.
-static foreach (backend; Matrix!(
-    Omit!(Bytecode, Because.unconfirmed,
-        "does not yet preserve class-field ref-local identity"),
-)) {
+static foreach (backend; Matrix!()) {
     @("pointer.classFieldRefLocalPreservesAddressIdentity." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -6734,10 +6689,7 @@ static foreach (backend; Matrix!()) {
 // read, not only for an indexed element read. Passing the array onward after
 // a pointer write must therefore reconstruct its static-array elements from
 // the cell instead of copying the stale boxed mirror into the callee.
-static foreach (backend; Matrix!(
-    Omit!(Bytecode, Because.unconfirmed,
-        "does not yet support storing a whole static array through a pointer"),
-)) {
+static foreach (backend; Matrix!()) {
     @("array.wholeStaticArrayArgumentReadsAuthoritativeCell." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -7008,12 +6960,8 @@ static foreach (backend; Matrix!()) {
 // was taken stays invisible through it -- the same snapshot gap the
 // struct-static-array-field slice closed for a struct receiver. SystemLinker's
 // `p` aliases `c`'s real storage, so the direct write is visible through
-// `*p`. Other backends omitted per the omit-don't-pin convention
-// (unconfirmed there).
-static foreach (backend; Matrix!(
-    Omit!(Bytecode, Because.unconfirmed,
-        "throws its own unrelated \"Unsupported assignment in bytecode core: c.arr[0] = one()\" for this shape, not a wrong value"),
-)) {
+// `*p`.
+static foreach (backend; Matrix!()) {
     @("pointer.classStaticArrayFieldElementWrittenDirectlyIsVisibleThroughEarlierPointer." ~
         backend.stringof)
     @Tags(backend.stringof)
@@ -7057,12 +7005,7 @@ static foreach (backend; Matrix!(
 // (not merely missing pointer-aliasing), so a plain (pointer-free)
 // `foreach (ref e; c.arr) e = ...;` already threw. SystemLinker's `p`
 // aliases `c`'s real storage, so the write is visible through `*p`.
-// `Ctfe`/`LLVMJit` omitted per the omit-don't-pin convention (unconfirmed
-// there), matching the struct sibling fixture's own backend set.
-static foreach (backend; Matrix!(
-    Omit!(Bytecode, Because.unconfirmed,
-        "throws its own unrelated \"Unsupported assignment in bytecode core: c.arr[0] = one()\" for this shape, not a wrong value"),
-)) {
+static foreach (backend; Matrix!()) {
     @("pointer.classStaticArrayFieldElementWrittenByForeachRefIsVisibleThroughEarlierPointer." ~
         backend.stringof)
     @Tags(backend.stringof)
@@ -7097,13 +7040,8 @@ static foreach (backend; Matrix!(
 // above -- write THROUGH `&c.arr[i]`, then read `c.arr[i]` directly --
 // mirroring `pointer.nestedClassStructFieldWrittenThroughPointerIsVisibleDirectly`'s
 // shape but for the static-array-field aggregate-composition shape instead
-// of the nested-struct-field one. Other backends omitted per the
-// omit-don't-pin convention, matching the other class fixtures' own backend
-// set.
-static foreach (backend; Matrix!(
-    Omit!(Bytecode, Because.unconfirmed,
-        "throws its own unrelated \"Unsupported assignment in bytecode core: c.arr[0] = one()\" for this shape, not a wrong value"),
-)) {
+// of the nested-struct-field one. SystemLinker is the oracle.
+static foreach (backend; Matrix!()) {
     @("pointer.classArrayFieldElementWrittenThroughPointerIsVisibleDirectly." ~
         backend.stringof)
     @Tags(backend.stringof)
@@ -7140,12 +7078,8 @@ static foreach (backend; Matrix!(
 // duped the reverse-lookup maps themselves, so the callee's
 // `writeThroughClassArrayFieldPointer` reverse-lookup missed and the write
 // fell through to the `fieldSnapshotAllocationIds` refusal check (also duped)
-// instead of aliasing. SystemLinker is the oracle; Bytecode omitted per the
-// omit-Bytecode convention.
-static foreach (backend; Matrix!(
-    Omit!(Bytecode, Because.unconfirmed,
-        "throws its own unrelated \"Unsupported assignment in bytecode core: c.arr[0] = one()\" for this shape, not a wrong value"),
-)) {
+// instead of aliasing. SystemLinker is the oracle.
+static foreach (backend; Matrix!()) {
     @("pointer.classArrayFieldWriteThroughPointerInCalleeIsVisibleToCaller." ~
         backend.stringof)
     @Tags(backend.stringof)
@@ -7262,21 +7196,19 @@ static foreach (backend; Matrix!()) {
     }
 }
 
-// Cross-frame pointer-identity follow-up (54d0bb99's own
-// deferred gap): `nestedFieldAddressAllocations` memoizes `&s.inner.x`'s
-// allocation id only within the SAME `Walker` frame -- a nested function
-// closing over `s` (the identical `VarDeclaration`, no rebind at all) runs
-// in its own child frame, and since that memo map was never duped into a
-// child frame, re-taking `&s.inner.x` from inside the nested function
-// minted a brand-new id instead of returning the outer frame's own
-// memoized one. Real D shares the exact same stack storage between an
-// outer function and a nested function closing over its locals, so the two
-// addresses must compare equal. SystemLinker is the oracle; Ctfe/Bytecode/
-// LLVMJit omitted per the omit-don't-pin convention (unconfirmed there).
-static foreach (backend; Matrix!(
-    Omit!(Bytecode, Because.unconfirmed,
-        "throws its own unrelated \"Unsupported expression in bytecode core: &s.inner.x\" for this shape, not a wrong value"),
-)) {
+// Cross-frame pointer-identity follow-up: `&s.inner.x` inside a nested
+// function closing over `s` used to fail two ways. A pointer-typed local
+// (`int* q;`) was never registered in `_capturedOffsets` at all (every other
+// local-declaration path does this but `compilePointerDeclaration` didn't),
+// so assigning through a captured pointer local from a nested function threw
+// "Unsupported assignment". Past that, `&s.inner.x` itself resolved through
+// `tryStructField`'s captured-receiver branch, which materialises a fresh
+// COPY of `s` in the nested function's own frame for ordinary reads/writes;
+// taking `Op.frameAddress` of that copy's offset addressed the copy, not the
+// outer frame's real storage. Real D shares the exact same stack storage
+// between an outer function and a nested function closing over its locals,
+// so the two addresses must compare equal. SystemLinker is the oracle.
+static foreach (backend; Matrix!()) {
     @("pointer.addressOfNestedStructFieldIsStableAcrossNestedFunctionCall." ~
         backend.stringof)
     @Tags(backend.stringof)
@@ -7462,13 +7394,9 @@ static foreach (backend; Matrix!()) {
 // one level deeper, mirroring `pointer.
 // addressOfNestedStructFieldWriteThroughUpdatesField`'s shape but with a
 // class RECEIVER instead of a struct one -- `inner` is a (non-union) struct
-// FIELD of class `C`, and `x` is a scalar field of `inner`. Other backends
-// omitted per the omit-don't-pin convention, matching the other class
-// fixtures' own backend set.
-static foreach (backend; Matrix!(
-    Omit!(Bytecode, Because.unconfirmed,
-        "throws its own unrelated \"Unsupported type in bytecode core: Inner\" for this shape, not a wrong value"),
-)) {
+// FIELD of class `C`, and `x` is a scalar field of `inner`. SystemLinker is
+// the oracle.
+static foreach (backend; Matrix!()) {
     @("pointer.nestedClassStructFieldWrittenDirectlyIsVisibleThroughEarlierPointer." ~
         backend.stringof)
     @Tags(backend.stringof)
@@ -7511,13 +7439,8 @@ static foreach (backend; Matrix!(
 // nestedClassStructFieldWrittenDirectlyIsVisibleThroughEarlierPointer` above
 // -- write THROUGH `&c.inner.x`, then read `c.inner.x` directly -- mirroring
 // `pointer.addressOfNestedStructFieldWriteThroughUpdatesField`'s shape but
-// with a class RECEIVER instead of a struct one. Other backends omitted per
-// the omit-don't-pin convention, matching the other class fixtures' own
-// backend set.
-static foreach (backend; Matrix!(
-    Omit!(Bytecode, Because.unconfirmed,
-        "throws its own unrelated \"Unsupported type in bytecode core: Inner\" for this shape, not a wrong value"),
-)) {
+// with a class RECEIVER instead of a struct one. SystemLinker is the oracle.
+static foreach (backend; Matrix!()) {
     @("pointer.nestedClassStructFieldWrittenThroughPointerIsVisibleDirectly." ~
         backend.stringof)
     @Tags(backend.stringof)
@@ -7547,23 +7470,11 @@ static foreach (backend; Matrix!(
     }
 }
 
-// Cross-frame follow-up: the
-// nested-class-struct-field sibling of `pointer.
-// classArrayFieldWriteThroughPointerInCalleeIsVisibleToCaller` above. The
-// caller takes `&c.inner.x` (promoting a `classCells` entry and a
-// `nestedClassStructFieldPointerVariables`/`...OuterFieldIndices`/
-// `...InnerFieldIndices` reverse-lookup entry in the CALLER's own frame),
-// then passes the pointer into a callee that writes through it. The callee's
-// own child `Walker` dupes `classCells` (so the cell's bytes are shared) but,
-// before this slice, never duped the reverse-lookup maps themselves, so the
-// callee's `writeThroughNestedClassStructFieldPointer` reverse-lookup missed
-// and the write fell through to the `fieldSnapshotAllocationIds` refusal
-// check (also duped) instead of aliasing. SystemLinker is the oracle;
-// Bytecode omitted per the omit-Bytecode convention.
-static foreach (backend; Matrix!(
-    Omit!(Bytecode, Because.unconfirmed,
-        "throws its own unrelated \"Unsupported type in bytecode core: Inner\" for this shape, not a wrong value"),
-)) {
+// Cross-frame follow-up: the nested-class-struct-field sibling of `pointer.
+// classArrayFieldWriteThroughPointerInCalleeIsVisibleToCaller` above -- the
+// caller takes `&c.inner.x`, then passes the pointer into a callee that
+// writes through it. SystemLinker is the oracle.
+static foreach (backend; Matrix!()) {
     @("pointer.nestedClassStructFieldWriteThroughPointerInCalleeIsVisibleToCaller." ~
         backend.stringof)
     @Tags(backend.stringof)
@@ -7719,11 +7630,7 @@ static foreach (backend; AliasSeq!(Interpreter)) {
 // `bindReferenceSlot`) meets a `PtrExp` over a `SymOffExp`, where the
 // address-of and the dereference must cancel rather than compose into two
 // dereferences of `p`'s slot.
-static foreach (backend; Matrix!(
-    Omit!(Bytecode, Because.unconfirmed,
-        "binds a `ref` argument written `*&p` to what `p` points at rather " ~
-        "than to `p` itself"),
-)) {
+static foreach (backend; Matrix!()) {
     @("pointer.refArgumentThroughDerefOfAddressOfRebindsTheVariable." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -7753,11 +7660,7 @@ static foreach (backend; Matrix!(
 // to, which the `ref` bind must apply directly to `buf`'s own storage
 // (`ai/plans/value.md`'s Layout authority contract) rather than re-derive as
 // an element index.
-static foreach (backend; Matrix!(
-    Omit!(Bytecode, Because.unconfirmed,
-        "binds a `ref` argument written `*&buf[2]` to the array's first " ~
-        "element rather than to element 2"),
-)) {
+static foreach (backend; Matrix!()) {
     @("pointer.refArgumentThroughDerefOfArrayElementAddressWritesThatElement." ~
         backend.stringof)
     @Tags(backend.stringof)
