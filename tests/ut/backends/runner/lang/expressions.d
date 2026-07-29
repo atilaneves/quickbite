@@ -3863,10 +3863,7 @@ static foreach (backend; Matrix!()) {
 // Two ref parameters bound from the same direct struct field denote one
 // storage location, so taking either parameter's address must produce equal
 // pointers even though the argument is not a plain variable.
-static foreach (backend; Matrix!(
-    Omit!(Bytecode, Because.unconfirmed,
-        "does not yet preserve repeated struct-field ref-argument identity"),
-)) {
+static foreach (backend; Matrix!()) {
     @("structField.repeatedRefArgumentPreservesAddressIdentity." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -3892,10 +3889,7 @@ static foreach (backend; Matrix!(
 
 // Direct fields reached through a source struct and its plain ref alias denote
 // one storage location when passed by ref.
-static foreach (backend; Matrix!(
-    Omit!(Bytecode, Because.unconfirmed,
-        "does not yet preserve aliased struct-field ref-argument identity"),
-)) {
+static foreach (backend; Matrix!()) {
     @("structField.aliasedRefArgumentsPreserveAddressIdentity." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -3922,10 +3916,7 @@ static foreach (backend; Matrix!(
 
 // Two ref parameters bound from the same direct class field denote one
 // storage location, just like the corresponding direct struct-field case.
-static foreach (backend; Matrix!(
-    Omit!(Bytecode, Because.unconfirmed,
-        "does not yet preserve repeated class-field ref-argument identity"),
-)) {
+static foreach (backend; Matrix!()) {
     @("classField.repeatedRefArgumentPreservesAddressIdentity." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {

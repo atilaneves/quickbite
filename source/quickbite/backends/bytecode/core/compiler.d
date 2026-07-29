@@ -204,6 +204,23 @@ private struct Compiler {
         ushort valueSize;
     }
 
+    // A scalar `ref` argument bound to a class field (`verify(c.value, ...)`):
+    // the field's heap storage has no caller-frame offset of its own, so
+    // (mirroring `StructPointerRefWriteBack`) the value is mirrored into a
+    // fresh frame slot for the call and copied back through the field's real
+    // address afterward. `pointerSlot`/`fieldOffset` are the match key: two
+    // arguments reaching the same class instance's same field via the same
+    // receiver slot share one mirror slot, so `refAliasGroups` (keyed on that
+    // shared caller-frame offset, same as any other ref argument) gives them
+    // one identity for the call's duration.
+    private static struct ClassFieldRefWriteBack {
+        ushort valueOffset;
+        ushort addressOffset;
+        ushort pointerSlot;
+        ushort fieldOffset;
+        ushort valueSize;
+    }
+
     private static struct MethodReceiver {
         ushort offset;
         ushort writeBackFrameIndex;
@@ -11004,6 +11021,7 @@ private struct Compiler {
 
         DynamicArrayRefWriteBack[] dynamicArrayRefWriteBacks;
         StructPointerRefWriteBack[] structPointerRefWriteBacks;
+        ClassFieldRefWriteBack[] classFieldRefWriteBacks;
         if (call.arguments !is null &&
             nextArgumentIndex + call.arguments.length > layout.offsets.length)
             throw new Exception(text(
@@ -11054,6 +11072,13 @@ private struct Compiler {
                         structPointerRefWriteBacks,
                     ))
                         continue;
+                if (layout.isReference[nextArgumentIndex + argumentIndex])
+                    if (emitClassFieldRefArgument(
+                        slot,
+                        (*call.arguments)[argumentIndex],
+                        classFieldRefWriteBacks,
+                    ))
+                        continue;
                 emitCallArgument(
                     slot,
                     layout.isReference[nextArgumentIndex + argumentIndex],
@@ -11093,6 +11118,13 @@ private struct Compiler {
                 pointerStoreOp(writeBack.valueSize),
                 writeBack.valueOffset,
                 writeBack.pointerOffset,
+                compileSizeConstant(0),
+            );
+        foreach (writeBack; classFieldRefWriteBacks)
+            _code ~= Instruction(
+                pointerStoreOp(writeBack.valueSize),
+                writeBack.valueOffset,
+                writeBack.addressOffset,
                 compileSizeConstant(0),
             );
         if (hasStructReceiver && structReceiver.writeBackSize != 0)
@@ -12260,6 +12292,79 @@ private struct Compiler {
         );
         writeBacks ~= StructPointerRefWriteBack(
             valueOffset, pointerOffset, valueSize,
+        );
+        return true;
+    }
+
+    // A `ref` argument bound to a scalar class field (`verify(c.value, ...)`):
+    // mirror the field's current value into a fresh frame slot for the call,
+    // matching `emitStructPointerRefArgument`'s pattern for a pointed-at
+    // value with no caller-frame offset of its own. Two arguments reaching
+    // the same field of the same receiver (matched by `pointerSlot` +
+    // `fieldOffset`, both stable across repeated compiles of the same
+    // receiver local) share one mirror slot, so the ordinary ref-argument
+    // alias grouping (keyed on that shared slot) gives them one identity.
+    // Aggregate-typed fields (struct/array) need their own inline or
+    // descriptor-copy handling, not a scalar mirror, so this declines them.
+    private bool emitClassFieldRefArgument(
+        in ushort slot,
+        Expression argument,
+        ref ClassFieldRefWriteBack[] writeBacks,
+    ) {
+        import dmd.astenums: TY;
+
+        auto dot = argument.isDotVarExp;
+        if (dot is null ||
+            dot.e1.type is null ||
+            dot.e1.type.toBasetype.ty != TY.Tclass)
+            return false;
+
+        auto field = tryClassPointerField(dot);
+        if (field is null)
+            return false;
+
+        const ty = field.type.toBasetype.ty;
+        if (ty == TY.Tstruct || ty == TY.Tsarray || ty == TY.Tarray ||
+            ty == TY.Taarray)
+            return false;
+
+        const valueSize = cast(ushort) size(scalarType(field.type));
+        if (valueSize != 1 && valueSize != 4 && valueSize != 8)
+            return false;
+
+        foreach (writeBack; writeBacks)
+            if (writeBack.pointerSlot == field.pointerSlot &&
+                writeBack.fieldOffset == field.fieldOffset &&
+                writeBack.valueSize == valueSize) {
+                _code ~= Instruction(
+                    Op.loadConstant,
+                    slot,
+                    constantIndex(writeBack.valueOffset),
+                    cast(ushort) size(ScalarType.uint_),
+                );
+                return true;
+            }
+
+        const valueOffset = allocateBytes(valueSize, valueSize);
+        const addressOffset = classFieldAddress(*field);
+        _code ~= Instruction(
+            pointerLoadOp(valueSize),
+            valueOffset,
+            addressOffset,
+            compileSizeConstant(0),
+        );
+        _code ~= Instruction(
+            Op.loadConstant,
+            slot,
+            constantIndex(valueOffset),
+            cast(ushort) size(ScalarType.uint_),
+        );
+        writeBacks ~= ClassFieldRefWriteBack(
+            valueOffset,
+            addressOffset,
+            field.pointerSlot,
+            field.fieldOffset,
+            valueSize,
         );
         return true;
     }
