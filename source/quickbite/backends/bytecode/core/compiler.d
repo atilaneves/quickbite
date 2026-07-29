@@ -7237,48 +7237,64 @@ private struct Compiler {
         Type type;
     }
 
-    // `s.arr[i].field`'s real runtime address for a field within an element
-    // of a struct's own dynamic-array (slice) field of structs -- the
-    // struct-field counterpart of `tryClassArrayFieldElementFieldPointer`,
-    // needed only for the slice case: a struct's static-array field element
-    // already folds to a real inline frame offset through
-    // `structBaseOffsetOrMaterialise`'s `locateStaticArrayElement` branch
-    // (so `tryStructField` resolves it correctly on its own), but that same
-    // function's dynamic-array branch resolves a slice element through
-    // `loadDynamicArrayElement`'s throwaway copy, aliasing a temporary
-    // instead of the field's real heap storage. `tryPointerToElement`
-    // already derives that real element pointer for `s.arr[i]` alone
-    // (through `dynamicArrayDescriptorOrNull`'s inline-descriptor
-    // struct-field branch); this advances that pointer by the leaf field's
-    // own offset within the element struct. Checked after
+    // `a[i].field`'s (or `a[i].outer.field`'s, for any depth of nested
+    // struct fields) real runtime address for a field within an element of
+    // an array of structs -- needed whenever the element type is a struct:
+    // a static-array field element already folds to a real inline frame
+    // offset through `structBaseOffsetOrMaterialise`'s
+    // `locateStaticArrayElement` branch (so `tryStructField` resolves it
+    // correctly on its own), but that same function's dynamic-array branch
+    // resolves a slice element through `loadDynamicArrayElement`'s throwaway
+    // copy, aliasing a temporary instead of the field's real heap storage.
+    // `tryPointerToElement` already derives the real element pointer for
+    // `a[i]` alone -- for any receiver it supports, including a bare local,
+    // a struct's own slice field, and a class's own slice field -- so this
+    // walks the field-access chain down from `dot` to the bottoming-out
+    // `IndexExp`, summing every field's own offset, and advances that
+    // element pointer by the total. Checked after
     // `tryClassArrayFieldElementFieldPointer`, which already claims the
-    // class-field case. Null if `dot.e1` is not a dynamic-array-of-structs
-    // element access.
+    // single-field-level class-array-of-structs case. Null if `dot`'s field
+    // chain does not bottom out at an array-of-structs element access.
     private StructArrayFieldElementField* tryStructSliceFieldElementFieldPointer(
         DotVarExp dot,
     ) {
         import dmd.astenums: TY;
 
-        auto field = dot.var.isVarDeclaration;
-        if (field is null)
-            return null;
+        uint offset;
+        Type leafFieldType;
+        auto current = dot;
+        for (;;) {
+            auto field = current.var.isVarDeclaration;
+            if (field is null)
+                return null;
+            offset += field.offset;
+            if (leafFieldType is null)
+                leafFieldType = field.type;
 
-        auto index = dot.e1.isIndexExp;
-        if (index is null || index.type.toBasetype.ty != TY.Tstruct)
-            return null;
+            if (auto index = current.e1.isIndexExp) {
+                if (index.type.toBasetype.ty != TY.Tstruct)
+                    return null;
 
-        auto elementPointer = tryPointerToElement(index);
-        if (elementPointer is null)
-            return null;
+                auto elementPointer = tryPointerToElement(index);
+                if (elementPointer is null)
+                    return null;
 
-        const pointer = allocateBytes(cast(uint) size_t.sizeof, size_t.sizeof);
-        _code ~= Instruction(
-            Op.addInt8, pointer, elementPointer.offset,
-            compileSizeConstant(cast(uint) field.offset),
-        );
-        auto result = new StructArrayFieldElementField;
-        *result = StructArrayFieldElementField(pointer, field.type);
-        return result;
+                const pointer =
+                    allocateBytes(cast(uint) size_t.sizeof, size_t.sizeof);
+                _code ~= Instruction(
+                    Op.addInt8, pointer, elementPointer.offset,
+                    compileSizeConstant(offset),
+                );
+                auto result = new StructArrayFieldElementField;
+                *result = StructArrayFieldElementField(pointer, leafFieldType);
+                return result;
+            }
+
+            auto next = current.e1.isDotVarExp;
+            if (next is null)
+                return null;
+            current = next;
+        }
     }
 
     // A located struct array field element field: its real runtime pointer
@@ -8895,6 +8911,30 @@ private struct Compiler {
             if (auto copy = tryDynamicArraySliceAssign(slice, assign.e2))
                 return *copy;
 
+        // `c.arr[i].field = rhs` (or any nested-field depth): a class array
+        // field's element storage lives on the class's own heap block, which
+        // has no frame offset for `tryStructField`'s generic struct-field
+        // path to fold into; `tryStructFieldAssign` below would resolve it
+        // through `structBaseOffsetOrMaterialise`'s throwaway per-read copy
+        // and silently discard the write. Checked first for the same reason
+        // `tryAddressOfLocal` checks this case ahead of `tryStructField`.
+        if (auto dot = assign.e1.isDotVarExp)
+            if (auto element = tryClassArrayFieldElementFieldPointer(dot))
+                return storeArrayElementFieldPointer(
+                    element.pointer, element.type, assign.e2,
+                );
+
+        // `a[i].field = rhs` (or `a[i].outer.field = rhs`, any nesting
+        // depth): the struct-field counterpart of the class case above --
+        // an array-of-structs element's storage lives on the real heap even
+        // when the array itself is a bare local or a struct's own slice
+        // field, so the same throwaway-copy risk applies.
+        if (auto dot = assign.e1.isDotVarExp)
+            if (auto element = tryStructSliceFieldElementFieldPointer(dot))
+                return storeArrayElementFieldPointer(
+                    element.pointer, element.type, assign.e2,
+                );
+
         // `base.field = rhs`: write into a struct field at its inline offset.
         if (auto dot = assign.e1.isDotVarExp)
             if (auto store = tryStructFieldAssign(dot, assign.e2))
@@ -9624,6 +9664,40 @@ private struct Compiler {
 
         _program.moduleData.length = end;
         return cast(ushort) offset;
+    }
+
+    // Write `rhs` at the real runtime address `pointer`, the shared tail of
+    // `tryClassArrayFieldElementFieldPointer` and
+    // `tryStructSliceFieldElementFieldPointer`'s assignment use: a dynamic-
+    // array field takes the rhs slice descriptor, matching
+    // `tryClassPointerField`'s own assignment branch; anything else is a
+    // scalar byte store at the pointer.
+    private Operand storeArrayElementFieldPointer(
+        in ushort pointer,
+        Type fieldType,
+        Expression rhs,
+    ) {
+        import dmd.astenums: TY;
+
+        if (fieldType.toBasetype.ty == TY.Tarray) {
+            const destination =
+                allocateBytes(sliceDescriptorSize, size_t.sizeof);
+            compileDynamicArrayInto(
+                destination, dynamicArrayElementType(fieldType), rhs,
+            );
+            _code ~= Instruction(
+                Op.pointerStore16, destination, pointer, compileSizeConstant(0),
+            );
+            return Operand(destination, ScalarType.void_);
+        }
+
+        const value = compileExpression(rhs);
+        const fieldScalar = scalarType(fieldType);
+        _code ~= Instruction(
+            pointerStoreOp(size(fieldScalar)), value.offset, pointer,
+            compileSizeConstant(0),
+        );
+        return Operand(value.offset, fieldScalar);
     }
 
     // `base.field = rhs`: write into a struct field at its inline frame offset.

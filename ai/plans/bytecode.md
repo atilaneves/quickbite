@@ -405,17 +405,16 @@ row reaches them:
   would misbind the callee to the pointer's raw bytes instead of dereferencing
   it, and any writeback would clobber the stored address instead of the
   pointee.
-- `&a[i].inner.x` (a nested struct field of a dynamic-array-of-struct element)
-  computes a stale address: `pointer.arrayElementNestedStructFieldWrittenDirectlyIsVisibleThroughEarlierPointer.Bytecode`
-  (`expressions.d`) is red with `1 != 99`, confirmed by removing its
-  `Because.unconfirmed` omit. `tryAddressOfLocal`'s `DotVarExp` branch
-  (`compiler.d`) has cases for a class array-field element
-  (`tryClassArrayFieldElementFieldPointer`) and a struct slice-field element
-  (`tryStructSliceFieldElementFieldPointer`) ahead of the generic
-  `tryStructField` fallback, but none of them, nor `tryStructField` itself,
-  resolve a field reached through an `IndexExp` receiver on a dynamic array of
-  structs; trace what address `tryStructField(dot)` actually folds into for
-  this shape and give it the element's own runtime address instead.
+- `pointer.staticArrayElementWrittenDirectlyIsVisibleThroughEarlierPointer.Bytecode`
+  (`expressions.d`) is red with a wrong value (`-1849532000 != 99`, not a
+  refusal), confirmed by removing its `Because.unconfirmed` omit:
+  `int[2][] a = [...]; int[2]* p = &a[0]; a[0] = [99, 99];` then `(*p)[0]`
+  should read 99. `tryDynamicArrayElementAssign` (`compiler.d`) has no
+  `elementIsArray`-aware branch for assigning a whole row of a `T[N][]`,
+  unlike its `isStaticArrayView` branch just above it; trace what
+  `indexStoreOp`/`compileExpression(rhs)` actually write for this element
+  shape and give the assignment the row's own real address (the same one
+  `&a[0]` resolves to) instead of a fresh, differently addressed block.
 
 `concurrency.thisTid.Bytecode` (`tests/ut/backends/runner/sys/concurrency.d`)
 stays `Omit!(Bytecode, Because.unconfirmed, ...)`. `Scheduler.thisInfo`'s

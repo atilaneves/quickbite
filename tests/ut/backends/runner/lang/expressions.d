@@ -6647,12 +6647,8 @@ static foreach (backend; Matrix!(
 // `VarExp`; here it is an `IndexExp` (`a[0]`), so no cell ever backed this
 // pointer and it stayed on the boxed snapshot taken at address-of time.
 // Before any production change, Interpreter returned 1 (the pre-write
-// snapshot) instead of 99. SystemLinker is the oracle. Ctfe/Bytecode/LLVMJit
-// omitted per the omit-don't-pin convention (unconfirmed there).
-static foreach (backend; Matrix!(
-    Omit!(Bytecode, Because.unconfirmed,
-        "computes a wrong value for this shape (`1 != 99`), not a refusal"),
-)) {
+// snapshot) instead of 99. SystemLinker is the oracle.
+static foreach (backend; Matrix!()) {
     @("pointer.arrayElementNestedStructFieldWrittenDirectlyIsVisibleThroughEarlierPointer." ~
         backend.stringof)
     @Tags(backend.stringof)
