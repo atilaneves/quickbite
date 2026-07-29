@@ -235,6 +235,18 @@ private struct Compiler {
         ushort valueSize;
     }
 
+    // A scalar `ref` argument bound to a `__gshared`/`static` module variable
+    // (`bump(counter)`): the variable lives in `_program.moduleData`, a
+    // different address space than the frame-relative offsets the ref-slot
+    // machinery otherwise passes around, so (mirroring
+    // `StructPointerRefWriteBack`) its current value is mirrored into a fresh
+    // frame slot for the call and copied back afterward.
+    private static struct ModuleScalarRefWriteBack {
+        ushort valueOffset;
+        ushort moduleOffset;
+        ushort valueSize;
+    }
+
     private static struct MethodReceiver {
         ushort offset;
         ushort writeBackFrameIndex;
@@ -11290,6 +11302,7 @@ private struct Compiler {
         StructPointerRefWriteBack[] structPointerRefWriteBacks;
         ClassFieldRefWriteBack[] classFieldRefWriteBacks;
         StructPointerFieldRefWriteBack[] structPointerFieldRefWriteBacks;
+        ModuleScalarRefWriteBack[] moduleScalarRefWriteBacks;
         if (call.arguments !is null &&
             nextArgumentIndex + call.arguments.length > layout.offsets.length)
             throw new Exception(text(
@@ -11355,6 +11368,13 @@ private struct Compiler {
                     ))
                         continue;
                 if (layout.isReference[nextArgumentIndex + argumentIndex])
+                    if (emitModuleScalarRefArgument(
+                        slot,
+                        (*call.arguments)[argumentIndex],
+                        moduleScalarRefWriteBacks,
+                    ))
+                        continue;
+                if (layout.isReference[nextArgumentIndex + argumentIndex])
                     if (emitConditionalRefArgument(
                         slot,
                         (*call.arguments)[argumentIndex],
@@ -11414,6 +11434,13 @@ private struct Compiler {
                 writeBack.valueOffset,
                 writeBack.addressOffset,
                 compileSizeConstant(0),
+            );
+        foreach (writeBack; moduleScalarRefWriteBacks)
+            _code ~= Instruction(
+                Op.storeModule,
+                writeBack.valueOffset,
+                writeBack.moduleOffset,
+                writeBack.valueSize,
             );
         if (hasStructReceiver && structReceiver.writeBackSize != 0)
             _code ~= Instruction(
@@ -12590,6 +12617,49 @@ private struct Compiler {
         );
         writeBacks ~= StructPointerRefWriteBack(
             valueOffset, pointerOffset, valueSize,
+        );
+        return true;
+    }
+
+    private bool emitModuleScalarRefArgument(
+        in ushort slot,
+        Expression argument,
+        ref ModuleScalarRefWriteBack[] writeBacks,
+    ) {
+        auto variable = argument.isVarExp;
+        auto declaration =
+            variable is null ? null : variable.var.isVarDeclaration;
+        if (declaration is null)
+            return false;
+
+        auto moduleVariable = moduleScalarVariableOrNull(declaration);
+        if (moduleVariable is null)
+            return false;
+
+        foreach (writeBack; writeBacks)
+            if (writeBack.moduleOffset == moduleVariable.offset) {
+                _code ~= Instruction(
+                    Op.loadConstant,
+                    slot,
+                    constantIndex(writeBack.valueOffset),
+                    cast(ushort) size(ScalarType.uint_),
+                );
+                return true;
+            }
+
+        const valueSize = cast(ushort) size(moduleVariable.type);
+        const valueOffset = allocateBytes(valueSize, valueSize);
+        _code ~= Instruction(
+            Op.loadModule, valueOffset, moduleVariable.offset, valueSize,
+        );
+        _code ~= Instruction(
+            Op.loadConstant,
+            slot,
+            constantIndex(valueOffset),
+            cast(ushort) size(ScalarType.uint_),
+        );
+        writeBacks ~= ModuleScalarRefWriteBack(
+            valueOffset, moduleVariable.offset, valueSize,
         );
         return true;
     }

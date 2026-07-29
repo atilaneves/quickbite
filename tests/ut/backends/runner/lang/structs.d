@@ -1916,13 +1916,10 @@ static foreach (backend; Matrix!()) {
 // isAliasingLocal`). `Ctfe` cannot read or write dataseg storage at all
 // (compile-time execution has no such storage to access, the same
 // pre-existing limitation `dataseg.moduleScalarAndStructMirroredAcrossWrites`
-// in expressions.d already pins); `Bytecode` refuses a dataseg variable as
-// a `ref` argument.
+// in expressions.d already pins).
 static foreach (backend; Matrix!(
     Omit!(Ctfe, Because.inexpressible,
         "CTFE cannot read or write dataseg (__gshared/static) storage"),
-    Omit!(Bytecode, Because.refusal,
-        "Unsupported ref argument in bytecode core: counter"),
 )) {
     @("refArgument.datasegVariableArgument." ~ backend.stringof)
     @Tags(backend.stringof)
