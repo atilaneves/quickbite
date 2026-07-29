@@ -166,6 +166,8 @@ private struct Compiler {
     private bool _hasZeroRealConstantIndex;
     private ushort _zeroRealConstantIndex;
     private ModuleScalarVariable[VarDeclaration] _moduleScalarVariables;
+    private ModuleDynamicArrayVariable[VarDeclaration]
+        _moduleDynamicArrayVariables;
     // Scalar locals' frame offsets, kept across functions (unlike `_locals`,
     // which is reset per function). A nested struct's method reads a captured
     // enclosing local through the struct's context pointer, which records the
@@ -2851,6 +2853,34 @@ private struct Compiler {
             if (auto declaration = variable.var.isVarDeclaration)
                 if (auto descriptor = declaration in _dynamicArrayLocals)
                     return descriptor;
+
+        // A module-level dynamic array (`byte[] a;`): materialise its
+        // 16-byte descriptor from `_program.moduleData` into a fresh frame
+        // slot, mirroring `moduleScalarVariableOrNull`'s read but sized for
+        // a whole slice descriptor; reassignment writes the slot back
+        // through `writeBackThroughModule` (`writeBackDynamicArrayDescriptor`).
+        if (auto variable = expression.isVarExp)
+            if (auto declaration = variable.var.isVarDeclaration)
+                if (auto moduleVariable =
+                        moduleDynamicArrayVariableOrNull(declaration)) {
+                    const offset =
+                        allocateBytes(sliceDescriptorSize, size_t.sizeof);
+                    _code ~= Instruction(
+                        Op.loadModule,
+                        offset,
+                        moduleVariable.offset,
+                        cast(ushort) sliceDescriptorSize,
+                    );
+                    auto result = new DynamicArrayLocal;
+                    *result = DynamicArrayLocal(
+                        offset,
+                        moduleVariable.elementType,
+                        moduleVariable.elementIsArray,
+                    );
+                    result.writeBackThroughModule = true;
+                    result.moduleOffset = moduleVariable.offset;
+                    return result;
+                }
 
         // A string literal: the native {ptr, length} descriptor `Op
         // .loadStringLiteral` writes is already the ordinary shape every
@@ -9604,7 +9634,7 @@ private struct Compiler {
 
         const isClassReference = declaration.type.toBasetype.ty == TY.Tclass;
         if (isClassReference &&
-            !moduleClassReferenceHasDefaultInitializer(declaration))
+            !moduleVariableHasDefaultInitializer(declaration))
             return null;
 
         const type = isClassReference
@@ -9623,7 +9653,43 @@ private struct Compiler {
         return declaration in _moduleScalarVariables;
     }
 
-    private bool moduleClassReferenceHasDefaultInitializer(
+    // A module-level dynamic array (`byte[] a;`) reserves a plain 16-byte
+    // native-order slice descriptor slot, the array counterpart of the
+    // scalar allocation above; only the default (null) initializer is
+    // supported so far, matching `moduleVariableHasDefaultInitializer`'s
+    // class-reference use.
+    private ModuleDynamicArrayVariable* moduleDynamicArrayVariableOrNull(
+        VarDeclaration declaration,
+    ) {
+        if (declaration is null || !declaration.isDataseg ||
+            declaration.isImmutable)
+        {
+            return null;
+        }
+
+        import dmd.astenums: TY;
+
+        if (declaration.type.toBasetype.ty != TY.Tarray)
+            return null;
+
+        if (auto existing = declaration in _moduleDynamicArrayVariables)
+            return existing;
+
+        if (!moduleVariableHasDefaultInitializer(declaration))
+            return null;
+
+        const elementType = dynamicArrayElementType(declaration.type);
+        const elementIsArray = arrayElementIsArray(declaration.type);
+        const offset = allocateModuleBytes(sliceDescriptorSize, size_t.sizeof);
+        _moduleDynamicArrayVariables[declaration] = ModuleDynamicArrayVariable(
+            offset,
+            elementType,
+            elementIsArray,
+        );
+        return declaration in _moduleDynamicArrayVariables;
+    }
+
+    private bool moduleVariableHasDefaultInitializer(
         VarDeclaration declaration,
     ) {
         resolveNonRootInitializer(declaration);
@@ -9947,6 +10013,14 @@ private struct Compiler {
                 descriptor.structOffset,
                 descriptor.structFrameIndexOffset,
                 descriptor.structSize,
+            );
+
+        if (descriptor.writeBackThroughModule)
+            _code ~= Instruction(
+                Op.storeModule,
+                descriptor.offset,
+                descriptor.moduleOffset,
+                cast(ushort) sliceDescriptorSize,
             );
 
         if (!descriptor.writeBackThroughPointer)
@@ -15044,6 +15118,13 @@ private struct DynamicArrayLocal {
     // element, because the underlying static array is a class field living
     // in the class's own heap block rather than inline in this frame.
     bool staticArrayViewIsClassField;
+    // Set when this descriptor is a materialised view of a module-level
+    // dynamic-array variable's own storage; `moduleOffset` is that
+    // variable's slot in `_program.moduleData`, written back through
+    // `Op.storeModule` on reassignment, the module counterpart of
+    // `writeBackThroughFrame`/`writeBackThroughPointer`.
+    bool writeBackThroughModule;
+    ushort moduleOffset;
 }
 
 // A delegate local (`auto d = () => this.field;`): a 16-byte slot holding a
@@ -15119,6 +15200,15 @@ private struct ModuleScalarVariable {
     ushort offset;
     imported!"quickbite.backends.bytecode.core.program".ScalarType type;
     bool isClassReference;
+}
+
+// A module-level (`__gshared`/`static`) dynamic-array variable's own 16-byte
+// native-order slice descriptor storage in `_program.moduleData`, the array
+// counterpart of `ModuleScalarVariable`.
+private struct ModuleDynamicArrayVariable {
+    ushort offset;
+    imported!"quickbite.backends.bytecode.core.program".ScalarType elementType;
+    bool elementIsArray;
 }
 
 private struct ExceptionStringField {

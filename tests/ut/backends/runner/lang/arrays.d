@@ -249,8 +249,6 @@ static foreach (backend; Matrix!()) {
 static foreach (backend; Matrix!(
     Omit!(Ctfe, Because.inexpressible,
         "CTFE cannot read a mutable module variable"),
-    Omit!(Bytecode, Because.refusal,
-        "module-level dynamic-array assignment is unsupported"),
 )) {
     @("dynamicArray.sameWidthScalarCastReturnPreservesStorageAliasing." ~
         backend.stringof)
@@ -280,8 +278,6 @@ static foreach (backend; Matrix!(
 static foreach (backend; Matrix!(
     Omit!(Ctfe, Because.inexpressible,
         "CTFE cannot read a mutable module variable"),
-    Omit!(Bytecode, Because.refusal,
-        "module-level dynamic-array assignment is unsupported"),
 )) {
     @("dynamicArray.assignedReturnedSameWidthScalarCastPreservesStorageAliasing." ~
         backend.stringof)

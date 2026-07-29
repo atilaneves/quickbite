@@ -405,6 +405,16 @@ row reaches them:
   would misbind the callee to the pointer's raw bytes instead of dereferencing
   it, and any writeback would clobber the stored address instead of the
   pointee.
+- A `__gshared`/`static` module-level dynamic-array variable
+  (`moduleDynamicArrayVariableOrNull`, `compiler.d`) only has storage when its
+  declared initializer is absent or an explicit `null`; a non-null module
+  array initializer still falls through to "Unsupported variable in bytecode
+  core". Module-level `Tstruct`/`Tsarray`/`Taarray`/`Tdelegate` variables and
+  pointer/complex-double dataseg variables remain entirely unsupported
+  (`moduleScalarVariableOrNull` still declines them) — see
+  `dataseg.moduleScalarAndStructMirroredAcrossWrites.Bytecode` and
+  `dataseg.mirrorRefusedShapeDeclinesOnBothSides.Bytecode`
+  (`tests/ut/backends/runner/lang/expressions.d`) below.
 
 `concurrency.thisTid.Bytecode` (`tests/ut/backends/runner/sys/concurrency.d`)
 stays `Omit!(Bytecode, Because.unconfirmed, ...)`. `Scheduler.thisInfo`'s
@@ -435,25 +445,28 @@ store instruction sequence `core.atomic` emits, or recognise `atomicOp`/
 lower them to dedicated VM atomic ops instead of compiling the inline asm
 body.
 
-`dynamicArray.sameWidthScalarCastReturnPreservesStorageAliasing.Bytecode` and
-`dynamicArray.assignedReturnedSameWidthScalarCastPreservesStorageAliasing.
-Bytecode` (`tests/ut/backends/runner/lang/arrays.d`) stay `Omit!(Bytecode,
-Because.refusal, "module-level dynamic-array assignment is unsupported")`: a
-`__gshared`/`static` module variable of dynamic-array type (`byte[] a;`)
-assigned at runtime (`a = [runtime];`). `moduleScalarVariableOrNull`
-explicitly declines `TY.Tarray` (and every other non-scalar type), so a
-module-level dynamic array has no `ModuleScalarVariable`/`moduleData`
-storage at all yet, unlike a module scalar. The fix is a module-level
-counterpart to the existing frame-resident `DynamicArrayLocal`/
-`_dynamicArrayLocals` machinery: reserve a 16-byte native-order slice
-descriptor in `_program.moduleData` per such `VarDeclaration` (mirroring
-`moduleScalarVariableOrNull`'s allocation, but sized/aligned for a
-descriptor rather than a scalar), then read and write it through
-`Op.loadModule`/`Op.storeModule` (`machine.d`'s handlers are plain
-byte-range copies keyed on the instruction's width operand, so a 16-byte
-descriptor works with no VM-side change) at the declaration's read
-(`VarExp`) and assignment (`AssignExp`) sites alongside the existing scalar
-case.
+`dataseg.moduleScalarAndStructMirroredAcrossWrites.Bytecode` and
+`dataseg.mirrorRefusedShapeDeclinesOnBothSides.Bytecode`
+(`tests/ut/backends/runner/lang/expressions.d`) stay `Omit!(Bytecode,
+Because.refusal, ...)`: a `__gshared`/`static` module variable of `Tstruct`
+type (`Point quickbiteDatasegPoint;`, and separately one with a dynamic-array
+field, `WithArray quickbiteDatasegWithArray;`). `moduleScalarVariableOrNull`
+(`compiler.d`) declines `TY.Tstruct` outright, so a module-level struct has
+no `moduleData` storage at all — the scalar and array counterparts
+(`ModuleScalarVariable`, `ModuleDynamicArrayVariable`) both exist now, but
+there is no `ModuleStructVariable`. The fix is the struct counterpart of the
+same pattern: reserve `Type.size()` bytes at `Type.alignsize()` in
+`_program.moduleData` per such `VarDeclaration`, and route `DotVarExp`
+field reads/writes through `Op.loadModule`/`Op.storeModule` at the
+variable's base offset plus the field's own `VarDeclaration.offset` (the
+same two opcodes already used for module scalars and arrays — both are
+plain byte-range copies keyed on width, so no VM-side change is needed).
+Start with the plain-scalar-fields row
+(`moduleScalarAndStructMirroredAcrossWrites`); the array-field row
+(`mirrorRefusedShapeDeclinesOnBothSides`) additionally needs a module
+struct's dynamic-array field to resolve through
+`dynamicArrayDescriptorOrNull`, analogous to how `moduleDynamicArrayVariableOrNull`
+resolves a bare module array variable today.
 
 ### TDD and handoff discipline
 
