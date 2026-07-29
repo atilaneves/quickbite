@@ -415,6 +415,41 @@ row reaches them:
   `Tsarray`/`Taarray`/`Tdelegate` variables and pointer/complex-double dataseg
   variables remain entirely unsupported (`moduleScalarVariableOrNull` still
   declines them).
+- A module-level dynamic array's single-element `~=` (`compileAppendElement`)
+  now compiles the appended value before materialising the target's
+  descriptor when the target is a module variable, so a reentrant append
+  inside that value's own evaluation (`ga ~= f()` where `f` itself does
+  `ga ~= x`) lands in the descriptor instead of being overwritten by the
+  post-call writeback of a stale pre-call snapshot. `compileConcatenationAssign`
+  (whole-array `arr ~= other`) still materialises its target descriptor
+  before compiling `other`, so the identical hazard remains open there
+  whenever `other`'s own evaluation mutates the same module array; no
+  fixture exercises this yet.
+- A scalar `ref` argument bound to module storage
+  (`emitModuleScalarRefArgument`/`emitModuleStructFieldRefArgument`) mirrors
+  the module value into a fresh frame slot for the call and writes it back
+  through `Op.storeModule` only after the callee returns. If the callee also
+  writes that same module variable directly by name during the call (a
+  `ref int x` bound to `counter` in `weird(ref int x) { x = 5; counter =
+  100; }`), the direct write is unconditionally clobbered by the post-call
+  mirror writeback regardless of which write is later in the callee's
+  program order -- real `ref`-to-global aliasing has no such race, since a
+  genuine ABI `ref` is the same storage, not a copy. Reordering cannot fix
+  this the way it fixed the append case above: nothing inside the callee's
+  body ever reaches the module address through the ref parameter itself,
+  because the parameter is an ordinary value living in its own frame slot,
+  not a pointer the callee dereferences. Every other ref-argument kind that
+  mirrors non-frame-resident storage into a fresh slot and writes it back
+  afterward (`emitStructPointerRefArgument`,
+  `emitStructPointerFieldRefArgument`, `emitClassFieldRefArgument`,
+  `emitRefLocalPointerArgument`, `emitPointerDereferenceRefArgument`)
+  shares the identical latent hazard
+  whenever the callee reaches the aliased storage by another path during
+  the same call. A real fix needs a scalar `ref` parameter to be a pointer
+  the callee dereferences on every read/write of it, so a call can bind it
+  directly to the real address (e.g. via `Op.moduleAddress`) and skip the
+  mirror/writeback pair entirely -- a change to the calling convention
+  shared by every ref-argument kind, not a narrow field-offset fix.
 
 `concurrency.thisTid.Bytecode` (`tests/ut/backends/runner/sys/concurrency.d`)
 stays `Omit!(Bytecode, Because.unconfirmed, ...)`. `Scheduler.thisInfo`'s

@@ -10119,6 +10119,27 @@ private struct Compiler {
             );
         }
 
+        // `ga ~= f()` where `ga` is a module-level array: `f()` may itself
+        // append to `ga` through its own name (a direct module read/write,
+        // not this call's descriptor). Compiling `append.e2` first lets any
+        // such write land in real module storage before the descriptor is
+        // materialised, so the materialised descriptor reflects it instead
+        // of a stale pre-call snapshot that the post-call writeback would
+        // otherwise clobber it with.
+        if (isModuleDynamicArrayVariable(append.e1)) {
+            const value = compileExpression(append.e2);
+            const descriptor = dynamicArrayDescriptor(append.e1);
+            const elementSize =
+                dynamicArrayElementSize(append.e1.type, descriptor.elementType);
+            _code ~= Instruction(
+                appendElementOp(elementSize),
+                descriptor.offset,
+                value.offset,
+            );
+            writeBackDynamicArrayDescriptor(descriptor);
+            return Operand(descriptor.offset, descriptor.elementType);
+        }
+
         const descriptor = dynamicArrayDescriptor(append.e1);
         const value = compileExpression(append.e2);
         const elementSize =
@@ -10130,6 +10151,14 @@ private struct Compiler {
         );
         writeBackDynamicArrayDescriptor(descriptor);
         return Operand(descriptor.offset, descriptor.elementType);
+    }
+
+    private bool isModuleDynamicArrayVariable(Expression expression) {
+        auto variable = expression.isVarExp;
+        if (variable is null)
+            return false;
+        return moduleDynamicArrayVariableOrNull(variable.var.isVarDeclaration)
+            !is null;
     }
 
     // `arr ~= other`: concatenate both array descriptors into fresh backing
