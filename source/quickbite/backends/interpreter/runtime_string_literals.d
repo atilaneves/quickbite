@@ -2,6 +2,8 @@ module quickbite.backends.interpreter.runtime_string_literals;
 
 private:
 
+private alias Value = imported!"quickbite.backends.interpreter.runtime_value".Value;
+
 private enum charCodeUnitWidth = 1;
 private enum wcharCodeUnitWidth = 2;
 private enum dcharCodeUnitWidth = 4;
@@ -10,16 +12,64 @@ private enum maxUtf8CodeUnits = 4;
 public imported!"quickbite.backends.interpreter.runtime_value".Value stringValue(
     imported!"dmd.expression".StringExp string_,
 ) {
-    import quickbite.backends.interpreter.runtime_value: Value;
+    import quickbite.backends.interpreter.aggregate_value: AggregateValue;
+
+    // DMD types a literal used directly as `"text".ptr` as a pointer,
+    // rather than preserving the intermediate array expression.  Give that
+    // pointer real NUL-terminated native storage; reconstructArray requires
+    // an array Type and would otherwise reject this ordinary C-string path.
+    if (string_.type.toBasetype.isTypePointer !is null)
+        return pointerStringValue(string_);
 
     switch (string_.sz) {
         case wcharCodeUnitWidth:
-            return Value.stringValue(stringCodeUnits!wchar(string_));
+            return AggregateValue.reconstructArray(
+                string_.type,
+                characterValues(stringCodeUnits!wchar(string_)),
+            );
         case dcharCodeUnitWidth:
-            return Value.stringValue(stringCodeUnits!dchar(string_));
+            return AggregateValue.reconstructArray(
+                string_.type,
+                characterValues(stringCodeUnits!dchar(string_)),
+            );
         default:
-            return Value.stringValue(stringChars(string_));
+            return AggregateValue.reconstructArray(
+                string_.type,
+                characterValues(stringChars(string_)),
+            );
     }
+}
+
+
+private Value pointerStringValue(
+    imported!"dmd.expression".StringExp string_,
+) {
+    import quickbite.backends.interpreter.native_array: NativeArray;
+    import quickbite.backends.interpreter.native_block: NativeBlock;
+    import quickbite.backends.interpreter.native_scalar: writeScalar;
+    import quickbite.backends.interpreter.layout: typeByteSize;
+
+    auto elementType = string_.type.toBasetype.nextOf;
+    const length = string_.numberOfCodeUnits + 1;
+    auto storage = NativeBlock.allocate(
+        length * typeByteSize(elementType),
+        NativeBlock.Scan.no,
+    );
+    auto elements = NativeArray.borrow(elementType, storage.address, length);
+    foreach (index; 0 .. string_.numberOfCodeUnits)
+        writeScalar(elementType, elements.element(index), Value(
+            string_.getIndex(index),
+        ));
+    writeScalar(elementType, elements.element(length - 1), Value(0));
+    return Value.pointerValue(storage.address);
+}
+
+
+private Value[] characterValues(T)(in T[] codeUnits) @safe pure {
+    Value[] values;
+    foreach (codeUnit; codeUnits)
+        values ~= Value(codeUnit);
+    return values;
 }
 
 public T[] stringCodeUnits(T)(

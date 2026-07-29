@@ -4,67 +4,13 @@ module quickbite.backends.interpreter.object_table;
 private:
 
 
-// The object-lifetime GC storage for class instances: each class object's
-// body gets its own `NativeBlock`, keyed by the object's own stable
-// identity (`quickbite.backends.interpreter.runtime_value.Value.classIdentity`, minted once per boxed
-// class object -- see `impl.d`'s `classObjectCells`) rather than by any
-// variable that happens to reference it. Unlike `ModuleTable`, which keys
-// on a `VarDeclaration` because a module variable IS its own storage, many
-// variables (and struct/array fields, slice elements, ...) can hold
-// references to the SAME object, and every one of them must resolve to
-// the SAME block -- decision 15's "a class variable holds a reference
-// (address) to an object block owned by object identity"
-// (`ai/plans/value.md`).
-//
-// Nothing is ever evicted, deliberately and at a real cost: every `new C`
-// mints a fresh identity, the first mirror of a class-typed local holding it
-// allocates that identity's body, and this table pins the body for the whole
-// execution -- `foreach (i; 0 .. 1_000_000) { auto c = new C; c.x = i; }`
-// retains a million conservatively-scanned dead bodies. It is bounded by the
-// number of distinct class objects one execution mirrors, and it is pure
-// shadow overhead: the boxed authority is unaffected.
-//
-// Eviction is not withheld because it is unimportant but because there is
-// nothing here to decide it with, and getting it wrong is worse than the
-// leak. Liveness lives in `impl.d`: an identity is reachable for exactly as
-// long as some boxed `Value.classIdentity` copy of it survives, and those
-// copies are ordinary GC values that spread into locals, arrays, struct
-// fields and forked per-activation maps with nothing reporting back here. A
-// table that guessed wrong in the direction of evicting would then be asked
-// for that identity again by a still-live binding and, finding no block,
-// allocate a SECOND body for one object -- splitting it in two, exactly the
-// duplication `place_value.readValue`'s `identityOfObjectBody` parameter
-// exists to prevent -- while `_generations` (and `impl.d`'s
-// `classMirrorGenerations` snapshots taken against it) would read as
-// unchanged across the gap and certify the new, unrelated body as the one
-// the snapshot was taken of. Both failures are silent.
-//
-// So this is carried to the authority switch (`value.md`'s remaining-work
-// item 5, which lists it), where it dissolves: once a native block IS the
-// object rather than a shadow of one (decision 15/17's authority switch), its
-// lifetime is the collector's and no identity-keyed pin exists to leak.
 public struct ObjectTable {
     import quickbite.backends.interpreter.native_block: NativeBlock;
     import dmd.dclass: ClassDeclaration;
 
     private NativeBlock[size_t] _blocks;
-
-    // Bumped by every `storageFor` call for `identity` that actually hands
-    // out an address, first allocation or not -- a monotonic "who last
-    // touched this body" token. Every real
-    // caller (`impl.d`'s `mirrorClassToFrame`, directly for a variable's own
-    // top-level identity, and `resolveObjectBody` for a class-typed field's
-    // nested one) always follows the call with an actual write into the
-    // returned address (`place_value.writeClassBody`'s own recursion), so a
-    // call here always means "this identity's body is about to be
-    // rewritten" -- bumping unconditionally, not only on first allocation,
-    // is what lets `generation` answer "has anyone rewritten this body
-    // since I last looked" for a SHARED identity two independent mirror
-    // writes (different variables, or different activations) can each
-    // reach. See `generation`'s own comment for the consumer. A call that
-    // THROWS handed no address out and so had no write follow it -- hence
-    // `scope(success)` rather than an unconditional bump, so a refused call
-    // does not tell every other binding its snapshot is stale.
+    // Retained for the ObjectTable unit contract. Interpreter execution no
+    // longer uses generations to verify mirrored class snapshots.
     private size_t[size_t] _generations;
 
     // The stable address of the object body identified by `identity`. The
@@ -130,14 +76,6 @@ public struct ObjectTable {
         return (identity in _blocks) !is null;
     }
 
-    // `identity`'s current write generation -- 0 for an identity `storageFor`
-    // has never been called for. A caller that recorded `generation(identity)`
-    // right after its own write and later sees a DIFFERENT value here knows
-    // some OTHER `storageFor` call -- another variable's mirror, another
-    // activation's, it makes no difference which since the table is shared
-    // for the whole execution (`impl.d`'s `classObjectTable` field comment)
-    // -- has rewritten this identity's body since; see `impl.d`'s
-    // `classMirrorGenerations`/`assertClassBodyValue` for the consumer.
     public size_t generation(size_t identity) const pure @safe {
         return _generations.get(identity, 0);
     }

@@ -183,6 +183,50 @@ static foreach (backend; Matrix!()) {
 }
 
 static foreach (backend; Matrix!()) {
+    @("function.outClassParameterAssignmentIsVisibleToCaller." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            class C {}
+
+            void make(out C c) {
+                c = new C();
+            }
+
+            unittest {
+                C c;
+
+                make(c);
+
+                assert(c !is null);
+            }
+        });
+    }
+}
+
+static foreach (backend; Matrix!()) {
+    @("function.outAssociativeArrayAssignmentIsVisibleToCaller." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            void make(out int[int] values) {
+                values = [1: 9];
+            }
+
+            unittest {
+                int[int] values;
+
+                make(values);
+
+                assert(values[1] == 9);
+            }
+        });
+    }
+}
+
+static foreach (backend; Matrix!()) {
     @("function.nestedLambdaReadsEnclosingThisField." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {

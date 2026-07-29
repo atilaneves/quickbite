@@ -12,6 +12,8 @@ private enum ArrayDisplay {
 
 
 public struct RuntimeValue {
+    private alias NativeAggregate = imported!"quickbite.backends.interpreter.native_aggregate".NativeAggregate;
+
     private alias Data = imported!"std.sumtype".SumType!(
 
         Void,
@@ -41,10 +43,9 @@ public struct RuntimeValue {
         Array,
         AssocArray,
         ClassObject,
-        LocalPointer,
-        NativePointer,
-        NativeDelegate,
+        NativeAggregate,
         Pointer,
+        NativeDelegate,
         Struct,
         TypeName,
         EnumValue,
@@ -105,20 +106,10 @@ public struct RuntimeValue {
         ));
     }
 
-    public static Value nativeArrayValue(
-        in Value[] elements,
-        const(void)* address,
+    public static Value nativeAggregateValue(
+        NativeAggregate aggregate,
     ) @safe pure {
-        return Value(Array(elements, ArrayDisplay.normal, address));
-    }
-
-    public static Value nativeArrayValueWithLength(
-        in size_t length,
-        const(void)* address,
-    ) @safe pure {
-        Value[] elements;
-        elements.length = length;
-        return nativeArrayValue(elements, address);
+        return Value(aggregate);
     }
 
     public static Value stringValue(in char[] elements) @safe pure {
@@ -156,24 +147,8 @@ public struct RuntimeValue {
         return Value(AssocArray(keys, values));
     }
 
-    public static Value pointerValue(in Value target) @safe pure {
-        return Value(Pointer([target]));
-    }
-
-    public static Value arrayPointerValue(
-        in Value[] allocation,
-        in size_t allocationId,
-        in long offset,
-    ) @safe pure {
-        return Value(Pointer(allocation, allocationId, offset));
-    }
-
-    public static Value localPointerValue(in size_t id) @safe pure {
-        return Value(LocalPointer(id));
-    }
-
-    public static Value nativePointerValue(void* pointer) @safe pure {
-        return Value(NativePointer(pointer));
+    public static Value pointerValue(void* pointer) @safe pure {
+        return Value(Pointer(pointer));
     }
 
     // A delegate returned by native code: an opaque {context, funcptr} pair
@@ -213,6 +188,10 @@ public struct RuntimeValue {
         data = Data(value);
     }
 
+    public this(in Value value) @safe pure {
+        data = value.data;
+    }
+
     private this(in Null value) @safe pure {
         data = Data(value);
     }
@@ -225,19 +204,15 @@ public struct RuntimeValue {
         data = Data(value);
     }
 
+    private this(NativeAggregate value) @safe pure {
+        data = Data(value);
+    }
+
     private this(AssocArray value) @safe pure {
         data = Data(value);
     }
 
     private this(Pointer value) @safe pure {
-        data = Data(value);
-    }
-
-    private this(LocalPointer value) @safe pure {
-        data = Data(value);
-    }
-
-    private this(NativePointer value) @safe pure {
         data = Data(value);
     }
 
@@ -373,7 +348,7 @@ public struct RuntimeValue {
         );
     }
 
-    private string asUtf8Character() const @safe pure {
+    public string asUtf8Character() const @safe pure {
         import std.sumtype: match;
         import std.utf: encode;
 
@@ -447,8 +422,12 @@ public struct RuntimeValue {
                     return value.toString;
                 } else static if (is(T == const(FunctionPointer)) || is(T == FunctionPointer)) {
                     return value.toString;
-                } else static if (is(T == const(NativePointer)) || is(T == NativePointer)) {
+                } else static if (is(T == const(Pointer)) || is(T == Pointer)) {
                     return value.toString;
+                } else static if (is(T == const(NativeAggregate)) ||
+                    is(T == NativeAggregate))
+                {
+                    return "<native aggregate>";
                 } else static if (is(T == const(Undisplayable)) || is(T == Undisplayable)) {
                     return value.toString;
                 } else static if (is(T == const(Array)) || is(T == Array)) {
@@ -512,8 +491,12 @@ public struct RuntimeValue {
                     return value.toString;
                 } else static if (is(T == const(FunctionPointer)) || is(T == FunctionPointer)) {
                     return value.toString;
-                } else static if (is(T == const(NativePointer)) || is(T == NativePointer)) {
+                } else static if (is(T == const(Pointer)) || is(T == Pointer)) {
                     return value.toString;
+                } else static if (is(T == const(NativeAggregate)) ||
+                    is(T == NativeAggregate))
+                {
+                    return "<native aggregate>";
                 } else static if (is(T == const(Undisplayable)) || is(T == Undisplayable)) {
                     return value.toString;
                 } else static if (is(T == const(Array)) || is(T == Array)) {
@@ -682,7 +665,6 @@ public struct RuntimeValue {
         return data.match!(
             (const(Array) array) => array.elements.length,
             (const(AssocArray) assocArray) => assocArray.entries.length,
-            (const(Pointer) pointer) => pointer.target.length,
             (_) {
                 throw new Exception("Expected array.");
                 return size_t.init;
@@ -826,38 +808,27 @@ public struct RuntimeValue {
 
         return data.match!(
             (const(Pointer) pointer) => true,
-            (const(LocalPointer) pointer) => true,
-            (const(NativePointer) pointer) => true,
             (_) => false,
         );
     }
 
-    public bool isLocalPointer() const @safe pure nothrow {
+    public bool isNativeAggregate() const @safe pure nothrow {
         import std.sumtype: match;
 
         return data.match!(
-            (const(LocalPointer) pointer) => true,
+            (const(NativeAggregate) aggregate) => true,
             (_) => false,
         );
     }
 
-    public bool isNativePointer() const @safe pure nothrow {
+    public NativeAggregate nativeAggregate() @safe pure {
         import std.sumtype: match;
 
         return data.match!(
-            (const(NativePointer) pointer) => true,
-            (_) => false,
-        );
-    }
-
-    public size_t localPointerId() const @safe pure {
-        import std.sumtype: match;
-
-        return data.match!(
-            (const(LocalPointer) pointer) => pointer.id,
+            (NativeAggregate aggregate) => aggregate,
             (_) {
-                throw new Exception("Expected local pointer.");
-                return size_t.init;
+                throw new Exception("Expected native aggregate.");
+                return NativeAggregate.init;
             },
         );
     }
@@ -883,16 +854,16 @@ public struct RuntimeValue {
         );
     }
 
-    public void* asNativePointer() const {
+    public void* pointerAddress() const {
         import std.sumtype: match;
 
         return data.match!(
-            (const(NativePointer) pointer) => cast(void*) pointer.pointer,
+            (const(Pointer) pointer) => cast(void*) pointer.address,
             (const(Null) null_) => null,
             (value) {
                 import std.conv: text;
                 throw new Exception(
-                    text("Expected native pointer, not ", typeof(value).stringof),
+                    text("Expected pointer, not ", typeof(value).stringof),
                 );
                 return cast(void*) null;
             },
@@ -1031,96 +1002,12 @@ public struct RuntimeValue {
         );
     }
 
-    public Value pointerTarget() const @safe pure {
-        return pointerIndex(0);
-    }
-
-    // Returns a new pointer value identical to this one except that the element
-    // at offset 0 is replaced with `value`.  Only valid for single-element
-    // struct-pointer allocations (those created by `pointerValue`).
-    public Value withPointerTarget(in Value value) const pure {
-        import std.sumtype: match;
-
-        return data.match!(
-            (const(Pointer) pointer) {
-                auto target = pointer.target.dup;
-                target[cast(size_t) pointer.offset] = value;
-                return Value(Pointer(target, pointer.allocation, pointer.offset));
-            },
-            (_) {
-                throw new Exception("Expected pointer.");
-                return Value.void_;
-            },
-        );
-    }
-
-    public Value withPointerElements(in Value[] values) const pure {
-        import std.sumtype: match;
-
-        return data.match!(
-            (const(Pointer) pointer) {
-                auto target = pointer.target.dup;
-                foreach (index, value; values) {
-                    const element = pointer.offset + cast(long) index;
-                    target[cast(size_t) element] = value;
-                }
-                return Value(Pointer(target, pointer.allocation, pointer.offset));
-            },
-            (_) {
-                throw new Exception("Expected pointer.");
-                return Value.void_;
-            },
-        );
-    }
-
-    public Value pointerIndex(in size_t index) const @safe pure {
-        import std.conv: text;
-        import std.sumtype: match;
-
-        return data.match!(
-            (const(Pointer) pointer) {
-                const element = pointer.offset + cast(long) index;
-                if (element < 0 || element >= pointer.target.length)
-                    throw new Exception(text(
-                        "pointer index `", index,
-                        "` exceeds allocated memory block `[",
-                        -pointer.offset, "..",
-                        cast(long) pointer.target.length - pointer.offset,
-                        "]`",
-                    ));
-
-                return pointer.target[cast(size_t) element];
-            },
-            (_) {
-                throw new Exception("Expected pointer.");
-                return Value.void_;
-            },
-        );
-    }
-
-    public size_t pointerLength() const @safe pure {
-        import std.sumtype: match;
-
-        return data.match!(
-            (const(Pointer) pointer) => pointer.target.length,
-            (_) {
-                throw new Exception("Expected pointer.");
-                return size_t.init;
-            },
-        );
-    }
-
     public Value pointerOffsetBy(in long delta) const @safe pure {
         import std.sumtype: match;
 
         return data.match!(
             (const(Pointer) pointer) => Value(Pointer(
-                pointer.target,
-                pointer.allocation,
-                pointer.offset + delta,
-            )),
-            (const(NativePointer) pointer) => Value(NativePointer(
-                cast(void*) (cast(size_t) pointer.pointer + delta),
+                cast(void*) (cast(size_t) pointer.address + delta),
             )),
             (_) {
                 throw new Exception("Expected pointer.");
@@ -1130,97 +1017,25 @@ public struct RuntimeValue {
     }
 
     public bool pointerSameAllocation(in Value other) const @safe pure {
-        return pointerAllocation != 0 &&
-            pointerAllocation == other.pointerAllocation;
+        return isPointer && other.isPointer;
     }
 
     public long pointerOffsetDifference(in Value other) const @safe pure {
-        if (isNativePointer && other.isNativePointer) {
+        if (isPointer && other.isPointer) {
             import std.sumtype: match;
 
             return data.match!(
-                (const(NativePointer) left) => other.data.match!(
-                    (const(NativePointer) right) =>
-                        cast(long) cast(size_t) left.pointer -
-                            cast(long) cast(size_t) right.pointer,
+                (const(Pointer) left) => other.data.match!(
+                    (const(Pointer) right) =>
+                        cast(long) cast(size_t) left.address -
+                            cast(long) cast(size_t) right.address,
                     (_) => assert(false),
                 ),
                 (_) => assert(false),
             );
         }
 
-        if (!pointerSameAllocation(other))
-            throw new Exception("Expected pointers into the same allocation.");
-
-        return pointerOffset - other.pointerOffset;
-    }
-
-    public Value pointerSlice(in size_t lower, in size_t upper) const @safe pure {
-        import std.conv: text;
-        import std.sumtype: match;
-
-        return data.match!(
-            (const(Pointer) pointer) {
-                const begin = pointer.offset + cast(long) lower;
-                const end = pointer.offset + cast(long) upper;
-
-                if (begin < 0 || begin > end || end > pointer.target.length)
-                    throw new Exception(text(
-                        "pointer slice `[", lower, "..", upper,
-                        "]` exceeds allocated memory block `[",
-                        -pointer.offset, "..",
-                        cast(long) pointer.target.length - pointer.offset,
-                        "]`",
-                    ));
-
-                return Value(Array(
-                    pointer.target[cast(size_t) begin .. cast(size_t) end],
-                    ArrayDisplay.normal,
-                    pointer.target,
-                    cast(size_t) begin,
-                ));
-            },
-            (_) {
-                throw new Exception("Expected pointer.");
-                return Value.void_;
-            },
-        );
-    }
-
-    public size_t pointerAllocation() const @safe pure {
-        import std.sumtype: match;
-
-        return data.match!(
-            (const(Pointer) pointer) => pointer.allocation,
-            (_) {
-                throw new Exception("Expected pointer.");
-                return size_t.init;
-            },
-        );
-    }
-
-    public long pointerElementOffset() const @safe pure {
-        import std.sumtype: match;
-
-        return data.match!(
-            (const(Pointer) pointer) => pointer.offset,
-            (_) {
-                throw new Exception("Expected pointer.");
-                return long.init;
-            },
-        );
-    }
-
-    private long pointerOffset() const @safe pure {
-        import std.sumtype: match;
-
-        return data.match!(
-            (const(Pointer) pointer) => pointer.offset,
-            (_) {
-                throw new Exception("Expected pointer.");
-                return long.init;
-            },
-        );
+        throw new Exception("Expected pointers.");
     }
 
     public Value opIndex(in size_t index) const @safe pure {
@@ -1228,7 +1043,6 @@ public struct RuntimeValue {
 
         return data.match!(
             (const(Array) array) => array.elements[index],
-            (const(Pointer) pointer) => pointer.target[cast(size_t) pointer.offset + index],
             (_) {
                 throw new Exception("Expected array.");
                 return Value.void_;
@@ -1275,7 +1089,6 @@ public struct RuntimeValue {
                 array.allocation,
                 array.allocationOffset,
                 array.allocationId,
-                array.nativeAddress,
             )),
             (_) {
                 throw new Exception("Expected array.");
@@ -1287,7 +1100,6 @@ public struct RuntimeValue {
     public Value arraySlice(
         in size_t lower,
         in size_t upper,
-        const(void)* nativeAddress = null,
     ) const @safe pure {
         import std.sumtype: match;
 
@@ -1298,7 +1110,6 @@ public struct RuntimeValue {
                 array.allocation,
                 array.allocationOffset + lower,
                 array.allocationId,
-                nativeAddress,
             )),
             (_) {
                 throw new Exception("Expected array.");
@@ -1340,18 +1151,6 @@ public struct RuntimeValue {
             (_) {
                 throw new Exception("Expected array.");
                 return size_t.init;
-            },
-        );
-    }
-
-    public const(void)* arrayNativeAddress() const @safe pure {
-        import std.sumtype: match;
-
-        return data.match!(
-            (const(Array) array) => array.nativeAddress,
-            (_) {
-                throw new Exception("Expected array.");
-                return null;
             },
         );
     }
@@ -1965,7 +1764,6 @@ private struct Array {
     public size_t allocationOffset;
     public size_t allocationId;
     public ArrayDisplay display;
-    public const(void)* nativeAddress;
 
     public this(
         in Value[] elements,
@@ -1976,16 +1774,6 @@ private struct Array {
         this.allocationOffset = 0;
         this.allocationId = 0;
         this.display = display;
-        this.nativeAddress = null;
-    }
-
-    public this(
-        in Value[] elements,
-        in ArrayDisplay display,
-        const(void)* nativeAddress,
-    ) @safe pure {
-        this(elements, display);
-        this.nativeAddress = nativeAddress;
     }
 
     public this(
@@ -1994,14 +1782,12 @@ private struct Array {
         in Value[] allocation,
         in size_t allocationOffset = 0,
         in size_t allocationId = 0,
-        const(void)* nativeAddress = null,
     ) @safe pure {
         this.elements = elements.dup;
         this.allocation = allocation.dup;
         this.allocationOffset = allocationOffset;
         this.allocationId = allocationId;
         this.display = display;
-        this.nativeAddress = nativeAddress;
     }
 
     public bool opEquals(in Array other) const @safe pure {
@@ -2134,44 +1920,13 @@ private struct AssocArray {
 }
 
 
-// `allocation` is an opaque nonzero id identifying the allocation the
-// pointer points into; `target` is a copy-on-write snapshot of that
-// allocation's elements and `offset` the element the pointer points at.
-// Single-target pointers (e.g. associative array slots) have no
-// allocation identity and use `allocation == 0`, `offset == 0`.
 private struct Pointer {
-    public Value[] target;
-    public size_t allocation;
-    public long offset;
-
-    public this(in Value[] target) @safe pure {
-        this.target = target.dup;
-    }
-
-    public this(
-        in Value[] target,
-        in size_t allocation,
-        in long offset,
-    ) @safe pure {
-        this.target = target.dup;
-        this.allocation = allocation;
-        this.offset = offset;
-    }
-}
-
-
-private struct LocalPointer {
-    public size_t id;
-}
-
-
-private struct NativePointer {
-    public void* pointer;
+    public void* address;
 
     public string toString() const @safe pure {
         import std.conv: text;
 
-        return text(pointer);
+        return text(address);
     }
 }
 

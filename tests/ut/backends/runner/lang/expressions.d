@@ -542,6 +542,26 @@ static foreach (backend; Matrix!(
     }
 }
 
+
+static foreach (backend; Matrix!()) {
+    @("enum.realBaseAssignmentWritesUnderlyingValue." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            enum E : real {
+                a = 1.5L,
+                b = 2.5L,
+            }
+
+            unittest {
+                E e = E.a;
+                e = E.b;
+                assert(cast(real) e == 2.5L);
+            }
+        });
+    }
+}
+
 static foreach (backend; Matrix!(
     Omit!(Interpreter, Because.diverges,
         "see Interpreter pin below; passes the real assertions instead " ~
@@ -977,6 +997,33 @@ static foreach (backend; Matrix!()) {
     }
 }
 
+static foreach (backend; Matrix!(
+    Omit!(Bytecode, Because.inexpressible,
+        "bytecode core does not support calls through delegate locals"),
+)) {
+    @("delegate.nestedFunctionReadsCapturedDelegate." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            int seed() {
+                return 3;
+            }
+
+            unittest {
+                int captured = seed();
+                int nested() {
+                    return captured + 1;
+                }
+                int delegate() dg = &nested;
+                int outerRead() {
+                    return dg();
+                }
+                assert(outerRead() == 4);
+            }
+        });
+    }
+}
+
 static foreach (backend; Matrix!()) {
     @("delegate.structMemberCallUsesReceiver." ~ backend.stringof)
     @Tags(backend.stringof)
@@ -1203,6 +1250,35 @@ static foreach (backend; Matrix!()) {
 
             unittest {
                 assert(recurse(3) == 31);
+            }
+        });
+    }
+}
+
+static foreach (backend; Matrix!(
+    Omit!(Bytecode, Because.inexpressible,
+        "bytecode core does not support function-pointer values loaded " ~
+        "through pointer dereference"),
+)) {
+    @("pointer.functionPointerDereferencePreservesCallable." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            unittest {
+                auto result = () {
+                    static int f(int x) {
+                        return x + 1;
+                    }
+
+                    int function(int) fp = &f;
+                    auto p = &fp;
+                    auto q = *p;
+                    assert(q !is null);
+                    return 1;
+                }();
+
+                assert(result == 1);
             }
         });
     }
@@ -2426,6 +2502,40 @@ static foreach (backend; Matrix!(
     }
 }
 
+// Direct Interpreter witness for the native shared-body path. This was the
+// backend's divergence characterization before object-body storage became
+// authoritative across activations.
+static foreach (backend; AliasSeq!(Interpreter)) {
+    @("class.sharedNestedBodyRewrittenAcrossActivationUsesNativeBody." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            class Child {
+                int x;
+            }
+
+            class Parent {
+                Child child;
+            }
+
+            void bump(Child c) {
+                c.x = c.x + 1;
+            }
+
+            unittest {
+                auto parent = new Parent();
+                parent.child = new Child();
+                parent.child.x = 6;
+
+                bump(parent.child);
+
+                assert(parent.child.x == 7);
+            }
+        });
+    }
+}
+
 // A heap struct's own constructor runs on a CHILD `Walker` (`impl.d`'s
 // `runNewStructPointerExpression`), and a dataseg write it performs lands
 // in the ONE shared `module_table.ModuleTable` block every frame resolves
@@ -2606,22 +2716,11 @@ static foreach (backend; Matrix!(
     }
 }
 
-// Once `&i` has promoted a native-scalar
-// cell, `writeLocation`'s `PtrExp` arm required the pointee to be a
-// native-scalar type no wider than the cell; a struct-typed (or wider)
-// pointee used to fall through to a mirror-only `locals` write, leaving the
-// cell stale, so a later direct read of `i` (which consults the cell first)
-// silently returned the OLD value instead of the struct just written.
-// SystemLinker is the oracle for the write itself (real memory supports it);
-// the Interpreter cannot yet model a struct-typed write into a scalar cell
-// (future work), so Interpreter is omitted from this matrix per the
-// omit-don't-pin convention and separately asserted below to fail loudly
-// instead of silently miswriting.
+// The pointee's type, rather than the source local's scalar type, controls a
+// write through a cast pointer. Native storage makes the struct write cover
+// the same bytes as SystemLinker, so every mature backend is eligible here.
 static foreach (backend; Matrix!(
     Omit!(Ctfe, Because.unconfirmed),
-    Omit!(Interpreter, Because.diverges,
-        "see Interpreter pin below (throws loudly instead of writing " ~
-        "memory)"),
     Omit!(LLVMJit, Because.unconfirmed),
 )) {
     @("pointer.structWriteThroughNonFittingScalarCellPointerWritesMemory." ~
@@ -2645,11 +2744,10 @@ static foreach (backend; Matrix!(
     }
 }
 
-// The Interpreter counterpart of the fixture above: it cannot model a
-// struct-typed write into a promoted scalar cell, so it must fail loudly
-// rather than silently leave the cell stale and read back `i`'s old value.
+// Keep a direct Interpreter characterization alongside the matrix row: the
+// cast pointer writes its complete struct layout over the original scalar.
 static foreach (backend; AliasSeq!(Interpreter)) {
-    @("pointer.structWriteThroughNonFittingScalarCellPointerThrowsLoudly." ~
+    @("pointer.structWriteThroughNonFittingScalarCellPointerWritesMemoryCharacterization." ~
         backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -2666,7 +2764,7 @@ static foreach (backend; AliasSeq!(Interpreter)) {
                 *p = S(42);
                 assert(i == 42);
             }
-        }).shouldThrowWithMessage("Unsupported interpreter assignment target.");
+        });
     }
 }
 
@@ -2737,6 +2835,76 @@ static foreach (backend; Matrix!()) {
                 int* p = &a[0];
                 a[0] = ninetyNine();
                 assert(*p == 99);
+            }
+        });
+    }
+}
+
+// A static-array local is copied into its activation frame on assignment.
+// A pointer taken before that copy must name the frame bytes, not the
+// initializer aggregate that seeded them: compiled D keeps `p` aliased to
+// the local's one inline array allocation across a whole-array assignment.
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.diverges,
+        "CTFE detaches the pointer when the whole static array is assigned; " ~
+        "see the sibling characterization below"),
+    Omit!(Bytecode, Because.unconfirmed,
+        "does not yet support whole static-array assignment from a runtime literal"),
+)) {
+    @("pointer.staticArrayPointerSurvivesWholeArrayAssignment." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            int one() {
+                return 1;
+            }
+
+            int two() {
+                return 2;
+            }
+
+            int ninetyNine() {
+                return 99;
+            }
+
+            unittest {
+                int[1] a = [one()];
+                int* p = &a[0];
+                a = [two()];
+                *p = ninetyNine();
+                assert(a[0] == 99);
+            }
+        });
+    }
+}
+
+// CTFE diverges from compiled D by leaving `p` attached to the array value
+// replaced by the whole-array assignment. Pin that engine behavior separately;
+// SystemLinker remains the oracle in the matrix fixture above.
+static foreach (backend; AliasSeq!(Ctfe)) {
+    @("pointer.staticArrayPointerSurvivesWholeArrayAssignment.ctfeDivergence." ~
+        backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            int one() {
+                return 1;
+            }
+
+            int two() {
+                return 2;
+            }
+
+            int ninetyNine() {
+                return 99;
+            }
+
+            unittest {
+                int[1] a = [one()];
+                int* p = &a[0];
+                a = [two()];
+                *p = ninetyNine();
+                assert(a[0] == 2);
             }
         });
     }
@@ -3416,11 +3584,6 @@ static foreach (backend; Matrix!()) {
 // mirror's own verify step must not turn that pre-existing wrong answer
 // into an internal `AssertError` crash.
 static foreach (backend; Matrix!(
-    Omit!(Interpreter, Because.diverges,
-        "boxed `locals[]` staleness (ai/plans/value.md's Cell coherence " ~
-        "Known gaps): child's own mirror write refreshes the shared " ~
-        "object body, but parent's boxed copy of the child field is never " ~
-        "refreshed, so parent.child.x reads back stale"),
 )) {
     @("class.sharedNestedBodyRewrittenBySiblingBindingDoesNotCrash." ~
         backend.stringof)
@@ -3448,15 +3611,10 @@ static foreach (backend; Matrix!(
     }
 }
 
-// The `Because.diverges` pin the fixture above owes, and the only place its
-// own "does not crash" property is actually executed on the backend that has
-// the mirror: Interpreter runs the guest program to completion and fails its
-// OWN `assert(parent.child.x == 5)` with the stale boxed value, rather than
-// dying inside the interpreter with a mirror-verify `AssertError`. Hand-
-// listed because no `SystemLinker`-oracle expectation applies to it
-// (`SystemLinker` passes).
+// Keep an Interpreter-local witness as well: the alias is a separate local
+// binding, yet the nested field read must still follow the shared native body.
 static foreach (backend; AliasSeq!(Interpreter)) {
-    @("class.sharedNestedBodyRewrittenBySiblingBindingReadsStale." ~
+    @("class.sharedNestedBodyRewrittenBySiblingBindingReadsSharedBody." ~
         backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -3478,24 +3636,14 @@ static foreach (backend; AliasSeq!(Interpreter)) {
 
                 assert(parent.child.x == 5);
             }
-        }).shouldThrowWithMessage("0 != 5");
+        });
     }
 }
 
-// The `DotVarExp`-alias counterpart of the fixture above: `c` aliases
-// `parent.child`'s own identity through a non-`VarExp` source, so it gets no
-// promoted cell of its own (`classIdentityAliasedByAnotherBinding`'s own
-// header comment) and establishes an INDEPENDENT mirror for the same
-// identity. Writing through `c` rewrites the shared body strictly after
-// `parent`'s own mirror last established, the identical shape the fixture
-// above exercises through a plain top-level variable instead of an alias.
-static foreach (backend; Matrix!(
-    Omit!(Interpreter, Because.diverges,
-        "boxed `locals[]` staleness (ai/plans/value.md's Cell coherence " ~
-        "Known gaps): c's own mirror write refreshes the shared object " ~
-        "body, but parent's boxed copy of the child field is never " ~
-        "refreshed, so parent.child.x reads back stale"),
-)) {
+// The `DotVarExp`-alias counterpart of the fixture above: `c` and
+// `parent.child` retain the same native class body, so a field write through
+// either binding is immediately visible through the other.
+static foreach (backend; Matrix!()) {
     @("class.sharedNestedBodyRewrittenByDotVarAliasDoesNotCrash." ~
         backend.stringof)
     @Tags(backend.stringof)
@@ -3522,12 +3670,10 @@ static foreach (backend; Matrix!(
     }
 }
 
-// The `Because.diverges` pin the alias fixture above owes, and the only
-// place its own "does not crash" property is executed on the backend that
-// has the mirror: the same stale boxed read, reached through the alias
-// instead of a plain top-level variable.
+// Keep a direct Interpreter witness alongside the oracle-backed matrix so
+// regressions in composed class identity remain localized.
 static foreach (backend; AliasSeq!(Interpreter)) {
-    @("class.sharedNestedBodyRewrittenByDotVarAliasReadsStale." ~
+    @("class.sharedNestedBodyRewrittenByDotVarAliasReadsSharedBody." ~
         backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -3549,7 +3695,7 @@ static foreach (backend; AliasSeq!(Interpreter)) {
 
                 assert(parent.child.x == 7);
             }
-        }).shouldThrowWithMessage("0 != 7");
+        });
     }
 }
 
@@ -3564,13 +3710,7 @@ static foreach (backend; AliasSeq!(Interpreter)) {
 // body once per sibling (last snapshot wins) and verifies each sibling
 // against its own snapshot must decline the shape outright rather than
 // turn that contradiction into an internal `AssertError`.
-static foreach (backend; Matrix!(
-    Omit!(Interpreter, Because.diverges,
-        "boxed `locals[]` staleness (ai/plans/value.md's Cell coherence " ~
-        "Known gaps): the write through parent.left refreshes the shared " ~
-        "object body, but parent's own boxed copy of the right field is " ~
-        "never refreshed, so parent.right.x reads back stale"),
-)) {
+static foreach (backend; Matrix!()) {
     @("class.sharedSiblingFieldsWithDifferentSnapshotsDoesNotCrash." ~
         backend.stringof)
     @Tags(backend.stringof)
@@ -3598,15 +3738,9 @@ static foreach (backend; Matrix!(
     }
 }
 
-// The `Because.diverges` pin the shared-sibling fixture above owes, and the
-// only place its own "does not crash" property is executed on the backend
-// that has the mirror: Interpreter runs the guest program to completion and
-// fails its OWN assertion with the stale boxed value rather than dying
-// inside the interpreter with a mirror-verify `AssertError`. Hand-listed
-// because no `SystemLinker`-oracle expectation applies to it
-// (`SystemLinker` passes).
+// Direct Interpreter coverage for the native shared-body read path.
 static foreach (backend; AliasSeq!(Interpreter)) {
-    @("class.sharedSiblingFieldsWithDifferentSnapshotsReadsStale." ~
+    @("class.sharedSiblingFieldsWithDifferentSnapshotsReadsSharedBody." ~
         backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -3629,7 +3763,7 @@ static foreach (backend; AliasSeq!(Interpreter)) {
 
                 assert(parent.right.x == 5);
             }
-        }).shouldThrowWithMessage("0 != 5");
+        });
     }
 }
 
@@ -3640,13 +3774,7 @@ static foreach (backend; AliasSeq!(Interpreter)) {
 // own, but `object_table.ObjectTable` is shared across every activation for
 // the whole execution (`impl.d`'s `classObjectTable` field comment), so the
 // rewrite is visible the moment control returns to the caller.
-static foreach (backend; Matrix!(
-    Omit!(Interpreter, Because.diverges,
-        "boxed `locals[]` staleness (ai/plans/value.md's Cell coherence " ~
-        "Known gaps): bump's own mirror write refreshes the shared object " ~
-        "body, but parent's boxed copy of the child field is never " ~
-        "refreshed, so parent.child.x reads back stale"),
-)) {
+static foreach (backend; Matrix!()) {
     @("class.sharedNestedBodyRewrittenAcrossActivationDoesNotCrash." ~
         backend.stringof)
     @Tags(backend.stringof)
@@ -3674,41 +3802,6 @@ static foreach (backend; Matrix!(
                 assert(parent.child.x == 7);
             }
         });
-    }
-}
-
-// The `Because.diverges` pin the cross-activation fixture above owes, and
-// the only place its own "does not crash" property is executed on the
-// backend that has the mirror: the caller's boxed copy still holds the
-// pre-call 6 the callee's mirror write replaced.
-static foreach (backend; AliasSeq!(Interpreter)) {
-    @("class.sharedNestedBodyRewrittenAcrossActivationReadsStale." ~
-        backend.stringof)
-    @Tags(backend.stringof)
-    unittest {
-        runBackendSourceFixtureTests!backend(q{
-            class Child {
-                int x;
-            }
-
-            class Parent {
-                Child child;
-            }
-
-            void bump(Child c) {
-                c.x = c.x + 1;
-            }
-
-            unittest {
-                auto parent = new Parent();
-                parent.child = new Child();
-                parent.child.x = 6;
-
-                bump(parent.child);
-
-                assert(parent.child.x == 7);
-            }
-        }).shouldThrowWithMessage("6 != 7");
     }
 }
 
@@ -3945,6 +4038,36 @@ static foreach (backend; Matrix!()) {
                 parent.child = new Child();
                 parent.child.value = mark(2);
                 assert(parent.child.value == mark(2));
+            }
+        });
+    }
+}
+
+// A condition-declared local owns storage for the whole `if` statement, so a
+// callee's `ref` mutation must still be visible after the call returns.
+static foreach (backend; Matrix!()) {
+    @("ifConditionDeclaration.refMutationPersists." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            int forty1() {
+                return 41;
+            }
+
+            void bump(ref int x) {
+                x += 1;
+            }
+
+            int probe() {
+                if (int v = forty1()) {
+                    bump(v);
+                    return v;
+                }
+                return 0;
+            }
+
+            unittest {
+                assert(probe() == 42);
             }
         });
     }
@@ -7641,38 +7764,9 @@ static foreach (backend; Matrix!()) {
     }
 }
 
-// Gap fixture, not a fix (`ai/plans/value.md`'s Cell coherence "Known gaps"
-// list): `mid.leaf` and `aliasLeaf` are two live bindings to the SAME `Leaf`
-// identity. `mid.leaf.value = mark(1)` is a deep field-chain write reached
-// through `mid`'s own frame slot, which correctly refreshes the identity-
-// keyed object body the native frame mirror mirrors into (`classObjectTable`,
-// `impl.d`'s `mirrorClassToFrame`/`writeClassBody`) -- but `aliasLeaf`'s OWN
-// boxed local (`locals[]`, keyed per VARIABLE, not per identity) is never
-// refreshed, since only a var's own promoted cell or direct write path
-// touches its `locals[]` entry. `impl.d`'s `classIdentityAliasedByAnotherBinding`
-// now declines to mirror or verify a class local whenever another live
-// binding boxes the identical identity (own header comment), so reading
-// `aliasLeaf` afterward hits the generic unpromoted-local path
-// (`assertFrameMirror`), finds no mirror slot to check, and returns
-// `aliasLeaf`'s own stale boxed value unmodified -- an ordinary WRONG VALUE
-// (`aliasLeaf.value == 0`, not `mark(1)`) rather than the internal
-// `AssertError: "class body mirror diverged from boxed local"` this used to
-// throw. The fault is still in the boxed AUTHORITY itself (the stale
-// `locals[]` copy); the mirror merely no longer crashes trying to verify
-// against it. Closing this generally needs every class-typed local's read
-// to consult identity-keyed storage instead of its own per-variable boxed
-// copy -- exactly the native-layout authority switch (`ai/plans/value.md`
-// decision 15/17), so it is frozen new representation-ceiling machinery,
-// not a correctness fix to existing boxed machinery. `Bytecode` omitted per
-// the omit-don't-pin convention (unconfirmed for this shape, matching the
-// other object-graph fixtures' own backend set).
-static foreach (backend; Matrix!(
-    Omit!(Interpreter, Because.diverges,
-        "boxed-authority staleness: a deep field-chain write through one " ~
-        "alias does not refresh another alias's own cached copy of the " ~
-        "same object identity, so aliasLeaf.value reads back 0 instead of " ~
-        "mark(1) -- see ai/plans/value.md's Cell coherence known gaps"),
-)) {
+// Class aliases share the object's native body: a deep write through one
+// binding is immediately visible through every other binding.
+static foreach (backend; Matrix!()) {
     @("classField.deepChainWriteThroughOneAliasVisibleThroughAnother." ~
         backend.stringof)
     @Tags(backend.stringof)
@@ -7705,25 +7799,10 @@ static foreach (backend; Matrix!(
     }
 }
 
-// The Interpreter counterpart of the gap fixture above, proving the DECLINE
-// rather than the crash it replaced: `impl.d`'s
-// `classIdentityAliasedByAnotherBinding` (`mirrorClassToFrame`'s and
-// `assertClassFrameMirror`'s shared gate, via `classBodyShapeMatches`) now
-// sees `leaf` and `aliasLeaf` as two live top-level bindings to the same
-// identity and declines to mirror or verify either one, so reading
-// `aliasLeaf` afterward hits the generic unpromoted-local path with no
-// mirror slot to check at all, rather than reaching `assertClassBodyValue`'s
-// own byte-comparison assert. The interpreted guest program therefore runs
-// to completion and fails its OWN `assert(aliasLeaf.value == mark(1))` the
-// ordinary way (`0 != 10`, `throwOnTestFailure`'s plain `Exception`) instead
-// of dying with `core.exception.AssertError: "class body mirror diverged
-// from boxed local"`. Not a `Matrix!()` member (no `SystemLinker`-oracle
-// comparison is possible here -- `SystemLinker` passes cleanly, so a
-// Matrix fixture would only ever restate the known gap above): a hand-
-// written `AliasSeq!(Interpreter)` pin of Interpreter's own actual, still-
-// divergent behaviour, per AGENTS.md's characterization-pin convention.
+// Keep an explicit Interpreter row so regressions in identity-preserving
+// class reads remain localized even while the matrix carries the oracle.
 static foreach (backend; AliasSeq!(Interpreter)) {
-    @("classField.deepChainWriteThroughOneAliasVisibleThroughAnotherDeclinesRatherThanAsserts." ~
+    @("classField.deepChainWriteThroughOneAliasVisibleThroughAnotherCharacterization." ~
         backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -7751,7 +7830,7 @@ static foreach (backend; AliasSeq!(Interpreter)) {
 
                 assert(aliasLeaf.value == mark(1));
             }
-        }).shouldThrowWithMessage("0 != 10");
+        });
     }
 }
 
@@ -7938,6 +8017,92 @@ static foreach (backend; Matrix!()) {
                 string* p = &s;
                 assert((*p).length == 2);
                 assert(*p == "hi");
+            }
+        });
+    }
+}
+
+
+static foreach (backend; Matrix!(
+    Omit!(Bytecode, Because.unconfirmed),
+    Omit!(Ctfe, Because.unconfirmed),
+    Omit!(LLVMJit, Because.unconfirmed),
+)) {
+    @("refArgument.templateRefSharedParameterMutatesAndPreservesAddress." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            void setShared(T)(ref shared(T) value, shared(T)* expected) {
+                assert(&value == expected);
+                value = 42;
+            }
+
+            unittest {
+                shared int value;
+                auto expected = &value;
+                setShared(value, expected);
+                assert(value == 42);
+                assert(&value == expected);
+            }
+        });
+    }
+}
+
+
+static foreach (backend; Matrix!(
+    Omit!(Bytecode, Because.unconfirmed),
+    Omit!(Ctfe, Because.unconfirmed),
+    Omit!(LLVMJit, Because.unconfirmed),
+)) {
+    @("delegate.captureIsNotParameterReference." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            unittest {
+                int value;
+                auto expected = &value;
+                auto increment = () {
+                    assert(&value == expected);
+                    value++;
+                };
+                increment();
+                increment();
+                assert(value == 2);
+                assert(&value == expected);
+            }
+        });
+    }
+}
+
+
+static foreach (backend; Matrix!(
+    Omit!(Bytecode, Because.unconfirmed),
+    Omit!(Ctfe, Because.unconfirmed),
+    Omit!(LLVMJit, Because.unconfirmed),
+)) {
+    @("refArgument.templateRefSharedForwardsThroughNestedFunction." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            void setShared(T)(ref shared(T) value) {
+                value = 42;
+            }
+
+            void forwardShared(T)(ref shared(T) value) {
+                void nested() {
+                    setShared(value);
+                }
+                nested();
+            }
+
+            unittest {
+                shared int value;
+                auto expected = &value;
+                forwardShared(value);
+                assert(value == 42);
+                assert(&value == expected);
             }
         });
     }

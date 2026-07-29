@@ -14,6 +14,12 @@ The shared bridge is live infrastructure, so this document remains its contract
 and ownership plan. It is not an implementation diary. Historical detail is in
 git history; the tests named below are the executable record.
 
+Bridge completion does not mean every backend has eliminated representation
+conversion. The Interpreter now has native storage authority and direct-address
+argument/result paths, but its adapter still retains transitional
+`RuntimeValue` buffer fallbacks. Deleting those fallbacks is planned in
+`ai/plans/value.md` item 5 and does not reopen the shared bridge milestone.
+
 ## 1. Goal
 
 Quickbite executes project source without relinking it, then calls the native
@@ -89,7 +95,7 @@ source/quickbite/ffi/libffi.d   libffi declarations
 `quickbite.ffi` deals in DMD types, native addresses, and ABI bytes. It never
 names `quickbite.lang.Value` or imports a backend.
 
-Backends implement `NativeMarshaller`:
+Backends currently implement `NativeMarshaller`:
 
 ```text
 canRepresent / canRepresentOutCell
@@ -100,10 +106,13 @@ invokeClosure / durableInboundCallbackId
 argumentAddress / resultAddress
 ```
 
-The boxed Interpreter uses the buffer methods to materialize and reify its
-private values. A native-layout backend may return stable frame-slot addresses
-from `argumentAddress` and `resultAddress`, avoiding per-argument allocation and
-copying. Null addresses request the buffer fallback.
+The Interpreter uses the address methods where its call site already exposes
+native storage, but still uses buffer methods to materialize and reify
+transient `RuntimeValue`s on remaining paths. That fallback is migration debt
+owned by `ai/plans/value.md` item 5. A native-layout backend may return stable
+frame-slot addresses from `argumentAddress` and `resultAddress`, avoiding
+per-argument allocation and copying. Null addresses request the buffer
+fallback.
 
 The pointer-handing variant and the non-variadic CIF cache are landed. The live
 Bytecode call site proves the seam has a second, native-layout consumer.
@@ -116,7 +125,7 @@ Track A — this plan, source/quickbite/ffi/**
   ABI ordering, inbound trampoline registry, native exception capture
 
 Track B — ai/plans/value.md, backends/interpreter/**
-  boxed or native-layout materialize/reify, object representation,
+  removal of transitional materialize/reify, object representation,
   interpreter writeback and catch-object construction
 
 Bytecode — ai/plans/bytecode.md, backends/bytecode/**
@@ -259,9 +268,13 @@ owned by `ai/plans/bytecode.md` unless it exposes a shared ABI defect.
 
 ## 24. Interpreter bridge milestone
 
-The boxed Interpreter can call resident and dependency-image functions through
-the shared bridge. Its marshaller lives in
-`source/quickbite/backends/interpreter/ffi_marshal.d`.
+The Interpreter can call resident and dependency-image functions through the
+shared bridge. Its adapter lives in
+`source/quickbite/backends/interpreter/native_call_adapter.d`. Native storage
+is authoritative and the adapter can pass arguments and results by address,
+but it still contains buffer-based `RuntimeValue` conversion and writeback
+fallbacks. Their deletion is open representation work in `value.md` item 5;
+the ABI support milestone below remains complete.
 
 ### 24.3 Type and layout mapping
 

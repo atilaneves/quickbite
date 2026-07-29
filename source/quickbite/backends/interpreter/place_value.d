@@ -42,7 +42,7 @@ private:
 // `real` (`TY.Tfloat80`) is ALSO a composable leaf, but through its OWN
 // codec below (`isRealType`/`readRealBits`/`writeRealBits`), not
 // `native_scalar`'s: `native_scalar` deliberately excludes `real` because
-// `ffi_marshal.d` routes exact-size scalar arms through its
+// `native_call_adapter.d` routes exact-size scalar arms through its
 // `writeScalar`/`readScalar`, and widening that shared codec would change
 // shipping FFI behaviour, out of scope for this place-composition layer
 // (`ai/plans/value.md`'s decision 15 -- host layout IS the spec on THIS
@@ -90,12 +90,14 @@ public imported!"quickbite.backends.interpreter.runtime_value".Value readValue(
     // non-member form (`cast(E)N`) instead.
     auto enumType = type.isTypeEnum;
     if (enumType !is null) {
-        if (isFloatingBaseEnum(type))
-            throw new Exception(
-                "quickbite.backends.interpreter.place_value.readValue: "
-                ~ "enum with a floating base type has no Value.enumValue "
-                ~ "representation",
-            );
+        if (isFloatingBaseEnum(type)) {
+            auto baseType = floatingEnumBaseType(enumType);
+            if (isRealType(baseType))
+                return Value(readRealBits(place.address, typeByteSize(baseType)));
+
+            import quickbite.backends.interpreter.place: Place;
+            return Place(place.address, baseType).loadScalar;
+        }
 
         const bits = place.loadScalar.asLong;
         const qualifiedName = enumMemberQualifiedName(enumType, bits);
@@ -113,44 +115,41 @@ public imported!"quickbite.backends.interpreter.runtime_value".Value readValue(
 
     auto structType = nonUnionStructOf(type);
     if (structType !is null)
-        return structValueAt(place, structType, identityOfObjectBody);
+        return AggregateValue.copyFromAddress(type, place.address);
 
     auto unionType = unionStructOf(type);
     if (unionType !is null)
-        return structValueAt(place, unionType, identityOfObjectBody);
+        return AggregateValue.copyFromAddress(type, place.address);
 
     auto arrayType = type.isTypeSArray;
-    if (arrayType !is null) {
-        Value[] elements;
-        foreach (i; 0 .. staticArrayLength(arrayType))
-            elements ~= readValue(place.index(i), identityOfObjectBody);
+    if (arrayType !is null)
+        return AggregateValue.copyFromAddress(type, place.address);
 
-        return AggregateValue.reconstructArray(elements);
-    }
+    if (type.isTypeVector !is null)
+        return AggregateValue.copyFromAddress(type, place.address);
 
     auto sliceType = type.isTypeDArray;
-    if (sliceType !is null) {
-        import quickbite.backends.interpreter.native_array:
-            NativeArray, readSliceHeaderBytes;
+    if (sliceType !is null)
+        return AggregateValue.copyFromAddress(type, place.address);
 
-        auto header = readSliceHeaderBytes(
-            sliceHeaderBytes(place.address, NativeArray.sliceHeaderByteLength));
+    // An associative-array place stores only Quickbite's native header
+    // pointer.  Copy that pointer-sized value as one aggregate handle; AA
+    // lookup/mutation stays in the interpreter's native_assoc_array hooks,
+    // never in recursive RuntimeValue entries.
+    if (type.isTypeAArray !is null)
+        return AggregateValue.copyFromAddress(type, place.address);
 
-        Value[] elements;
-        foreach (i; 0 .. header.length)
-            elements ~= readValue(place.index(i), identityOfObjectBody);
-
-        return AggregateValue.reconstructArray(elements);
-    }
-
-    // A class-typed FIELD is itself a stored reference (identical shape to
-    // `place` here), so composing an object graph -- a class field pointing
-    // at another object, `class Node { Node next; }` being the extreme
-    // case -- needs the same `deref`-then-compose treatment recursively.
-    // `readClassValue` carries that recursion (and its cycle guard); see
-    // its own header comment.
-    if (type.isTypeClass !is null)
+    // Native-authority class slots expose the stored object body address
+    // directly. The legacy mirror supplies an identity capability and keeps
+    // its boxed graph reconstruction below; it is not allowed to mint a
+    // second identity for a native body.
+    if (type.isTypeClass !is null) {
+        if (identityOfObjectBody is null) {
+            auto body = place.deref.address;
+            return body is null ? Value.null_ : Value.pointerValue(body);
+        }
         return readClassValue(place, null, identityOfObjectBody);
+    }
 
     // A pointer place's own bytes are the stored host address itself
     // (`ai/plans/value.md` decision 15) -- `place.deref` already reads
@@ -159,16 +158,34 @@ public imported!"quickbite.backends.interpreter.runtime_value".Value readValue(
     // needs no parallel raw-address accessor. A stored `null` address reads
     // back as `Value.null_`, matching `impl.d`'s own null-pointer-literal
     // value (`isNullExp`'s non-array arm) rather than inventing a
-    // `nativePointerValue(null)` shape nothing else in the walker produces.
+    // `pointerValue(null)` shape nothing else in the walker produces.
     auto pointerType = type.isTypePointer;
     if (pointerType !is null) {
         auto address = place.deref.address;
-        return address is null ? Value.null_ : Value.nativePointerValue(address);
+        return address is null ? Value.null_ : Value.pointerValue(address);
     }
+
+    if (type.isTypeDelegate !is null && bytesAreZero(
+        place.address,
+        typeByteSize(type),
+    ))
+        return Value.null_;
 
     throw new Exception(
         "quickbite.backends.interpreter.place_value.readValue: unsupported at place",
     );
+}
+
+
+private bool bytesAreZero(
+    const(void)* address,
+    in size_t length,
+) pure nothrow @trusted {
+    const bytes = (cast(const(ubyte)*) address)[0 .. length];
+    foreach (octet; bytes)
+        if (octet != 0)
+            return false;
+    return true;
 }
 
 
@@ -298,6 +315,68 @@ public bool isRealType(imported!"dmd.mtype".Type type) @trusted {
 }
 
 
+// `Type.toBasetype` is not @safe; this keeps the class-reference check at the
+// same narrow DMD boundary as `isRealType` above.
+private bool isClassType(imported!"dmd.mtype".Type type) @trusted {
+    return type.toBasetype.isTypeClass !is null;
+}
+
+
+// The AA carrier is a header pointer, whose layout does not change when D
+// propagates qualifiers into the key/value types.
+private bool isAssocArrayType(imported!"dmd.mtype".Type type) @trusted {
+    return type.toBasetype.isTypeAArray !is null;
+}
+
+
+// DMD interns base types, while modifiers and aliases can give two different
+// Type objects for the same guest-layout value. The byte-copy gate cares about
+// that layout identity, not the wrapper object identity.
+private bool sameBaseType(
+    imported!"dmd.mtype".Type lhs,
+    imported!"dmd.mtype".Type rhs,
+) @trusted {
+    import dmd.astenums: TY;
+    import dmd.typesem: mutableOf;
+
+    auto lhsVector = lhs.toBasetype.isTypeVector;
+    auto rhsVector = rhs.toBasetype.isTypeVector;
+    if (lhsVector !is null || rhsVector !is null)
+        return lhsVector !is null && rhsVector !is null &&
+            mutableOf(lhsVector.basetype).equals(mutableOf(rhsVector.basetype));
+
+    // `mutableOf` removes the outer qualifier, but DMD is not required to
+    // intern the resulting wrapper (notably for a const AA field).  Semantic
+    // type equality is the layout identity here; pointer identity rejects a
+    // valid `long[string]` -> `const(long[string])` aggregate copy.
+    // A dynamic-array qualifier can instead live on its element (`inout(int)[]`
+    // versus `int[]`). The header layout is identical, and the element
+    // qualifier does not change the header copied at this boundary.
+    auto lhsArray = lhs.toBasetype.isTypeDArray;
+    auto rhsArray = rhs.toBasetype.isTypeDArray;
+    if (lhsArray !is null && rhsArray !is null) {
+        // The frontend represents an untyped empty/null slice carrier as
+        // `void[]`. Its value is only the ABI header, so copying that empty
+        // header into a concretely typed slice slot is the typed
+        // materialization step, not an element-layout conversion.
+        if (lhsArray.next.toBasetype.ty == TY.Tvoid)
+            return true;
+        return mutableOf(lhsArray.next).equals(mutableOf(rhsArray.next));
+    }
+
+    return mutableOf(lhs.toBasetype).equals(mutableOf(rhs.toBasetype));
+}
+
+
+// DMD owns the null-terminated type spelling for the lifetime of the AST;
+// copying it makes the diagnostic independent of that internal buffer.
+private string typeName(imported!"dmd.mtype".Type type) @trusted {
+    import std.string: fromStringz;
+
+    return type.toChars.fromStringz.idup;
+}
+
+
 // Whether `value` has exactly the recursive boxed shape `writeValue` can
 // encode at `type`: a native scalar, `real`, struct/union, static array, or
 // host-address pointer. This is the value-side counterpart to
@@ -359,7 +438,7 @@ private bool valueMatchesComposablePlace(
     }
 
     if (type.isTypePointer !is null)
-        return value.isNativePointer || value == Value.null_;
+        return value.isPointer || value == Value.null_;
 
     auto arrayType = type.isTypeSArray;
     assert(arrayType !is null, "valueMatchesPlace: composable type");
@@ -379,16 +458,10 @@ private bool valueMatchesComposablePlace(
 
 
 // True for an enum whose base type is a floating one -- `enum E : double`
-// and `enum E : real` are both legal D, and both are shapes this module
-// composes in ONE direction only. `writeValue` would happily write them
-// (their base type is `native_scalar.isNativeScalarType` or `isRealType`),
-// but `readValue` cannot bring them back: its enum arm must return a
-// `Value.enumValue`, whose bits are a `long`, and there is no member
-// lookup or `cast(E)N` rendering for a floating one. A one-way shape is
-// not composable, so all three of `isPlaceComposable`, `readValue` and
-// `writeValue` decline it together rather than letting a write land that
-// the read side then refuses -- exactly the asymmetry `isPlaceComposable`'s
-// contract exists to rule out.
+// and `enum E : real` are both legal D. RuntimeValue has no floating enum
+// tag, so typed places carry their underlying floating scalar directly; that
+// is still a complete and lossless guest representation for reads, writes,
+// and union overlap.
 //
 // `TypeEnum.isFloating` forwards to the enum's own member type (DMD's own
 // override), so this needs no separate base-type resolution. `@trusted`:
@@ -400,18 +473,22 @@ private bool isFloatingBaseEnum(imported!"dmd.mtype".Type type) @trusted {
 }
 
 
+private imported!"dmd.mtype".Type floatingEnumBaseType(
+    imported!"dmd.mtype".TypeEnum type,
+) @trusted {
+    return type.toBasetype2;
+}
+
+
 // The scalar leaf `writeValue` actually writes: `native_scalar.
 // isNativeScalarType` dispatches on an enum's BASE type, so it answers
-// `true` for `enum E : double` -- a type `writeValue` refuses
-// (`isFloatingBaseEnum` above). Every predicate that wants "a leaf this
-// module's writer can land on" must ask this one rather than
-// `isNativeScalarType` directly, which is how `isUnionMemberReDerivable`
-// stays inside `isPlaceComposable`'s own accepted set instead of admitting
-// a member `writeValue` will then throw on.
+// `true` for `enum E : double`, whose typed place carries the underlying
+// scalar bits directly. This keeps union-member reconstruction on the same
+// read/write representation.
 private bool isWritableNativeScalar(imported!"dmd.mtype".Type type) @safe {
     import quickbite.backends.interpreter.native_scalar: isNativeScalarType;
 
-    return isNativeScalarType(type) && !isFloatingBaseEnum(type);
+    return isNativeScalarType(type);
 }
 
 
@@ -442,10 +519,9 @@ in (length == real.sizeof)
 // Writes `value` into `length` bytes at `address`, with the padding bytes
 // (6 of them on this host, past the 10 significant ones) DETERMINISTIC --
 // always zero -- rather than whatever was already at `address`. The
-// verified frame mirror compares whole slots RAW BYTE by raw byte
-// (`ai/plans/value.md`'s Layout authority contract), so two writes of the
-// same `real` must produce identical bytes, padding included, or `impl.d`'s
-// `assertFrameMirror` fires as a hard failure. What guarantees that is
+// native storage must preserve deterministic padding bytes, so two writes of
+// the same `real` produce identical byte representations. What guarantees that
+// is
 // composing the bytes in a fresh LOCAL and copying the whole local over,
 // never assigning into the destination in place: `place_value.d`'s own
 // `writeRealBits` unit test writes the same value into two destinations
@@ -523,19 +599,8 @@ private imported!"quickbite.backends.interpreter.runtime_value".Value structValu
 // unions that single write cannot honestly stand in for -- see
 // `writeUnionValue`/`isComposableUnion`'s own header comments. A
 // pointer-typed place composes symmetrically with `readValue`'s pointer
-// arm -- but its refusal, unlike every type-shape refusal above, is
-// VALUE-dependent, not type-shape-dependent: the type itself (a pointer)
-// is always accepted, and what gets refused is a `value` that has no host
-// address to store. `Value.isNativePointer` or `Value.null_` carry one (a
-// real host address, or the null address); every other pointer-flavoured
-// boxed carrier the walker still has (`isLocalPointer`'s allocation-id
-// carrier, the struct-shaped `Pointer`, a function pointer's minted id)
-// does not, because none of them IS a host address -- they are boxed-era
-// stand-ins for one, and this codec has no address to invent for them.
-// That is a fact about the VALUE handed to a call this slice makes always
-// legal by TYPE, the opposite shape from every refusal above (a slice
-// element type that cannot compose, a class place), which all refuse the
-// same way for every value of that type. `real` is a plain leaf here too
+// arm: `Value.isPointer` carries a host address and `Value.null_` carries
+// the null address. `real` is a plain leaf here too
 // (`writeRealBits`, via `isRealType`) -- see `readValue`'s own header
 // comment for why it lives in this module rather than `native_scalar`'s
 // shared codec.
@@ -547,21 +612,49 @@ public void writeValue(
     import quickbite.backends.interpreter.layout:
         structFields, staticArrayLength, typeByteSize;
     import quickbite.backends.interpreter.aggregate_value: AggregateValue;
+    import quickbite.backends.interpreter.place: Place;
     import quickbite.backends.interpreter.runtime_value: Value;
 
     auto type = place.type;
 
-    // Refused for the same reason `readValue`'s own enum arm refuses it
-    // (its message there): `Value.enumValue` carries `long` bits, so a
-    // floating-base enum has no boxed enum shape to read back, and a write
-    // this module cannot undo is not a composition -- both directions
-    // decline together, which is what `isPlaceComposable` promises.
-    if (isFloatingBaseEnum(type))
-        throw new Exception(
-            "quickbite.backends.interpreter.place_value.writeValue: "
-            ~ "enum with a floating base type has no Value.enumValue "
-            ~ "representation",
-        );
+    if (value.isNativeAggregate) {
+        auto source = AggregateValue.native(value);
+        // DMD uses a pointer-typed slot for a catch variable even though the
+        // caught value is a class reference. Store the referenced object body,
+        // not the address of the native class-reference carrier.
+        if (isClassType(source.type) && type.isTypePointer !is null) {
+            place.storeReference(Place(source.address, source.type).deref.address);
+            return;
+        }
+        // Class assignment stores only the reference slot, so a derived
+        // native class value may initialise a base-class slot just as a D
+        // reference does. Other aggregates still require their exact native
+        // layout type before copying their complete byte span.
+        const classReference = isClassType(source.type) && isClassType(type);
+        // An AA value is solely its header handle.  Qualifying an AA qualifies
+        // its value type (`const(long[string])`), not that one-word handle,
+        // so a qualified destination is a valid copy without pretending its
+        // key/value storage has the same DMD type.
+        const assocArrayHandle = isAssocArrayType(source.type) && isAssocArrayType(type);
+        if (!sameBaseType(source.type, type) && !classReference && !assocArrayHandle)
+            throw new Exception(
+                "quickbite.backends.interpreter.place_value.writeValue: "
+                ~ "native aggregate type mismatch " ~ typeName(source.type)
+                ~ " -> " ~ typeName(type),
+            );
+        copyAggregateBytes(place.address, source.address, typeByteSize(type));
+        return;
+    }
+
+    if (isFloatingBaseEnum(type)) {
+        auto enumType = type.isTypeEnum;
+        auto baseType = floatingEnumBaseType(enumType);
+        if (isRealType(baseType))
+            writeRealBits(place.address, typeByteSize(baseType), value.asReal);
+        else
+            place.storeScalar(value);
+        return;
+    }
 
     if (isNativeScalarType(type)) {
         place.storeScalar(value);
@@ -601,15 +694,34 @@ public void writeValue(
 
     auto pointerType = type.isTypePointer;
     if (pointerType !is null) {
-        if (!value.isNativePointer && value != Value.null_)
+        if (!value.isPointer && value != Value.null_)
             throw new Exception(
                 "quickbite.backends.interpreter.place_value.writeValue: "
-                ~ "pointer place requires a Value holding a host address "
-                ~ "(a native pointer or null), not a boxed pointer carrier "
-                ~ "with no host address to store",
+                ~ "pointer place requires a pointer Value or null",
             );
 
-        place.storeReference(nativePointerAddress(value));
+        place.storeReference(pointerAddress(value));
+        return;
+    }
+
+    auto classType = type.isTypeClass;
+    if (classType !is null) {
+        if (!value.isPointer && value != Value.null_)
+            throw new Exception(
+                "quickbite.backends.interpreter.place_value.writeValue: "
+                ~ "class place requires an object pointer or null",
+            );
+        place.storeReference(pointerAddress(value));
+        return;
+    }
+
+    if (type.isTypeAArray !is null && value == Value.null_) {
+        zeroBytes(place.address, typeByteSize(type));
+        return;
+    }
+
+    if (type.isTypeDelegate !is null && value == Value.null_) {
+        zeroBytes(place.address, typeByteSize(type));
         return;
     }
 
@@ -619,13 +731,24 @@ public void writeValue(
 }
 
 
-// `Value.asNativePointer` is not `@safe`; this is the `@trusted` boundary.
-// Called only once `writeValue`'s pointer arm has already checked `value`
-// is `isNativePointer` or `Value.null_`, so this never reaches
-// `asNativePointer`'s own throwing arm -- it always returns a real host
+// A null delegate is the all-zero `{ context, function }` ABI value.  Live
+// interpreted delegates are intentionally not encoded here: the walker keeps
+// those in its callable slot table because no native function address exists
+// for them.
+private void zeroBytes(void* address, in size_t length) pure nothrow @trusted {
+    import core.stdc.string: memset;
+
+    memset(address, 0, length);
+}
+
+
+// `Value.pointerAddress` is not `@safe`; this is the `@trusted` boundary.
+// Called only once `writeValue`'s pointer or class arm has already checked
+// `value` is `isPointer` or `Value.null_`, so this never reaches
+// `pointerAddress`'s own throwing arm -- it always returns a real host
 // address, or `null`.
-private void* nativePointerAddress(in imported!"quickbite.backends.interpreter.runtime_value".Value value) @trusted {
-    return value.asNativePointer;
+private void* pointerAddress(in imported!"quickbite.backends.interpreter.runtime_value".Value value) @trusted {
+    return value.pointerAddress;
 }
 
 
@@ -657,9 +780,8 @@ private void* nativePointerAddress(in imported!"quickbite.backends.interpreter.r
 // has already been written successfully into `array` -- storage nothing
 // else can yet see, since no guest-visible location points at it until
 // then. An element `writeValue` cannot compose -- a class or `real`
-// element (or a nested aggregate containing one), or a pointer element
-// given a boxed value with no host address (`writeValue`'s own pointer
-// arm) -- throws from deep in that recursion, before `place`'s own header
+// element (or a nested aggregate containing one) throws from deep in that
+// recursion, before `place`'s own header
 // is ever touched -- so a non-composable element refuses the WHOLE write,
 // leaving `place` exactly as it was, never a partially written array
 // visible through it.
@@ -831,10 +953,9 @@ private bool isComposableUnion(imported!"dmd.mtype".TypeStruct unionType) @safe 
 // deliberately a subset of `isPlaceComposable`'s -- a member answering
 // `true` here always composes, which the `out` contract below checks
 // rather than leaving it as a claim two functions must independently
-// honour: a native scalar `writeValue` writes (`isWritableNativeScalar`,
-// NOT `isNativeScalarType`, which admits the floating-base enums
-// `writeValue` refuses), a static array of those, or a non-union struct
-// built recursively from them.
+// honour: a native scalar `writeValue` writes (`isWritableNativeScalar`),
+// a static array of those, or a non-union struct built recursively from
+// them.
 //
 // The excluded shapes are excluded because `impl.d`'s `withUnionFieldWrite`
 // -- the walker's only union field-write path -- re-derives exactly a
@@ -892,9 +1013,8 @@ out (result; !result || isPlaceComposable(type))
 // writer, recursing the identical dispatch `writeValue` does so the two
 // cannot drift. Only the union arm needs it (see `isComposableUnion`):
 // everywhere else a byte no field or element owns is padding nothing reads,
-// and both the mirror slot and `assertFrameMirror`'s comparison scratch
-// start out zeroed (`NativeBlock.allocate`'s own contract), so untouched
-// padding compares equal on both sides.
+// and fresh native blocks start out zeroed (`NativeBlock.allocate`'s own
+// contract), so untouched padding has a deterministic representation.
 //
 // A native scalar, a `real`, and a pointer each write exactly their own
 // `typeByteSize` (`native_scalar.writeScalar`, `writeRealBits`,
@@ -905,16 +1025,10 @@ out (result; !result || isPlaceComposable(type))
 // `layout.fieldByteOffset`s must run consecutively from 0 and the last one
 // must end at the struct's own size, which alignment padding (interior or
 // trailing) breaks. Every other shape -- a union, a slice, a class --
-// answers `false` -- including a floating-base enum, which both
-// `isNativeScalarType` and `isRealType` answer `true` for (they dispatch on
-// the enum's base type) but `writeValue` refuses outright, so it writes no
-// bytes at all rather than all of them.
+// answers `false`.
 private bool writeCoversWholeType(imported!"dmd.mtype".Type type) @safe {
     import quickbite.backends.interpreter.layout:
         structFields, declaredType, fieldByteOffset, typeByteSize;
-
-    if (isFloatingBaseEnum(type))
-        return false;
 
     if (isWritableNativeScalar(type) || isRealType(type) || type.isTypePointer !is null)
         return true;
@@ -1052,56 +1166,8 @@ private void writeClassBodyImpl(
 }
 
 
-// Whether `type` is one `readValue`/`writeValue` compose down to scalar
-// leaves without throwing: a native scalar; `real` (its own leaf codec,
-// `isRealType`/`readRealBits`/`writeRealBits` -- see `readValue`'s own
-// header comment for why it is not `native_scalar.isNativeScalarType`); a
-// non-union struct all of whose `layout.structFields` field types are
-// themselves place-composable; a union `isComposableUnion` accepts (its own
-// header comment -- a stricter question than "are its members composable",
-// because `writeValue`'s union arm writes ONE member's bytes rather than
-// recursing every field, and that stands in for the whole union only under
-// conditions a union's own member types decide); a static array whose
-// element type (`.next`) is place-composable; or a pointer. Recurses the
-// identical dispatch `readValue`/`writeValue` use (`isNativeScalarType`,
-// `isRealType`, `nonUnionStructOf`, `unionStructOf`, `isTypeSArray`,
-// `isTypePointer`) so this predicate can never drift from what those two
-// actually accept for the shapes it DOES claim -- false for a class, a
-// slice/dynamic array, a floating-base enum (`isFloatingBaseEnum`), and a
-// union `isComposableUnion` declines.
-//
-// The union arm is the one place this predicate is deliberately narrower
-// than `readValue` alone: `readValue` composes a declined union perfectly
-// well (every member is just its own reinterpretation of the same bytes),
-// it is the single-member WRITE that cannot stand in for it. Both mirror
-// sides gate on this predicate, so the narrowing costs coverage
-// symmetrically and never leaves one side writing what the other will not
-// verify.
-//
-// A pointer answers `true` unconditionally here (a TYPE-shape question,
-// the only kind this predicate asks), even though `writeValue`'s own
-// pointer arm still refuses some VALUES of that type (a boxed-era pointer
-// carrier with no host address -- `isLocalPointer`'s allocation-id
-// carrier, the struct-shaped `Pointer`, a function pointer's minted id).
-// That is not a gap `isPlaceComposable` needs to close: `impl.d`'s
-// `mirrorToFrame`/`assertFrameMirror` never call `writeValue` on a value
-// they have not already run through `placeShapeMatches` first, and that
-// function's own pointer arm repeats `writeValue`'s EXACT refusal
-// condition (`value.isNativePointer || value == Value.null_`) as the
-// shared gate both the write and the verify side call before touching
-// `writeValue` at all -- so a value this type-level predicate makes
-// eligible but that value-level gate declines is skipped on both sides
-// identically, never asserted on. The other blocker a prior slice found,
-// `assertFrameMirror`'s comparison scratch being allocated `NativeBlock.
-// Scan.no` unconditionally, is fixed at its own call site: the scratch's
-// scan policy is now `layout.typeHasPointers` over the type being
-// composed, mechanically, not a hardcoded default -- see `impl.d`'s own
-// comment there.
 public bool isPlaceComposable(imported!"dmd.mtype".Type type) @safe {
     import quickbite.backends.interpreter.native_scalar: isNativeScalarType;
-
-    if (isFloatingBaseEnum(type))
-        return false;
 
     if (isNativeScalarType(type))
         return true;
@@ -1222,9 +1288,8 @@ private bool fieldsAreDisjoint(
 // which this predicate can see (it takes a `ClassDeclaration`, not a
 // `Value`), and neither of which is a TYPE question in the first place.
 // `impl.d`'s `classBodyShapeMatches` is the value-level counterpart that
-// catches those, called identically alongside this predicate by both
-// `mirrorClassToFrame` and `assertClassFrameMirror` before either ever
-// reaches `writeClassBody`. Answering `true` here unconditionally, rather
+// catches those before `mirrorClassToFrame` reaches `writeClassBody`.
+// Answering `true` here unconditionally, rather
 // than recursing into the referenced class's OWN `isClassBodyComposable`,
 // is also what keeps this a plain, terminating TYPE-shape walk: DMD class
 // declarations are free to reference themselves directly
@@ -1266,7 +1331,7 @@ public bool isClassBodyComposable(
 private imported!"dmd.mtype".TypeStruct nonUnionStructOf(
     imported!"dmd.mtype".Type type,
 ) @safe {
-    auto structType = type.isTypeStruct;
+    auto structType = baseTypeOf(type).isTypeStruct;
     return structType !is null && structType.sym.isUnionDeclaration is null
         ? structType
         : null;
@@ -1284,10 +1349,21 @@ private imported!"dmd.mtype".TypeStruct nonUnionStructOf(
 private imported!"dmd.mtype".TypeStruct unionStructOf(
     imported!"dmd.mtype".Type type,
 ) @safe {
-    auto structType = type.isTypeStruct;
+    auto structType = baseTypeOf(type).isTypeStruct;
     return structType !is null && structType.sym.isUnionDeclaration !is null
         ? structType
         : null;
+}
+
+
+// Struct dispatch ignores top-level qualifiers; the DMD base-type query is
+// confined to this boundary so all struct paths make the same decision.
+private imported!"dmd.mtype".Type baseTypeOf(
+    imported!"dmd.mtype".Type type,
+) @trusted {
+    import dmd.typesem: mutableOf;
+
+    return mutableOf(type.toBasetype);
 }
 
 
@@ -1297,6 +1373,21 @@ private imported!"dmd.mtype".TypeStruct unionStructOf(
 // exactly the header bytes at `address` -- never more.
 private ubyte[] sliceHeaderBytes(void* address, in size_t length) pure nothrow @trusted {
     return (cast(ubyte*) address)[0 .. length];
+}
+
+
+// Both addresses come from DMD-sized aggregate storage of the identical
+// static type, checked by `writeValue` before this boundary.  Copying exactly
+// that size is the whole-value assignment operation; recursive field writes
+// would recreate a boxed aggregate traversal and lose union/padding bits.
+private void copyAggregateBytes(
+    void* destination,
+    void* source,
+    in size_t length,
+) pure nothrow @trusted {
+    import core.stdc.string: memcpy;
+
+    memcpy(destination, source, length);
 }
 
 

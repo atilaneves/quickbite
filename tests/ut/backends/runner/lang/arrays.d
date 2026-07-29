@@ -802,6 +802,32 @@ static foreach (backend; Matrix!()) {
     }
 }
 
+// Slice assignment writes existing storage in place, so a slice taken before
+// the assignment observes the changed element.
+static foreach (backend; Matrix!()) {
+    @("dynamicArray.sliceAssignmentIsVisibleThroughEarlierSlice." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            int nine() {
+                return 9;
+            }
+
+            int f() {
+                int[] a = [1, 2];
+                int[] s = a[0 .. 2];
+                a[0 .. 1] = nine();
+                return s[0];
+            }
+
+            unittest {
+                assert(f() == 9);
+            }
+        });
+    }
+}
+
 static foreach (backend; AliasSeq!(Ctfe)) {
     @("dynamicArray.overlappingSliceAssignmentIsRejectedAtCtfe." ~
         backend.stringof)
@@ -1807,6 +1833,52 @@ static foreach (backend; Matrix!()) {
     }
 }
 
+// Struct AA keys compare dynamic-array members by their elements, not by the
+// identity of their slice backing storage. Bytecode refuses DMD's synthesized
+// associative-array key variable before it can execute this fixture.
+static foreach (backend; Matrix!(
+    Omit!(Bytecode, Because.refusal,
+        "Unsupported variable in bytecode core: __aakey3"),
+)) {
+    @("assocArray.structKeyWithStringMemberComparesStructurally." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct Name {
+                string text;
+            }
+
+            string ab() {
+                return "ab";
+            }
+
+            unittest {
+                int[Name] ages;
+                ages[Name(ab())] = 1;
+                assert((Name(ab()) in ages) !is null);
+            }
+        });
+    }
+}
+
+static foreach (backend; Matrix!(
+    Omit!(Bytecode, Because.inexpressible, "nested associative-array operand"),
+)) {
+    @("assocArray.nestedLookupDereferencesAssociativeArrayPointee." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            unittest {
+                int[int][int] a = [1: [2: 3]];
+
+                assert(a[1][2] == 3);
+            }
+        });
+    }
+}
+
 static foreach (backend; Matrix!()) {
     @("assocArray.equalityComparesRuntimeEntries." ~ backend.stringof)
     @Tags(backend.stringof)
@@ -1921,6 +1993,43 @@ static foreach (backend; Matrix!()) {
 
                 assert(values[first] == 42);
                 assert(values[second] == 41);
+            }
+        });
+    }
+}
+
+static foreach (backend; Matrix!()) {
+    @("assocArray.nullAACalleeInsertInvisible." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            void insert(int[int] aa) {
+                aa[1] = 2;
+            }
+
+            unittest {
+                int[int] aa;
+                insert(aa);
+                assert(aa.length == 0);
+            }
+        });
+    }
+}
+
+static foreach (backend; Matrix!(
+    Omit!(Bytecode, Because.refusal,
+        "Unsupported associative array initializer in bytecode core: aa"),
+)) {
+    @("assocArray.nullAAAssignmentInsertDetaches." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            unittest {
+                int[int] aa;
+                int[int] bb = aa;
+                bb[1] = 2;
+                assert(aa.length == 0);
+                assert(bb.length == 1);
             }
         });
     }

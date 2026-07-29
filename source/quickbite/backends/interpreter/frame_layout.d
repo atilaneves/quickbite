@@ -75,7 +75,7 @@ public struct FrameLayout {
 // slot used.
 public FrameLayout computeFrameLayout(
     imported!"dmd.func".FuncDeclaration function_,
-) @safe {
+) @trusted {
     import quickbite.backends.interpreter.layout: typeByteSize, typeAlignment, typeIsSized, declaredType;
     import dmd.declaration: VarDeclaration;
 
@@ -96,8 +96,8 @@ public FrameLayout computeFrameLayout(
             maxAlignment = alignment;
     }
 
-    foreach (parameter; activationParameters(function_)) {
-        if (parameterIsReference(parameter)) {
+    foreach (index, parameter; activationParameters(function_)) {
+        if (isReferenceParameter(function_, index, parameter)) {
             place(
                 parameter,
                 (void*).sizeof,
@@ -188,6 +188,14 @@ private size_t alignedUp(in size_t value, in size_t alignment) pure nothrow @nog
 private FrameLayout[imported!"dmd.func".FuncDeclaration] _frameLayoutCache;
 
 
+// DMD fixture compilations replace their AST arenas, so declaration addresses
+// can be reused by a later module in the same test process. Keep memoization
+// within one interpreter root execution, but never across compiler lifetimes.
+public void clearFrameLayoutCache() @safe {
+    _frameLayoutCache.clear;
+}
+
+
 // `computeFrameLayout(function_)`, memoized: the first call for `function_`
 // walks its body and caches the result; every later call for the same
 // `function_` returns the cached layout instead of re-walking it.
@@ -239,8 +247,31 @@ private imported!"dmd.declaration".VarDeclaration[] activationParameters(
 // `VarDeclaration.isReference` (`(storage_class & (STC.ref_ | STC.out_))
 // != 0`), already `@safe` in DMD itself, so no `@trusted` boundary is
 // needed here.
-private bool parameterIsReference(imported!"dmd.declaration".VarDeclaration parameter) @safe {
-    return parameter.isReference;
+public bool isReferenceParameter(
+    imported!"dmd.func".FuncDeclaration function_,
+    in size_t index,
+    imported!"dmd.declaration".VarDeclaration parameter,
+) @trusted {
+    import dmd.astenums: STC;
+
+    if ((parameter.storage_class & STC.parameter) == STC.none)
+        return false;
+    if (parameter.isReference)
+        return true;
+    if (!parameter.type.isShared)
+        return false;
+
+    auto functionType = function_.type is null
+        ? null
+        : function_.type.toBasetype.isTypeFunction;
+    auto canonical = functionType is null
+        ? null
+        : functionType.parameterList.parameters;
+    if (canonical is null || index >= canonical.length)
+        return false;
+
+    enum refLike = STC.ref_ | STC.out_ | STC.auto_;
+    return ((*canonical)[index].storageClass & refLike) != STC.none;
 }
 
 
@@ -268,7 +299,8 @@ private bool isAliasingLocal(imported!"dmd.declaration".VarDeclaration variable)
 // subtree, in the order the statement tree declares them. Mirrors the
 // statement-tree recursion the interpreter's own walker uses to run a
 // function body (`Walker.runStatement`): compound and compound-declaration
-// blocks, scope statements, if/for/do bodies (`while`/`foreach` are
+// blocks, scope statements, if conditions and branches, for/do bodies
+// (`while`/`foreach` are
 // lowered to `ForStatement` by DMD's own semantic pass, so no separate
 // case is needed for them), try/finally/catch, unrolled loop bodies,
 // labels, switch/case/default, and with-statements.
@@ -339,7 +371,8 @@ private imported!"dmd.declaration".VarDeclaration[] bodyLocals(
         return caseRange.statement is statement ? null : bodyLocals(caseRange.statement);
 
     if (auto if_ = statement.isIfStatement)
-        return bodyLocals(if_.ifbody) ~ bodyLocals(if_.elsebody);
+        return declaredVariables(if_.condition) ~ bodyLocals(if_.ifbody) ~
+            bodyLocals(if_.elsebody);
 
     if (auto with_ = statement.isWithStatement)
         return bodyLocals(with_._body);
@@ -368,4 +401,20 @@ private imported!"dmd.declaration".VarDeclaration[] declaredVariable(
 
     auto variable = declaration.declaration.isVarDeclaration;
     return variable is null ? null : [variable];
+}
+
+
+// Every `VarDeclaration` a `DeclarationExp` introduces within `expression`.
+// DMD lowers `if (T name = value)` to a `CommaExp` whose left operand is the
+// declaration and whose right operand reads the new local.
+private imported!"dmd.declaration".VarDeclaration[] declaredVariables(
+    imported!"dmd.expression".Expression expression,
+) @trusted {
+    if (auto variable = declaredVariable(expression))
+        return variable;
+
+    if (auto comma = expression.isCommaExp)
+        return declaredVariables(comma.e1) ~ declaredVariables(comma.e2);
+
+    return null;
 }

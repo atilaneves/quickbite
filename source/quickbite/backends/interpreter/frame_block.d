@@ -70,8 +70,7 @@ public struct FrameBlock {
     // Whether `variable` owns an OWNING slot specifically: inline storage
     // of its own declared type, as opposed to a REFERENCE slot holding a
     // caller-supplied address (`hasReferenceSlot` below) or no slot at
-    // all. The verified frame mirror (`impl.d`'s `mirrorToFrame`/
-    // `assertFrameMirror`) gates on this, never on `hasSlot` alone: a
+    // all. The native binding path gates on this, never on `hasSlot` alone: a
     // reference slot's bytes are an address, not a `place_value`
     // composition of `variable`'s own declared type, so mirroring it the
     // same way would write the wrong bytes into the wrong-sized slot.
