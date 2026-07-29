@@ -195,8 +195,9 @@ Never delete test code to make tests pass.
 
 The repo is private for now, which is causing Github Actions failures
 due to billing issues. CI is not currently checking anything we can't
-and don't do locally, so ignore its failures for as long as the repo
-is private.
+and don't do locally, so ignore its failures in Github for as long as
+the repo is private. Do not ignore failures locally. Run CI whenever a
+PR is updated, not only when it is created.
 
 ## Reviews
 
