@@ -4280,10 +4280,7 @@ static foreach (backend; Matrix!()) {
 // A struct cell promoted through one alias is authoritative for the whole
 // value reached through another alias. SystemLinker therefore observes a
 // pointer write when the aliased struct is passed onward as a value.
-static foreach (backend; Matrix!(
-    Omit!(Bytecode, Because.unconfirmed,
-        "does not yet support taking the address of a struct field"),
-)) {
+static foreach (backend; Matrix!()) {
     @("struct.wholeValueAliasReadsAuthoritativeCell." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
