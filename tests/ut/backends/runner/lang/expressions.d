@@ -3607,9 +3607,7 @@ static foreach (backend; AliasSeq!(Interpreter)) {
 // the interpreter's own `ObjectTable` throws outright the moment the two
 // disagree on size, converting a pre-existing (harmless-until-now) boxed
 // identity aliasing into a guest-visible crash.
-static foreach (backend; Matrix!(
-    Omit!(Bytecode, Because.unconfirmed),
-)) {
+static foreach (backend; Matrix!()) {
     @("classIdentity.structConstructorIdentityDoesNotCollideWithCallersNext." ~
         backend.stringof)
     @Tags(backend.stringof)

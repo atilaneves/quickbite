@@ -2458,6 +2458,10 @@ private struct Compiler {
                     return Operand(field.offset, ScalarType.void_);
                 if (field.type.toBasetype.ty == TY.Taarray)
                     return Operand(field.offset, ScalarType.ulong_);
+                if (field.type.toBasetype.ty == TY.Tclass)
+                    return Operand(
+                        field.offset, ScalarType.ulong_, true, ScalarType.void_,
+                    );
                 if (isPointerType(field.type))
                     return Operand(
                         field.offset, ScalarType.ulong_, true,
@@ -5173,6 +5177,8 @@ private struct Compiler {
             fieldPointer,
             compileSizeConstant(0),
         );
+        if (field.type.toBasetype.ty == TY.Tclass)
+            return Operand(destination, fieldScalar, true, ScalarType.void_);
         return Operand(destination, fieldScalar);
     }
 
