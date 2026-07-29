@@ -32,6 +32,10 @@ capabilities:
 - `RuntimeValue` is transient expression currency. Its aggregate arm owns or
   borrows native DMD-layout storage, and its sole data-pointer arm is a host
   address. It is never local, alias, or cross-frame storage authority.
+- The native-call adapter has direct-address argument and result paths, but
+  still accepts `RuntimeValue` inputs and retains buffer-based materialize,
+  reify, and writeback fallbacks. Decision 18's no-marshalling end state is
+  therefore not complete; Remaining-work item 5 owns deleting those fallbacks.
 
 ## Audit findings (June 2026)
 
@@ -116,8 +120,10 @@ deletion (items 2-3).
 8. Track B charter: this plan owns the interpreter's value
    representation, companion to the FFI bridge plan (`ai/plans/ffi.md`
    §5/§6). The bridge core never sees `RuntimeValue`; the interpreter's
-   native-call adapter hands argument and result addresses to `quickbite.ffi`,
-   which keeps owning ABI descriptors and call plumbing.
+   native-call adapter can hand argument and result addresses to
+   `quickbite.ffi`, which keeps owning ABI descriptors and call plumbing. The
+   adapter still has a buffer fallback for `RuntimeValue` inputs; item 5
+   removes it by making typed addresses the ordinary call-site contract.
 
 9. FFI-crossing and addressable aggregates live in native ABI layout
    behind a thin handle reusing DMD's own offsets. A cross-language
@@ -341,6 +347,15 @@ deletion (items 2-3).
     layout to construct and read back, a boxed 16-long slice at ~27x —
     boxing's GC alloc + `SumType` tag dispatch) is realizable only
     when aggregates are never boxed.
+
+    This paragraph specifies the target, not master’s present completion
+    status. `backends/interpreter/native_call_adapter.d` still contains the
+    transitional `RuntimeValue` -> ABI-buffer and ABI-buffer -> `RuntimeValue`
+    fallbacks, including aggregate reconstruction and post-call writeback.
+    Item 5 is complete only when those paths are unreachable and deleted. The
+    libffi descriptor, address-array, callback-lifetime, scalar scratch, symbol
+    resolution, and exception machinery remains call plumbing under this
+    decision.
 
 ## Contracts
 
@@ -611,6 +626,43 @@ language-surface fix plus its oracle-backed fixture per small, short-lived PR.
 Native storage and calls remain the ordinary execution path; do not restore
 marshalling, cell families, alias maps, or name-based representation shims.
 `interpreter.md` §8 triage remains the partition.
+
+### Item 5 — Delete Interpreter FFI marshalling fallbacks
+
+Finish decision 18 after the language-surface critical path. The current
+`backends/interpreter/native_call_adapter.d` has landed `argumentAddress` and
+`resultAddress`, but its public entry points still accept `RuntimeValue`
+arguments and return reconstructed values and writeback arrays. Consequently
+it retains `marshalArgument`, `unmarshalValue`, receiver buffers, mutable-slice
+copy/writeback storage, and `out`-cell reification.
+
+Make each ordinary native call consume typed argument, receiver, `ref`, and
+`out` places, using a fixed-width native scratch cell only for an rvalue that
+has no existing address. Allocate typed result storage before the call and
+hand its address to `quickbite.ffi`; bind or load that storage afterward rather
+than reconstructing an aggregate. A native callee writes through the caller's
+supplied `ref`/`out` address, so no return-time aggregate reconciliation or
+writeback array remains.
+
+Callbacks obey the same representation rule: their ABI buffers are borrowed
+typed places while the callback runs, and their result is written to libffi's
+typed result address. Callback registration, roots, closure lifetime, and ABI
+scalar widening remain in the adapter because they are call plumbing, not
+representation conversion.
+
+Completion requires all of the following:
+
+- normal outbound arguments and results cross through addresses;
+- receivers and `ref`/`out` parameters use their authoritative places;
+- no recursive aggregate materialize/reify or post-call reconstruction path
+  exists;
+- the buffer fallback methods may be removed from the Interpreter adapter,
+  with any shared-interface simplification coordinated through `ffi.md`; and
+- the adapter that remains contains only address selection, ABI-required
+  scalar scratch, callback lifetime/re-entry, and native exception plumbing.
+
+Do not delete `quickbite.ffi`, CIF construction, `ffi_call`, the ABI argument
+address array, or callback trampolines: decision 18 explicitly retains them.
 
 ### Item 1 — Prelude formatter wiring
 
