@@ -398,6 +398,13 @@ row reaches them:
   `sliceCopy` opcode's pointer-range overlap check ever runs, so the check
   never sees the true aliasing (unlike the dynamic-array path, whose rhs
   descriptor shares the real backing pointer).
+- `referenceOffset` resolves a `VarExp` ref-argument through `_locals` with no
+  check against `_refLocalPointers`; a `ref` local whose slot holds a real
+  heap address rather than a value (scalar class-field ref locals, and
+  array-field-element ref locals) passed onward as another `ref` argument
+  would misbind the callee to the pointer's raw bytes instead of dereferencing
+  it, and any writeback would clobber the stored address instead of the
+  pointee.
 
 `concurrency.thisTid.Bytecode` (`tests/ut/backends/runner/sys/concurrency.d`)
 stays `Omit!(Bytecode, Because.unconfirmed, ...)`. `Scheduler.thisInfo`'s

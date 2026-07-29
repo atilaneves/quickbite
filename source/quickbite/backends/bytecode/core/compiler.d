@@ -13732,6 +13732,19 @@ private struct Compiler {
         if (lhsTy == TY.Tsarray && rhsTy == TY.Tsarray)
             return false;
 
+        // A mixed Tsarray/Tarray pair where the static side's own elements
+        // are themselves arrays (`int[2][2]`): `compileStaticArrayAsDynamicInto`
+        // (via `arrayDescriptorOffset`) stores each row as a raw byte block,
+        // not a 16-byte slice descriptor, while the other, dynamic-array side
+        // builds proper nested descriptors -- comparing the two would compare
+        // unrelated byte shapes. Decline so the caller falls through to the
+        // honest "Unsupported array cast" diagnostic instead of a silent
+        // wrong result.
+        if (lhsTy == TY.Tsarray && arrayElementIsArray(lhs.type))
+            return false;
+        if (rhsTy == TY.Tsarray && arrayElementIsArray(rhs.type))
+            return false;
+
         // A genuine `string` comparison renders as a quoted string
         // (`tryStringComparisonAssert`), not `[e0, e1, ...]`; a mutable
         // `char[]` merely cast to a `const`/`immutable` view for the

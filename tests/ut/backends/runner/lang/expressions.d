@@ -6845,8 +6845,7 @@ static foreach (backend; Matrix!()) {
 // was taken stays invisible through it -- the same snapshot gap the
 // struct-static-array-field slice closed for a struct receiver. SystemLinker's
 // `p` aliases `c`'s real storage, so the direct write is visible through
-// `*p`. Other backends omitted per the omit-don't-pin convention
-// (unconfirmed there).
+// `*p`.
 static foreach (backend; Matrix!()) {
     @("pointer.classStaticArrayFieldElementWrittenDirectlyIsVisibleThroughEarlierPointer." ~
         backend.stringof)
@@ -6891,8 +6890,6 @@ static foreach (backend; Matrix!()) {
 // (not merely missing pointer-aliasing), so a plain (pointer-free)
 // `foreach (ref e; c.arr) e = ...;` already threw. SystemLinker's `p`
 // aliases `c`'s real storage, so the write is visible through `*p`.
-// `Ctfe`/`LLVMJit` omitted per the omit-don't-pin convention (unconfirmed
-// there), matching the struct sibling fixture's own backend set.
 static foreach (backend; Matrix!()) {
     @("pointer.classStaticArrayFieldElementWrittenByForeachRefIsVisibleThroughEarlierPointer." ~
         backend.stringof)
@@ -6928,9 +6925,7 @@ static foreach (backend; Matrix!()) {
 // above -- write THROUGH `&c.arr[i]`, then read `c.arr[i]` directly --
 // mirroring `pointer.nestedClassStructFieldWrittenThroughPointerIsVisibleDirectly`'s
 // shape but for the static-array-field aggregate-composition shape instead
-// of the nested-struct-field one. Other backends omitted per the
-// omit-don't-pin convention, matching the other class fixtures' own backend
-// set.
+// of the nested-struct-field one. SystemLinker is the oracle.
 static foreach (backend; Matrix!()) {
     @("pointer.classArrayFieldElementWrittenThroughPointerIsVisibleDirectly." ~
         backend.stringof)
@@ -6968,8 +6963,7 @@ static foreach (backend; Matrix!()) {
 // duped the reverse-lookup maps themselves, so the callee's
 // `writeThroughClassArrayFieldPointer` reverse-lookup missed and the write
 // fell through to the `fieldSnapshotAllocationIds` refusal check (also duped)
-// instead of aliasing. SystemLinker is the oracle; Bytecode omitted per the
-// omit-Bytecode convention.
+// instead of aliasing. SystemLinker is the oracle.
 static foreach (backend; Matrix!()) {
     @("pointer.classArrayFieldWriteThroughPointerInCalleeIsVisibleToCaller." ~
         backend.stringof)
