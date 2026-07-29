@@ -4575,6 +4575,42 @@ static foreach (backend; Matrix!()) {
     }
 }
 
+// The 2-byte-element counterpart of `arrays.refLocalElementArgumentMutatesSource`:
+// `emitRefLocalPointerArgument` mirrors the element's address into a fresh
+// slot through `pointerLoadOp`/`pointerStoreOp`, and `pointerStoreOp` only
+// had 1/4/8/16-byte cases, so a `short` element's writeback silently used the
+// wrong value instead of reaching the array element.
+static foreach (backend; Matrix!()) {
+    @("arrays.refLocalShortElementArgumentMutatesSource." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            void increment(ref short value) {
+                value = cast(short)(value + 1);
+            }
+
+            void bump(ref short value) {
+                increment(value);
+            }
+
+            short[] build(short first, short second, short third) {
+                short[] result;
+                result ~= first;
+                result ~= second;
+                result ~= third;
+                return result;
+            }
+
+            unittest {
+                auto values = build(10, 20, 30);
+                ref short element = values[1];
+                bump(element);
+                assert(values[1] == 21);
+            }
+        });
+    }
+}
+
 // A `ref` local bound directly to a scalar class field is the same
 // address-holding shape as the array-element case above. Passing it onward
 // as another function's `ref` argument must still reach the field, not the
@@ -7740,31 +7776,30 @@ static foreach (backend; Matrix!()) {
     }
 }
 
-// A `ref` argument dereferencing a call-returned pointer whose pointee width
-// `emitPointerDereferenceRefArgument` declines to commit to directly (it only
-// handles 1/4/8-byte pointees; a `short*` pointee is 2 bytes) used to leave
-// the pointer expression's already-emitted bytecode in the stream and then
-// let `referenceOffsetOrNull`'s fallback recompile that same expression from
-// scratch, so a side-effecting pointer expression (a call) ran twice instead
-// of once. `Ctfe` cannot read or write dataseg storage at all; `Interpreter`
-// does not support dereferencing a call-returned pointer as a `ref` argument.
+// A `ref` argument dereferencing a call-returned pointer must both call the
+// pointer expression exactly once and write back through the real pointee,
+// including a 2-byte pointee (`short*`), which `emitPointerDereferenceRefArgument`
+// commits to directly rather than falling back to `referenceOffsetOrNull`
+// recompiling the same expression from scratch. `Ctfe` cannot read or write
+// dataseg storage at all; `Interpreter` does not support dereferencing a
+// call-returned pointer as a `ref` argument.
 static foreach (backend; Matrix!(
     Omit!(Ctfe, Because.inexpressible,
         "CTFE cannot read or write dataseg (__gshared/static) storage"),
     Omit!(Interpreter, Because.unconfirmed),
 )) {
-    @("pointer.refArgumentThroughDeclinedPointerWidthCallsPointerExpressionOnce." ~
+    @("pointer.refArgumentThroughCallReturnedShortPointerCallsExpressionOnce." ~
         backend.stringof)
     @Tags(backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
-            __gshared int quickbiteDeclinedWidthCallCount;
-            __gshared short quickbiteDeclinedWidthValue = 7;
+            __gshared int quickbiteCallReturnedPointerCallCount;
+            __gshared short quickbiteCallReturnedPointerValue = 7;
 
             short* next() {
-                quickbiteDeclinedWidthCallCount =
-                    quickbiteDeclinedWidthCallCount + 1;
-                return &quickbiteDeclinedWidthValue;
+                quickbiteCallReturnedPointerCallCount =
+                    quickbiteCallReturnedPointerCallCount + 1;
+                return &quickbiteCallReturnedPointerValue;
             }
 
             void bump(ref short r) {
@@ -7773,7 +7808,37 @@ static foreach (backend; Matrix!(
 
             unittest {
                 bump(*next());
-                assert(quickbiteDeclinedWidthCallCount == 1);
+                assert(quickbiteCallReturnedPointerCallCount == 1);
+                assert(quickbiteCallReturnedPointerValue == 8);
+            }
+        });
+    }
+}
+
+// A `ref` argument dereferencing a genuine runtime pointer to a 2-byte
+// pointee (`short*`) must write back through the pointer itself, matching
+// `pointer.refArgumentThroughStoredPointerWritesThroughPointer`'s 4-byte
+// case: `pointerStoreOp` only had 1/4/8/16-byte cases, so a 2-byte pointee
+// fell through to a stale fallback that silently wrote the wrong value.
+static foreach (backend; Matrix!()) {
+    @("pointer.refArgumentThroughStoredShortPointerWritesThroughPointer." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            short seed() {
+                return 10;
+            }
+
+            void bump(ref short r) {
+                r = cast(short)(r + 1);
+            }
+
+            unittest {
+                short value = seed;
+                short* pointer = &value;
+                bump(*pointer);
+                assert(value == 11);
             }
         });
     }

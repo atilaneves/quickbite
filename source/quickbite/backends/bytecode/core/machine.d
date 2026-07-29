@@ -397,7 +397,8 @@ package(quickbite.backends.bytecode) RunResult run(
                 ++ip;
                 break;
 
-            case pointerStore1, pointerStore4, pointerStore8, pointerStore16:
+            case pointerStore1, pointerStore2, pointerStore4, pointerStore8,
+                pointerStore16:
                 const pointerStoreSize = pointerElementSize(instruction.op);
                 const pointerStoreAddress =
                     scalarValue!size_t(stack, base + instruction.b) +
@@ -2339,7 +2340,8 @@ private uint pointerElementSize(
     if (op == Op.pointerLoad4 || op == Op.pointerStore4 ||
         op == Op.pointerSlice4)
         return 4;
-    return op == Op.pointerLoad2 || op == Op.pointerSlice2 ? 2 : 1;
+    return op == Op.pointerLoad2 || op == Op.pointerStore2 ||
+        op == Op.pointerSlice2 ? 2 : 1;
 }
 
 private uint subSliceElementSize(

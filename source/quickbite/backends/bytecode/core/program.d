@@ -333,6 +333,7 @@ package(quickbite.backends.bytecode) enum Op: ubyte {
     // `p[i] = v` through a pointer into VM-owned memory; unchecked, like compiled
     // D. The element size is fixed by the opcode (1 or 4 bytes).
     pointerStore1,
+    pointerStore2,
     pointerStore4,
     pointerStore8,
     pointerStore16,

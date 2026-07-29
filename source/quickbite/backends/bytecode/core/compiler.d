@@ -13092,7 +13092,8 @@ private struct Compiler {
             return false;
 
         const valueSize = cast(ushort) size(scalarType(field.type));
-        if (valueSize != 1 && valueSize != 4 && valueSize != 8)
+        if (valueSize != 1 && valueSize != 2 && valueSize != 4 &&
+            valueSize != 8)
             return false;
 
         const moduleOffset =
@@ -13215,7 +13216,8 @@ private struct Compiler {
             return false;
 
         const valueSize = cast(ushort) size(scalarType(field.type));
-        if (valueSize != 1 && valueSize != 4 && valueSize != 8)
+        if (valueSize != 1 && valueSize != 2 && valueSize != 4 &&
+            valueSize != 8)
             return false;
 
         foreach (writeBack; writeBacks)
@@ -13299,7 +13301,8 @@ private struct Compiler {
             return false;
 
         const valueSize = cast(ushort) size(scalarType(field.type));
-        if (valueSize != 1 && valueSize != 4 && valueSize != 8)
+        if (valueSize != 1 && valueSize != 2 && valueSize != 4 &&
+            valueSize != 8)
             return false;
 
         foreach (writeBack; writeBacks)
@@ -13373,7 +13376,8 @@ private struct Compiler {
             return false;
 
         const valueSize = cast(ushort) size(*element);
-        if (valueSize != 1 && valueSize != 4 && valueSize != 8)
+        if (valueSize != 1 && valueSize != 2 && valueSize != 4 &&
+            valueSize != 8)
             return false;
 
         const addressOffset = *existing;
@@ -13441,7 +13445,8 @@ private struct Compiler {
             return false;
 
         const valueSize = cast(ushort) size(pointerElementScalar(deref.e1.type));
-        if (valueSize != 1 && valueSize != 4 && valueSize != 8)
+        if (valueSize != 1 && valueSize != 2 && valueSize != 4 &&
+            valueSize != 8)
             return false;
 
         const pointer = compileExpression(deref.e1);
@@ -15055,16 +15060,30 @@ private struct Compiler {
         }
 
         const scalar = scalarType(type);
-        const alignment = size(scalar);
+        const argumentSize = isReference
+            ? referenceScalarSlotSize(size(scalar))
+            : size(scalar);
         layout.blockSize = (layout.blockSize +
-            alignment - 1) & ~(alignment - 1);
+            argumentSize - 1) & ~(argumentSize - 1);
         layout.offsets ~= cast(ushort) layout.blockSize;
         layout.isReference ~= isReference;
         if (isReference)
             layout.refParameters ~= RefParameter(
                 cast(ushort) layout.blockSize, size(scalar),
             );
-        layout.blockSize += size(scalar);
+        layout.blockSize += argumentSize;
+    }
+
+    // A scalar `ref`/`out` parameter's argument-area word always carries the
+    // caller's `size(ScalarType.uint_)`-wide offset constant
+    // (`emit*RefArgument`'s `Op.loadConstant` writes exactly that width),
+    // regardless of the referenced value's own size, so a narrower scalar
+    // (e.g. `short`) still needs the full word reserved: otherwise the
+    // constant write spills past the slot into whatever the caller allocates
+    // next.
+    private uint referenceScalarSlotSize(in uint valueSize) @safe @nogc nothrow pure {
+        const wordSize = size(ScalarType.uint_);
+        return valueSize < wordSize ? wordSize : valueSize;
     }
 
     private ParameterLayout parameterLayout(FuncDeclaration function_) {
@@ -15230,19 +15249,22 @@ private struct Compiler {
                 continue;
             }
 
-            // A scalar `ref` parameter has a frame slot sized for the
-            // referenced value, just like a value parameter; the difference is
-            // only in how the argument word is passed and written back.
+            // A scalar `ref` parameter's callee-frame slot still holds just
+            // the referenced value's own size (`RefParameter.valueSize`
+            // below); the argument-area word itself needs
+            // `referenceScalarSlotSize`'s wider reservation instead.
             const type = scalarType(parameter.type);
-            const alignment = size(type);
+            const argumentSize = parameter.isReference
+                ? referenceScalarSlotSize(size(type))
+                : size(type);
             layout.blockSize =
-                (layout.blockSize + alignment - 1) & ~(alignment - 1);
+                (layout.blockSize + argumentSize - 1) & ~(argumentSize - 1);
             layout.offsets ~= cast(ushort) layout.blockSize;
             layout.isReference ~= parameter.isReference;
             if (parameter.isReference)
                 layout.refParameters ~=
                     RefParameter(cast(ushort) layout.blockSize, size(type));
-            layout.blockSize += size(type);
+            layout.blockSize += argumentSize;
         }
 
         return layout;
@@ -15841,6 +15863,7 @@ private imported!"quickbite.backends.bytecode.core.program".Op pointerStoreOp(
     import quickbite.backends.bytecode.core.program: Op;
     switch (elementSize) {
         case 1: return Op.pointerStore1;
+        case 2: return Op.pointerStore2;
         case 4: return Op.pointerStore4;
         case 8: return Op.pointerStore8;
         case 16: return Op.pointerStore16;
