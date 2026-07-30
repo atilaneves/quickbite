@@ -15,11 +15,6 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install D compiler
-        uses: dlang-community/setup-dlang@v2
-        with:
-          compiler: ${{ matrix.dc }}
-
       - name: Install LDC compiler
         uses: dlang-community/setup-dlang@v2
         with:
@@ -30,6 +25,11 @@ jobs:
           mkdir -p "$RUNNER_TEMP/ldc-alias"
           ln -s "$(command -v ldc2)" "$RUNNER_TEMP/ldc-alias/ldc"
           echo "$RUNNER_TEMP/ldc-alias" >> "$GITHUB_PATH"
+
+      - name: Install D compiler
+        uses: dlang-community/setup-dlang@v2
+        with:
+          compiler: ${{ matrix.dc }}
 
       - name: Install LLVM 21
         if: matrix.os == 'ubuntu-24.04'
