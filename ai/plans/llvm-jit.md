@@ -562,8 +562,10 @@ the backend. Without it, `ci.sh`'s `bin/bench.sh` and `ninja bin/qb` steps
 fail to link (undefined `LLVMOrc*` symbols). Locally, the global bare
 `libLLVM.so` symlink may let the canonical plain `-lLLVM` resolve it; LLVM 21
 is the minimum supported version. Ubuntu CI installs pinned LLVM 21.1.8 into
-the runner temporary directory and exports its `lib` directory for both link
-and runtime lookup. Regenerate with
+the runner temporary directory, derives its library directory and filename
+with `llvm-config`, creates a canonical `libLLVM.so` alias when needed, and
+exports the directory through DMD's linker flags and the runtime library
+path. Regenerate with
 `dub run reggae --compiler=ldc -- -b ninja`.
 
 ## Verification
