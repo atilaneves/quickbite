@@ -39,7 +39,8 @@ jobs:
           echo "deb http://apt.llvm.org/noble/ llvm-toolchain-noble-21 main" \
             | sudo tee /etc/apt/sources.list.d/llvm21.list
           sudo apt-get update
-          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y llvm-21-dev
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y \
+            llvm-21-dev libreadline-dev
           llvm_libdir="$(llvm-config-21 --libdir)"
           echo "LLVM_CONFIG=llvm-config-21" >> "$GITHUB_ENV"
           echo "DFLAGS=-L-L$llvm_libdir${DFLAGS:+ $DFLAGS}" >> "$GITHUB_ENV"
