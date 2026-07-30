@@ -41,6 +41,87 @@ private auto runDependencyImage(alias backend)(
     }
 }
 
+private struct CtorOrderingFixture {
+    string[] imagePaths;
+    string[] importPaths;
+    Module module_;
+}
+
+private CtorOrderingFixture buildCtorOrderingFixture(
+    in Sandbox sandbox,
+    in string suffix,
+) {
+    import quickbite.frontend.compiler: parseSnippetWithCheckActionContext;
+    import std.path: buildPath;
+
+    with(sandbox) {
+        const importPath = "imports";
+
+        const depAPath = buildPath(importPath, "dep_image_ctororder_a_" ~ suffix ~ ".d");
+        writeFile(depAPath, q{
+            module dep_image_ctororder_a;
+
+            extern(C) __gshared int seedBase;
+
+            static this() {
+                seedBase = 10;
+            }
+        }.uniqueDepModule("dep_image_ctororder_a", suffix)
+         .uniqueDepModule("seedBase", suffix));
+        const imageAPath = buildSharedLibrary(
+            sandbox,
+            "dep_image_ctororder_a_" ~ suffix,
+            [depAPath],
+        );
+
+        const depBPath = buildPath(importPath, "dep_image_ctororder_b_" ~ suffix ~ ".d");
+        writeFile(depBPath, q{
+            module dep_image_ctororder_b;
+
+            extern(C) extern __gshared int seedBase;
+            __gshared int seedDerived;
+
+            static this() {
+                seedDerived = seedBase + 5;
+            }
+
+            int readDerived() {
+                return seedDerived;
+            }
+        }.uniqueDepModule("dep_image_ctororder_b", suffix)
+         .uniqueDepModule("seedBase", suffix));
+        const imageBPath = buildSharedLibrary(
+            sandbox,
+            "dep_image_ctororder_b_" ~ suffix,
+            [depBPath],
+        );
+
+        writeFile(depBPath, q{
+            module dep_image_ctororder_b;
+
+            int readDerived();
+        }.uniqueDepModule("dep_image_ctororder_b", suffix));
+
+        auto moduleResult = parseSnippetWithCheckActionContext(
+            q{
+                import dep_image_ctororder_b;
+
+                unittest {
+                    assert(readDerived() == 15);  // B's ctor ran after A's:
+                                                  // 10 + 5
+                }
+            }.uniqueDepModule("dep_image_ctororder_b", suffix),
+            [inSandboxPath(importPath)],
+        );
+
+        return CtorOrderingFixture(
+            [imageAPath, imageBPath],
+            [inSandboxPath(importPath)],
+            moduleResult.module_,
+        );
+    }
+}
+
 
 static foreach (backend; AliasSeq!(LLVMJit, Interpreter)) {
 @("dependencyImage.externDFunction." ~ backend.stringof)
@@ -4033,87 +4114,29 @@ unittest {
 @("dependencyImage.crossImageCtorOrdering." ~ backend.stringof)
 @Tags(backend.stringof)
 unittest {
-    import quickbite.frontend.compiler: parseSnippetWithCheckActionContext;
-    import std.path: buildPath;
-
     const sandbox = immutable Sandbox();
-    with(sandbox) {
-        const importPath = "imports";
+    const oracleFixture = buildCtorOrderingFixture(
+        sandbox,
+        backend.stringof ~ "_oracle",
+    );
+    const oracle = (new SystemLinker(
+        oracleFixture.imagePaths,
+        oracleFixture.importPaths,
+    )).runTests(oracleFixture.module_);
+    oracle.length.should == 1;
+    oracle[0].passed.should == true;
 
-        const depAPath =
-            buildPath(importPath, "dep_image_ctororder_a_" ~ backend.stringof ~ ".d");
-        writeFile(depAPath, q{
-            module dep_image_ctororder_a;
-
-            extern(C) __gshared int seedBase;
-
-            static this() {
-                seedBase = 10;
-            }
-        }.uniqueDepModule("dep_image_ctororder_a", backend.stringof)
-         .uniqueDepModule("seedBase", backend.stringof));
-        const imageAPath = buildSharedLibrary(
-            sandbox,
-            "dep_image_ctororder_a_" ~ backend.stringof,
-            [depAPath],
-        );
-
-        const depBPath =
-            buildPath(importPath, "dep_image_ctororder_b_" ~ backend.stringof ~ ".d");
-        writeFile(depBPath, q{
-            module dep_image_ctororder_b;
-
-            extern(C) extern __gshared int seedBase;
-            __gshared int seedDerived;
-
-            static this() {
-                seedDerived = seedBase + 5;
-            }
-
-            int readDerived() {
-                return seedDerived;
-            }
-        }.uniqueDepModule("dep_image_ctororder_b", backend.stringof)
-         .uniqueDepModule("seedBase", backend.stringof));
-        const imageBPath = buildSharedLibrary(
-            sandbox,
-            "dep_image_ctororder_b_" ~ backend.stringof,
-            [depBPath],
-        );
-
-        writeFile(depBPath, q{
-            module dep_image_ctororder_b;
-
-            int readDerived();
-        }.uniqueDepModule("dep_image_ctororder_b", backend.stringof));
-
-        auto moduleResult = parseSnippetWithCheckActionContext(
-            q{
-                import dep_image_ctororder_b;
-
-                unittest {
-                    assert(readDerived() == 15);  // B's ctor ran after A's:
-                                                  // 10 + 5
-                }
-            }.uniqueDepModule("dep_image_ctororder_b", backend.stringof),
-            [inSandboxPath(importPath)],
-        );
-
-        const oracle = (new SystemLinker(
-            [imageAPath, imageBPath],
-            [inSandboxPath(importPath)],
-        )).runTests(moduleResult.module_);
-        oracle.length.should == 1;
-        oracle[0].passed.should == true;
-
-        const actual = runDependencyImage!backend(
-            [imageAPath, imageBPath],
-            [inSandboxPath(importPath)],
-            moduleResult.module_,
-        );
-        actual.length.should == 1;
-        actual[0].passed.should == true;
-    }
+    const actualFixture = buildCtorOrderingFixture(
+        sandbox,
+        backend.stringof ~ "_actual",
+    );
+    const actual = runDependencyImage!backend(
+        actualFixture.imagePaths,
+        actualFixture.importPaths,
+        actualFixture.module_,
+    );
+    actual.length.should == 1;
+    actual[0].passed.should == true;
 }
 
 // Pins §35.2 DT_NEEDED-driven dependency-image initialization ordering: the
