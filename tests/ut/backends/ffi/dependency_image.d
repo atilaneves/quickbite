@@ -3,6 +3,7 @@ module ut.backends.ffi.dependency_image;
 
 import ut.backends;
 import dmd.dmodule: Module;
+import std.conv: text;
 
 
 // Give each (fixture, backend) a globally-unique dependency-image module name.
@@ -127,7 +128,6 @@ private void runCtorOrderingInFreshProcess(alias backend)(
 ) {
     import std.file: thisExePath;
     import std.process: environment, execute;
-    import std.stdio: stderr;
 
     enum childKey = "QUICKBITE_CTOR_ORDERING_CHILD";
     if (environment.get(childKey) == backend.stringof) {
@@ -139,12 +139,16 @@ private void runCtorOrderingInFreshProcess(alias backend)(
         "ut.backends.ffi.dependency_image.dependencyImage." ~
         "crossImageCtorOrdering." ~ backend.stringof;
     const result = execute(
-        [thisExePath, testName],
+        [thisExePath, "-s", "-q", "-t", testName],
         [childKey: backend.stringof],
     );
     if (result.status != 0)
-        stderr.write(result.output);
-    result.status.should == 0;
+        throw new Exception(text(
+            "isolated ctor-ordering child failed with status ",
+            result.status,
+            ":\n",
+            result.output,
+        ));
 }
 
 
@@ -4149,8 +4153,14 @@ unittest {
             oracleFixture.imagePaths,
             oracleFixture.importPaths,
         )).runTests(oracleFixture.module_);
-        oracle.length.should == 1;
-        oracle[0].passed.should == true;
+        if (oracle.length != 1)
+            throw new Exception(text(
+                "SystemLinker oracle returned ", oracle.length, " results",
+            ));
+        if (!oracle[0].passed)
+            throw new Exception(
+                "SystemLinker oracle failed: " ~ oracle[0].message,
+            );
 
         auto actualFixture = buildCtorOrderingFixture( // Module must stay mutable.
             sandbox,
@@ -4161,8 +4171,14 @@ unittest {
             actualFixture.importPaths,
             actualFixture.module_,
         );
-        actual.length.should == 1;
-        actual[0].passed.should == true;
+        if (actual.length != 1)
+            throw new Exception(text(
+                backend.stringof, " returned ", actual.length, " results",
+            ));
+        if (!actual[0].passed)
+            throw new Exception(text(
+                backend.stringof, " failed: ", actual[0].message,
+            ));
     });
 }
 
