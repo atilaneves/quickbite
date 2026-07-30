@@ -4115,7 +4115,7 @@ unittest {
 @Tags(backend.stringof)
 unittest {
     const sandbox = immutable Sandbox();
-    const oracleFixture = buildCtorOrderingFixture(
+    auto oracleFixture = buildCtorOrderingFixture( // Module must stay mutable.
         sandbox,
         backend.stringof ~ "_oracle",
     );
@@ -4126,7 +4126,7 @@ unittest {
     oracle.length.should == 1;
     oracle[0].passed.should == true;
 
-    const actualFixture = buildCtorOrderingFixture(
+    auto actualFixture = buildCtorOrderingFixture( // Module must stay mutable.
         sandbox,
         backend.stringof ~ "_actual",
     );
