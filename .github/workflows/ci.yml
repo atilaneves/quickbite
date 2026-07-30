@@ -18,7 +18,7 @@ jobs:
       - name: Install LDC compiler
         uses: dlang-community/setup-dlang@v2
         with:
-          compiler: ldc-1.41.0
+          compiler: ldc-1.42.0
 
       - name: Provide ldc executable alias
         run: |
