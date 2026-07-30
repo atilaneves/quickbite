@@ -46,5 +46,11 @@ jobs:
           echo "DFLAGS=-L-L$llvm_libdir${DFLAGS:+ $DFLAGS}" >> "$GITHUB_ENV"
           echo "LD_LIBRARY_PATH=$llvm_libdir${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}" >> "$GITHUB_ENV"
 
+      - name: Set up uv
+        if: matrix.os == 'ubuntu-24.04'
+        uses: astral-sh/setup-uv@v6
+        with:
+          version: "0.11.32"
+
       - name: Run CI
         run: ./ci.sh
