@@ -8,7 +8,6 @@ jobs:
       matrix:
         os:
           - ubuntu-24.04
-          - macos-14
         dc:
           - dmd-2.112.0
 
