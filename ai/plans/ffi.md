@@ -226,6 +226,10 @@ new dependency images
   loaded RTLD_NOW | RTLD_GLOBAL before symbol resolution
 ```
 
+`RTLD_GLOBAL` images and druntime registration are process-lifetime state;
+tests needing pristine loader state must use a fresh process and collision-free
+symbols.
+
 ### 21.1 Shared resolver
 
 The resolver is backend-neutral. It derives the mangled name, linkage,

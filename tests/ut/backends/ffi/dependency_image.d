@@ -122,6 +122,31 @@ private CtorOrderingFixture buildCtorOrderingFixture(
     }
 }
 
+private void runCtorOrderingInFreshProcess(alias backend)(
+    scope void delegate() action,
+) {
+    import std.file: thisExePath;
+    import std.process: environment, execute;
+    import std.stdio: stderr;
+
+    enum childKey = "QUICKBITE_CTOR_ORDERING_CHILD";
+    if (environment.get(childKey) == backend.stringof) {
+        action();
+        return;
+    }
+
+    const testName =
+        "ut.backends.ffi.dependency_image.dependencyImage." ~
+        "crossImageCtorOrdering." ~ backend.stringof;
+    const result = execute(
+        [thisExePath, testName],
+        [childKey: backend.stringof],
+    );
+    if (result.status != 0)
+        stderr.write(result.output);
+    result.status.should == 0;
+}
+
 
 static foreach (backend; AliasSeq!(LLVMJit, Interpreter)) {
 @("dependencyImage.externDFunction." ~ backend.stringof)
@@ -4114,29 +4139,31 @@ unittest {
 @("dependencyImage.crossImageCtorOrdering." ~ backend.stringof)
 @Tags(backend.stringof)
 unittest {
-    const sandbox = immutable Sandbox();
-    auto oracleFixture = buildCtorOrderingFixture( // Module must stay mutable.
-        sandbox,
-        backend.stringof ~ "_oracle",
-    );
-    const oracle = (new SystemLinker(
-        oracleFixture.imagePaths,
-        oracleFixture.importPaths,
-    )).runTests(oracleFixture.module_);
-    oracle.length.should == 1;
-    oracle[0].passed.should == true;
+    runCtorOrderingInFreshProcess!backend(() {
+        const sandbox = immutable Sandbox();
+        auto oracleFixture = buildCtorOrderingFixture( // Module must stay mutable.
+            sandbox,
+            backend.stringof ~ "_oracle",
+        );
+        const oracle = (new SystemLinker(
+            oracleFixture.imagePaths,
+            oracleFixture.importPaths,
+        )).runTests(oracleFixture.module_);
+        oracle.length.should == 1;
+        oracle[0].passed.should == true;
 
-    auto actualFixture = buildCtorOrderingFixture( // Module must stay mutable.
-        sandbox,
-        backend.stringof ~ "_actual",
-    );
-    const actual = runDependencyImage!backend(
-        actualFixture.imagePaths,
-        actualFixture.importPaths,
-        actualFixture.module_,
-    );
-    actual.length.should == 1;
-    actual[0].passed.should == true;
+        auto actualFixture = buildCtorOrderingFixture( // Module must stay mutable.
+            sandbox,
+            backend.stringof ~ "_actual",
+        );
+        const actual = runDependencyImage!backend(
+            actualFixture.imagePaths,
+            actualFixture.importPaths,
+            actualFixture.module_,
+        );
+        actual.length.should == 1;
+        actual[0].passed.should == true;
+    });
 }
 
 // Pins §35.2 DT_NEEDED-driven dependency-image initialization ordering: the
