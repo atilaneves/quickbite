@@ -20,21 +20,17 @@ jobs:
         with:
           compiler: ${{ matrix.dc }}
 
-      - name: Install LLVM
-        if: matrix.os == 'ubuntu-24.04'
-        uses: KyleMayes/install-llvm-action@ebc0426251bc40c7cd31162802432c68818ab8f0 # v2.0.9
-        with:
-          version: 21.1.8
-          directory: ${{ runner.temp }}/llvm
-
-      - name: Configure LLVM library paths
+      - name: Install LLVM 21
         if: matrix.os == 'ubuntu-24.04'
         run: |
-          llvm_libdir="$("$LLVM_PATH/bin/llvm-config" --libdir)"
-          llvm_libname="$("$LLVM_PATH/bin/llvm-config" --link-shared --libnames | awk '{ print $1 }')"
-          if [[ "$llvm_libname" != libLLVM.so ]]; then
-            ln -sf "$llvm_libname" "$llvm_libdir/libLLVM.so"
-          fi
+          wget -qO- https://apt.llvm.org/llvm-snapshot.gpg.key \
+            | sudo tee /etc/apt/trusted.gpg.d/apt.llvm.org.asc > /dev/null
+          echo "deb http://apt.llvm.org/noble/ llvm-toolchain-noble-21 main" \
+            | sudo tee /etc/apt/sources.list.d/llvm21.list
+          sudo apt-get update
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y llvm-21-dev
+          llvm_libdir="$(llvm-config-21 --libdir)"
+          echo "LLVM_CONFIG=llvm-config-21" >> "$GITHUB_ENV"
           echo "DFLAGS=-L-L$llvm_libdir${DFLAGS:+ $DFLAGS}" >> "$GITHUB_ENV"
           echo "LD_LIBRARY_PATH=$llvm_libdir${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}" >> "$GITHUB_ENV"
 
