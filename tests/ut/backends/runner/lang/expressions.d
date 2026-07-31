@@ -997,10 +997,7 @@ static foreach (backend; Matrix!()) {
     }
 }
 
-static foreach (backend; Matrix!(
-    Omit!(Bytecode, Because.inexpressible,
-        "bytecode core does not support calls through delegate locals"),
-)) {
+static foreach (backend; Matrix!()) {
     @("delegate.nestedFunctionReadsCapturedDelegate." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {

@@ -366,16 +366,30 @@ architectural non-goals with an explicit reason. An unsupported
 implementation is not, by itself, a permanent divergence from the compiled-D
 oracle.
 
-Concrete next candidates in `tests/ut/backends/runner/lang/arrays.d`:
-- `assocArray.structKeyWithStringMemberComparesStructurally.Bytecode`
-  (`Omit!(Bytecode, Because.refusal, "Unsupported variable in bytecode core:
-  __aakey3")`) -- a struct-typed AA key compares members structurally; the
-  bytecode core refuses DMD's synthesized `__aakeyN` temporary the key
-  expression lowers to before it ever reaches the assoc-array opcodes.
-- `assocArray.nestedLookupDereferencesAssociativeArrayPointee.Bytecode`
-  (`Omit!(Bytecode, Because.inexpressible, "nested associative-array
-  operand")`) -- `int[int][int]` (an AA of AAs); `a[1][2]` needs the outer
-  lookup's result treated as another AA handle rather than a scalar.
+Both remaining `Omit!(Bytecode, ...)` rows in
+`tests/ut/backends/runner/lang/arrays.d`
+(`assocArray.structKeyWithStringMemberComparesStructurally`,
+`assocArray.nestedLookupDereferencesAssociativeArrayPointee`) are blocked on
+the same architectural limitation, not on their own compiler-frontend
+plumbing: `AssocArray` (`machine.d`) hard-codes `int[] keys; int[] values;`
+and every `aa*` opcode handler reads/writes keys and values via
+`scalarValue!int`/`AssocArray.insert(in int, in int)`. A struct key (the
+first row) and an AA-handle value (the second row, a `ulong` handle for the
+nested map) both need a wider representation than 4-byte `int`; the
+compiler-side operand plumbing for both (recovering `__aakeyN`'s structural
+comparison and the nested handle's expression form respectively) is
+tractable on its own, but the machine's map storage has to grow arbitrary
+key/value width first, mirroring how dynamic arrays already carry their own
+element size. That is the prerequisite, not a narrow per-row fix.
+
+Concrete next candidate in `tests/ut/backends/runner/lang/expressions.d`:
+`pointer.functionPointerDereferencePreservesCallable`
+(`Omit!(Bytecode, Because.inexpressible, "bytecode core does not support
+function-pointer values loaded through pointer dereference")`) -- loading a
+function pointer through `*pp`/`pp[i]` never reaches an actual call; needs
+tracing where the loaded function-pointer value is asked to be invoked and
+routing it through the existing `compileIndirectCall` dispatch instead of
+being dropped.
 
 Reconfirm these live aggregate limitations against the current source when a
 row reaches them:
@@ -541,12 +555,9 @@ receives `this`, not just this call path.
 callee's function-pointer type alone (the same run-time-declared-type
 approach `compileDynamicDelegateCall` uses for a delegate parameter, minus
 the context word), so a plain `R function(Args...)` call with arguments
-works. `delegate.nestedFunctionReadsCapturedDelegate` and
-`pointer.functionPointerDereferencePreservesCallable` (`expressions.d`) are
-separate, still-open gaps: the former calls through a delegate LOCAL
-(`compileDelegateCall`, a different path with a statically known
-`FuncDeclaration`), and the latter never actually invokes the pointer it
-loads.
+works. `pointer.functionPointerDereferencePreservesCallable`
+(`expressions.d`) remains a separate, still-open gap: it never actually
+invokes the pointer it loads.
 
 ### TDD and handoff discipline
 

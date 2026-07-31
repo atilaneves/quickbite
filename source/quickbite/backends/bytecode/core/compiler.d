@@ -3828,6 +3828,11 @@ private struct Compiler {
         const offset = allocateBytes(delegateValueSize, size_t.sizeof);
         emitDelegateValue(offset, delegate_.function_, delegate_.contextOffset);
         _delegateLocals[variable] = DelegateLocal(offset, delegate_.function_);
+        // A nested function reading `dg` sees only the captured-locals
+        // environment, not `_delegateLocals` (reset per compiled function);
+        // register the offset like every other local so its value is
+        // reachable there too.
+        _capturedOffsets[variable] = offset;
     }
 
     // Store a `{functionIndex, context}` delegate pair into the 16-byte slot at
@@ -11609,6 +11614,20 @@ private struct Compiler {
             if (auto offset = structFieldDelegateOffsetOf(call))
                 return compileDynamicDelegateCall(*offset, call);
 
+        // `d()` through a delegate local declared in an ENCLOSING function and
+        // read here as a captured variable (`_delegateLocals` only tracks the
+        // function currently being compiled): load its `{functionIndex,
+        // context}` pair out of the captured environment into a fresh slot in
+        // the current frame, then dispatch it exactly like a delegate-typed
+        // parameter. Tried only after every current-function-owned delegate
+        // shape above has declined, since a plain parameter also carries a
+        // `_capturedOffsets` entry (any local may later be captured by a
+        // nested function) that this check would otherwise misread as a
+        // capture of its own.
+        if (function_ is null)
+            if (auto offset = capturedDelegateOffsetOf(call))
+                return compileDynamicDelegateCall(*offset, call);
+
         // `fp()` through a function-pointer value: the callee is not a named
         // `FuncDeclaration` but a function-pointer expression. Dispatch through
         // the run-time index it holds.
@@ -12348,6 +12367,38 @@ private struct Compiler {
         if (declaration is null)
             return null;
         return declaration in _delegateLocals;
+    }
+
+    // A call through a delegate-typed local declared in an enclosing
+    // function and reached here only as a captured variable: materialise its
+    // `{functionIndex, context}` pair out of the captured-locals environment
+    // into a fresh slot in the CURRENT frame, returning that slot's offset.
+    // `null` when `call` is not this shape.
+    private ushort* capturedDelegateOffsetOf(CallExp call) {
+        import dmd.astenums: TY;
+
+        if (!_hasNestedContext)
+            return null;
+
+        auto variable = call.e1 is null ? null : call.e1.isVarExp;
+        if (variable is null)
+            return null;
+        auto declaration = variable.var.isVarDeclaration;
+        if (declaration is null ||
+            declaration.type.toBasetype.ty != TY.Tdelegate)
+            return null;
+        auto capturedOffset = declaration in _capturedOffsets;
+        if (capturedOffset is null)
+            return null;
+
+        const offset = allocateBytes(delegateValueSize, size_t.sizeof);
+        _code ~= Instruction(
+            Op.frameLoad, offset, capturedFrameIndex(*capturedOffset),
+            cast(ushort) delegateValueSize,
+        );
+        auto result = new ushort;
+        *result = offset;
+        return result;
     }
 
     // The frame offset of the delegate-typed PARAMETER invoked by `f(...)`,
