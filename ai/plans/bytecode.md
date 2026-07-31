@@ -526,24 +526,16 @@ something frame-independent -- a real pointer to the receiver block rather
 than a frame-relative offset -- which changes how every struct method
 receives `this`, not just this call path.
 
-`compileIndirectCall` (`compiler.d`) rejects any call through a plain
-`R function(Args...)` pointer value that passes arguments
-("Unsupported function-pointer call with arguments in bytecode core", the
-comment above it explains the callee's argument layout is only known at
-run time). Two rows are blocked on exactly this:
-`struct.functionPointerFieldPreservesCallable.Bytecode` (`structs.d`,
-`Omit!(Bytecode, Because.inexpressible, "bytecode core does not support
-function-pointer calls with arguments")`) calls a struct field's function
-pointer with an argument; `delegate.nestedFunctionReadsCapturedDelegate`
-and `pointer.functionPointerDereferencePreservesCallable`
-(`expressions.d`) are separate gaps (delegate-typed locals, function
-pointers loaded through a dereference) not fixed by this. The existing
-delegate-parameter mechanism (`Op.callIndirectDynamic`, described above)
-already builds an argument area from a runtime-resolved callee's declared
-type with no statically known `FuncDeclaration`; a function-pointer value
-carries the same shape minus the context word, so the same run-time
-layout lookup should extend to it instead of `compileIndirectCall`'s
-current no-arguments restriction.
+`compileIndirectCall` (`compiler.d`) now builds its argument area from the
+callee's function-pointer type alone (the same run-time-declared-type
+approach `compileDynamicDelegateCall` uses for a delegate parameter, minus
+the context word), so a plain `R function(Args...)` call with arguments
+works. `delegate.nestedFunctionReadsCapturedDelegate` and
+`pointer.functionPointerDereferencePreservesCallable` (`expressions.d`) are
+separate, still-open gaps: the former calls through a delegate LOCAL
+(`compileDelegateCall`, a different path with a statically known
+`FuncDeclaration`), and the latter never actually invokes the pointer it
+loads.
 
 ### TDD and handoff discipline
 

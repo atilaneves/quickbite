@@ -12587,36 +12587,47 @@ private struct Compiler {
         return null;
     }
 
-    // `fp()` through a function-pointer value: load the callee's run-time
-    // function index from the pointer slot and dispatch through `callIndirect`.
-    // The pointer carries the index (set by `&f`); the machine reads the
-    // callee's parameter and result layout from that index, so the call site
-    // need only place the arguments and a result slot.
+    // `fp(args...)` through a function-pointer value: load the callee's
+    // run-time function index from the pointer slot and dispatch through
+    // `callIndirect`. There is no statically known `FuncDeclaration` behind
+    // the pointer, so the argument area is built from the function-pointer
+    // type's own declared parameters -- the same approach
+    // `compileDynamicDelegateCall` uses for a delegate-typed parameter, minus
+    // the leading context word a plain function pointer has no room for.
     private Operand compileIndirectCall(CallExp call) {
-        import std.conv: text;
+        import dmd.astenums: STC;
 
         // DMD lowers `fp()` as `(*fp)()`: the callee operand is a `PtrExp` whose
         // dereferenced type is the function type `R function(Args...)`. The
-        // callee's result type is that function type's `nextOf`; the pointer
-        // slot holding the run-time index is the `PtrExp`'s sub-expression.
+        // pointer slot holding the run-time index is the `PtrExp`'s
+        // sub-expression.
         auto deref = call.e1.isPtrExp;
-        const returnType = resultType(deref.type.toBasetype.nextOf);
+        auto functionType = deref.type.toBasetype.isTypeFunction;
+        const returnType = resultType(functionType.next);
 
         const pointer = compileExpression(deref.e1);
 
-        // No test exercises arguments through a function pointer; the callee's
-        // argument layout is only known at run time, so supporting them safely
-        // needs the layout derived from the function-pointer type, not yet done.
-        if (call.arguments !is null && call.arguments.length > 0)
-            throw new Exception(text(
-                "Unsupported function-pointer call with arguments in bytecode "
-                ~ "core: ",
-                expressionChars(call),
-            ));
+        ParameterLayout layout;
+        if (functionType.parameterList.parameters !is null)
+            foreach (parameter; *functionType.parameterList.parameters) {
+                const isReference = (parameter.storageClass &
+                    (STC.ref_ | STC.out_ | STC.auto_)) != STC.none;
+                appendParameterLayoutEntry(
+                    layout, parameter.type, isReference,
+                );
+            }
 
-        // An empty argument area: the callee has no parameters (the only form
-        // supported here), so the machine copies zero parameter bytes from it.
-        const argumentArea = allocateBytes(0, 8);
+        const argumentArea = allocateBytes(layout.blockSize, size_t.sizeof);
+        if (call.arguments !is null)
+            foreach (argumentIndex; 0 .. call.arguments.length) {
+                const slot = cast(ushort)
+                    (argumentArea + layout.offsets[argumentIndex]);
+                emitCallArgument(
+                    slot,
+                    layout.isReference[argumentIndex],
+                    (*call.arguments)[argumentIndex],
+                );
+            }
 
         const destination =
             (!returnType.isArray &&

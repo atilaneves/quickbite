@@ -27,10 +27,7 @@ static foreach (backend; Matrix!()) {
     }
 }
 
-static foreach (backend; Matrix!(
-    Omit!(Bytecode, Because.inexpressible,
-        "bytecode core does not support function-pointer calls with arguments"),
-)) {
+static foreach (backend; Matrix!()) {
     @("struct.functionPointerFieldPreservesCallable." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
