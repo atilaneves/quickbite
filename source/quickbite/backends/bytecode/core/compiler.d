@@ -11083,7 +11083,7 @@ private struct Compiler {
     // `validateSubSlice`, matching compiled D's `RangeError` wording byte for
     // byte). Null if `slice.e1` is not a static-array location, or its
     // element isn't one of the widths `subSliceOp`/`sliceCopyOp` copy
-    // correctly (1, 2, 4, or 8 bytes).
+    // correctly (1, 2, 4, 8, or 16 bytes).
     private ushort* tryStaticArraySliceDescriptor(SliceExp slice) {
         // `tryStaticArrayRuntimeAddress` resolves a `DotVarExp` to any
         // struct field's own frame offset, static array or not (e.g. a
@@ -11102,9 +11102,12 @@ private struct Compiler {
             return null;
 
         const elementType = dynamicArrayElementType(slice.e1.type);
-        const elementSize = size(elementType);
+        // `dynamicArrayElementSize` derives the real byte width for a
+        // struct/static-array element instead of the `ScalarType.void_`-
+        // implied 0 that the raw `size(elementType)` gives it.
+        const elementSize = dynamicArrayElementSize(slice.e1.type, elementType);
         if (elementSize != 1 && elementSize != 2 && elementSize != 4 &&
-            elementSize != 8)
+            elementSize != 8 && elementSize != 16)
             return null;
 
         const length = staticArrayLength(slice.e1.type);
@@ -11163,7 +11166,7 @@ private struct Compiler {
             return null;
 
         const elementType = dynamicArrayElementType(slice.e1.type);
-        const elementSize = size(elementType);
+        const elementSize = dynamicArrayElementSize(slice.e1.type, elementType);
 
         if (sliceFillSupported(elementSize) &&
             rhs.type !is null &&
@@ -11208,9 +11211,12 @@ private struct Compiler {
             : descriptor.elementIsArray;
         const destination = allocateBytes(sliceDescriptorSize, size_t.sizeof);
         compileSliceInto(destination, elementType, slice);
-        const elementSize = elementIsArray
-            ? sliceDescriptorSize
-            : size(elementType);
+        // `dynamicArrayElementSize` derives an aggregate (struct/static-array)
+        // element's real byte width instead of the `ScalarType.void_`-implied
+        // 0 that a raw `size(elementType)` would give it, the same way
+        // append/concat already do.
+        const elementSize =
+            dynamicArrayElementSize(slice.e1.type, elementType, elementIsArray);
 
         if (sliceFillSupported(elementSize) &&
             rhs.type !is null &&

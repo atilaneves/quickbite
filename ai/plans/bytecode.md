@@ -424,22 +424,26 @@ row reaches them:
   size from `elementIsArray` via the descriptor rather than `size` of a
   `ScalarType` that is `void_` for any non-scalar element)
   (`dynamicArray.subSliceAssignmentWithArrayElementsAcrossMultipleRows`).
-  Concrete next candidate, confirmed still red with a real fixture: the
-  same shape but the array's element is a 16-byte *struct* rather than a
-  slice, e.g. `struct S { long a; long b; } S[] outer; S[] other; ...
-  outer[0..2] = other;` -- `dynamicArrayElementType`/`dynamicArrayElementSize`
-  return `ScalarType.void_`/needs `elementIsArray` false for a `Tstruct`
-  element, so `tryDynamicArraySliceAssign`'s `elementSize` still resolves to
-  0 and `sliceCopyOp` silently selects the 4-byte variant, truncating the
-  copy the same way the array-element case did before this fix. Needs the
-  same treatment `dynamicArrayElementSize`'s `Tstruct`/`Tsarray` branch
-  already gives append/concat (`staticArraySize(element)`), threaded through
-  `tryDynamicArraySliceAssign` (and `tryStaticArraySliceAssign`, which has
-  the identical `size(elementType)` computation for a static-array target),
-  plus a `sliceCopyOp`/`Op.sliceCopy`-family case for arbitrary aggregate
-  widths beyond the fixed 1/2/4/8/16 set -- `copySlice`'s machine handler is
-  already width-generic (a raw byte copy), so only the compiler-side
-  element-size derivation and opcode selection need to grow.
+  A sub-slice assignment whose element is a 16-byte *struct* rather than a
+  slice descriptor (`struct S { long a; long b; } S[] outer; S[] other; ...
+  outer[0..2] = other;`) now also copies each element's full width: both
+  `tryDynamicArraySliceAssign` and `tryStaticArraySliceAssign` (plus
+  `tryStaticArraySliceDescriptor`'s element-width gate, widened to accept
+  16) derive `elementSize` from `dynamicArrayElementSize` instead of a raw
+  `size(elementType)`, which resolved to 0 for any `Tstruct`/`Tsarray`
+  element and made `sliceCopyOp` silently fall back to its 4-byte variant
+  (`dynamicArray.subSliceAssignmentWithStructElementsAcrossMultipleRows`,
+  `staticArray.subSliceAssignmentWithStructElementsWritesThroughRealStorage`).
+  Concrete next candidate: a struct element wider than 16 bytes (e.g. three
+  `long` fields, 24 bytes) still has no working path -- `sliceCopyOp`,
+  `sliceCopyElementSize` (`machine.d`), and `subSliceOp` each hard-code a
+  fixed 1/2/4/8/16 opcode set and have no fallback for other widths (`assert
+  (0, ...)` in `subSliceOp`, a silent wrong-width default in `sliceCopyOp`).
+  `copySlice`'s machine handler already takes `elementSize` as a plain
+  runtime `uint`, so the natural fix is an opcode whose third operand
+  carries the byte width directly (as `Op.copy` already does for arbitrary
+  block width) instead of adding more fixed-width opcode variants per
+  struct size.
 - Dynamic-array and string sub-slices reject an upper bound beyond the source
   length and a lower bound greater than the upper bound; pointer-slice bounds
   remain unchecked.

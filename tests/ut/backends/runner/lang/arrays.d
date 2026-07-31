@@ -723,6 +723,43 @@ static foreach (backend; Matrix!()) {
     }
 }
 
+// Sub-slice assignment whose element is a 16-byte struct (not a slice
+// descriptor): each element must copy its full width rather than the
+// scalar width a struct-blind element-size computation would fall back to.
+static foreach (backend; Matrix!()) {
+    @("dynamicArray.subSliceAssignmentWithStructElementsAcrossMultipleRows." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct S {
+                long a;
+                long b;
+            }
+
+            int seed(int value) {
+                return value;
+            }
+
+            unittest {
+                S[] outer;
+                outer ~= S(seed(1), seed(2));
+                outer ~= S(seed(3), seed(4));
+                S[] other;
+                other ~= S(seed(7), seed(8));
+                other ~= S(seed(9), seed(10));
+
+                outer[0 .. 2] = other;
+
+                assert(outer[0].a == 7);
+                assert(outer[0].b == 8);
+                assert(outer[1].a == 9);
+                assert(outer[1].b == 10);
+            }
+        });
+    }
+}
+
 static foreach (backend; Matrix!()) {
     @("dynamicArray.refParameterAppend." ~ backend.stringof)
     @Tags(backend.stringof)
@@ -1519,6 +1556,44 @@ static foreach (backend; Matrix!()) {
                 assert(values[1] == 10);
                 assert(values[2] == 20);
                 assert(values[3] == 0);
+            }
+        });
+    }
+}
+
+// A static array whose element is a 16-byte struct: sub-slice assignment must
+// write through the array's own real storage at the struct's full width, the
+// same way `staticArray.partialSliceAssignmentFromDynamicArrayOfIntsWritesThroughRealStorage`
+// does for a 4-byte scalar element.
+static foreach (backend; Matrix!()) {
+    @("staticArray.subSliceAssignmentWithStructElementsWritesThroughRealStorage." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct S {
+                long a;
+                long b;
+            }
+
+            int seed(int value) {
+                return value;
+            }
+
+            unittest {
+                S[2] outer;
+                outer[0] = S(seed(1), seed(2));
+                outer[1] = S(seed(3), seed(4));
+                S[2] other;
+                other[0] = S(seed(7), seed(8));
+                other[1] = S(seed(9), seed(10));
+
+                outer[0 .. 2] = other[];
+
+                assert(outer[0].a == 7);
+                assert(outer[0].b == 8);
+                assert(outer[1].a == 9);
+                assert(outer[1].b == 10);
             }
         });
     }
