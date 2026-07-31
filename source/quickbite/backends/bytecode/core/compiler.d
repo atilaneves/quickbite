@@ -2690,6 +2690,16 @@ private struct Compiler {
                 lvalueType = scalarType(field.type);
                 lvalueField = field;
             }
+        } else if (auto index = post.e1.isIndexExp) {
+            // `a[0]++` / `s.a[1]++`: a compile-time-constant index into a
+            // static-array chain (a plain local or a struct field's inline
+            // block) resolves to the element's own inline frame slot, the
+            // same authority `compileStaticArrayElementAssign` writes
+            // through.
+            if (auto element = tryStaticArrayElement(index)) {
+                lvalueSlot = element.offset;
+                lvalueType = element.type;
+            }
         }
 
         if (!isIntegerScalar(lvalueType))
@@ -8637,6 +8647,18 @@ private struct Compiler {
             if (auto store = tryPointerDereferenceAddAssign(deref, addAssign.e2))
                 return *store;
 
+        // `a[0] += rhs` / `s.a[1] += rhs`: a compile-time-constant index into
+        // a static-array chain (a plain local or a struct field's inline
+        // block) adds directly into the element's own inline frame slot.
+        // Tried before the dynamic-array descriptor case below, since
+        // `dynamicArrayDescriptorOrNull` would otherwise materialise a
+        // throwaway heap-copied view of the whole static array (for slicing
+        // and iteration reads) and write the sum into that copy instead of
+        // the real storage.
+        if (auto index = compoundAssignIndex(addAssign.e1))
+            if (auto element = tryStaticArrayElementAddAssign(index, addAssign.e2))
+                return *element;
+
         // `arr[i] += rhs` on a dynamic-array element (e.g. a destructor's
         // `this.sink[0] += 3`): load the element, add the rhs, and store it back
         // through the descriptor.
@@ -10597,6 +10619,58 @@ private struct Compiler {
 
         auto result = new Operand;
         *result = Operand(current, elementType);
+        return result;
+    }
+
+    // `a[0] += rhs` / `s.a[1] += rhs` on a static-array element: add directly
+    // into the element's own inline frame slot, the same authority
+    // `compileStaticArrayElementAssign` writes through. Null if `index` is
+    // not a compile-time-constant index into a known static-array chain.
+    private Operand* tryStaticArrayElementAddAssign(
+        IndexExp index,
+        Expression rhs,
+    ) {
+        import std.conv: text;
+
+        auto element = tryStaticArrayElement(index);
+        if (element is null)
+            return null;
+
+        const lvalueType = element.type;
+        const rhsValue = compileExpression(rhs);
+        if (!isCompoundIntegerScalar(lvalueType) ||
+            !isCompoundIntegerScalar(rhsValue.type) ||
+            isEightByteInteger(lvalueType) != isEightByteInteger(rhsValue.type))
+            throw new Exception(text(
+                "Unsupported compound assignment in bytecode core: ",
+                expressionChars(index),
+            ));
+
+        const operationType = isEightByteInteger(lvalueType)
+            ? lvalueType
+            : ScalarType.int_;
+        const lhs = integerOperationOperand(
+            Operand(element.offset, lvalueType), operationType,
+        );
+        const right = integerOperationOperand(rhsValue, operationType);
+        const destination = size(lvalueType) == size(operationType)
+            ? element.offset
+            : allocate(operationType);
+        const addOp = lvalueType == ScalarType.long_ ||
+            lvalueType == ScalarType.ulong_
+                ? Op.addInt8
+                : Op.addInt4;
+        _code ~= Instruction(addOp, destination, lhs.offset, right.offset);
+        if (destination != element.offset)
+            _code ~= Instruction(
+                Op.copy,
+                element.offset,
+                destination,
+                cast(ushort) size(lvalueType),
+            );
+
+        auto result = new Operand;
+        *result = Operand(element.offset, lvalueType);
         return result;
     }
 

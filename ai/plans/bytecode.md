@@ -461,7 +461,21 @@ row reaches them:
   the callee dereferences on every read/write of it, so a call can bind it
   directly to the real address (e.g. via `Op.moduleAddress`) and skip the
   mirror/writeback pair entirely -- a change to the calling convention
-  shared by every ref-argument kind, not a narrow field-offset fix.
+  shared by every ref-argument kind, not a narrow field-offset fix. This
+  also covers the plain-local case, not just module/struct/class-backed
+  storage: `referenceOffset`'s ordinary `_locals` path passes the same
+  caller-frame-offset-mirrored-into-a-fresh-slot value for any `ref`
+  parameter, confirmed via `bin/qb` for a bare `ref int` parameter with no
+  module or aggregate involved at all (`&value` inside the callee never
+  equals the caller's `&value`). `expressions.d`'s
+  `refArgument.templateRefSharedParameterMutatesAndPreservesAddress`,
+  `refArgument.templateRefSharedForwardsThroughNestedFunction`, and
+  `delegate.captureIsNotParameterReference` (still
+  `Omit!(Bytecode, Because.unconfirmed)`, ~line 8024) all assert `&value ==
+  expected` across a `ref`/captured-local call boundary and are blocked on
+  this same calling-convention change, not on template/`shared`/closure
+  specifics; they are not a bounded single-commit family until the ref
+  calling convention above is redesigned.
 
 `concurrency.thisTid.Bytecode` (`tests/ut/backends/runner/sys/concurrency.d`)
 stays `Omit!(Bytecode, Because.unconfirmed, ...)`. `Scheduler.thisInfo`'s
@@ -511,6 +525,25 @@ all. Making the struct-receiver shape callable needs the receiver encoded as
 something frame-independent -- a real pointer to the receiver block rather
 than a frame-relative offset -- which changes how every struct method
 receives `this`, not just this call path.
+
+`compileIndirectCall` (`compiler.d`) rejects any call through a plain
+`R function(Args...)` pointer value that passes arguments
+("Unsupported function-pointer call with arguments in bytecode core", the
+comment above it explains the callee's argument layout is only known at
+run time). Two rows are blocked on exactly this:
+`struct.functionPointerFieldPreservesCallable.Bytecode` (`structs.d`,
+`Omit!(Bytecode, Because.inexpressible, "bytecode core does not support
+function-pointer calls with arguments")`) calls a struct field's function
+pointer with an argument; `delegate.nestedFunctionReadsCapturedDelegate`
+and `pointer.functionPointerDereferencePreservesCallable`
+(`expressions.d`) are separate gaps (delegate-typed locals, function
+pointers loaded through a dereference) not fixed by this. The existing
+delegate-parameter mechanism (`Op.callIndirectDynamic`, described above)
+already builds an argument area from a runtime-resolved callee's declared
+type with no statically known `FuncDeclaration`; a function-pointer value
+carries the same shape minus the context word, so the same run-time
+layout lookup should extend to it instead of `compileIndirectCall`'s
+current no-arguments restriction.
 
 ### TDD and handoff discipline
 

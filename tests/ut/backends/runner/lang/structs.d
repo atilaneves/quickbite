@@ -3633,10 +3633,7 @@ static foreach (backend; Matrix!()) {
     }
 }
 
-static foreach (backend; Matrix!(
-    Omit!(Bytecode, Because.inexpressible,
-        "bytecode core does not support postfix increment"),
-)) {
+static foreach (backend; Matrix!()) {
     @("struct.fixedArrayFieldCompoundAssignmentAndIncrementWriteBack." ~
         backend.stringof)
     @Tags(backend.stringof)
