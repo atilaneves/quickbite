@@ -387,23 +387,28 @@ of the already-documented not-bounded rows above (`file.d:14`,
 `concurrency.d:24`, the cerealed exception-message row, the three
 `expressions.d` ref-calling-convention rows, the two `arrays.d` assoc-array
 rows, and the four `archive.d` rows); re-search before assuming otherwise.
-Concrete next candidate: a module-level struct's dynamic-array FIELD
-(`struct P { byte[] arr; } P gp;`) silently drops every `gp.arr ~= x` /
-`gp.arr ~= other`. Confirmed via `bin/qb` against `SystemLinker`: after
-`gp.arr ~= runtime`, `SystemLinker` reports `gp.arr.length == 1`, Bytecode
-reports `0`. Root cause: `dynamicArrayDescriptorOrNull`'s `base.field` branch
-(`compiler.d`, the `if (auto field = tryStructField(dot))` block around line
-3048) copies `field.offset`/`writeBackStructThroughFrame`/`structOffset`/
-`structFrameIndexOffset`/`structSize` from the resolved `StructField` into the
-new `DynamicArrayLocal`, but never copies `field.writeBackThroughModule` /
-`field.moduleOffset` — the two members `tryStructField` sets exactly for a
-module-struct field (see the `moduleStructVariableOrNull` branch a few dozen
-lines above it). `writeBackDynamicArrayDescriptor` therefore finds every
-writeback flag on the resulting descriptor false and emits no writeback
-instruction at all: not a reordering/reentrancy bug like the ones below, a
-missing field copy that drops the append unconditionally. No fixture exists
-yet; write the `SystemLinker`-backed exposing test and thread
-`writeBackThroughModule`/`moduleOffset` through that branch.
+Concrete next candidate: a module-level struct's own NESTED struct field is
+entirely unsupported for any read or write, not just dynamic-array fields.
+Confirmed via `bin/qb` against `SystemLinker`: with `struct Inner { int x; }
+struct Outer { Inner inner; } Outer go;`, `go.inner.x = 5;` throws
+`Unsupported assignment in bytecode core: go.inner.x = 5` under Bytecode
+where `SystemLinker` gives `5`; the array-field shape (`struct Inner { byte[]
+arr; }`) throws `Unsupported dynamic array access in bytecode core:
+go.inner.arr`. Root cause: `structBaseOffsetOrNull` (`compiler.d`, ~line
+4681) has no case for a bare module-struct `VarExp` — only `tryStructField`'s
+own bespoke `moduleStructVariableOrNull` branch (~line 5000) materialises a
+module struct's whole-block copy, and only for a single dot-level
+(`go.field`). `structBaseOffsetOrMaterialise`'s generic `outer.inner`
+recursion (~line 5161) needs `structBaseOffsetOrMaterialise(go, ...)` to
+resolve `go`'s own base offset before it can add `inner`'s field offset, but
+nothing teaches that generic resolver about module structs, so it reports
+unresolved and the whole chain gives up before ever reaching `tryStructField`'s
+bespoke branch. Fix needs `structBaseOffsetOrMaterialise` (or
+`structBaseOffsetOrNull`) to materialise a bare module-struct `VarExp` into a
+frame block the same way `tryStructField` already does for one level, with
+writeback generalised from the existing single-field
+`writeBackThroughModule`/`moduleOffset` machinery to a nested field offset.
+No fixture exists yet.
 
 Reconfirm these live aggregate limitations against the current source when a
 row reaches them:

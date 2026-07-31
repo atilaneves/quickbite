@@ -3057,6 +3057,15 @@ private struct Compiler {
                     result.structOffset = field.structOffset;
                     result.structFrameIndexOffset = field.frameIndexOffset;
                     result.structSize = field.structSize;
+                    // A module-struct field: `field.moduleOffset` is the
+                    // whole struct's own dataseg base (`writeBackStructField`
+                    // adds back the field's offset within the struct); mirror
+                    // that same arithmetic here so the array's own writeback
+                    // lands at the field's own module slot, not the struct's.
+                    result.writeBackThroughModule = field.writeBackThroughModule;
+                    result.moduleOffset = cast(ushort) (
+                        field.moduleOffset + (field.offset - field.structOffset)
+                    );
                     return result;
                 }
 

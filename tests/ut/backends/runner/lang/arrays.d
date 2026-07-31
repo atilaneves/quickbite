@@ -374,6 +374,36 @@ static foreach (backend; Matrix!(
     }
 }
 
+// `gp.arr ~= x` where `gp` is a module-level struct and `arr` is one of its
+// dynamic-array fields: the field's own slice descriptor lives inside the
+// struct's whole-block dataseg copy, so its writeback must land at the
+// field's own module offset, not silently drop the append. SystemLinker is
+// the oracle.
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.inexpressible,
+        "CTFE cannot read or write dataseg (__gshared/static) storage"),
+)) {
+    @("dynamicArray.moduleStructFieldAppendWritesBackToModule." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct P { int x; byte[] arr; }
+            P gp;
+
+            unittest {
+                gp.x = 9;
+                byte runtime = cast(byte) (40 + 2);
+                gp.arr ~= runtime;
+
+                assert(gp.x == 9);
+                assert(gp.arr.length == 1);
+                assert(gp.arr[0] == 42);
+            }
+        });
+    }
+}
+
 static foreach (backend; Matrix!()) {
     @("assertDiagnostic.characterEquality." ~ backend.stringof)
     @Tags(backend.stringof)
