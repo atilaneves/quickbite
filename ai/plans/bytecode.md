@@ -366,6 +366,13 @@ architectural non-goals with an explicit reason. An unsupported
 implementation is not, by itself, a permanent divergence from the compiled-D
 oracle.
 
+Concrete next candidate: `assocArray.nullAAAssignmentInsertDetaches.Bytecode`
+(`tests/ut/backends/runner/lang/arrays.d`, `Omit!(Bytecode, Because.refusal,
+"Unsupported associative array initializer in bytecode core: aa")`) --
+`int[int] bb = aa;` initializes an AA-typed local from another AA VARIABLE
+(a plain `VarExp`, not an AA literal); the current AA-initializer path only
+handles a literal or null right-hand side.
+
 Reconfirm these live aggregate limitations against the current source when a
 row reaches them:
 

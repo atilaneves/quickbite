@@ -10058,6 +10058,28 @@ private struct Compiler {
             }
         }
 
+        // A delegate field `int delegate(int) f` (`s.f = &add`) holds a
+        // 16-byte `{functionIndex, context}` pair; build it from the rhs
+        // delegate initializer the same way a delegate local's own
+        // declaration does.
+        if (field.type.toBasetype.ty == TY.Tdelegate) {
+            import std.conv: text;
+
+            auto delegate_ = delegateInitializer(rhs);
+            if (delegate_.function_ is null)
+                throw new Exception(text(
+                    "Unsupported delegate struct-field assignment in ",
+                    "bytecode core: ", expressionChars(rhs),
+                ));
+            emitDelegateValue(
+                field.offset, delegate_.function_, delegate_.contextOffset,
+            );
+            writeBackStructField(*field);
+            auto delegateResult = new Operand;
+            *delegateResult = Operand(field.offset, ScalarType.void_);
+            return delegateResult;
+        }
+
         // A pointer field `T* p` (`tracker.postblits = &count`) holds an 8-byte
         // raw address; copy the rhs pointer value into the field slot.
         if (isPointerType(field.type)) {
@@ -11554,6 +11576,13 @@ private struct Compiler {
             if (auto offset = delegateParameterOffsetOf(call))
                 return compileDynamicDelegateCall(*offset, call);
 
+        // `s.f()` through a delegate-typed struct FIELD: the same run-time-
+        // typed dispatch as a delegate-typed parameter, with the field's own
+        // frame offset as the descriptor instead of a parameter slot.
+        if (function_ is null)
+            if (auto offset = structFieldDelegateOffsetOf(call))
+                return compileDynamicDelegateCall(*offset, call);
+
         // `fp()` through a function-pointer value: the callee is not a named
         // `FuncDeclaration` but a function-pointer expression. Dispatch through
         // the run-time index it holds.
@@ -12306,6 +12335,26 @@ private struct Compiler {
         if (declaration is null)
             return null;
         return declaration in _delegateParameterLocals;
+    }
+
+    // The frame offset of the delegate-typed struct FIELD invoked by
+    // `s.f(...)`, or null if `call` is not a call through one. The callee's
+    // target is a run-time value with no statically known `FuncDeclaration`,
+    // the same shape a delegate-typed parameter reaches.
+    private ushort* structFieldDelegateOffsetOf(CallExp call) {
+        import dmd.astenums: TY;
+
+        auto dot = call.e1 is null ? null : call.e1.isDotVarExp;
+        if (dot is null || dot.var.isFuncDeclaration !is null)
+            return null;
+
+        auto field = tryStructField(dot);
+        if (field is null || field.type.toBasetype.ty != TY.Tdelegate)
+            return null;
+
+        auto offset = new ushort;
+        *offset = field.offset;
+        return offset;
     }
 
     private LazyDelegateSource* lazyDelegateLocalOf(CallExp call) {

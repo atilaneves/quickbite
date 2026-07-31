@@ -49,10 +49,7 @@ static foreach (backend; Matrix!()) {
     }
 }
 
-static foreach (backend; Matrix!(
-    Omit!(Bytecode, Because.inexpressible,
-        "bytecode core does not support delegate-typed aggregate fields"),
-)) {
+static foreach (backend; Matrix!()) {
     @("struct.liveDelegateFieldPreservesCallable." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
