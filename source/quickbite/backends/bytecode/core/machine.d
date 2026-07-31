@@ -296,7 +296,7 @@ package(quickbite.backends.bytecode) RunResult run(
                 ++ip;
                 break;
 
-            case sliceCopy1, sliceCopy2, sliceCopy4, sliceCopy8:
+            case sliceCopy1, sliceCopy2, sliceCopy4, sliceCopy8, sliceCopy16:
                 copySlice(
                     stack,
                     base + instruction.a,
@@ -2408,6 +2408,8 @@ private uint sliceCopyElementSize(
         return 2;
     if (op == Op.sliceEqual8 || op == Op.sliceCopy8)
         return 8;
+    if (op == Op.sliceCopy16)
+        return 16;
     return 4;
 }
 

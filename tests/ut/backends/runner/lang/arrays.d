@@ -691,6 +691,38 @@ static foreach (backend; Matrix!(
     }
 }
 
+// Sub-slice assignment whose element is itself a 16-byte slice descriptor
+// (`outer[lo..hi] = otherOuter` for `T[][]`, copying whole row descriptors
+// across multiple rows), not a single row's scalar contents.
+static foreach (backend; Matrix!()) {
+    @("dynamicArray.subSliceAssignmentWithArrayElementsAcrossMultipleRows." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            int seed(int value) {
+                return value;
+            }
+
+            unittest {
+                int[][] outer;
+                outer ~= [seed(1), seed(2)];
+                outer ~= [seed(3), seed(4)];
+                int[][] other;
+                other ~= [seed(7), seed(8)];
+                other ~= [seed(9), seed(10)];
+
+                outer[0 .. 2] = other;
+
+                assert(outer[0][0] == 7);
+                assert(outer[0][1] == 8);
+                assert(outer[1][0] == 9);
+                assert(outer[1][1] == 10);
+            }
+        });
+    }
+}
+
 static foreach (backend; Matrix!()) {
     @("dynamicArray.refParameterAppend." ~ backend.stringof)
     @Tags(backend.stringof)

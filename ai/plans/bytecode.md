@@ -407,27 +407,39 @@ row reaches them:
 - Scalar slice fill and slice-copy sub-slice assignment now cover every
   basic width (1, 2, 4, and 8 bytes: `Op.sliceFill1`/`sliceFill2`/
   `sliceFill4`/`sliceFill8`, `Op.sliceCopy1`/`sliceCopy2`/`sliceCopy4`/
-  `sliceCopy8`); 16-byte elements (a slice-typed or 16-byte-struct-typed
-  array element) and aggregate elements still need general semantics.
-  `compileSourceSlice`'s rhs materialisation now also covers a plain
-  dynamic-array-typed expression that is neither a `SliceExp` nor a literal
-  (a bare variable, a call result, ...): it compiles the expression and
-  reuses its own slice descriptor directly rather than throwing "Unsupported
-  slice-assignment source". Sub-slice assignment onto an array-of-arrays
-  element (`outer[i][lo..hi] = rhs` where `outer`'s own element is itself an
-  array, e.g. a plain `int[]` rhs) goes through this same generic path and
-  is confirmed working
+  `sliceCopy8`); aggregate (non-array) elements still need general
+  semantics. `compileSourceSlice`'s rhs materialisation now also covers a
+  plain dynamic-array-typed expression that is neither a `SliceExp` nor a
+  literal (a bare variable, a call result, ...): it compiles the expression
+  and reuses its own slice descriptor directly rather than throwing
+  "Unsupported slice-assignment source". Sub-slice assignment onto an
+  array-of-arrays element (`outer[i][lo..hi] = rhs` where `outer`'s own
+  element is itself an array, e.g. a plain `int[]` rhs) goes through this
+  same generic path and is confirmed working
   (`dynamicArray.subSliceAssignmentOntoArrayOfArraysElementFromPlainVariable`).
-  Concrete next candidate, confirmed still red with a real fixture: a
-  sub-slice assignment whose *element* is itself 16 bytes wide, i.e.
+  A sub-slice assignment whose *element* is itself a slice descriptor, i.e.
   `outer[lo..hi] = otherOuter` where `outer` is a `T[][]` and the slice
-  spans multiple rows (copying whole row descriptors, not a single row's
-  scalar contents) -- `int[][] a; a ~= [1,2]; a ~= [3,4]; int[][] b; b ~=
-  [7,8]; b ~= [9,10]; a[0..2] = b;` silently produces the wrong result
-  (reads back stale/original row contents) instead of throwing or matching
-  `SystemLinker`; `sliceCopyOp`/`sliceFillOp` and their machine handlers
-  need a 16-byte-element variant the way `Op.appendElement16`/
-  `Op.concatArrays16` already exist for append/concat.
+  spans multiple rows, now copies whole 16-byte row descriptors correctly
+  (`Op.sliceCopy16`, `tryDynamicArraySliceAssign` now derives its element
+  size from `elementIsArray` via the descriptor rather than `size` of a
+  `ScalarType` that is `void_` for any non-scalar element)
+  (`dynamicArray.subSliceAssignmentWithArrayElementsAcrossMultipleRows`).
+  Concrete next candidate, confirmed still red with a real fixture: the
+  same shape but the array's element is a 16-byte *struct* rather than a
+  slice, e.g. `struct S { long a; long b; } S[] outer; S[] other; ...
+  outer[0..2] = other;` -- `dynamicArrayElementType`/`dynamicArrayElementSize`
+  return `ScalarType.void_`/needs `elementIsArray` false for a `Tstruct`
+  element, so `tryDynamicArraySliceAssign`'s `elementSize` still resolves to
+  0 and `sliceCopyOp` silently selects the 4-byte variant, truncating the
+  copy the same way the array-element case did before this fix. Needs the
+  same treatment `dynamicArrayElementSize`'s `Tstruct`/`Tsarray` branch
+  already gives append/concat (`staticArraySize(element)`), threaded through
+  `tryDynamicArraySliceAssign` (and `tryStaticArraySliceAssign`, which has
+  the identical `size(elementType)` computation for a static-array target),
+  plus a `sliceCopyOp`/`Op.sliceCopy`-family case for arbitrary aggregate
+  widths beyond the fixed 1/2/4/8/16 set -- `copySlice`'s machine handler is
+  already width-generic (a raw byte copy), so only the compiler-side
+  element-size derivation and opcode selection need to grow.
 - Dynamic-array and string sub-slices reject an upper bound beyond the source
   length and a lower bound greater than the upper bound; pointer-slice bounds
   remain unchecked.

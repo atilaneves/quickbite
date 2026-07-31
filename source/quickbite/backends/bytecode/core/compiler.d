@@ -11203,9 +11203,14 @@ private struct Compiler {
         const elementType = descriptor is null
             ? dynamicArrayElementType(slice.type)
             : descriptor.elementType;
+        const elementIsArray = descriptor is null
+            ? arrayElementIsArray(slice.e1.type)
+            : descriptor.elementIsArray;
         const destination = allocateBytes(sliceDescriptorSize, size_t.sizeof);
         compileSliceInto(destination, elementType, slice);
-        const elementSize = size(elementType);
+        const elementSize = elementIsArray
+            ? sliceDescriptorSize
+            : size(elementType);
 
         if (sliceFillSupported(elementSize) &&
             rhs.type !is null &&
@@ -16503,7 +16508,9 @@ private imported!"quickbite.backends.bytecode.core.program".Op sliceCopyOp(
         return Op.sliceCopy1;
     if (elementSize == 2)
         return Op.sliceCopy2;
-    return elementSize == 8 ? Op.sliceCopy8 : Op.sliceCopy4;
+    if (elementSize == 8)
+        return Op.sliceCopy8;
+    return elementSize == 16 ? Op.sliceCopy16 : Op.sliceCopy4;
 }
 
 private bool sliceFillSupported(in uint elementSize) @safe @nogc nothrow pure {
