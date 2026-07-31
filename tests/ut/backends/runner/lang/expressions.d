@@ -2848,8 +2848,6 @@ static foreach (backend; Matrix!(
     Omit!(Ctfe, Because.diverges,
         "CTFE detaches the pointer when the whole static array is assigned; " ~
         "see the sibling characterization below"),
-    Omit!(Bytecode, Because.unconfirmed,
-        "does not yet support whole static-array assignment from a runtime literal"),
 )) {
     @("pointer.staticArrayPointerSurvivesWholeArrayAssignment." ~
         backend.stringof)
