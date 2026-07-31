@@ -8,7 +8,6 @@ jobs:
       matrix:
         os:
           - ubuntu-24.04
-          - macos-14
         dc:
           - dmd-2.112.0
 
@@ -16,30 +15,42 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Install LDC compiler
+        uses: dlang-community/setup-dlang@v2
+        with:
+          compiler: ldc-1.42.0
+
+      - name: Provide ldc executable alias
+        run: |
+          mkdir -p "$RUNNER_TEMP/ldc-alias"
+          ln -s "$(command -v ldc2)" "$RUNNER_TEMP/ldc-alias/ldc"
+          echo "$RUNNER_TEMP/ldc-alias" >> "$GITHUB_PATH"
+
       - name: Install D compiler
         uses: dlang-community/setup-dlang@v2
         with:
           compiler: ${{ matrix.dc }}
 
-      - name: Run tests
-        if: matrix.os != 'ubuntu-24.04'
-        run: dub test -q -- -s
-
-      - name: Run tests with coverage
+      - name: Install LLVM 21
         if: matrix.os == 'ubuntu-24.04'
-        run: dub run -q -b unittest-cov -c unittest-cov -- -s
+        run: |
+          wget -qO- https://apt.llvm.org/llvm-snapshot.gpg.key \
+            | sudo tee /etc/apt/trusted.gpg.d/apt.llvm.org.asc > /dev/null
+          echo "deb http://apt.llvm.org/noble/ llvm-toolchain-noble-21 main" \
+            | sudo tee /etc/apt/sources.list.d/llvm21.list
+          sudo apt-get update
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y \
+            llvm-21-dev libreadline-dev
+          llvm_libdir="$(llvm-config-21 --libdir)"
+          echo "LLVM_CONFIG=llvm-config-21" >> "$GITHUB_ENV"
+          echo "DFLAGS=-L-L$llvm_libdir${DFLAGS:+ $DFLAGS}" >> "$GITHUB_ENV"
+          echo "LD_LIBRARY_PATH=$llvm_libdir${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}" >> "$GITHUB_ENV"
 
-      - name: Upload coverage to Codecov
+      - name: Set up uv
         if: matrix.os == 'ubuntu-24.04'
-        uses: codecov/codecov-action@v5
+        uses: astral-sh/setup-uv@v6
         with:
-          token: ${{ secrets.CODECOV_TOKEN }}
-          files: ./source-*.lst
-          disable_search: true
-          fail_ci_if_error: false
+          version: "0.11.32"
 
-      - name: Build binary
-        run: dub build -q
-
-      - name: Run benchmark (smoke test)
-        run: benchmarks/run.sh --warmup=1 --iterations=3
+      - name: Run CI
+        run: ./ci.sh
