@@ -7881,7 +7881,9 @@ private struct Compiler {
         if (pointer.pointerElement == ScalarType.void_)
             return pointer;
 
-        return loadThroughPointer(pointer, compileSizeConstant(0));
+        return asPointerValue(
+            loadThroughPointer(pointer, compileSizeConstant(0)), deref.type,
+        );
     }
 
     // `p[i]`: read the element at `p + i` through a pointer, yielding a scalar
@@ -7894,7 +7896,9 @@ private struct Compiler {
 
             const indexSlot = compileExpression(index.e2);
             auto result = new Operand;
-            *result = loadThroughPointer(pointer, indexSlot.offset);
+            *result = asPointerValue(
+                loadThroughPointer(pointer, indexSlot.offset), index.type,
+            );
             return result;
         }
 
@@ -7904,7 +7908,9 @@ private struct Compiler {
         const pointer = compileExpression(index.e1);
         const indexSlot = compileExpression(index.e2);
         auto result = new Operand;
-        *result = loadThroughPointer(pointer, indexSlot.offset);
+        *result = asPointerValue(
+            loadThroughPointer(pointer, indexSlot.offset), index.type,
+        );
         return result;
     }
 
@@ -7920,6 +7926,20 @@ private struct Compiler {
             pointerLoadOp(elementSize), offset, pointer.offset, indexSlot,
         );
         return Operand(offset, pointer.pointerElement);
+    }
+
+    // A value loaded through a pointer whose static D type is itself a
+    // pointer (`int** p; *p`, or a function-pointer value loaded through
+    // `*pp`/`pp[i]`) must carry `isPointer` so a further dereference, index,
+    // or indirect call sees a pointer operand instead of the plain scalar
+    // `loadThroughPointer` returns by default.
+    private Operand asPointerValue(in Operand loaded, Type type) {
+        if (!isPointerType(type))
+            return loaded;
+
+        return Operand(
+            loaded.offset, loaded.type, true, pointerElementScalar(type),
+        );
     }
 
     private Operand compileAddExpression(Expression expression) {

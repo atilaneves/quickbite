@@ -382,14 +382,16 @@ tractable on its own, but the machine's map storage has to grow arbitrary
 key/value width first, mirroring how dynamic arrays already carry their own
 element size. That is the prerequisite, not a narrow per-row fix.
 
-Concrete next candidate in `tests/ut/backends/runner/lang/expressions.d`:
-`pointer.functionPointerDereferencePreservesCallable`
-(`Omit!(Bytecode, Because.inexpressible, "bytecode core does not support
-function-pointer values loaded through pointer dereference")`) -- loading a
-function pointer through `*pp`/`pp[i]` never reaches an actual call; needs
-tracing where the loaded function-pointer value is asked to be invoked and
-routing it through the existing `compileIndirectCall` dispatch instead of
-being dropped.
+Concrete next candidate: a class field's compound assignment (`c.x += f()`,
+`tryClassPointerField`) has the same read-modify-write reordering hazard the
+module-struct-field fix above already fixed for module storage: nothing
+currently reorders `f()`'s compilation ahead of the field read, so if `f()`
+itself writes `c.x` directly, that direct write is clobbered by a stale-sum
+writeback. No fixture exercises this yet -- write a `SystemLinker`-oracle
+fixture (a class with field `x` and a free function that mutates `c.x`
+directly, called from the right-hand side of `c.x += f()`), confirm it is
+red on `Bytecode`, then apply the same reordering fix in
+`tryClassPointerField`'s compound-assignment path.
 
 Reconfirm these live aggregate limitations against the current source when a
 row reaches them:
@@ -555,9 +557,10 @@ receives `this`, not just this call path.
 callee's function-pointer type alone (the same run-time-declared-type
 approach `compileDynamicDelegateCall` uses for a delegate parameter, minus
 the context word), so a plain `R function(Args...)` call with arguments
-works. `pointer.functionPointerDereferencePreservesCallable`
-(`expressions.d`) remains a separate, still-open gap: it never actually
-invokes the pointer it loads.
+works. A value loaded through a pointer dereference or index (`*p`, `p[i]`)
+whose static type is itself a pointer now carries `isPointer` (`compiler.d`'s
+`asPointerValue`), so a function pointer reached that way is an ordinary
+callable pointer local, the same as one bound directly from `&f`.
 
 ### TDD and handoff discipline
 

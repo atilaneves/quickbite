@@ -1252,11 +1252,7 @@ static foreach (backend; Matrix!()) {
     }
 }
 
-static foreach (backend; Matrix!(
-    Omit!(Bytecode, Because.inexpressible,
-        "bytecode core does not support function-pointer values loaded " ~
-        "through pointer dereference"),
-)) {
+static foreach (backend; Matrix!()) {
     @("pointer.functionPointerDereferencePreservesCallable." ~
         backend.stringof)
     @Tags(backend.stringof)
