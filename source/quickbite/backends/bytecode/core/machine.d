@@ -273,8 +273,11 @@ package(quickbite.backends.bytecode) RunResult run(
                 ++ip;
                 break;
 
-            case subSlice1, subSlice2, subSlice4, subSlice8, subSlice16:
-                const subElementSize = subSliceElementSize(instruction.op);
+            case subSlice1, subSlice2, subSlice4, subSlice8, subSlice16,
+                subSliceN:
+                const subElementSize = instruction.op == subSliceN
+                    ? instruction.d
+                    : subSliceElementSize(instruction.op);
                 const lo = scalarValue!size_t(stack, base + instruction.c);
                 const hi = scalarValue!size_t(
                     stack, base + instruction.c + size_t.sizeof,
@@ -296,12 +299,15 @@ package(quickbite.backends.bytecode) RunResult run(
                 ++ip;
                 break;
 
-            case sliceCopy1, sliceCopy2, sliceCopy4, sliceCopy8, sliceCopy16:
+            case sliceCopy1, sliceCopy2, sliceCopy4, sliceCopy8, sliceCopy16,
+                sliceCopyN:
                 copySlice(
                     stack,
                     base + instruction.a,
                     base + instruction.b,
-                    sliceCopyElementSize(instruction.op),
+                    instruction.op == sliceCopyN
+                        ? instruction.c
+                        : sliceCopyElementSize(instruction.op),
                 );
                 ++ip;
                 break;

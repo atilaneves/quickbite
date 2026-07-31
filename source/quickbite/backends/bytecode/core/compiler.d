@@ -6729,17 +6729,17 @@ private struct Compiler {
             cast(ushort) size_t.sizeof,
         );
 
+        const elementSize = dynamicArrayElementSize(
+            slice.e1.type,
+            elementType,
+            descriptor.elementIsArray,
+        );
         _code ~= Instruction(
-            subSliceOp(
-                dynamicArrayElementSize(
-                    slice.e1.type,
-                    elementType,
-                    descriptor.elementIsArray,
-                ),
-            ),
+            subSliceOp(elementSize),
             destination,
             descriptor.offset,
             bounds,
+            cast(ushort) elementSize,
         );
     }
 
@@ -11081,9 +11081,7 @@ private struct Compiler {
     // anything). Bounds-checks `[lo .. hi]` against the array's own known
     // length the same way a dynamic-array sub-slice does (`Op.subSlice*`'s
     // `validateSubSlice`, matching compiled D's `RangeError` wording byte for
-    // byte). Null if `slice.e1` is not a static-array location, or its
-    // element isn't one of the widths `subSliceOp`/`sliceCopyOp` copy
-    // correctly (1, 2, 4, 8, or 16 bytes).
+    // byte). Null if `slice.e1` is not a static-array location.
     private ushort* tryStaticArraySliceDescriptor(SliceExp slice) {
         // `tryStaticArrayRuntimeAddress` resolves a `DotVarExp` to any
         // struct field's own frame offset, static array or not (e.g. a
@@ -11106,9 +11104,6 @@ private struct Compiler {
         // struct/static-array element instead of the `ScalarType.void_`-
         // implied 0 that the raw `size(elementType)` gives it.
         const elementSize = dynamicArrayElementSize(slice.e1.type, elementType);
-        if (elementSize != 1 && elementSize != 2 && elementSize != 4 &&
-            elementSize != 8 && elementSize != 16)
-            return null;
 
         const length = staticArrayLength(slice.e1.type);
         const bounds = allocateBytes(2 * size_t.sizeof, size_t.sizeof);
@@ -11145,6 +11140,7 @@ private struct Compiler {
         const destination = allocateBytes(sliceDescriptorSize, size_t.sizeof);
         _code ~= Instruction(
             subSliceOp(elementSize), destination, sourceDescriptor, bounds,
+            cast(ushort) elementSize,
         );
 
         auto result = new ushort;
@@ -11155,8 +11151,7 @@ private struct Compiler {
     // `arr[lo .. hi] = rhs` where `arr` is a static array: write through the
     // real-address descriptor `tryStaticArraySliceDescriptor` builds, rather
     // than the throwaway heap copy `dynamicArrayDescriptorOrNull` would
-    // resolve `arr` to. Null if `slice.e1` is not a static-array location of
-    // a supported element width.
+    // resolve `arr` to. Null if `slice.e1` is not a static-array location.
     private Operand* tryStaticArraySliceAssign(
         SliceExp slice,
         Expression rhs,
@@ -11184,6 +11179,7 @@ private struct Compiler {
             sliceCopyOp(elementSize),
             *destination,
             source,
+            cast(ushort) elementSize,
         );
 
         auto result = new Operand;
@@ -11234,6 +11230,7 @@ private struct Compiler {
             sliceCopyOp(elementSize),
             destination,
             source,
+            cast(ushort) elementSize,
         );
 
         auto result = new Operand;
@@ -16502,7 +16499,7 @@ private imported!"quickbite.backends.bytecode.core.program".Op subSliceOp(
         case 4: return Op.subSlice4;
         case 8: return Op.subSlice8;
         case 16: return Op.subSlice16;
-        default: assert(0, "Unsupported sub-slice element size.");
+        default: return Op.subSliceN;
     }
 }
 
@@ -16514,9 +16511,11 @@ private imported!"quickbite.backends.bytecode.core.program".Op sliceCopyOp(
         return Op.sliceCopy1;
     if (elementSize == 2)
         return Op.sliceCopy2;
+    if (elementSize == 4)
+        return Op.sliceCopy4;
     if (elementSize == 8)
         return Op.sliceCopy8;
-    return elementSize == 16 ? Op.sliceCopy16 : Op.sliceCopy4;
+    return elementSize == 16 ? Op.sliceCopy16 : Op.sliceCopyN;
 }
 
 private bool sliceFillSupported(in uint elementSize) @safe @nogc nothrow pure {

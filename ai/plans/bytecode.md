@@ -434,16 +434,25 @@ row reaches them:
   element and made `sliceCopyOp` silently fall back to its 4-byte variant
   (`dynamicArray.subSliceAssignmentWithStructElementsAcrossMultipleRows`,
   `staticArray.subSliceAssignmentWithStructElementsWritesThroughRealStorage`).
-  Concrete next candidate: a struct element wider than 16 bytes (e.g. three
-  `long` fields, 24 bytes) still has no working path -- `sliceCopyOp`,
-  `sliceCopyElementSize` (`machine.d`), and `subSliceOp` each hard-code a
-  fixed 1/2/4/8/16 opcode set and have no fallback for other widths (`assert
-  (0, ...)` in `subSliceOp`, a silent wrong-width default in `sliceCopyOp`).
-  `copySlice`'s machine handler already takes `elementSize` as a plain
-  runtime `uint`, so the natural fix is an opcode whose third operand
-  carries the byte width directly (as `Op.copy` already does for arbitrary
-  block width) instead of adding more fixed-width opcode variants per
-  struct size.
+  `subSliceOp` and `sliceCopyOp` now cover a struct element of any width,
+  not only 1/2/4/8/16: `Op.subSliceN`/`Op.sliceCopyN` carry the byte width
+  as an explicit instruction operand (`d` and `c` respectively) instead of
+  encoding it in the opcode, the way `Op.copy` already carries an arbitrary
+  block width; the fixed 1/2/4/8/16 opcodes remain for those exact widths,
+  `subSliceOp`/`sliceCopyOp` fall back to the `N` variant for anything else,
+  and `tryStaticArraySliceDescriptor`'s element-width gate is gone
+  (`staticArray.subSliceAssignmentWithStructElementsWiderThan16Bytes`, a
+  24-byte struct). Concrete next candidate: a *dynamic* array of such a
+  wide struct still can't be appended to, indexed by a runtime index, or
+  concatenated -- `appendElementOp`/`concatArraysOp` throw "Unsupported
+  array element size in bytecode core" and `indexLoadOp`/`indexStoreOp`
+  `assert(0)` for any width outside 1/2/4/8/16 (confirmed:
+  `S[] outer; outer ~= S(1, 2, 3);` for a 24-byte three-`long`-field `S`
+  throws from `appendElementOp` before a sub-slice assignment is even
+  reached). A static array's own constant-index element assignment already
+  goes through the width-generic `Op.copy` (`compileStaticArrayElementAssign`)
+  and does not need this; the gap is specific to the dynamic-array element
+  opcodes that, unlike `subSliceOp`/`sliceCopyOp`, still lack an `N` escape.
 - Dynamic-array and string sub-slices reject an upper bound beyond the source
   length and a lower bound greater than the upper bound; pointer-slice bounds
   remain unchecked.

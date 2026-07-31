@@ -262,6 +262,10 @@ package(quickbite.backends.bytecode) enum Op: ubyte {
     subSlice4,
     subSlice8,
     subSlice16,
+    // Same as `subSlice1`/etc, for an element width not covered by a fixed
+    // opcode (e.g. a struct element wider than 16 bytes): the byte width is
+    // operand d instead of being implied by the opcode.
+    subSliceN,
     // Copy elements from the source slice descriptor at frame offset b into the
     // destination slice descriptor at frame offset a, write-through to the
     // destination's backing memory. The two lengths must match; overlapping
@@ -274,6 +278,10 @@ package(quickbite.backends.bytecode) enum Op: ubyte {
     sliceCopy4,
     sliceCopy8,
     sliceCopy16,
+    // Same as `sliceCopy1`/etc, for an element width not covered by a fixed
+    // opcode: the byte width is operand c instead of being implied by the
+    // opcode.
+    sliceCopyN,
     // Fill every element of the destination slice descriptor at frame offset
     // a with the scalar value at frame offset b. The element size is fixed by
     // the opcode (1, 2, 4, or 8 bytes).

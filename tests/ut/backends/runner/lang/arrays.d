@@ -760,6 +760,46 @@ static foreach (backend; Matrix!()) {
     }
 }
 
+// A static array whose element is a struct wider than 16 bytes (24 bytes):
+// sub-slice assignment must copy each element's full width instead of
+// falling back to a narrower fixed-width copy or refusing the assignment.
+static foreach (backend; Matrix!()) {
+    @("staticArray.subSliceAssignmentWithStructElementsWiderThan16Bytes." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct S {
+                long a;
+                long b;
+                long c;
+            }
+
+            int seed(int value) {
+                return value;
+            }
+
+            unittest {
+                S[2] outer;
+                outer[0] = S(seed(1), seed(2), seed(3));
+                outer[1] = S(seed(4), seed(5), seed(6));
+                S[2] other;
+                other[0] = S(seed(7), seed(8), seed(9));
+                other[1] = S(seed(10), seed(11), seed(12));
+
+                outer[0 .. 2] = other[];
+
+                assert(outer[0].a == 7);
+                assert(outer[0].b == 8);
+                assert(outer[0].c == 9);
+                assert(outer[1].a == 10);
+                assert(outer[1].b == 11);
+                assert(outer[1].c == 12);
+            }
+        });
+    }
+}
+
 static foreach (backend; Matrix!()) {
     @("dynamicArray.refParameterAppend." ~ backend.stringof)
     @Tags(backend.stringof)
