@@ -1397,13 +1397,7 @@ static foreach (backend; Matrix!()) {
 // pre-existing, unrelated gap (boxed `locals.dup` copies whatever the
 // CALLING activation currently holds, not a snapshot taken when the
 // delegate value itself was created) and not what this fixture tests.
-// `Bytecode` refuses a delegate-typed PARAMETER; a delegate-typed
-// LOCAL/field works there today (see delegate.nestedCallUsesCapturedValue
-// above), so only the parameter form is out.
-static foreach (backend; Matrix!(
-    Omit!(Bytecode, Because.refusal,
-        "Unsupported type in bytecode core: int delegate(int)"),
-)) {
+static foreach (backend; Matrix!()) {
     @("lambda.passedToNestedFunctionSeesCapturedContext." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -1424,6 +1418,43 @@ static foreach (backend; Matrix!(
                 assert(addCaptured(10) == 32);
             }
         });
+    }
+}
+
+// A struct method's delegate (`&receiver.value`) passed through a
+// delegate-typed PARAMETER carries a caller-frame-relative receiver offset,
+// not the pointer-sized context word `callIndirectDynamic`'s argument area
+// assumes for a nested function or lambda; the VM checks the resolved
+// callee's `hasThis` and refuses the call instead of misreading that offset
+// as a bogus caller-frame reference.
+static foreach (backend; AliasSeq!(Bytecode)) {
+    @("delegate.structReceiverPassedAsParameterIsRejected." ~ backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct Counter {
+                int field;
+
+                int value(int input) {
+                    return field + input;
+                }
+            }
+
+            int applyOnce(int delegate(int) f) {
+                return f(5);
+            }
+
+            int callStructMethodDelegate(int seed) {
+                Counter counter = Counter(seed + 2);
+                return applyOnce(&counter.value);
+            }
+
+            unittest {
+                assert(callStructMethodDelegate(3) == 10);
+            }
+        }).shouldThrowWithMessage(
+            "Unsupported delegate-parameter call in bytecode core: the " ~
+                "callee is a struct-receiver method",
+        );
     }
 }
 
@@ -2324,13 +2355,10 @@ static foreach (backend; Matrix!(
 // A scalar and a struct `__gshared` global, each mutated across several
 // separate calls -- every intervening read re-verifies the mirror against
 // the just-written boxed value. `Ctfe` cannot read or write dataseg storage
-// at all (compile-time execution has no such storage to access); `Bytecode`
-// does not yet support a struct-typed dataseg variable.
+// at all (compile-time execution has no such storage to access).
 static foreach (backend; Matrix!(
     Omit!(Ctfe, Because.inexpressible,
         "CTFE cannot read or write dataseg (__gshared/static) storage"),
-    Omit!(Bytecode, Because.refusal,
-        "Unsupported variable in bytecode core: quickbiteDatasegPoint"),
 )) {
     @("dataseg.moduleScalarAndStructMirroredAcrossWrites." ~ backend.stringof)
     @Tags(backend.stringof)
@@ -2360,6 +2388,115 @@ static foreach (backend; Matrix!(
                 movePoint(3, 4);
                 assert(quickbiteDatasegPoint.x == 4);
                 assert(quickbiteDatasegPoint.y == 6);
+            }
+        });
+    }
+}
+
+// A `ref` argument bound to a module-level struct's own field
+// (`bump(point.x)`): the generic struct-field `ref`-argument path
+// materialises the whole struct into a throwaway frame copy and would
+// otherwise resolve the argument to an offset inside that copy with no
+// writeback of its own, so the callee's write through the `ref` parameter
+// needs a dedicated mirror-and-writeback path carrying the field's own
+// module offset, exactly as a bare module scalar's `ref` argument already
+// gets. `Ctfe` cannot read or write dataseg storage at all (compile-time
+// execution has no such storage to access).
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.inexpressible,
+        "CTFE cannot read or write dataseg (__gshared/static) storage"),
+)) {
+    @("dataseg.moduleStructFieldRefArgumentWritesThroughToModule." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct Point { int x; int y; }
+
+            __gshared Point quickbiteDatasegRefArgumentPoint;
+
+            void bump(ref int v) {
+                v = v + 1;
+            }
+
+            unittest {
+                quickbiteDatasegRefArgumentPoint.x = 1;
+                bump(quickbiteDatasegRefArgumentPoint.x);
+                assert(quickbiteDatasegRefArgumentPoint.x == 2);
+            }
+        });
+    }
+}
+
+// A module struct field assignment whose right-hand side call itself
+// writes a sibling field of the same struct: the field being assigned is
+// read back from a fresh whole-block copy of the struct, so writing that
+// assignment back must touch only the assigned field's own bytes --
+// writing the whole stale block back instead would silently overwrite
+// whatever the right-hand side call wrote to the sibling field in between.
+// `Ctfe` cannot read or write dataseg storage at all (compile-time
+// execution has no such storage to access).
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.inexpressible,
+        "CTFE cannot read or write dataseg (__gshared/static) storage"),
+)) {
+    @("dataseg.moduleStructFieldWriteBackDoesNotClobberSiblingField." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct Point { int x; int y; }
+
+            __gshared Point quickbiteDatasegSiblingPoint;
+
+            int setYAndReturnSeven() {
+                quickbiteDatasegSiblingPoint.y = 5;
+                return 7;
+            }
+
+            unittest {
+                quickbiteDatasegSiblingPoint.x = setYAndReturnSeven();
+                assert(quickbiteDatasegSiblingPoint.x == 7);
+                assert(quickbiteDatasegSiblingPoint.y == 5);
+            }
+        });
+    }
+}
+
+// A module struct field's compound assignment (`+=`) whose right-hand side
+// call itself writes that same field directly by name: the addition must
+// read whatever the call already wrote to the field, not a copy taken
+// before the call ran, and the writeback afterward must land the correctly
+// computed sum -- not a stale pre-call value that erases the call's own
+// write. `Ctfe` cannot read or write dataseg storage at all (compile-time
+// execution has no such storage to access).
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.inexpressible,
+        "CTFE cannot read or write dataseg (__gshared/static) storage"),
+    Omit!(Interpreter, Because.diverges,
+        "computes 6 instead of 101: reads a stale pre-call copy of the " ~
+        "field, oblivious to writeDirectFieldAndReturnOne's direct write; " ~
+        "a pre-existing gap in a different backend, unrelated to this fix"),
+)) {
+    @("dataseg.moduleStructFieldCompoundAssignReflectsRhsDirectWrite." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct Point { int x; int y; }
+
+            __gshared Point quickbiteDatasegCompoundPoint;
+
+            int writeDirectFieldAndReturnOne() {
+                quickbiteDatasegCompoundPoint.x = 100;
+                return 1;
+            }
+
+            unittest {
+                quickbiteDatasegCompoundPoint.x = 5;
+                quickbiteDatasegCompoundPoint.x +=
+                    writeDirectFieldAndReturnOne();
+                assert(quickbiteDatasegCompoundPoint.x == 101);
             }
         });
     }
@@ -2550,14 +2687,10 @@ static foreach (backend; Matrix!(
 // identically, via their shared `isPlaceComposable` gate, so this global
 // never enters the mirror at all and keeps using the existing boxed
 // `locals` path exclusively. `Ctfe` cannot read or write dataseg storage at
-// all (compile-time execution has no such storage to access); `Bytecode`
-// does not yet support a dynamic-array field access on a dataseg struct.
+// all (compile-time execution has no such storage to access).
 static foreach (backend; Matrix!(
     Omit!(Ctfe, Because.inexpressible,
         "CTFE cannot read or write dataseg (__gshared/static) storage"),
-    Omit!(Bytecode, Because.refusal,
-        "Unsupported dynamic array access in bytecode core: " ~
-        "quickbiteDatasegWithArray.data"),
 )) {
     @("dataseg.mirrorRefusedShapeDeclinesOnBothSides." ~ backend.stringof)
     @Tags(backend.stringof)
@@ -3165,22 +3298,10 @@ static foreach (backend; Matrix!()) {
     }
 }
 
-// Same-frame plain-variable class aliasing, non-scalar field:
-// `classCellFieldValue` -- the DIRECT (non-pointer) class-field
-// read's authoritative-cell dispatcher -- only consults the shared
-// `classCells` cell for a `native_scalar.isNativeScalarType` field; a
-// scalar-element static-array field still falls back to the boxed `locals`
-// mirror, which the OTHER alias's write never touches. `c2.arr[0] = 99;`
-// already reaches the shared cell (the write side's
-// `writeClassCellScalarFields` widens every scalar-element static-array
-// field), but reading `c.arr[0]` back through the ORIGINAL
-// alias, with no `&`/pointer involved, still sees the stale independent copy.
-// Only Interpreter and SystemLinker (the oracle) are pinned here per the
-// omit-don't-pin convention.
-static foreach (backend; Matrix!(
-    Omit!(Bytecode, Because.unconfirmed,
-        "throws its own unrelated \"Unsupported assignment in bytecode core: c2.arr[0] = ninetyNine()\" for this shape, not a wrong value"),
-)) {
+// Same-frame plain-variable class aliasing, non-scalar field: `c2.arr[0] =
+// 99;` writes through `c2`'s alias, and reading `c.arr[0]` back through the
+// ORIGINAL alias, with no `&`/pointer involved, must see the same write.
+static foreach (backend; Matrix!()) {
     @("class.aliasedVariableArrayFieldWriteIsVisibleThroughOriginal." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -3212,13 +3333,8 @@ static foreach (backend; Matrix!(
 // (the write side's `writeClassCellScalarFields` already recurses one level
 // into a struct-typed field), but
 // reading `c.inner.x` back through the ORIGINAL alias, with no `&`/pointer
-// involved, still sees the stale independent copy. Only Interpreter and
-// SystemLinker (the oracle) are pinned here per the omit-don't-pin
-// convention.
-static foreach (backend; Matrix!(
-    Omit!(Bytecode, Because.unconfirmed,
-        "throws its own unrelated \"Unsupported type in bytecode core: Inner\" for this shape, not a wrong value"),
-)) {
+// involved, still sees the stale independent copy on Interpreter.
+static foreach (backend; Matrix!()) {
     @("class.aliasedVariableStructFieldWriteIsVisibleThroughOriginal." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -3700,9 +3816,7 @@ static foreach (backend; Matrix!()) {
 // the interpreter's own `ObjectTable` throws outright the moment the two
 // disagree on size, converting a pre-existing (harmless-until-now) boxed
 // identity aliasing into a guest-visible crash.
-static foreach (backend; Matrix!(
-    Omit!(Bytecode, Because.unconfirmed),
-)) {
+static foreach (backend; Matrix!()) {
     @("classIdentity.structConstructorIdentityDoesNotCollideWithCallersNext." ~
         backend.stringof)
     @Tags(backend.stringof)
@@ -4620,6 +4734,114 @@ static foreach (backend; Matrix!()) {
                 alias_ = replacement;
                 assert(source is replacement);
                 assert(source.value == 99);
+            }
+        });
+    }
+}
+
+// A `ref` local bound to a dynamic-array element holds the element's runtime
+// address in its own frame slot rather than the element's value. Passing that
+// local onward as another function's `ref` argument must still reach the
+// array element, not the stored address.
+static foreach (backend; Matrix!()) {
+    @("arrays.refLocalElementArgumentMutatesSource." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            void increment(ref int value) {
+                value += 1;
+            }
+
+            void bump(ref int value) {
+                increment(value);
+            }
+
+            int[] build(int first, int second, int third) {
+                int[] result;
+                result ~= first;
+                result ~= second;
+                result ~= third;
+                return result;
+            }
+
+            unittest {
+                auto values = build(10, 20, 30);
+                ref int element = values[1];
+                bump(element);
+                assert(values[1] == 21);
+            }
+        });
+    }
+}
+
+// The 2-byte-element counterpart of `arrays.refLocalElementArgumentMutatesSource`:
+// `emitRefLocalPointerArgument` mirrors the element's address into a fresh
+// slot through `pointerLoadOp`/`pointerStoreOp`, and `pointerStoreOp` only
+// had 1/4/8/16-byte cases, so a `short` element's writeback silently used the
+// wrong value instead of reaching the array element.
+static foreach (backend; Matrix!()) {
+    @("arrays.refLocalShortElementArgumentMutatesSource." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            void increment(ref short value) {
+                value = cast(short)(value + 1);
+            }
+
+            void bump(ref short value) {
+                increment(value);
+            }
+
+            short[] build(short first, short second, short third) {
+                short[] result;
+                result ~= first;
+                result ~= second;
+                result ~= third;
+                return result;
+            }
+
+            unittest {
+                auto values = build(10, 20, 30);
+                ref short element = values[1];
+                bump(element);
+                assert(values[1] == 21);
+            }
+        });
+    }
+}
+
+// A `ref` local bound directly to a scalar class field is the same
+// address-holding shape as the array-element case above. Passing it onward
+// as another function's `ref` argument must still reach the field, not the
+// local's own stored address.
+static foreach (backend; Matrix!()) {
+    @("class.refLocalFieldArgumentMutatesSource." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            void increment(ref int value) {
+                value += 1;
+            }
+
+            void bump(ref int value) {
+                increment(value);
+            }
+
+            class Counter {
+                int value;
+            }
+
+            Counter create(int initial) {
+                auto counter = new Counter();
+                counter.value = initial;
+                return counter;
+            }
+
+            unittest {
+                auto counter = create(10);
+                ref int field = counter.value;
+                bump(field);
+                assert(counter.value == 11);
             }
         });
     }
@@ -6777,12 +6999,8 @@ static foreach (backend; Matrix!(
 // `VarExp`; here it is an `IndexExp` (`a[0]`), so no cell ever backed this
 // pointer and it stayed on the boxed snapshot taken at address-of time.
 // Before any production change, Interpreter returned 1 (the pre-write
-// snapshot) instead of 99. SystemLinker is the oracle. Ctfe/Bytecode/LLVMJit
-// omitted per the omit-don't-pin convention (unconfirmed there).
-static foreach (backend; Matrix!(
-    Omit!(Bytecode, Because.unconfirmed,
-        "computes a wrong value for this shape (`1 != 99`), not a refusal"),
-)) {
+// snapshot) instead of 99. SystemLinker is the oracle.
+static foreach (backend; Matrix!()) {
     @("pointer.arrayElementNestedStructFieldWrittenDirectlyIsVisibleThroughEarlierPointer." ~
         backend.stringof)
     @Tags(backend.stringof)
@@ -7258,10 +7476,7 @@ static foreach (backend; Matrix!()) {
 // snapshot) instead of 99; confirmed via an unnamed scratch probe with the
 // identical body before the fixture was given its real name and committed.
 // SystemLinker is the oracle.
-static foreach (backend; Matrix!(
-    Omit!(Bytecode, Because.unconfirmed,
-        "computes a wrong value for this shape (`-1849532000 != 99`), not a refusal"),
-)) {
+static foreach (backend; Matrix!()) {
     @("pointer.staticArrayElementWrittenDirectlyIsVisibleThroughEarlierPointer." ~
         backend.stringof)
     @Tags(backend.stringof)
@@ -7681,6 +7896,104 @@ static foreach (backend; Matrix!()) {
                 assert(buf[2] == 43);
                 assert(buf[1] == 0);
                 assert(buf[3] == 0);
+            }
+        });
+    }
+}
+
+// A `ref` argument dereferencing a plain pointer LOCAL holding a
+// previously-computed address is a different shape from the two fixtures
+// above: DMD never folds `*p` into a `SymOffExp` here, since `p` is read
+// through an ordinary `VarExp` rather than an inline `&lvalue`. The callee
+// must still write back through the runtime address `p` holds, not a fresh
+// copy of whatever it read.
+static foreach (backend; Matrix!()) {
+    @("pointer.refArgumentThroughStoredPointerWritesThroughPointer." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            int seed() {
+                return 10;
+            }
+
+            void bump(ref int r) {
+                r = r + 1;
+            }
+
+            unittest {
+                int value = seed;
+                int* pointer = &value;
+                bump(*pointer);
+                assert(value == 11);
+            }
+        });
+    }
+}
+
+// A `ref` argument dereferencing a call-returned pointer must both call the
+// pointer expression exactly once and write back through the real pointee,
+// including a 2-byte pointee (`short*`), which `emitPointerDereferenceRefArgument`
+// commits to directly rather than falling back to `referenceOffsetOrNull`
+// recompiling the same expression from scratch. `Ctfe` cannot read or write
+// dataseg storage at all; `Interpreter` does not support dereferencing a
+// call-returned pointer as a `ref` argument.
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.inexpressible,
+        "CTFE cannot read or write dataseg (__gshared/static) storage"),
+    Omit!(Interpreter, Because.unconfirmed),
+)) {
+    @("pointer.refArgumentThroughCallReturnedShortPointerCallsExpressionOnce." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            __gshared int quickbiteCallReturnedPointerCallCount;
+            __gshared short quickbiteCallReturnedPointerValue = 7;
+
+            short* next() {
+                quickbiteCallReturnedPointerCallCount =
+                    quickbiteCallReturnedPointerCallCount + 1;
+                return &quickbiteCallReturnedPointerValue;
+            }
+
+            void bump(ref short r) {
+                r = cast(short)(r + 1);
+            }
+
+            unittest {
+                bump(*next());
+                assert(quickbiteCallReturnedPointerCallCount == 1);
+                assert(quickbiteCallReturnedPointerValue == 8);
+            }
+        });
+    }
+}
+
+// A `ref` argument dereferencing a genuine runtime pointer to a 2-byte
+// pointee (`short*`) must write back through the pointer itself, matching
+// `pointer.refArgumentThroughStoredPointerWritesThroughPointer`'s 4-byte
+// case: `pointerStoreOp` only had 1/4/8/16-byte cases, so a 2-byte pointee
+// fell through to a stale fallback that silently wrote the wrong value.
+static foreach (backend; Matrix!()) {
+    @("pointer.refArgumentThroughStoredShortPointerWritesThroughPointer." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            short seed() {
+                return 10;
+            }
+
+            void bump(ref short r) {
+                r = cast(short)(r + 1);
+            }
+
+            unittest {
+                short value = seed;
+                short* pointer = &value;
+                bump(*pointer);
+                assert(value == 11);
             }
         });
     }

@@ -249,8 +249,6 @@ static foreach (backend; Matrix!()) {
 static foreach (backend; Matrix!(
     Omit!(Ctfe, Because.inexpressible,
         "CTFE cannot read a mutable module variable"),
-    Omit!(Bytecode, Because.refusal,
-        "module-level dynamic-array assignment is unsupported"),
 )) {
     @("dynamicArray.sameWidthScalarCastReturnPreservesStorageAliasing." ~
         backend.stringof)
@@ -280,8 +278,6 @@ static foreach (backend; Matrix!(
 static foreach (backend; Matrix!(
     Omit!(Ctfe, Because.inexpressible,
         "CTFE cannot read a mutable module variable"),
-    Omit!(Bytecode, Because.refusal,
-        "module-level dynamic-array assignment is unsupported"),
 )) {
     @("dynamicArray.assignedReturnedSameWidthScalarCastPreservesStorageAliasing." ~
         backend.stringof)
@@ -302,6 +298,40 @@ static foreach (backend; Matrix!(
                 b[0] = 2;
 
                 assert(a[0] == 2);
+            }
+        });
+    }
+}
+
+// `a ~= append()` where `a` is a module-level array and `append` itself
+// appends to `a` by name: the outer append's own descriptor must reflect
+// whatever `append` already committed to `a`'s real storage, not a snapshot
+// taken before `append` ran. SystemLinker is the oracle.
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.inexpressible,
+        "CTFE cannot read a mutable module variable"),
+    Omit!(Interpreter, Because.refusal,
+        "Unsupported interpreter array append target."),
+)) {
+    @("dynamicArray.moduleAppendSurvivesReentrantAppendDuringRhsCall." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            byte[] a;
+
+            byte append() {
+                byte runtime = 7;
+                a ~= runtime;
+                return 9;
+            }
+
+            unittest {
+                a ~= append();
+
+                assert(a.length == 2);
+                assert(a[0] == 7);
+                assert(a[1] == 9);
             }
         });
     }

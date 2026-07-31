@@ -713,11 +713,7 @@ static foreach (backend; Matrix!()) {
     }
 }
 
-// Bytecode and IR both report TryCatch as an unsupported statement.
-static foreach (backend; Matrix!(
-    Omit!(Bytecode, Because.unconfirmed,
-        "returns -1 instead of 42 after rethrowing to the outer handler"),
-)) {
+static foreach (backend; Matrix!()) {
     @("exception.rethrowPropagatesToOuterHandler." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {

@@ -337,9 +337,9 @@ in-repo `SystemLinker`-oracle test include `Bytecode` and pass. In particular:
   `Because.unconfirmed` omission. This matrix promotion is pre-approved.
   Observe the concrete red failure, implement the smallest general D semantic
   that makes the row pass, verify the suite, and repeat.
-- The rethrow and cerealed exception-message rows remain paused until their
-  wrong-result causes are isolated; do not re-enable either on presumed
-  exception or formatting support.
+- The cerealed exception-message row remains paused until its wrong-result
+  cause is isolated; do not re-enable it on presumed exception or formatting
+  support.
 - Phobos, druntime, `File`, `Random`, `Concurrency`, lazy structs,
   archive-backed imports, and FFI are normal ways arbitrary D unittest code
   reaches the VM. Unsupported constructs on those paths are expected VM work.
@@ -398,13 +398,70 @@ row reaches them:
   `sliceCopy` opcode's pointer-range overlap check ever runs, so the check
   never sees the true aliasing (unlike the dynamic-array path, whose rhs
   descriptor shares the real backing pointer).
-- `referenceOffset` resolves a `VarExp` ref-argument through `_locals` with no
-  check against `_refLocalPointers`; a `ref` local whose slot holds a real
-  heap address rather than a value (scalar class-field ref locals, and
-  array-field-element ref locals) passed onward as another `ref` argument
-  would misbind the callee to the pointer's raw bytes instead of dereferencing
-  it, and any writeback would clobber the stored address instead of the
-  pointee.
+- A `__gshared`/`static` module-level dynamic-array variable
+  (`moduleDynamicArrayVariableOrNull`, `compiler.d`) only has storage when its
+  declared initializer is absent or an explicit `null`; a non-null module
+  array initializer still falls through to "Unsupported variable in bytecode
+  core". A module-level struct variable (`ModuleStructVariable`) is supported
+  for the default-initialized case: field access materialises the whole block
+  via `Op.loadModule` but writes back only the touched field's own bytes via
+  `Op.storeModule` (`tryStructField`/`writeBackStructField`), so a sibling
+  field written in between (e.g. by a right-hand-side call) survives; a `ref`
+  argument bound to such a field mirrors just that field into its own fresh
+  slot with its own writeback (`emitModuleStructFieldRefArgument`) rather than
+  reusing the whole-block copy `tryStructField` materialises for plain field
+  access. A non-default struct initializer still falls through to
+  "Unsupported variable in bytecode core". Module-level
+  `Tsarray`/`Taarray`/`Tdelegate` variables and pointer/complex-double dataseg
+  variables remain entirely unsupported (`moduleScalarVariableOrNull` still
+  declines them).
+- A module-struct field's compound assignment (`gp.x += rhs`) now compiles
+  `rhs` before `tryStructField` materialises the field's whole-block copy,
+  the same reordering the module-array `~=` fix below applies: `rhs` may
+  itself write that exact field by name (`gp.x += f()` where `f` writes
+  `gp.x` directly), and the direct write must land in real module storage
+  before the copy this read-modify-write reads from is taken, or the
+  post-op `Op.storeModule` writeback clobbers it with a stale sum. The
+  identical shape through a class reference (`gc.x += f()`,
+  `tryClassPointerField`) is unfixed and predates this module-struct
+  support; a class field is heap-referenced storage with no whole-block
+  copy to reorder around, so it needs its own fix, not an extension of
+  this one.
+- A module-level dynamic array's single-element `~=` (`compileAppendElement`)
+  now compiles the appended value before materialising the target's
+  descriptor when the target is a module variable, so a reentrant append
+  inside that value's own evaluation (`ga ~= f()` where `f` itself does
+  `ga ~= x`) lands in the descriptor instead of being overwritten by the
+  post-call writeback of a stale pre-call snapshot. `compileConcatenationAssign`
+  (whole-array `arr ~= other`) still materialises its target descriptor
+  before compiling `other`, so the identical hazard remains open there
+  whenever `other`'s own evaluation mutates the same module array; no
+  fixture exercises this yet.
+- A scalar `ref` argument bound to module storage
+  (`emitModuleScalarRefArgument`/`emitModuleStructFieldRefArgument`) mirrors
+  the module value into a fresh frame slot for the call and writes it back
+  through `Op.storeModule` only after the callee returns. If the callee also
+  writes that same module variable directly by name during the call (a
+  `ref int x` bound to `counter` in `weird(ref int x) { x = 5; counter =
+  100; }`), the direct write is unconditionally clobbered by the post-call
+  mirror writeback regardless of which write is later in the callee's
+  program order -- real `ref`-to-global aliasing has no such race, since a
+  genuine ABI `ref` is the same storage, not a copy. Reordering cannot fix
+  this the way it fixed the append case above: nothing inside the callee's
+  body ever reaches the module address through the ref parameter itself,
+  because the parameter is an ordinary value living in its own frame slot,
+  not a pointer the callee dereferences. Every other ref-argument kind that
+  mirrors non-frame-resident storage into a fresh slot and writes it back
+  afterward (`emitStructPointerRefArgument`,
+  `emitStructPointerFieldRefArgument`, `emitClassFieldRefArgument`,
+  `emitRefLocalPointerArgument`, `emitPointerDereferenceRefArgument`)
+  shares the identical latent hazard
+  whenever the callee reaches the aliased storage by another path during
+  the same call. A real fix needs a scalar `ref` parameter to be a pointer
+  the callee dereferences on every read/write of it, so a call can bind it
+  directly to the real address (e.g. via `Op.moduleAddress`) and skip the
+  mirror/writeback pair entirely -- a change to the calling convention
+  shared by every ref-argument kind, not a narrow field-offset fix.
 
 `concurrency.thisTid.Bytecode` (`tests/ut/backends/runner/sys/concurrency.d`)
 stays `Omit!(Bytecode, Because.unconfirmed, ...)`. `Scheduler.thisInfo`'s
@@ -421,21 +478,39 @@ read is actually the correct oracle behaviour for this call, rather than a
 truncation of the real 8-byte reference.
 
 `file.createWriteRead.Bytecode` (`tests/ut/backends/runner/sys/file.d`) stays
-`Omit!(Bytecode, Because.refusal, "Unsupported ref argument in bytecode
-core: (*this._p).refs")`. Two blockers, in order: (1)
-`atomicOp!"+="(_p.refs, 1)` passes `_p.refs` (a field reached by
-dereferencing the pointer field `File.Impl* _p`) as a `ref` argument, and
-`referenceOffset` (`compiler.d`) has no case for a `ref` argument reached
-through a dereferenced pointer field -- only a plain local, a `this`/
-struct-field lvalue, and a bare pointer dereference are handled; and, once
-that is addressed, (2) `std.stdio.File`'s refcounting is `shared`, and DMD's
-`core.atomic` lowers `atomicOp!"+="` on this platform to inline x86 asm
-(`lock xchg` followed by a plain store) rather than a compiler intrinsic; the
-bytecode core has no inline-asm support at all. Candidate fixes for (2):
-implement the specific `lock`-prefixed read-modify-write/store instruction
-sequence `core.atomic` emits, or recognise `atomicOp`/`atomicLoad`/
-`atomicStore` by symbol (like the `std.math` builtins) and lower them to
-dedicated VM atomic ops instead of compiling the inline asm body.
+`Omit!(Bytecode, Because.refusal, "Unsupported inline asm instruction
+sequence: ...")`. `atomicOp!"+="(_p.refs, 1)` passes `_p.refs` (a field
+reached by dereferencing the pointer field `File.Impl* _p`) as a `ref`
+argument; `emitStructPointerFieldRefArgument` (`compiler.d`) now resolves
+that shape. The remaining blocker: `std.stdio.File`'s refcounting is
+`shared`, and DMD's `core.atomic` lowers `atomicOp!"+="` on this platform to
+inline x86 asm (`lock xchg` followed by a plain store) rather than a
+compiler intrinsic; the bytecode core has no inline-asm support at all.
+Candidate fixes: implement the specific `lock`-prefixed read-modify-write/
+store instruction sequence `core.atomic` emits, or recognise `atomicOp`/
+`atomicLoad`/`atomicStore` by symbol (like the `std.math` builtins) and
+lower them to dedicated VM atomic ops instead of compiling the inline asm
+body.
+
+A delegate-typed PARAMETER is an ordinary 16-byte `{functionIndex, context}`
+by-value parameter; a call through one (`Op.callIndirectDynamic`) builds its
+argument area from the delegate's declared type alone, since there is no
+statically known `FuncDeclaration` behind it. This is sound for a nested
+function/lambda, whose context is always one pointer-sized word matching the
+delegate pair's own context word. A struct-receiver method's context is
+instead a caller-frame-relative offset into a whole receiver block, so
+`callIndirectDynamic` checks the resolved callee's `CompiledFunction.hasThis`
+at run time and rejects it with a diagnostic rather than misreading the
+context word (`delegate.structReceiverPassedAsParameterIsRejected.Bytecode`,
+`tests/ut/backends/runner/lang/expressions.d`). A class-method delegate
+should carry the same single-word context as a lambda/nested function, but
+that shape is not yet verified through this mechanism: `auto d = &c.m; d()`
+already fails earlier with a pre-existing, unrelated `class this is null`
+error even as a plain local, before reaching a dynamic parameter call at
+all. Making the struct-receiver shape callable needs the receiver encoded as
+something frame-independent -- a real pointer to the receiver block rather
+than a frame-relative offset -- which changes how every struct method
+receives `this`, not just this call path.
 
 ### TDD and handoff discipline
 
