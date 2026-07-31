@@ -1294,6 +1294,67 @@ static foreach (backend; Matrix!()) {
     }
 }
 
+static foreach (backend; AliasSeq!(Ctfe)) {
+    @("staticArray.overlappingSubSliceAssignmentIsRejectedAtCtfe." ~
+        backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            int seed(int value) {
+                return value;
+            }
+
+            unittest {
+                int first = seed(10);
+                int[4] values = [first, first + 1, first + 2, first + 3];
+                size_t targetStart = cast(size_t) seed(1);
+                size_t targetStop = cast(size_t) seed(4);
+                size_t sourceStart = cast(size_t) seed(0);
+                size_t sourceStop = cast(size_t) seed(3);
+
+                values[targetStart .. targetStop] =
+                    values[sourceStart .. sourceStop];
+
+                assert(values[1] == first);
+            }
+        }).shouldThrowWithMessage(
+            "overlapping slice assignment `[1..4] = [0..3]`",
+        );
+    }
+}
+
+// Compiled overlapping slice assignment raises druntime's plain
+// "Range violation"; the slice-range text is CTFE-only, matching the
+// sibling dynamicArray pin above.
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.diverges,
+        "see sibling pin above (overlappingSubSliceAssignmentIsRejectedAtCtfe)"),
+)) {
+    @("staticArray.overlappingSubSliceAssignmentDiagnostic." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            int seed(int value) {
+                return value;
+            }
+
+            unittest {
+                int first = seed(10);
+                int[4] values = [first, first + 1, first + 2, first + 3];
+                size_t targetStart = cast(size_t) seed(1);
+                size_t targetStop = cast(size_t) seed(4);
+                size_t sourceStart = cast(size_t) seed(0);
+                size_t sourceStop = cast(size_t) seed(3);
+
+                values[targetStart .. targetStop] =
+                    values[sourceStart .. sourceStop];
+
+                assert(values[1] == first);
+            }
+        }).shouldThrowWithMessage("Range violation");
+    }
+}
+
 // The static-array bounded sub-slice write-through path above went straight
 // to an unchecked `pointerSlice` opcode, silently writing past the array's
 // own frame storage for an out-of-range upper bound instead of raising the

@@ -10942,21 +10942,21 @@ private struct Compiler {
         return result;
     }
 
-    // `arr[lo .. hi] = rhs` where `arr` is a static array and the rhs is
-    // itself a slice: `arr` otherwise resolves through
-    // `dynamicArrayDescriptorOrNull` into a throwaway heap copy
-    // (`compileStaticArrayAsDynamicInto`), so writing the destination through
-    // that descriptor would never reach `arr`'s real frame storage. Build the
-    // destination directly from a real pointer into `arr`'s own memory
-    // instead, the same way `tryDynamicArrayElementAssign` already does for a
-    // single element (`staticArrayElementPointer`). Null if `slice.e1` is not
-    // a static-array location, or its element isn't one of the widths
-    // `sliceCopyOp` copies correctly (1 or 4 bytes; wider elements still need
-    // general slice-copy support).
-    private Operand* tryStaticArraySliceAssign(
-        SliceExp slice,
-        Expression rhs,
-    ) {
+    // A real-address slice descriptor over a static-array sub-slice
+    // (`arr[lo .. hi]`), sharing `arr`'s own frame or field storage instead of
+    // the throwaway heap copy `dynamicArrayDescriptorOrNull` builds
+    // (`compileStaticArrayAsDynamicInto`). Needed both as a slice-assignment
+    // destination (so the write actually reaches `arr`'s real storage) and as
+    // a slice-assignment source (so `sliceCopyOp`'s pointer-range overlap
+    // check sees genuine aliasing instead of a copy that can never overlap
+    // anything). Bounds-checks `[lo .. hi]` against the array's own known
+    // length the same way a dynamic-array sub-slice does (`Op.subSlice*`'s
+    // `validateSubSlice`, matching compiled D's `RangeError` wording byte for
+    // byte). Null if `slice.e1` is not a static-array location, or its
+    // element isn't one of the widths `subSliceOp`/`sliceCopyOp` copy
+    // correctly (1 or 4 bytes; wider elements still need general
+    // slice-copy support).
+    private ushort* tryStaticArraySliceDescriptor(SliceExp slice) {
         // `tryStaticArrayRuntimeAddress` resolves a `DotVarExp` to any
         // struct field's own frame offset, static array or not (e.g. a
         // `char*` field): guard with the same static-array type check
@@ -10994,13 +10994,10 @@ private struct Compiler {
             cast(ushort) size_t.sizeof,
         );
 
-        // Bounds check `[lo .. hi]` against the array's own known length the
-        // same way a dynamic-array sub-slice does (`Op.subSlice*`'s
-        // `validateSubSlice`, matching compiled D's `RangeError` wording
-        // byte for byte): build a throwaway {pointer, length} descriptor over
-        // `base` and go through `subSliceOp` instead of the unchecked
-        // `pointerSliceOp`, so an out-of-range bound throws instead of
-        // silently writing past the array's frame storage.
+        // Build a throwaway {pointer, length} descriptor over `base` and go
+        // through `subSliceOp` instead of the unchecked `pointerSliceOp`, so
+        // an out-of-range bound throws instead of silently reading or
+        // writing past the array's frame storage.
         const sourceDescriptor =
             allocateBytes(sliceDescriptorSize, size_t.sizeof);
         _code ~= Instruction(
@@ -11018,11 +11015,32 @@ private struct Compiler {
             subSliceOp(elementSize), destination, sourceDescriptor, bounds,
         );
 
+        auto result = new ushort;
+        *result = destination;
+        return result;
+    }
+
+    // `arr[lo .. hi] = rhs` where `arr` is a static array: write through the
+    // real-address descriptor `tryStaticArraySliceDescriptor` builds, rather
+    // than the throwaway heap copy `dynamicArrayDescriptorOrNull` would
+    // resolve `arr` to. Null if `slice.e1` is not a static-array location of
+    // a supported element width.
+    private Operand* tryStaticArraySliceAssign(
+        SliceExp slice,
+        Expression rhs,
+    ) {
+        auto destination = tryStaticArraySliceDescriptor(slice);
+        if (destination is null)
+            return null;
+
+        const elementType = dynamicArrayElementType(slice.e1.type);
+        const elementSize = size(elementType);
+
         if (elementSize == uint.sizeof &&
             rhs.type !is null &&
             rhs.type.toBasetype.isTypeBasic !is null) {
             const value = compileExpression(rhs);
-            _code ~= Instruction(Op.sliceFill4, destination, value.offset);
+            _code ~= Instruction(Op.sliceFill4, *destination, value.offset);
 
             auto result = new Operand;
             *result = Operand.init;
@@ -11032,7 +11050,7 @@ private struct Compiler {
         const source = compileSourceSlice(elementType, rhs);
         _code ~= Instruction(
             sliceCopyOp(elementSize),
-            destination,
+            *destination,
             source,
         );
 
@@ -11090,6 +11108,16 @@ private struct Compiler {
         Expression rhs,
     ) {
         import std.conv: text;
+
+        // A static-array-backed rhs sub-slice (`buff[0 .. 3]`) shares
+        // `buff`'s real frame storage instead of the throwaway heap copy
+        // `compileSliceInto` would otherwise resolve it to
+        // (`dynamicArrayDescriptorOrNull`'s static-array branch), so the
+        // destination write's own overlap check in `sliceCopyOp` can see a
+        // genuine self-aliasing rhs such as `buff[1 .. 4] = buff[0 .. 3]`.
+        if (auto slice = rhs.isSliceExp)
+            if (auto staticDescriptor = tryStaticArraySliceDescriptor(slice))
+                return *staticDescriptor;
 
         const offset = allocateBytes(sliceDescriptorSize, size_t.sizeof);
 

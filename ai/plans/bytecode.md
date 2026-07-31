@@ -387,10 +387,12 @@ of the already-documented not-bounded rows above (`file.d:14`,
 `concurrency.d:24`, the cerealed exception-message row, the three
 `expressions.d` ref-calling-convention rows, the two `arrays.d` assoc-array
 rows, and the four `archive.d` rows); re-search before assuming otherwise.
-Concrete next candidate: the static-array self-overlap sub-slice-assignment
-gap in the limitations list below (`buff[1..4] = buff[0..3]`) has no fixture
-yet and a fully diagnosed root cause; write the `SystemLinker`-backed
-exposing fixture and fix `compileSourceSlice`'s static-array rhs path.
+Concrete next candidate: `compileConcatenationAssign`'s whole-array `~=`
+reentrant-append hazard in the limitations list below (`ga ~= f()` where `f`
+itself does `ga ~= x` against the same module array) has no fixture yet;
+write the `SystemLinker`-backed exposing fixture and reorder it to compile
+the appended value before materialising the target descriptor, the same fix
+`compileAppendElement`'s single-element case already applies.
 
 Reconfirm these live aggregate limitations against the current source when a
 row reaches them:
@@ -417,13 +419,6 @@ row reaches them:
   descriptors, so a pointer taken into one row (`&outer[i][j]`) is valid
   within that row, but a flat pointer walk across rows diverges from compiled
   D's contiguous layout.
-- Static-array bounded sub-slice assignment does not detect overlap with its
-  own rhs when the rhs is a sub-slice of the same array (`buff[1..4] =
-  buff[0..3]`): `compileSourceSlice` routes a static-array rhs through
-  `compileStaticArrayAsDynamicInto`, which heap-copies it before the shared
-  `sliceCopy` opcode's pointer-range overlap check ever runs, so the check
-  never sees the true aliasing (unlike the dynamic-array path, whose rhs
-  descriptor shares the real backing pointer).
 - A `__gshared`/`static` module-level dynamic-array variable
   (`moduleDynamicArrayVariableOrNull`, `compiler.d`) only has storage when its
   declared initializer is absent or an explicit `null`; a non-null module
