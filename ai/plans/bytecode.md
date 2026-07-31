@@ -404,22 +404,14 @@ forced by the baseline" fronts) rather than a matrix search.
 Reconfirm these live aggregate limitations against the current source when a
 row reaches them:
 
-- Scalar slice fill is limited to 4-byte basic elements; other widths and
-  aggregate elements still need general semantics. Static-array bounded
-  sub-slice assignment (`arr[lo .. hi] = rhs`, both a plain local and a
-  struct field) now writes through the array's own frame storage for 1- and
-  4-byte elements when `rhs` is itself a slice; wider elements (`sliceCopyOp`
-  only distinguishes 1 vs. 4 bytes) still need general semantics. A bare
-  scalar broadcast into a non-4-byte element is confirmed red via `bin/qb`:
-  `byte[4] arr; byte v = 5; arr[1..3] = v;` and `long[4] arr; long v = 5;
-  arr[1..3] = v;` both throw "Unsupported slice-assignment source in
-  bytecode core" (`tryStaticArraySliceAssign`/`tryDynamicArraySliceAssign`,
-  `compiler.d`, gate `elementSize == uint.sizeof` before falling through to
-  `compileSourceSlice`, which only accepts a slice/string-literal/
-  array-literal rhs), while the 4-byte case (`int[4] arr; arr[1..3] = v;`)
-  already works. Fix shape: add `Op.sliceFill1`/`Op.sliceFill8` alongside
-  the existing `Op.sliceFill4` and widen both call sites' basic-type gate to
-  the widths the new fill ops cover.
+- Scalar slice fill and slice-copy sub-slice assignment now cover 1-, 4-,
+  and 8-byte basic elements (`Op.sliceFill1`/`sliceFill4`/`sliceFill8`,
+  `Op.sliceCopy1`/`sliceCopy4`/`sliceCopy8`); 2-byte elements
+  (`short`/`ushort`/`wchar`) are the one basic width still missing from
+  both ops -- `short[4] arr; short v = 5; arr[1..3] = v;` is expected to hit
+  the same "Unsupported slice-assignment source" gate (unconfirmed, verify
+  with a real fixture first); 16-byte and aggregate elements still need
+  general semantics.
 - Dynamic-array and string sub-slices reject an upper bound beyond the source
   length and a lower bound greater than the upper bound; pointer-slice bounds
   remain unchecked.

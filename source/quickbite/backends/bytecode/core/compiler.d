@@ -11083,8 +11083,7 @@ private struct Compiler {
     // `validateSubSlice`, matching compiled D's `RangeError` wording byte for
     // byte). Null if `slice.e1` is not a static-array location, or its
     // element isn't one of the widths `subSliceOp`/`sliceCopyOp` copy
-    // correctly (1 or 4 bytes; wider elements still need general
-    // slice-copy support).
+    // correctly (1, 4, or 8 bytes).
     private ushort* tryStaticArraySliceDescriptor(SliceExp slice) {
         // `tryStaticArrayRuntimeAddress` resolves a `DotVarExp` to any
         // struct field's own frame offset, static array or not (e.g. a
@@ -11104,7 +11103,7 @@ private struct Compiler {
 
         const elementType = dynamicArrayElementType(slice.e1.type);
         const elementSize = size(elementType);
-        if (elementSize != 1 && elementSize != 4)
+        if (elementSize != 1 && elementSize != 4 && elementSize != 8)
             return null;
 
         const length = staticArrayLength(slice.e1.type);
@@ -11165,11 +11164,11 @@ private struct Compiler {
         const elementType = dynamicArrayElementType(slice.e1.type);
         const elementSize = size(elementType);
 
-        if (elementSize == uint.sizeof &&
+        if (sliceFillSupported(elementSize) &&
             rhs.type !is null &&
             rhs.type.toBasetype.isTypeBasic !is null) {
             const value = compileExpression(rhs);
-            _code ~= Instruction(Op.sliceFill4, *destination, value.offset);
+            _code ~= Instruction(sliceFillOp(elementSize), *destination, value.offset);
 
             auto result = new Operand;
             *result = Operand.init;
@@ -11205,12 +11204,13 @@ private struct Compiler {
             : descriptor.elementType;
         const destination = allocateBytes(sliceDescriptorSize, size_t.sizeof);
         compileSliceInto(destination, elementType, slice);
+        const elementSize = size(elementType);
 
-        if (size(elementType) == uint.sizeof &&
+        if (sliceFillSupported(elementSize) &&
             rhs.type !is null &&
             rhs.type.toBasetype.isTypeBasic !is null) {
             const value = compileExpression(rhs);
-            _code ~= Instruction(Op.sliceFill4, destination, value.offset);
+            _code ~= Instruction(sliceFillOp(elementSize), destination, value.offset);
 
             auto result = new Operand;
             *result = Operand.init;
@@ -11219,7 +11219,7 @@ private struct Compiler {
 
         const source = compileSourceSlice(elementType, rhs);
         _code ~= Instruction(
-            sliceCopyOp(size(elementType)),
+            sliceCopyOp(elementSize),
             destination,
             source,
         );
@@ -16489,7 +16489,22 @@ private imported!"quickbite.backends.bytecode.core.program".Op sliceCopyOp(
     in uint elementSize,
 ) @safe @nogc nothrow pure {
     import quickbite.backends.bytecode.core.program: Op;
-    return elementSize == 1 ? Op.sliceCopy1 : Op.sliceCopy4;
+    if (elementSize == 1)
+        return Op.sliceCopy1;
+    return elementSize == 8 ? Op.sliceCopy8 : Op.sliceCopy4;
+}
+
+private bool sliceFillSupported(in uint elementSize) @safe @nogc nothrow pure {
+    return elementSize == 1 || elementSize == uint.sizeof || elementSize == ulong.sizeof;
+}
+
+private imported!"quickbite.backends.bytecode.core.program".Op sliceFillOp(
+    in uint elementSize,
+) @safe @nogc nothrow pure {
+    import quickbite.backends.bytecode.core.program: Op;
+    if (elementSize == 1)
+        return Op.sliceFill1;
+    return elementSize == uint.sizeof ? Op.sliceFill4 : Op.sliceFill8;
 }
 
 private imported!"quickbite.backends.bytecode.core.program".Op sliceEqualOp(

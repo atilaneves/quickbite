@@ -266,13 +266,17 @@ package(quickbite.backends.bytecode) enum Op: ubyte {
     // destination slice descriptor at frame offset a, write-through to the
     // destination's backing memory. The two lengths must match; overlapping
     // backing ranges abort with the plain "Range violation" message. The
-    // element size is fixed by the opcode (1 or 4 bytes), matching the
+    // element size is fixed by the opcode (1, 4, or 8 bytes), matching the
     // indexLoad/indexStore split.
     sliceCopy1,
     sliceCopy4,
-    // Fill every 4-byte element of the destination slice descriptor at frame
-    // offset a with the scalar value at frame offset b.
+    sliceCopy8,
+    // Fill every element of the destination slice descriptor at frame offset
+    // a with the scalar value at frame offset b. The element size is fixed by
+    // the opcode (1, 4, or 8 bytes).
+    sliceFill1,
     sliceFill4,
+    sliceFill8,
     // Compare the two slice descriptors at frame offsets b and c, writing one
     // boolean byte to frame offset a: true iff their lengths and all element
     // bytes are equal. The element size is fixed by the opcode (1, 2, 4, or 8

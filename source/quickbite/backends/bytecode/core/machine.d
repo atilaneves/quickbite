@@ -296,7 +296,7 @@ package(quickbite.backends.bytecode) RunResult run(
                 ++ip;
                 break;
 
-            case sliceCopy1, sliceCopy4:
+            case sliceCopy1, sliceCopy4, sliceCopy8:
                 copySlice(
                     stack,
                     base + instruction.a,
@@ -306,8 +306,18 @@ package(quickbite.backends.bytecode) RunResult run(
                 ++ip;
                 break;
 
+            case sliceFill1:
+                fillSlice1(stack, base + instruction.a, base + instruction.b);
+                ++ip;
+                break;
+
             case sliceFill4:
                 fillSlice4(stack, base + instruction.a, base + instruction.b);
+                ++ip;
+                break;
+
+            case sliceFill8:
+                fillSlice8(stack, base + instruction.a, base + instruction.b);
                 ++ip;
                 break;
 
@@ -2391,7 +2401,7 @@ private uint sliceCopyElementSize(
         return 1;
     if (op == Op.sliceEqual2)
         return 2;
-    if (op == Op.sliceEqual8)
+    if (op == Op.sliceEqual8 || op == Op.sliceCopy8)
         return 8;
     return 4;
 }
@@ -2668,6 +2678,21 @@ private void copySlice(
     destination[] = source[];
 }
 
+// The compiler supplies a valid native slice descriptor and a 1-byte scalar
+// slot; the trusted boundary only forms the corresponding typed host slice.
+private void fillSlice1(
+    ref ubyte[] stack,
+    in size_t destinationOffset,
+    in size_t valueOffset,
+) @trusted {
+    const destinationPointer =
+        scalarValue!size_t(stack, destinationOffset);
+    const destinationLength =
+        scalarValue!size_t(stack, destinationOffset + size_t.sizeof);
+    auto destination = (cast(ubyte*) destinationPointer)[0 .. destinationLength];
+    destination[] = scalarValue!ubyte(stack, valueOffset);
+}
+
 // The compiler supplies a valid native slice descriptor and a 4-byte scalar
 // slot; the trusted boundary only forms the corresponding typed host slice.
 private void fillSlice4(
@@ -2681,6 +2706,21 @@ private void fillSlice4(
         scalarValue!size_t(stack, destinationOffset + size_t.sizeof);
     auto destination = (cast(uint*) destinationPointer)[0 .. destinationLength];
     destination[] = scalarValue!uint(stack, valueOffset);
+}
+
+// The compiler supplies a valid native slice descriptor and an 8-byte scalar
+// slot; the trusted boundary only forms the corresponding typed host slice.
+private void fillSlice8(
+    ref ubyte[] stack,
+    in size_t destinationOffset,
+    in size_t valueOffset,
+) @trusted {
+    const destinationPointer =
+        scalarValue!size_t(stack, destinationOffset);
+    const destinationLength =
+        scalarValue!size_t(stack, destinationOffset + size_t.sizeof);
+    auto destination = (cast(ulong*) destinationPointer)[0 .. destinationLength];
+    destination[] = scalarValue!ulong(stack, valueOffset);
 }
 
 // Element-wise `dest[] = left[] + right[]` over 4-byte integer elements,

@@ -920,6 +920,42 @@ static foreach (backend; Matrix!()) {
     }
 }
 
+static foreach (backend; Matrix!()) {
+    @("dynamicArray.partialSliceAssignmentBroadcastsScalarForByteAndLongElements." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            int seed(int value) {
+                return value;
+            }
+
+            unittest {
+                byte[] narrow = [
+                    cast(byte) seed(1), cast(byte) seed(2),
+                    cast(byte) seed(3), cast(byte) seed(4),
+                ];
+                byte narrowValue = cast(byte) seed(5);
+                narrow[1 .. 3] = narrowValue;
+
+                assert(narrow[0] == 1);
+                assert(narrow[1] == 5);
+                assert(narrow[2] == 5);
+                assert(narrow[3] == 4);
+
+                long[] wide = [seed(1), seed(2), seed(3), seed(4)];
+                long wideValue = seed(7);
+                wide[1 .. 3] = wideValue;
+
+                assert(wide[0] == 1);
+                assert(wide[1] == 7);
+                assert(wide[2] == 7);
+                assert(wide[3] == 4);
+            }
+        });
+    }
+}
+
 // Slice assignment writes existing storage in place, so a slice taken before
 // the assignment observes the changed element.
 static foreach (backend; Matrix!()) {
@@ -1407,6 +1443,39 @@ static foreach (backend; Matrix!()) {
                 assert(values[1] == 10);
                 assert(values[2] == 20);
                 assert(values[3] == 0);
+            }
+        });
+    }
+}
+
+static foreach (backend; Matrix!()) {
+    @("staticArray.partialSliceAssignmentBroadcastsScalarForByteAndLongElements." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            int seed(int value) {
+                return value;
+            }
+
+            unittest {
+                byte[4] narrow;
+                byte narrowValue = cast(byte) seed(5);
+                narrow[1 .. 3] = narrowValue;
+
+                assert(narrow[0] == 0);
+                assert(narrow[1] == 5);
+                assert(narrow[2] == 5);
+                assert(narrow[3] == 0);
+
+                long[4] wide;
+                long wideValue = seed(7);
+                wide[1 .. 3] = wideValue;
+
+                assert(wide[0] == 0);
+                assert(wide[1] == 7);
+                assert(wide[2] == 7);
+                assert(wide[3] == 0);
             }
         });
     }
