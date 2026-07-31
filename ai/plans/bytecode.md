@@ -387,12 +387,23 @@ of the already-documented not-bounded rows above (`file.d:14`,
 `concurrency.d:24`, the cerealed exception-message row, the three
 `expressions.d` ref-calling-convention rows, the two `arrays.d` assoc-array
 rows, and the four `archive.d` rows); re-search before assuming otherwise.
-Concrete next candidate: `compileConcatenationAssign`'s whole-array `~=`
-reentrant-append hazard in the limitations list below (`ga ~= f()` where `f`
-itself does `ga ~= x` against the same module array) has no fixture yet;
-write the `SystemLinker`-backed exposing fixture and reorder it to compile
-the appended value before materialising the target descriptor, the same fix
-`compileAppendElement`'s single-element case already applies.
+Concrete next candidate: a module-level struct's dynamic-array FIELD
+(`struct P { byte[] arr; } P gp;`) silently drops every `gp.arr ~= x` /
+`gp.arr ~= other`. Confirmed via `bin/qb` against `SystemLinker`: after
+`gp.arr ~= runtime`, `SystemLinker` reports `gp.arr.length == 1`, Bytecode
+reports `0`. Root cause: `dynamicArrayDescriptorOrNull`'s `base.field` branch
+(`compiler.d`, the `if (auto field = tryStructField(dot))` block around line
+3048) copies `field.offset`/`writeBackStructThroughFrame`/`structOffset`/
+`structFrameIndexOffset`/`structSize` from the resolved `StructField` into the
+new `DynamicArrayLocal`, but never copies `field.writeBackThroughModule` /
+`field.moduleOffset` — the two members `tryStructField` sets exactly for a
+module-struct field (see the `moduleStructVariableOrNull` branch a few dozen
+lines above it). `writeBackDynamicArrayDescriptor` therefore finds every
+writeback flag on the resulting descriptor false and emits no writeback
+instruction at all: not a reordering/reentrancy bug like the ones below, a
+missing field copy that drops the append unconditionally. No fixture exists
+yet; write the `SystemLinker`-backed exposing test and thread
+`writeBackThroughModule`/`moduleOffset` through that branch.
 
 Reconfirm these live aggregate limitations against the current source when a
 row reaches them:
@@ -449,15 +460,12 @@ row reaches them:
   narrowing the way module storage does -- there is no copy, just a load
   ordered to run after whatever the rhs already wrote directly.
 - A module-level dynamic array's single-element `~=` (`compileAppendElement`)
-  now compiles the appended value before materialising the target's
+  and whole-array `~=` (`compileConcatenationAssign`) both now compile the
+  appended value/right-hand array before materialising the target's
   descriptor when the target is a module variable, so a reentrant append
   inside that value's own evaluation (`ga ~= f()` where `f` itself does
   `ga ~= x`) lands in the descriptor instead of being overwritten by the
-  post-call writeback of a stale pre-call snapshot. `compileConcatenationAssign`
-  (whole-array `arr ~= other`) still materialises its target descriptor
-  before compiling `other`, so the identical hazard remains open there
-  whenever `other`'s own evaluation mutates the same module array; no
-  fixture exercises this yet.
+  post-call writeback of a stale pre-call snapshot.
 - A scalar `ref` argument bound to module storage
   (`emitModuleScalarRefArgument`/`emitModuleStructFieldRefArgument`) mirrors
   the module value into a fresh frame slot for the call and writes it back

@@ -10291,6 +10291,31 @@ private struct Compiler {
     // `arr ~= other`: concatenate both array descriptors into fresh backing
     // memory, then overwrite the local's descriptor with the result.
     private Operand compileConcatenationAssign(CatAssignExp concatenate) {
+        // `ga ~= other()` where `ga` is a module-level array: `other()` may
+        // itself append to `ga` through its own name (a direct module
+        // read/write, not this call's descriptor). Compiling `other()`
+        // before materialising `ga`'s descriptor lets any such write land in
+        // real module storage first, mirroring `compileAppendElement`'s
+        // identical fix for the single-element case.
+        if (isModuleDynamicArrayVariable(concatenate.e1)) {
+            const elementType = moduleDynamicArrayVariableOrNull(
+                concatenate.e1.isVarExp.var.isVarDeclaration,
+            ).elementType;
+            const right = arrayDescriptorOffset(elementType, concatenate.e2);
+            const descriptor = dynamicArrayDescriptor(concatenate.e1);
+            const elementSize = dynamicArrayElementSize(
+                concatenate.e1.type, descriptor.elementType,
+            );
+            _code ~= Instruction(
+                concatArraysOp(elementSize),
+                descriptor.offset,
+                descriptor.offset,
+                right,
+            );
+            writeBackDynamicArrayDescriptor(descriptor);
+            return Operand(descriptor.offset, descriptor.elementType);
+        }
+
         const descriptor = dynamicArrayDescriptor(concatenate.e1);
         const right = arrayDescriptorOffset(
             descriptor.elementType, concatenate.e2,
