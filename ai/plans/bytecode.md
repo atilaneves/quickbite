@@ -435,10 +435,13 @@ row reaches them:
   via `Op.loadModule` but writes back only the touched field's own bytes via
   `Op.storeModule` (`tryStructField`/`writeBackStructField`), so a sibling
   field written in between (e.g. by a right-hand-side call) survives; a `ref`
-  argument bound to such a field mirrors just that field into its own fresh
-  slot with its own writeback (`emitModuleStructFieldRefArgument`) rather than
-  reusing the whole-block copy `tryStructField` materialises for plain field
-  access. A non-default struct initializer still falls through to
+  argument bound to such a field, at any nesting depth (`go.x` or
+  `go.inner.x`), mirrors just that field into its own fresh slot with its own
+  writeback (`emitModuleStructFieldRefArgument`, resolving the field's dataseg
+  offset through `moduleStructFieldOffsetOrNull`'s `DotVarExp`-chain
+  arithmetic) rather than reusing the whole-block copy `tryStructField`
+  materialises for plain field access. A non-default struct initializer still
+  falls through to
   "Unsupported variable in bytecode core". Module-level
   `Tsarray`/`Taarray`/`Tdelegate` variables and pointer/complex-double dataseg
   variables remain entirely unsupported (`moduleScalarVariableOrNull` still

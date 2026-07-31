@@ -1983,6 +1983,40 @@ static foreach (backend; Matrix!(
     }
 }
 
+// The nested counterpart of `datasegVariableArgument` above: a `ref`
+// argument bound to a field reached through more than one struct level
+// (`go.inner.x`, not just `go.x`). `moduleStructFieldOffsetOrNull` walks the
+// `DotVarExp` chain back to the module struct root, accumulating each
+// level's own `VarDeclaration.offset`, so `emitModuleStructFieldRefArgument`
+// covers this the same way it already covered a single field level.
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.inexpressible,
+        "CTFE cannot read or write dataseg (__gshared/static) storage"),
+)) {
+    @("refArgument.nestedDatasegStructFieldArgument." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct Inner { int x; }
+            struct Outer { Inner inner; int y; }
+            __gshared Outer go;
+
+            void bump(ref int v) {
+                v = v + 1;
+            }
+
+            unittest {
+                go.y = 7;
+                bump(go.inner.x);
+                bump(go.inner.x);
+                bump(go.inner.x);
+                assert(go.inner.x == 3);
+                assert(go.y == 7);
+            }
+        });
+    }
+}
+
 // An indexed element (`IndexExp` over a constant index -- `impl.d`'s
 // `constantIndex` only accepts DMD's own already-folded integer constant,
 // never a runtime-evaluated one, to avoid evaluating a side-effecting

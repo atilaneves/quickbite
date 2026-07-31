@@ -13453,10 +13453,53 @@ private struct Compiler {
         return true;
     }
 
+    // The dataseg byte offset of a module-struct field reached through any
+    // number of nested struct-typed fields (`go.x`, `go.inner.x`,
+    // `go.inner.inner2.x`, ...), computed by pure offset arithmetic with no
+    // frame materialisation: the base case is the module struct variable
+    // itself (`moduleStructVariableOrNull`); each further `DotVarExp` level
+    // adds that field's own `VarDeclaration.offset` on top of its base's
+    // already-resolved dataseg offset, mirroring the arithmetic
+    // `tryStructField`/`writeBackStructField` use for reads and whole-field
+    // writeback.
+    private bool moduleStructFieldOffsetOrNull(
+        Expression expression,
+        out ushort moduleOffset,
+        out Type fieldType,
+    ) {
+        if (auto variable = expression.isVarExp) {
+            auto declaration = variable.var.isVarDeclaration;
+            auto moduleVariable = declaration is null
+                ? null
+                : moduleStructVariableOrNull(declaration);
+            if (moduleVariable is null)
+                return false;
+
+            moduleOffset = moduleVariable.offset;
+            fieldType = expression.type;
+            return true;
+        }
+
+        auto dot = expression.isDotVarExp;
+        auto field = dot is null ? null : dot.var.isVarDeclaration;
+        if (field is null)
+            return false;
+
+        ushort baseOffset;
+        Type baseType;
+        if (!moduleStructFieldOffsetOrNull(dot.e1, baseOffset, baseType))
+            return false;
+
+        moduleOffset = cast(ushort) (baseOffset + field.offset);
+        fieldType = field.type;
+        return true;
+    }
+
     // The module-struct counterpart of `emitModuleScalarRefArgument`: a
     // scalar `ref` argument reached through a module-level struct variable's
-    // own field (`bump(gp.x)`). The field lives at a fixed byte offset from
-    // the struct's own `_program.moduleData` storage, so (mirroring
+    // own field, at any nesting depth (`bump(gp.x)`, `bump(gp.inner.x)`).
+    // Each field lives at a fixed byte offset from the struct's own
+    // `_program.moduleData` storage, so (mirroring
     // `emitModuleScalarRefArgument`) its current value is mirrored into a
     // fresh frame slot for the call and copied back through that same
     // module offset afterward -- never through `tryStructField`'s whole-block
@@ -13472,32 +13515,20 @@ private struct Compiler {
         if (dot is null)
             return false;
 
-        auto variable = dot.e1.isVarExp;
-        auto declaration =
-            variable is null ? null : variable.var.isVarDeclaration;
-        if (declaration is null)
+        ushort moduleOffset;
+        Type fieldType;
+        if (!moduleStructFieldOffsetOrNull(dot, moduleOffset, fieldType))
             return false;
 
-        auto moduleVariable = moduleStructVariableOrNull(declaration);
-        if (moduleVariable is null)
-            return false;
-
-        auto field = dot.var.isVarDeclaration;
-        if (field is null)
-            return false;
-
-        const ty = field.type.toBasetype.ty;
+        const ty = fieldType.toBasetype.ty;
         if (ty == TY.Tstruct || ty == TY.Tsarray || ty == TY.Tarray ||
             ty == TY.Taarray)
             return false;
 
-        const valueSize = cast(ushort) size(scalarType(field.type));
+        const valueSize = cast(ushort) size(scalarType(fieldType));
         if (valueSize != 1 && valueSize != 2 && valueSize != 4 &&
             valueSize != 8)
             return false;
-
-        const moduleOffset =
-            cast(ushort) (moduleVariable.offset + field.offset);
 
         foreach (writeBack; writeBacks)
             if (writeBack.moduleOffset == moduleOffset) {
