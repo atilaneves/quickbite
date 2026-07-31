@@ -5887,8 +5887,14 @@ private struct Compiler {
     }
 
     // An associative array `int[int]` local holds an 8-byte handle into the
-    // machine's VM-owned map table. Create a fresh map and, for a literal
-    // initializer, insert each entry (later duplicate keys overwrite earlier).
+    // machine's VM-owned map table; handle `0` means "no map" (matching real
+    // D's null AA), the same zero-init a plain scalar local gets from the
+    // frame's own zeroing. Every map-reading/writing opcode already treats
+    // handle `0` as an empty map, and `Op.aaInsert` autovivifies a fresh map
+    // into the handle's own slot on first insert -- exactly like a null
+    // pointer's storage location gaining an address the first time something
+    // is allocated through it, distinct from any other variable that once
+    // held the same null value.
     private void compileAssocArrayDeclaration(VarDeclaration variable) {
         const offset = allocateBytes(cast(uint) size_t.sizeof, size_t.sizeof);
         _locals[variable] = offset;
@@ -5897,7 +5903,7 @@ private struct Compiler {
         auto initializer =
             variable._init is null ? null : variable._init.isExpInitializer;
         if (initializer is null) {
-            _code ~= Instruction(Op.aaNew, offset);
+            // The frame begins zeroed, so a null AA needs no code.
             return;
         }
 
@@ -5907,18 +5913,38 @@ private struct Compiler {
     }
 
     // Build an associative-array handle at frame offset `destination`: a fresh
-    // map populated from a `[k: v, ...]` literal (or a `.dup` of another map).
+    // map populated from a `[k: v, ...]` literal, a copy of another map's own
+    // handle (`.dup` and a bare AA-variable initializer, both reference
+    // copies matching real D's AA aliasing), or a null map.
     private void compileAssocArrayInto(
         in ushort destination,
         Expression source,
     ) {
         import std.conv: text;
 
-        // `int[int] m;` (or `m = null`): an empty map.
-        if (source.isNullExp !is null) {
-            _code ~= Instruction(Op.aaNew, destination);
+        // `int[int] m;` (DMD's own default `= null` initializer) or an
+        // explicit `m = null`: a null AA, matching real D. The frame begins
+        // zeroed and handle `0` already reads as an empty map everywhere, so
+        // this needs no code; a later insert autovivifies `m`'s own slot.
+        if (source.isNullExp !is null)
             return;
-        }
+
+        // `int[int] bb = aa;`: copy the source variable's own handle, the
+        // same reference-copy semantics real D gives any AA assignment --
+        // when `aa` is still null (handle `0`), this leaves `bb` equally
+        // null and independently detachable rather than aliasing a shared
+        // table, since each variable's handle then autovivifies its own map
+        // on its own first insert.
+        if (auto variable = source.isVarExp)
+            if (auto declaration = variable.var.isVarDeclaration)
+                if (declaration in _assocArrayLocals)
+                    if (auto handleOffset = declaration in _locals) {
+                        _code ~= Instruction(
+                            Op.copy, destination, *handleOffset,
+                            cast(ushort) size_t.sizeof,
+                        );
+                        return;
+                    }
 
         // `dest = src.dup`: the `object.dup` hook yields a fresh handle; copy it
         // into the destination slot.

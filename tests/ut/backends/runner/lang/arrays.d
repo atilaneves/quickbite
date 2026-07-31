@@ -2016,10 +2016,7 @@ static foreach (backend; Matrix!()) {
     }
 }
 
-static foreach (backend; Matrix!(
-    Omit!(Bytecode, Because.refusal,
-        "Unsupported associative array initializer in bytecode core: aa"),
-)) {
+static foreach (backend; Matrix!()) {
     @("assocArray.nullAAAssignmentInsertDetaches." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {

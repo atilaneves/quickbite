@@ -366,12 +366,16 @@ architectural non-goals with an explicit reason. An unsupported
 implementation is not, by itself, a permanent divergence from the compiled-D
 oracle.
 
-Concrete next candidate: `assocArray.nullAAAssignmentInsertDetaches.Bytecode`
-(`tests/ut/backends/runner/lang/arrays.d`, `Omit!(Bytecode, Because.refusal,
-"Unsupported associative array initializer in bytecode core: aa")`) --
-`int[int] bb = aa;` initializes an AA-typed local from another AA VARIABLE
-(a plain `VarExp`, not an AA literal); the current AA-initializer path only
-handles a literal or null right-hand side.
+Concrete next candidates in `tests/ut/backends/runner/lang/arrays.d`:
+- `assocArray.structKeyWithStringMemberComparesStructurally.Bytecode`
+  (`Omit!(Bytecode, Because.refusal, "Unsupported variable in bytecode core:
+  __aakey3")`) -- a struct-typed AA key compares members structurally; the
+  bytecode core refuses DMD's synthesized `__aakeyN` temporary the key
+  expression lowers to before it ever reaches the assoc-array opcodes.
+- `assocArray.nestedLookupDereferencesAssociativeArrayPointee.Bytecode`
+  (`Omit!(Bytecode, Because.inexpressible, "nested associative-array
+  operand")`) -- `int[int][int]` (an AA of AAs); `a[1][2]` needs the outer
+  lookup's result treated as another AA handle rather than a scalar.
 
 Reconfirm these live aggregate limitations against the current source when a
 row reaches them:
