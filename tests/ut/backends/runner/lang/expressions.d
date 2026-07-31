@@ -2495,6 +2495,39 @@ static foreach (backend; Matrix!(
     }
 }
 
+// A class field's compound assignment (`+=`) whose right-hand side call
+// itself writes that same field directly by name through the class
+// reference: the addition must read whatever the call already wrote to the
+// field, not a value loaded before the call ran, and the writeback
+// afterward must land the correctly computed sum -- not a stale pre-call
+// value that erases the call's own direct write.
+static foreach (backend; Matrix!(
+    Omit!(Interpreter, Because.diverges,
+        "computes 6 instead of 101: reads a stale pre-call copy of the " ~
+        "field, oblivious to writeDirectFieldAndReturnOne's direct write; " ~
+        "a pre-existing gap in a different backend, unrelated to this fix"),
+)) {
+    @("class.fieldCompoundAssignReflectsRhsDirectWrite." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            class Box { int x; }
+
+            int writeDirectFieldAndReturnOne(Box box) {
+                box.x = 100;
+                return 1;
+            }
+
+            unittest {
+                auto box = new Box;
+                box.x = 5;
+                box.x += writeDirectFieldAndReturnOne(box);
+                assert(box.x == 101);
+            }
+        });
+    }
+}
+
 // Direct Interpreter witness for the native shared-body path. This was the
 // backend's divergence characterization before object-body storage became
 // authoritative across activations.

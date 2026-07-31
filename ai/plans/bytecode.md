@@ -382,16 +382,13 @@ tractable on its own, but the machine's map storage has to grow arbitrary
 key/value width first, mirroring how dynamic arrays already carry their own
 element size. That is the prerequisite, not a narrow per-row fix.
 
-Concrete next candidate: a class field's compound assignment (`c.x += f()`,
-`tryClassPointerField`) has the same read-modify-write reordering hazard the
-module-struct-field fix above already fixed for module storage: nothing
-currently reorders `f()`'s compilation ahead of the field read, so if `f()`
-itself writes `c.x` directly, that direct write is clobbered by a stale-sum
-writeback. No fixture exercises this yet -- write a `SystemLinker`-oracle
-fixture (a class with field `x` and a free function that mutates `c.x`
-directly, called from the right-hand side of `c.x += f()`), confirm it is
-red on `Bytecode`, then apply the same reordering fix in
-`tryClassPointerField`'s compound-assignment path.
+Concrete next candidate: `staticArray.refLocalAssignmentMutatesSource.Bytecode`
+(`tests/ut/backends/runner/lang/expressions.d`, `Omit!(Bytecode,
+Because.refusal, "the nested int[2][2] == comparison is declined (mixed
+static/dynamic nested-array shapes are unsupported)")`) -- a nested
+`int[2][2]` static array's whole-value `==` comparison against an array
+literal is declined; the assignment/aliasing part of the fixture already
+works, only the trailing equality check is unsupported.
 
 Reconfirm these live aggregate limitations against the current source when a
 row reaches them:
@@ -450,10 +447,10 @@ row reaches them:
   before the copy this read-modify-write reads from is taken, or the
   post-op `Op.storeModule` writeback clobbers it with a stale sum. The
   identical shape through a class reference (`gc.x += f()`,
-  `tryClassPointerField`) is unfixed and predates this module-struct
-  support; a class field is heap-referenced storage with no whole-block
-  copy to reorder around, so it needs its own fix, not an extension of
-  this one.
+  `tryClassPointerField`) is fixed the same way: the field load is now
+  compiled after the rhs, so a heap object needs no whole-block-copy
+  narrowing the way module storage does -- there is no copy, just a load
+  ordered to run after whatever the rhs already wrote directly.
 - A module-level dynamic array's single-element `~=` (`compileAppendElement`)
   now compiles the appended value before materialising the target's
   descriptor when the target is a module variable, so a reentrant append

@@ -8848,10 +8848,16 @@ private struct Compiler {
         // result back through the class pointer. Tried only after the inline
         // struct-field case above, so a struct method's own `this.field += rhs`
         // (`this` is not a class reference there) is handled first.
+        // The field load runs after the rhs compiles: the rhs may itself write
+        // this exact field through the same class reference by name (`c.x +=
+        // f()` where `f` writes `c.x` directly through its own parameter), and
+        // that write has to already be in the heap object before the load
+        // below reads it, or the post-op `storeClassPointerField` writeback
+        // clobbers it with a stale pre-call sum.
         if (auto dot = compoundAssignDotVar(addAssign.e1))
             if (auto field = tryClassPointerField(dot)) {
-                const current = loadClassPointerField(*field);
                 const rhsValue = compileExpression(addAssign.e2);
+                const current = loadClassPointerField(*field);
                 const lvalueType = scalarType(field.type);
                 if (!isCompoundIntegerScalar(lvalueType) ||
                     !isCompoundIntegerScalar(rhsValue.type))
