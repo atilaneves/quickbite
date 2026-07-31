@@ -609,6 +609,30 @@ static foreach (backend; Matrix!()) {
 }
 
 static foreach (backend; Matrix!()) {
+    @("dynamicArray.appendStaticArrayRow." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            int seed(int value) {
+                return value;
+            }
+
+            unittest {
+                int[2][] rows;
+                rows ~= [seed(1), seed(2)];
+                rows ~= [seed(3), seed(4)];
+
+                assert(rows.length == 2);
+                assert(rows[0][0] == 1);
+                assert(rows[0][1] == 2);
+                assert(rows[1][0] == 3);
+                assert(rows[1][1] == 4);
+            }
+        });
+    }
+}
+
+static foreach (backend; Matrix!()) {
     @("dynamicArray.refParameterAppend." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {

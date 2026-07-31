@@ -10352,6 +10352,24 @@ private struct Compiler {
         }
 
         const descriptor = dynamicArrayDescriptor(append.e1);
+
+        // `outer ~= row` where `outer`'s element is itself an array
+        // (`int[][]`/`int[N][]`): the appended row needs its own heap-backed
+        // sub-array and 16-byte descriptor, the same shape an array-of-arrays
+        // literal builds for each of its elements (`compileDynamicArrayInto`'s
+        // `elementIsArray` branch), not the flat scalar/struct byte layout --
+        // `outer[i]` always reads a stored element as a descriptor to
+        // dereference.
+        if (descriptor.elementIsArray) {
+            const inner = allocateBytes(sliceDescriptorSize, size_t.sizeof);
+            compileDynamicArrayInto(inner, descriptor.elementType, append.e2);
+            _code ~= Instruction(
+                appendElementOp(sliceDescriptorSize), descriptor.offset, inner,
+            );
+            writeBackDynamicArrayDescriptor(descriptor);
+            return Operand(descriptor.offset, descriptor.elementType);
+        }
+
         const value = compileExpression(append.e2);
         const elementSize =
             dynamicArrayElementSize(append.e1.type, descriptor.elementType);
@@ -16493,11 +16511,22 @@ private imported!"quickbite.backends.bytecode.core.program".Op sliceEqualOp(
 
 private imported!"quickbite.backends.bytecode.core.program".Op appendElementOp(
     in uint elementSize,
-) @safe @nogc nothrow pure {
+) @safe pure {
     import quickbite.backends.bytecode.core.program: Op;
-    if (elementSize == 1)
-        return Op.appendElement1;
-    return elementSize == 2 ? Op.appendElement2 : Op.appendElement4;
+    import std.conv: text;
+
+    switch (elementSize) {
+        case 1: return Op.appendElement1;
+        case 2: return Op.appendElement2;
+        case 4: return Op.appendElement4;
+        case 8: return Op.appendElement8;
+        case 16: return Op.appendElement16;
+        default:
+            throw new Exception(text(
+                "Unsupported array element size in bytecode core: ",
+                elementSize,
+            ));
+    }
 }
 
 private imported!"quickbite.backends.bytecode.core.program".Op concatArraysOp(

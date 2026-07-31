@@ -321,7 +321,8 @@ package(quickbite.backends.bytecode) RunResult run(
                 ++ip;
                 break;
 
-            case appendElement1, appendElement2, appendElement4:
+            case appendElement1, appendElement2, appendElement4, appendElement8,
+                appendElement16:
                 auto appended = appendElement(
                     stack,
                     base + instruction.a,
@@ -2401,7 +2402,11 @@ private uint appendElementSize(
     import quickbite.backends.bytecode.core.program: Op;
     if (op == Op.appendElement1)
         return 1;
-    return op == Op.appendElement2 ? 2 : 4;
+    if (op == Op.appendElement2)
+        return 2;
+    if (op == Op.appendElement8)
+        return 8;
+    return op == Op.appendElement16 ? 16 : 4;
 }
 
 private uint concatElementSize(

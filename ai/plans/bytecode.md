@@ -425,7 +425,29 @@ row reaches them:
 - A `T[N][]`'s rows are materialised as separately heap-allocated inner
   descriptors, so a pointer taken into one row (`&outer[i][j]`) is valid
   within that row, but a flat pointer walk across rows diverges from compiled
-  D's contiguous layout.
+  D's contiguous layout. Reconfirmed current: `&outer[0][0]` then indexing
+  past row 0's own two elements reads unrelated heap bytes instead of row 1,
+  where `SystemLinker`'s contiguous backing store reads the next row.
+  Appending a row (`outer ~= [a, b]`) now builds that row's own heap block
+  and 16-byte descriptor before appending it (`compileAppendElement`'s new
+  `descriptor.elementIsArray` branch, `compiler.d`), matching what an
+  array-of-arrays literal already builds per element; previously this both
+  used the wrong element width (`appendElementOp`/`appendElementSize` only
+  distinguished 1, 2, or default-4 bytes, so an 8-byte row or descriptor
+  silently truncated to 4 bytes copied) and appended the row's raw value
+  instead of a descriptor, corrupting the backing store and segfaulting on
+  a later indexed read. `appendElementOp` now covers 8 and 16 bytes
+  (`Op.appendElement8`/`Op.appendElement16`) and throws instead of silently
+  mis-sizing any other width.
+- `compileConcatenationAssign` (`outer ~= otherOuter`, whole-array
+  concatenation) has the identical pre-fix gap `compileAppendElement` had:
+  `concatArraysOp` only distinguishes 1 vs. default-4-byte elements, so
+  concatenating two `T[N][]`/`T[][]` arrays silently uses `concatArrays4`
+  and corrupts each copied row's 16-byte descriptor
+  (`int[][] outer; outer ~= [1, 2]; int[][] other; other ~= [3, 4]; outer ~=
+  other;` segfaults on Bytecode today). The fix is the same shape: give
+  `concatArraysOp`/`concatElementSize` an `elementIsArray`-aware 16-byte
+  variant, mirroring `appendElementOp`/`appendElementSize` above.
 - A `__gshared`/`static` module-level dynamic-array variable
   (`moduleDynamicArrayVariableOrNull`, `compiler.d`) only has storage when its
   declared initializer is absent or an explicit `null`; a non-null module

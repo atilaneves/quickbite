@@ -287,10 +287,15 @@ package(quickbite.backends.bytecode) enum Op: ubyte {
     // overwrite the descriptor with {newPtr, length + 1}. Reallocating (rather
     // than growing in place) matches compiled D, so a slice of an array is not
     // corrupted by appending to a neighbour. The element size is fixed by the
-    // opcode (1 or 4 bytes), matching the indexLoad/indexStore split.
+    // opcode (1, 2, 4, 8, or 16 bytes), matching the indexLoad/indexStore split.
     appendElement1,
     appendElement2, // 2-byte element (wchar): backs `wchar[] ~= w`
     appendElement4,
+    appendElement8, // 8-byte element: long/double/pointer, or an 8-byte struct
+    appendElement16, // 16-byte descriptor: appending one row to an array
+                      // whose element is itself an array (`int[][]`/
+                      // `int[N][]`), where each row is its own heap-backed
+                      // sub-array addressed by a stored descriptor
     // Concatenate the two slice descriptors at frame offsets b and c into a
     // fresh heap block holding all of b's elements followed by all of c's, then
     // write the descriptor {newPtr, len(b) + len(c)} to frame offset a. The
