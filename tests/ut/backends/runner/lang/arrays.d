@@ -633,6 +633,33 @@ static foreach (backend; Matrix!()) {
 }
 
 static foreach (backend; Matrix!()) {
+    @("dynamicArray.concatenatesArrayOfArrays." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            int seed(int value) {
+                return value;
+            }
+
+            unittest {
+                int[][] outer;
+                outer ~= [seed(1), seed(2)];
+                int[][] other;
+                other ~= [seed(3), seed(4)];
+
+                outer ~= other;
+
+                assert(outer.length == 2);
+                assert(outer[0][0] == 1);
+                assert(outer[0][1] == 2);
+                assert(outer[1][0] == 3);
+                assert(outer[1][1] == 4);
+            }
+        });
+    }
+}
+
+static foreach (backend; Matrix!()) {
     @("dynamicArray.refParameterAppend." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {

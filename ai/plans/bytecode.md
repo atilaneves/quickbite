@@ -409,8 +409,17 @@ row reaches them:
   sub-slice assignment (`arr[lo .. hi] = rhs`, both a plain local and a
   struct field) now writes through the array's own frame storage for 1- and
   4-byte elements when `rhs` is itself a slice; wider elements (`sliceCopyOp`
-  only distinguishes 1 vs. 4 bytes) and a bare scalar broadcast into a
-  non-4-byte element still need general semantics.
+  only distinguishes 1 vs. 4 bytes) still need general semantics. A bare
+  scalar broadcast into a non-4-byte element is confirmed red via `bin/qb`:
+  `byte[4] arr; byte v = 5; arr[1..3] = v;` and `long[4] arr; long v = 5;
+  arr[1..3] = v;` both throw "Unsupported slice-assignment source in
+  bytecode core" (`tryStaticArraySliceAssign`/`tryDynamicArraySliceAssign`,
+  `compiler.d`, gate `elementSize == uint.sizeof` before falling through to
+  `compileSourceSlice`, which only accepts a slice/string-literal/
+  array-literal rhs), while the 4-byte case (`int[4] arr; arr[1..3] = v;`)
+  already works. Fix shape: add `Op.sliceFill1`/`Op.sliceFill8` alongside
+  the existing `Op.sliceFill4` and widen both call sites' basic-type gate to
+  the widths the new fill ops cover.
 - Dynamic-array and string sub-slices reject an upper bound beyond the source
   length and a lower bound greater than the upper bound; pointer-slice bounds
   remain unchecked.
@@ -440,14 +449,12 @@ row reaches them:
   (`Op.appendElement8`/`Op.appendElement16`) and throws instead of silently
   mis-sizing any other width.
 - `compileConcatenationAssign` (`outer ~= otherOuter`, whole-array
-  concatenation) has the identical pre-fix gap `compileAppendElement` had:
-  `concatArraysOp` only distinguishes 1 vs. default-4-byte elements, so
-  concatenating two `T[N][]`/`T[][]` arrays silently uses `concatArrays4`
-  and corrupts each copied row's 16-byte descriptor
-  (`int[][] outer; outer ~= [1, 2]; int[][] other; other ~= [3, 4]; outer ~=
-  other;` segfaults on Bytecode today). The fix is the same shape: give
-  `concatArraysOp`/`concatElementSize` an `elementIsArray`-aware 16-byte
-  variant, mirroring `appendElementOp`/`appendElementSize` above.
+  concatenation of a `T[N][]`/`T[][]`) now builds its `elementIsArray`
+  operand size the same way `compileAppendElement` does
+  (`dynamicArrayElementSize(..., descriptor.elementIsArray)`), and
+  `concatArraysOp`/`concatElementSize` add an `Op.concatArrays16` variant, so
+  the right-hand array's rows copy as whole 16-byte descriptors instead of
+  truncating to 4 bytes.
 - A `__gshared`/`static` module-level dynamic-array variable
   (`moduleDynamicArrayVariableOrNull`, `compiler.d`) only has storage when its
   declared initializer is absent or an explicit `null`; a non-null module

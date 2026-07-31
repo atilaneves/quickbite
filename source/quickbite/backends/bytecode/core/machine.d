@@ -335,7 +335,7 @@ package(quickbite.backends.bytecode) RunResult run(
                 ++ip;
                 break;
 
-            case concatArrays1, concatArrays4:
+            case concatArrays1, concatArrays4, concatArrays16:
                 heap ~= concatArrays(
                     stack,
                     base + instruction.a,
@@ -2413,7 +2413,9 @@ private uint concatElementSize(
     in imported!"quickbite.backends.bytecode.core.program".Op op,
 ) @safe @nogc nothrow pure {
     import quickbite.backends.bytecode.core.program: Op;
-    return op == Op.concatArrays1 ? 1 : 4;
+    if (op == Op.concatArrays1)
+        return 1;
+    return op == Op.concatArrays16 ? 16 : 4;
 }
 
 private uint dupArrayElementSize(

@@ -10407,6 +10407,7 @@ private struct Compiler {
             const descriptor = dynamicArrayDescriptor(concatenate.e1);
             const elementSize = dynamicArrayElementSize(
                 concatenate.e1.type, descriptor.elementType,
+                descriptor.elementIsArray,
             );
             _code ~= Instruction(
                 concatArraysOp(elementSize),
@@ -10424,6 +10425,7 @@ private struct Compiler {
         );
         const elementSize = dynamicArrayElementSize(
             concatenate.e1.type, descriptor.elementType,
+            descriptor.elementIsArray,
         );
         _code ~= Instruction(
             concatArraysOp(elementSize),
@@ -16531,9 +16533,20 @@ private imported!"quickbite.backends.bytecode.core.program".Op appendElementOp(
 
 private imported!"quickbite.backends.bytecode.core.program".Op concatArraysOp(
     in uint elementSize,
-) @safe @nogc nothrow pure {
+) @safe pure {
     import quickbite.backends.bytecode.core.program: Op;
-    return elementSize == 1 ? Op.concatArrays1 : Op.concatArrays4;
+    import std.conv: text;
+
+    switch (elementSize) {
+        case 1: return Op.concatArrays1;
+        case 4: return Op.concatArrays4;
+        case 16: return Op.concatArrays16;
+        default:
+            throw new Exception(text(
+                "Unsupported array element size in bytecode core: ",
+                elementSize,
+            ));
+    }
 }
 
 private imported!"quickbite.backends.bytecode.core.program".Op dupArrayOp(
