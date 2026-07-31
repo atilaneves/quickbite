@@ -2386,6 +2386,70 @@ static foreach (backend; Matrix!(
     }
 }
 
+// A module-level struct's own field that is itself a struct
+// (`quickbiteDatasegOuter.inner.x`): the generic base resolver that walks an
+// `outer.inner` chain back to its base had no case for a bare module-struct
+// `VarExp`, so it gave up one level before ever reaching `inner`'s own
+// module offset, and any read or write through a nested struct field failed
+// outright. `Ctfe` cannot read or write dataseg storage at all (compile-time
+// execution has no such storage to access).
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.inexpressible,
+        "CTFE cannot read or write dataseg (__gshared/static) storage"),
+)) {
+    @("dataseg.moduleStructNestedFieldReadWrite." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct Inner { int x; }
+            struct Outer { Inner inner; }
+
+            __gshared Outer quickbiteDatasegOuter;
+
+            void setInnerX(int value) {
+                quickbiteDatasegOuter.inner.x = value;
+            }
+
+            unittest {
+                setInnerX(42);
+                assert(quickbiteDatasegOuter.inner.x == 42);
+            }
+        });
+    }
+}
+
+// The same nested-field shape through a dynamic-array field
+// (`quickbiteDatasegNestedOuter.inner.arr`): the array descriptor's own
+// writeback reuses `tryStructField`'s result, so it inherits the identical
+// fix. `Ctfe` cannot read or write dataseg storage at all (compile-time
+// execution has no such storage to access).
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.inexpressible,
+        "CTFE cannot read or write dataseg (__gshared/static) storage"),
+)) {
+    @("dataseg.moduleStructNestedArrayFieldAppendWritesBackToModule." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct Inner { byte[] arr; }
+            struct Outer { Inner inner; }
+
+            __gshared Outer quickbiteDatasegNestedOuter;
+
+            void appendToInnerArr(byte value) {
+                quickbiteDatasegNestedOuter.inner.arr ~= value;
+            }
+
+            unittest {
+                appendToInnerArr(42);
+                assert(quickbiteDatasegNestedOuter.inner.arr.length == 1);
+                assert(quickbiteDatasegNestedOuter.inner.arr[0] == 42);
+            }
+        });
+    }
+}
+
 // A `ref` argument bound to a module-level struct's own field
 // (`bump(point.x)`): the generic struct-field `ref`-argument path
 // materialises the whole struct into a throwaway frame copy and would
