@@ -226,6 +226,9 @@ new dependency images
   loaded RTLD_NOW | RTLD_GLOBAL before symbol resolution
 ```
 
+`RTLD_GLOBAL` images and druntime registration are process-lifetime state, so
+dependency-image fixtures must use collision-free symbols.
+
 ### 21.1 Shared resolver
 
 The resolver is backend-neutral. It derives the mangled name, linkage,
@@ -440,10 +443,18 @@ variadic and raw native-delegate calls prepare per call as required.
 
 ### 35.2 Data symbols and dependency-image initialization
 
-**Status: done.** The Interpreter resolves extern data symbols by mangled name
-and reads/writes them through the declared type. Covered shapes include scalar
-widths, pointers, structs, static arrays, slices, nested slice fields,
-`__gshared`, TLS, cross-image constructors, and DT_NEEDED ordering.
+**Status: done except for the Linux cross-image constructor pin.** The
+Interpreter resolves extern data symbols by mangled name and reads/writes them
+through the declared type. Covered shapes include scalar widths, pointers,
+structs, static arrays, slices, nested slice fields, `__gshared`, TLS, and
+DT_NEEDED ordering.
+
+The explicit sequential-`RTLD_GLOBAL` cross-image constructor fixture remains
+registered outside Linux. On Ubuntu, both the Interpreter and LLVMJit cases
+fail even in fresh processes, so their Linux registrations are deferred. The
+next step is a minimal Ubuntu/DMD shared-library reproduction that distinguishes
+fixture construction, the SystemLinker oracle, and dependency-image loading
+before changing backend production ordering.
 
 #### 35.2a Data-symbol resolution
 

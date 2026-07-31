@@ -137,7 +137,9 @@ public imported!"quickbite.backends.interpreter.runtime_value".Value readValue(
     // lookup/mutation stays in the interpreter's native_assoc_array hooks,
     // never in recursive RuntimeValue entries.
     if (type.isTypeAArray !is null)
-        return AggregateValue.copyFromAddress(type, place.address);
+        return bytesAreZero(place.address, typeByteSize(type))
+            ? Value.null_
+            : AggregateValue.copyFromAddress(type, place.address);
 
     // Native-authority class slots expose the stored object body address
     // directly. The legacy mirror supplies an identity capability and keeps

@@ -134,7 +134,7 @@ findings still fall out clearly:
   pointer-chasing tree code; DMD's backend gains little. So "turn on `-O`" is
   correct and necessary hygiene, but is not where a big number lives.
 - **LDC nearly halves it** (→~1066 ms, stable across repeats). The distro `dmd`
-  your `dub test` uses is LDC-built (`ldc 1.41.0`, plus LTO/PGO) and does the
+  your `dub test` uses is LDC-built (`ldc 1.42.0`, plus LTO/PGO) and does the
   *same* parse+semantic in ~660 ms; that is why an unoptimised, DMD-compiled
   embedded frontend looked ~2.5× too slow. It was never `-allinst` (+22 ms) or
   cold init (−25 ms).

@@ -171,7 +171,8 @@ private void defineHostSymbols(
         LLVMOrcExecutorAddress,
         LLVMOrcJITDylibDefine,
         LLVMOrcLLJITMangleAndIntern;
-    import core.sys.linux.dlfcn: RTLD_DEFAULT;
+    version (linux) import core.sys.linux.dlfcn: RTLD_DEFAULT;
+    version (OSX) import core.sys.darwin.dlfcn: RTLD_DEFAULT;
     import core.sys.posix.dlfcn: dlsym;
     import std.conv: text;
     import std.string: fromStringz;
@@ -264,7 +265,8 @@ private void addObjectFile(
         rewriteTlsGdRelocations,
         tlsGdSymbolNames,
         tlsSymbolNames;
-    import core.sys.linux.dlfcn: RTLD_DEFAULT;
+    version (linux) import core.sys.linux.dlfcn: RTLD_DEFAULT;
+    version (OSX) import core.sys.darwin.dlfcn: RTLD_DEFAULT;
     import core.sys.posix.dlfcn: dlsym;
     import std.conv: text;
     import std.file: read, write;

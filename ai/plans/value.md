@@ -627,6 +627,16 @@ Native storage and calls remain the ordinary execution path; do not restore
 marshalling, cell families, alias maps, or name-based representation shims.
 `interpreter.md` §8 triage remains the partition.
 
+Eliminate the boxed native-exception catch-local compatibility path. A catch
+binding must contain the retained native object's class reference in its typed
+native place, preserving object-address identity through aliases, casts, and
+member calls. Interpreter-only data needed to expose the captured message,
+dynamic type, or exception chain belongs in sidecar metadata keyed by that
+object-body address, never in a `RuntimeValue` stored as binding authority. The
+work is complete when catch-variable reads use the ordinary native-place path
+and no exception-specific branch can leave `mirrorEstablished` false for a
+data binding.
+
 ### Item 5 — Delete Interpreter FFI marshalling fallbacks
 
 Finish decision 18 after the language-surface critical path. The current

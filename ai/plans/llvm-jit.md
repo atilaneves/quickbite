@@ -559,11 +559,13 @@ also required for the `benchmark` and `qb` configs: both link the `native`
 package via `source/`, and that package re-exports `LLVMJit` unconditionally,
 so the ORC symbols are referenced even though the bench and REPL never select
 the backend. Without it, `ci.sh`'s `bin/bench.sh` and `ninja bin/qb` steps
-fail to link (undefined `LLVMOrc*` symbols). The bare `libLLVM.so` symlink is
-present (→ `libLLVM.so.22.1`), so plain `-lLLVM` resolves it; if only the
-versioned runtime were installed, link the soname explicitly
-(`lflags "-L-l:libLLVM.so.22.1"` or a full path). Regenerate with `dub run
-reggae --compiler=ldc -- -b ninja`.
+fail to link (undefined `LLVMOrc*` symbols). Locally, the global bare
+`libLLVM.so` symlink may let the canonical plain `-lLLVM` resolve it; LLVM 21
+is the minimum supported version. Ubuntu CI installs `llvm-21-dev` from the
+official apt.llvm.org Noble repository, derives the link and runtime library
+path with `llvm-config-21`, and exports it through DMD's linker flags and the
+runtime library path. Regenerate with
+`dub run reggae --compiler=ldc -- -b ninja`.
 
 ## Verification
 

@@ -800,11 +800,34 @@ private struct Walker {
             valueMatchesPlace, writeValue;
 
         if (
+            variable.type.toBasetype.isTypeAArray !is null &&
+            value == Value.null_
+        ) {
+            writeValue(bindingPlace(variable), value);
+            mirrorEstablished[variable] = true;
+            return;
+        }
+
+        if (
             variable.type.toBasetype.isTypeClass !is null &&
             value == Value.null_
         ) {
             mirrorEstablished[variable] = hasMirrorSlot(variable)
                 && mirrorClassToFrame(variable, value);
+            return;
+        }
+
+        if (
+            variable.type.toBasetype.isTypeClass !is null &&
+            !value.isNativeAggregate &&
+            !value.isPointer &&
+            AggregateValue.isClass(value) &&
+            AggregateValue.hasClassFieldNamed(
+                value,
+                nativeExceptionObjectPointerField,
+            )
+        ) {
+            mirrorEstablished[variable] = false;
             return;
         }
 
@@ -1238,20 +1261,6 @@ private struct Walker {
         in const(void)* nativeObjectPointer = null,
     ) {
         if (auto class_ = dynamicClassDeclarationByName(className)) {
-            if (nativeObjectPointer !is null) {
-                nativeClassTypes[cast(void*) nativeObjectPointer] = class_.type;
-                return AggregateValue.withClassFieldNamed(
-                    AggregateValue.borrowClass(
-                        class_.type,
-                        cast(void*) nativeObjectPointer,
-                    ),
-                    "msg",
-                    // The native message may point into the dependency image's
-                    // read-only data. Keep catch evaluation independent of
-                    // that image's lifetime by rooting an interpreter copy.
-                    Value(message.idup),
-                );
-            }
             return withNativeExceptionObjectPointer(
                 AggregateValue.withClassFieldNamed(
                     classDefaultValue(class_),
@@ -1271,17 +1280,6 @@ private struct Walker {
         // Error-vs-Exception classification and intermediate bases, instead
         // of `nativeExceptionRoot`'s name-prefix guess.
         if (auto class_ = classDeclarationByQualifiedName(className)) {
-            if (nativeObjectPointer !is null) {
-                nativeClassTypes[cast(void*) nativeObjectPointer] = class_.type;
-                return AggregateValue.withClassFieldNamed(
-                    AggregateValue.borrowClass(
-                        class_.type,
-                        cast(void*) nativeObjectPointer,
-                    ),
-                    "msg",
-                    Value(message.idup),
-                );
-            }
             return withNativeExceptionObjectPointer(
                 AggregateValue.withClassFieldNamed(
                     classDefaultValue(class_),
@@ -3423,15 +3421,15 @@ private struct Walker {
                     continue;
 
                 const fieldValue = AggregateValue.fieldAt(structValue, index);
-                if (!fieldValue.isArray)
+                if (!AggregateValue.isArray(fieldValue))
                     continue;
 
                 auto arrayCell = cell.arrayField(index);
-                foreach (elementIndex; 0 .. fieldValue.length)
+                foreach (elementIndex; 0 .. AggregateValue.elementCount(fieldValue))
                     writeArrayCellElement(
                         arrayCell,
                         elementIndex,
-                        fieldValue[elementIndex],
+                        AggregateValue.elementAt(fieldValue, elementIndex),
                     );
                 continue;
             }
@@ -3446,15 +3444,16 @@ private struct Walker {
                     continue;
 
                 const fieldValue = AggregateValue.fieldAt(structValue, index);
-                if (!fieldValue.isArray)
+                if (!AggregateValue.isArray(fieldValue))
                     continue;
 
-                auto arrayCell = NativeArray.allocate(elementType, fieldValue.length);
-                foreach (elementIndex; 0 .. fieldValue.length)
+                auto arrayCell = NativeArray.allocate(elementType,
+                    AggregateValue.elementCount(fieldValue));
+                foreach (elementIndex; 0 .. AggregateValue.elementCount(fieldValue))
                     writeArrayCellElement(
                         arrayCell,
                         elementIndex,
-                        fieldValue[elementIndex],
+                        AggregateValue.elementAt(fieldValue, elementIndex),
                     );
                 arrayCell.writeSliceHeader(
                     cell.block,
@@ -3468,7 +3467,7 @@ private struct Walker {
                 continue;
 
             const nestedValue = AggregateValue.fieldAt(structValue, index);
-            if (!nestedValue.isStruct)
+            if (!AggregateValue.isStruct(nestedValue))
                 continue;
 
             auto nestedCell = cell.structField(index);
@@ -3689,7 +3688,9 @@ private struct Walker {
         const aggregateValues =
             AggregateValue.isStruct(left) && AggregateValue.isStruct(right) ||
             AggregateValue.isArray(left) && AggregateValue.isArray(right);
-        const same = identity.e1.type.toBasetype.isTypeClass !is null
+        const same =
+            identity.e1.isTypeidExp is null && identity.e2.isTypeidExp is null &&
+            identity.e1.type.toBasetype.isTypeClass !is null
             ? classIdentityAddress(left) == classIdentityAddress(right)
             : aggregateValues
             ? equalValues(left, right)
@@ -3703,9 +3704,22 @@ private struct Walker {
     private void* classIdentityAddress(in Value value) {
         import quickbite.backends.interpreter.aggregate_value: AggregateValue;
 
-        return value.isNativeAggregate
-            ? AggregateValue.nativeClassBodyAddress(value)
-            : value.pointerAddress;
+        if (value == Value.null_)
+            return null;
+
+        if (value.isNativeAggregate)
+            return AggregateValue.nativeClassBodyAddress(value);
+        if (value.isPointer)
+            return value.pointerAddress;
+        if (AggregateValue.hasClassFieldNamed(
+            value,
+            nativeExceptionObjectPointerField,
+        ))
+            return AggregateValue.classFieldNamed(
+                value,
+                nativeExceptionObjectPointerField,
+            ).pointerAddress;
+        return cast(void*) AggregateValue.classIdentity(value);
     }
 
     private Value runCallExpression(imported!"dmd.expression".CallExp call) {
@@ -5164,13 +5178,14 @@ private struct Walker {
     ) {
         const memberReceiver = nativeMemberReceiver(function_, receiver);
 
-        auto memberClass = function_.parent is null
-            ? null
-            : function_.parent.isClassDeclaration;
         if (
             declarationName(function_) == "next" &&
-            memberClass !is null && className(memberClass) == "Throwable"
+            AggregateValue.isClass(memberReceiver) &&
+            AggregateValue.hasClassType(memberReceiver, "Throwable")
         ) {
+            if (AggregateValue.hasClassFieldNamed(memberReceiver, "_nextInChainPtr"))
+                return AggregateValue.classFieldNamed(memberReceiver, "_nextInChainPtr");
+
             auto body = memberReceiver.isNativeAggregate
                 ? AggregateValue.nativeClassBodyAddress(memberReceiver)
                 : memberReceiver.isPointer
@@ -5348,6 +5363,7 @@ private struct Walker {
     /*
     */
     private Value structValueFromCell(in Value current, ref NativeStruct cell) {
+        import quickbite.backends.interpreter.aggregate_value: AggregateValue;
         import quickbite.backends.interpreter.native_scalar:
             isNativeScalarType, readScalar;
         import quickbite.frontend.dmd.types:
@@ -5358,7 +5374,8 @@ private struct Walker {
             auto fieldType = cell.fieldDeclaration(index).type;
 
             if (isNativeScalarType(fieldType)) {
-                value = value.withStructField(index, readScalar(fieldType, cell.field(index)));
+                value = AggregateValue.withStructField(value, index,
+                    readScalar(fieldType, cell.field(index)));
                 continue;
             }
 
@@ -5371,17 +5388,17 @@ private struct Walker {
                 ))
                     continue;
 
-                auto fieldValue = value.structFieldAt(index);
-                if (!fieldValue.isArray)
+                auto fieldValue = AggregateValue.fieldAt(value, index);
+                if (!AggregateValue.isArray(fieldValue))
                     continue;
 
                 auto arrayCell = cell.arrayField(index);
-                foreach (elementIndex; 0 .. fieldValue.length) {
+                foreach (elementIndex; 0 .. AggregateValue.elementCount(fieldValue)) {
                     Value elementValue;
                     if (structType !is null) {
                         auto elementCell = arrayCell.structElement(elementIndex);
                         elementValue = structValueFromCell(
-                            fieldValue[elementIndex],
+                            AggregateValue.elementAt(fieldValue, elementIndex),
                             elementCell,
                         );
                     } else
@@ -5389,12 +5406,12 @@ private struct Walker {
                             elementType,
                             arrayCell.element(elementIndex),
                         );
-                    fieldValue = fieldValue.withArrayElement(
+                    fieldValue = AggregateValue.withArrayElement(fieldValue,
                         elementIndex,
                         elementValue,
                     );
                 }
-                value = value.withStructField(index, fieldValue);
+                value = AggregateValue.withStructField(value, index, fieldValue);
                 continue;
             }
 
@@ -5407,12 +5424,12 @@ private struct Walker {
                 ))
                     continue;
 
-                const fieldValue = value.structFieldAt(index);
-                if (!fieldValue.isArray)
+                const fieldValue = AggregateValue.fieldAt(value, index);
+                if (!AggregateValue.isArray(fieldValue))
                     continue;
 
                 auto arrayCell = cell.sliceField(index);
-                value = value.withStructField(
+                value = AggregateValue.withStructField(value,
                     index,
                     arrayValueFromCell(fieldValue, arrayCell),
                 );
@@ -5423,12 +5440,13 @@ private struct Walker {
             if (nestedStructType is null || nestedStructType.sym.isUnionDeclaration !is null)
                 continue;
 
-            auto nestedValue = value.structFieldAt(index);
-            if (!nestedValue.isStruct)
+            auto nestedValue = AggregateValue.fieldAt(value, index);
+            if (!AggregateValue.isStruct(nestedValue))
                 continue;
 
             auto nestedCell = cell.structField(index);
-            value = value.withStructField(index, structValueFromCell(nestedValue, nestedCell));
+            value = AggregateValue.withStructField(value, index,
+                structValueFromCell(nestedValue, nestedCell));
         }
 
         return value;
@@ -7694,13 +7712,14 @@ private struct Walker {
         ref NativeArray cell,
         in Value arrayValue,
     ) {
+        import quickbite.backends.interpreter.aggregate_value: AggregateValue;
         import quickbite.backends.interpreter.native_scalar: writeScalar;
 
-        if (!arrayValue.isArray)
+        if (!AggregateValue.isArray(arrayValue))
             return;
 
         foreach (index; 0 .. cell.length) {
-            if (index >= arrayValue.length)
+            if (index >= AggregateValue.elementCount(arrayValue))
                 continue;
 
             if (cell.elementType.isTypeSArray) {
@@ -7708,13 +7727,13 @@ private struct Walker {
                 auto elementCell = cell.arrayElement(index);
                 writeStaticArrayCellScalarElements(
                     elementCell,
-                    arrayValue[index],
+                    AggregateValue.elementAt(arrayValue, index),
                 );
             } else {
                 writeScalar(
                     cell.elementType,
                     cell.element(index),
-                    arrayValue[index],
+                    AggregateValue.elementAt(arrayValue, index),
                 );
             }
         }
@@ -8622,6 +8641,7 @@ private struct Walker {
         in Value[] fieldsSoFar,
         out Value value,
     ) {
+        import quickbite.backends.interpreter.aggregate_value: AggregateValue;
         import quickbite.backends.interpreter.native_scalar:
             isNativeScalarType, readScalar, writeScalar;
         if (index == 0 || fieldsSoFar.length == 0 || literal.sd is null)
@@ -8660,9 +8680,9 @@ private struct Walker {
         auto firstFieldStructType = firstField.type.toBasetype.isTypeStruct;
         const firstFieldStruct = firstFieldStructType !is null;
         const firstFieldArray = isScalarLeafStaticArray(firstField.type)
-            && fieldsSoFar[0].isArray;
+            && AggregateValue.isArray(fieldsSoFar[0]);
         const firstFieldStructArray = isStaticArrayOfPlainStructs(firstField.type)
-            && fieldsSoFar[0].isArray;
+            && AggregateValue.isArray(fieldsSoFar[0]);
 
         if (
             !firstFieldScalar &&
@@ -8690,14 +8710,14 @@ private struct Walker {
             value = readScalar(field.type, cell.field(index));
         } else if (siblingStruct) {
             auto current = defaultValue(field);
-            if (!current.isStruct)
+            if (!AggregateValue.isStruct(current))
                 return false;
 
             auto siblingCell = cell.structField(index);
             value = structValueFromCell(current, siblingCell);
         } else if (siblingStructArray) {
             value = defaultValue(field);
-            if (!value.isArray)
+            if (!AggregateValue.isArray(value))
                 return false;
 
             auto siblingCell = cell.arrayField(index);
@@ -8705,7 +8725,10 @@ private struct Walker {
                 auto elementCell = siblingCell.structElement(elementIndex);
                 value = AggregateValue.withArrayElement(value,
                     elementIndex,
-                    structValueFromCell(value[elementIndex], elementCell),
+                    structValueFromCell(
+                        AggregateValue.elementAt(value, elementIndex),
+                        elementCell,
+                    ),
                 );
             }
         } else {
@@ -8722,11 +8745,13 @@ private struct Walker {
         ref NativeArray cell,
         in Value arrayValue,
     ) {
-        if (!arrayValue.isArray)
+        import quickbite.backends.interpreter.aggregate_value: AggregateValue;
+
+        if (!AggregateValue.isArray(arrayValue))
             return;
 
         foreach (index; 0 .. cell.length) {
-            if (index >= arrayValue.length)
+            if (index >= AggregateValue.elementCount(arrayValue))
                 continue;
 
             if (cell.elementType.isTypeSArray) {
@@ -8734,11 +8759,12 @@ private struct Walker {
                 auto elementCell = cell.arrayElement(index);
                 writeStaticArrayCellStructElements(
                     elementCell,
-                    arrayValue[index],
+                    AggregateValue.elementAt(arrayValue, index),
                 );
             } else {
                 auto elementCell = cell.structElement(index);
-                writeStructCellScalarFields(elementCell, arrayValue[index]);
+                writeStructCellScalarFields(elementCell,
+                    AggregateValue.elementAt(arrayValue, index));
             }
         }
     }
@@ -9876,7 +9902,9 @@ private struct Walker {
                 }
             }
 
-            if (variable !in nativeRefLocalAddresses) {
+            const isRvalueMemberReference = dotInitializer !is null &&
+                dotInitializer.e1.isCallExp !is null;
+            if (variable !in nativeRefLocalAddresses && !isRvalueMemberReference) {
                 import dmd.tokens: EXP;
 
                 const pointer = addressOfExpression(initializer, EXP.address);
