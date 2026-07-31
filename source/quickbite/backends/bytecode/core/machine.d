@@ -296,7 +296,7 @@ package(quickbite.backends.bytecode) RunResult run(
                 ++ip;
                 break;
 
-            case sliceCopy1, sliceCopy4, sliceCopy8:
+            case sliceCopy1, sliceCopy2, sliceCopy4, sliceCopy8:
                 copySlice(
                     stack,
                     base + instruction.a,
@@ -308,6 +308,11 @@ package(quickbite.backends.bytecode) RunResult run(
 
             case sliceFill1:
                 fillSlice1(stack, base + instruction.a, base + instruction.b);
+                ++ip;
+                break;
+
+            case sliceFill2:
+                fillSlice2(stack, base + instruction.a, base + instruction.b);
                 ++ip;
                 break;
 
@@ -2399,7 +2404,7 @@ private uint sliceCopyElementSize(
     import quickbite.backends.bytecode.core.program: Op;
     if (op == Op.sliceCopy1 || op == Op.sliceEqual1)
         return 1;
-    if (op == Op.sliceEqual2)
+    if (op == Op.sliceCopy2 || op == Op.sliceEqual2)
         return 2;
     if (op == Op.sliceEqual8 || op == Op.sliceCopy8)
         return 8;
@@ -2691,6 +2696,21 @@ private void fillSlice1(
         scalarValue!size_t(stack, destinationOffset + size_t.sizeof);
     auto destination = (cast(ubyte*) destinationPointer)[0 .. destinationLength];
     destination[] = scalarValue!ubyte(stack, valueOffset);
+}
+
+// The compiler supplies a valid native slice descriptor and a 2-byte scalar
+// slot; the trusted boundary only forms the corresponding typed host slice.
+private void fillSlice2(
+    ref ubyte[] stack,
+    in size_t destinationOffset,
+    in size_t valueOffset,
+) @trusted {
+    const destinationPointer =
+        scalarValue!size_t(stack, destinationOffset);
+    const destinationLength =
+        scalarValue!size_t(stack, destinationOffset + size_t.sizeof);
+    auto destination = (cast(ushort*) destinationPointer)[0 .. destinationLength];
+    destination[] = scalarValue!ushort(stack, valueOffset);
 }
 
 // The compiler supplies a valid native slice descriptor and a 4-byte scalar

@@ -404,14 +404,17 @@ forced by the baseline" fronts) rather than a matrix search.
 Reconfirm these live aggregate limitations against the current source when a
 row reaches them:
 
-- Scalar slice fill and slice-copy sub-slice assignment now cover 1-, 4-,
-  and 8-byte basic elements (`Op.sliceFill1`/`sliceFill4`/`sliceFill8`,
-  `Op.sliceCopy1`/`sliceCopy4`/`sliceCopy8`); 2-byte elements
-  (`short`/`ushort`/`wchar`) are the one basic width still missing from
-  both ops -- `short[4] arr; short v = 5; arr[1..3] = v;` is expected to hit
-  the same "Unsupported slice-assignment source" gate (unconfirmed, verify
-  with a real fixture first); 16-byte and aggregate elements still need
-  general semantics.
+- Scalar slice fill and slice-copy sub-slice assignment now cover every
+  basic width (1, 2, 4, and 8 bytes: `Op.sliceFill1`/`sliceFill2`/
+  `sliceFill4`/`sliceFill8`, `Op.sliceCopy1`/`sliceCopy2`/`sliceCopy4`/
+  `sliceCopy8`); 16-byte elements (a slice-typed or 16-byte-struct-typed
+  array element) and aggregate elements still need general semantics.
+  Concrete next candidate to verify with a real fixture: sub-slice
+  assignment onto an array-of-arrays element (`outer[i][lo..hi] = rhs` where
+  `outer`'s own element is itself an array) -- each row is its own
+  16-byte-descriptor-addressed heap block (as of the append/concat fixes
+  above), so this may already work through the generic slice-copy path, or
+  may need its own case; unconfirmed.
 - Dynamic-array and string sub-slices reject an upper bound beyond the source
   length and a lower bound greater than the upper bound; pointer-slice bounds
   remain unchecked.

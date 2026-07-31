@@ -11083,7 +11083,7 @@ private struct Compiler {
     // `validateSubSlice`, matching compiled D's `RangeError` wording byte for
     // byte). Null if `slice.e1` is not a static-array location, or its
     // element isn't one of the widths `subSliceOp`/`sliceCopyOp` copy
-    // correctly (1, 4, or 8 bytes).
+    // correctly (1, 2, 4, or 8 bytes).
     private ushort* tryStaticArraySliceDescriptor(SliceExp slice) {
         // `tryStaticArrayRuntimeAddress` resolves a `DotVarExp` to any
         // struct field's own frame offset, static array or not (e.g. a
@@ -11103,7 +11103,8 @@ private struct Compiler {
 
         const elementType = dynamicArrayElementType(slice.e1.type);
         const elementSize = size(elementType);
-        if (elementSize != 1 && elementSize != 4 && elementSize != 8)
+        if (elementSize != 1 && elementSize != 2 && elementSize != 4 &&
+            elementSize != 8)
             return null;
 
         const length = staticArrayLength(slice.e1.type);
@@ -16491,11 +16492,14 @@ private imported!"quickbite.backends.bytecode.core.program".Op sliceCopyOp(
     import quickbite.backends.bytecode.core.program: Op;
     if (elementSize == 1)
         return Op.sliceCopy1;
+    if (elementSize == 2)
+        return Op.sliceCopy2;
     return elementSize == 8 ? Op.sliceCopy8 : Op.sliceCopy4;
 }
 
 private bool sliceFillSupported(in uint elementSize) @safe @nogc nothrow pure {
-    return elementSize == 1 || elementSize == uint.sizeof || elementSize == ulong.sizeof;
+    return elementSize == 1 || elementSize == ushort.sizeof ||
+        elementSize == uint.sizeof || elementSize == ulong.sizeof;
 }
 
 private imported!"quickbite.backends.bytecode.core.program".Op sliceFillOp(
@@ -16504,6 +16508,8 @@ private imported!"quickbite.backends.bytecode.core.program".Op sliceFillOp(
     import quickbite.backends.bytecode.core.program: Op;
     if (elementSize == 1)
         return Op.sliceFill1;
+    if (elementSize == ushort.sizeof)
+        return Op.sliceFill2;
     return elementSize == uint.sizeof ? Op.sliceFill4 : Op.sliceFill8;
 }
 

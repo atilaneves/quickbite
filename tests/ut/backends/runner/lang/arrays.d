@@ -921,7 +921,7 @@ static foreach (backend; Matrix!()) {
 }
 
 static foreach (backend; Matrix!()) {
-    @("dynamicArray.partialSliceAssignmentBroadcastsScalarForByteAndLongElements." ~
+    @("dynamicArray.partialSliceAssignmentBroadcastsScalarForByteShortAndLongElements." ~
         backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -942,6 +942,18 @@ static foreach (backend; Matrix!()) {
                 assert(narrow[1] == 5);
                 assert(narrow[2] == 5);
                 assert(narrow[3] == 4);
+
+                short[] medium = [
+                    cast(short) seed(1), cast(short) seed(2),
+                    cast(short) seed(3), cast(short) seed(4),
+                ];
+                short mediumValue = cast(short) seed(6);
+                medium[1 .. 3] = mediumValue;
+
+                assert(medium[0] == 1);
+                assert(medium[1] == 6);
+                assert(medium[2] == 6);
+                assert(medium[3] == 4);
 
                 long[] wide = [seed(1), seed(2), seed(3), seed(4)];
                 long wideValue = seed(7);
@@ -1449,7 +1461,7 @@ static foreach (backend; Matrix!()) {
 }
 
 static foreach (backend; Matrix!()) {
-    @("staticArray.partialSliceAssignmentBroadcastsScalarForByteAndLongElements." ~
+    @("staticArray.partialSliceAssignmentBroadcastsScalarForByteShortAndLongElements." ~
         backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -1467,6 +1479,15 @@ static foreach (backend; Matrix!()) {
                 assert(narrow[1] == 5);
                 assert(narrow[2] == 5);
                 assert(narrow[3] == 0);
+
+                short[4] medium;
+                short mediumValue = cast(short) seed(6);
+                medium[1 .. 3] = mediumValue;
+
+                assert(medium[0] == 0);
+                assert(medium[1] == 6);
+                assert(medium[2] == 6);
+                assert(medium[3] == 0);
 
                 long[4] wide;
                 long wideValue = seed(7);
