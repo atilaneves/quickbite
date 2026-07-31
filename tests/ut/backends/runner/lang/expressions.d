@@ -4666,9 +4666,6 @@ static foreach (backend; Matrix!()) {
 static foreach (backend; Matrix!(
     Omit!(Ctfe, Because.refusal,
         "DMD CTFE refuses the nested static-array element pointer cast"),
-    Omit!(Bytecode, Because.refusal,
-        "the nested `int[2][2]` `==` comparison is declined (mixed " ~
-            "static/dynamic nested-array shapes are unsupported)"),
 )) {
     @("staticArray.refLocalAssignmentMutatesSource." ~ backend.stringof)
     @Tags(backend.stringof)

@@ -14677,6 +14677,11 @@ private struct Compiler {
                 return true;
 
         if (op == "==" || op == "!=")
+            if (tryNestedArrayComparisonAssert(
+                    op, (*call.arguments)[1], (*call.arguments)[2]))
+                return true;
+
+        if (op == "==" || op == "!=")
             if (tryStringComparisonAssert(
                     op, (*call.arguments)[1], (*call.arguments)[2]))
                 return true;
@@ -15023,9 +15028,9 @@ private struct Compiler {
         // (via `arrayDescriptorOffset`) stores each row as a raw byte block,
         // not a 16-byte slice descriptor, while the other, dynamic-array side
         // builds proper nested descriptors -- comparing the two would compare
-        // unrelated byte shapes. Decline so the caller falls through to the
-        // honest "Unsupported array cast" diagnostic instead of a silent
-        // wrong result.
+        // unrelated byte shapes. Decline so the caller falls through to
+        // `tryNestedArrayComparisonAssert`'s row-by-row comparison instead of
+        // a silent wrong result.
         if (lhsTy == TY.Tsarray && arrayElementIsArray(lhs.type))
             return false;
         if (rhsTy == TY.Tsarray && arrayElementIsArray(rhs.type))
@@ -15104,6 +15109,122 @@ private struct Compiler {
         const diagnostic = _program.assertDiagnostics.length;
         _program.assertDiagnostics ~=
             AssertDiagnostic(op, lhsOffset, rhsOffset, elementScalar, true);
+        _code ~= Instruction(
+            Op.assertTrue,
+            condition,
+            cast(ushort) diagnostic,
+        );
+        return true;
+    }
+
+    // `assert(a == b)` where one side is a static array whose own element is
+    // itself an array (`int[2][2]`) and the other is a genuine array of
+    // arrays -- either a real `T[][]` local or DMD's hoisted stack temp for a
+    // nested array literal, which types each row as its own independently
+    // heap-allocated dynamic array rather than a flat static block
+    // (`tryStackArrayLiteralSliceInto` builds exactly that shape). The two
+    // sides' rows are not the same byte shape (a contiguous inline block on
+    // the static side, an independent heap slice on the other), so neither
+    // `tryStaticArrayComparisonAssert`'s single memcmp nor
+    // `tryArrayComparisonAssert`'s flat slice compare applies; compare row by
+    // row instead, mirroring DMD's own recursive `__equals` lowering: the
+    // outer lengths must match, then every row compares content-equal, with
+    // the static side's row read as a view sharing its own storage (no copy)
+    // and the other side's row fetched from its own descriptor.
+    private bool tryNestedArrayComparisonAssert(
+        in string op,
+        Expression lhs,
+        Expression rhs,
+    ) {
+        import dmd.astenums: TY;
+
+        auto nestedStatic = lhs;
+        auto other = rhs;
+        const lhsIsNested = lhs.type.toBasetype.ty == TY.Tsarray &&
+            arrayElementIsArray(lhs.type);
+        if (!lhsIsNested) {
+            const rhsIsNested = rhs.type.toBasetype.ty == TY.Tsarray &&
+                arrayElementIsArray(rhs.type);
+            if (!rhsIsNested)
+                return false;
+            nestedStatic = rhs;
+            other = lhs;
+        }
+
+        auto rowType = nestedStatic.type.toBasetype.nextOf;
+        if (rowType.toBasetype.ty != TY.Tsarray)
+            return false;
+
+        auto nestedOffset = staticArrayOffsetOf(nestedStatic);
+        if (nestedOffset is null)
+            return false;
+
+        auto rowElementType = rowType.toBasetype.nextOf;
+        const rowElementScalar = scalarType(rowElementType);
+        const rowByteSize = cast(uint) staticArraySize(rowType);
+        const rowLength = cast(uint) (rowByteSize / size(rowElementScalar));
+        const rowCount =
+            cast(uint) (staticArraySize(nestedStatic.type) / rowByteSize);
+
+        const otherDescriptor =
+            arrayDescriptorOffset(rowElementScalar, other, true);
+        const otherLength = allocate(ScalarType.ulong_);
+        _code ~= Instruction(Op.sliceLength, otherLength, otherDescriptor);
+
+        const lengthsEqual = allocateBytes(1, 1);
+        _code ~= Instruction(
+            comparisonEqualOp(ScalarType.ulong_),
+            lengthsEqual,
+            compileSizeConstant(rowCount),
+            otherLength,
+        );
+
+        size_t[] toFalse =
+            [emitJumpIfFalse(Operand(lengthsEqual, ScalarType.bool_))];
+
+        foreach (rowIndex; 0 .. rowCount) {
+            const rowOffset =
+                cast(ushort) (*nestedOffset + rowIndex * rowByteSize);
+            const view = allocateBytes(sliceDescriptorSize, size_t.sizeof);
+            _code ~= Instruction(Op.frameAddress, view, rowOffset);
+            _code ~= Instruction(
+                Op.loadConstant,
+                cast(ushort) (view + size_t.sizeof),
+                constantIndex(rowLength),
+                cast(ushort) size_t.sizeof,
+            );
+
+            const indexSlot = compileSizeConstant(rowIndex);
+            const otherRow = allocateBytes(sliceDescriptorSize, size_t.sizeof);
+            _code ~= Instruction(
+                Op.indexLoad16, otherRow, otherDescriptor, indexSlot,
+            );
+
+            const rowEqual = allocateBytes(1, 1);
+            _code ~= Instruction(
+                sliceEqualOp(size(rowElementScalar)), rowEqual, view, otherRow,
+            );
+            toFalse ~= emitJumpIfFalse(Operand(rowEqual, ScalarType.bool_));
+        }
+
+        const result = allocateBytes(1, 1);
+        _code ~= Instruction(Op.loadConstant, result, constantIndex(1), 1);
+        const doneJump = emitJump;
+        foreach (patch; toFalse)
+            patchJump(patch);
+        _code ~= Instruction(Op.loadConstant, result, constantIndex(0), 1);
+        patchJump(doneJump);
+
+        ushort condition = result;
+        if (op == "!=") {
+            condition = allocateBytes(1, 1);
+            _code ~= Instruction(Op.notBool, condition, result);
+        }
+
+        const diagnostic = _program.assertDiagnostics.length;
+        _program.assertDiagnostics ~= AssertDiagnostic(
+            op, *nestedOffset, otherDescriptor, ScalarType.void_,
+        );
         _code ~= Instruction(
             Op.assertTrue,
             condition,

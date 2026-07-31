@@ -382,13 +382,15 @@ tractable on its own, but the machine's map storage has to grow arbitrary
 key/value width first, mirroring how dynamic arrays already carry their own
 element size. That is the prerequisite, not a narrow per-row fix.
 
-Concrete next candidate: `staticArray.refLocalAssignmentMutatesSource.Bytecode`
-(`tests/ut/backends/runner/lang/expressions.d`, `Omit!(Bytecode,
-Because.refusal, "the nested int[2][2] == comparison is declined (mixed
-static/dynamic nested-array shapes are unsupported)")`) -- a nested
-`int[2][2]` static array's whole-value `==` comparison against an array
-literal is declined; the assignment/aliasing part of the fixture already
-works, only the trailing equality check is unsupported.
+Every `Omit!(Bytecode, ...)` row left in `tests/ut/backends/runner/**` is one
+of the already-documented not-bounded rows above (`file.d:14`,
+`concurrency.d:24`, the cerealed exception-message row, the three
+`expressions.d` ref-calling-convention rows, the two `arrays.d` assoc-array
+rows, and the four `archive.d` rows); re-search before assuming otherwise.
+Concrete next candidate: the static-array self-overlap sub-slice-assignment
+gap in the limitations list below (`buff[1..4] = buff[0..3]`) has no fixture
+yet and a fully diagnosed root cause; write the `SystemLinker`-backed
+exposing fixture and fix `compileSourceSlice`'s static-array rhs path.
 
 Reconfirm these live aggregate limitations against the current source when a
 row reaches them:
