@@ -442,17 +442,22 @@ row reaches them:
   `subSliceOp`/`sliceCopyOp` fall back to the `N` variant for anything else,
   and `tryStaticArraySliceDescriptor`'s element-width gate is gone
   (`staticArray.subSliceAssignmentWithStructElementsWiderThan16Bytes`, a
-  24-byte struct). Concrete next candidate: a *dynamic* array of such a
-  wide struct still can't be appended to, indexed by a runtime index, or
-  concatenated -- `appendElementOp`/`concatArraysOp` throw "Unsupported
-  array element size in bytecode core" and `indexLoadOp`/`indexStoreOp`
-  `assert(0)` for any width outside 1/2/4/8/16 (confirmed:
-  `S[] outer; outer ~= S(1, 2, 3);` for a 24-byte three-`long`-field `S`
-  throws from `appendElementOp` before a sub-slice assignment is even
-  reached). A static array's own constant-index element assignment already
-  goes through the width-generic `Op.copy` (`compileStaticArrayElementAssign`)
-  and does not need this; the gap is specific to the dynamic-array element
-  opcodes that, unlike `subSliceOp`/`sliceCopyOp`, still lack an `N` escape.
+  24-byte struct). `appendElementOp` and `indexLoadOp` now cover a dynamic
+  array of such a wide struct too: `Op.appendElementN`/`Op.indexLoadN` carry
+  the byte width as an explicit instruction operand (`c` and `d`
+  respectively) the same way `subSliceN`/`sliceCopyN` do, and every call site
+  of either function now passes its own computed element size as that
+  operand regardless of which opcode variant is selected, so an unrelated
+  call site that used to hit the fixed 1/2/4/8/16 set exclusively keeps
+  doing so with no behaviour change
+  (`dynamicArray.appendStructElementWiderThan16Bytes`). Concrete next
+  candidate: the sibling opcodes `indexStoreOp` and `concatArraysOp` still
+  `assert(0)`/throw "Unsupported array element size in bytecode core" for
+  any width outside 1/2/4/8/16, so writing to an indexed element of such an
+  array (`outer[0] = S(...)`) or concatenating two of them (`outer ~=
+  other`) remains unsupported; both need the identical `N`-variant escape
+  `appendElementOp`/`indexLoadOp` just got, and `indexStoreOp` in particular
+  has the most call sites (14) to update consistently.
 - Dynamic-array and string sub-slices reject an upper bound beyond the source
   length and a lower bound greater than the upper bound; pointer-slice bounds
   remain unchecked.

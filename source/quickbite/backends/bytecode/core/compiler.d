@@ -2853,6 +2853,7 @@ private struct Compiler {
             offset,
             descriptorOffset,
             indexSlot.offset,
+            cast(ushort) elementSize,
         );
 
         auto result = new Operand;
@@ -10318,6 +10319,7 @@ private struct Compiler {
                 appendElementOp(elementSize),
                 outerElement.inner.offset,
                 value.offset,
+                cast(ushort) elementSize,
             );
             _code ~= Instruction(
                 Op.indexStore16,
@@ -10346,6 +10348,7 @@ private struct Compiler {
                 appendElementOp(elementSize),
                 descriptor.offset,
                 value.offset,
+                cast(ushort) elementSize,
             );
             writeBackDynamicArrayDescriptor(descriptor);
             return Operand(descriptor.offset, descriptor.elementType);
@@ -10365,6 +10368,7 @@ private struct Compiler {
             compileDynamicArrayInto(inner, descriptor.elementType, append.e2);
             _code ~= Instruction(
                 appendElementOp(sliceDescriptorSize), descriptor.offset, inner,
+                cast(ushort) sliceDescriptorSize,
             );
             writeBackDynamicArrayDescriptor(descriptor);
             return Operand(descriptor.offset, descriptor.elementType);
@@ -10377,6 +10381,7 @@ private struct Compiler {
             appendElementOp(elementSize),
             descriptor.offset,
             value.offset,
+            cast(ushort) elementSize,
         );
         writeBackDynamicArrayDescriptor(descriptor);
         return Operand(descriptor.offset, descriptor.elementType);
@@ -10785,6 +10790,7 @@ private struct Compiler {
         const current = allocateBytes(elementSize, elementSize);
         _code ~= Instruction(
             indexLoadOp(elementSize), current, descriptor.offset, indexSlot,
+            cast(ushort) elementSize,
         );
 
         const rhsValue = compileExpression(rhs);
@@ -12532,6 +12538,7 @@ private struct Compiler {
 
         _code ~= Instruction(
             indexLoadOp(elementSize), variableSlot, elements, index,
+            cast(ushort) elementSize,
         );
 
         size_t[] bodyExits;
@@ -13388,6 +13395,7 @@ private struct Compiler {
             valueOffset,
             descriptor.offset,
             indexOffset,
+            cast(ushort) elementSize,
         );
         _code ~= Instruction(
             Op.loadConstant,
@@ -14132,6 +14140,7 @@ private struct Compiler {
         _code ~= Instruction(Op.indexLoad4, keySlot, keys.offset, index);
         _code ~= Instruction(
             indexLoadOp(valueElementSize), valueSlot, values.offset, index,
+            cast(ushort) valueElementSize,
         );
 
         size_t[] bodyExits;
@@ -16430,7 +16439,7 @@ private imported!"quickbite.backends.bytecode.core.program".Op indexLoadOp(
         case 4: return Op.indexLoad4;
         case 8: return Op.indexLoad8;
         case 16: return Op.indexLoad16;
-        default: assert(0, "Unsupported index load element size.");
+        default: return Op.indexLoadN;
     }
 }
 
@@ -16555,9 +16564,8 @@ private imported!"quickbite.backends.bytecode.core.program".Op sliceEqualOp(
 
 private imported!"quickbite.backends.bytecode.core.program".Op appendElementOp(
     in uint elementSize,
-) @safe pure {
+) @safe @nogc nothrow pure {
     import quickbite.backends.bytecode.core.program: Op;
-    import std.conv: text;
 
     switch (elementSize) {
         case 1: return Op.appendElement1;
@@ -16565,11 +16573,7 @@ private imported!"quickbite.backends.bytecode.core.program".Op appendElementOp(
         case 4: return Op.appendElement4;
         case 8: return Op.appendElement8;
         case 16: return Op.appendElement16;
-        default:
-            throw new Exception(text(
-                "Unsupported array element size in bytecode core: ",
-                elementSize,
-            ));
+        default: return Op.appendElementN;
     }
 }
 

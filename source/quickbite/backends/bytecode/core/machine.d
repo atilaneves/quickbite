@@ -231,8 +231,11 @@ package(quickbite.backends.bytecode) RunResult run(
                 ++ip;
                 break;
 
-            case indexLoad1, indexLoad2, indexLoad4, indexLoad8, indexLoad16:
-                const loadSize = elementSize(instruction.op);
+            case indexLoad1, indexLoad2, indexLoad4, indexLoad8, indexLoad16,
+                indexLoadN:
+                const loadSize = instruction.op == indexLoadN
+                    ? instruction.d
+                    : elementSize(instruction.op);
                 const loadElement = elementAddress(
                     stack, base + instruction.b,
                     scalarValue!size_t(stack, base + instruction.c),
@@ -343,12 +346,14 @@ package(quickbite.backends.bytecode) RunResult run(
                 break;
 
             case appendElement1, appendElement2, appendElement4, appendElement8,
-                appendElement16:
+                appendElement16, appendElementN:
                 auto appended = appendElement(
                     stack,
                     base + instruction.a,
                     base + instruction.b,
-                    appendElementSize(instruction.op),
+                    instruction.op == appendElementN
+                        ? instruction.c
+                        : appendElementSize(instruction.op),
                     heap,
                     appendablePointers,
                 );

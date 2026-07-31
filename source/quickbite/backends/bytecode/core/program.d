@@ -234,6 +234,10 @@ package(quickbite.backends.bytecode) enum Op: ubyte {
     // index `c` of the outer descriptor at offset b into the descriptor slot at
     // frame offset a, bounds checked against the outer length.
     indexLoad16,
+    // Same as `indexLoad1`/etc, for an element width not covered by a fixed
+    // opcode (e.g. a struct element wider than 16 bytes): the byte width is
+    // operand d instead of being implied by the opcode.
+    indexLoadN,
     // Write the element slot at frame offset a into element `c` (a size_t index
     // in a frame slot) of the slice descriptor at offset b, bounds checked
     // against the descriptor length. The element size is fixed by the opcode.
@@ -312,6 +316,10 @@ package(quickbite.backends.bytecode) enum Op: ubyte {
                       // whose element is itself an array (`int[][]`/
                       // `int[N][]`), where each row is its own heap-backed
                       // sub-array addressed by a stored descriptor
+    // Same as `appendElement1`/etc, for an element width not covered by a
+    // fixed opcode (e.g. a struct element wider than 16 bytes): the byte
+    // width is operand c instead of being implied by the opcode.
+    appendElementN,
     // Concatenate the two slice descriptors at frame offsets b and c into a
     // fresh heap block holding all of b's elements followed by all of c's, then
     // write the descriptor {newPtr, len(b) + len(c)} to frame offset a. The
