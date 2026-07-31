@@ -659,6 +659,38 @@ static foreach (backend; Matrix!()) {
     }
 }
 
+// `outer[0]`'s own sub-slice assignment rhs is a plain dynamic-array
+// variable (`rhs`), not itself sliced (`rhs[]`) or a literal -- the general
+// case `compileSourceSlice` must resolve by compiling `rhs` as an ordinary
+// expression and reusing its own slice descriptor.
+static foreach (backend; Matrix!(
+    Omit!(Interpreter, Because.unconfirmed,
+        "assignment target is a slice of an indexed element"),
+)) {
+    @("dynamicArray.subSliceAssignmentOntoArrayOfArraysElementFromPlainVariable." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            int seed(int value) {
+                return value;
+            }
+
+            unittest {
+                int[][] outer;
+                outer ~= [seed(1), seed(2), seed(3)];
+                int[] rhs = [seed(7), seed(8)];
+
+                outer[0][0 .. 2] = rhs;
+
+                assert(outer[0][0] == 7);
+                assert(outer[0][1] == 8);
+                assert(outer[0][2] == 3);
+            }
+        });
+    }
+}
+
 static foreach (backend; Matrix!()) {
     @("dynamicArray.refParameterAppend." ~ backend.stringof)
     @Tags(backend.stringof)

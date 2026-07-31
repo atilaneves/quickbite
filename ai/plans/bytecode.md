@@ -409,12 +409,25 @@ row reaches them:
   `sliceFill4`/`sliceFill8`, `Op.sliceCopy1`/`sliceCopy2`/`sliceCopy4`/
   `sliceCopy8`); 16-byte elements (a slice-typed or 16-byte-struct-typed
   array element) and aggregate elements still need general semantics.
-  Concrete next candidate to verify with a real fixture: sub-slice
-  assignment onto an array-of-arrays element (`outer[i][lo..hi] = rhs` where
-  `outer`'s own element is itself an array) -- each row is its own
-  16-byte-descriptor-addressed heap block (as of the append/concat fixes
-  above), so this may already work through the generic slice-copy path, or
-  may need its own case; unconfirmed.
+  `compileSourceSlice`'s rhs materialisation now also covers a plain
+  dynamic-array-typed expression that is neither a `SliceExp` nor a literal
+  (a bare variable, a call result, ...): it compiles the expression and
+  reuses its own slice descriptor directly rather than throwing "Unsupported
+  slice-assignment source". Sub-slice assignment onto an array-of-arrays
+  element (`outer[i][lo..hi] = rhs` where `outer`'s own element is itself an
+  array, e.g. a plain `int[]` rhs) goes through this same generic path and
+  is confirmed working
+  (`dynamicArray.subSliceAssignmentOntoArrayOfArraysElementFromPlainVariable`).
+  Concrete next candidate, confirmed still red with a real fixture: a
+  sub-slice assignment whose *element* is itself 16 bytes wide, i.e.
+  `outer[lo..hi] = otherOuter` where `outer` is a `T[][]` and the slice
+  spans multiple rows (copying whole row descriptors, not a single row's
+  scalar contents) -- `int[][] a; a ~= [1,2]; a ~= [3,4]; int[][] b; b ~=
+  [7,8]; b ~= [9,10]; a[0..2] = b;` silently produces the wrong result
+  (reads back stale/original row contents) instead of throwing or matching
+  `SystemLinker`; `sliceCopyOp`/`sliceFillOp` and their machine handlers
+  need a 16-byte-element variant the way `Op.appendElement16`/
+  `Op.concatArrays16` already exist for append/concat.
 - Dynamic-array and string sub-slices reject an upper bound beyond the source
   length and a lower bound greater than the upper bound; pointer-slice bounds
   remain unchecked.

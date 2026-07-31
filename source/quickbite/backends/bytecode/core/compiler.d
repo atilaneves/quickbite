@@ -11238,6 +11238,7 @@ private struct Compiler {
         Expression rhs,
     ) {
         import std.conv: text;
+        import dmd.astenums: TY;
 
         // A static-array-backed rhs sub-slice (`buff[0 .. 3]`) shares
         // `buff`'s real frame storage instead of the throwaway heap copy
@@ -11249,22 +11250,30 @@ private struct Compiler {
             if (auto staticDescriptor = tryStaticArraySliceDescriptor(slice))
                 return *staticDescriptor;
 
-        const offset = allocateBytes(sliceDescriptorSize, size_t.sizeof);
-
         if (auto slice = rhs.isSliceExp) {
+            const offset = allocateBytes(sliceDescriptorSize, size_t.sizeof);
             compileSliceInto(offset, elementType, slice);
             return offset;
         }
 
         if (auto string_ = stringLiteralOf(rhs)) {
+            const offset = allocateBytes(sliceDescriptorSize, size_t.sizeof);
             compileStringElementSlice(offset, elementType, string_);
             return offset;
         }
 
         if (rhs.isArrayLiteralExp !is null) {
+            const offset = allocateBytes(sliceDescriptorSize, size_t.sizeof);
             compileDynamicArrayInto(offset, elementType, rhs);
             return offset;
         }
+
+        // Any other dynamic-array-typed expression (a plain variable, a call
+        // result, ...) is an ordinary frame slot already holding its own
+        // full slice descriptor; reuse it directly rather than materialising
+        // a redundant copy.
+        if (rhs.type !is null && rhs.type.toBasetype.ty == TY.Tarray)
+            return compileExpression(rhs).offset;
 
         throw new Exception(text(
             "Unsupported slice-assignment source in bytecode core: ",
