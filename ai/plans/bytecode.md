@@ -450,14 +450,23 @@ row reaches them:
   operand regardless of which opcode variant is selected, so an unrelated
   call site that used to hit the fixed 1/2/4/8/16 set exclusively keeps
   doing so with no behaviour change
-  (`dynamicArray.appendStructElementWiderThan16Bytes`). Concrete next
-  candidate: the sibling opcodes `indexStoreOp` and `concatArraysOp` still
-  `assert(0)`/throw "Unsupported array element size in bytecode core" for
-  any width outside 1/2/4/8/16, so writing to an indexed element of such an
-  array (`outer[0] = S(...)`) or concatenating two of them (`outer ~=
-  other`) remains unsupported; both need the identical `N`-variant escape
-  `appendElementOp`/`indexLoadOp` just got, and `indexStoreOp` in particular
-  has the most call sites (14) to update consistently.
+  (`dynamicArray.appendStructElementWiderThan16Bytes`). `concatArraysOp` now
+  covers an element of any width, not only 1/4/16, the identical `N`-variant
+  escape as its siblings: `Op.concatArraysN` carries the byte width as
+  instruction operand `d`
+  (`dynamicArray.concatenationAssignmentWithStructElementsWiderThan16Bytes`,
+  a 24-byte struct). `compileCatInto` (the `a ~ b` binary operator, as
+  opposed to `arr ~= other`) computed its element width from the `ScalarType`
+  tag alone, which resolves to 0 for any struct/static-array element; it now
+  calls `dynamicArrayElementSize` like every sibling call site, since with
+  `concatArraysOp` no longer throwing on an unmatched width, a stale
+  zero-width computation would silently corrupt the result instead of
+  raising a diagnostic. Concrete next candidate: `indexStoreOp` still
+  `assert(0)`s for any width outside 1/2/4/8/16, so writing to an indexed
+  element of such an array (`outer[0] = S(...)`) remains unsupported; it
+  needs the identical `N`-variant escape, carried as instruction operand `d`
+  (`a`/`b`/`c` are already used for value/descriptor/index), across its 14
+  call sites.
 - Dynamic-array and string sub-slices reject an upper bound beyond the source
   length and a lower bound greater than the upper bound; pointer-slice bounds
   remain unchecked.

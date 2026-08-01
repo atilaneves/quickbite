@@ -361,13 +361,15 @@ package(quickbite.backends.bytecode) RunResult run(
                 ++ip;
                 break;
 
-            case concatArrays1, concatArrays4, concatArrays16:
+            case concatArrays1, concatArrays4, concatArrays16, concatArraysN:
                 heap ~= concatArrays(
                     stack,
                     base + instruction.a,
                     base + instruction.b,
                     base + instruction.c,
-                    concatElementSize(instruction.op),
+                    instruction.op == concatArraysN
+                        ? instruction.d
+                        : concatElementSize(instruction.op),
                 );
                 ++ip;
                 break;

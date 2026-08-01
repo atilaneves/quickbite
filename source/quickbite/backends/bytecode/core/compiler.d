@@ -6785,11 +6785,15 @@ private struct Compiler {
     ) {
         const left = catOperandDescriptor(elementType, cat.e1);
         const right = catOperandDescriptor(elementType, cat.e2);
+        const elementSize = dynamicArrayElementSize(
+            cat.type, elementType, arrayElementIsArray(cat.type),
+        );
         _code ~= Instruction(
-            concatArraysOp(size(elementType)),
+            concatArraysOp(elementSize),
             destination,
             left,
             right,
+            cast(ushort) elementSize,
         );
     }
 
@@ -10419,6 +10423,7 @@ private struct Compiler {
                 descriptor.offset,
                 descriptor.offset,
                 right,
+                cast(ushort) elementSize,
             );
             writeBackDynamicArrayDescriptor(descriptor);
             return Operand(descriptor.offset, descriptor.elementType);
@@ -10437,6 +10442,7 @@ private struct Compiler {
             descriptor.offset,
             descriptor.offset,
             right,
+            cast(ushort) elementSize,
         );
         writeBackDynamicArrayDescriptor(descriptor);
         return Operand(descriptor.offset, descriptor.elementType);
@@ -16579,19 +16585,14 @@ private imported!"quickbite.backends.bytecode.core.program".Op appendElementOp(
 
 private imported!"quickbite.backends.bytecode.core.program".Op concatArraysOp(
     in uint elementSize,
-) @safe pure {
+) @safe @nogc nothrow pure {
     import quickbite.backends.bytecode.core.program: Op;
-    import std.conv: text;
 
     switch (elementSize) {
         case 1: return Op.concatArrays1;
         case 4: return Op.concatArrays4;
         case 16: return Op.concatArrays16;
-        default:
-            throw new Exception(text(
-                "Unsupported array element size in bytecode core: ",
-                elementSize,
-            ));
+        default: return Op.concatArraysN;
     }
 }
 

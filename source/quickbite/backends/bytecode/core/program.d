@@ -332,6 +332,10 @@ package(quickbite.backends.bytecode) enum Op: ubyte {
                      // whose element is itself an array (`int[][]`/
                      // `int[N][]`), where each row is its own heap-backed
                      // sub-array addressed by a stored descriptor
+    // Same as `concatArrays1`/etc, for an element width not covered by a
+    // fixed opcode (e.g. a struct element wider than 16 bytes): the byte
+    // width is operand d instead of being implied by the opcode.
+    concatArraysN,
 
     // Duplicate the slice descriptor at frame offset b into a fresh heap block
     // holding an independent copy of all its elements, then write the

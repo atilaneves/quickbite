@@ -797,6 +797,51 @@ static foreach (backend; Matrix!()) {
     }
 }
 
+// A dynamic array whose element is a struct wider than 16 bytes (24 bytes):
+// whole-array concatenation (`~=`) must copy the right-hand array's elements
+// at their real width instead of falling back to a narrower fixed-width copy
+// or refusing the operation.
+static foreach (backend; Matrix!()) {
+    @("dynamicArray.concatenationAssignmentWithStructElementsWiderThan16Bytes."
+        ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct S {
+                long a;
+                long b;
+                long c;
+            }
+
+            int seed(int value) {
+                return value;
+            }
+
+            unittest {
+                S[] outer;
+                outer ~= S(seed(1), seed(2), seed(3));
+
+                S[] other;
+                other ~= S(seed(4), seed(5), seed(6));
+                other ~= S(seed(7), seed(8), seed(9));
+
+                outer ~= other;
+
+                assert(outer.length == 3);
+                assert(outer[0].a == 1);
+                assert(outer[0].b == 2);
+                assert(outer[0].c == 3);
+                assert(outer[1].a == 4);
+                assert(outer[1].b == 5);
+                assert(outer[1].c == 6);
+                assert(outer[2].a == 7);
+                assert(outer[2].b == 8);
+                assert(outer[2].c == 9);
+            }
+        });
+    }
+}
+
 // A static array whose element is a struct wider than 16 bytes (24 bytes):
 // sub-slice assignment must copy each element's full width instead of
 // falling back to a narrower fixed-width copy or refusing the assignment.
