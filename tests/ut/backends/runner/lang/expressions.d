@@ -7641,6 +7641,100 @@ static foreach (backend; Matrix!()) {
     }
 }
 
+// Whole-field sibling of `pointer.
+// classArrayFieldElementWrittenThroughPointerIsVisibleDirectly` above: take
+// the address of a class's own static-array FIELD as a whole (`&c.arr`, an
+// `int[3]*`), not one of its elements (`&c.arr[0]`, an `int*`), then write
+// the whole object through the pointer and read it back both as a whole
+// (`*p`) and elementwise. SystemLinker is the oracle.
+static foreach (backend; Matrix!()) {
+    @("pointer.classStaticArrayFieldWholeObjectWrittenThroughPointerIsVisibleDirectly." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            class C {
+                int[3] arr;
+            }
+
+            unittest {
+                C c = new C();
+                c.arr = [1, 2, 3];
+                int[3]* p = &c.arr;
+                *p = [4, 5, 6];
+
+                assert(c.arr[0] == 4);
+                assert(c.arr[1] == 5);
+                assert(c.arr[2] == 6);
+                assert((*p)[1] == 5);
+            }
+        });
+    }
+}
+
+// Indexed-through-the-whole-field-pointer sibling of the fixture above:
+// `(*p)[i] = v` where `p`'s pointee is a class field's static array, the
+// class-receiver counterpart of
+// `pointer.wholeStaticArrayAssignmentWritesRealStorage`'s local-variable
+// case. SystemLinker is the oracle.
+static foreach (backend; Matrix!(
+    Omit!(Interpreter, Because.unconfirmed,
+        "an indexed write through a dereferenced static-array pointer " ~
+        "(`(*p)[i] = v`) expects a native pointer representation"),
+)) {
+    @("pointer.classStaticArrayFieldElementWrittenThroughWholeFieldPointerIsVisibleDirectly." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            class C {
+                int[3] arr;
+            }
+
+            unittest {
+                C c = new C();
+                c.arr = [1, 2, 3];
+                int[3]* p = &c.arr;
+                (*p)[1] = 99;
+
+                assert(c.arr[1] == 99);
+            }
+        });
+    }
+}
+
+// Pointer-free sibling of the two fixtures above: a direct whole-object
+// array-literal assignment to a class's own static-array field (`c.arr =
+// [1, 2, 3];`), no `&`/pointer involved at all. `compileAssignExpression`'s
+// `tryClassPointerField` branch special-cased only a `Tarray` field (the
+// 16-byte descriptor case) and otherwise called `scalarType` directly on the
+// field's DMD type, throwing "Unsupported type in bytecode core: int[3]" for
+// any `Tstruct`/`Tsarray` field; `storeClassPointerField` now widens to the
+// field's real `staticArraySize` byte width for those two kinds, mirroring
+// `storeStructPointerField`'s identical widening for a struct-pointer field.
+// SystemLinker is the oracle.
+static foreach (backend; Matrix!()) {
+    @("assignment.classStaticArrayFieldWholeObjectArrayLiteralAssignmentWritesRealStorage." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            class C {
+                int[3] arr;
+            }
+
+            unittest {
+                C c = new C();
+                c.arr = [1, 2, 3];
+
+                assert(c.arr[0] == 1);
+                assert(c.arr[1] == 2);
+                assert(c.arr[2] == 3);
+            }
+        });
+    }
+}
+
 // Nested-struct-field follow-up: `&s.inner.x` where `inner` is a
 // (non-union) struct field of a
 // plain struct local and `x` is a scalar field of `inner`.

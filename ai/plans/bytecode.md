@@ -447,18 +447,24 @@ row reaches them:
   view-preservation, and closure combination.
 - Struct aliases and whole-local assignment do not yet cover captured
   structs, postblits, or `opAssign` semantics.
-- Next candidate: a pointer to a class's own static-array *field* (`int[3]*
-  p = &c.arr;`, as opposed to a plain local's `int[3]* p = &arr;`, fixed
-  above) is unsupported: `pointerElementMetadata`'s caller resolves the
-  pointee's element correctly, but nothing yet maps `&c.arr` itself to a
-  class-field address the way `classFieldPointerVariables`/
-  `classArrayFieldPointerVariables` map `&c.x`/`&c.arr[i]`; confirmed via a
-  fixture (`class C { int[3] arr; } C c = new C(); int[3]* p = &c.arr; *p =
-  [4, 5, 6];`) throwing "Unsupported type in bytecode core: int[3]" on
-  Bytecode. A single element's pointer (`&c.arr[i]`) already works
-  (`pointer.classArrayFieldElementWrittenThroughPointerIsVisibleDirectly`,
-  `expressions.d`); this is the whole-field sibling of that, and the
-  class-receiver sibling of the whole-local fix above.
+- `Interpreter` declines an indexed write through a dereferenced
+  static-array pointer (`(*p)[i] = v`, e.g. a class field's whole-array
+  pointer indexed and written) with "Unsupported interpreter assignment
+  target"; `Omit!(Interpreter, Because.unconfirmed)` on that row
+  (`pointer.classStaticArrayFieldElementWrittenThroughWholeFieldPointerIsVisibleDirectly`,
+  `expressions.d`).
+- Next candidate: whole-local reassignment of a captured struct from within
+  a nested function/delegate (`struct S { int x; } S s; void delegate() dg =
+  () { s = S(99); }; dg();`) throws "Unsupported type in bytecode core: S" on
+  Bytecode. `compileCapturedAssign` (`compiler.d`) unconditionally computes
+  `scalarType(declaration.type)` to both gate the assignment (comparing it
+  against the rhs's type) and size the store, with no `Tstruct`/`Tsarray`
+  branch at all -- unlike `loadCapturedLocal`, whose existing `Tstruct`
+  branch already reads the whole block via `Op.frameLoad` and
+  `staticArraySize`. `storeCapturedLocal` needs the same widening
+  `storeStructPointerField`/`storeClassPointerField` (above) already got,
+  and `compileCapturedAssign` needs to skip the scalar type-equality gate for
+  an aggregate the same way the class-field assignment fix above does.
 - Static arrays of dynamic arrays copy each element's full 16-byte slice
   descriptor; nested mutation and general stale-cell reconciliation remain
   incomplete.

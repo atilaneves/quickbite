@@ -5636,18 +5636,28 @@ private struct Compiler {
     }
 
     // `box.field = value`: write `value` (already in a frame slot) through the
-    // class pointer at `ptr + field.offset`.
+    // class pointer at `ptr + field.offset`. A `Tstruct`/`Tsarray` field lives
+    // inline at that address, so it needs its own real byte width from
+    // `staticArraySize` instead of the scalar-only gate, mirroring
+    // `storeStructPointerField`'s identical widening.
     private void storeClassPointerField(
         ClassPointerField field,
         in ushort valueSlot,
     ) {
-        const elementSize = size(scalarType(field.type));
+        import dmd.astenums: TY;
+
+        const ty = field.type.toBasetype.ty;
+        const isAggregate = ty == TY.Tstruct || ty == TY.Tsarray;
+        const elementSize = isAggregate
+            ? cast(uint) staticArraySize(field.type)
+            : size(scalarType(field.type));
         const fieldPointer = classFieldAddress(field);
         _code ~= Instruction(
             pointerStoreOp(elementSize),
             valueSlot,
             fieldPointer,
             compileSizeConstant(0),
+            cast(ushort) elementSize,
         );
     }
 
@@ -9436,8 +9446,12 @@ private struct Compiler {
             }
 
         // `box.field = rhs` through a class reference: a dynamic-array field
-        // (a `string` included) writes the full 16-byte descriptor; anything
-        // else writes the scalar rhs at `class pointer + field.offset`.
+        // (a `string` included) writes the full 16-byte descriptor; a
+        // `Tstruct`/`Tsarray` field (e.g. `c.arr = [1, 2, 3];`) writes the
+        // whole aggregate inline through the widened `storeClassPointerField`
+        // (the class-receiver sibling of `storeStructPointerField`'s
+        // identical widening); anything else writes the scalar rhs at
+        // `class pointer + field.offset`.
         if (auto dot = assign.e1.isDotVarExp)
             if (auto field = tryClassPointerField(dot)) {
                 import dmd.astenums: TY;
@@ -9459,21 +9473,22 @@ private struct Compiler {
                     return Operand(destination, ScalarType.void_);
                 }
 
+                const isAggregate = field.type.toBasetype.ty == TY.Tstruct ||
+                    field.type.toBasetype.ty == TY.Tsarray;
                 const value = compileExpression(assign.e2);
-                const fieldScalar = scalarType(field.type);
-                if (value.type != fieldScalar)
-                    throw new Exception(text(
-                        "Unsupported assignment in bytecode core: ",
-                        expressionChars(assign),
-                    ));
-                const fieldPointer = classFieldAddress(*field);
-                _code ~= Instruction(
-                    pointerStoreOp(size(fieldScalar)),
+                if (!isAggregate) {
+                    const fieldScalar = scalarType(field.type);
+                    if (value.type != fieldScalar)
+                        throw new Exception(text(
+                            "Unsupported assignment in bytecode core: ",
+                            expressionChars(assign),
+                        ));
+                }
+                storeClassPointerField(*field, value.offset);
+                return Operand(
                     value.offset,
-                    fieldPointer,
-                    compileSizeConstant(0),
+                    isAggregate ? ScalarType.void_ : scalarType(field.type),
                 );
-                return Operand(value.offset, fieldScalar);
             }
 
         // A `string` local reassignment (`s = rhs;`) is a dynamic-array
@@ -10835,6 +10850,30 @@ private struct Compiler {
         IndexExp index,
         Expression rhs,
     ) {
+        // `(*p)[i] = rhs` where `p`'s pointee is itself a static array
+        // (`int[2]* p`): the write-side sibling of `tryPointerIndex`'s
+        // identically shaped read branch. `index.e1.type` here is the WHOLE
+        // `T[N]` block `*p` dereferences to (`Tsarray`, not `Tpointer`), so
+        // the plain `isPointerType` guard below never fires for this shape;
+        // resolve the array's own element stride via
+        // `dereferencedArrayIndexElementMetadata` instead of the aggregate
+        // `void_` marker `pointer.pointerElement` would otherwise carry.
+        if (auto deref = index.e1.isPtrExp) {
+            const pointer = compileExpression(deref.e1);
+            if (!pointer.isPointer)
+                return null;
+
+            const elementMetadata =
+                dereferencedArrayIndexElementMetadata(deref.e1.type);
+            const indexPointer = Operand(
+                pointer.offset, pointer.type, true, elementMetadata.opcodeType,
+            );
+            const indexSlot = compileExpression(index.e2);
+            auto derefResult = new Operand;
+            *derefResult = storeThroughPointer(indexPointer, indexSlot.offset, rhs);
+            return derefResult;
+        }
+
         if (!isPointerType(index.e1.type))
             return null;
 
