@@ -451,26 +451,31 @@ row reaches them:
   target"; `Omit!(Interpreter, Because.unconfirmed)` on that row
   (`pointer.classStaticArrayFieldElementWrittenThroughWholeFieldPointerIsVisibleDirectly`,
   `expressions.d`).
-- Next candidate: calling a method through a receiver reached via a struct
-  pointer or class field (`p.t.method()`, `c.t.method()`) throws
-  "Unsupported struct value in bytecode core: (*p).t" / "...: c.t" --
-  confirmed for an ordinary method, not just a postblit-synthesized
-  `opAssign`: `struct Plain { int x; int get() { return x; } } struct
-  Holder { Plain t; } Holder* p = &h; p.t.get();` fails this way. This is
-  why a postblit-typed field's whole assignment through a pointer/class
-  reference (`p.t = a;` where `Plain` has `this(this)`) still fails after
-  the fix above: DMD lowers that assignment into a call,
-  `(*p).t.opAssign(copytmp)`, not an `AssignExp`, so it never reaches
-  `tryStructPointerField`/`tryClassPointerField` at all. Root cause: the
-  call's receiver resolution (`methodReceiverOffset` -> `structOperandOffset`
-  -> `structBaseOffsetOrMaterialise`, `compiler.d` ~4772/~4975/~5235) has no
-  case for a `DotVarExp` whose own base is a pointer dereference or a class
-  reference -- only a nested-struct-field chain anchored in a resolvable
-  `VarExp` (`outer.inner`). A general fix extends
-  `structBaseOffsetOrMaterialise` with a branch that resolves via
-  `tryStructPointerField`/`tryClassPointerField`'s existing
-  `structFieldAddress`/`classFieldAddress` when the `DotVarExp`'s own field
-  is struct/static-array-typed and reached through a pointer/class receiver.
+- Next candidate: calling a method through a receiver that is an element of a
+  *dynamic* array of structs (`arr[i].method()`, `Plain[] arr`) silently
+  drops the mutation instead of throwing: confirmed with `struct Plain { int
+  x; void bump() { x++; } } Plain[] arr = [Plain(1), Plain(2)]; arr[0].bump();
+  assert(arr[0].x == 2);` -- the assert fails (`arr[0].x` reads back `1`) on
+  `Bytecode` only; `Interpreter`/`SystemLinker` both mutate correctly. The
+  same fixture with a *static* array (`Plain[2] arr`) already passes on
+  `Bytecode`, so this is specific to the dynamic-array element path. Root
+  cause: `structBaseOffsetOrMaterialise`'s dynamic-array-of-structs branch
+  (`compiler.d` ~5401, `if (auto index = expression.isIndexExp) if (auto
+  descriptor = dynamicArrayDescriptorOrNull(index.e1))`) materialises the
+  element via `loadDynamicArrayElement`, a plain `indexLoadOp` copy into a
+  throwaway frame block with no write-back registered, so `methodReceiver`
+  (which falls through to `methodReceiverOffset` ->
+  `structOperandOffset` -> this same helper for a non-pointer/non-class
+  receiver) gets a receiver copy the callee's mutations never reach back
+  through. A general fix mirrors the pointer/class-field receiver write-back
+  just added to `MethodReceiver`: extend `methodReceiver` with a branch that
+  detects this exact shape (a `DotVarExp` callee receiver whose `dot.e1` is
+  an `IndexExp` into a `dynamicArrayDescriptorOrNull`-resolvable array of
+  structs) and registers an `indexStoreOp` write-back after the call, reusing
+  the same `descriptorOffset`/`indexOffset`/`elementSize` triple
+  `emitDynamicArrayElementRefArgument`'s `DynamicArrayRefWriteBack` already
+  carries for the identical shape reached as a `ref` argument instead of a
+  method-call receiver.
 - Static arrays of dynamic arrays copy each element's full 16-byte slice
   descriptor; nested mutation and general stale-cell reconciliation remain
   incomplete.

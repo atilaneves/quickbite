@@ -293,6 +293,16 @@ private struct Compiler {
         ushort offset;
         ushort writeBackFrameIndex;
         ushort writeBackSize;
+        // Set instead of the two fields above when the receiver was
+        // materialised from a struct-pointer/class field's real heap
+        // address (`p.t.method()`, `c.t.method()`) rather than a captured
+        // frame: `writeBackPointerAddress` holds the frame slot with that
+        // real address, and a nonzero `writeBackPointerSize` signals the
+        // block must be written back through it, mirroring
+        // `StructPointerFieldRefWriteBack`/`ClassFieldRefWriteBack` for
+        // `ref` arguments reached the same way.
+        ushort writeBackPointerAddress;
+        ushort writeBackPointerSize;
     }
 
     private void compileFunctionBody(in size_t index) {
@@ -4821,6 +4831,48 @@ private struct Compiler {
                             );
                             return MethodReceiver(offset, frameIndex, blockSize);
                         }
+
+        // `p.t.method()` / `c.t.method()`: the receiver `p.t`/`c.t` (DMD's
+        // `(*p).t`/`c.t`) is a struct-typed field reached through a struct
+        // pointer or class reference rather than an already frame-resident
+        // struct. Its real storage lives at a heap address, which the
+        // frame-relative `this` convention below cannot address directly
+        // (mirroring the captured-context case above): resolve that address
+        // the same way a plain field read does
+        // (`tryStructPointerField`/`tryClassPointerField`), materialise a
+        // fresh inline copy for the call, and write the (possibly mutated)
+        // copy back through the real address afterward.
+        if (auto dot = call.e1.isDotVarExp)
+            if (auto fieldDot = dot.e1.isDotVarExp)
+                if (auto field = fieldDot.var.isVarDeclaration)
+                    if (field.type.toBasetype.ty == TY.Tstruct) {
+                        ushort address;
+                        bool haveAddress;
+                        if (auto pointerField = tryStructPointerField(fieldDot)) {
+                            address = structFieldAddress(*pointerField);
+                            haveAddress = true;
+                        } else if (auto classField = tryClassPointerField(fieldDot)) {
+                            address = classFieldAddress(*classField);
+                            haveAddress = true;
+                        }
+                        if (haveAddress) {
+                            const structSize =
+                                cast(ushort) staticArraySize(field.type);
+                            const offset = allocateBytes(
+                                structSize, staticArrayAlign(field.type),
+                            );
+                            _code ~= Instruction(
+                                pointerLoadOp(structSize),
+                                offset,
+                                address,
+                                compileSizeConstant(0),
+                                structSize,
+                            );
+                            return MethodReceiver(
+                                offset, 0, 0, address, structSize,
+                            );
+                        }
+                    }
 
         return MethodReceiver(methodReceiverOffset(call), 0, 0);
     }
@@ -12683,6 +12735,14 @@ private struct Compiler {
                 structReceiver.offset,
                 structReceiver.writeBackFrameIndex,
                 structReceiver.writeBackSize,
+            );
+        if (hasStructReceiver && structReceiver.writeBackPointerSize != 0)
+            _code ~= Instruction(
+                pointerStoreOp(structReceiver.writeBackPointerSize),
+                structReceiver.offset,
+                structReceiver.writeBackPointerAddress,
+                compileSizeConstant(0),
+                structReceiver.writeBackPointerSize,
             );
         if (isPointerType(call.type))
             return Operand(

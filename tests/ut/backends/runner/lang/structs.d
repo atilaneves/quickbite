@@ -4067,3 +4067,121 @@ static foreach (backend; Matrix!()) {
         });
     }
 }
+
+// Calling a method through a receiver reached one level past a struct
+// pointer field (`p.t.bump()`, DMD's `(*p).t.bump()`): `methodReceiver`'s
+// fallback (`methodReceiverOffset` -> `structOperandOffset` ->
+// `structBaseOffsetOrMaterialise`) had no case for a `DotVarExp` callee
+// receiver whose own base is a pointer dereference, so this threw
+// "Unsupported struct value in bytecode core: (*p).t". `methodReceiver` now
+// resolves `t`'s real heap address the same way a plain field read does
+// (`tryStructPointerField`), materialises a fresh inline copy for the call
+// so the callee's frame-relative `this` convention is satisfied, and writes
+// the (possibly mutated) copy back through that real address afterward --
+// the receiver-analogue of `StructPointerFieldRefWriteBack` used for `ref`
+// arguments reached the same way. Two `bump()` calls before the read check
+// the writeback actually lands (a no-writeback bug would silently discard
+// both mutations rather than crash).
+static foreach (backend; Matrix!()) {
+    @("pointer.methodCallThroughStructPointerFieldReceiverMutatesField." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct Plain {
+                int x;
+                int get() const { return x; }
+                void bump() { x++; }
+            }
+
+            struct Holder {
+                Plain t;
+            }
+
+            unittest {
+                Holder holder;
+                Holder* p = &holder;
+                p.t.bump();
+                p.t.bump();
+                assert(p.t.get() == 2);
+            }
+        });
+    }
+}
+
+// The class-field counterpart of the struct-pointer fixture above
+// (`c.t.bump()`): `tryClassPointerField` resolves the receiver's real
+// address the same way `tryStructPointerField` does for a struct pointer.
+static foreach (backend; Matrix!()) {
+    @("struct.classFieldMethodCallReceiverMutatesField." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct Plain {
+                int x;
+                int get() const { return x; }
+                void bump() { x++; }
+            }
+
+            class CHolder {
+                Plain t;
+            }
+
+            unittest {
+                auto c = new CHolder;
+                c.t.bump();
+                c.t.bump();
+                assert(c.t.get() == 2);
+            }
+        });
+    }
+}
+
+// A direct consequence of the fix above: `p.t = a;` where `Tracker` has a
+// postblit but no user-defined `opAssign` lowers to a call,
+// `(*p).t.opAssign(copytmp)`, whose receiver is the exact same
+// pointer-reached-struct-field shape as a method call. Interpreter runs the
+// same postblit-losing whole-local assignment as
+// `struct.wholeLocalAssignmentRunsPostblit`'s sibling pin, so it stays
+// omitted here for the identical reason.
+static foreach (backend; Matrix!(
+    Omit!(Interpreter, Because.diverges,
+        "loses the field copy for a postblit-typed whole-struct assignment "
+            ~ "through a pointer field, see struct.wholeLocalAssignmentRunsPostblit"),
+)) {
+    @("pointer.structPointerFieldPostblitAssignmentRunsPostblit." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct Tracker {
+                int x;
+                int* postblits;
+
+                this(this) {
+                    ++*postblits;
+                }
+            }
+
+            struct Holder {
+                Tracker t;
+            }
+
+            unittest {
+                int postblits = 0;
+
+                Tracker a;
+                a.x = 5;
+                a.postblits = &postblits;
+
+                Holder holder;
+                Holder* p = &holder;
+                p.t = a;
+
+                assert(p.t.x == 5);
+                assert(postblits == 1);
+            }
+        });
+    }
+}
+
