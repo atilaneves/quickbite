@@ -521,6 +521,26 @@ row reaches them:
   (`pointer.refArgumentRebindingStoredStructPointerUpdatesTheVariable`,
   `struct.foreachRefOverFieldArrayPersistsElementWrites`,
   `struct.foreachRefRepeatedArgumentPreservesAlias`).
+  `emitDynamicArrayRefArgument`/`emitDynamicArrayElementRefArgument` (a `ref`
+  argument bound to a dynamic-array element, `bump(arr[i])`) declined any
+  element whose descriptor `elementType` was the non-scalar `void_` marker
+  (every struct/static-array/array-of-arrays element), falling through to
+  `referenceOffset`'s generic path, which has no `IndexExp` case for a
+  dynamic array and throws "Unsupported ref argument in bytecode core"
+  instead of silently losing the writeback -- an honest refusal, not the
+  width/address-confusion bug, but still an unnecessary one: `indexLoadOp`/
+  `indexStoreOp` (the mirror-in load and post-call writeback this path
+  already uses) support any width via their `N`-variant escape. Both
+  functions now accept a non-scalar element and derive its width from
+  `dynamicArrayElementSize(arrayType, descriptor.elementType,
+  descriptor.elementIsArray)` -- the same call every sibling site uses --
+  instead of declining
+  (`dynamicArray.refParamWriteBackThroughIndexArgumentWithStructElementWiderThan16Bytes`,
+  a 24-byte struct). `emitRefReturnedDynamicArrayElementArgument` (the
+  `ref`-returning-wrapper counterpart a few lines below it) still has the
+  identical `elementType == void_` decline, unexercised by any row; verify
+  and fix it the same way, or confirm the wrapper shape only ever arises
+  with a scalar element, before removing it.
 - Dynamic-array and string sub-slices reject an upper bound beyond the source
   length and a lower bound greater than the upper bound; pointer-slice bounds
   remain unchecked.

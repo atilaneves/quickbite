@@ -13373,10 +13373,11 @@ private struct Compiler {
         );
     }
 
-    // A scalar dynamic-array element has no caller-frame offset for the
-    // ordinary ref-parameter machinery to pass. Copy it to a call-local slot,
-    // let the callee's existing ref writeback update that slot, then store it
-    // back to the same already-evaluated element after the call returns.
+    // A dynamic-array element, whatever its width, has no caller-frame
+    // offset for the ordinary ref-parameter machinery to pass. Copy it to a
+    // call-local slot, let the callee's existing ref writeback update that
+    // slot, then store it back to the same already-evaluated element after
+    // the call returns.
     private bool emitDynamicArrayRefArgument(
         in ushort slot,
         Expression argument,
@@ -13397,7 +13398,7 @@ private struct Compiler {
             return false;
 
         auto descriptor = dynamicArrayDescriptorOrNull(index.e1);
-        if (descriptor is null || descriptor.elementType == ScalarType.void_)
+        if (descriptor is null)
             return false;
 
         return emitDynamicArrayElementRefArgument(
@@ -13455,10 +13456,8 @@ private struct Compiler {
         ref DynamicArrayRefWriteBack[] writeBacks,
     ) {
         const elementSize = dynamicArrayElementSize(
-            arrayType, descriptor.elementType,
+            arrayType, descriptor.elementType, descriptor.elementIsArray,
         );
-        if (elementSize > ulong.sizeof)
-            return false;
 
         const indexOffset = compileExpression(index).offset;
         const valueOffset = allocateBytes(elementSize, elementSize);

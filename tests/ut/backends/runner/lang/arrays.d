@@ -3319,6 +3319,46 @@ static foreach (backend; Matrix!()) {
     }
 }
 
+// The same ref-argument array-element write-back as above, for an element
+// wider than a register (a 24-byte struct) rather than a scalar: the
+// writeback must use the element's own real width instead of refusing the
+// call or corrupting a neighbouring element.
+static foreach (backend; Matrix!()) {
+    @("dynamicArray.refParamWriteBackThroughIndexArgumentWithStructElementWiderThan16Bytes."
+        ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct S {
+                long a;
+                long b;
+                long c;
+            }
+
+            void bump(ref S s) {
+                s.a += 100;
+            }
+
+            int seed(int value) {
+                return value;
+            }
+
+            unittest {
+                S[] arr;
+                arr ~= S(seed(1), seed(2), seed(3));
+                arr ~= S(seed(4), seed(5), seed(6));
+
+                bump(arr[1]);
+
+                assert(arr[1].a == 104);
+                assert(arr[1].b == 5);
+                assert(arr[1].c == 6);
+                assert(arr[0].a == 1);
+            }
+        });
+    }
+}
+
 // A nested `foreach` re-declares the
 // inner loop's slice temporary (dmd lowers `foreach (v; row)` to a fresh
 // `auto __r = row[];` every OUTER iteration) over the SAME `VarDeclaration`
