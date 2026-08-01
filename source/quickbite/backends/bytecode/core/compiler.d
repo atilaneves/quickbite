@@ -6276,6 +6276,7 @@ private struct Compiler {
                 value.offset,
                 destination,
                 index,
+                cast(ushort) elementSize,
             );
         }
     }
@@ -6407,6 +6408,7 @@ private struct Compiler {
                 value.offset,
                 destination,
                 compileSizeConstant(elementIndex),
+                cast(ushort) elementSize,
             );
         }
         return true;
@@ -6460,6 +6462,7 @@ private struct Compiler {
                 cast(ushort) (*sourceOffset + elementIndex * sourceElementSize),
                 destination,
                 index,
+                cast(ushort) elementSize,
             );
         }
     }
@@ -6511,6 +6514,7 @@ private struct Compiler {
             const index = compileSizeConstant(elementIndex);
             _code ~= Instruction(
                 indexStoreOp(elementSize), loaded, destination, index,
+                cast(ushort) elementSize,
             );
         }
     }
@@ -6553,6 +6557,7 @@ private struct Compiler {
                     slot,
                     destination,
                     compileSizeConstant(elementIndex),
+                    cast(ushort) elementSize,
                 );
             }
             return;
@@ -6591,6 +6596,7 @@ private struct Compiler {
                 slot,
                 destination,
                 compileSizeConstant(elementIndex),
+                cast(ushort) elementSize,
             );
         }
     }
@@ -6783,11 +6789,11 @@ private struct Compiler {
         in ScalarType elementType,
         CatExp cat,
     ) {
-        const left = catOperandDescriptor(elementType, cat.e1);
-        const right = catOperandDescriptor(elementType, cat.e2);
         const elementSize = dynamicArrayElementSize(
             cat.type, elementType, arrayElementIsArray(cat.type),
         );
+        const left = catOperandDescriptor(elementType, elementSize, cat.e1);
+        const right = catOperandDescriptor(elementType, elementSize, cat.e2);
         _code ~= Instruction(
             concatArraysOp(elementSize),
             destination,
@@ -6800,8 +6806,12 @@ private struct Compiler {
     // A 16-byte slice descriptor for one side of a concatenation: an array
     // operand uses its existing descriptor (materialised if needed); an element
     // operand (`x ~ arr`) is stored into a fresh one-element heap block.
+    // `elementSize` is the concatenation's own array element width (from
+    // `dynamicArrayElementSize`, not a bare `size(elementType)`, since
+    // `elementType` is only `void_` for a struct/static-array element).
     private ushort catOperandDescriptor(
         in ScalarType elementType,
+        in uint elementSize,
         Expression operand,
     ) {
         import dmd.astenums: TY;
@@ -6811,7 +6821,6 @@ private struct Compiler {
             return arrayDescriptorOffset(elementType, operand);
 
         const offset = allocateBytes(sliceDescriptorSize, size_t.sizeof);
-        const elementSize = size(elementType);
         _code ~= Instruction(
             Op.allocArray, offset, cast(ushort) elementSize, 1,
         );
@@ -6819,6 +6828,7 @@ private struct Compiler {
         const index = compileSizeConstant(0);
         _code ~= Instruction(
             indexStoreOp(elementSize), value.offset, offset, index,
+            cast(ushort) elementSize,
         );
         return offset;
     }
@@ -10768,6 +10778,7 @@ private struct Compiler {
             value.offset,
             descriptor.offset,
             indexSlot.offset,
+            cast(ushort) elementSize,
         );
 
         auto result = new Operand;
@@ -10835,6 +10846,7 @@ private struct Compiler {
 
         _code ~= Instruction(
             indexStoreOp(elementSize), current, descriptor.offset, indexSlot,
+            cast(ushort) elementSize,
         );
 
         auto result = new Operand;
@@ -11334,6 +11346,7 @@ private struct Compiler {
                 value,
                 offset,
                 index,
+                cast(ushort) elementSize,
             );
         }
     }
@@ -12090,6 +12103,7 @@ private struct Compiler {
                 writeBack.valueOffset,
                 writeBack.descriptorOffset,
                 writeBack.indexOffset,
+                writeBack.elementSize,
             );
         foreach (writeBack; structPointerRefWriteBacks)
             _code ~= Instruction(
@@ -13040,6 +13054,7 @@ private struct Compiler {
                 value,
                 descriptor.offset,
                 indexSlot.offset,
+                cast(ushort) elementSize,
             );
 
             auto result = new Operand;
@@ -13084,6 +13099,7 @@ private struct Compiler {
                     value,
                     descriptor.offset,
                     indexSlot.offset,
+                    cast(ushort) elementSize,
                 );
 
                 auto result = new Operand;
@@ -13114,6 +13130,7 @@ private struct Compiler {
                 value,
                 descriptor.offset,
                 indexSlot.offset,
+                cast(ushort) elementSize,
             );
 
             auto result = new Operand;
@@ -16500,7 +16517,7 @@ private imported!"quickbite.backends.bytecode.core.program".Op indexStoreOp(
         case 4: return Op.indexStore4;
         case 8: return Op.indexStore8;
         case 16: return Op.indexStore16;
-        default: assert(0, "Unsupported index store element size.");
+        default: return Op.indexStoreN;
     }
 }
 

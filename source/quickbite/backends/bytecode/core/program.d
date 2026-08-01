@@ -250,6 +250,10 @@ package(quickbite.backends.bytecode) enum Op: ubyte {
     // checked against the outer length. Backs storing an inner array into an
     // array-of-arrays element.
     indexStore16,
+    // Same as `indexStore1`/etc, for an element width not covered by a fixed
+    // opcode (e.g. a struct element wider than 16 bytes): the byte width is
+    // operand d instead of being implied by the opcode.
+    indexStoreN,
     // Check that the size_t index at frame offset a is less than the size_t
     // length at frame offset b, raising `indexLoad`/`indexStore`'s exact
     // "index [n] is out of bounds for array of length N" diagnostic

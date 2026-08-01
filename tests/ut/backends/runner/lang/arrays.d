@@ -842,6 +842,44 @@ static foreach (backend; Matrix!()) {
     }
 }
 
+// A dynamic array whose element is a struct wider than 16 bytes (24 bytes):
+// indexed assignment (`outer[0] = ...`) must write the element's full width
+// into its own backing slot instead of falling back to a narrower
+// fixed-width copy or refusing the assignment.
+static foreach (backend; Matrix!()) {
+    @("dynamicArray.indexAssignmentWithStructElementsWiderThan16Bytes." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct S {
+                long a;
+                long b;
+                long c;
+            }
+
+            int seed(int value) {
+                return value;
+            }
+
+            unittest {
+                S[] outer;
+                outer ~= S(seed(1), seed(2), seed(3));
+                outer ~= S(seed(4), seed(5), seed(6));
+
+                outer[0] = S(seed(7), seed(8), seed(9));
+
+                assert(outer[0].a == 7);
+                assert(outer[0].b == 8);
+                assert(outer[0].c == 9);
+                assert(outer[1].a == 4);
+                assert(outer[1].b == 5);
+                assert(outer[1].c == 6);
+            }
+        });
+    }
+}
+
 // A static array whose element is a struct wider than 16 bytes (24 bytes):
 // sub-slice assignment must copy each element's full width instead of
 // falling back to a narrower fixed-width copy or refusing the assignment.

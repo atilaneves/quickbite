@@ -461,12 +461,28 @@ row reaches them:
   calls `dynamicArrayElementSize` like every sibling call site, since with
   `concatArraysOp` no longer throwing on an unmatched width, a stale
   zero-width computation would silently corrupt the result instead of
-  raising a diagnostic. Concrete next candidate: `indexStoreOp` still
-  `assert(0)`s for any width outside 1/2/4/8/16, so writing to an indexed
-  element of such an array (`outer[0] = S(...)`) remains unsupported; it
-  needs the identical `N`-variant escape, carried as instruction operand `d`
-  (`a`/`b`/`c` are already used for value/descriptor/index), across its 14
-  call sites.
+  raising a diagnostic. `indexStoreOp` now covers a dynamic-array element of
+  any width, not only 1/2/4/8/16, the identical `N`-variant escape as its
+  siblings: `Op.indexStoreN` carries the byte width as instruction operand
+  `d`, so writing to an indexed element of such an array (`outer[0] =
+  S(...)`) now writes the element's real width instead of asserting
+  (`dynamicArray.indexAssignmentWithStructElementsWiderThan16Bytes`, a
+  24-byte struct). `catOperandDescriptor` (one side of `a ~ b` when that side
+  is a bare element, not an array) computed its one-element array's width
+  from the bare `size(elementType)` `ScalarType` tag, the same zero-for-
+  struct hazard `compileCatInto` had; it now takes the caller's already-
+  `dynamicArrayElementSize`-computed width instead of recomputing it.
+  Concrete next candidate: `pointerLoadOp`/`pointerStoreOp`/`pointerSliceOp`
+  (`compiler.d`, defined alongside `indexStoreOp`) still `assert(0)` for a
+  struct element wider than 16 (`pointerSliceOp` wider than 8) bytes, so
+  dereferencing, indexing through, or slicing a pointer to such a struct
+  (`S* p; *p = S(...)`, `p[0] = S(...)`) remains unsupported; each needs the
+  identical `N`-variant escape. `pointerLoadOp`/`pointerStoreOp` have far
+  more call sites than `indexStoreOp` did (over 20 each), so this is likely
+  several commits: start with the plain-dereference/assignment call sites
+  and leave the ref-argument/write-back call sites (already bounded to
+  `<= 8` bytes by existing guards, so not currently reachable with a wide
+  struct) for a follow-up.
 - Dynamic-array and string sub-slices reject an upper bound beyond the source
   length and a lower bound greater than the upper bound; pointer-slice bounds
   remain unchecked.

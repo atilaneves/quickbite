@@ -251,8 +251,10 @@ package(quickbite.backends.bytecode) RunResult run(
                 break;
 
             case indexStore1, indexStore2, indexStore4, indexStore8,
-                indexStore16:
-                const storeSize = elementSize(instruction.op);
+                indexStore16, indexStoreN:
+                const storeSize = instruction.op == indexStoreN
+                    ? instruction.d
+                    : elementSize(instruction.op);
                 // Non-const: the heap element is written through this pointer.
                 auto storeElement = elementAddress(
                     stack, base + instruction.b,
