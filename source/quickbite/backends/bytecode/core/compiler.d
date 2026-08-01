@@ -8050,10 +8050,21 @@ private struct Compiler {
             if (!pointer.isPointer)
                 return null;
 
+            // `(*p)[i]` where `p`'s pointee is a static array (`int[2]* p`):
+            // `pointer.pointerElement` (from `pointerElementMetadata`) names
+            // the WHOLE `T[N]` block `*p` dereferences to, not the single
+            // element `[i]` steps through; use the one-level-deeper metadata
+            // instead so the element width/stride is `sizeof(T)`, not
+            // `sizeof(T[N])` or the aggregate `void_` marker.
+            const elementMetadata =
+                dereferencedArrayIndexElementMetadata(deref.e1.type);
+            const indexPointer = Operand(
+                pointer.offset, pointer.type, true, elementMetadata.opcodeType,
+            );
             const indexSlot = compileExpression(index.e2);
             auto result = new Operand;
             *result = asPointerValue(
-                loadThroughPointer(pointer, indexSlot.offset), index.type,
+                loadThroughPointer(indexPointer, indexSlot.offset), index.type,
             );
             return result;
         }
@@ -16623,8 +16634,18 @@ private struct Compiler {
         const byteStride = element.toBasetype.ty == TY.Tfunction
             ? 0
             : cast(uint) staticArraySize(element);
+        // A static-array pointee (`int[3]*`, `S[3]*`) is always an aggregate
+        // regardless of its own element type: `int[3]*` must resolve the same
+        // way `S[3]*` does (`void_` opcode type, DMD's full array byte width
+        // as `byteStride`), not unwrap one level and mistake a plain-scalar
+        // static array for a pointer to its bare element type. Unwrapping
+        // here previously made `int[3]*` fall through to `scalarType(int)`,
+        // so `storeThroughPointer`/`loadThroughPointer` and the ref-argument
+        // dereference path (`emitPointerDereferenceRefArgument`) read or wrote
+        // only the first 4 bytes of a 12-byte static array through such a
+        // pointer instead of the whole object.
         if (element.toBasetype.ty == TY.Tsarray)
-            element = element.toBasetype.nextOf;
+            return PointerElementMetadata(ScalarType.void_, byteStride);
         if (element.toBasetype.ty == TY.Tstruct)
             return PointerElementMetadata(ScalarType.void_, byteStride);
         if (element.toBasetype.ty == TY.Tarray)
@@ -16632,6 +16653,33 @@ private struct Compiler {
         if (element.toBasetype.ty == TY.Tdelegate)
             return PointerElementMetadata(ScalarType.void_, byteStride);
         if (element.toBasetype.ty == TY.Tfunction)
+            return PointerElementMetadata(ScalarType.void_, byteStride);
+        return PointerElementMetadata(scalarType(element), byteStride);
+    }
+
+    // `(*p)[i]` where `p`'s pointee is itself a static array (`T[N]*`, e.g.
+    // `int[2]* p; (*p)[i]`): indexing steps through the array's own element
+    // `T` at `p + i * sizeof(T)`, not through the whole `T[N]` block
+    // `pointerElementMetadata` reports for a plain dereference or
+    // whole-object assignment/ref-argument mirror. Falls back to
+    // `pointerElementMetadata` itself when `p`'s pointee is not a static
+    // array (an ordinary `p[i]`/`(*pp)[i]` shape, unaffected by the
+    // one-level unwrap this static-array case needs).
+    private PointerElementMetadata dereferencedArrayIndexElementMetadata(
+        Type pointerType,
+    ) {
+        import dmd.astenums: TY;
+
+        auto pointee = pointerType.toBasetype.nextOf;
+        if (pointee is null || pointee.toBasetype.ty != TY.Tsarray)
+            return pointerElementMetadata(pointerType);
+
+        auto element = pointee.toBasetype.nextOf;
+        const byteStride = cast(uint) staticArraySize(element);
+        if (element.toBasetype.ty == TY.Tstruct ||
+            element.toBasetype.ty == TY.Tsarray ||
+            element.toBasetype.ty == TY.Tarray ||
+            element.toBasetype.ty == TY.Tdelegate)
             return PointerElementMetadata(ScalarType.void_, byteStride);
         return PointerElementMetadata(scalarType(element), byteStride);
     }

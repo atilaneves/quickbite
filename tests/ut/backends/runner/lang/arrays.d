@@ -3162,6 +3162,53 @@ static foreach (backend; Matrix!(
     }
 }
 
+// A whole-object assignment through a pointer to a static array
+// (`int[3]*`) must write all of the pointee's bytes, not just the width of
+// its own element type.
+static foreach (backend; Matrix!()) {
+    @("pointer.wholeStaticArrayAssignmentWritesRealStorage." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            unittest {
+                int[3] arr = [1, 2, 3];
+                int[3]* p = &arr;
+                *p = [4, 5, 6];
+
+                assert(arr[0] == 4);
+                assert(arr[1] == 5);
+                assert(arr[2] == 6);
+            }
+        });
+    }
+}
+
+// A `ref` parameter bound to a static array reached by dereferencing a
+// pointer to it (`bump(*p)` where `p: int[3]*`) must mirror and write back
+// the whole array, the same width question as the whole-object assignment
+// above but through the ref-argument mirror/writeback path instead.
+static foreach (backend; Matrix!()) {
+    @("pointer.refArgumentThroughStaticArrayDereferenceWritesRealStorage." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            void bump(ref int[3] a) {
+                a[0] = 99;
+            }
+
+            unittest {
+                int[3] arr = [1, 2, 3];
+                int[3]* p = &arr;
+                bump(*p);
+
+                assert(arr[0] == 99);
+            }
+        });
+    }
+}
+
 // A slice assignment through a D pointer must write the pointed-at array
 // storage, not sever the aliasing. This is the silently lost write distilled
 // from cerealed.

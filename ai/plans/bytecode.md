@@ -445,13 +445,25 @@ row reaches them:
   remain unchecked.
 - Captured array support does not yet cover every read, write, slice, append,
   view-preservation, and closure combination.
-- Struct aliases and whole-local assignment do not yet cover a static-array
-  whole-object pointer receiver, a class array-field-element pointer
-  receiver, captured structs, postblits, or `opAssign` semantics.
+- Struct aliases and whole-local assignment do not yet cover captured
+  structs, postblits, or `opAssign` semantics.
+- Next candidate: a pointer to a class's own static-array *field* (`int[3]*
+  p = &c.arr;`, as opposed to a plain local's `int[3]* p = &arr;`, fixed
+  above) is unsupported: `pointerElementMetadata`'s caller resolves the
+  pointee's element correctly, but nothing yet maps `&c.arr` itself to a
+  class-field address the way `classFieldPointerVariables`/
+  `classArrayFieldPointerVariables` map `&c.x`/`&c.arr[i]`; confirmed via a
+  fixture (`class C { int[3] arr; } C c = new C(); int[3]* p = &c.arr; *p =
+  [4, 5, 6];`) throwing "Unsupported type in bytecode core: int[3]" on
+  Bytecode. A single element's pointer (`&c.arr[i]`) already works
+  (`pointer.classArrayFieldElementWrittenThroughPointerIsVisibleDirectly`,
+  `expressions.d`); this is the whole-field sibling of that, and the
+  class-receiver sibling of the whole-local fix above.
 - Static arrays of dynamic arrays copy each element's full 16-byte slice
   descriptor; nested mutation and general stale-cell reconciliation remain
   incomplete.
-- Next candidate: a `T[N][]`'s rows are materialised as separately
+- Also open, architectural rather than boundable in one commit: a `T[N][]`'s
+  rows are materialised as separately
   heap-allocated inner descriptors, so a pointer taken into one row
   (`&outer[i][j]`) is valid within that row, but a flat pointer walk across
   rows diverges from compiled D's contiguous layout. Reconfirmed current:
