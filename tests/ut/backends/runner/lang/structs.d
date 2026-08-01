@@ -2450,6 +2450,46 @@ static foreach (backend; Matrix!()) {
     }
 }
 
+// A class field's own default initializer (`int x = 5;`) must be applied
+// when the object is allocated, whether or not an explicit constructor runs:
+// an untouched field (own or inherited from a base class) keeps its declared
+// default rather than reading zero, and an explicit constructor's own field
+// write still overrides the default for the field it actually touches.
+static foreach (backend; Matrix!(
+    Omit!(Interpreter, Because.unconfirmed,
+        "a class field's own default initializer is never applied on allocation"),
+)) {
+    @("class.defaultFieldInitializerAppliesOnAllocationAndSurvivesConstructor." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            class Base {
+                int inherited = 111;
+            }
+
+            class Derived : Base {
+                int untouched = 42;
+                int overridden = 7;
+
+                this(int value) {
+                    overridden = value;
+                }
+            }
+
+            unittest {
+                auto noConstructor = new Base;
+                assert(noConstructor.inherited == 111);
+
+                auto derived = new Derived(99);
+                assert(derived.inherited == 111);
+                assert(derived.untouched == 42);
+                assert(derived.overridden == 99);
+            }
+        });
+    }
+}
+
 // cerealed's `@ArrayLength` field decode (`Unit[] units; ... foreach(ref e;
 // units) cereal.grain(e);` inside a `ref Packet val` parameter) writes each
 // element's fields through a hidden temporary dmd's foreach-to-for lowering

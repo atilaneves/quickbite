@@ -5848,6 +5848,7 @@ private struct Compiler {
             registerClass(classType.sym),
             cast(ushort) classType.sym.structsize,
         );
+        compileDefaultClassFields(pointer, classType.sym);
         if (newExp.member !is null)
             runClassConstructor(pointer, newExp.member, newExp.arguments);
         else
@@ -5858,6 +5859,32 @@ private struct Compiler {
             pointer, ScalarType.ulong_, true, ScalarType.void_,
         );
         return result;
+    }
+
+    // Mirror compileDefaultStructFields for a heap-allocated class object:
+    // native codegen copies a class's `.init` template -- every own and
+    // inherited field's declared default -- into the new block before any
+    // constructor body runs. `allocClass` only zero-fills, so walk the base
+    // chain (matching classFieldNamed's own field iteration) and write each
+    // field's own initializer through storeClassField first; an explicit
+    // constructor body or the no-constructor positional-argument path
+    // (initialiseClassObject) runs afterwards and its own field writes
+    // override these defaults, matching D's default-then-constructor order.
+    private void compileDefaultClassFields(
+        in ushort pointer,
+        ClassDeclaration class_,
+    ) {
+        for (auto current = class_; current !is null; current = current.baseClass)
+            foreach (field; current.fields) {
+                auto initializer =
+                    field._init is null ? null : field._init.isExpInitializer;
+                if (initializer is null)
+                    continue;
+
+                storeClassField(
+                    pointer, field, initializerExpression(initializer.exp),
+                );
+            }
     }
 
     private void initialiseClassObject(

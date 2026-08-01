@@ -451,49 +451,26 @@ row reaches them:
   target"; `Omit!(Interpreter, Because.unconfirmed)` on that row
   (`pointer.classStaticArrayFieldElementWrittenThroughWholeFieldPointerIsVisibleDirectly`,
   `expressions.d`).
-- Calling a method through a receiver reached via a struct pointer or class
-  field (`p.t.method()`, `c.t.method()`) throws "Unsupported struct value in
-  bytecode core: (*p).t" / "...: c.t" -- confirmed for an ordinary method,
-  not just a postblit-synthesized `opAssign`: `struct Plain { int x; int
-  get() { return x; } } struct Holder { Plain t; } Holder* p = &h;
-  p.t.get();` fails this way. This is why a postblit-typed field's whole
-  assignment through a pointer/class reference (`p.t = a;` where `Plain` has
-  `this(this)`) still fails after the fix above: DMD lowers that assignment
-  into a call, `(*p).t.opAssign(copytmp)`, not an `AssignExp`, so it never
-  reaches `tryStructPointerField`/`tryClassPointerField` at all. Root cause:
-  the call's receiver resolution (`methodReceiverOffset` ->
-  `structOperandOffset` -> `structBaseOffsetOrMaterialise`, `compiler.d`
-  ~4772/~4975/~5235) has no case for a `DotVarExp` whose own base is a
-  pointer dereference or a class reference -- only a nested-struct-field
-  chain anchored in a resolvable `VarExp` (`outer.inner`). A general fix
-  extends `structBaseOffsetOrMaterialise` with a branch that resolves via
+- Next candidate: calling a method through a receiver reached via a struct
+  pointer or class field (`p.t.method()`, `c.t.method()`) throws
+  "Unsupported struct value in bytecode core: (*p).t" / "...: c.t" --
+  confirmed for an ordinary method, not just a postblit-synthesized
+  `opAssign`: `struct Plain { int x; int get() { return x; } } struct
+  Holder { Plain t; } Holder* p = &h; p.t.get();` fails this way. This is
+  why a postblit-typed field's whole assignment through a pointer/class
+  reference (`p.t = a;` where `Plain` has `this(this)`) still fails after
+  the fix above: DMD lowers that assignment into a call,
+  `(*p).t.opAssign(copytmp)`, not an `AssignExp`, so it never reaches
+  `tryStructPointerField`/`tryClassPointerField` at all. Root cause: the
+  call's receiver resolution (`methodReceiverOffset` -> `structOperandOffset`
+  -> `structBaseOffsetOrMaterialise`, `compiler.d` ~4772/~4975/~5235) has no
+  case for a `DotVarExp` whose own base is a pointer dereference or a class
+  reference -- only a nested-struct-field chain anchored in a resolvable
+  `VarExp` (`outer.inner`). A general fix extends
+  `structBaseOffsetOrMaterialise` with a branch that resolves via
   `tryStructPointerField`/`tryClassPointerField`'s existing
   `structFieldAddress`/`classFieldAddress` when the `DotVarExp`'s own field
   is struct/static-array-typed and reached through a pointer/class receiver.
-- Next candidate: a class field's own default initializer (`int x = 5;`) is
-  never applied when the object is allocated, on any code path. Confirmed
-  via a throwaway fixture: `class C { int guard = 888; } auto c = new C();
-  assert(c.guard == 888);` fails (reads `0`), both with no constructor at
-  all and with an explicit constructor that never touches the field
-  (`this(int dummy) {}`). Root cause: `tryNewClass` (`compiler.d`, ~line 5832)
-  emits `Op.allocClass` with only the object's byte size --
-  `machine.d`'s `allocClass` handler (~line 175) zero-fills a fresh
-  `ubyte[]` and writes only the class-id header word -- then either runs the
-  constructor (`runClassConstructor`, ~line 6005) or, on the no-member path,
-  nothing at all; `initialiseClassObject` (~line 5863) only fires when
-  `newExp.arguments` is non-empty, and even then fills only as many fields
-  as there are positional arguments, in declaration order, never reading a
-  field's own default-initializer expression. Unlike a struct local, which
-  materialises its default bytes through `compileDefaultStructFields`'s
-  per-field `_init` walk, and unlike `allocStruct`, which copies a
-  caller-prepared initialised block, `allocClass` has no equivalent: nothing
-  ever writes a class field's default value into the heap block unless a
-  constructor body (or the field-args path) explicitly assigns it. A
-  general fix gives `tryNewClass` the same per-field default-value walk
-  `compileDefaultStructFields` already does for structs, writing each
-  field's own initializer through `storeClassField` before running an
-  explicit constructor or applying `newExp.arguments`, mirroring how native
-  codegen copies a class's `.init` template before the constructor runs.
 - Static arrays of dynamic arrays copy each element's full 16-byte slice
   descriptor; nested mutation and general stale-cell reconciliation remain
   incomplete.
