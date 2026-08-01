@@ -180,6 +180,15 @@ private struct Compiler {
     // enclosing frame's base; this map recovers the captured local's offset
     // within that frame at the point the method (a separate function) compiles.
     private ushort[VarDeclaration] _capturedOffsets;
+    // The function that declared each `_capturedOffsets` entry -- the frame
+    // that offset is relative to. A captured variable's owner may be more
+    // than one nesting level above the function currently reading or writing
+    // it; `capturedFrameIndex` walks the enclosing-function chain from the
+    // current function to this owner, one received-context hop per level.
+    private FuncDeclaration[VarDeclaration] _capturedOwners;
+    // The function whose body is currently being compiled; `_capturedOwners`
+    // entries recorded while compiling it are attributed to it.
+    private FuncDeclaration _currentFunction;
     // The frame offset of the current method's hidden `this` block when it is a
     // nested struct whose first field (`vthis`) holds the enclosing-frame
     // context index; 0 otherwise. Set while compiling such a method.
@@ -347,6 +356,7 @@ private struct Compiler {
             ));
         }
 
+        _currentFunction = function_;
         _code = null;
         _locals = null;
         _staticArrayLocals = null;
@@ -401,7 +411,7 @@ private struct Compiler {
                 layout.thisOffset, thisStructDeclaration(function_),
             );
             if (function_.vthis !is null)
-                _capturedOffsets[function_.vthis] = layout.thisOffset;
+                registerCapturedOffset(function_.vthis, layout.thisOffset);
             _hasNestedContext = _thisLocal.declaration !is null &&
                 _thisLocal.declaration.isNested;
         }
@@ -418,13 +428,13 @@ private struct Compiler {
             // mechanism as any other captured outer local, mirroring the
             // struct-receiver case just above.
             if (function_.vthis !is null)
-                _capturedOffsets[function_.vthis] = layout.classThisOffset;
+                registerCapturedOffset(function_.vthis, layout.classThisOffset);
         }
         if (function_.parameters !is null)
             foreach (parameterIndex; 0 .. function_.parameters.length) {
                 auto parameter = (*function_.parameters)[parameterIndex];
                 const offset = layout.offsets[parameterIndex];
-                _capturedOffsets[parameter] = offset;
+                registerCapturedOffset(parameter, offset);
 
                 if (parameterIsLazy(parameter)) {
                     _lazyDelegateLocals[parameter] = offset;
@@ -3029,7 +3039,9 @@ private struct Compiler {
                             _code ~= Instruction(
                                 Op.frameLoad,
                                 offset,
-                                capturedFrameIndex(*captured),
+                                capturedFrameIndex(
+                                    _capturedOwners[declaration], *captured,
+                                ),
                                 cast(ushort) sliceDescriptorSize,
                             );
                             auto result = new DynamicArrayLocal;
@@ -3038,8 +3050,9 @@ private struct Compiler {
                                 dynamicArrayElementType(declaration.type),
                             );
                             result.writeBackThroughFrame = true;
-                            result.frameIndexOffset =
-                                capturedFrameIndex(*captured);
+                            result.frameIndexOffset = capturedFrameIndex(
+                                _capturedOwners[declaration], *captured,
+                            );
                             return result;
                         }
 
@@ -3555,7 +3568,7 @@ private struct Compiler {
         const type = scalarType(variable.type);
         const offset = allocateBytes(size(type), size(type));
         _locals[variable] = offset;
-        _capturedOffsets[variable] = offset;
+        registerCapturedOffset(variable, offset);
 
         auto initializer =
             variable._init is null ? null : variable._init.isExpInitializer;
@@ -3786,7 +3799,7 @@ private struct Compiler {
         _locals[variable] = offset;
         _classPointerLocals[variable] =
             variable.type.toBasetype.isTypeClass.sym;
-        _capturedOffsets[variable] = offset;
+        registerCapturedOffset(variable, offset);
         _code ~= Instruction(
             Op.copy, offset, pointer.offset, cast(ushort) size_t.sizeof,
         );
@@ -3808,7 +3821,7 @@ private struct Compiler {
             initializerExpression(initializer.exp).isNullExp !is null) {
             _locals[variable] = offset;
             _pointerLocals[variable] = pointerElementScalar(variable.type);
-            _capturedOffsets[variable] = offset;
+            registerCapturedOffset(variable, offset);
             _code ~= Instruction(
                 Op.loadConstant,
                 offset,
@@ -3833,7 +3846,7 @@ private struct Compiler {
             declaredElement.toBasetype.ty == TY.Tdelegate
             ? pointer.pointerElement
             : pointerElementScalar(variable.type);
-        _capturedOffsets[variable] = offset;
+        registerCapturedOffset(variable, offset);
         // A `S* p = new S(...)` pointer addresses a heap struct block; record the
         // struct declaration so `p.field` resolves through the pointer.
         if (auto structDeclaration = structPointerDeclaration(variable.type))
@@ -3874,7 +3887,7 @@ private struct Compiler {
         // environment, not `_delegateLocals` (reset per compiled function);
         // register the offset like every other local so its value is
         // reachable there too.
-        _capturedOffsets[variable] = offset;
+        registerCapturedOffset(variable, offset);
     }
 
     // Store a `{functionIndex, context}` delegate pair into the 16-byte slot at
@@ -4053,7 +4066,7 @@ private struct Compiler {
         // `_locals`: the scalar VarExp/assignment paths must not treat its
         // inline block as a scalar slot.
         _staticArrayLocals[variable] = offset;
-        _capturedOffsets[variable] = offset;
+        registerCapturedOffset(variable, offset);
 
         if (totalSize == 0)
             return;
@@ -4316,7 +4329,7 @@ private struct Compiler {
         const offset = allocateStructBlock(variable.type);
         auto declaration = structDeclarationOf(variable.type);
         _structLocals[variable] = StructLocal(offset, declaration);
-        _capturedOffsets[variable] = offset;
+        registerCapturedOffset(variable, offset);
 
         zeroFrameBlock(offset, cast(uint) staticArraySize(variable.type));
 
@@ -4834,7 +4847,9 @@ private struct Compiler {
                         declaration !in _structLocals)
                         if (auto captured = declaration in _capturedOffsets) {
                             const offset = allocateStructBlock(declaration.type);
-                            const frameIndex = capturedFrameIndex(*captured);
+                            const frameIndex = capturedFrameIndex(
+                                _capturedOwners[declaration], *captured,
+                            );
                             const blockSize = cast(ushort)
                                 staticArraySize(declaration.type);
                             _code ~= Instruction(
@@ -5159,7 +5174,9 @@ private struct Compiler {
             if (auto receiver = capturedStructReceiver(dot.e1))
                 if (auto captured = receiver in _capturedOffsets) {
                     const structOffset = allocateStructBlock(dot.e1.type);
-                    const frameIndexOffset = capturedFrameIndex(*captured);
+                    const frameIndexOffset = capturedFrameIndex(
+                        _capturedOwners[receiver], *captured,
+                    );
                     const structSize = cast(ushort) staticArraySize(dot.e1.type);
                     _code ~= Instruction(
                         Op.frameLoad,
@@ -5280,6 +5297,14 @@ private struct Compiler {
         return null;
     }
 
+    // A captured field's frame offset together with the function whose
+    // frame it is relative to, mirroring `_capturedOffsets`/`_capturedOwners`
+    // for a field reached through a captured struct receiver.
+    private static struct CapturedFieldOffset {
+        ushort offset;
+        FuncDeclaration owner;
+    }
+
     // The captured-frame offset of `expression`'s field, when `expression`
     // is a (possibly multi-level) field access chain whose ultimate receiver
     // is a captured outer local (`capturedStructReceiver`) -- `s.field` or
@@ -5288,16 +5313,21 @@ private struct Compiler {
     // (`tryAddressOfCaptured`); reusing it for a field gives `&s.field` the
     // same real outer-frame storage as `&s` itself, rather than the address
     // of a copy.
-    private ushort* capturedFieldFrameOffset(Expression expression) {
+    private CapturedFieldOffset* capturedFieldFrameOffset(Expression expression) {
         if (auto receiver = capturedStructReceiver(expression))
-            if (auto captured = receiver in _capturedOffsets)
-                return captured;
+            if (auto captured = receiver in _capturedOffsets) {
+                auto result = new CapturedFieldOffset;
+                *result = CapturedFieldOffset(*captured, _capturedOwners[receiver]);
+                return result;
+            }
 
         if (auto dot = expression.isDotVarExp)
             if (auto field = dot.var.isVarDeclaration)
-                if (auto baseOffset = capturedFieldFrameOffset(dot.e1)) {
-                    auto result = new ushort;
-                    *result = cast(ushort) (*baseOffset + field.offset);
+                if (auto base = capturedFieldFrameOffset(dot.e1)) {
+                    auto result = new CapturedFieldOffset;
+                    *result = CapturedFieldOffset(
+                        cast(ushort) (base.offset + field.offset), base.owner,
+                    );
                     return result;
                 }
 
@@ -5506,7 +5536,7 @@ private struct Compiler {
             _code ~= Instruction(
                 Op.frameLoad,
                 destination,
-                capturedFrameIndex(capturedOffset),
+                capturedFrameIndex(_capturedOwners[declaration], capturedOffset),
                 cast(ushort) staticArraySize(declaration.type),
             );
             return Operand(destination, ScalarType.void_);
@@ -5518,7 +5548,7 @@ private struct Compiler {
         _code ~= Instruction(
             Op.frameLoad,
             destination,
-            capturedFrameIndex(capturedOffset),
+            capturedFrameIndex(_capturedOwners[declaration], capturedOffset),
             cast(ushort) valueSize,
         );
         if (declaredTy == TY.Tclass)
@@ -5543,13 +5573,38 @@ private struct Compiler {
         _code ~= Instruction(
             Op.frameStore,
             value.offset,
-            capturedFrameIndex(capturedOffset),
+            capturedFrameIndex(_capturedOwners[declaration], capturedOffset),
             cast(ushort) valueSize,
         );
     }
 
-    private ushort capturedFrameIndex(in ushort capturedOffset) {
-        const contextBase =
+    // Records `variable`'s frame offset alongside the function currently
+    // being compiled -- the frame that offset is relative to -- so a later
+    // read from a differently-nested function can find its way back to it
+    // (`capturedFrameIndex`).
+    private void registerCapturedOffset(VarDeclaration variable, in ushort offset) {
+        _capturedOffsets[variable] = offset;
+        _capturedOwners[variable] = _currentFunction;
+    }
+
+    // The frame index (an absolute `stack[]` slot, offset by `capturedOffset`)
+    // of a captured variable declared in `owner`'s own frame, read or written
+    // from the function currently being compiled.
+    //
+    // A call site always hands a callee its own live frame as that callee's
+    // received context (`compileCall`'s `Op.frameBaseIndex`), matching real D:
+    // a nested function's context is its immediate enclosing function's frame,
+    // never a further ancestor's. So the current function's own received
+    // context (`_nestedContextOffset`) is exactly one hop -- its immediate
+    // enclosing function's frame -- which is `owner` only for a single level
+    // of nesting. When `owner` sits further up, each intermediate ancestor's
+    // own received context is a further hop: it lives at that ancestor's own
+    // `nestedContextOffset` within the frame just reached, and that frame is
+    // still live on the stack as the current call's (transitive) caller.
+    private ushort capturedFrameIndex(in FuncDeclaration owner, in ushort capturedOffset) {
+        import std.conv: text;
+
+        ushort contextBase =
             allocateBytes(cast(uint) size_t.sizeof, size_t.sizeof);
         _code ~= Instruction(
             Op.copy,
@@ -5562,6 +5617,41 @@ private struct Compiler {
         if (_nestedContextOffset != ushort.max) {
             const one = compileSizeConstant(1);
             _code ~= Instruction(Op.subInt8, contextBase, contextBase, one);
+
+            for (auto ancestor = enclosingMethodOf(_currentFunction);
+                 ancestor !is null && ancestor !is owner;
+                 ancestor = enclosingMethodOf(ancestor))
+            {
+                const ancestorLayout = parameterLayout(ancestor);
+                // An intermediate ancestor with no relayable context of its
+                // own (a struct method whose hidden `this` receiver takes
+                // the nested-context slot instead, `capturedThisStructDeclaration`)
+                // cannot forward a further hop; this shape is not modelled.
+                if (!ancestorLayout.hasNestedContext)
+                    throw new Exception(text(
+                        "Unsupported multi-level captured-variable access ",
+                        "in bytecode core: `",
+                        ancestor.ident is null ? "" : ancestor.ident.toString,
+                        "` has no relayable nested-function context",
+                    ));
+                const slotAddress =
+                    allocateBytes(cast(uint) size_t.sizeof, size_t.sizeof);
+                _code ~= Instruction(
+                    Op.addInt8, slotAddress, contextBase,
+                    compileSizeConstant(ancestorLayout.nestedContextOffset),
+                );
+                const nextContext =
+                    allocateBytes(cast(uint) size_t.sizeof, size_t.sizeof);
+                _code ~= Instruction(
+                    Op.frameLoad, nextContext, slotAddress,
+                    cast(ushort) size_t.sizeof,
+                );
+                contextBase =
+                    allocateBytes(cast(uint) size_t.sizeof, size_t.sizeof);
+                _code ~= Instruction(
+                    Op.subInt8, contextBase, nextContext, compileSizeConstant(1),
+                );
+            }
         }
         const sourceIndex =
             allocateBytes(cast(uint) size_t.sizeof, size_t.sizeof);
@@ -6203,7 +6293,7 @@ private struct Compiler {
         const offset = allocateBytes(sliceDescriptorSize, size_t.sizeof);
         _dynamicArrayLocals[variable] =
             DynamicArrayLocal(offset, elementType, elementIsArray);
-        _capturedOffsets[variable] = offset;
+        registerCapturedOffset(variable, offset);
 
         auto initializer =
             variable._init is null ? null : variable._init.isExpInitializer;
@@ -8124,7 +8214,7 @@ private struct Compiler {
                     _code ~= Instruction(
                         Op.frameIndexAddress,
                         pointer,
-                        capturedFrameIndex(*fieldOffset),
+                        capturedFrameIndex(fieldOffset.owner, fieldOffset.offset),
                     );
                     auto result = new Operand;
                     *result = Operand(
@@ -8176,7 +8266,7 @@ private struct Compiler {
         if (!_hasNestedContext || captured is null)
             return null;
 
-        const sourceIndex = capturedFrameIndex(*captured);
+        const sourceIndex = capturedFrameIndex(_capturedOwners[declaration], *captured);
         const pointer = allocateBytes(cast(uint) size_t.sizeof, size_t.sizeof);
         _code ~= Instruction(Op.frameIndexAddress, pointer, sourceIndex);
         auto result = new Operand;
@@ -13266,7 +13356,8 @@ private struct Compiler {
 
         const offset = allocateBytes(delegateValueSize, size_t.sizeof);
         _code ~= Instruction(
-            Op.frameLoad, offset, capturedFrameIndex(*capturedOffset),
+            Op.frameLoad, offset,
+            capturedFrameIndex(_capturedOwners[declaration], *capturedOffset),
             cast(ushort) delegateValueSize,
         );
         auto result = new ushort;
@@ -13322,7 +13413,9 @@ private struct Compiler {
         if (declaration !in _lazyDelegateDeclarations)
             return null;
         if (auto captured = declaration in _capturedOffsets)
-            return new LazyDelegateSource(*captured, true);
+            return new LazyDelegateSource(
+                *captured, true, _capturedOwners[declaration],
+            );
         return null;
     }
 
@@ -13345,7 +13438,7 @@ private struct Compiler {
             _code ~= Instruction(
                 Op.frameLoad,
                 delegateOffset,
-                capturedFrameIndex(source.offset),
+                capturedFrameIndex(source.owner, source.offset),
                 cast(ushort) delegateValueSize,
             );
 
@@ -13391,7 +13484,9 @@ private struct Compiler {
                     if (auto source = declaration in _capturedOffsets) {
                         _code ~= Instruction(
                             Op.frameLoad, destination,
-                            capturedFrameIndex(*source),
+                            capturedFrameIndex(
+                                _capturedOwners[declaration], *source,
+                            ),
                             cast(ushort) delegateValueSize,
                         );
                         return;
@@ -17098,6 +17193,8 @@ private struct DelegateLocal {
 private struct LazyDelegateSource {
     ushort offset;
     bool isCaptured;
+    // The function owning `offset`'s frame; only meaningful when `isCaptured`.
+    imported!"dmd.func".FuncDeclaration owner;
 }
 
 private struct DelegateInitializer {

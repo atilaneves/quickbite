@@ -1219,6 +1219,144 @@ static foreach (backend; Matrix!()) {
     }
 }
 
+// `inner`'s immediate enclosing function is `middle`, which owns no capture
+// of its own -- `captured` belongs to `run`, one level further up. A call
+// site must forward the context `middle` itself received from `run` rather
+// than handing `inner` `middle`'s own frame; matches this exact regression.
+static foreach (backend; Matrix!()) {
+    @("function.nestedFunctionTwoLevelsDeepMutatesEnclosingScalar." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            int run() {
+                int captured = 42;
+
+                void middle() {
+                    void inner() {
+                        captured = 43;
+                    }
+                    inner();
+                }
+                middle();
+
+                return captured;
+            }
+
+            unittest {
+                assert(run() == 43);
+            }
+        });
+    }
+}
+
+// Heap-referencing twin of the fixture above: `arr`'s slice descriptor lives
+// in `run`'s frame, so reading it through the wrong (`middle`'s own) frame
+// misreads unrelated bytes as the descriptor's pointer field and dereferences
+// them as a raw heap address.
+static foreach (backend; Matrix!()) {
+    @("function.nestedFunctionTwoLevelsDeepMutatesEnclosingArrayElement." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            int[] run() {
+                int[] arr = [1, 2, 3];
+
+                void middle() {
+                    void inner() {
+                        arr[0] = 5;
+                    }
+                    inner();
+                }
+                middle();
+
+                return arr;
+            }
+
+            unittest {
+                assert(run() == [5, 2, 3]);
+            }
+        });
+    }
+}
+
+// Four levels deep: `levelC`'s captured local is owned three levels up, so
+// resolving it needs two relayed hops (through `levelB`'s and `levelA`'s own
+// received contexts), not just the single hop the fixture above exercises.
+static foreach (backend; Matrix!()) {
+    @("function.nestedFunctionThreeLevelsDeepMutatesEnclosingScalar." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            int run() {
+                int captured = 1;
+
+                void levelA() {
+                    void levelB() {
+                        void levelC() {
+                            captured += 1;
+                        }
+                        levelC();
+                    }
+                    levelB();
+                }
+                levelA();
+
+                return captured;
+            }
+
+            unittest {
+                assert(run() == 2);
+            }
+        });
+    }
+}
+
+// `middle` is both a relay (for `innerA`, which reaches `run`'s `a`) AND an
+// owner (for `innerB`, which reaches `middle`'s own `b`) -- the same caller
+// in both roles for different callees. `innerB` itself reads captures at two
+// different depths in the same body (`b` one level up, `total` two), so a
+// single function needing more than one hop count at once is exercised too.
+static foreach (backend; Matrix!()) {
+    @("function.nestedFunctionCapturesOwnAndAncestorLocalsAtDifferentDepths." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            int run() {
+                int a = 1;
+                int total = 0;
+
+                void middle() {
+                    int b = 10;
+
+                    void innerA() {
+                        a += 1;
+                    }
+
+                    void innerB() {
+                        b += 1;
+                        total += b;
+                    }
+
+                    innerA();
+                    innerB();
+                    innerA();
+                }
+                middle();
+
+                return a * 100 + total;
+            }
+
+            unittest {
+                assert(run() == 311);
+            }
+        });
+    }
+}
+
 // Recursion means several activations of `recurse` are live at once, each
 // with its own `total` local and its own `bump` activation reaching it --
 // this fails if a nested function's captured-variable binding is ever

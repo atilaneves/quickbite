@@ -366,7 +366,7 @@ architectural non-goals with an explicit reason. An unsupported
 implementation is not, by itself, a permanent divergence from the compiled-D
 oracle.
 
-Both remaining `Omit!(Bytecode, ...)` rows in
+Next candidate: both remaining `Omit!(Bytecode, ...)` rows in
 `tests/ut/backends/runner/lang/arrays.d`
 (`assocArray.structKeyWithStringMemberComparesStructurally`,
 `assocArray.nestedLookupDereferencesAssociativeArrayPointee`) are blocked on
@@ -451,50 +451,6 @@ row reaches them:
   target"; `Omit!(Interpreter, Because.unconfirmed)` on that row
   (`pointer.classStaticArrayFieldElementWrittenThroughWholeFieldPointerIsVisibleDirectly`,
   `expressions.d`).
-- Next candidate, and more severe than a typical gap because it crashes the
-  host instead of giving a wrong result or an "unsupported" diagnostic: a
-  captured-variable access from a function nested **two or more** call
-  levels below the function that actually declares the captured variable
-  reads/writes the wrong stack slot on `Bytecode`. Confirmed live with (a) a
-  scalar, silent corruption, no crash: `int captured = 42; void middle() {
-  void inner() { captured = 43; } inner(); } middle(); assert(captured ==
-  43);` -- the assert fails, `captured` is still `42`; and (b) a dynamic
-  array, real `SIGSEGV`: same shape with `int[] arr = [1, 2, 3];` and
-  `inner` doing `arr[0] = 5;` -- crashes inside
-  `machine.readHeapElement`/`elementAddress` (`machine.d` ~2840-2857)
-  because the corrupted slice descriptor's pointer field is read as a raw
-  heap address. `Interpreter`/`SystemLinker` both give the correct result
-  for either fixture; a single level of nesting (the direct caller owns the
-  capture) already works on `Bytecode` for both scalars and arrays. Root
-  cause: at a call site needing to pass a nested-function context
-  (`compileCall`, `compiler.d` ~12561-12567, `if (layout.hasNestedContext)`),
-  the compiler unconditionally emits `Op.frameBaseIndex` -- the CALLER's own
-  current stack frame base -- as the context handed to the callee. That is
-  correct only when the caller itself is the frame that declared the
-  captured variable(s) the callee (transitively) reads, i.e. exactly one
-  nesting level. When the immediate caller is itself just relaying (e.g.
-  `middle` above, which touches no capture of its own but calls `inner`,
-  which reads a variable owned by `run`, `middle`'s caller), the callee
-  should receive the context `middle` itself already received from `run` --
-  its own `_nestedContextOffset` slot -- not a freshly computed base of
-  `middle`'s own frame. `capturedFrameIndex` (`compiler.d` ~5551-5573), which
-  every captured-variable read/write ultimately calls, has the matching
-  `-1`/`+capturedOffset` arithmetic and is not itself wrong; the bug is only
-  in what value the call site feeds into the context slot the callee then
-  reads through. A correct general fix needs the call site to distinguish
-  "callee's captures are all owned by me" (keep `Op.frameBaseIndex`) from
-  "callee's captures may be owned by an ancestor further up" (forward
-  `_nestedContextOffset` unchanged) -- and a caller can appear in both roles
-  for different callees, so this is not a single boolean flip. A cheaper,
-  bounded first step: since the current code is provably wrong whenever the
-  caller is itself relaying a received context AND the callee's needed
-  capture isn't caller-owned, compiling such a call could instead throw the
-  same "Unsupported ... in bytecode core" diagnostic every other
-  not-yet-handled shape throws, in place of silently corrupting memory or
-  crashing -- but determining "callee's needed capture isn't caller-owned"
-  cheaply and correctly (without walking DMD's `closureVars`/`toParent2`
-  chain for the callee) still needs its own design pass; do that analysis
-  before writing either the diagnostic or the real fix.
 - Static arrays of dynamic arrays copy each element's full 16-byte slice
   descriptor; nested mutation and general stale-cell reconciliation remain
   incomplete.
@@ -833,6 +789,18 @@ lifetime as the dependency bytecode cache.
   already determined `needsClosure()` and `closureVars`.
 - Native callbacks that receive delegates use the inbound trampoline described
   under Native bridge.
+- A call site handing a callee its nested-function context always passes its
+  own live frame (`Op.frameBaseIndex`), matching real D: a nested function's
+  context is its immediate enclosing function's frame, never a further
+  ancestor's, so the call site never needs to know or forward anything about
+  what the callee (transitively) captures. Reading a captured variable owned
+  further up the enclosing-function chain than one level
+  (`capturedFrameIndex`, `compiler.d`) walks the remaining hops itself: each
+  intermediate ancestor's own received context lives at that ancestor's own
+  `nestedContextOffset` within the frame just reached, still live on the
+  stack as the current call's transitive caller. `_capturedOwners` records,
+  per captured `VarDeclaration`, the function whose frame its offset is
+  relative to, so the read site knows how many hops to walk.
 - A nested function that reads its enclosing struct method's `this` (a
   capturing lambda literal, e.g. `() => this.field`, or a plain nested named
   function, e.g. `auto helper() { return this.field; }`) needs a hidden
