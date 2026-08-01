@@ -8308,6 +8308,41 @@ static foreach (backend; Matrix!()) {
     }
 }
 
+// A `ref` argument that is itself a struct-pointer local passed by name (no
+// dereference) is a different shape from the struct-pointer-dereference
+// fixture above: the callee rebinds the pointer variable itself
+// (`q = new S(...)`), so the write-back must copy the pointer's own 8-byte
+// value back into the caller's local rather than write through whatever the
+// pointer used to point at.
+static foreach (backend; Matrix!()) {
+    @("pointer.refArgumentRebindingStoredStructPointerUpdatesTheVariable." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            int seed() {
+                return 10;
+            }
+
+            struct Widget {
+                int value;
+            }
+
+            void reassign(ref Widget* q) {
+                q = new Widget(seed + 89);
+            }
+
+            unittest {
+                auto first = new Widget(seed);
+                auto p = first;
+                reassign(p);
+                assert(p.value == 99);
+                assert(first.value == 10);
+            }
+        });
+    }
+}
+
 // A `string` is just an `immutable(char)[]`, so a `string*` dereference must
 // read the same 16-byte {ptr, length} descriptor a `T[]*` dereference (e.g.
 // `int[]*`) already does: `.length` and whole-array equality through the

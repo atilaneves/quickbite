@@ -210,6 +210,12 @@ private struct Compiler {
         ushort valueOffset;
         ushort pointerOffset;
         ushort valueSize;
+        // True when `pointerOffset` holds the mirrored local's own pointer
+        // value (a `ref S*` rebind); false when it holds an address the
+        // mirrored value must be read from/written through (a `ref S`
+        // binding to a struct reached by pointer arithmetic, e.g. a
+        // foreach-ref array element).
+        bool isPointerValue;
     }
 
     // A scalar `ref` argument bound to a class field (`verify(c.value, ...)`):
@@ -12133,12 +12139,19 @@ private struct Compiler {
                 writeBack.elementSize,
             );
         foreach (writeBack; structPointerRefWriteBacks)
-            _code ~= Instruction(
-                pointerStoreOp(writeBack.valueSize),
-                writeBack.valueOffset,
-                writeBack.pointerOffset,
-                compileSizeConstant(0),
-            );
+            _code ~= writeBack.isPointerValue
+                ? Instruction(
+                    Op.copy,
+                    writeBack.pointerOffset,
+                    writeBack.valueOffset,
+                    writeBack.valueSize,
+                )
+                : Instruction(
+                    pointerStoreOp(writeBack.valueSize),
+                    writeBack.valueOffset,
+                    writeBack.pointerOffset,
+                    compileSizeConstant(0),
+                );
         foreach (writeBack; classFieldRefWriteBacks)
             _code ~= Instruction(
                 pointerStoreOp(writeBack.valueSize),
@@ -13471,11 +13484,26 @@ private struct Compiler {
         return true;
     }
 
+    // `_structPointerLocals` covers two distinct shapes sharing one lookup:
+    // a genuine `S* p = new S(...)` local, whose frame slot holds the
+    // pointer's own `size_t` value, and a `ref S item = arr[i]`/AA-element
+    // binding, whose frame slot holds the byte address of `item`'s own
+    // storage rather than `item`'s value. A `ref` argument that is itself
+    // the bare local (`argument.isVarExp`) disambiguates the two by
+    // `argument.type`: a pointer-typed argument (`reassign(p)` where the
+    // parameter is `ref S* q`) means the callee rebinds the pointer value
+    // itself, so the mirror/write-back is a plain value copy of the slot,
+    // the same as any other word-sized scalar `ref` argument; a
+    // struct-typed argument (`fill(item, ...)` where the parameter is
+    // `ref Item item`) means the slot is an address to dereference, so the
+    // mirror/write-back reads/writes the pointee's own bytes through it.
     private bool emitStructPointerRefArgument(
         in ushort slot,
         Expression argument,
         ref StructPointerRefWriteBack[] writeBacks,
     ) {
+        import dmd.astenums: TY;
+
         auto variable = argument.isVarExp;
         auto declaration =
             variable is null ? null : variable.var.isVarDeclaration;
@@ -13483,10 +13511,14 @@ private struct Compiler {
             return false;
 
         const pointerOffset = _locals[declaration];
-        const valueSize = cast(ushort) staticArraySize(argument.type);
+        const isPointerValue = argument.type.toBasetype.ty == TY.Tpointer;
+        const valueSize = cast(ushort) (isPointerValue
+            ? size_t.sizeof
+            : staticArraySize(argument.type));
         foreach (writeBack; writeBacks)
             if (writeBack.pointerOffset == pointerOffset &&
-                writeBack.valueSize == valueSize) {
+                writeBack.valueSize == valueSize &&
+                writeBack.isPointerValue == isPointerValue) {
                 _code ~= Instruction(
                     Op.loadConstant,
                     slot,
@@ -13497,12 +13529,15 @@ private struct Compiler {
             }
 
         const valueOffset = allocateBytes(valueSize, valueSize);
-        _code ~= Instruction(
-            pointerLoadOp(valueSize),
-            valueOffset,
-            pointerOffset,
-            compileSizeConstant(0),
-        );
+        if (isPointerValue)
+            _code ~= Instruction(Op.copy, valueOffset, pointerOffset, valueSize);
+        else
+            _code ~= Instruction(
+                pointerLoadOp(valueSize),
+                valueOffset,
+                pointerOffset,
+                compileSizeConstant(0),
+            );
         _code ~= Instruction(
             Op.loadConstant,
             slot,
@@ -13510,7 +13545,7 @@ private struct Compiler {
             cast(ushort) size(ScalarType.uint_),
         );
         writeBacks ~= StructPointerRefWriteBack(
-            valueOffset, pointerOffset, valueSize,
+            valueOffset, pointerOffset, valueSize, isPointerValue,
         );
         return true;
     }

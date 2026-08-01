@@ -507,19 +507,20 @@ row reaches them:
   the mirror-in `pointerLoadOp` call and the post-call `pointerStoreOp`
   writeback pass that width as the `N`-variant's explicit operand
   (`pointer.refArgumentThroughStoredPointerToWideStructWritesThroughPointer`).
-  Concrete next candidate: `emitStructPointerRefArgument`
-  (`compiler.d`) handles a different shape -- a `ref` argument that is itself
-  a struct-pointer-typed local passed by name (`void reassign(ref S* q) { q =
-  new S(...); } reassign(p);`, not a dereference) -- but its `valueSize`
-  computation and `pointerLoadOp`/`pointerStoreOp` calls treat the pointer
-  local's own frame slot as an address to dereference, rather than copying
-  the pointer's own 8-byte value; a `bin/qb` probe of this exact shape reads
-  back garbage after the call rather than either the pre-call or the
-  expected reassigned value. This is a genuine second bug in the same
-  ref-argument family, not the one just fixed, and needs a real
-  `SystemLinker`-backed fixture (it crosses a call boundary carrying mutable
-  pointer state, the kind of shape the REPL's per-statement model can mask)
-  before diagnosing or fixing it.
+  `emitStructPointerRefArgument` (`compiler.d`) now distinguishes the two
+  shapes `_structPointerLocals` covers: a genuine `S* p = new S(...)` local
+  passed by name to a `ref S* q` parameter (`reassign(p)`, no dereference)
+  rebinds the pointer value itself, so its frame slot is mirrored/written
+  back with a plain value copy; a `ref S item = arr[i]`/AA-element binding's
+  frame slot instead holds an address to dereference, so it keeps the
+  original `pointerLoadOp`/`pointerStoreOp` mirror/write-back sized from the
+  struct's own byte width. Distinguishing them by whether `argument.type` is
+  itself a pointer type (`TY.Tpointer`) fixed the rebind shape without
+  regressing the address-dereference shape, which a same-width fix that
+  always treated the slot as a pointer value broke
+  (`pointer.refArgumentRebindingStoredStructPointerUpdatesTheVariable`,
+  `struct.foreachRefOverFieldArrayPersistsElementWrites`,
+  `struct.foreachRefRepeatedArgumentPreservesAlias`).
 - Dynamic-array and string sub-slices reject an upper bound beyond the source
   length and a lower bound greater than the upper bound; pointer-slice bounds
   remain unchecked.
