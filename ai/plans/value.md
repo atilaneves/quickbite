@@ -735,12 +735,3 @@ bytecode VM.
 - DMD-derived layout facts stay the source of truth, cached on the
   handle; the interpreter must not grow a second set of D layout rules
   (see Contracts).
-
-### Verification blocker
-
-The full randomized gate is blocked by a deterministic plain-order Interpreter
-null dereference on an existing test. The previously recorded LLVMJit
-`SIGPIPE` transport failure is no longer the current gate blocker. Resume
-full-gate verification after the Interpreter crash is diagnosed; focused
-Interpreter and typed native-authority tests remain the safe migration
-feedback path meanwhile.
