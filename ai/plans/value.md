@@ -633,9 +633,9 @@ Native storage and calls remain the ordinary execution path; do not restore
 marshalling, cell families, alias maps, or name-based representation shims.
 `interpreter.md` §8 triage remains the partition.
 
-Next, promote the existing oracle-backed cross-array pointer-relations fixture
-and close any resulting Interpreter gap through native addresses, never an
-allocation-identity side channel.
+Next, promote the existing oracle-backed pointer post-increment-through-array-
+element fixture and close any resulting Interpreter gap through its
+authoritative native place, never a mirror or allocation-identity side channel.
 
 ### Item 5 — Delete Interpreter FFI marshalling fallbacks
 

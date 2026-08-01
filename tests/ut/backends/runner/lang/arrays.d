@@ -2776,10 +2776,7 @@ static foreach (backend; Matrix!()) {
     }
 }
 
-static foreach (backend; Matrix!(
-    Omit!(Interpreter, Because.unconfirmed,
-        "cross-array pointer relations expect a native pointer representation"),
-)) {
+static foreach (backend; Matrix!()) {
     @("pointer.relationsAcrossArraysReturnFalse." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
