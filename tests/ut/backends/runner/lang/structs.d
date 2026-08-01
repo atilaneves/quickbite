@@ -3947,3 +3947,83 @@ static foreach (backend; Matrix!()) {
         });
     }
 }
+
+// A whole-struct assignment into a field reached through a struct pointer,
+// where the right-hand side is a bare struct-local `VarExp` rather than a
+// struct literal or call. `tryStructPointerField`'s assignment branch
+// unconditionally called `compileExpression(assign.e2)` to get the rhs
+// value; `compileExpression`'s generic `VarExp` handling has no case for a
+// bare struct-typed local, since structs are only ever addressed through
+// `_structLocals`, so this threw "Unsupported variable in bytecode core:
+// a". Routes the aggregate rhs through `structBaseOffsetOrMaterialise`
+// instead, then block-copies through `storeStructPointerField`'s existing
+// width the same way a literal/call rhs already does. `guard` (a sibling
+// field after `t` in `Holder`) checks the block copy uses the field's own
+// width and does not overrun into adjacent storage.
+static foreach (backend; Matrix!()) {
+    @("pointer.structPointerFieldWholeStructAssignmentFromBareLocal." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            long seed() {
+                return 5;
+            }
+
+            struct Plain {
+                long x;
+            }
+
+            struct Holder {
+                Plain t;
+                long guard;
+            }
+
+            unittest {
+                Holder holder;
+                holder.guard = 999;
+                Holder* carrier = &holder;
+                Plain a;
+                a.x = seed;
+                carrier.t = a;
+                assert(carrier.t.x == 5);
+                assert(carrier.guard == 999);
+            }
+        });
+    }
+}
+
+// The class-field counterpart of the struct-pointer fixture above:
+// `tryClassPointerField`'s assignment branch has the identical bug, fixed
+// the same way through `storeClassPointerField`.
+static foreach (backend; Matrix!()) {
+    @("struct.classFieldWholeStructAssignmentFromBareLocal." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            long seed() {
+                return 7;
+            }
+
+            struct Plain {
+                long x;
+            }
+
+            class Holder {
+                Plain t;
+                long guard;
+            }
+
+            unittest {
+                auto holder = new Holder;
+                holder.guard = 999;
+                Plain a;
+                a.x = seed;
+                holder.t = a;
+                assert(holder.t.x == 7);
+                assert(holder.guard == 999);
+            }
+        });
+    }
+}

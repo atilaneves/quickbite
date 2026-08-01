@@ -9495,10 +9495,29 @@ private struct Compiler {
                     return Operand(destination, ScalarType.void_);
                 }
 
-                const value = compileExpression(assign.e2);
-                storeStructPointerField(*field, value.offset);
                 const isAggregate = field.type.toBasetype.ty == TY.Tstruct ||
                     field.type.toBasetype.ty == TY.Tsarray;
+                // A struct/static-array rhs (e.g. a bare struct-local
+                // `VarExp`) has no scalar operand at all --
+                // `compileExpression`'s generic `VarExp` path never
+                // resolves a struct-typed local, since structs are only
+                // ever addressed through `_structLocals`. Resolve it the
+                // same way the whole-local `_structLocals` assignment
+                // branch below does, then block-copy through
+                // `storeStructPointerField`'s existing width instead of
+                // storing a scalar operand offset.
+                if (isAggregate) {
+                    bool resolved;
+                    const source =
+                        structBaseOffsetOrMaterialise(assign.e2, resolved);
+                    if (resolved) {
+                        storeStructPointerField(*field, source);
+                        return Operand(source, ScalarType.void_);
+                    }
+                }
+
+                const value = compileExpression(assign.e2);
+                storeStructPointerField(*field, value.offset);
                 return Operand(
                     value.offset,
                     isAggregate ? ScalarType.void_ : scalarType(field.type),
@@ -9535,6 +9554,19 @@ private struct Compiler {
 
                 const isAggregate = field.type.toBasetype.ty == TY.Tstruct ||
                     field.type.toBasetype.ty == TY.Tsarray;
+                // Same bare struct-local rhs case `tryStructPointerField`'s
+                // sibling branch above resolves: `compileExpression` never
+                // returns a bare struct-typed local.
+                if (isAggregate) {
+                    bool resolved;
+                    const source =
+                        structBaseOffsetOrMaterialise(assign.e2, resolved);
+                    if (resolved) {
+                        storeClassPointerField(*field, source);
+                        return Operand(source, ScalarType.void_);
+                    }
+                }
+
                 const value = compileExpression(assign.e2);
                 if (!isAggregate) {
                     const fieldScalar = scalarType(field.type);
