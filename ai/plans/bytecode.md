@@ -551,16 +551,23 @@ row reaches them:
   handles a struct-typed branch correctly -- confirmed via `bin/qb` with a
   24-byte struct -- because `conditionalBranchOffsetOrNull` resolves each
   branch through the generic, width-agnostic `referenceOffsetOrNull`, not a
-  scalar-sized mirror. Next candidate in this same family:
-  `emitClassFieldRefArgument` (`compiler.d`) explicitly declines any class
-  field whose type is `Tstruct`/`Tsarray`/`Tarray`/`Taarray`, falling
-  through to "Unsupported ref argument in bytecode core" -- confirmed red
-  via `bin/qb` (`class C { Wide value; } ... bump(c.value);` where `Wide` is
-  a 24-byte struct and `bump` takes `ref Wide`; `SystemLinker` mutates the
-  field, `Bytecode` throws). Needs a whole-field mirror/writeback through
-  the field's own address (`classFieldAddress`) sized from the field's real
-  byte width, the aggregate-field counterpart of
-  `emitStructPointerFieldRefArgument`.
+  scalar-sized mirror. `emitClassFieldRefArgument` now covers a class field
+  whose own type is `Tstruct`/`Tsarray`, sized from the field's real byte
+  width (`staticArraySize`/`staticArrayAlign`, the same source
+  `emitPointerDereferenceRefArgument` already uses for a wide-struct
+  pointee) instead of the scalar-only 1/2/4/8 gate; `Tarray`/`Taarray`
+  fields still decline
+  (`refArgument.classFieldOfWideStructTypeWritesThroughField`). Next
+  candidate in this same family: `emitStructPointerFieldRefArgument` has
+  the identical `Tstruct`/`Tsarray`/`Tarray`/`Taarray` decline for a struct
+  field reached through a struct pointer (`carrier.value` where `carrier:
+  Holder*`) -- confirmed red via `bin/qb`
+  (`struct Wide { long a; long b; long c; } struct Holder { Wide value; }
+  ... bump(carrier.value);`; `SystemLinker` mutates the field, `Bytecode`
+  throws "Unsupported ref argument in bytecode core: (*carrier).value").
+  Same fix shape: widen the `Tstruct`/`Tsarray` case to the field's real
+  byte width through `structFieldAddress`, leaving `Tarray`/`Taarray`
+  declined.
 - Dynamic-array and string sub-slices reject an upper bound beyond the source
   length and a lower bound greater than the upper bound; pointer-slice bounds
   remain unchecked.

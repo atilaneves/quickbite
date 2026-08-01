@@ -12158,6 +12158,7 @@ private struct Compiler {
                 writeBack.valueOffset,
                 writeBack.addressOffset,
                 compileSizeConstant(0),
+                writeBack.valueSize,
             );
         foreach (writeBack; structPointerFieldRefWriteBacks)
             _code ~= Instruction(
@@ -13781,14 +13782,23 @@ private struct Compiler {
             return false;
 
         const ty = field.type.toBasetype.ty;
-        if (ty == TY.Tstruct || ty == TY.Tsarray || ty == TY.Tarray ||
-            ty == TY.Taarray)
+        if (ty == TY.Tarray || ty == TY.Taarray)
             return false;
 
-        const valueSize = cast(ushort) size(scalarType(field.type));
-        if (valueSize != 1 && valueSize != 2 && valueSize != 4 &&
-            valueSize != 8)
+        // A struct or static-array field lives inline in the class block
+        // (`classFieldAddress` is already its own address, not a further
+        // pointer to dereference), so it needs its own real byte width
+        // rather than the scalar-only 1/2/4/8 gate below -- the aggregate
+        // counterpart of `emitStructPointerFieldRefArgument`.
+        const isAggregate = ty == TY.Tstruct || ty == TY.Tsarray;
+        const valueSize = cast(ushort) (isAggregate
+            ? staticArraySize(field.type)
+            : size(scalarType(field.type)));
+        if (!isAggregate && valueSize != 1 && valueSize != 2 &&
+            valueSize != 4 && valueSize != 8)
             return false;
+        const valueAlign =
+            isAggregate ? staticArrayAlign(field.type) : valueSize;
 
         foreach (writeBack; writeBacks)
             if (writeBack.pointerSlot == field.pointerSlot &&
@@ -13803,13 +13813,14 @@ private struct Compiler {
                 return true;
             }
 
-        const valueOffset = allocateBytes(valueSize, valueSize);
+        const valueOffset = allocateBytes(valueSize, valueAlign);
         const addressOffset = classFieldAddress(*field);
         _code ~= Instruction(
             pointerLoadOp(valueSize),
             valueOffset,
             addressOffset,
             compileSizeConstant(0),
+            valueSize,
         );
         _code ~= Instruction(
             Op.loadConstant,

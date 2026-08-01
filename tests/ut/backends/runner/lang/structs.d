@@ -3689,3 +3689,51 @@ static foreach (backend; Matrix!()) {
         });
     }
 }
+
+// A class field whose own type is a struct wider than a register, passed as
+// a `ref` argument (`bump(c.value)`). `emitClassFieldRefArgument` declined
+// any `Tstruct`/`Tsarray`/`Tarray`/`Taarray` field, falling through to
+// "Unsupported ref argument in bytecode core"; the field lives inline in the
+// class block, so its own address (`classFieldAddress`) is already correct,
+// it only needed its real byte width instead of the scalar-only 1/2/4/8
+// gate, mirroring `emitStructPointerFieldRefArgument`'s existing scalar
+// case.
+static foreach (backend; Matrix!()) {
+    @("refArgument.classFieldOfWideStructTypeWritesThroughField." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            long seed() {
+                return 10;
+            }
+
+            struct Wide {
+                long a;
+                long b;
+                long c;
+            }
+
+            class Holder {
+                Wide value;
+            }
+
+            void bump(ref Wide w) {
+                w.a = w.a + 1;
+                w.b = w.b + 2;
+                w.c = w.c + 3;
+            }
+
+            unittest {
+                auto holder = new Holder;
+                holder.value.a = seed;
+                holder.value.b = seed + 10;
+                holder.value.c = seed + 20;
+                bump(holder.value);
+                assert(holder.value.a == 11);
+                assert(holder.value.b == 22);
+                assert(holder.value.c == 33);
+            }
+        });
+    }
+}
