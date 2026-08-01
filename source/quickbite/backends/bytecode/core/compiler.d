@@ -10041,9 +10041,28 @@ private struct Compiler {
 
     // A module-level dynamic array (`byte[] a;`) reserves a plain 16-byte
     // native-order slice descriptor slot, the array counterpart of the
-    // scalar allocation above; only the default (null) initializer is
-    // supported so far, matching `moduleVariableHasDefaultInitializer`'s
-    // class-reference use.
+    // scalar allocation above. The default (null) initializer leaves the
+    // descriptor's bytes zeroed (a null slice); a non-null initializer that
+    // is an array literal of constant scalar elements
+    // (`int[] arr = [1, 2, 3];`) compiles its bytes into a fresh
+    // `_program.literalBlocks` entry -- a GC-rooted block that never moves,
+    // the same stable-address mechanism `appendStringLiteral` already uses
+    // -- and writes {blockPointer, count} directly into the descriptor's
+    // moduleData bytes right now, at registration time, exactly as
+    // `moduleScalarInitializerBytes` writes a scalar's bytes directly: no
+    // bytecode instruction is needed, since the compiler and the machine
+    // share one process/address space, so a pointer resolved during
+    // compilation stays valid for the whole run. An array-of-arrays element,
+    // a struct/static-array element, or any non-constant element (e.g. a
+    // function call) is not yet handled and still declines registration.
+    //
+    // A plain array literal (`[1, 2, 3]`) parses as an `ArrayInitializer`,
+    // not an `ExpInitializer` the way a scalar's `int x = 5;` does, so this
+    // does not reuse `moduleVariableHasDefaultInitializer` (which only
+    // recognises `ExpInitializer` and, for anything else, wrongly reports
+    // "default initializer" -- the actual root cause of the bug this
+    // function fixes): `moduleDynamicArrayInitializerExpressionOrNull` below
+    // normalises every `Initializer` subclass via `initializerToExpression`.
     private ModuleDynamicArrayVariable* moduleDynamicArrayVariableOrNull(
         VarDeclaration declaration,
     ) {
@@ -10061,18 +10080,115 @@ private struct Compiler {
         if (auto existing = declaration in _moduleDynamicArrayVariables)
             return existing;
 
-        if (!moduleVariableHasDefaultInitializer(declaration))
-            return null;
-
         const elementType = dynamicArrayElementType(declaration.type);
         const elementIsArray = arrayElementIsArray(declaration.type);
+
+        auto initializerExpr =
+            moduleDynamicArrayInitializerExpressionOrNull(declaration);
+        const hasDefaultInitializer =
+            initializerExpr is null || initializerExpr.isNullExp !is null;
+
+        size_t literalCount;
+        ubyte[] literalBytes;
+        if (!hasDefaultInitializer) {
+            literalBytes = moduleDynamicArrayLiteralInitializerBytes(
+                initializerExpr, elementType, elementIsArray, literalCount,
+            );
+            if (literalBytes is null && literalCount == 0)
+                return null;
+        }
+
         const offset = allocateModuleBytes(sliceDescriptorSize, size_t.sizeof);
         _moduleDynamicArrayVariables[declaration] = ModuleDynamicArrayVariable(
             offset,
             elementType,
             elementIsArray,
         );
+        if (!hasDefaultInitializer) {
+            import std.bitmanip: nativeToLittleEndian;
+
+            _program.literalBlocks ~= literalBytes;
+            const pointer = cast(size_t) _program.literalBlocks[$ - 1].ptr;
+            _program.moduleData[offset .. offset + size_t.sizeof] =
+                nativeToLittleEndian(pointer);
+            _program.moduleData[
+                offset + size_t.sizeof .. offset + sliceDescriptorSize
+            ] = nativeToLittleEndian(cast(size_t) literalCount);
+        }
         return declaration in _moduleDynamicArrayVariables;
+    }
+
+    // Resolve a module-level dynamic array's initializer to a plain
+    // `Expression`, regardless of which `Initializer` subclass DMD parsed it
+    // into (`ExpInitializer` for `int x = 5;`, but `ArrayInitializer` for a
+    // literal like `[1, 2, 3]`): see `initializerToExpression`.
+    private Expression moduleDynamicArrayInitializerExpressionOrNull(
+        VarDeclaration declaration,
+    ) {
+        import dmd.initsem: initializerToExpression;
+
+        resolveNonRootInitializer(declaration);
+        if (declaration._init is null)
+            return null;
+
+        auto expression = declaration._init.initializerToExpression;
+        return expression is null ? null : initializerExpression(expression);
+    }
+
+    // Compile-time bytes for a module-level dynamic array's non-null,
+    // non-default initializer, when it is a non-empty array literal of
+    // constant scalar elements. Returns `null` (with `count` left at 0) when
+    // the initializer is not that shape, so the caller can tell "empty
+    // literal bytes" (`count == 0` from a genuinely empty `[]` initializer,
+    // not yet given real storage either) apart from "declined".
+    private ubyte[] moduleDynamicArrayLiteralInitializerBytes(
+        Expression initializerExpr,
+        in ScalarType elementType,
+        in bool elementIsArray,
+        out size_t count,
+    ) {
+        import std.bitmanip: nativeToLittleEndian;
+
+        if (elementIsArray || elementType == ScalarType.void_)
+            return null;
+
+        auto literal = initializerExpr.isArrayLiteralExp;
+        if (literal is null || literal.elements is null ||
+            literal.elements.length == 0)
+        {
+            return null;
+        }
+
+        count = literal.elements.length;
+        const elementSize = size(elementType);
+        ubyte[] bytes;
+        bytes.length = count * elementSize;
+        foreach (elementIndex; 0 .. count) {
+            auto element = (*literal.elements)[elementIndex];
+            if (auto integer = element.isIntegerExp) {
+                const raw = nativeToLittleEndian(cast(ulong) integer.toInteger);
+                bytes[elementIndex * elementSize .. (elementIndex + 1) * elementSize] =
+                    raw[0 .. elementSize];
+                continue;
+            }
+            if (auto real_ = element.isRealExp) {
+                if (elementType == ScalarType.real_) {
+                    bytes[
+                        elementIndex * elementSize .. (elementIndex + 1) * elementSize
+                    ] = realBytes(real_)[];
+                } else {
+                    const raw = nativeToLittleEndian(floatBits(real_, elementType));
+                    bytes[
+                        elementIndex * elementSize .. (elementIndex + 1) * elementSize
+                    ] = raw[0 .. elementSize];
+                }
+                continue;
+            }
+
+            count = 0;
+            return null;
+        }
+        return bytes;
     }
 
     // A module-level struct (`Point p;`) reserves `Type.size()` bytes at

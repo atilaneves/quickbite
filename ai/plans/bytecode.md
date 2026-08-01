@@ -434,17 +434,16 @@ row reaches them:
   the plain (non-ref-argument) read/write path for a field reached through
   `tryStructPointerField` -- now handle a `Tstruct`/`Tsarray` field the same
   way the ref-argument path above does.
-- Next candidate: a module-level dynamic array with a non-null initializer
-  (`int[] arr = [1, 2, 3];` at module scope) does not throw at all --
-  `moduleDynamicArrayVariableOrNull` (`compiler.d`) declines to register it
-  (gated on `moduleVariableHasDefaultInitializer`), so `arr` never resolves
-  to any descriptor, and reading it silently yields a zero/null slice
-  instead of `[1, 2, 3]` (`assert(arr.length == 3)` fails with "0 != 3",
-  confirmed red via a real ut fixture, not just `bin/qb`, against the
-  `SystemLinker` oracle). Fix shape: extend `moduleDynamicArrayVariableOrNull`
-  to compile a non-null initializer into `_program.moduleData` at
-  registration time, instead of gating registration on
-  `moduleVariableHasDefaultInitializer` at all.
+- Next candidate: a module-level struct variable's non-default initializer
+  (`Point p = Point(1, 2);`) falls through to "Unsupported variable in
+  bytecode core" -- `moduleStructVariableOrNull` (`compiler.d`) is gated on
+  `moduleVariableHasDefaultInitializer` the same way the now-fixed
+  module-array case below was; likely needs the analogous fix (compile the
+  initializer's field bytes into `_program.moduleData` at registration
+  time), plus checking whether `moduleVariableHasDefaultInitializer` itself
+  needs the same `Initializer`-subclass normalisation
+  (`initializerToExpression`) the array fix required, since a struct literal
+  parses as a `StructInitializer`, not an `ExpInitializer`.
 - Dynamic-array and string sub-slices reject an upper bound beyond the source
   length and a lower bound greater than the upper bound; pointer-slice bounds
   remain unchecked.
@@ -481,13 +480,14 @@ row reaches them:
   the right-hand array's rows copy as whole 16-byte descriptors instead of
   truncating to 4 bytes.
 - A `__gshared`/`static` module-level dynamic-array variable
-  (`moduleDynamicArrayVariableOrNull`, `compiler.d`) only has storage when its
-  declared initializer is absent or an explicit `null`; a non-null module
-  array initializer silently reads back as a zero/null slice instead of
-  throwing (see the "Next candidate" note above, confirmed red via a real ut
-  fixture rather than the earlier assumption of an "Unsupported variable in
-  bytecode core" throw). A module-level struct variable
-  (`ModuleStructVariable`) is supported for the default-initialized case:
+  (`moduleDynamicArrayVariableOrNull`, `compiler.d`) with a non-null
+  initializer now has real storage when the initializer is a non-empty array
+  literal of constant scalar elements (`int[] arr = [1, 2, 3];`); still
+  declines registration (same as the default-initializer case) for an
+  array-of-arrays element, a struct/static-array element, an empty literal
+  (`[]`), or any non-constant element (e.g. a function call). A module-level
+  struct variable (`ModuleStructVariable`) is supported for the
+  default-initialized case:
   field access materialises the whole block
   via `Op.loadModule` but writes back only the touched field's own bytes via
   `Op.storeModule` (`tryStructField`/`writeBackStructField`), so a sibling

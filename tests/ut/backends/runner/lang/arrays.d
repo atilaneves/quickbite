@@ -404,6 +404,50 @@ static foreach (backend; Matrix!(
     }
 }
 
+// A module-level dynamic array with a non-null array-literal initializer
+// (`int[] arr = [1, 2, 3];`): `moduleDynamicArrayVariableOrNull` used to
+// treat this the same as no initializer at all (a plain array literal
+// parses as an `ArrayInitializer`, not the `ExpInitializer`
+// `moduleVariableHasDefaultInitializer` recognised), so `arr` read back a
+// zero-length null slice instead of its declared contents. `Ctfe` cannot
+// read dataseg storage at all; `Interpreter` and `LLVMJit` have the same
+// gap, unconfirmed/unfixed here.
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.inexpressible,
+        "CTFE cannot read dataseg (__gshared/static) storage"),
+    Omit!(Interpreter, Because.unconfirmed),
+    Omit!(LLVMJit, Because.unconfirmed),
+)) {
+    @("dynamicArray.moduleArrayLiteralInitializer." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            int[] arr = [1, 2, 3];
+
+            int sum() {
+                return arr[0] + arr[1] + arr[2];
+            }
+
+            unittest {
+                // First touch is from a lazily-compiled callee, not the
+                // entry itself; it must still see the initialised contents.
+                assert(sum() == 6);
+
+                assert(arr.length == 3);
+                assert(arr[0] == 1);
+                assert(arr[1] == 2);
+                assert(arr[2] == 3);
+
+                arr[0] = 99;
+                assert(arr[0] == 99);
+                arr ~= 4;
+                assert(arr.length == 4);
+                assert(arr[3] == 4);
+            }
+        });
+    }
+}
+
 static foreach (backend; Matrix!()) {
     @("assertDiagnostic.characterEquality." ~ backend.stringof)
     @Tags(backend.stringof)
