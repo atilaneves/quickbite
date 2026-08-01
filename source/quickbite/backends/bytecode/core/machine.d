@@ -449,8 +449,11 @@ package(quickbite.backends.bytecode) RunResult run(
                 ++ip;
                 break;
 
-            case pointerSlice1, pointerSlice2, pointerSlice4, pointerSlice8:
-                const pointerSliceSize = pointerElementSize(instruction.op);
+            case pointerSlice1, pointerSlice2, pointerSlice4, pointerSlice8,
+                pointerSlice16, pointerSliceN:
+                const pointerSliceSize = instruction.op == pointerSliceN
+                    ? instruction.d
+                    : pointerElementSize(instruction.op);
                 const sliceLo = scalarValue!size_t(stack, base + instruction.c);
                 const sliceHi = scalarValue!size_t(
                     stack, base + instruction.c + size_t.sizeof,
@@ -2367,7 +2370,8 @@ private uint pointerElementSize(
     in imported!"quickbite.backends.bytecode.core.program".Op op,
 ) @safe @nogc nothrow pure {
     import quickbite.backends.bytecode.core.program: Op;
-    if (op == Op.pointerLoad16 || op == Op.pointerStore16)
+    if (op == Op.pointerLoad16 || op == Op.pointerStore16 ||
+        op == Op.pointerSlice16)
         return 16;
     if (op == Op.pointerLoad8 || op == Op.pointerStore8 ||
         op == Op.pointerSlice8)

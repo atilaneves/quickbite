@@ -6795,11 +6795,13 @@ private struct Compiler {
             cast(ushort) size_t.sizeof,
         );
 
+        const byteStride = pointerElementMetadata(slice.e1.type).byteStride;
         _code ~= Instruction(
-            pointerSliceOp(pointerElementMetadata(slice.e1.type).byteStride),
+            pointerSliceOp(byteStride),
             destination,
             pointer.offset,
             bounds,
+            cast(ushort) byteStride,
         );
     }
 
@@ -16535,7 +16537,8 @@ private imported!"quickbite.backends.bytecode.core.program".Op pointerSliceOp(
         case 2: return Op.pointerSlice2;
         case 4: return Op.pointerSlice4;
         case 8: return Op.pointerSlice8;
-        default: assert(0, "Unsupported pointer slice element size.");
+        case 16: return Op.pointerSlice16;
+        default: return Op.pointerSliceN;
     }
 }
 

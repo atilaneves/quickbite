@@ -6545,6 +6545,46 @@ static foreach (backend; Matrix!()) {
     }
 }
 
+// `p[lo .. hi]` slicing through a raw pointer into a struct wider than 16
+// bytes: `pointerSliceOp` used to `assert(0)` for any element size beyond 8,
+// blocking this shape entirely. The resulting slice must share the original
+// backing storage, not a copy.
+static foreach (backend; Matrix!()) {
+    @("pointer.sliceWithStructElementsWiderThan16BytesSharesBackingStorage." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct S {
+                long a;
+                long b;
+                long c;
+            }
+
+            int seed(int value) {
+                return value;
+            }
+
+            unittest {
+                S[] outer;
+                outer ~= S(seed(1), seed(2), seed(3));
+                outer ~= S(seed(4), seed(5), seed(6));
+                outer ~= S(seed(7), seed(8), seed(9));
+                S* p = outer.ptr;
+
+                S[] sliced = p[1 .. 3];
+
+                assert(sliced.length == 2);
+                assert(sliced[0].a == 4);
+                assert(sliced[1].c == 9);
+
+                sliced[0].a = seed(100);
+                assert(outer[1].a == 100);
+            }
+        });
+    }
+}
+
 // `recordStructFieldAlias` records ANY
 // `DotVarExp` initializer bound to a `ref` local -- including a non-scalar
 // (array/nested-struct) field -- so `writeThroughStructFieldAlias` reached a

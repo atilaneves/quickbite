@@ -393,11 +393,16 @@ package(quickbite.backends.bytecode) enum Op: ubyte {
     // offset a from the raw `size_t` pointer value at frame offset b and an
     // adjacent {lo, hi} pair of `size_t` bounds at frame offset c. Backs
     // `p[lo .. hi]`; unchecked against the original block, like compiled D. The
-    // element size is fixed by the opcode (1 or 4 bytes).
+    // element size is fixed by the opcode (1, 2, 4, 8, or 16 bytes).
     pointerSlice1,
     pointerSlice2,
     pointerSlice4,
     pointerSlice8,
+    pointerSlice16,
+    // Same as `pointerSlice1`/etc, for an element width not covered by a fixed
+    // opcode (e.g. a struct element wider than 16 bytes): the byte width is
+    // operand d instead of being implied by the opcode.
+    pointerSliceN,
     // a: destination (one boolean byte), b: lhs, c: rhs (unsigned 8-byte
     // comparison). Back raw pointer-value relations `p < q`, `p <= q`, `p > q`,
     // `p >= q`, which compare as `size_t`.

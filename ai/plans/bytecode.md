@@ -482,15 +482,29 @@ row reaches them:
   sites (`*p` and `p[i]` as struct rvalues, both now sharing a single
   `loadStructThroughPointer` helper) have the identical `N`-variant escape,
   so reading a struct wider than 16 bytes through a raw pointer works.
-  Concrete next candidate: `pointerSliceOp` (`compiler.d`, defined alongside
-  `pointerLoadOp`/`pointerStoreOp`) still `assert(0)`s for a struct element
-  wider than 8 bytes, so slicing through such a pointer (`p[lo .. hi]`)
-  remains unsupported; needs the identical `N`-variant escape. Separately,
-  `pointerLoadOp`'s ref-argument/write-back call sites are still bounded to
-  `<= 8` bytes by existing guards and were left untouched (not currently
-  reachable with a wide struct, since no ref-argument path yet resolves a
-  struct-typed pointee) -- reconfirm this is still true before assuming it's
-  fully covered.
+  `pointerSliceOp` now covers 16 bytes and any wider width too
+  (`Op.pointerSlice16`/`Op.pointerSliceN`, carrying the byte width as
+  instruction operand `d` the same way `subSliceN` does), so slicing through
+  a raw pointer to a struct wider than 8 bytes (`p[lo .. hi]`) shares the
+  original backing storage instead of asserting
+  (`pointer.sliceWithStructElementsWiderThan16BytesSharesBackingStorage`).
+  Concrete next candidate: `compileClassStaticArrayAsDynamicInto`
+  (`compiler.d`, the class-field counterpart of
+  `compileStaticArrayAsDynamicInto`, backing `c.arr[]` where `arr` is a class
+  instance's static-array field) calls `pointerLoadOp(elementSize)` per
+  element but its `Instruction` only sets operands a/b/c, never d; for a
+  struct element wider than 16 bytes this silently selects `Op.pointerLoadN`
+  with an unset (zero) width instead of asserting, so the view reads zero
+  bytes per element -- a silently wrong answer, not a crash. Confirmed via
+  `bin/qb`: `class C { S[2] arr; } auto c = new C; c.arr[0] = S(1,2,3);
+  c.arr[1] = S(4,5,6); auto view = c.arr[]; return view[1].a;` (`S` a 24-byte
+  struct) returns `4` under `system-linker` but `0` under `bytecode`. Needs
+  the same fix as the `N`-variant call sites above: pass the element width as
+  operand d. Separately, `pointerLoadOp`'s ref-argument/write-back call sites
+  are still bounded to `<= 8` bytes by existing guards and were left
+  untouched (not currently reachable with a wide struct, since no
+  ref-argument path yet resolves a struct-typed pointee) -- reconfirm this is
+  still true before assuming it's fully covered.
 - Dynamic-array and string sub-slices reject an upper bound beyond the source
   length and a lower bound greater than the upper bound; pointer-slice bounds
   remain unchecked.
