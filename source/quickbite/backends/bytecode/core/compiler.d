@@ -11453,11 +11453,12 @@ private struct Compiler {
         const elementType = dynamicArrayElementType(slice.e1.type);
         const elementSize = dynamicArrayElementSize(slice.e1.type, elementType);
 
-        if (sliceFillSupported(elementSize) &&
-            rhs.type !is null &&
-            rhs.type.toBasetype.isTypeBasic !is null) {
+        if (isBroadcastFillSource(rhs)) {
             const value = compileExpression(rhs);
-            _code ~= Instruction(sliceFillOp(elementSize), *destination, value.offset);
+            _code ~= Instruction(
+                sliceFillOp(elementSize), *destination, value.offset,
+                cast(ushort) elementSize,
+            );
 
             auto result = new Operand;
             *result = Operand.init;
@@ -11475,6 +11476,27 @@ private struct Compiler {
         auto result = new Operand;
         *result = Operand.init;
         return result;
+    }
+
+    // True when `rhs` is a single value broadcast into every element of a
+    // slice-assignment range (`arr[0 .. 2] = value;`), as opposed to an
+    // array-shaped source `compileSourceSlice` copies element-by-element (a
+    // sub-slice, an array literal, a string literal, or another dynamic
+    // array). Does not by itself account for a destination element that is
+    // its own heap-allocated row descriptor (`elementIsArray` at the call
+    // site) -- callers guard that shape separately.
+    private bool isBroadcastFillSource(Expression rhs) {
+        import dmd.astenums: TY;
+
+        if (rhs.type is null)
+            return false;
+        if (rhs.isSliceExp !is null)
+            return false;
+        if (rhs.isArrayLiteralExp !is null)
+            return false;
+        if (stringLiteralOf(rhs) !is null)
+            return false;
+        return rhs.type.toBasetype.ty != TY.Tarray;
     }
 
     // `arr[lo .. hi] = rhs` or `p[lo .. hi] = rhs`: form the destination
@@ -11504,11 +11526,19 @@ private struct Compiler {
         const elementSize =
             dynamicArrayElementSize(slice.e1.type, elementType, elementIsArray);
 
-        if (sliceFillSupported(elementSize) &&
-            rhs.type !is null &&
-            rhs.type.toBasetype.isTypeBasic !is null) {
+        // `elementIsArray` means each destination element is its own
+        // separately heap-allocated row descriptor (the `T[N][]`/`T[][]`
+        // representation), not `elementSize` raw bytes shared by every row;
+        // broadcasting one rhs value into every row would need a fresh row
+        // allocation per destination element rather than a byte-for-byte
+        // fill, so this shape still declines below rather than silently
+        // aliasing every row to one block or misreading the rhs's width.
+        if (!elementIsArray && isBroadcastFillSource(rhs)) {
             const value = compileExpression(rhs);
-            _code ~= Instruction(sliceFillOp(elementSize), destination, value.offset);
+            _code ~= Instruction(
+                sliceFillOp(elementSize), destination, value.offset,
+                cast(ushort) elementSize,
+            );
 
             auto result = new Operand;
             *result = Operand.init;
@@ -16886,11 +16916,6 @@ private imported!"quickbite.backends.bytecode.core.program".Op sliceCopyOp(
     return elementSize == 16 ? Op.sliceCopy16 : Op.sliceCopyN;
 }
 
-private bool sliceFillSupported(in uint elementSize) @safe @nogc nothrow pure {
-    return elementSize == 1 || elementSize == ushort.sizeof ||
-        elementSize == uint.sizeof || elementSize == ulong.sizeof;
-}
-
 private imported!"quickbite.backends.bytecode.core.program".Op sliceFillOp(
     in uint elementSize,
 ) @safe @nogc nothrow pure {
@@ -16899,7 +16924,9 @@ private imported!"quickbite.backends.bytecode.core.program".Op sliceFillOp(
         return Op.sliceFill1;
     if (elementSize == ushort.sizeof)
         return Op.sliceFill2;
-    return elementSize == uint.sizeof ? Op.sliceFill4 : Op.sliceFill8;
+    if (elementSize == uint.sizeof)
+        return Op.sliceFill4;
+    return elementSize == ulong.sizeof ? Op.sliceFill8 : Op.sliceFillN;
 }
 
 private imported!"quickbite.backends.bytecode.core.program".Op sliceEqualOp(

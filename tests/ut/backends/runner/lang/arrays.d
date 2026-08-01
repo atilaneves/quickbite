@@ -1316,6 +1316,61 @@ static foreach (backend; Matrix!()) {
     }
 }
 
+// A non-basic-type (struct) element wider than 8 bytes: broadcasting a single
+// value across a range must copy its full width into every destination
+// element, the same way the byte/short/long scalar broadcasts above do.
+static foreach (backend; Matrix!()) {
+    @("dynamicArray.partialSliceAssignmentBroadcastsStructElementWiderThan8Bytes." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct S {
+                long a;
+                long b;
+                long c;
+            }
+
+            int seed(int value) {
+                return value;
+            }
+
+            unittest {
+                S[] values = [
+                    S(seed(1), seed(2), seed(3)),
+                    S(seed(4), seed(5), seed(6)),
+                    S(seed(7), seed(8), seed(9)),
+                    S(seed(10), seed(11), seed(12)),
+                ];
+
+                values[1 .. 3] = S(seed(20), seed(21), seed(22));
+
+                assert(values[0].a == 1);
+                assert(values[0].b == 2);
+                assert(values[0].c == 3);
+                assert(values[1].a == 20);
+                assert(values[1].b == 21);
+                assert(values[1].c == 22);
+                assert(values[2].a == 20);
+                assert(values[2].b == 21);
+                assert(values[2].c == 22);
+                assert(values[3].a == 10);
+                assert(values[3].b == 11);
+                assert(values[3].c == 12);
+
+                // The broadcast source is also a plain lvalue read out of the
+                // same array (not a fresh literal), non-overlapping with the
+                // destination range.
+                values[0 .. 1] = values[3];
+
+                assert(values[0].a == 10);
+                assert(values[0].b == 11);
+                assert(values[0].c == 12);
+            }
+        });
+    }
+}
+
 // Slice assignment writes existing storage in place, so a slice taken before
 // the assignment observes the changed element.
 static foreach (backend; Matrix!()) {
@@ -1883,6 +1938,60 @@ static foreach (backend; Matrix!()) {
                 assert(wide[1] == 7);
                 assert(wide[2] == 7);
                 assert(wide[3] == 0);
+            }
+        });
+    }
+}
+
+// A non-basic-type (struct) element wider than 8 bytes: broadcasting a single
+// value across a range must copy its full width into every destination
+// element, the same way the byte/short/long scalar broadcasts above do.
+static foreach (backend; Matrix!()) {
+    @("staticArray.partialSliceAssignmentBroadcastsStructElementWiderThan8Bytes." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct S {
+                long a;
+                long b;
+                long c;
+            }
+
+            int seed(int value) {
+                return value;
+            }
+
+            unittest {
+                S[4] values;
+                values[0] = S(seed(1), seed(2), seed(3));
+                values[1] = S(seed(4), seed(5), seed(6));
+                values[2] = S(seed(7), seed(8), seed(9));
+                values[3] = S(seed(10), seed(11), seed(12));
+
+                values[1 .. 3] = S(seed(20), seed(21), seed(22));
+
+                assert(values[0].a == 1);
+                assert(values[0].b == 2);
+                assert(values[0].c == 3);
+                assert(values[1].a == 20);
+                assert(values[1].b == 21);
+                assert(values[1].c == 22);
+                assert(values[2].a == 20);
+                assert(values[2].b == 21);
+                assert(values[2].c == 22);
+                assert(values[3].a == 10);
+                assert(values[3].b == 11);
+                assert(values[3].c == 12);
+
+                // The broadcast source is also a plain lvalue read out of the
+                // same array (not a fresh literal), non-overlapping with the
+                // destination range.
+                values[0 .. 1] = values[3];
+
+                assert(values[0].a == 10);
+                assert(values[0].b == 11);
+                assert(values[0].c == 12);
             }
         });
     }

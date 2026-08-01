@@ -297,6 +297,12 @@ package(quickbite.backends.bytecode) enum Op: ubyte {
     sliceFill2,
     sliceFill4,
     sliceFill8,
+    // Same as `sliceFill1`/etc, for an element width not covered by a fixed
+    // opcode (e.g. a struct/static-array element broadcast across the
+    // range): the byte width is operand c instead of being implied by the
+    // opcode, and the source at frame offset b is that many bytes wide
+    // rather than a narrow scalar.
+    sliceFillN,
     // Compare the two slice descriptors at frame offsets b and c, writing one
     // boolean byte to frame offset a: true iff their lengths and all element
     // bytes are equal. The element size is fixed by the opcode (1, 2, 4, or 8

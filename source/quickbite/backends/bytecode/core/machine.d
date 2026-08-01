@@ -337,6 +337,14 @@ package(quickbite.backends.bytecode) RunResult run(
                 ++ip;
                 break;
 
+            case sliceFillN:
+                fillSliceN(
+                    stack, base + instruction.a, base + instruction.b,
+                    instruction.c,
+                );
+                ++ip;
+                break;
+
             case sliceEqual1, sliceEqual2, sliceEqual4, sliceEqual8:
                 stack[base + instruction.a] = slicesEqual(
                     stack,
@@ -2766,6 +2774,27 @@ private void fillSlice8(
         scalarValue!size_t(stack, destinationOffset + size_t.sizeof);
     auto destination = (cast(ulong*) destinationPointer)[0 .. destinationLength];
     destination[] = scalarValue!ulong(stack, valueOffset);
+}
+
+// Same as `fillSlice1`/etc, for an element width not covered by a fixed
+// opcode (a struct or static-array element): broadcast the source's own
+// `elementSize` bytes into each destination element, byte for byte, the way
+// compiled D's array-fill lowering does for a non-scalar element.
+private void fillSliceN(
+    ref ubyte[] stack,
+    in size_t destinationOffset,
+    in size_t valueOffset,
+    in uint elementSize,
+) @trusted {
+    const destinationPointer =
+        scalarValue!size_t(stack, destinationOffset);
+    const destinationLength =
+        scalarValue!size_t(stack, destinationOffset + size_t.sizeof);
+    auto destination =
+        (cast(ubyte*) destinationPointer)[0 .. destinationLength * elementSize];
+    const source = stack[valueOffset .. valueOffset + elementSize];
+    foreach (i; 0 .. destinationLength)
+        destination[i * elementSize .. (i + 1) * elementSize] = source;
 }
 
 // Element-wise `dest[] = left[] + right[]` over 4-byte integer elements,

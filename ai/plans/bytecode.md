@@ -423,10 +423,15 @@ row reaches them:
   instead of declining a non-scalar element or a struct/static-array field.
   `emitConditionalRefArgument` already handled a struct-typed branch
   correctly via the generic, width-agnostic `referenceOffsetOrNull`, needing
-  no change. `Op.sliceCopy*` already has a 16-byte opcode and an `N`-variant
-  fallback for any other width; `Op.sliceFill*` (the single-value
-  broadcast-fill path) does not -- see the next candidate below. A ref
-  argument bound to a ref-returning wrapper's
+  no change. `Op.sliceCopy*` and `Op.sliceFill*` (the single-value
+  broadcast-fill path used by `arr[0 .. 2] = value;`) both carry a
+  fixed-width opcode set plus an `N`-variant fallback with an explicit
+  byte-width operand, so a struct/static-array-typed broadcast source fills
+  at any width, not just a basic-type scalar. A destination element that is
+  itself a heap-allocated row descriptor (`T[N][]`/`T[][]`, `elementIsArray`)
+  still declines the fill path: broadcasting into it needs a fresh row
+  allocation per element, not a byte copy. A ref argument bound to
+  a ref-returning wrapper's
   returned array element still loses the writeback on `Interpreter`
   regardless of element width (confirmed via `bin/qb` with a plain scalar
   element too), so that row stays `Omit!(Interpreter, Because.diverges,
@@ -435,20 +440,6 @@ row reaches them:
   the plain (non-ref-argument) read/write path for a field reached through
   `tryStructPointerField` -- now handle a `Tstruct`/`Tsarray` field the same
   way the ref-argument path above does.
-- Next candidate: a slice assignment whose right-hand side is a single
-  non-basic-type value broadcast across the range (`arr[0 .. 2] =
-  Point(7, 8);` for a `Point[]`/`Point[N]`) throws "Unsupported
-  slice-assignment source in bytecode core" -- `tryStaticArraySliceAssign`/
-  `tryDynamicArraySliceAssign` (`compiler.d`) only take the broadcast-fill
-  path (`sliceFillOp`) when `rhs.type.toBasetype.isTypeBasic` is non-null,
-  so a struct/static-array-typed `rhs` falls through to
-  `compileSourceSlice`, which throws unless `rhs` is itself array-typed
-  (a slice, array literal, string, or `Tarray` expression). `sliceFillOp`
-  itself only has opcodes for 1/2/4/8-byte scalars; a broadcast fill of a
-  wider or non-scalar element needs either a widened `Op.sliceFillN`
-  (mirroring `Op.sliceCopyN`, which already exists) plus a decode step that
-  copies `rhs`'s own bytes into each destination element, or a compiled loop
-  emitting one `Op.copy` per element.
 - Dynamic-array and string sub-slices reject an upper bound beyond the source
   length and a lower bound greater than the upper bound; pointer-slice bounds
   remain unchecked.
@@ -460,12 +451,13 @@ row reaches them:
 - Static arrays of dynamic arrays copy each element's full 16-byte slice
   descriptor; nested mutation and general stale-cell reconciliation remain
   incomplete.
-- A `T[N][]`'s rows are materialised as separately heap-allocated inner
-  descriptors, so a pointer taken into one row (`&outer[i][j]`) is valid
-  within that row, but a flat pointer walk across rows diverges from compiled
-  D's contiguous layout. Reconfirmed current: `&outer[0][0]` then indexing
-  past row 0's own two elements reads unrelated heap bytes instead of row 1,
-  where `SystemLinker`'s contiguous backing store reads the next row.
+- Next candidate: a `T[N][]`'s rows are materialised as separately
+  heap-allocated inner descriptors, so a pointer taken into one row
+  (`&outer[i][j]`) is valid within that row, but a flat pointer walk across
+  rows diverges from compiled D's contiguous layout. Reconfirmed current:
+  `&outer[0][0]` then indexing past row 0's own two elements reads unrelated
+  heap bytes instead of row 1, where `SystemLinker`'s contiguous backing
+  store reads the next row.
   Appending a row (`outer ~= [a, b]`) now builds that row's own heap block
   and 16-byte descriptor before appending it (`compileAppendElement`'s new
   `descriptor.elementIsArray` branch, `compiler.d`), matching what an
