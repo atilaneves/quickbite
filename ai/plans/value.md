@@ -479,8 +479,9 @@ checked fact; do not relearn them.
   transient aggregate result. Once stored, the destination place is
   authoritative.
 - `RuntimeValue.Pointer` contains only a host address. Pointer arithmetic and
-  subtraction operate on that address; no allocation identity, declaration
-  identity, or pointer-kind predicate participates in execution.
+  subtraction, equality, and relational comparison operate on that address; no
+  allocation identity, declaration identity, or pointer-kind predicate
+  participates in execution.
 - Class identity is the object-body address. All aliases, fields, casts, member
   calls, and exception paths retain that address and observe the same body.
 - Native class type membership includes implemented and inherited interfaces;
@@ -631,6 +632,10 @@ language-surface fix plus its oracle-backed fixture per small, short-lived PR.
 Native storage and calls remain the ordinary execution path; do not restore
 marshalling, cell families, alias maps, or name-based representation shims.
 `interpreter.md` §8 triage remains the partition.
+
+Next, promote the existing oracle-backed cross-array pointer-relations fixture
+and close any resulting Interpreter gap through native addresses, never an
+allocation-identity side channel.
 
 ### Item 5 — Delete Interpreter FFI marshalling fallbacks
 

@@ -2749,10 +2749,7 @@ static foreach (backend; Matrix!()) {
     }
 }
 
-static foreach (backend; Matrix!(
-    Omit!(Interpreter, Because.unconfirmed,
-        "pointer comparison expects a native pointer representation"),
-)) {
+static foreach (backend; Matrix!()) {
     @("pointer.comparisonWithinArray." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
