@@ -639,6 +639,11 @@ native-pointer path matches it. The allocated-block diagnostic is a CTFE-only
 characterization, so the Interpreter belongs in the compiled-behaviour matrix;
 do not restore a boxed-storage bounds diagnostic for this operation.
 
+The temporary `std.conv.text` character-array path reads the authoritative
+native slice header, including its retained backing address, rather than a
+transient aggregate handle. This is slice execution, not a formatter-specific
+storage shim; the interceptor remains temporary per item 1.
+
 ### Item 5 — Delete Interpreter FFI marshalling fallbacks
 
 Finish decision 18 after the language-surface critical path. Normal outbound
