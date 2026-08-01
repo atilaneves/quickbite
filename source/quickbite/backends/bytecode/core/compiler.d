@@ -12166,6 +12166,7 @@ private struct Compiler {
                 writeBack.valueOffset,
                 writeBack.addressOffset,
                 compileSizeConstant(0),
+                writeBack.valueSize,
             );
         foreach (writeBack; moduleScalarRefWriteBacks)
             _code ~= Instruction(
@@ -13955,7 +13956,11 @@ private struct Compiler {
     // otherwise bind the callee to a fresh copy of the pointee instead of the
     // pointee itself. Mirrors `emitRefLocalPointerArgument`: read the current
     // value through the pointer into a fresh slot for the call, and write it
-    // back through that same pointer afterward.
+    // back through that same pointer afterward. The pointee may be a struct
+    // wider than a scalar register (`bump(*p)` where `p: S*` and `S` has no
+    // scalar opcode type); `pointerElementMetadata`'s `byteStride` already
+    // carries that width for such a pointee, alongside `pointerLoadOp`'s and
+    // `pointerStoreOp`'s existing `N`-variant escape for any width.
     private bool emitPointerDereferenceRefArgument(
         in ushort slot,
         Expression argument,
@@ -13979,10 +13984,15 @@ private struct Compiler {
         if (!isPointerType(deref.e1.type))
             return false;
 
-        const valueSize = cast(ushort) size(pointerElementScalar(deref.e1.type));
-        if (valueSize != 1 && valueSize != 2 && valueSize != 4 &&
-            valueSize != 8)
+        const elementMetadata = pointerElementMetadata(deref.e1.type);
+        const isAggregatePointee = elementMetadata.opcodeType == ScalarType.void_;
+        const valueSize = cast(ushort) (isAggregatePointee
+            ? elementMetadata.byteStride
+            : size(elementMetadata.opcodeType));
+        if (valueSize == 0)
             return false;
+        const valueAlign =
+            isAggregatePointee ? staticArrayAlign(argument.type) : valueSize;
 
         const pointer = compileExpression(deref.e1);
         const addressOffset = pointer.offset;
@@ -13998,12 +14008,13 @@ private struct Compiler {
                 return true;
             }
 
-        const valueOffset = allocateBytes(valueSize, valueSize);
+        const valueOffset = allocateBytes(valueSize, valueAlign);
         _code ~= Instruction(
             pointerLoadOp(valueSize),
             valueOffset,
             addressOffset,
             compileSizeConstant(0),
+            valueSize,
         );
         _code ~= Instruction(
             Op.loadConstant,

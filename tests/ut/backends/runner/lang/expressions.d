@@ -8268,6 +8268,46 @@ static foreach (backend; Matrix!()) {
     }
 }
 
+// A `ref` argument dereferencing a stored pointer to a struct wider than 8
+// bytes needs the same write-through-the-real-address behaviour as the
+// scalar cases above: `emitPointerDereferenceRefArgument` only recognised
+// scalar pointees (1/2/4/8 bytes), so a struct pointee fell through to
+// `referenceOffsetOrNull`'s generic dereference-through-pointer fallback,
+// which reads the pointee into a fresh caller-frame slot but never writes it
+// back anywhere, silently discarding the mutation.
+static foreach (backend; Matrix!()) {
+    @("pointer.refArgumentThroughStoredPointerToWideStructWritesThroughPointer." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            long seed() {
+                return 10;
+            }
+
+            struct Wide {
+                long a;
+                long b;
+                long c;
+            }
+
+            void bump(ref Wide w) {
+                w.a = w.a + 1;
+                w.b = w.b + 2;
+                w.c = w.c + 3;
+            }
+
+            unittest {
+                auto pointer = new Wide(seed, seed + 10, seed + 20);
+                bump(*pointer);
+                assert(pointer.a == 11);
+                assert(pointer.b == 22);
+                assert(pointer.c == 33);
+            }
+        });
+    }
+}
+
 // A `string` is just an `immutable(char)[]`, so a `string*` dereference must
 // read the same 16-byte {ptr, length} descriptor a `T[]*` dereference (e.g.
 // `int[]*`) already does: `.length` and whole-array equality through the

@@ -495,11 +495,31 @@ row reaches them:
   field of a struct wider than 16 bytes reads each element's real width
   instead of zero
   (`dynamicArray.classStaticArrayFieldViewWithStructElementsWiderThan16Bytes`).
-  Concrete next candidate: `pointerLoadOp`'s ref-argument/write-back call
-  sites are still bounded to `<= 8` bytes by existing guards; reconfirm
-  whether that bound is still correct now that a struct-typed pointee can be
-  reached through a `ref` argument path, or whether it needs the same
-  `N`-variant escape as the plain-read call sites above.
+  `emitPointerDereferenceRefArgument` (a `ref` argument dereferencing a
+  runtime pointer local, `bump(*p)`) now covers a struct-typed pointee of any
+  width too: it declined any pointee whose `pointerElementScalar` was
+  non-scalar, so a struct wider than a register fell through to
+  `referenceOffsetOrNull`'s generic `*p` fallback, which reads the pointee
+  into a fresh caller-frame slot but never writes it back anywhere -- the
+  callee's mutation was silently lost rather than refused. The size now comes
+  from `pointerElementMetadata(...).byteStride` (already correct for a
+  struct/array pointee) when the pointee has no scalar opcode type, and both
+  the mirror-in `pointerLoadOp` call and the post-call `pointerStoreOp`
+  writeback pass that width as the `N`-variant's explicit operand
+  (`pointer.refArgumentThroughStoredPointerToWideStructWritesThroughPointer`).
+  Concrete next candidate: `emitStructPointerRefArgument`
+  (`compiler.d`) handles a different shape -- a `ref` argument that is itself
+  a struct-pointer-typed local passed by name (`void reassign(ref S* q) { q =
+  new S(...); } reassign(p);`, not a dereference) -- but its `valueSize`
+  computation and `pointerLoadOp`/`pointerStoreOp` calls treat the pointer
+  local's own frame slot as an address to dereference, rather than copying
+  the pointer's own 8-byte value; a `bin/qb` probe of this exact shape reads
+  back garbage after the call rather than either the pre-call or the
+  expected reassigned value. This is a genuine second bug in the same
+  ref-argument family, not the one just fixed, and needs a real
+  `SystemLinker`-backed fixture (it crosses a call boundary carrying mutable
+  pointer state, the kind of shape the REPL's per-statement model can mask)
+  before diagnosing or fixing it.
 - Dynamic-array and string sub-slices reject an upper bound beyond the source
   length and a lower bound greater than the upper bound; pointer-slice bounds
   remain unchecked.
