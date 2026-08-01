@@ -5484,6 +5484,21 @@ private struct Compiler {
             return Operand(destination, ScalarType.void_);
         }
 
+        // A struct or static-array field lives inline in the pointed-to
+        // block, the same as `loadClassPointerField`'s identical `Tstruct`
+        // branch: its own address is the field's address, with no load to
+        // perform. Mark it as a further-dereferenceable pointer so a nested
+        // `.field` hop (`carrier.value.a`) resolves against it -- that nested
+        // hop is compiled through `tryClassPointerField`'s generic
+        // pointer-receiver mechanism, which only requires `isPointer`, not an
+        // actual class.
+        if (field.type.toBasetype.ty == TY.Tstruct ||
+            field.type.toBasetype.ty == TY.Tsarray)
+            return Operand(
+                structFieldAddress(field), ScalarType.ulong_, true,
+                ScalarType.void_,
+            );
+
         const fieldScalar = scalarType(field.type);
         const elementSize = size(fieldScalar);
         const fieldPointer = structFieldAddress(field);
@@ -5500,18 +5515,28 @@ private struct Compiler {
     }
 
     // `p.field = value`: write `value` (already in a frame slot) through the
-    // struct pointer at `ptr + field.offset`.
+    // struct pointer at `ptr + field.offset`. A `Tstruct`/`Tsarray` field
+    // lives inline at that address, so it needs its own real byte width from
+    // `staticArraySize`/`staticArrayAlign` instead of the scalar-only gate,
+    // mirroring `emitStructPointerFieldRefArgument`'s identical widening.
     private void storeStructPointerField(
         StructPointerField field,
         in ushort valueSlot,
     ) {
-        const elementSize = size(scalarType(field.type));
+        import dmd.astenums: TY;
+
+        const ty = field.type.toBasetype.ty;
+        const isAggregate = ty == TY.Tstruct || ty == TY.Tsarray;
+        const elementSize = isAggregate
+            ? cast(uint) staticArraySize(field.type)
+            : size(scalarType(field.type));
         const fieldPointer = structFieldAddress(field);
         _code ~= Instruction(
             pointerStoreOp(elementSize),
             valueSlot,
             fieldPointer,
             compileSizeConstant(0),
+            cast(ushort) elementSize,
         );
     }
 
@@ -9391,7 +9416,12 @@ private struct Compiler {
 
                 const value = compileExpression(assign.e2);
                 storeStructPointerField(*field, value.offset);
-                return Operand(value.offset, scalarType(field.type));
+                const isAggregate = field.type.toBasetype.ty == TY.Tstruct ||
+                    field.type.toBasetype.ty == TY.Tsarray;
+                return Operand(
+                    value.offset,
+                    isAggregate ? ScalarType.void_ : scalarType(field.type),
+                );
             }
 
         // `box.field = rhs` through a class reference: a dynamic-array field

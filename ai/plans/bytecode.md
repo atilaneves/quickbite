@@ -430,18 +430,21 @@ row reaches them:
   regardless of element width (confirmed via `bin/qb` with a plain scalar
   element too), so that row stays `Omit!(Interpreter, Because.diverges,
   ...)` independent of the Bytecode fix.
-  Next candidate in this same family, but outside the ref-argument path:
-  `loadStructPointerField`/`storeStructPointerField` (`compiler.d`), the
-  plain (non-ref-argument) read/write path for a field reached through
-  `tryStructPointerField`, both still call `scalarType(field.type)`
-  unconditionally and so throw "Unsupported type in bytecode core: Wide"
-  for a `Tstruct`/`Tsarray` field -- confirmed red via `bin/qb`
-  (`struct Wide { long a; long b; long c; } struct Holder { Wide value; }
-  ... Holder* carrier = &holder; carrier.value.a = 10;` throws before ever
-  reaching a call). Same fix shape again: branch on `field.type`'s base
-  type the way `loadStructPointerField` already does for `Tarray`, sizing
-  the load/store from `staticArraySize`/`staticArrayAlign` instead of
-  `scalarType`/`size(scalarType(...))`.
+  `loadStructPointerField`/`storeStructPointerField` (`compiler.d`) --
+  the plain (non-ref-argument) read/write path for a field reached through
+  `tryStructPointerField` -- now handle a `Tstruct`/`Tsarray` field the same
+  way the ref-argument path above does.
+- Next candidate: a module-level dynamic array with a non-null initializer
+  (`int[] arr = [1, 2, 3];` at module scope) does not throw at all --
+  `moduleDynamicArrayVariableOrNull` (`compiler.d`) declines to register it
+  (gated on `moduleVariableHasDefaultInitializer`), so `arr` never resolves
+  to any descriptor, and reading it silently yields a zero/null slice
+  instead of `[1, 2, 3]` (`assert(arr.length == 3)` fails with "0 != 3",
+  confirmed red via a real ut fixture, not just `bin/qb`, against the
+  `SystemLinker` oracle). Fix shape: extend `moduleDynamicArrayVariableOrNull`
+  to compile a non-null initializer into `_program.moduleData` at
+  registration time, instead of gating registration on
+  `moduleVariableHasDefaultInitializer` at all.
 - Dynamic-array and string sub-slices reject an upper bound beyond the source
   length and a lower bound greater than the upper bound; pointer-slice bounds
   remain unchecked.
@@ -480,9 +483,12 @@ row reaches them:
 - A `__gshared`/`static` module-level dynamic-array variable
   (`moduleDynamicArrayVariableOrNull`, `compiler.d`) only has storage when its
   declared initializer is absent or an explicit `null`; a non-null module
-  array initializer still falls through to "Unsupported variable in bytecode
-  core". A module-level struct variable (`ModuleStructVariable`) is supported
-  for the default-initialized case: field access materialises the whole block
+  array initializer silently reads back as a zero/null slice instead of
+  throwing (see the "Next candidate" note above, confirmed red via a real ut
+  fixture rather than the earlier assumption of an "Unsupported variable in
+  bytecode core" throw). A module-level struct variable
+  (`ModuleStructVariable`) is supported for the default-initialized case:
+  field access materialises the whole block
   via `Op.loadModule` but writes back only the touched field's own bytes via
   `Op.storeModule` (`tryStructField`/`writeBackStructField`), so a sibling
   field written in between (e.g. by a right-hand-side call) survives; a `ref`

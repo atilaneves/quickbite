@@ -3822,3 +3822,52 @@ static foreach (backend; Matrix!()) {
         });
     }
 }
+
+// The plain (non-ref-argument) read/write sibling of the fixture above: a
+// struct field reached through a struct pointer is itself a struct wider than
+// a register, and a nested field of that field is read and written directly
+// (`carrier.value.a = 10`), not passed as a `ref` argument.
+// `loadStructPointerField`/`storeStructPointerField` called `scalarType`
+// unconditionally and so threw "Unsupported type in bytecode core: Wide"
+// before ever reaching a call. The nested field access is compiled through
+// `tryClassPointerField`'s generic pointer-receiver mechanism (it only
+// requires `isPointer`, not an actual class), so `loadStructPointerField`'s
+// `Tstruct`/`Tsarray` branch now mirrors `loadClassPointerField`'s identical
+// branch: the field's own address is already correct, it only needed to be
+// exposed as a further-dereferenceable pointer instead of being read as a
+// scalar. `storeStructPointerField` widens the same way
+// `emitStructPointerFieldRefArgument` already does, sizing from
+// `staticArraySize`/`staticArrayAlign` for the single-level
+// `carrier.value = ...` assignment case.
+static foreach (backend; Matrix!()) {
+    @("pointer.structPointerFieldOfWideStructTypeReadsAndWritesNestedField." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct Wide {
+                long a;
+                long b;
+                long c;
+            }
+
+            struct Holder {
+                Wide value;
+            }
+
+            unittest {
+                Holder holder;
+                Holder* carrier = &holder;
+                carrier.value.a = 10;
+                carrier.value.b = 20;
+                carrier.value.c = 30;
+                assert(carrier.value.a == 10);
+                assert(carrier.value.b == 20);
+                assert(carrier.value.c == 30);
+                assert(holder.value.a == 10);
+                assert(holder.value.b == 20);
+                assert(holder.value.c == 30);
+            }
+        });
+    }
+}
