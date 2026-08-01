@@ -2559,6 +2559,44 @@ static foreach (backend; Matrix!(
     }
 }
 
+// A module-level struct with a non-default initializer
+// (`Point p = Point(1, 2);`): `moduleStructVariableOrNull` used to decline
+// registration outright ("Unsupported variable in bytecode core") whenever
+// `moduleVariableHasDefaultInitializer` reported a non-default initializer,
+// leaving the module struct entirely unsupported instead of giving it real
+// storage with the literal's field values. `Ctfe` cannot read or write
+// dataseg storage at all. `LLVMJit` has a pre-existing, unrelated bug on
+// this shape (confirmed via a standalone probe: it reads back 131072
+// instead of 1), so it stays unconfirmed here rather than being fixed as a
+// side effect of this change.
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.inexpressible,
+        "CTFE cannot read or write dataseg (__gshared/static) storage"),
+    Omit!(LLVMJit, Because.unconfirmed),
+)) {
+    @("dataseg.moduleStructNonDefaultInitializer." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct Point { int x; int y; }
+            Point quickbiteDatasegInitializedPoint = Point(1, 2);
+
+            void bumpX() {
+                quickbiteDatasegInitializedPoint.x =
+                    quickbiteDatasegInitializedPoint.x + 10;
+            }
+
+            unittest {
+                assert(quickbiteDatasegInitializedPoint.x == 1);
+                assert(quickbiteDatasegInitializedPoint.y == 2);
+                bumpX();
+                assert(quickbiteDatasegInitializedPoint.x == 11);
+                assert(quickbiteDatasegInitializedPoint.y == 2);
+            }
+        });
+    }
+}
+
 // A class field's compound assignment (`+=`) whose right-hand side call
 // itself writes that same field directly by name through the class
 // reference: the addition must read whatever the call already wrote to the

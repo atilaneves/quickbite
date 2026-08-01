@@ -423,9 +423,10 @@ row reaches them:
   instead of declining a non-scalar element or a struct/static-array field.
   `emitConditionalRefArgument` already handled a struct-typed branch
   correctly via the generic, width-agnostic `referenceOffsetOrNull`, needing
-  no change. Scalar slice fill/copy (`Op.sliceFill*`/`sliceCopy*`) still only
-  cover 1/2/4/8-byte scalars; an aggregate (non-array) element still needs
-  general semantics. A ref argument bound to a ref-returning wrapper's
+  no change. `Op.sliceCopy*` already has a 16-byte opcode and an `N`-variant
+  fallback for any other width; `Op.sliceFill*` (the single-value
+  broadcast-fill path) does not -- see the next candidate below. A ref
+  argument bound to a ref-returning wrapper's
   returned array element still loses the writeback on `Interpreter`
   regardless of element width (confirmed via `bin/qb` with a plain scalar
   element too), so that row stays `Omit!(Interpreter, Because.diverges,
@@ -434,16 +435,20 @@ row reaches them:
   the plain (non-ref-argument) read/write path for a field reached through
   `tryStructPointerField` -- now handle a `Tstruct`/`Tsarray` field the same
   way the ref-argument path above does.
-- Next candidate: a module-level struct variable's non-default initializer
-  (`Point p = Point(1, 2);`) falls through to "Unsupported variable in
-  bytecode core" -- `moduleStructVariableOrNull` (`compiler.d`) is gated on
-  `moduleVariableHasDefaultInitializer` the same way the now-fixed
-  module-array case below was; likely needs the analogous fix (compile the
-  initializer's field bytes into `_program.moduleData` at registration
-  time), plus checking whether `moduleVariableHasDefaultInitializer` itself
-  needs the same `Initializer`-subclass normalisation
-  (`initializerToExpression`) the array fix required, since a struct literal
-  parses as a `StructInitializer`, not an `ExpInitializer`.
+- Next candidate: a slice assignment whose right-hand side is a single
+  non-basic-type value broadcast across the range (`arr[0 .. 2] =
+  Point(7, 8);` for a `Point[]`/`Point[N]`) throws "Unsupported
+  slice-assignment source in bytecode core" -- `tryStaticArraySliceAssign`/
+  `tryDynamicArraySliceAssign` (`compiler.d`) only take the broadcast-fill
+  path (`sliceFillOp`) when `rhs.type.toBasetype.isTypeBasic` is non-null,
+  so a struct/static-array-typed `rhs` falls through to
+  `compileSourceSlice`, which throws unless `rhs` is itself array-typed
+  (a slice, array literal, string, or `Tarray` expression). `sliceFillOp`
+  itself only has opcodes for 1/2/4/8-byte scalars; a broadcast fill of a
+  wider or non-scalar element needs either a widened `Op.sliceFillN`
+  (mirroring `Op.sliceCopyN`, which already exists) plus a decode step that
+  copies `rhs`'s own bytes into each destination element, or a compiled loop
+  emitting one `Op.copy` per element.
 - Dynamic-array and string sub-slices reject an upper bound beyond the source
   length and a lower bound greater than the upper bound; pointer-slice bounds
   remain unchecked.

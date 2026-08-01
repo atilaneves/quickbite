@@ -10216,14 +10216,25 @@ private struct Compiler {
         if (auto existing = declaration in _moduleStructVariables)
             return existing;
 
-        if (!moduleVariableHasDefaultInitializer(declaration))
-            return null;
-
         const size = cast(ushort) staticArraySize(declaration.type);
+        const hasDefaultInitializer =
+            moduleVariableHasDefaultInitializer(declaration);
+
+        ubyte[] literalBytes;
+        if (!hasDefaultInitializer) {
+            literalBytes = moduleStructLiteralInitializerBytes(
+                declaration, size,
+            );
+            if (literalBytes is null)
+                return null;
+        }
+
         const offset =
             allocateModuleBytes(size, staticArrayAlign(declaration.type));
         _moduleStructVariables[declaration] =
             ModuleStructVariable(offset, size);
+        if (!hasDefaultInitializer)
+            _program.moduleData[offset .. offset + size] = literalBytes[];
         return declaration in _moduleStructVariables;
     }
 
@@ -10236,6 +10247,82 @@ private struct Compiler {
             : declaration._init.isExpInitializer;
         return initializer is null ||
             initializerExpression(initializer.exp).isNullExp !is null;
+    }
+
+    // Compile-time bytes for a module-level struct's non-null, non-default
+    // initializer (`Point p = Point(1, 2);`), when it is a struct literal
+    // with every field given as a constant scalar expression: DMD's
+    // `initializerSemantic` already rewrites a `StructInitializer`
+    // (`Point p = {1, 2};`) into an `ExpInitializer` wrapping a
+    // `StructLiteralExp`, so `moduleVariableHasDefaultInitializer` (which
+    // only recognises `ExpInitializer`) already classifies both spellings
+    // correctly and needs no `Initializer`-subclass normalisation the way
+    // the module-array case did. Returns `null` (declining registration,
+    // same as the default-initializer path) when a field is omitted from
+    // the literal (defaulting to its own init value), is itself a
+    // struct/static-array/dynamic-array/delegate, or is not a constant
+    // scalar expression.
+    private ubyte[] moduleStructLiteralInitializerBytes(
+        VarDeclaration declaration,
+        in ushort structSize,
+    ) {
+        import std.bitmanip: nativeToLittleEndian;
+        import dmd.astenums: TY;
+
+        resolveNonRootInitializer(declaration);
+        auto initializer = declaration._init is null
+            ? null
+            : declaration._init.isExpInitializer;
+        if (initializer is null)
+            return null;
+
+        auto literal =
+            initializerExpression(initializer.exp).isStructLiteralExp;
+        if (literal is null || literal.elements is null ||
+            literal.elements.length != literal.sd.fields.length)
+        {
+            return null;
+        }
+
+        ubyte[] bytes;
+        bytes.length = structSize;
+        foreach (fieldIndex, field; literal.sd.fields) {
+            auto element = (*literal.elements)[fieldIndex];
+            if (element is null)
+                return null;
+
+            switch (field.type.toBasetype.ty) with (TY) {
+                case Tstruct, Tsarray, Tarray, Tdelegate:
+                    return null;
+                default:
+                    break;
+            }
+
+            const fieldType = scalarType(field.type);
+            const fieldSize = size(fieldType);
+            const fieldOffset = cast(size_t) field.offset;
+
+            if (auto integer = element.isIntegerExp) {
+                const raw = nativeToLittleEndian(cast(ulong) integer.toInteger);
+                bytes[fieldOffset .. fieldOffset + fieldSize] =
+                    raw[0 .. fieldSize];
+                continue;
+            }
+            if (auto real_ = element.isRealExp) {
+                if (fieldType == ScalarType.real_) {
+                    bytes[fieldOffset .. fieldOffset + fieldSize] =
+                        realBytes(real_)[];
+                } else {
+                    const raw = nativeToLittleEndian(floatBits(real_, fieldType));
+                    bytes[fieldOffset .. fieldOffset + fieldSize] =
+                        raw[0 .. fieldSize];
+                }
+                continue;
+            }
+
+            return null;
+        }
+        return bytes;
     }
 
     private ubyte[] moduleScalarInitializerBytes(
