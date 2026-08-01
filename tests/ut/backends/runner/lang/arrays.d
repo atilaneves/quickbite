@@ -4525,3 +4525,39 @@ static foreach (backend; Matrix!()) {
         });
     }
 }
+
+// Calling a mutating method through a receiver that is an element of a
+// dynamic array of structs (`arr[0].bump()`, `Plain[] arr`): `methodReceiver`
+// had no case for a `DotVarExp` callee receiver whose own base is a dynamic
+// array index, so it fell through to the generic
+// `structOperandOffset` -> `structBaseOffsetOrMaterialise` path, which
+// materialises the element via `loadDynamicArrayElement`'s plain
+// `indexLoadOp` copy into a throwaway frame block with no write-back
+// registered -- the mutation was silently dropped. `methodReceiver` now
+// resolves this shape the same way `emitDynamicArrayElementRefArgument`
+// already does for the identical shape reached as a `ref` argument, and
+// writes the (possibly mutated) copy back through `indexStoreOp` afterward.
+// Two `bump()` calls before the read check the writeback actually lands (a
+// no-writeback bug would silently discard both mutations rather than crash).
+static foreach (backend; Matrix!()) {
+    @("dynamicArray.methodCallThroughElementReceiverMutatesElement." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct Plain {
+                int x;
+                int get() const { return x; }
+                void bump() { x++; }
+            }
+
+            unittest {
+                Plain[] arr = [Plain(1), Plain(2)];
+                arr[0].bump();
+                arr[0].bump();
+                assert(arr[0].get() == 3);
+                assert(arr[1].get() == 2);
+            }
+        });
+    }
+}

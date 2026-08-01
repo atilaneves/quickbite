@@ -303,6 +303,17 @@ private struct Compiler {
         // `ref` arguments reached the same way.
         ushort writeBackPointerAddress;
         ushort writeBackPointerSize;
+        // Set instead of the fields above when the receiver was materialised
+        // from a dynamic array of structs' indexed element
+        // (`arr[i].method()`): `writeBackDescriptorOffset`/
+        // `writeBackIndexOffset` are the same descriptor/index frame slots
+        // `emitDynamicArrayElementRefArgument`'s `DynamicArrayRefWriteBack`
+        // already carries for the identical shape reached as a `ref`
+        // argument, and a nonzero `writeBackElementSize` signals the block
+        // must be written back through `indexStoreOp`.
+        ushort writeBackDescriptorOffset;
+        ushort writeBackIndexOffset;
+        ushort writeBackElementSize;
     }
 
     private void compileFunctionBody(in size_t index) {
@@ -4872,6 +4883,42 @@ private struct Compiler {
                                 offset, 0, 0, address, structSize,
                             );
                         }
+                    }
+
+        // `arr[i].method()` where `arr` is a dynamic array of structs: the
+        // receiver `arr[i]` has no frame-relative storage of its own, the
+        // same way a struct-pointer/class field's receiver above does not.
+        // Resolve it the same way `emitDynamicArrayElementRefArgument`
+        // already does for the identical shape reached as a `ref` argument:
+        // load the element into a fresh inline copy for the call, then write
+        // the (possibly mutated) copy back through `indexStoreOp` afterward.
+        // Guard against a static array merely viewed as a dynamic-array
+        // descriptor (`indexesStaticArray`) the same way that helper does --
+        // that view is a fresh read-only copy of the whole array, not the
+        // static array's own storage.
+        if (auto dot = call.e1.isDotVarExp)
+            if (auto index = dot.e1.isIndexExp)
+                if (dot.e1.type !is null &&
+                    dot.e1.type.toBasetype.ty == TY.Tstruct &&
+                    !indexesStaticArray(index.e1))
+                    if (auto descriptor = dynamicArrayDescriptorOrNull(index.e1)) {
+                        const elementSize = cast(ushort)
+                            staticArraySize(dot.e1.type);
+                        const indexOffset = compileExpression(index.e2).offset;
+                        const offset = allocateBytes(
+                            elementSize, staticArrayAlign(dot.e1.type),
+                        );
+                        _code ~= Instruction(
+                            indexLoadOp(elementSize),
+                            offset,
+                            descriptor.offset,
+                            indexOffset,
+                            elementSize,
+                        );
+                        return MethodReceiver(
+                            offset, 0, 0, 0, 0,
+                            descriptor.offset, indexOffset, elementSize,
+                        );
                     }
 
         return MethodReceiver(methodReceiverOffset(call), 0, 0);
@@ -12743,6 +12790,14 @@ private struct Compiler {
                 structReceiver.writeBackPointerAddress,
                 compileSizeConstant(0),
                 structReceiver.writeBackPointerSize,
+            );
+        if (hasStructReceiver && structReceiver.writeBackElementSize != 0)
+            _code ~= Instruction(
+                indexStoreOp(structReceiver.writeBackElementSize),
+                structReceiver.offset,
+                structReceiver.writeBackDescriptorOffset,
+                structReceiver.writeBackIndexOffset,
+                structReceiver.writeBackElementSize,
             );
         if (isPointerType(call.type))
             return Operand(

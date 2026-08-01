@@ -451,31 +451,50 @@ row reaches them:
   target"; `Omit!(Interpreter, Because.unconfirmed)` on that row
   (`pointer.classStaticArrayFieldElementWrittenThroughWholeFieldPointerIsVisibleDirectly`,
   `expressions.d`).
-- Next candidate: calling a method through a receiver that is an element of a
-  *dynamic* array of structs (`arr[i].method()`, `Plain[] arr`) silently
-  drops the mutation instead of throwing: confirmed with `struct Plain { int
-  x; void bump() { x++; } } Plain[] arr = [Plain(1), Plain(2)]; arr[0].bump();
-  assert(arr[0].x == 2);` -- the assert fails (`arr[0].x` reads back `1`) on
-  `Bytecode` only; `Interpreter`/`SystemLinker` both mutate correctly. The
-  same fixture with a *static* array (`Plain[2] arr`) already passes on
-  `Bytecode`, so this is specific to the dynamic-array element path. Root
-  cause: `structBaseOffsetOrMaterialise`'s dynamic-array-of-structs branch
-  (`compiler.d` ~5401, `if (auto index = expression.isIndexExp) if (auto
-  descriptor = dynamicArrayDescriptorOrNull(index.e1))`) materialises the
-  element via `loadDynamicArrayElement`, a plain `indexLoadOp` copy into a
-  throwaway frame block with no write-back registered, so `methodReceiver`
-  (which falls through to `methodReceiverOffset` ->
-  `structOperandOffset` -> this same helper for a non-pointer/non-class
-  receiver) gets a receiver copy the callee's mutations never reach back
-  through. A general fix mirrors the pointer/class-field receiver write-back
-  just added to `MethodReceiver`: extend `methodReceiver` with a branch that
-  detects this exact shape (a `DotVarExp` callee receiver whose `dot.e1` is
-  an `IndexExp` into a `dynamicArrayDescriptorOrNull`-resolvable array of
-  structs) and registers an `indexStoreOp` write-back after the call, reusing
-  the same `descriptorOffset`/`indexOffset`/`elementSize` triple
-  `emitDynamicArrayElementRefArgument`'s `DynamicArrayRefWriteBack` already
-  carries for the identical shape reached as a `ref` argument instead of a
-  method-call receiver.
+- Next candidate, and more severe than a typical gap because it crashes the
+  host instead of giving a wrong result or an "unsupported" diagnostic: a
+  captured-variable access from a function nested **two or more** call
+  levels below the function that actually declares the captured variable
+  reads/writes the wrong stack slot on `Bytecode`. Confirmed live with (a) a
+  scalar, silent corruption, no crash: `int captured = 42; void middle() {
+  void inner() { captured = 43; } inner(); } middle(); assert(captured ==
+  43);` -- the assert fails, `captured` is still `42`; and (b) a dynamic
+  array, real `SIGSEGV`: same shape with `int[] arr = [1, 2, 3];` and
+  `inner` doing `arr[0] = 5;` -- crashes inside
+  `machine.readHeapElement`/`elementAddress` (`machine.d` ~2840-2857)
+  because the corrupted slice descriptor's pointer field is read as a raw
+  heap address. `Interpreter`/`SystemLinker` both give the correct result
+  for either fixture; a single level of nesting (the direct caller owns the
+  capture) already works on `Bytecode` for both scalars and arrays. Root
+  cause: at a call site needing to pass a nested-function context
+  (`compileCall`, `compiler.d` ~12561-12567, `if (layout.hasNestedContext)`),
+  the compiler unconditionally emits `Op.frameBaseIndex` -- the CALLER's own
+  current stack frame base -- as the context handed to the callee. That is
+  correct only when the caller itself is the frame that declared the
+  captured variable(s) the callee (transitively) reads, i.e. exactly one
+  nesting level. When the immediate caller is itself just relaying (e.g.
+  `middle` above, which touches no capture of its own but calls `inner`,
+  which reads a variable owned by `run`, `middle`'s caller), the callee
+  should receive the context `middle` itself already received from `run` --
+  its own `_nestedContextOffset` slot -- not a freshly computed base of
+  `middle`'s own frame. `capturedFrameIndex` (`compiler.d` ~5551-5573), which
+  every captured-variable read/write ultimately calls, has the matching
+  `-1`/`+capturedOffset` arithmetic and is not itself wrong; the bug is only
+  in what value the call site feeds into the context slot the callee then
+  reads through. A correct general fix needs the call site to distinguish
+  "callee's captures are all owned by me" (keep `Op.frameBaseIndex`) from
+  "callee's captures may be owned by an ancestor further up" (forward
+  `_nestedContextOffset` unchanged) -- and a caller can appear in both roles
+  for different callees, so this is not a single boolean flip. A cheaper,
+  bounded first step: since the current code is provably wrong whenever the
+  caller is itself relaying a received context AND the callee's needed
+  capture isn't caller-owned, compiling such a call could instead throw the
+  same "Unsupported ... in bytecode core" diagnostic every other
+  not-yet-handled shape throws, in place of silently corrupting memory or
+  crashing -- but determining "callee's needed capture isn't caller-owned"
+  cheaply and correctly (without walking DMD's `closureVars`/`toParent2`
+  chain for the callee) still needs its own design pass; do that analysis
+  before writing either the diagnostic or the real fix.
 - Static arrays of dynamic arrays copy each element's full 16-byte slice
   descriptor; nested mutation and general stale-cell reconciliation remain
   incomplete.
