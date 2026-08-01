@@ -366,16 +366,82 @@ architectural non-goals with an explicit reason. An unsupported
 implementation is not, by itself, a permanent divergence from the compiled-D
 oracle.
 
+Both remaining `Omit!(Bytecode, ...)` rows in
+`tests/ut/backends/runner/lang/arrays.d`
+(`assocArray.structKeyWithStringMemberComparesStructurally`,
+`assocArray.nestedLookupDereferencesAssociativeArrayPointee`) are blocked on
+the same architectural limitation, not on their own compiler-frontend
+plumbing: `AssocArray` (`machine.d`) hard-codes `int[] keys; int[] values;`
+and every `aa*` opcode handler reads/writes keys and values via
+`scalarValue!int`/`AssocArray.insert(in int, in int)`. A struct key (the
+first row) and an AA-handle value (the second row, a `ulong` handle for the
+nested map) both need a wider representation than 4-byte `int`; the
+compiler-side operand plumbing for both (recovering `__aakeyN`'s structural
+comparison and the nested handle's expression form respectively) is
+tractable on its own, but the machine's map storage has to grow arbitrary
+key/value width first, mirroring how dynamic arrays already carry their own
+element size. That is the prerequisite, not a narrow per-row fix.
+
+Every `Omit!(Bytecode, ...)` row left in `tests/ut/backends/runner/**` is one
+of the already-documented not-bounded rows above (`file.d:14`,
+`concurrency.d:24`, the cerealed exception-message row, the three
+`expressions.d` ref-calling-convention rows, the two `arrays.d` assoc-array
+rows, and the four `archive.d` rows); re-search before assuming otherwise.
+A module-level struct's own nested struct field (`go.inner.x`, `struct Inner
+{ int x; } struct Outer { Inner inner; } Outer go;`) now reads and writes
+correctly, including a nested array field (`go.inner.arr ~= ...`):
+`structBaseOffsetOrMaterialise` materialises a bare module-struct `VarExp`
+into a frame block the same way `tryStructField`'s single-dot-level branch
+already did, reporting the module offset back up through its `outer.inner`
+recursion so a field at any nesting depth writes back to its own real slot.
+
+Every currently-known Bytecode gap in `tests/ut/backends/runner/**` is one
+of the already-documented not-bounded rows listed above. Finding the next
+candidate requires fresh `bin/qb` exploration (read-modify-write/mirror
+paths, the live aggregate limitations below, or the "Architecture work
+forced by the baseline" fronts) rather than a matrix search.
+
 Reconfirm these live aggregate limitations against the current source when a
 row reaches them:
 
-- Scalar slice fill is limited to 4-byte basic elements; other widths and
-  aggregate elements still need general semantics. Static-array bounded
-  sub-slice assignment (`arr[lo .. hi] = rhs`, both a plain local and a
-  struct field) now writes through the array's own frame storage for 1- and
-  4-byte elements when `rhs` is itself a slice; wider elements (`sliceCopyOp`
-  only distinguishes 1 vs. 4 bytes) and a bare scalar broadcast into a
-  non-4-byte element still need general semantics.
+- Every array/pointer opcode family that supports a fixed-width fast path
+  (`Op.subSliceN`/`sliceCopyN`/`appendElementN`/`indexLoadN`/`indexStoreN`/
+  `concatArraysN`/`pointerSliceN`/`pointerLoadN`/`pointerStoreN`) now covers
+  1, 2, 4, 8, and 16 bytes via dedicated opcodes and any other width via an
+  `N`-variant that carries the byte width as an explicit instruction operand,
+  the same way `Op.copy` already carries an arbitrary block width, instead of
+  encoding the width in the opcode or deriving it from a `ScalarType` tag
+  that resolves to 0 for a struct/static-array element. Every ref-argument
+  mirror/writeback call site that binds non-frame-resident storage
+  (`emitStructPointerRefArgument`, `emitStructPointerFieldRefArgument`,
+  `emitClassFieldRefArgument`, `emitPointerDereferenceRefArgument`,
+  `emitDynamicArrayRefArgument`/`emitDynamicArrayElementRefArgument`,
+  `emitRefReturnedDynamicArrayElementArgument`,
+  `compileClassStaticArrayAsDynamicInto`) now sizes its `pointerLoadOp`/
+  `pointerStoreOp`/`indexLoadOp`/`indexStoreOp` pair from the pointee's real
+  byte width and passes that width as the `N`-variant's explicit operand,
+  instead of declining a non-scalar element or a struct/static-array field.
+  `emitConditionalRefArgument` already handled a struct-typed branch
+  correctly via the generic, width-agnostic `referenceOffsetOrNull`, needing
+  no change. Scalar slice fill/copy (`Op.sliceFill*`/`sliceCopy*`) still only
+  cover 1/2/4/8-byte scalars; an aggregate (non-array) element still needs
+  general semantics. A ref argument bound to a ref-returning wrapper's
+  returned array element still loses the writeback on `Interpreter`
+  regardless of element width (confirmed via `bin/qb` with a plain scalar
+  element too), so that row stays `Omit!(Interpreter, Because.diverges,
+  ...)` independent of the Bytecode fix.
+  Next candidate in this same family, but outside the ref-argument path:
+  `loadStructPointerField`/`storeStructPointerField` (`compiler.d`), the
+  plain (non-ref-argument) read/write path for a field reached through
+  `tryStructPointerField`, both still call `scalarType(field.type)`
+  unconditionally and so throw "Unsupported type in bytecode core: Wide"
+  for a `Tstruct`/`Tsarray` field -- confirmed red via `bin/qb`
+  (`struct Wide { long a; long b; long c; } struct Holder { Wide value; }
+  ... Holder* carrier = &holder; carrier.value.a = 10;` throws before ever
+  reaching a call). Same fix shape again: branch on `field.type`'s base
+  type the way `loadStructPointerField` already does for `Tarray`, sizing
+  the load/store from `staticArraySize`/`staticArrayAlign` instead of
+  `scalarType`/`size(scalarType(...))`.
 - Dynamic-array and string sub-slices reject an upper bound beyond the source
   length and a lower bound greater than the upper bound; pointer-slice bounds
   remain unchecked.
@@ -390,14 +456,27 @@ row reaches them:
 - A `T[N][]`'s rows are materialised as separately heap-allocated inner
   descriptors, so a pointer taken into one row (`&outer[i][j]`) is valid
   within that row, but a flat pointer walk across rows diverges from compiled
-  D's contiguous layout.
-- Static-array bounded sub-slice assignment does not detect overlap with its
-  own rhs when the rhs is a sub-slice of the same array (`buff[1..4] =
-  buff[0..3]`): `compileSourceSlice` routes a static-array rhs through
-  `compileStaticArrayAsDynamicInto`, which heap-copies it before the shared
-  `sliceCopy` opcode's pointer-range overlap check ever runs, so the check
-  never sees the true aliasing (unlike the dynamic-array path, whose rhs
-  descriptor shares the real backing pointer).
+  D's contiguous layout. Reconfirmed current: `&outer[0][0]` then indexing
+  past row 0's own two elements reads unrelated heap bytes instead of row 1,
+  where `SystemLinker`'s contiguous backing store reads the next row.
+  Appending a row (`outer ~= [a, b]`) now builds that row's own heap block
+  and 16-byte descriptor before appending it (`compileAppendElement`'s new
+  `descriptor.elementIsArray` branch, `compiler.d`), matching what an
+  array-of-arrays literal already builds per element; previously this both
+  used the wrong element width (`appendElementOp`/`appendElementSize` only
+  distinguished 1, 2, or default-4 bytes, so an 8-byte row or descriptor
+  silently truncated to 4 bytes copied) and appended the row's raw value
+  instead of a descriptor, corrupting the backing store and segfaulting on
+  a later indexed read. `appendElementOp` now covers 8 and 16 bytes
+  (`Op.appendElement8`/`Op.appendElement16`) and throws instead of silently
+  mis-sizing any other width.
+- `compileConcatenationAssign` (`outer ~= otherOuter`, whole-array
+  concatenation of a `T[N][]`/`T[][]`) now builds its `elementIsArray`
+  operand size the same way `compileAppendElement` does
+  (`dynamicArrayElementSize(..., descriptor.elementIsArray)`), and
+  `concatArraysOp`/`concatElementSize` add an `Op.concatArrays16` variant, so
+  the right-hand array's rows copy as whole 16-byte descriptors instead of
+  truncating to 4 bytes.
 - A `__gshared`/`static` module-level dynamic-array variable
   (`moduleDynamicArrayVariableOrNull`, `compiler.d`) only has storage when its
   declared initializer is absent or an explicit `null`; a non-null module
@@ -407,10 +486,13 @@ row reaches them:
   via `Op.loadModule` but writes back only the touched field's own bytes via
   `Op.storeModule` (`tryStructField`/`writeBackStructField`), so a sibling
   field written in between (e.g. by a right-hand-side call) survives; a `ref`
-  argument bound to such a field mirrors just that field into its own fresh
-  slot with its own writeback (`emitModuleStructFieldRefArgument`) rather than
-  reusing the whole-block copy `tryStructField` materialises for plain field
-  access. A non-default struct initializer still falls through to
+  argument bound to such a field, at any nesting depth (`go.x` or
+  `go.inner.x`), mirrors just that field into its own fresh slot with its own
+  writeback (`emitModuleStructFieldRefArgument`, resolving the field's dataseg
+  offset through `moduleStructFieldOffsetOrNull`'s `DotVarExp`-chain
+  arithmetic) rather than reusing the whole-block copy `tryStructField`
+  materialises for plain field access. A non-default struct initializer still
+  falls through to
   "Unsupported variable in bytecode core". Module-level
   `Tsarray`/`Taarray`/`Tdelegate` variables and pointer/complex-double dataseg
   variables remain entirely unsupported (`moduleScalarVariableOrNull` still
@@ -423,20 +505,17 @@ row reaches them:
   before the copy this read-modify-write reads from is taken, or the
   post-op `Op.storeModule` writeback clobbers it with a stale sum. The
   identical shape through a class reference (`gc.x += f()`,
-  `tryClassPointerField`) is unfixed and predates this module-struct
-  support; a class field is heap-referenced storage with no whole-block
-  copy to reorder around, so it needs its own fix, not an extension of
-  this one.
+  `tryClassPointerField`) is fixed the same way: the field load is now
+  compiled after the rhs, so a heap object needs no whole-block-copy
+  narrowing the way module storage does -- there is no copy, just a load
+  ordered to run after whatever the rhs already wrote directly.
 - A module-level dynamic array's single-element `~=` (`compileAppendElement`)
-  now compiles the appended value before materialising the target's
+  and whole-array `~=` (`compileConcatenationAssign`) both now compile the
+  appended value/right-hand array before materialising the target's
   descriptor when the target is a module variable, so a reentrant append
   inside that value's own evaluation (`ga ~= f()` where `f` itself does
   `ga ~= x`) lands in the descriptor instead of being overwritten by the
-  post-call writeback of a stale pre-call snapshot. `compileConcatenationAssign`
-  (whole-array `arr ~= other`) still materialises its target descriptor
-  before compiling `other`, so the identical hazard remains open there
-  whenever `other`'s own evaluation mutates the same module array; no
-  fixture exercises this yet.
+  post-call writeback of a stale pre-call snapshot.
 - A scalar `ref` argument bound to module storage
   (`emitModuleScalarRefArgument`/`emitModuleStructFieldRefArgument`) mirrors
   the module value into a fresh frame slot for the call and writes it back
@@ -461,7 +540,21 @@ row reaches them:
   the callee dereferences on every read/write of it, so a call can bind it
   directly to the real address (e.g. via `Op.moduleAddress`) and skip the
   mirror/writeback pair entirely -- a change to the calling convention
-  shared by every ref-argument kind, not a narrow field-offset fix.
+  shared by every ref-argument kind, not a narrow field-offset fix. This
+  also covers the plain-local case, not just module/struct/class-backed
+  storage: `referenceOffset`'s ordinary `_locals` path passes the same
+  caller-frame-offset-mirrored-into-a-fresh-slot value for any `ref`
+  parameter, confirmed via `bin/qb` for a bare `ref int` parameter with no
+  module or aggregate involved at all (`&value` inside the callee never
+  equals the caller's `&value`). `expressions.d`'s
+  `refArgument.templateRefSharedParameterMutatesAndPreservesAddress`,
+  `refArgument.templateRefSharedForwardsThroughNestedFunction`, and
+  `delegate.captureIsNotParameterReference` (still
+  `Omit!(Bytecode, Because.unconfirmed)`, ~line 8024) all assert `&value ==
+  expected` across a `ref`/captured-local call boundary and are blocked on
+  this same calling-convention change, not on template/`shared`/closure
+  specifics; they are not a bounded single-commit family until the ref
+  calling convention above is redesigned.
 
 `concurrency.thisTid.Bytecode` (`tests/ut/backends/runner/sys/concurrency.d`)
 stays `Omit!(Bytecode, Because.unconfirmed, ...)`. `Scheduler.thisInfo`'s
@@ -511,6 +604,15 @@ all. Making the struct-receiver shape callable needs the receiver encoded as
 something frame-independent -- a real pointer to the receiver block rather
 than a frame-relative offset -- which changes how every struct method
 receives `this`, not just this call path.
+
+`compileIndirectCall` (`compiler.d`) now builds its argument area from the
+callee's function-pointer type alone (the same run-time-declared-type
+approach `compileDynamicDelegateCall` uses for a delegate parameter, minus
+the context word), so a plain `R function(Args...)` call with arguments
+works. A value loaded through a pointer dereference or index (`*p`, `p[i]`)
+whose static type is itself a pointer now carries `isPointer` (`compiler.d`'s
+`asPointerValue`), so a function pointer reached that way is an ordinary
+callable pointer local, the same as one bound directly from `&f`.
 
 ### TDD and handoff discipline
 

@@ -231,8 +231,11 @@ package(quickbite.backends.bytecode) RunResult run(
                 ++ip;
                 break;
 
-            case indexLoad1, indexLoad2, indexLoad4, indexLoad8, indexLoad16:
-                const loadSize = elementSize(instruction.op);
+            case indexLoad1, indexLoad2, indexLoad4, indexLoad8, indexLoad16,
+                indexLoadN:
+                const loadSize = instruction.op == indexLoadN
+                    ? instruction.d
+                    : elementSize(instruction.op);
                 const loadElement = elementAddress(
                     stack, base + instruction.b,
                     scalarValue!size_t(stack, base + instruction.c),
@@ -248,8 +251,10 @@ package(quickbite.backends.bytecode) RunResult run(
                 break;
 
             case indexStore1, indexStore2, indexStore4, indexStore8,
-                indexStore16:
-                const storeSize = elementSize(instruction.op);
+                indexStore16, indexStoreN:
+                const storeSize = instruction.op == indexStoreN
+                    ? instruction.d
+                    : elementSize(instruction.op);
                 // Non-const: the heap element is written through this pointer.
                 auto storeElement = elementAddress(
                     stack, base + instruction.b,
@@ -273,8 +278,11 @@ package(quickbite.backends.bytecode) RunResult run(
                 ++ip;
                 break;
 
-            case subSlice1, subSlice2, subSlice4, subSlice8, subSlice16:
-                const subElementSize = subSliceElementSize(instruction.op);
+            case subSlice1, subSlice2, subSlice4, subSlice8, subSlice16,
+                subSliceN:
+                const subElementSize = instruction.op == subSliceN
+                    ? instruction.d
+                    : subSliceElementSize(instruction.op);
                 const lo = scalarValue!size_t(stack, base + instruction.c);
                 const hi = scalarValue!size_t(
                     stack, base + instruction.c + size_t.sizeof,
@@ -296,18 +304,36 @@ package(quickbite.backends.bytecode) RunResult run(
                 ++ip;
                 break;
 
-            case sliceCopy1, sliceCopy4:
+            case sliceCopy1, sliceCopy2, sliceCopy4, sliceCopy8, sliceCopy16,
+                sliceCopyN:
                 copySlice(
                     stack,
                     base + instruction.a,
                     base + instruction.b,
-                    sliceCopyElementSize(instruction.op),
+                    instruction.op == sliceCopyN
+                        ? instruction.c
+                        : sliceCopyElementSize(instruction.op),
                 );
+                ++ip;
+                break;
+
+            case sliceFill1:
+                fillSlice1(stack, base + instruction.a, base + instruction.b);
+                ++ip;
+                break;
+
+            case sliceFill2:
+                fillSlice2(stack, base + instruction.a, base + instruction.b);
                 ++ip;
                 break;
 
             case sliceFill4:
                 fillSlice4(stack, base + instruction.a, base + instruction.b);
+                ++ip;
+                break;
+
+            case sliceFill8:
+                fillSlice8(stack, base + instruction.a, base + instruction.b);
                 ++ip;
                 break;
 
@@ -321,12 +347,15 @@ package(quickbite.backends.bytecode) RunResult run(
                 ++ip;
                 break;
 
-            case appendElement1, appendElement2, appendElement4:
+            case appendElement1, appendElement2, appendElement4, appendElement8,
+                appendElement16, appendElementN:
                 auto appended = appendElement(
                     stack,
                     base + instruction.a,
                     base + instruction.b,
-                    appendElementSize(instruction.op),
+                    instruction.op == appendElementN
+                        ? instruction.c
+                        : appendElementSize(instruction.op),
                     heap,
                     appendablePointers,
                 );
@@ -334,13 +363,15 @@ package(quickbite.backends.bytecode) RunResult run(
                 ++ip;
                 break;
 
-            case concatArrays1, concatArrays4:
+            case concatArrays1, concatArrays4, concatArrays16, concatArraysN:
                 heap ~= concatArrays(
                     stack,
                     base + instruction.a,
                     base + instruction.b,
                     base + instruction.c,
-                    concatElementSize(instruction.op),
+                    instruction.op == concatArraysN
+                        ? instruction.d
+                        : concatElementSize(instruction.op),
                 );
                 ++ip;
                 break;
@@ -366,8 +397,10 @@ package(quickbite.backends.bytecode) RunResult run(
                 break;
 
             case pointerLoad1, pointerLoad2, pointerLoad4, pointerLoad8,
-                pointerLoad16:
-                const pointerLoadSize = pointerElementSize(instruction.op);
+                pointerLoad16, pointerLoadN:
+                const pointerLoadSize = instruction.op == pointerLoadN
+                    ? instruction.d
+                    : pointerElementSize(instruction.op);
                 const pointerLoadAddress =
                     scalarValue!size_t(stack, base + instruction.b) +
                     scalarValue!size_t(stack, base + instruction.c) *
@@ -398,8 +431,10 @@ package(quickbite.backends.bytecode) RunResult run(
                 break;
 
             case pointerStore1, pointerStore2, pointerStore4, pointerStore8,
-                pointerStore16:
-                const pointerStoreSize = pointerElementSize(instruction.op);
+                pointerStore16, pointerStoreN:
+                const pointerStoreSize = instruction.op == pointerStoreN
+                    ? instruction.d
+                    : pointerElementSize(instruction.op);
                 const pointerStoreAddress =
                     scalarValue!size_t(stack, base + instruction.b) +
                     scalarValue!size_t(stack, base + instruction.c) *
@@ -414,8 +449,11 @@ package(quickbite.backends.bytecode) RunResult run(
                 ++ip;
                 break;
 
-            case pointerSlice1, pointerSlice2, pointerSlice4, pointerSlice8:
-                const pointerSliceSize = pointerElementSize(instruction.op);
+            case pointerSlice1, pointerSlice2, pointerSlice4, pointerSlice8,
+                pointerSlice16, pointerSliceN:
+                const pointerSliceSize = instruction.op == pointerSliceN
+                    ? instruction.d
+                    : pointerElementSize(instruction.op);
                 const sliceLo = scalarValue!size_t(stack, base + instruction.c);
                 const sliceHi = scalarValue!size_t(
                     stack, base + instruction.c + size_t.sizeof,
@@ -2332,7 +2370,8 @@ private uint pointerElementSize(
     in imported!"quickbite.backends.bytecode.core.program".Op op,
 ) @safe @nogc nothrow pure {
     import quickbite.backends.bytecode.core.program: Op;
-    if (op == Op.pointerLoad16 || op == Op.pointerStore16)
+    if (op == Op.pointerLoad16 || op == Op.pointerStore16 ||
+        op == Op.pointerSlice16)
         return 16;
     if (op == Op.pointerLoad8 || op == Op.pointerStore8 ||
         op == Op.pointerSlice8)
@@ -2388,10 +2427,12 @@ private uint sliceCopyElementSize(
     import quickbite.backends.bytecode.core.program: Op;
     if (op == Op.sliceCopy1 || op == Op.sliceEqual1)
         return 1;
-    if (op == Op.sliceEqual2)
+    if (op == Op.sliceCopy2 || op == Op.sliceEqual2)
         return 2;
-    if (op == Op.sliceEqual8)
+    if (op == Op.sliceEqual8 || op == Op.sliceCopy8)
         return 8;
+    if (op == Op.sliceCopy16)
+        return 16;
     return 4;
 }
 
@@ -2401,14 +2442,20 @@ private uint appendElementSize(
     import quickbite.backends.bytecode.core.program: Op;
     if (op == Op.appendElement1)
         return 1;
-    return op == Op.appendElement2 ? 2 : 4;
+    if (op == Op.appendElement2)
+        return 2;
+    if (op == Op.appendElement8)
+        return 8;
+    return op == Op.appendElement16 ? 16 : 4;
 }
 
 private uint concatElementSize(
     in imported!"quickbite.backends.bytecode.core.program".Op op,
 ) @safe @nogc nothrow pure {
     import quickbite.backends.bytecode.core.program: Op;
-    return op == Op.concatArrays1 ? 1 : 4;
+    if (op == Op.concatArrays1)
+        return 1;
+    return op == Op.concatArrays16 ? 16 : 4;
 }
 
 private uint dupArrayElementSize(
@@ -2661,6 +2708,36 @@ private void copySlice(
     destination[] = source[];
 }
 
+// The compiler supplies a valid native slice descriptor and a 1-byte scalar
+// slot; the trusted boundary only forms the corresponding typed host slice.
+private void fillSlice1(
+    ref ubyte[] stack,
+    in size_t destinationOffset,
+    in size_t valueOffset,
+) @trusted {
+    const destinationPointer =
+        scalarValue!size_t(stack, destinationOffset);
+    const destinationLength =
+        scalarValue!size_t(stack, destinationOffset + size_t.sizeof);
+    auto destination = (cast(ubyte*) destinationPointer)[0 .. destinationLength];
+    destination[] = scalarValue!ubyte(stack, valueOffset);
+}
+
+// The compiler supplies a valid native slice descriptor and a 2-byte scalar
+// slot; the trusted boundary only forms the corresponding typed host slice.
+private void fillSlice2(
+    ref ubyte[] stack,
+    in size_t destinationOffset,
+    in size_t valueOffset,
+) @trusted {
+    const destinationPointer =
+        scalarValue!size_t(stack, destinationOffset);
+    const destinationLength =
+        scalarValue!size_t(stack, destinationOffset + size_t.sizeof);
+    auto destination = (cast(ushort*) destinationPointer)[0 .. destinationLength];
+    destination[] = scalarValue!ushort(stack, valueOffset);
+}
+
 // The compiler supplies a valid native slice descriptor and a 4-byte scalar
 // slot; the trusted boundary only forms the corresponding typed host slice.
 private void fillSlice4(
@@ -2674,6 +2751,21 @@ private void fillSlice4(
         scalarValue!size_t(stack, destinationOffset + size_t.sizeof);
     auto destination = (cast(uint*) destinationPointer)[0 .. destinationLength];
     destination[] = scalarValue!uint(stack, valueOffset);
+}
+
+// The compiler supplies a valid native slice descriptor and an 8-byte scalar
+// slot; the trusted boundary only forms the corresponding typed host slice.
+private void fillSlice8(
+    ref ubyte[] stack,
+    in size_t destinationOffset,
+    in size_t valueOffset,
+) @trusted {
+    const destinationPointer =
+        scalarValue!size_t(stack, destinationOffset);
+    const destinationLength =
+        scalarValue!size_t(stack, destinationOffset + size_t.sizeof);
+    auto destination = (cast(ulong*) destinationPointer)[0 .. destinationLength];
+    destination[] = scalarValue!ulong(stack, valueOffset);
 }
 
 // Element-wise `dest[] = left[] + right[]` over 4-byte integer elements,

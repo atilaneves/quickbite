@@ -997,10 +997,7 @@ static foreach (backend; Matrix!()) {
     }
 }
 
-static foreach (backend; Matrix!(
-    Omit!(Bytecode, Because.inexpressible,
-        "bytecode core does not support calls through delegate locals"),
-)) {
+static foreach (backend; Matrix!()) {
     @("delegate.nestedFunctionReadsCapturedDelegate." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -1255,11 +1252,7 @@ static foreach (backend; Matrix!()) {
     }
 }
 
-static foreach (backend; Matrix!(
-    Omit!(Bytecode, Because.inexpressible,
-        "bytecode core does not support function-pointer values loaded " ~
-        "through pointer dereference"),
-)) {
+static foreach (backend; Matrix!()) {
     @("pointer.functionPointerDereferencePreservesCallable." ~
         backend.stringof)
     @Tags(backend.stringof)
@@ -2393,6 +2386,70 @@ static foreach (backend; Matrix!(
     }
 }
 
+// A module-level struct's own field that is itself a struct
+// (`quickbiteDatasegOuter.inner.x`): the generic base resolver that walks an
+// `outer.inner` chain back to its base had no case for a bare module-struct
+// `VarExp`, so it gave up one level before ever reaching `inner`'s own
+// module offset, and any read or write through a nested struct field failed
+// outright. `Ctfe` cannot read or write dataseg storage at all (compile-time
+// execution has no such storage to access).
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.inexpressible,
+        "CTFE cannot read or write dataseg (__gshared/static) storage"),
+)) {
+    @("dataseg.moduleStructNestedFieldReadWrite." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct Inner { int x; }
+            struct Outer { Inner inner; }
+
+            __gshared Outer quickbiteDatasegOuter;
+
+            void setInnerX(int value) {
+                quickbiteDatasegOuter.inner.x = value;
+            }
+
+            unittest {
+                setInnerX(42);
+                assert(quickbiteDatasegOuter.inner.x == 42);
+            }
+        });
+    }
+}
+
+// The same nested-field shape through a dynamic-array field
+// (`quickbiteDatasegNestedOuter.inner.arr`): the array descriptor's own
+// writeback reuses `tryStructField`'s result, so it inherits the identical
+// fix. `Ctfe` cannot read or write dataseg storage at all (compile-time
+// execution has no such storage to access).
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.inexpressible,
+        "CTFE cannot read or write dataseg (__gshared/static) storage"),
+)) {
+    @("dataseg.moduleStructNestedArrayFieldAppendWritesBackToModule." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct Inner { byte[] arr; }
+            struct Outer { Inner inner; }
+
+            __gshared Outer quickbiteDatasegNestedOuter;
+
+            void appendToInnerArr(byte value) {
+                quickbiteDatasegNestedOuter.inner.arr ~= value;
+            }
+
+            unittest {
+                appendToInnerArr(42);
+                assert(quickbiteDatasegNestedOuter.inner.arr.length == 1);
+                assert(quickbiteDatasegNestedOuter.inner.arr[0] == 42);
+            }
+        });
+    }
+}
+
 // A `ref` argument bound to a module-level struct's own field
 // (`bump(point.x)`): the generic struct-field `ref`-argument path
 // materialises the whole struct into a throwaway frame copy and would
@@ -2497,6 +2554,39 @@ static foreach (backend; Matrix!(
                 quickbiteDatasegCompoundPoint.x +=
                     writeDirectFieldAndReturnOne();
                 assert(quickbiteDatasegCompoundPoint.x == 101);
+            }
+        });
+    }
+}
+
+// A class field's compound assignment (`+=`) whose right-hand side call
+// itself writes that same field directly by name through the class
+// reference: the addition must read whatever the call already wrote to the
+// field, not a value loaded before the call ran, and the writeback
+// afterward must land the correctly computed sum -- not a stale pre-call
+// value that erases the call's own direct write.
+static foreach (backend; Matrix!(
+    Omit!(Interpreter, Because.diverges,
+        "computes 6 instead of 101: reads a stale pre-call copy of the " ~
+        "field, oblivious to writeDirectFieldAndReturnOne's direct write; " ~
+        "a pre-existing gap in a different backend, unrelated to this fix"),
+)) {
+    @("class.fieldCompoundAssignReflectsRhsDirectWrite." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            class Box { int x; }
+
+            int writeDirectFieldAndReturnOne(Box box) {
+                box.x = 100;
+                return 1;
+            }
+
+            unittest {
+                auto box = new Box;
+                box.x = 5;
+                box.x += writeDirectFieldAndReturnOne(box);
+                assert(box.x == 101);
             }
         });
     }
@@ -2848,8 +2938,6 @@ static foreach (backend; Matrix!(
     Omit!(Ctfe, Because.diverges,
         "CTFE detaches the pointer when the whole static array is assigned; " ~
         "see the sibling characterization below"),
-    Omit!(Bytecode, Because.unconfirmed,
-        "does not yet support whole static-array assignment from a runtime literal"),
 )) {
     @("pointer.staticArrayPointerSurvivesWholeArrayAssignment." ~
         backend.stringof)
@@ -4642,9 +4730,6 @@ static foreach (backend; Matrix!()) {
 static foreach (backend; Matrix!(
     Omit!(Ctfe, Because.refusal,
         "DMD CTFE refuses the nested static-array element pointer cast"),
-    Omit!(Bytecode, Because.refusal,
-        "the nested `int[2][2]` `==` comparison is declined (mixed " ~
-            "static/dynamic nested-array shapes are unsupported)"),
 )) {
     @("staticArray.refLocalAssignmentMutatesSource." ~ backend.stringof)
     @Tags(backend.stringof)
@@ -6311,6 +6396,190 @@ static foreach (backend; Matrix!()) {
 
             unittest {
                 assert(f() == 8);
+            }
+        });
+    }
+}
+
+// A struct wider than 16 bytes (24 bytes) assigned through a raw pointer
+// (`*p = S(...)`): `storeThroughPointer`'s shared `*p = v` / `p[i] = v` write
+// must copy the value's own full width instead of asserting on an
+// unsupported element size.
+static foreach (backend; Matrix!()) {
+    @("pointer.dereferenceAssignmentWithStructWiderThan16BytesWritesFullWidth."
+        ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct S {
+                long a;
+                long b;
+                long c;
+            }
+
+            int seed(int value) {
+                return value;
+            }
+
+            unittest {
+                S s = S(seed(1), seed(2), seed(3));
+                S* p = &s;
+                *p = S(seed(7), seed(8), seed(9));
+                assert(s.a == 7);
+                assert(s.b == 8);
+                assert(s.c == 9);
+            }
+        });
+    }
+}
+
+// The `p[i] = v` sibling of the fixture above: indexing through a raw
+// pointer (rather than dereferencing it at index 0) into a struct wider than
+// 16 bytes.
+static foreach (backend; Matrix!()) {
+    @("pointer.indexAssignmentWithStructWiderThan16BytesWritesFullWidth." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct S {
+                long a;
+                long b;
+                long c;
+            }
+
+            int seed(int value) {
+                return value;
+            }
+
+            unittest {
+                S[] outer;
+                outer ~= S(seed(1), seed(2), seed(3));
+                outer ~= S(seed(4), seed(5), seed(6));
+                S* p = outer.ptr;
+
+                p[0] = S(seed(7), seed(8), seed(9));
+
+                assert(outer[0].a == 7);
+                assert(outer[0].b == 8);
+                assert(outer[0].c == 9);
+                assert(outer[1].a == 4);
+                assert(outer[1].b == 5);
+                assert(outer[1].c == 6);
+            }
+        });
+    }
+}
+
+// The read-through-pointer counterpart of the write fixtures above: passing
+// a struct wider than 16 bytes read through `*p` as a plain (non-ref)
+// function argument. `structOperandOffset`'s `PtrExp` branch used to gate
+// itself to a fixed 1/2/4/8/16 element size and fall through to "Unsupported
+// struct value" for anything wider; it now calls the same `pointerLoadOp`
+// general-width escape the store side already has.
+static foreach (backend; Matrix!()) {
+    @("pointer.dereferenceReadWithStructWiderThan16BytesReadsFullWidth." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct S {
+                long a;
+                long b;
+                long c;
+            }
+
+            int seed(int value) {
+                return value;
+            }
+
+            int sum(S value) {
+                return cast(int) (value.a + value.b + value.c);
+            }
+
+            unittest {
+                S s = S(seed(1), seed(2), seed(3));
+                S* p = &s;
+                assert(sum(*p) == 6);
+            }
+        });
+    }
+}
+
+// The `p[i]` sibling: indexing (rather than dereferencing at index 0)
+// through a raw pointer into a struct wider than 16 bytes, read as a
+// by-value argument. `structOperandOffset` did not resolve an `IndexExp`
+// through a raw pointer receiver at all before this change -- only the
+// array-of-structs index shapes `structBaseOffsetOrMaterialise` already
+// handles -- regardless of struct width.
+static foreach (backend; Matrix!()) {
+    @("pointer.indexReadWithStructWiderThan16BytesReadsFullWidth." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct S {
+                long a;
+                long b;
+                long c;
+            }
+
+            int seed(int value) {
+                return value;
+            }
+
+            int sum(S value) {
+                return cast(int) (value.a + value.b + value.c);
+            }
+
+            unittest {
+                S[] outer;
+                outer ~= S(seed(1), seed(2), seed(3));
+                outer ~= S(seed(4), seed(5), seed(6));
+                S* p = outer.ptr;
+
+                assert(sum(p[0]) == 6);
+                assert(sum(p[1]) == 15);
+            }
+        });
+    }
+}
+
+// `p[lo .. hi]` slicing through a raw pointer into a struct wider than 16
+// bytes: `pointerSliceOp` used to `assert(0)` for any element size beyond 8,
+// blocking this shape entirely. The resulting slice must share the original
+// backing storage, not a copy.
+static foreach (backend; Matrix!()) {
+    @("pointer.sliceWithStructElementsWiderThan16BytesSharesBackingStorage." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct S {
+                long a;
+                long b;
+                long c;
+            }
+
+            int seed(int value) {
+                return value;
+            }
+
+            unittest {
+                S[] outer;
+                outer ~= S(seed(1), seed(2), seed(3));
+                outer ~= S(seed(4), seed(5), seed(6));
+                outer ~= S(seed(7), seed(8), seed(9));
+                S* p = outer.ptr;
+
+                S[] sliced = p[1 .. 3];
+
+                assert(sliced.length == 2);
+                assert(sliced[0].a == 4);
+                assert(sliced[1].c == 9);
+
+                sliced[0].a = seed(100);
+                assert(outer[1].a == 100);
             }
         });
     }
@@ -7994,6 +8263,81 @@ static foreach (backend; Matrix!()) {
                 short* pointer = &value;
                 bump(*pointer);
                 assert(value == 11);
+            }
+        });
+    }
+}
+
+// A `ref` argument dereferencing a stored pointer to a struct wider than 8
+// bytes needs the same write-through-the-real-address behaviour as the
+// scalar cases above: `emitPointerDereferenceRefArgument` only recognised
+// scalar pointees (1/2/4/8 bytes), so a struct pointee fell through to
+// `referenceOffsetOrNull`'s generic dereference-through-pointer fallback,
+// which reads the pointee into a fresh caller-frame slot but never writes it
+// back anywhere, silently discarding the mutation.
+static foreach (backend; Matrix!()) {
+    @("pointer.refArgumentThroughStoredPointerToWideStructWritesThroughPointer." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            long seed() {
+                return 10;
+            }
+
+            struct Wide {
+                long a;
+                long b;
+                long c;
+            }
+
+            void bump(ref Wide w) {
+                w.a = w.a + 1;
+                w.b = w.b + 2;
+                w.c = w.c + 3;
+            }
+
+            unittest {
+                auto pointer = new Wide(seed, seed + 10, seed + 20);
+                bump(*pointer);
+                assert(pointer.a == 11);
+                assert(pointer.b == 22);
+                assert(pointer.c == 33);
+            }
+        });
+    }
+}
+
+// A `ref` argument that is itself a struct-pointer local passed by name (no
+// dereference) is a different shape from the struct-pointer-dereference
+// fixture above: the callee rebinds the pointer variable itself
+// (`q = new S(...)`), so the write-back must copy the pointer's own 8-byte
+// value back into the caller's local rather than write through whatever the
+// pointer used to point at.
+static foreach (backend; Matrix!()) {
+    @("pointer.refArgumentRebindingStoredStructPointerUpdatesTheVariable." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            int seed() {
+                return 10;
+            }
+
+            struct Widget {
+                int value;
+            }
+
+            void reassign(ref Widget* q) {
+                q = new Widget(seed + 89);
+            }
+
+            unittest {
+                auto first = new Widget(seed);
+                auto p = first;
+                reassign(p);
+                assert(p.value == 99);
+                assert(first.value == 10);
             }
         });
     }

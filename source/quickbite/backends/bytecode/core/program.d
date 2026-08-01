@@ -234,6 +234,10 @@ package(quickbite.backends.bytecode) enum Op: ubyte {
     // index `c` of the outer descriptor at offset b into the descriptor slot at
     // frame offset a, bounds checked against the outer length.
     indexLoad16,
+    // Same as `indexLoad1`/etc, for an element width not covered by a fixed
+    // opcode (e.g. a struct element wider than 16 bytes): the byte width is
+    // operand d instead of being implied by the opcode.
+    indexLoadN,
     // Write the element slot at frame offset a into element `c` (a size_t index
     // in a frame slot) of the slice descriptor at offset b, bounds checked
     // against the descriptor length. The element size is fixed by the opcode.
@@ -246,6 +250,10 @@ package(quickbite.backends.bytecode) enum Op: ubyte {
     // checked against the outer length. Backs storing an inner array into an
     // array-of-arrays element.
     indexStore16,
+    // Same as `indexStore1`/etc, for an element width not covered by a fixed
+    // opcode (e.g. a struct element wider than 16 bytes): the byte width is
+    // operand d instead of being implied by the opcode.
+    indexStoreN,
     // Check that the size_t index at frame offset a is less than the size_t
     // length at frame offset b, raising `indexLoad`/`indexStore`'s exact
     // "index [n] is out of bounds for array of length N" diagnostic
@@ -262,17 +270,33 @@ package(quickbite.backends.bytecode) enum Op: ubyte {
     subSlice4,
     subSlice8,
     subSlice16,
+    // Same as `subSlice1`/etc, for an element width not covered by a fixed
+    // opcode (e.g. a struct element wider than 16 bytes): the byte width is
+    // operand d instead of being implied by the opcode.
+    subSliceN,
     // Copy elements from the source slice descriptor at frame offset b into the
     // destination slice descriptor at frame offset a, write-through to the
     // destination's backing memory. The two lengths must match; overlapping
     // backing ranges abort with the plain "Range violation" message. The
-    // element size is fixed by the opcode (1 or 4 bytes), matching the
-    // indexLoad/indexStore split.
+    // element size is fixed by the opcode (1, 2, 4, 8, or 16 bytes), matching
+    // the indexLoad/indexStore split; 16 bytes is a whole slice-descriptor
+    // element, e.g. a `T[][]` row.
     sliceCopy1,
+    sliceCopy2,
     sliceCopy4,
-    // Fill every 4-byte element of the destination slice descriptor at frame
-    // offset a with the scalar value at frame offset b.
+    sliceCopy8,
+    sliceCopy16,
+    // Same as `sliceCopy1`/etc, for an element width not covered by a fixed
+    // opcode: the byte width is operand c instead of being implied by the
+    // opcode.
+    sliceCopyN,
+    // Fill every element of the destination slice descriptor at frame offset
+    // a with the scalar value at frame offset b. The element size is fixed by
+    // the opcode (1, 2, 4, or 8 bytes).
+    sliceFill1,
+    sliceFill2,
     sliceFill4,
+    sliceFill8,
     // Compare the two slice descriptors at frame offsets b and c, writing one
     // boolean byte to frame offset a: true iff their lengths and all element
     // bytes are equal. The element size is fixed by the opcode (1, 2, 4, or 8
@@ -287,18 +311,36 @@ package(quickbite.backends.bytecode) enum Op: ubyte {
     // overwrite the descriptor with {newPtr, length + 1}. Reallocating (rather
     // than growing in place) matches compiled D, so a slice of an array is not
     // corrupted by appending to a neighbour. The element size is fixed by the
-    // opcode (1 or 4 bytes), matching the indexLoad/indexStore split.
+    // opcode (1, 2, 4, 8, or 16 bytes), matching the indexLoad/indexStore split.
     appendElement1,
     appendElement2, // 2-byte element (wchar): backs `wchar[] ~= w`
     appendElement4,
+    appendElement8, // 8-byte element: long/double/pointer, or an 8-byte struct
+    appendElement16, // 16-byte descriptor: appending one row to an array
+                      // whose element is itself an array (`int[][]`/
+                      // `int[N][]`), where each row is its own heap-backed
+                      // sub-array addressed by a stored descriptor
+    // Same as `appendElement1`/etc, for an element width not covered by a
+    // fixed opcode (e.g. a struct element wider than 16 bytes): the byte
+    // width is operand c instead of being implied by the opcode.
+    appendElementN,
     // Concatenate the two slice descriptors at frame offsets b and c into a
     // fresh heap block holding all of b's elements followed by all of c's, then
     // write the descriptor {newPtr, len(b) + len(c)} to frame offset a. The
     // block is rooted in `heap`. Both operands are copied, so the originals are
     // untouched (`a ~ b` makes a NEW array). The element size is fixed by the
-    // opcode (1 or 4 bytes), matching the indexLoad/indexStore split.
+    // opcode (1, 4, or 16 bytes), matching the indexLoad/indexStore split.
     concatArrays1,
     concatArrays4,
+    concatArrays16, // 16-byte descriptor element: concatenating two arrays
+                     // whose element is itself an array (`int[][]`/
+                     // `int[N][]`), where each row is its own heap-backed
+                     // sub-array addressed by a stored descriptor
+    // Same as `concatArrays1`/etc, for an element width not covered by a
+    // fixed opcode (e.g. a struct element wider than 16 bytes): the byte
+    // width is operand d instead of being implied by the opcode.
+    concatArraysN,
+
     // Duplicate the slice descriptor at frame offset b into a fresh heap block
     // holding an independent copy of all its elements, then write the
     // descriptor {newPtr, length} to frame offset a. The block is rooted in
@@ -323,6 +365,11 @@ package(quickbite.backends.bytecode) enum Op: ubyte {
     pointerLoad4,
     pointerLoad8,
     pointerLoad16,
+    // Same as `pointerLoad1`/etc, for an element width not covered by a
+    // fixed opcode (e.g. a struct element wider than 16 bytes): the byte
+    // width is operand d instead of being implied by the opcode. Backs `*p`
+    // and `p[i]` for such a pointee.
+    pointerLoadN,
     // Atomically read the 8-byte element at `[pointer + index * 8]` into the
     // slot at frame offset a. The atomic-load inline-asm lowering uses this
     // only after exact whole-sequence validation.
@@ -337,15 +384,25 @@ package(quickbite.backends.bytecode) enum Op: ubyte {
     pointerStore4,
     pointerStore8,
     pointerStore16,
+    // Same as `pointerStore1`/etc, for an element width not covered by a
+    // fixed opcode (e.g. a struct element wider than 16 bytes): the byte
+    // width is operand d instead of being implied by the opcode. Backs `*p
+    // = v` and `p[i] = v` for such a pointee.
+    pointerStoreN,
     // Form a slice descriptor {pointer + lo * elementSize, hi - lo} at frame
     // offset a from the raw `size_t` pointer value at frame offset b and an
     // adjacent {lo, hi} pair of `size_t` bounds at frame offset c. Backs
     // `p[lo .. hi]`; unchecked against the original block, like compiled D. The
-    // element size is fixed by the opcode (1 or 4 bytes).
+    // element size is fixed by the opcode (1, 2, 4, 8, or 16 bytes).
     pointerSlice1,
     pointerSlice2,
     pointerSlice4,
     pointerSlice8,
+    pointerSlice16,
+    // Same as `pointerSlice1`/etc, for an element width not covered by a fixed
+    // opcode (e.g. a struct element wider than 16 bytes): the byte width is
+    // operand d instead of being implied by the opcode.
+    pointerSliceN,
     // a: destination (one boolean byte), b: lhs, c: rhs (unsigned 8-byte
     // comparison). Back raw pointer-value relations `p < q`, `p <= q`, `p > q`,
     // `p >= q`, which compare as `size_t`.

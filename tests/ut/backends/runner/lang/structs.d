@@ -27,10 +27,7 @@ static foreach (backend; Matrix!()) {
     }
 }
 
-static foreach (backend; Matrix!(
-    Omit!(Bytecode, Because.inexpressible,
-        "bytecode core does not support function-pointer calls with arguments"),
-)) {
+static foreach (backend; Matrix!()) {
     @("struct.functionPointerFieldPreservesCallable." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -52,10 +49,7 @@ static foreach (backend; Matrix!(
     }
 }
 
-static foreach (backend; Matrix!(
-    Omit!(Bytecode, Because.inexpressible,
-        "bytecode core does not support delegate-typed aggregate fields"),
-)) {
+static foreach (backend; Matrix!()) {
     @("struct.liveDelegateFieldPreservesCallable." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -1989,6 +1983,40 @@ static foreach (backend; Matrix!(
     }
 }
 
+// The nested counterpart of `datasegVariableArgument` above: a `ref`
+// argument bound to a field reached through more than one struct level
+// (`go.inner.x`, not just `go.x`). `moduleStructFieldOffsetOrNull` walks the
+// `DotVarExp` chain back to the module struct root, accumulating each
+// level's own `VarDeclaration.offset`, so `emitModuleStructFieldRefArgument`
+// covers this the same way it already covered a single field level.
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.inexpressible,
+        "CTFE cannot read or write dataseg (__gshared/static) storage"),
+)) {
+    @("refArgument.nestedDatasegStructFieldArgument." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct Inner { int x; }
+            struct Outer { Inner inner; int y; }
+            __gshared Outer go;
+
+            void bump(ref int v) {
+                v = v + 1;
+            }
+
+            unittest {
+                go.y = 7;
+                bump(go.inner.x);
+                bump(go.inner.x);
+                bump(go.inner.x);
+                assert(go.inner.x == 3);
+                assert(go.y == 7);
+            }
+        });
+    }
+}
+
 // An indexed element (`IndexExp` over a constant index -- `impl.d`'s
 // `constantIndex` only accepts DMD's own already-folded integer constant,
 // never a runtime-evaluated one, to avoid evaluating a side-effecting
@@ -2418,6 +2446,41 @@ static foreach (backend; Matrix!()) {
 
                 assert(items[0].x == 1);
                 assert(items[0].y == 2);
+            }
+        });
+    }
+}
+
+// A `ref` argument bound to a foreach-ref element whose struct is wider than
+// a register (24 bytes, exceeding the fixed 1/2/4/8/16-byte opcode set) must
+// still write back through the element's real address:
+// `emitStructPointerRefArgument`'s mirror-load and `structPointerRefWriteBacks`'
+// write-back both build their `pointerLoadOp`/`pointerStoreOp` instruction
+// without the explicit width operand `Op.pointerLoadN`/`pointerStoreN`
+// require, so the machine read the always-zero-defaulted `instruction.d`
+// instead of the element's real size and silently copied zero bytes.
+static foreach (backend; Matrix!()) {
+    @("struct.foreachRefWithStructWiderThan16BytesWritesThroughElement." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct S {
+                long a;
+                long b;
+                long c;
+            }
+
+            void bump(ref S s) {
+                s.a += 100;
+            }
+
+            unittest {
+                S[] arr;
+                arr ~= S(1, 2, 3);
+                foreach (ref item; arr)
+                    bump(item);
+                assert(arr[0].a == 101);
             }
         });
     }
@@ -3633,10 +3696,7 @@ static foreach (backend; Matrix!()) {
     }
 }
 
-static foreach (backend; Matrix!(
-    Omit!(Bytecode, Because.inexpressible,
-        "bytecode core does not support postfix increment"),
-)) {
+static foreach (backend; Matrix!()) {
     @("struct.fixedArrayFieldCompoundAssignmentAndIncrementWriteBack." ~
         backend.stringof)
     @Tags(backend.stringof)
@@ -3660,6 +3720,104 @@ static foreach (backend; Matrix!(
 
             unittest {
                 assert(f() == 15);
+            }
+        });
+    }
+}
+
+// A class field whose own type is a struct wider than a register, passed as
+// a `ref` argument (`bump(c.value)`). `emitClassFieldRefArgument` declined
+// any `Tstruct`/`Tsarray`/`Tarray`/`Taarray` field, falling through to
+// "Unsupported ref argument in bytecode core"; the field lives inline in the
+// class block, so its own address (`classFieldAddress`) is already correct,
+// it only needed its real byte width instead of the scalar-only 1/2/4/8
+// gate, mirroring `emitStructPointerFieldRefArgument`'s existing scalar
+// case.
+static foreach (backend; Matrix!()) {
+    @("refArgument.classFieldOfWideStructTypeWritesThroughField." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            long seed() {
+                return 10;
+            }
+
+            struct Wide {
+                long a;
+                long b;
+                long c;
+            }
+
+            class Holder {
+                Wide value;
+            }
+
+            void bump(ref Wide w) {
+                w.a = w.a + 1;
+                w.b = w.b + 2;
+                w.c = w.c + 3;
+            }
+
+            unittest {
+                auto holder = new Holder;
+                holder.value.a = seed;
+                holder.value.b = seed + 10;
+                holder.value.c = seed + 20;
+                bump(holder.value);
+                assert(holder.value.a == 11);
+                assert(holder.value.b == 22);
+                assert(holder.value.c == 33);
+            }
+        });
+    }
+}
+
+// The struct-pointer counterpart of the class-field fixture above: a struct
+// reached through a raw struct pointer whose own field is a struct wider
+// than a register, passed as a `ref` argument (`bump(carrier.value)`).
+// `emitStructPointerFieldRefArgument` declined any `Tstruct`/`Tsarray`/
+// `Tarray`/`Taarray` field, falling through to "Unsupported ref argument in
+// bytecode core: (*carrier).value"; the field's real address
+// (`structFieldAddress`) is already correct, it only needed its real byte
+// width instead of the scalar-only 1/2/4/8 gate, mirroring
+// `emitClassFieldRefArgument`'s identical widening.
+static foreach (backend; Matrix!()) {
+    @("refArgument.structPointerFieldOfWideStructTypeWritesThroughField." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            long seed() {
+                return 10;
+            }
+
+            struct Wide {
+                long a;
+                long b;
+                long c;
+            }
+
+            struct Holder {
+                Wide value;
+            }
+
+            void bump(ref Wide w) {
+                w.a = w.a + 1;
+                w.b = w.b + 2;
+                w.c = w.c + 3;
+            }
+
+            unittest {
+                Holder holder;
+                holder.value.a = seed;
+                holder.value.b = seed + 10;
+                holder.value.c = seed + 20;
+                Holder* carrier = &holder;
+                bump(carrier.value);
+                assert(holder.value.a == 11);
+                assert(holder.value.b == 22);
+                assert(holder.value.c == 33);
             }
         });
     }

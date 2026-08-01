@@ -337,6 +337,73 @@ static foreach (backend; Matrix!(
     }
 }
 
+// `a ~= append()` where `a` is a module-level array, `append` returns a
+// *whole array* (`CatAssignExp`, not the single-element `CatElemAssignExp`
+// case above), and `append` itself appends to `a` by name: the outer
+// concatenation's own descriptor must reflect whatever `append` already
+// committed to `a`'s real storage, not a snapshot taken before `append` ran.
+// SystemLinker is the oracle.
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.inexpressible,
+        "CTFE cannot read a mutable module variable"),
+    Omit!(Interpreter, Because.refusal,
+        "Unsupported interpreter array append target."),
+)) {
+    @("dynamicArray.moduleConcatenationSurvivesReentrantAppendDuringRhsCall." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            byte[] a;
+
+            byte[] append() {
+                byte runtime = 7;
+                a ~= runtime;
+                byte other = 9;
+                return [other];
+            }
+
+            unittest {
+                a ~= append();
+
+                assert(a.length == 2);
+                assert(a[0] == 7);
+                assert(a[1] == 9);
+            }
+        });
+    }
+}
+
+// `gp.arr ~= x` where `gp` is a module-level struct and `arr` is one of its
+// dynamic-array fields: the field's own slice descriptor lives inside the
+// struct's whole-block dataseg copy, so its writeback must land at the
+// field's own module offset, not silently drop the append. SystemLinker is
+// the oracle.
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.inexpressible,
+        "CTFE cannot read or write dataseg (__gshared/static) storage"),
+)) {
+    @("dynamicArray.moduleStructFieldAppendWritesBackToModule." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct P { int x; byte[] arr; }
+            P gp;
+
+            unittest {
+                gp.x = 9;
+                byte runtime = cast(byte) (40 + 2);
+                gp.arr ~= runtime;
+
+                assert(gp.x == 9);
+                assert(gp.arr.length == 1);
+                assert(gp.arr[0] == 42);
+            }
+        });
+    }
+}
+
 static foreach (backend; Matrix!()) {
     @("assertDiagnostic.characterEquality." ~ backend.stringof)
     @Tags(backend.stringof)
@@ -536,6 +603,361 @@ static foreach (backend; Matrix!()) {
                 assert(values.length == 2);
                 assert(values[0] == 0x2au);
                 assert(values[1] == 0x2bu);
+            }
+        });
+    }
+}
+
+static foreach (backend; Matrix!()) {
+    @("dynamicArray.appendStaticArrayRow." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            int seed(int value) {
+                return value;
+            }
+
+            unittest {
+                int[2][] rows;
+                rows ~= [seed(1), seed(2)];
+                rows ~= [seed(3), seed(4)];
+
+                assert(rows.length == 2);
+                assert(rows[0][0] == 1);
+                assert(rows[0][1] == 2);
+                assert(rows[1][0] == 3);
+                assert(rows[1][1] == 4);
+            }
+        });
+    }
+}
+
+static foreach (backend; Matrix!()) {
+    @("dynamicArray.concatenatesArrayOfArrays." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            int seed(int value) {
+                return value;
+            }
+
+            unittest {
+                int[][] outer;
+                outer ~= [seed(1), seed(2)];
+                int[][] other;
+                other ~= [seed(3), seed(4)];
+
+                outer ~= other;
+
+                assert(outer.length == 2);
+                assert(outer[0][0] == 1);
+                assert(outer[0][1] == 2);
+                assert(outer[1][0] == 3);
+                assert(outer[1][1] == 4);
+            }
+        });
+    }
+}
+
+// `outer[0]`'s own sub-slice assignment rhs is a plain dynamic-array
+// variable (`rhs`), not itself sliced (`rhs[]`) or a literal -- the general
+// case `compileSourceSlice` must resolve by compiling `rhs` as an ordinary
+// expression and reusing its own slice descriptor.
+static foreach (backend; Matrix!(
+    Omit!(Interpreter, Because.unconfirmed,
+        "assignment target is a slice of an indexed element"),
+)) {
+    @("dynamicArray.subSliceAssignmentOntoArrayOfArraysElementFromPlainVariable." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            int seed(int value) {
+                return value;
+            }
+
+            unittest {
+                int[][] outer;
+                outer ~= [seed(1), seed(2), seed(3)];
+                int[] rhs = [seed(7), seed(8)];
+
+                outer[0][0 .. 2] = rhs;
+
+                assert(outer[0][0] == 7);
+                assert(outer[0][1] == 8);
+                assert(outer[0][2] == 3);
+            }
+        });
+    }
+}
+
+// Sub-slice assignment whose element is itself a 16-byte slice descriptor
+// (`outer[lo..hi] = otherOuter` for `T[][]`, copying whole row descriptors
+// across multiple rows), not a single row's scalar contents.
+static foreach (backend; Matrix!()) {
+    @("dynamicArray.subSliceAssignmentWithArrayElementsAcrossMultipleRows." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            int seed(int value) {
+                return value;
+            }
+
+            unittest {
+                int[][] outer;
+                outer ~= [seed(1), seed(2)];
+                outer ~= [seed(3), seed(4)];
+                int[][] other;
+                other ~= [seed(7), seed(8)];
+                other ~= [seed(9), seed(10)];
+
+                outer[0 .. 2] = other;
+
+                assert(outer[0][0] == 7);
+                assert(outer[0][1] == 8);
+                assert(outer[1][0] == 9);
+                assert(outer[1][1] == 10);
+            }
+        });
+    }
+}
+
+// Sub-slice assignment whose element is a 16-byte struct (not a slice
+// descriptor): each element must copy its full width rather than the
+// scalar width a struct-blind element-size computation would fall back to.
+static foreach (backend; Matrix!()) {
+    @("dynamicArray.subSliceAssignmentWithStructElementsAcrossMultipleRows." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct S {
+                long a;
+                long b;
+            }
+
+            int seed(int value) {
+                return value;
+            }
+
+            unittest {
+                S[] outer;
+                outer ~= S(seed(1), seed(2));
+                outer ~= S(seed(3), seed(4));
+                S[] other;
+                other ~= S(seed(7), seed(8));
+                other ~= S(seed(9), seed(10));
+
+                outer[0 .. 2] = other;
+
+                assert(outer[0].a == 7);
+                assert(outer[0].b == 8);
+                assert(outer[1].a == 9);
+                assert(outer[1].b == 10);
+            }
+        });
+    }
+}
+
+// A dynamic array whose element is a struct wider than 16 bytes (24 bytes):
+// appending an element, reading `.length`, and indexing back into it must all
+// use the element's real width instead of falling back to a narrower
+// fixed-width copy or refusing the operation.
+static foreach (backend; Matrix!()) {
+    @("dynamicArray.appendStructElementWiderThan16Bytes." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct S {
+                long a;
+                long b;
+                long c;
+            }
+
+            int seed(int value) {
+                return value;
+            }
+
+            unittest {
+                S[] outer;
+                outer ~= S(seed(1), seed(2), seed(3));
+                outer ~= S(seed(4), seed(5), seed(6));
+
+                assert(outer.length == 2);
+                assert(outer[0].a == 1);
+                assert(outer[0].b == 2);
+                assert(outer[0].c == 3);
+                assert(outer[1].a == 4);
+                assert(outer[1].b == 5);
+                assert(outer[1].c == 6);
+            }
+        });
+    }
+}
+
+// A dynamic array whose element is a struct wider than 16 bytes (24 bytes):
+// whole-array concatenation (`~=`) must copy the right-hand array's elements
+// at their real width instead of falling back to a narrower fixed-width copy
+// or refusing the operation.
+static foreach (backend; Matrix!()) {
+    @("dynamicArray.concatenationAssignmentWithStructElementsWiderThan16Bytes."
+        ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct S {
+                long a;
+                long b;
+                long c;
+            }
+
+            int seed(int value) {
+                return value;
+            }
+
+            unittest {
+                S[] outer;
+                outer ~= S(seed(1), seed(2), seed(3));
+
+                S[] other;
+                other ~= S(seed(4), seed(5), seed(6));
+                other ~= S(seed(7), seed(8), seed(9));
+
+                outer ~= other;
+
+                assert(outer.length == 3);
+                assert(outer[0].a == 1);
+                assert(outer[0].b == 2);
+                assert(outer[0].c == 3);
+                assert(outer[1].a == 4);
+                assert(outer[1].b == 5);
+                assert(outer[1].c == 6);
+                assert(outer[2].a == 7);
+                assert(outer[2].b == 8);
+                assert(outer[2].c == 9);
+            }
+        });
+    }
+}
+
+// A dynamic array whose element is a struct wider than 16 bytes (24 bytes):
+// indexed assignment (`outer[0] = ...`) must write the element's full width
+// into its own backing slot instead of falling back to a narrower
+// fixed-width copy or refusing the assignment.
+static foreach (backend; Matrix!()) {
+    @("dynamicArray.indexAssignmentWithStructElementsWiderThan16Bytes." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct S {
+                long a;
+                long b;
+                long c;
+            }
+
+            int seed(int value) {
+                return value;
+            }
+
+            unittest {
+                S[] outer;
+                outer ~= S(seed(1), seed(2), seed(3));
+                outer ~= S(seed(4), seed(5), seed(6));
+
+                outer[0] = S(seed(7), seed(8), seed(9));
+
+                assert(outer[0].a == 7);
+                assert(outer[0].b == 8);
+                assert(outer[0].c == 9);
+                assert(outer[1].a == 4);
+                assert(outer[1].b == 5);
+                assert(outer[1].c == 6);
+            }
+        });
+    }
+}
+
+// A class instance's static-array field, viewed as a dynamic array
+// (`c.arr[]`), whose element is a struct wider than 16 bytes (24 bytes): each
+// element read through the view must use the element's real width instead of
+// falling back to a zero-width read.
+static foreach (backend; Matrix!()) {
+    @("dynamicArray.classStaticArrayFieldViewWithStructElementsWiderThan16Bytes."
+        ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct S {
+                long a;
+                long b;
+                long c;
+            }
+
+            class C {
+                S[2] arr;
+            }
+
+            int seed(int value) {
+                return value;
+            }
+
+            unittest {
+                auto c = new C();
+                c.arr[0] = S(seed(1), seed(2), seed(3));
+                c.arr[1] = S(seed(4), seed(5), seed(6));
+
+                auto view = c.arr[];
+
+                assert(view.length == 2);
+                assert(view[0].a == 1);
+                assert(view[0].b == 2);
+                assert(view[0].c == 3);
+                assert(view[1].a == 4);
+                assert(view[1].b == 5);
+                assert(view[1].c == 6);
+            }
+        });
+    }
+}
+
+// A static array whose element is a struct wider than 16 bytes (24 bytes):
+// sub-slice assignment must copy each element's full width instead of
+// falling back to a narrower fixed-width copy or refusing the assignment.
+static foreach (backend; Matrix!()) {
+    @("staticArray.subSliceAssignmentWithStructElementsWiderThan16Bytes." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct S {
+                long a;
+                long b;
+                long c;
+            }
+
+            int seed(int value) {
+                return value;
+            }
+
+            unittest {
+                S[2] outer;
+                outer[0] = S(seed(1), seed(2), seed(3));
+                outer[1] = S(seed(4), seed(5), seed(6));
+                S[2] other;
+                other[0] = S(seed(7), seed(8), seed(9));
+                other[1] = S(seed(10), seed(11), seed(12));
+
+                outer[0 .. 2] = other[];
+
+                assert(outer[0].a == 7);
+                assert(outer[0].b == 8);
+                assert(outer[0].c == 9);
+                assert(outer[1].a == 10);
+                assert(outer[1].b == 11);
+                assert(outer[1].c == 12);
             }
         });
     }
@@ -797,6 +1219,54 @@ static foreach (backend; Matrix!()) {
                 assert(values[1] == 21);
                 assert(values[2] == 22);
                 assert(values[3] == 13);
+            }
+        });
+    }
+}
+
+static foreach (backend; Matrix!()) {
+    @("dynamicArray.partialSliceAssignmentBroadcastsScalarForByteShortAndLongElements." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            int seed(int value) {
+                return value;
+            }
+
+            unittest {
+                byte[] narrow = [
+                    cast(byte) seed(1), cast(byte) seed(2),
+                    cast(byte) seed(3), cast(byte) seed(4),
+                ];
+                byte narrowValue = cast(byte) seed(5);
+                narrow[1 .. 3] = narrowValue;
+
+                assert(narrow[0] == 1);
+                assert(narrow[1] == 5);
+                assert(narrow[2] == 5);
+                assert(narrow[3] == 4);
+
+                short[] medium = [
+                    cast(short) seed(1), cast(short) seed(2),
+                    cast(short) seed(3), cast(short) seed(4),
+                ];
+                short mediumValue = cast(short) seed(6);
+                medium[1 .. 3] = mediumValue;
+
+                assert(medium[0] == 1);
+                assert(medium[1] == 6);
+                assert(medium[2] == 6);
+                assert(medium[3] == 4);
+
+                long[] wide = [seed(1), seed(2), seed(3), seed(4)];
+                long wideValue = seed(7);
+                wide[1 .. 3] = wideValue;
+
+                assert(wide[0] == 1);
+                assert(wide[1] == 7);
+                assert(wide[2] == 7);
+                assert(wide[3] == 4);
             }
         });
     }
@@ -1291,6 +1761,147 @@ static foreach (backend; Matrix!()) {
                 assert(values[3] == 0);
             }
         });
+    }
+}
+
+// A static array whose element is a 16-byte struct: sub-slice assignment must
+// write through the array's own real storage at the struct's full width, the
+// same way `staticArray.partialSliceAssignmentFromDynamicArrayOfIntsWritesThroughRealStorage`
+// does for a 4-byte scalar element.
+static foreach (backend; Matrix!()) {
+    @("staticArray.subSliceAssignmentWithStructElementsWritesThroughRealStorage." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct S {
+                long a;
+                long b;
+            }
+
+            int seed(int value) {
+                return value;
+            }
+
+            unittest {
+                S[2] outer;
+                outer[0] = S(seed(1), seed(2));
+                outer[1] = S(seed(3), seed(4));
+                S[2] other;
+                other[0] = S(seed(7), seed(8));
+                other[1] = S(seed(9), seed(10));
+
+                outer[0 .. 2] = other[];
+
+                assert(outer[0].a == 7);
+                assert(outer[0].b == 8);
+                assert(outer[1].a == 9);
+                assert(outer[1].b == 10);
+            }
+        });
+    }
+}
+
+static foreach (backend; Matrix!()) {
+    @("staticArray.partialSliceAssignmentBroadcastsScalarForByteShortAndLongElements." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            int seed(int value) {
+                return value;
+            }
+
+            unittest {
+                byte[4] narrow;
+                byte narrowValue = cast(byte) seed(5);
+                narrow[1 .. 3] = narrowValue;
+
+                assert(narrow[0] == 0);
+                assert(narrow[1] == 5);
+                assert(narrow[2] == 5);
+                assert(narrow[3] == 0);
+
+                short[4] medium;
+                short mediumValue = cast(short) seed(6);
+                medium[1 .. 3] = mediumValue;
+
+                assert(medium[0] == 0);
+                assert(medium[1] == 6);
+                assert(medium[2] == 6);
+                assert(medium[3] == 0);
+
+                long[4] wide;
+                long wideValue = seed(7);
+                wide[1 .. 3] = wideValue;
+
+                assert(wide[0] == 0);
+                assert(wide[1] == 7);
+                assert(wide[2] == 7);
+                assert(wide[3] == 0);
+            }
+        });
+    }
+}
+
+static foreach (backend; AliasSeq!(Ctfe)) {
+    @("staticArray.overlappingSubSliceAssignmentIsRejectedAtCtfe." ~
+        backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            int seed(int value) {
+                return value;
+            }
+
+            unittest {
+                int first = seed(10);
+                int[4] values = [first, first + 1, first + 2, first + 3];
+                size_t targetStart = cast(size_t) seed(1);
+                size_t targetStop = cast(size_t) seed(4);
+                size_t sourceStart = cast(size_t) seed(0);
+                size_t sourceStop = cast(size_t) seed(3);
+
+                values[targetStart .. targetStop] =
+                    values[sourceStart .. sourceStop];
+
+                assert(values[1] == first);
+            }
+        }).shouldThrowWithMessage(
+            "overlapping slice assignment `[1..4] = [0..3]`",
+        );
+    }
+}
+
+// Compiled overlapping slice assignment raises druntime's plain
+// "Range violation"; the slice-range text is CTFE-only, matching the
+// sibling dynamicArray pin above.
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.diverges,
+        "see sibling pin above (overlappingSubSliceAssignmentIsRejectedAtCtfe)"),
+)) {
+    @("staticArray.overlappingSubSliceAssignmentDiagnostic." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            int seed(int value) {
+                return value;
+            }
+
+            unittest {
+                int first = seed(10);
+                int[4] values = [first, first + 1, first + 2, first + 3];
+                size_t targetStart = cast(size_t) seed(1);
+                size_t targetStop = cast(size_t) seed(4);
+                size_t sourceStart = cast(size_t) seed(0);
+                size_t sourceStop = cast(size_t) seed(3);
+
+                values[targetStart .. targetStop] =
+                    values[sourceStart .. sourceStop];
+
+                assert(values[1] == first);
+            }
+        }).shouldThrowWithMessage("Range violation");
     }
 }
 
@@ -2016,10 +2627,7 @@ static foreach (backend; Matrix!()) {
     }
 }
 
-static foreach (backend; Matrix!(
-    Omit!(Bytecode, Because.refusal,
-        "Unsupported associative array initializer in bytecode core: aa"),
-)) {
+static foreach (backend; Matrix!()) {
     @("assocArray.nullAAAssignmentInsertDetaches." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -2706,6 +3314,97 @@ static foreach (backend; Matrix!()) {
                 arr.length = 3;
                 setTo(arr[1], 7);
                 assert(arr[1] == 7);
+            }
+        });
+    }
+}
+
+// The same ref-argument array-element write-back as above, for an element
+// wider than a register (a 24-byte struct) rather than a scalar: the
+// writeback must use the element's own real width instead of refusing the
+// call or corrupting a neighbouring element.
+static foreach (backend; Matrix!()) {
+    @("dynamicArray.refParamWriteBackThroughIndexArgumentWithStructElementWiderThan16Bytes."
+        ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct S {
+                long a;
+                long b;
+                long c;
+            }
+
+            void bump(ref S s) {
+                s.a += 100;
+            }
+
+            int seed(int value) {
+                return value;
+            }
+
+            unittest {
+                S[] arr;
+                arr ~= S(seed(1), seed(2), seed(3));
+                arr ~= S(seed(4), seed(5), seed(6));
+
+                bump(arr[1]);
+
+                assert(arr[1].a == 104);
+                assert(arr[1].b == 5);
+                assert(arr[1].c == 6);
+                assert(arr[0].a == 1);
+            }
+        });
+    }
+}
+
+// The ref-returning-wrapper counterpart of the test above: `first` is a
+// `ref`-returning function whose final statement returns one element of its
+// by-value array parameter, and the outer call binds that element to
+// another function's `ref` parameter. The element is a 24-byte struct, wider
+// than a register, so the writeback must use the element's own real width
+// instead of refusing the call.
+static foreach (backend; Matrix!(
+    Omit!(Interpreter, Because.diverges,
+        "confirmed via bin/qb: ref argument bound to a ref-returning " ~
+        "wrapper's returned array element loses the writeback regardless " ~
+        "of element width"),
+)) {
+    @("dynamicArray.refReturningWrapperWriteBackThroughIndexArgumentWithStructElementWiderThan16Bytes."
+        ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct S {
+                long a;
+                long b;
+                long c;
+            }
+
+            ref S first(S[] arr) {
+                return arr[0];
+            }
+
+            void bump(ref S s) {
+                s.a += 100;
+            }
+
+            int seed(int value) {
+                return value;
+            }
+
+            unittest {
+                S[] arr;
+                arr ~= S(seed(1), seed(2), seed(3));
+                arr ~= S(seed(4), seed(5), seed(6));
+
+                bump(first(arr));
+
+                assert(arr[0].a == 101);
+                assert(arr[0].b == 2);
+                assert(arr[0].c == 3);
+                assert(arr[1].a == 4);
             }
         });
     }
