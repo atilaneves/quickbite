@@ -1455,6 +1455,10 @@ unittest {
                 int combine(int x, int y) {
                     return value * 100 + x * 10 + y;
                 }
+
+                void add(int amount) {
+                    value += amount;
+                }
             }
         }.uniqueDepModule("dep_image_cpp_fixture", backend.stringof));
 
@@ -1472,6 +1476,7 @@ unittest {
             extern(C++) struct CppCounter {
                 int value;
                 int combine(int x, int y);
+                void add(int amount);
             }
         }.uniqueDepModule("dep_image_cpp_fixture", backend.stringof));
 
@@ -1488,6 +1493,14 @@ unittest {
                     int x = 2;
                     int y = 3;
                     assert(counter.combine(x, y) == 723);
+
+                    struct Holder {
+                        CppCounter counter;
+                    }
+
+                    Holder holder = Holder(CppCounter(7));
+                    holder.counter.add(5);
+                    assert(holder.counter.combine(x, y) == 1223);
                 }
             }.uniqueDepModule("dep_image_cpp_fixture", backend.stringof),
             [inSandboxPath(importPath)],

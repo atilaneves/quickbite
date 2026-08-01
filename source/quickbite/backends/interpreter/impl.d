@@ -9139,28 +9139,53 @@ private struct Walker {
     private imported!"quickbite.backends.interpreter.native_call_adapter".NativeOperand nativeStructReceiverOperand(
         imported!"dmd.expression".Expression receiver,
     ) {
+        import dmd.tokens: EXP;
         import quickbite.backends.interpreter.native_call_adapter: NativeOperand;
         import quickbite.backends.interpreter.layout: declaredType;
 
-        auto variableExpression = receiver.isVarExp;
-        if (variableExpression is null)
-            return NativeOperand.init;
+        if (auto variableExpression = receiver.isVarExp) {
+            auto variable = variableExpression.var.isVarDeclaration;
+            if (variable is null || variable.isDataseg)
+                return NativeOperand.init;
 
-        auto variable = variableExpression.var.isVarDeclaration;
-        if (variable is null || variable.isDataseg)
-            return NativeOperand.init;
+            if (
+                !_activationFrame.hasOwningSlot(variable) &&
+                !_activationFrame.hasReferenceSlot(variable)
+            )
+                return NativeOperand.init;
 
+            auto address = addressableBindingBase(variable);
+            if (address is null)
+                return NativeOperand.init;
+
+            return NativeOperand(declaredType(variable), address);
+        }
+
+        auto field = receiver.isDotVarExp;
         if (
-            !_activationFrame.hasOwningSlot(variable) &&
-            !_activationFrame.hasReferenceSlot(variable)
+            field is null ||
+            receiver.type is null ||
+            receiver.type.toBasetype.isTypeStruct is null
         )
             return NativeOperand.init;
 
-        auto address = addressableBindingBase(variable);
-        if (address is null)
+        auto fieldReceiver = field.e1.isVarExp;
+        if (fieldReceiver is null)
             return NativeOperand.init;
 
-        return NativeOperand(declaredType(variable), address);
+        auto variable = fieldReceiver.var.isVarDeclaration;
+        if (
+            variable is null ||
+            variable.isDataseg ||
+            (!_activationFrame.hasOwningSlot(variable) &&
+                !_activationFrame.hasReferenceSlot(variable))
+        )
+            return NativeOperand.init;
+
+        const address = addressOfExpression(receiver, EXP.address);
+        return address.isPointer
+            ? NativeOperand(receiver.type, address.pointerAddress)
+            : NativeOperand.init;
     }
 
     // Flag each argument that is `&local`, so the FFI core can treat a
