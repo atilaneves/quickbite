@@ -4046,6 +4046,11 @@ private struct Walker {
                             nativeArgumentTypes(argumentExpressions),
                             nativeAddressOfLocalArguments(argumentExpressions),
                             nativeOutParameterInputValues(argumentExpressions),
+                            nativeDirectAddressOperands(
+                                argumentExpressions,
+                                nativeArgumentTypes(argumentExpressions),
+                                arguments,
+                            ),
                             &invokeNativeCallback,
                             durableInboundSession,
                             result,
@@ -9198,6 +9203,54 @@ private struct Walker {
                 values[index] = *current;
         }
         return values;
+    }
+
+    // The frontend preserves `&local` as an AddrExp or SymOffExp. For scalar
+    // pointees its evaluated pointer already names the binding's authoritative
+    // native place. Hand libffi a typed ABI slot containing that pointer rather
+    // than asking the core to allocate an out cell and later write it back.
+    private imported!"quickbite.backends.interpreter.native_call_adapter".NativeOperand[]
+    nativeDirectAddressOperands(
+        imported!"dmd.expression".Expression[] argumentExpressions,
+        imported!"dmd.mtype".Type[] argumentTypes,
+        in Value[] arguments,
+    ) {
+        import quickbite.backends.interpreter.native_block: NativeBlock;
+        import quickbite.backends.interpreter.native_call_adapter: NativeOperand;
+        import quickbite.backends.interpreter.native_scalar: isNativeScalarType;
+        import quickbite.backends.interpreter.place: Place;
+        import quickbite.backends.interpreter.place_value: writeValue;
+
+        NativeOperand[] operands;
+        operands.length = argumentExpressions.length;
+        foreach (index, expression; argumentExpressions) {
+            if (
+                !isNativeAddressOfLocal(expression) ||
+                index >= argumentTypes.length ||
+                index >= arguments.length ||
+                !arguments[index].isPointer
+            )
+                continue;
+
+            auto pointer = argumentTypes[index].toBasetype.isTypePointer;
+            if (pointer is null || !isNativeScalarType(pointer.next))
+                continue;
+
+            auto scratch = NativeBlock.allocate(
+                (void*).sizeof,
+                NativeBlock.Scan.conservative,
+            );
+            writeValue(
+                Place(scratch.address, argumentTypes[index]),
+                arguments[index],
+            );
+            operands[index] = NativeOperand(
+                argumentTypes[index],
+                scratch.address,
+                scratch,
+            );
+        }
+        return operands;
     }
 
     private Value runIndexExpression(

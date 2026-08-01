@@ -124,6 +124,7 @@ public bool tryCallNative(
     imported!"dmd.mtype".Type[] argumentTypes,
     in bool[] addressOfLocalArguments,
     in imported!"quickbite.backends.interpreter.runtime_value".Value[] outParameterInputs,
+    NativeOperand[] directAddressOperands,
     DelegateInvoker invokeDelegate,
     InterpreterInboundTrampolineSession* durableSession,
     out imported!"quickbite.backends.interpreter.runtime_value".Value result,
@@ -134,6 +135,7 @@ public bool tryCallNative(
     auto marshaller = new InterpreterNativeMarshaller(
         arguments,
         outParameterInputs,
+        directAddressOperands,
         invokeDelegate, durableSession,
     );
     if (!callNative(function_, marshaller, argumentTypes, addressOfLocalArguments,
@@ -392,6 +394,20 @@ private final class InterpreterNativeMarshaller: NativeMarshaller {
     public this(
         in Value[] arguments,
         in Value[] outParameterInputs,
+        NativeOperand[] directAddressOperands,
+        DelegateInvoker invokeDelegate = null,
+        InterpreterInboundTrampolineSession* durableSession = null,
+    ) {
+        _arguments = arguments.dup;
+        _outParameterInputs = outParameterInputs;
+        _argumentOperands = directAddressOperands;
+        _invokeDelegate = invokeDelegate;
+        _durableSession = durableSession;
+    }
+
+    public this(
+        in Value[] arguments,
+        in Value[] outParameterInputs,
         DelegateInvoker invokeDelegate = null,
         InterpreterInboundTrampolineSession* durableSession = null,
     ) {
@@ -525,6 +541,17 @@ private final class InterpreterNativeMarshaller: NativeMarshaller {
         import quickbite.backends.interpreter.place: Place;
         import quickbite.backends.interpreter.place_value:
             valueMatchesPlace, writeValue;
+
+        // `&local`/`SymOffExp` scalar operands already have their one
+        // authoritative native place. The walker gives us a pointer-sized ABI
+        // scratch slot containing that address, so the core passes it directly
+        // instead of allocating an out cell and reconstructing a writeback.
+        if (
+            index < _argumentOperands.length &&
+            _argumentOperands[index].address !is null &&
+            _argumentOperands[index].type is type
+        )
+            return _argumentOperands[index].address;
 
         if (
             type.toBasetype.ty == TY.Tpointer &&

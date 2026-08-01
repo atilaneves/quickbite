@@ -641,12 +641,13 @@ do not restore a boxed-storage bounds diagnostic for this operation.
 
 ### Item 5 — Delete Interpreter FFI marshalling fallbacks
 
-Finish decision 18 after the language-surface critical path. The current
-`backends/interpreter/native_call_adapter.d` has landed `argumentAddress` and
-`resultAddress`, but its public entry points still accept `RuntimeValue`
-arguments and return reconstructed values and writeback arrays. Consequently
-it retains `marshalArgument`, `unmarshalValue`, receiver buffers, mutable-slice
-copy/writeback storage, and `out`-cell reification.
+Finish decision 18 after the language-surface critical path. Normal outbound
+calls recognize scalar `&local`/`SymOffExp` operands and hand libffi a typed
+scratch slot containing the authoritative pointee address, bypassing the
+out-cell/writeback fallback. The adapter's public entry points still accept
+`RuntimeValue` arguments and return reconstructed values and writeback arrays.
+Consequently it retains `marshalArgument`, `unmarshalValue`, receiver buffers,
+mutable-slice copy/writeback storage, and the remaining `out`-cell reification.
 
 Make each ordinary native call consume typed argument, receiver, `ref`, and
 `out` places, using a fixed-width native scratch cell only for an rvalue that
