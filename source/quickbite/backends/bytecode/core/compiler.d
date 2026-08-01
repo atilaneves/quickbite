@@ -10709,6 +10709,7 @@ private struct Compiler {
             value.offset,
             pointer.offset,
             indexSlot,
+            cast(ushort) elementSize,
         );
         return Operand(value.offset, pointer.pointerElement);
     }
@@ -13004,11 +13005,19 @@ private struct Compiler {
             return null;
 
         const value = compileExpression((*call.arguments)[1]);
+        // `destination.pointerElement` is `void_` for a struct/static-array
+        // pointee (no opcode scalar type at all, matching `storeThroughPointer`
+        // above); its width then comes from the emplaced value's own DMD
+        // type size, never a bare `size(ScalarType.void_)`, which is 0.
+        const elementSize = destination.pointerElement == ScalarType.void_
+            ? cast(uint) staticArraySize((*call.arguments)[1].type)
+            : size(destination.pointerElement);
         _code ~= Instruction(
-            pointerStoreOp(size(destination.pointerElement)),
+            pointerStoreOp(elementSize),
             value.offset,
             destination.offset,
             compileSizeConstant(0),
+            cast(ushort) elementSize,
         );
 
         auto result = new Operand;
@@ -16490,7 +16499,7 @@ private imported!"quickbite.backends.bytecode.core.program".Op pointerStoreOp(
         case 4: return Op.pointerStore4;
         case 8: return Op.pointerStore8;
         case 16: return Op.pointerStore16;
-        default: assert(0, "Unsupported pointer store element size.");
+        default: return Op.pointerStoreN;
     }
 }
 

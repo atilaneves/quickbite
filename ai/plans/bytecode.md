@@ -472,16 +472,22 @@ row reaches them:
   from the bare `size(elementType)` `ScalarType` tag, the same zero-for-
   struct hazard `compileCatInto` had; it now takes the caller's already-
   `dynamicArrayElementSize`-computed width instead of recomputing it.
-  Concrete next candidate: `pointerLoadOp`/`pointerStoreOp`/`pointerSliceOp`
-  (`compiler.d`, defined alongside `indexStoreOp`) still `assert(0)` for a
-  struct element wider than 16 (`pointerSliceOp` wider than 8) bytes, so
-  dereferencing, indexing through, or slicing a pointer to such a struct
-  (`S* p; *p = S(...)`, `p[0] = S(...)`) remains unsupported; each needs the
-  identical `N`-variant escape. `pointerLoadOp`/`pointerStoreOp` have far
-  more call sites than `indexStoreOp` did (over 20 each), so this is likely
-  several commits: start with the plain-dereference/assignment call sites
-  and leave the ref-argument/write-back call sites (already bounded to
-  `<= 8` bytes by existing guards, so not currently reachable with a wide
+  `pointerStoreOp` (`compiler.d`) now has the identical `N`-variant escape,
+  so `*p = S(...)` and `p[0] = S(...)` write a wide struct's full real width
+  through `storeThroughPointer` (both share that one call site) instead of
+  asserting; the element width for a struct/static-array pointee comes from
+  the emplaced value's own DMD type size (`staticArraySize`), since
+  `destination.pointerElement` is `ScalarType.void_` for such a pointee and
+  `size(void_)` is 0. Concrete next candidate: `pointerLoadOp`/
+  `pointerSliceOp` (`compiler.d`, defined alongside `pointerStoreOp`) still
+  `assert(0)` for a struct element wider than 16 (`pointerSliceOp`: wider
+  than 8) bytes, so reading `*p`/`p[0]` or slicing through such a pointer
+  remains unsupported; each needs the identical `N`-variant escape.
+  `pointerLoadOp` has far more call sites than `pointerStoreOp` did (20+),
+  so this is likely several commits: start with the plain-dereference/
+  index-read call sites and leave the ref-argument/write-back call sites
+  (already bounded to `<= 8` bytes by existing guards, so not currently
+  reachable with a wide
   struct) for a follow-up.
 - Dynamic-array and string sub-slices reject an upper bound beyond the source
   length and a lower bound greater than the upper bound; pointer-slice bounds

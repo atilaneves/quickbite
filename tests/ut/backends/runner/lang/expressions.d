@@ -6401,6 +6401,76 @@ static foreach (backend; Matrix!()) {
     }
 }
 
+// A struct wider than 16 bytes (24 bytes) assigned through a raw pointer
+// (`*p = S(...)`): `storeThroughPointer`'s shared `*p = v` / `p[i] = v` write
+// must copy the value's own full width instead of asserting on an
+// unsupported element size.
+static foreach (backend; Matrix!()) {
+    @("pointer.dereferenceAssignmentWithStructWiderThan16BytesWritesFullWidth."
+        ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct S {
+                long a;
+                long b;
+                long c;
+            }
+
+            int seed(int value) {
+                return value;
+            }
+
+            unittest {
+                S s = S(seed(1), seed(2), seed(3));
+                S* p = &s;
+                *p = S(seed(7), seed(8), seed(9));
+                assert(s.a == 7);
+                assert(s.b == 8);
+                assert(s.c == 9);
+            }
+        });
+    }
+}
+
+// The `p[i] = v` sibling of the fixture above: indexing through a raw
+// pointer (rather than dereferencing it at index 0) into a struct wider than
+// 16 bytes.
+static foreach (backend; Matrix!()) {
+    @("pointer.indexAssignmentWithStructWiderThan16BytesWritesFullWidth." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct S {
+                long a;
+                long b;
+                long c;
+            }
+
+            int seed(int value) {
+                return value;
+            }
+
+            unittest {
+                S[] outer;
+                outer ~= S(seed(1), seed(2), seed(3));
+                outer ~= S(seed(4), seed(5), seed(6));
+                S* p = outer.ptr;
+
+                p[0] = S(seed(7), seed(8), seed(9));
+
+                assert(outer[0].a == 7);
+                assert(outer[0].b == 8);
+                assert(outer[0].c == 9);
+                assert(outer[1].a == 4);
+                assert(outer[1].b == 5);
+                assert(outer[1].c == 6);
+            }
+        });
+    }
+}
+
 // `recordStructFieldAlias` records ANY
 // `DotVarExp` initializer bound to a `ref` local -- including a non-scalar
 // (array/nested-struct) field -- so `writeThroughStructFieldAlias` reached a

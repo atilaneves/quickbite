@@ -379,6 +379,11 @@ package(quickbite.backends.bytecode) enum Op: ubyte {
     pointerStore4,
     pointerStore8,
     pointerStore16,
+    // Same as `pointerStore1`/etc, for an element width not covered by a
+    // fixed opcode (e.g. a struct element wider than 16 bytes): the byte
+    // width is operand d instead of being implied by the opcode. Backs `*p
+    // = v` and `p[i] = v` for such a pointee.
+    pointerStoreN,
     // Form a slice descriptor {pointer + lo * elementSize, hi - lo} at frame
     // offset a from the raw `size_t` pointer value at frame offset b and an
     // adjacent {lo, hi} pair of `size_t` bounds at frame offset c. Backs
