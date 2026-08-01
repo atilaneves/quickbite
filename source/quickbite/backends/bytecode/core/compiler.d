@@ -12151,6 +12151,7 @@ private struct Compiler {
                     writeBack.valueOffset,
                     writeBack.pointerOffset,
                     compileSizeConstant(0),
+                    writeBack.valueSize,
                 );
         foreach (writeBack; classFieldRefWriteBacks)
             _code ~= Instruction(
@@ -13538,6 +13539,7 @@ private struct Compiler {
                 valueOffset,
                 pointerOffset,
                 compileSizeConstant(0),
+                valueSize,
             );
         _code ~= Instruction(
             Op.loadConstant,

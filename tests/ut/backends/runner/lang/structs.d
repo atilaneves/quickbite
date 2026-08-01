@@ -2451,6 +2451,41 @@ static foreach (backend; Matrix!()) {
     }
 }
 
+// A `ref` argument bound to a foreach-ref element whose struct is wider than
+// a register (24 bytes, exceeding the fixed 1/2/4/8/16-byte opcode set) must
+// still write back through the element's real address:
+// `emitStructPointerRefArgument`'s mirror-load and `structPointerRefWriteBacks`'
+// write-back both build their `pointerLoadOp`/`pointerStoreOp` instruction
+// without the explicit width operand `Op.pointerLoadN`/`pointerStoreN`
+// require, so the machine read the always-zero-defaulted `instruction.d`
+// instead of the element's real size and silently copied zero bytes.
+static foreach (backend; Matrix!()) {
+    @("struct.foreachRefWithStructWiderThan16BytesWritesThroughElement." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct S {
+                long a;
+                long b;
+                long c;
+            }
+
+            void bump(ref S s) {
+                s.a += 100;
+            }
+
+            unittest {
+                S[] arr;
+                arr ~= S(1, 2, 3);
+                foreach (ref item; arr)
+                    bump(item);
+                assert(arr[0].a == 101);
+            }
+        });
+    }
+}
+
 // Two ref parameters bound from the same plain variable denote one storage
 // location, so taking either parameter's address must produce equal pointers.
 static foreach (backend; Matrix!()) {

@@ -404,165 +404,32 @@ forced by the baseline" fronts) rather than a matrix search.
 Reconfirm these live aggregate limitations against the current source when a
 row reaches them:
 
-- Scalar slice fill and slice-copy sub-slice assignment now cover every
-  basic width (1, 2, 4, and 8 bytes: `Op.sliceFill1`/`sliceFill2`/
-  `sliceFill4`/`sliceFill8`, `Op.sliceCopy1`/`sliceCopy2`/`sliceCopy4`/
-  `sliceCopy8`); aggregate (non-array) elements still need general
-  semantics. `compileSourceSlice`'s rhs materialisation now also covers a
-  plain dynamic-array-typed expression that is neither a `SliceExp` nor a
-  literal (a bare variable, a call result, ...): it compiles the expression
-  and reuses its own slice descriptor directly rather than throwing
-  "Unsupported slice-assignment source". Sub-slice assignment onto an
-  array-of-arrays element (`outer[i][lo..hi] = rhs` where `outer`'s own
-  element is itself an array, e.g. a plain `int[]` rhs) goes through this
-  same generic path and is confirmed working
-  (`dynamicArray.subSliceAssignmentOntoArrayOfArraysElementFromPlainVariable`).
-  A sub-slice assignment whose *element* is itself a slice descriptor, i.e.
-  `outer[lo..hi] = otherOuter` where `outer` is a `T[][]` and the slice
-  spans multiple rows, now copies whole 16-byte row descriptors correctly
-  (`Op.sliceCopy16`, `tryDynamicArraySliceAssign` now derives its element
-  size from `elementIsArray` via the descriptor rather than `size` of a
-  `ScalarType` that is `void_` for any non-scalar element)
-  (`dynamicArray.subSliceAssignmentWithArrayElementsAcrossMultipleRows`).
-  A sub-slice assignment whose element is a 16-byte *struct* rather than a
-  slice descriptor (`struct S { long a; long b; } S[] outer; S[] other; ...
-  outer[0..2] = other;`) now also copies each element's full width: both
-  `tryDynamicArraySliceAssign` and `tryStaticArraySliceAssign` (plus
-  `tryStaticArraySliceDescriptor`'s element-width gate, widened to accept
-  16) derive `elementSize` from `dynamicArrayElementSize` instead of a raw
-  `size(elementType)`, which resolved to 0 for any `Tstruct`/`Tsarray`
-  element and made `sliceCopyOp` silently fall back to its 4-byte variant
-  (`dynamicArray.subSliceAssignmentWithStructElementsAcrossMultipleRows`,
-  `staticArray.subSliceAssignmentWithStructElementsWritesThroughRealStorage`).
-  `subSliceOp` and `sliceCopyOp` now cover a struct element of any width,
-  not only 1/2/4/8/16: `Op.subSliceN`/`Op.sliceCopyN` carry the byte width
-  as an explicit instruction operand (`d` and `c` respectively) instead of
-  encoding it in the opcode, the way `Op.copy` already carries an arbitrary
-  block width; the fixed 1/2/4/8/16 opcodes remain for those exact widths,
-  `subSliceOp`/`sliceCopyOp` fall back to the `N` variant for anything else,
-  and `tryStaticArraySliceDescriptor`'s element-width gate is gone
-  (`staticArray.subSliceAssignmentWithStructElementsWiderThan16Bytes`, a
-  24-byte struct). `appendElementOp` and `indexLoadOp` now cover a dynamic
-  array of such a wide struct too: `Op.appendElementN`/`Op.indexLoadN` carry
-  the byte width as an explicit instruction operand (`c` and `d`
-  respectively) the same way `subSliceN`/`sliceCopyN` do, and every call site
-  of either function now passes its own computed element size as that
-  operand regardless of which opcode variant is selected, so an unrelated
-  call site that used to hit the fixed 1/2/4/8/16 set exclusively keeps
-  doing so with no behaviour change
-  (`dynamicArray.appendStructElementWiderThan16Bytes`). `concatArraysOp` now
-  covers an element of any width, not only 1/4/16, the identical `N`-variant
-  escape as its siblings: `Op.concatArraysN` carries the byte width as
-  instruction operand `d`
-  (`dynamicArray.concatenationAssignmentWithStructElementsWiderThan16Bytes`,
-  a 24-byte struct). `compileCatInto` (the `a ~ b` binary operator, as
-  opposed to `arr ~= other`) computed its element width from the `ScalarType`
-  tag alone, which resolves to 0 for any struct/static-array element; it now
-  calls `dynamicArrayElementSize` like every sibling call site, since with
-  `concatArraysOp` no longer throwing on an unmatched width, a stale
-  zero-width computation would silently corrupt the result instead of
-  raising a diagnostic. `indexStoreOp` now covers a dynamic-array element of
-  any width, not only 1/2/4/8/16, the identical `N`-variant escape as its
-  siblings: `Op.indexStoreN` carries the byte width as instruction operand
-  `d`, so writing to an indexed element of such an array (`outer[0] =
-  S(...)`) now writes the element's real width instead of asserting
-  (`dynamicArray.indexAssignmentWithStructElementsWiderThan16Bytes`, a
-  24-byte struct). `catOperandDescriptor` (one side of `a ~ b` when that side
-  is a bare element, not an array) computed its one-element array's width
-  from the bare `size(elementType)` `ScalarType` tag, the same zero-for-
-  struct hazard `compileCatInto` had; it now takes the caller's already-
-  `dynamicArrayElementSize`-computed width instead of recomputing it.
-  `pointerStoreOp` (`compiler.d`) now has the identical `N`-variant escape,
-  so `*p = S(...)` and `p[0] = S(...)` write a wide struct's full real width
-  through `storeThroughPointer` (both share that one call site) instead of
-  asserting; the element width for a struct/static-array pointee comes from
-  the emplaced value's own DMD type size (`staticArraySize`), since
-  `destination.pointerElement` is `ScalarType.void_` for such a pointee and
-  `size(void_)` is 0. `pointerLoadOp`'s plain-dereference/index-read call
-  sites (`*p` and `p[i]` as struct rvalues, both now sharing a single
-  `loadStructThroughPointer` helper) have the identical `N`-variant escape,
-  so reading a struct wider than 16 bytes through a raw pointer works.
-  `pointerSliceOp` now covers 16 bytes and any wider width too
-  (`Op.pointerSlice16`/`Op.pointerSliceN`, carrying the byte width as
-  instruction operand `d` the same way `subSliceN` does), so slicing through
-  a raw pointer to a struct wider than 8 bytes (`p[lo .. hi]`) shares the
-  original backing storage instead of asserting
-  (`pointer.sliceWithStructElementsWiderThan16BytesSharesBackingStorage`).
-  `compileClassStaticArrayAsDynamicInto` (the class-field counterpart of
-  `compileStaticArrayAsDynamicInto`, backing `c.arr[]` where `arr` is a class
-  instance's static-array field) now passes the element width as operand d on
-  its `pointerLoadOp` call site too, so a view over a class's static-array
-  field of a struct wider than 16 bytes reads each element's real width
-  instead of zero
-  (`dynamicArray.classStaticArrayFieldViewWithStructElementsWiderThan16Bytes`).
-  `emitPointerDereferenceRefArgument` (a `ref` argument dereferencing a
-  runtime pointer local, `bump(*p)`) now covers a struct-typed pointee of any
-  width too: it declined any pointee whose `pointerElementScalar` was
-  non-scalar, so a struct wider than a register fell through to
-  `referenceOffsetOrNull`'s generic `*p` fallback, which reads the pointee
-  into a fresh caller-frame slot but never writes it back anywhere -- the
-  callee's mutation was silently lost rather than refused. The size now comes
-  from `pointerElementMetadata(...).byteStride` (already correct for a
-  struct/array pointee) when the pointee has no scalar opcode type, and both
-  the mirror-in `pointerLoadOp` call and the post-call `pointerStoreOp`
-  writeback pass that width as the `N`-variant's explicit operand
-  (`pointer.refArgumentThroughStoredPointerToWideStructWritesThroughPointer`).
-  `emitStructPointerRefArgument` (`compiler.d`) now distinguishes the two
-  shapes `_structPointerLocals` covers: a genuine `S* p = new S(...)` local
-  passed by name to a `ref S* q` parameter (`reassign(p)`, no dereference)
-  rebinds the pointer value itself, so its frame slot is mirrored/written
-  back with a plain value copy; a `ref S item = arr[i]`/AA-element binding's
-  frame slot instead holds an address to dereference, so it keeps the
-  original `pointerLoadOp`/`pointerStoreOp` mirror/write-back sized from the
-  struct's own byte width. Distinguishing them by whether `argument.type` is
-  itself a pointer type (`TY.Tpointer`) fixed the rebind shape without
-  regressing the address-dereference shape, which a same-width fix that
-  always treated the slot as a pointer value broke
-  (`pointer.refArgumentRebindingStoredStructPointerUpdatesTheVariable`,
-  `struct.foreachRefOverFieldArrayPersistsElementWrites`,
-  `struct.foreachRefRepeatedArgumentPreservesAlias`).
-  `emitDynamicArrayRefArgument`/`emitDynamicArrayElementRefArgument` (a `ref`
-  argument bound to a dynamic-array element, `bump(arr[i])`) declined any
-  element whose descriptor `elementType` was the non-scalar `void_` marker
-  (every struct/static-array/array-of-arrays element), falling through to
-  `referenceOffset`'s generic path, which has no `IndexExp` case for a
-  dynamic array and throws "Unsupported ref argument in bytecode core"
-  instead of silently losing the writeback -- an honest refusal, not the
-  width/address-confusion bug, but still an unnecessary one: `indexLoadOp`/
-  `indexStoreOp` (the mirror-in load and post-call writeback this path
-  already uses) support any width via their `N`-variant escape. Both
-  functions now accept a non-scalar element and derive its width from
-  `dynamicArrayElementSize(arrayType, descriptor.elementType,
-  descriptor.elementIsArray)` -- the same call every sibling site uses --
-  instead of declining
-  (`dynamicArray.refParamWriteBackThroughIndexArgumentWithStructElementWiderThan16Bytes`,
-  a 24-byte struct). `emitRefReturnedDynamicArrayElementArgument` (the
-  `ref`-returning-wrapper counterpart a few lines below it) had the identical
-  `elementType == void_` decline; removed, since
-  `emitDynamicArrayElementRefArgument` already derives the element width
-  generically
-  (`dynamicArray.refReturningWrapperWriteBackThroughIndexArgumentWithStructElementWiderThan16Bytes`).
-  That same fixture exposed a pre-existing, unrelated Interpreter gap: an
-  `Interpreter` ref argument bound to a ref-returning wrapper's returned
-  array element loses the writeback regardless of element width (confirmed
-  via `bin/qb` with a plain scalar element too), so the row stays
-  `Omit!(Interpreter, Because.unconfirmed, ...)`.
-  `emitConditionalRefArgument` (`cond ? a : b` as a `ref` argument) already
-  handles a struct-typed branch correctly -- confirmed via `bin/qb` with a
-  24-byte struct -- because `conditionalBranchOffsetOrNull` resolves each
-  branch through the generic, width-agnostic `referenceOffsetOrNull`, not a
-  scalar-sized mirror. `emitClassFieldRefArgument` now covers a class field
-  whose own type is `Tstruct`/`Tsarray`, sized from the field's real byte
-  width (`staticArraySize`/`staticArrayAlign`, the same source
-  `emitPointerDereferenceRefArgument` already uses for a wide-struct
-  pointee) instead of the scalar-only 1/2/4/8 gate; `Tarray`/`Taarray`
-  fields still decline
-  (`refArgument.classFieldOfWideStructTypeWritesThroughField`).
-  `emitStructPointerFieldRefArgument` now covers the identical
-  `Tstruct`/`Tsarray` widening for a struct field reached through a struct
-  pointer (`carrier.value` where `carrier: Holder*`), sized from the
-  field's real byte width the same way; `Tarray`/`Taarray` fields still
-  decline (`refArgument.structPointerFieldOfWideStructTypeWritesThroughField`).
+- Every array/pointer opcode family that supports a fixed-width fast path
+  (`Op.subSliceN`/`sliceCopyN`/`appendElementN`/`indexLoadN`/`indexStoreN`/
+  `concatArraysN`/`pointerSliceN`/`pointerLoadN`/`pointerStoreN`) now covers
+  1, 2, 4, 8, and 16 bytes via dedicated opcodes and any other width via an
+  `N`-variant that carries the byte width as an explicit instruction operand,
+  the same way `Op.copy` already carries an arbitrary block width, instead of
+  encoding the width in the opcode or deriving it from a `ScalarType` tag
+  that resolves to 0 for a struct/static-array element. Every ref-argument
+  mirror/writeback call site that binds non-frame-resident storage
+  (`emitStructPointerRefArgument`, `emitStructPointerFieldRefArgument`,
+  `emitClassFieldRefArgument`, `emitPointerDereferenceRefArgument`,
+  `emitDynamicArrayRefArgument`/`emitDynamicArrayElementRefArgument`,
+  `emitRefReturnedDynamicArrayElementArgument`,
+  `compileClassStaticArrayAsDynamicInto`) now sizes its `pointerLoadOp`/
+  `pointerStoreOp`/`indexLoadOp`/`indexStoreOp` pair from the pointee's real
+  byte width and passes that width as the `N`-variant's explicit operand,
+  instead of declining a non-scalar element or a struct/static-array field.
+  `emitConditionalRefArgument` already handled a struct-typed branch
+  correctly via the generic, width-agnostic `referenceOffsetOrNull`, needing
+  no change. Scalar slice fill/copy (`Op.sliceFill*`/`sliceCopy*`) still only
+  cover 1/2/4/8-byte scalars; an aggregate (non-array) element still needs
+  general semantics. A ref argument bound to a ref-returning wrapper's
+  returned array element still loses the writeback on `Interpreter`
+  regardless of element width (confirmed via `bin/qb` with a plain scalar
+  element too), so that row stays `Omit!(Interpreter, Because.diverges,
+  ...)` independent of the Bytecode fix.
   Next candidate in this same family, but outside the ref-argument path:
   `loadStructPointerField`/`storeStructPointerField` (`compiler.d`), the
   plain (non-ref-argument) read/write path for a field reached through

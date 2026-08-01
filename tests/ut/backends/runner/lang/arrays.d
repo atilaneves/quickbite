@@ -3366,9 +3366,10 @@ static foreach (backend; Matrix!()) {
 // than a register, so the writeback must use the element's own real width
 // instead of refusing the call.
 static foreach (backend; Matrix!(
-    Omit!(Interpreter, Because.unconfirmed,
-        "ref argument bound to a ref-returning wrapper's returned array " ~
-        "element loses the writeback regardless of element width"),
+    Omit!(Interpreter, Because.diverges,
+        "confirmed via bin/qb: ref argument bound to a ref-returning " ~
+        "wrapper's returned array element loses the writeback regardless " ~
+        "of element width"),
 )) {
     @("dynamicArray.refReturningWrapperWriteBackThroughIndexArgumentWithStructElementWiderThan16Bytes."
         ~ backend.stringof)
