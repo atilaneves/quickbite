@@ -537,10 +537,30 @@ row reaches them:
   instead of declining
   (`dynamicArray.refParamWriteBackThroughIndexArgumentWithStructElementWiderThan16Bytes`,
   a 24-byte struct). `emitRefReturnedDynamicArrayElementArgument` (the
-  `ref`-returning-wrapper counterpart a few lines below it) still has the
-  identical `elementType == void_` decline, unexercised by any row; verify
-  and fix it the same way, or confirm the wrapper shape only ever arises
-  with a scalar element, before removing it.
+  `ref`-returning-wrapper counterpart a few lines below it) had the identical
+  `elementType == void_` decline; removed, since
+  `emitDynamicArrayElementRefArgument` already derives the element width
+  generically
+  (`dynamicArray.refReturningWrapperWriteBackThroughIndexArgumentWithStructElementWiderThan16Bytes`).
+  That same fixture exposed a pre-existing, unrelated Interpreter gap: an
+  `Interpreter` ref argument bound to a ref-returning wrapper's returned
+  array element loses the writeback regardless of element width (confirmed
+  via `bin/qb` with a plain scalar element too), so the row stays
+  `Omit!(Interpreter, Because.unconfirmed, ...)`.
+  `emitConditionalRefArgument` (`cond ? a : b` as a `ref` argument) already
+  handles a struct-typed branch correctly -- confirmed via `bin/qb` with a
+  24-byte struct -- because `conditionalBranchOffsetOrNull` resolves each
+  branch through the generic, width-agnostic `referenceOffsetOrNull`, not a
+  scalar-sized mirror. Next candidate in this same family:
+  `emitClassFieldRefArgument` (`compiler.d`) explicitly declines any class
+  field whose type is `Tstruct`/`Tsarray`/`Tarray`/`Taarray`, falling
+  through to "Unsupported ref argument in bytecode core" -- confirmed red
+  via `bin/qb` (`class C { Wide value; } ... bump(c.value);` where `Wide` is
+  a 24-byte struct and `bump` takes `ref Wide`; `SystemLinker` mutates the
+  field, `Bytecode` throws). Needs a whole-field mirror/writeback through
+  the field's own address (`classFieldAddress`) sized from the field's real
+  byte width, the aggregate-field counterpart of
+  `emitStructPointerFieldRefArgument`.
 - Dynamic-array and string sub-slices reject an upper bound beyond the source
   length and a lower bound greater than the upper bound; pointer-slice bounds
   remain unchecked.

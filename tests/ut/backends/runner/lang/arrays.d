@@ -3359,6 +3359,56 @@ static foreach (backend; Matrix!()) {
     }
 }
 
+// The ref-returning-wrapper counterpart of the test above: `first` is a
+// `ref`-returning function whose final statement returns one element of its
+// by-value array parameter, and the outer call binds that element to
+// another function's `ref` parameter. The element is a 24-byte struct, wider
+// than a register, so the writeback must use the element's own real width
+// instead of refusing the call.
+static foreach (backend; Matrix!(
+    Omit!(Interpreter, Because.unconfirmed,
+        "ref argument bound to a ref-returning wrapper's returned array " ~
+        "element loses the writeback regardless of element width"),
+)) {
+    @("dynamicArray.refReturningWrapperWriteBackThroughIndexArgumentWithStructElementWiderThan16Bytes."
+        ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct S {
+                long a;
+                long b;
+                long c;
+            }
+
+            ref S first(S[] arr) {
+                return arr[0];
+            }
+
+            void bump(ref S s) {
+                s.a += 100;
+            }
+
+            int seed(int value) {
+                return value;
+            }
+
+            unittest {
+                S[] arr;
+                arr ~= S(seed(1), seed(2), seed(3));
+                arr ~= S(seed(4), seed(5), seed(6));
+
+                bump(first(arr));
+
+                assert(arr[0].a == 101);
+                assert(arr[0].b == 2);
+                assert(arr[0].c == 3);
+                assert(arr[1].a == 4);
+            }
+        });
+    }
+}
+
 // A nested `foreach` re-declares the
 // inner loop's slice temporary (dmd lowers `foreach (v; row)` to a fresh
 // `auto __r = row[];` every OUTER iteration) over the SAME `VarDeclaration`

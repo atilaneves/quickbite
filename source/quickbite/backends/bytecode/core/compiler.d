@@ -13435,7 +13435,7 @@ private struct Compiler {
         auto descriptor = dynamicArrayDescriptorOrNull(
             (*call.arguments)[*argumentIndex],
         );
-        if (descriptor is null || descriptor.elementType == ScalarType.void_)
+        if (descriptor is null)
             return false;
 
         compileCall(call);
