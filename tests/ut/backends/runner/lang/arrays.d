@@ -2867,8 +2867,6 @@ static foreach (backend; AliasSeq!(Ctfe)) {
 // CTFE-only and the fixture just passes (the slice is never dereferenced).
 static foreach (backend; Matrix!(
     Omit!(Ctfe, Because.diverges, "see sibling pin above (Ctfe)"),
-    Omit!(Interpreter, Because.unconfirmed,
-        "does not produce the allocated-block diagnostic"),
 )) {
     @("pointer.slicePastAllocatedBlockDiagnostic." ~ backend.stringof)
     @Tags(backend.stringof)

@@ -633,9 +633,11 @@ Native storage and calls remain the ordinary execution path; do not restore
 marshalling, cell families, alias maps, or name-based representation shims.
 `interpreter.md` §8 triage remains the partition.
 
-Next, decide whether the Interpreter's allocated-block diagnostic for a pointer
-slice past its allocation should remain; its current behavior neither matches
-the compiled-D characterization nor participates in that oracle-backed row.
+Pointer-slice formation past an allocation remains unchecked when its result is
+not dereferenced: this is compiled D's contract and the Interpreter's
+native-pointer path matches it. The allocated-block diagnostic is a CTFE-only
+characterization, so the Interpreter belongs in the compiled-behaviour matrix;
+do not restore a boxed-storage bounds diagnostic for this operation.
 
 ### Item 5 — Delete Interpreter FFI marshalling fallbacks
 
