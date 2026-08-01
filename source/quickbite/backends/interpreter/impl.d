@@ -3950,6 +3950,7 @@ private struct Walker {
                                     function_,
                                     structType,
                                     receiver,
+                                    nativeStructReceiverOperand(dot.e1),
                                     arguments,
                                     nativeArgumentTypes(argumentExpressions),
                                     nativeAddressOfLocalArguments(argumentExpressions),
@@ -3988,6 +3989,7 @@ private struct Walker {
                             function_,
                             receiverStructType(dot.e1),
                             receiver,
+                            nativeStructReceiverOperand(dot.e1),
                             arguments,
                             nativeArgumentTypes(argumentExpressions),
                             nativeAddressOfLocalArguments(argumentExpressions),
@@ -9128,6 +9130,37 @@ private struct Walker {
 
         setLocal(variable, receiverWriteback);
         uninitializedLocals.remove(variable);
+    }
+
+    // A plain local/ref struct receiver already has one authoritative typed
+    // frame place. Let the native call use it directly; globals, expression
+    // temporaries, fields, constructors, and all other lvalue shapes retain
+    // the transitional receiver-buffer/writeback path.
+    private imported!"quickbite.backends.interpreter.native_call_adapter".NativeOperand nativeStructReceiverOperand(
+        imported!"dmd.expression".Expression receiver,
+    ) {
+        import quickbite.backends.interpreter.native_call_adapter: NativeOperand;
+        import quickbite.backends.interpreter.layout: declaredType;
+
+        auto variableExpression = receiver.isVarExp;
+        if (variableExpression is null)
+            return NativeOperand.init;
+
+        auto variable = variableExpression.var.isVarDeclaration;
+        if (variable is null || variable.isDataseg)
+            return NativeOperand.init;
+
+        if (
+            !_activationFrame.hasOwningSlot(variable) &&
+            !_activationFrame.hasReferenceSlot(variable)
+        )
+            return NativeOperand.init;
+
+        auto address = addressableBindingBase(variable);
+        if (address is null)
+            return NativeOperand.init;
+
+        return NativeOperand(declaredType(variable), address);
     }
 
     // Flag each argument that is `&local`, so the FFI core can treat a

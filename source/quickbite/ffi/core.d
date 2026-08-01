@@ -131,6 +131,11 @@ public interface NativeMarshaller {
         ref ubyte[][] keepAliveBuffers,
     );
 
+    // Optional zero-copy struct receiver seam: a native-layout backend can
+    // expose its authoritative `this` storage directly. Null preserves the
+    // existing receiver buffer and post-call writeback path.
+    const(void)* receiverAddress(imported!"dmd.mtype".Type type);
+
     void readResult(imported!"dmd.mtype".Type type, in ubyte[] buffer);
 
     // Optional zero-copy result slot. Returning null keeps today's return
@@ -710,6 +715,8 @@ private bool callViaLibffi(
             // (ffi.md §34.12).
             *cast(const(void)**) receiverPointerBuffer.ptr =
                 marshaller.receiverObjectPointer;
+        } else if (auto address = marshaller.receiverAddress(receiver.type)) {
+            *cast(const(void)**) receiverPointerBuffer.ptr = address;
         } else {
             receiverBuffer = new ubyte[](cast(size_t) size(receiver.type));
             marshaller.fillReceiver(

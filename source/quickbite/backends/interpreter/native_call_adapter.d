@@ -189,6 +189,7 @@ public bool tryCallNativeMember(
     imported!"dmd.func".FuncDeclaration function_,
     imported!"dmd.mtype".TypeStruct receiverType,
     in imported!"quickbite.backends.interpreter.runtime_value".Value receiver,
+    NativeOperand receiverOperand,
     in imported!"quickbite.backends.interpreter.runtime_value".Value[] arguments,
     imported!"dmd.mtype".Type[] argumentTypes,
     in bool[] addressOfLocalArguments,
@@ -203,7 +204,11 @@ public bool tryCallNativeMember(
     if (receiverType is null || !AggregateValue.isStruct(receiver))
         return false;
 
-    auto marshaller = new InterpreterNativeMarshaller(arguments, receiver);
+    auto marshaller = new InterpreterNativeMarshaller(
+        arguments,
+        receiver,
+        receiverOperand,
+    );
     if (!callNativeMember(
         function_,
         receiverType,
@@ -366,6 +371,7 @@ private final class InterpreterNativeMarshaller: NativeMarshaller {
     // read the caller's value rather than zeroes (ffi.md §35.6).
     private const(Value)[] _outParameterInputs;
     private Value _receiver;
+    private NativeOperand _receiverOperand;
     private Value _refResultValue;
     private Value _result;
     private NativeOperand[] _argumentOperands;
@@ -417,9 +423,14 @@ private final class InterpreterNativeMarshaller: NativeMarshaller {
         _durableSession = durableSession;
     }
 
-    public this(in Value[] arguments, in Value receiver) {
+    public this(
+        in Value[] arguments,
+        in Value receiver,
+        NativeOperand receiverOperand = NativeOperand.init,
+    ) {
         _arguments = arguments.dup;
         _receiver = receiver;
+        _receiverOperand = receiverOperand;
         _refResultValue = receiver;
     }
 
@@ -646,6 +657,12 @@ private final class InterpreterNativeMarshaller: NativeMarshaller {
             keepAlive,
             keepAliveBuffers,
         );
+    }
+
+    public override const(void)* receiverAddress(Type type) {
+        return _receiverOperand.address !is null && _receiverOperand.type is type
+            ? _receiverOperand.address
+            : null;
     }
 
     public override void readResult(Type type, in ubyte[] buffer) {
