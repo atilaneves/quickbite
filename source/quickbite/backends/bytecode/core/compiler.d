@@ -2383,16 +2383,21 @@ private struct Compiler {
         // is a scalar construction onto a `VarExp` local, also routed here.
         // A static array's default-init fill on function entry (an `out
         // char[4] buf` parameter zeroed to `char.init`) arrives the same way
-        // over a `SliceExp` lvalue (`buf[] = '\xff'`).
+        // over a `SliceExp` lvalue (`buf[] = '\xff'`). `this = rhs;` inside a
+        // struct method -- e.g. the compiler-synthesized `opAssign` a
+        // postblit-typed struct's whole-local reassignment lowers through --
+        // arrives the same way over a `ThisExp` lvalue.
         if (auto construct = expression.isConstructExp)
             if (construct.e1.isDotVarExp !is null ||
                 construct.e1.isVarExp !is null ||
-                construct.e1.isSliceExp !is null)
+                construct.e1.isSliceExp !is null ||
+                construct.e1.isThisExp !is null)
                 return compileAssignExpression(construct);
         if (auto blit = expression.isBlitExp)
             if (blit.e1.isDotVarExp !is null ||
                 blit.e1.isVarExp !is null ||
-                blit.e1.isSliceExp !is null)
+                blit.e1.isSliceExp !is null ||
+                blit.e1.isThisExp !is null)
                 return compileAssignExpression(blit);
 
         // `arr ~= x` (append element) arrives as a CatElemAssignExp (op
@@ -4329,6 +4334,54 @@ private struct Compiler {
             compileStructLiteralInto(offset, literal);
             return;
         }
+
+        // `s = t;` where `S` has a postblit but no user-defined `opAssign`:
+        // DMD synthesizes an `opAssign` and lowers its by-value argument
+        // into a synthesized `__copytmp` local -- this very declaration --
+        // whose own initializer is the postblit call
+        // `(__copytmp = src).__postblit()`: a raw blit into this
+        // declaration's own storage, immediately followed by running the
+        // postblit on it. Block-copy the blit's right-hand side into this
+        // declaration's offset (already registered in `_structLocals`
+        // above), then run the postblit, mirroring
+        // `compileArrayConstructor`'s identical `_d_arrayctor` handling for
+        // a static array of postblit elements.
+        if (auto call = source.isCallExp)
+            if (auto dot = call.e1.isDotVarExp) {
+                // The receiver is `__copytmp = t`, which -- since
+                // `__copytmp` is being written for the first time here --
+                // DMD types as a ConstructExp/BlitExp (op `construct`/
+                // `blit`), not a plain AssignExp (op `assign`); all three
+                // share the `AssignExp` base and its `e1`/`e2` fields, the
+                // same family `compileExpression`'s ConstructExp/BlitExp
+                // routing above already distinguishes from a real
+                // `EXP.assign`.
+                auto blit = dot.e1.isAssignExp;
+                if (blit is null)
+                    blit = dot.e1.isConstructExp;
+                if (blit is null)
+                    blit = dot.e1.isBlitExp;
+                if (blit !is null)
+                    if (auto blitTarget = blit.e1.isVarExp)
+                        if (blitTarget.var is variable) {
+                            bool blitResolved;
+                            const blitSource = structBaseOffsetOrMaterialise(
+                                blit.e2, blitResolved,
+                            );
+                            if (blitResolved) {
+                                _code ~= Instruction(
+                                    Op.copy,
+                                    offset,
+                                    blitSource,
+                                    cast(ushort) staticArraySize(variable.type),
+                                );
+                                auto postblitFunction = callFunction(call);
+                                if (postblitFunction !is null)
+                                    runStructMethod(offset, postblitFunction);
+                                return;
+                            }
+                        }
+            }
 
         // `S dest = src` / `S dest = make(...)`: a value-type block copy of the
         // whole struct from its inline base (a local, a nested field, or a
@@ -9515,6 +9568,36 @@ private struct Compiler {
                 writeBackDynamicArrayDescriptor(*descriptor);
                 return Operand(descriptor.offset, ScalarType.void_);
             }
+
+        // `this = rhs;` inside a struct method -- e.g. the compiler-
+        // synthesized `opAssign` a postblit-typed struct's whole-local
+        // reassignment lowers through (`this = p; return this;`), or plain
+        // user code such as `void reset() { this = S.init; }` -- assigns
+        // the method's whole receiver block, the value-type block copy the
+        // `_structLocals` branch below performs for a plain local, targeting
+        // `_thisLocal.offset` instead of a `_structLocals` entry.
+        if (_hasThis && assign.e1.isThisExp !is null) {
+            if (auto integer = assign.e2.isIntegerExp)
+                if (integer.toInteger == 0) {
+                    zeroFrameBlock(
+                        _thisLocal.offset,
+                        cast(uint) staticArraySize(assign.e1.type),
+                    );
+                    return Operand(_thisLocal.offset, ScalarType.void_);
+                }
+
+            bool resolved;
+            const source = structBaseOffsetOrMaterialise(assign.e2, resolved);
+            if (resolved) {
+                _code ~= Instruction(
+                    Op.copy,
+                    _thisLocal.offset,
+                    source,
+                    cast(ushort) staticArraySize(assign.e1.type),
+                );
+                return Operand(_thisLocal.offset, ScalarType.void_);
+            }
+        }
 
         auto variable = assign.e1.isVarExp;
         auto declaration =

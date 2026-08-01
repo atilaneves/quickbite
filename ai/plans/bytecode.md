@@ -451,33 +451,33 @@ row reaches them:
   target"; `Omit!(Interpreter, Because.unconfirmed)` on that row
   (`pointer.classStaticArrayFieldElementWrittenThroughWholeFieldPointerIsVisibleDirectly`,
   `expressions.d`).
-- Next candidate: whole-local struct assignment through a postblit does not
-  run the postblit. `struct Tracker { int x; int* postblits; this(this) {
-  ++*postblits; } } ... Tracker s; s = t;` throws "Unsupported struct
-  initializer in bytecode core: __copytmp2" on Bytecode
-  (`compileStructDeclaration`, `compiler.d`, ~line 4367; confirmed via a
-  throwaway fixture, not yet committed); `Interpreter` runs it as a silent
-  raw copy instead, so `s.x` is right but the postblit never fires. DMD
-  lowers the copy into a synthesized `__copytmp` local whose own initializer
-  is a `CallExp`: `expressionChars` on it reads
-  `(__copytmp2 = t).this(this)()` -- the postblit call's receiver (`e1`) is
-  itself the raw blit `__copytmp2 = t`, a shape none of
-  `compileStructDeclaration`'s existing branches
-  (`structBaseOffsetOrMaterialise`, `isStructLiteralExp`, `isVarExp`)
-  recognize. A general fix needs `compileStructDeclaration` (and the
-  parallel whole-local `s = t;` assignment path, `compileAssignExpression`'s
-  `_structLocals` branch) to recognize this shape -- a `CallExp` whose
-  receiver is itself an `AssignExp` -- block-copy the assignment's rhs into
-  the declared/assigned offset the way the plain
-  `structBaseOffsetOrMaterialise` branch already does, then compile the
-  `CallExp` itself (the postblit invocation) with that offset bound as
-  `this`, mirroring how `compileArrayConstructor` already recognizes the
-  analogous `_d_arrayctor` lowering for a static array of postblit
-  elements.
-  `opAssign` needs no separate work: DMD already lowers `s = t;` to an
-  ordinary `s.opAssign(t)` call when `S` defines one, which compiles through
-  the existing call path with no gap (also confirmed via a throwaway
-  fixture).
+- Next candidate: a whole-struct assignment into a field reached through a
+  struct pointer or a class reference throws "Unsupported variable in
+  bytecode core: `<name>`" on Bytecode when the right-hand side is a bare
+  struct-local `VarExp` -- but not when it's a struct literal or a call.
+  Confirmed via a throwaway fixture: given `struct Plain { int x; } struct
+  Holder { Plain t; }`, `Holder* p = &h; Plain a; a.x = 9; p.t = a;` fails
+  this way, and so does the class-field counterpart `class C { Plain t; }
+  auto c = new C(); c.t = a;`; `c.t = Plain(9)` and `c.t = make()` (a
+  literal or call rhs) both already work. Also reproduces with a
+  postblit-typed field (the same `Tracker` fixture from the fix above,
+  `class C { Tracker t; } c.t = a;`), though that's downstream of the same
+  root cause, not a separate postblit gap. Root cause:
+  `compileAssignExpression`'s `tryStructPointerField` branch (`compiler.d`,
+  ~line 9478) and `tryClassPointerField` branch (~line 9516) both already
+  compute `isAggregate` for a `Tstruct`/`Tsarray` field, but then
+  unconditionally call `compileExpression(assign.e2)` to get the rhs value
+  regardless of `isAggregate`; `compileExpression`'s generic `VarExp`
+  handling has no case for a bare struct-typed local and always throws --
+  structs are only ever addressed through `_structLocals`, never returned
+  from the generic expression path (the same fact already documented at
+  ~line 11992's `classStaticArrayFieldOf` comment). A general fix routes the
+  `isAggregate` case through `structBaseOffsetOrMaterialise` instead of
+  `compileExpression` in both branches, then block-copies into the field's
+  address (`storeStructPointerField`/`storeClassPointerField`) instead of
+  storing `value.offset` as a scalar, mirroring how the whole-local
+  `_structLocals` assignment branch and the new `this = rhs` branch above
+  already resolve their aggregate rhs.
 - Static arrays of dynamic arrays copy each element's full 16-byte slice
   descriptor; nested mutation and general stale-cell reconciliation remain
   incomplete.

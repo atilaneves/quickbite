@@ -1303,6 +1303,82 @@ static foreach (backend; Matrix!(
     }
 }
 
+// `s = t;` for a whole struct local: `S` has a postblit but no user-defined
+// `opAssign`, so DMD synthesizes one and lowers the call argument through a
+// `__copytmp` temporary whose own postblit runs once on the copy, matching
+// `SystemLinker`. Interpreter's own assignment for this shape loses the
+// field copy entirely (`s.x` stays its default, not `t.x`'s value), pinned
+// below.
+static foreach (backend; Matrix!(
+    Omit!(Interpreter, Because.diverges,
+        "loses the field copy for a postblit-typed whole-local assignment, see sibling pin below"),
+)) {
+    @("struct.wholeLocalAssignmentRunsPostblit." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct Tracker {
+                int x;
+                int* postblits;
+
+                this(this) {
+                    ++*postblits;
+                }
+            }
+
+            unittest {
+                int postblits = 0;
+
+                Tracker t;
+                t.x = 5;
+                t.postblits = &postblits;
+
+                Tracker s;
+                s = t;
+
+                assert(s.x == 5);
+                assert(postblits == 1);
+            }
+        });
+    }
+}
+
+// The `Because.diverges` pin the fixture above owes: Interpreter runs the
+// exact same fixture -- including its `SystemLinker`-correct
+// `assert(s.x == 5)` -- but its own whole-local assignment for a
+// postblit-typed struct never copies `t.x` into `s.x`, so that first assert
+// fails the ordinary way inside the guest program.
+static foreach (backend; AliasSeq!(Interpreter)) {
+    @("structWholeLocalAssignmentDoesNotRunPostblit." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct Tracker {
+                int x;
+                int* postblits;
+
+                this(this) {
+                    ++*postblits;
+                }
+            }
+
+            unittest {
+                int postblits = 0;
+
+                Tracker t;
+                t.x = 5;
+                t.postblits = &postblits;
+
+                Tracker s;
+                s = t;
+
+                assert(s.x == 5);
+                assert(postblits == 1);
+            }
+        }).shouldThrowWithMessage("0 != 5");
+    }
+}
+
 
 /++
     Nested structs.
