@@ -1004,6 +1004,9 @@ unittest {
                         dependencyThrowCustomField();
                         assert(false);
                     } catch (DependencyException caught) {
+                        DependencyException* caughtAddress = &caught;
+
+                        assert(*caughtAddress is caught);
                         assert(caught.msg == "dependency failed");
                         assert(caught.code == 73);
                     }

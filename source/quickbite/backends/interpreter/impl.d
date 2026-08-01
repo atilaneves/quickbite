@@ -821,20 +821,6 @@ private struct Walker {
             variable.type.toBasetype.isTypeClass !is null &&
             !value.isNativeAggregate &&
             !value.isPointer &&
-            AggregateValue.isClass(value) &&
-            AggregateValue.hasClassFieldNamed(
-                value,
-                nativeExceptionObjectPointerField,
-            )
-        ) {
-            mirrorEstablished[variable] = false;
-            return;
-        }
-
-        if (
-            variable.type.toBasetype.isTypeClass !is null &&
-            !value.isNativeAggregate &&
-            !value.isPointer &&
             value != Value.null_
         ) {
             // Boxed class construction remains only at the allocation seam
@@ -1169,7 +1155,16 @@ private struct Walker {
         if (catch_.var is null)
             return;
 
-        setLocal(catch_.var, nativeExceptionCatchObject(catch_, object));
+        if (AggregateValue.hasClassFieldNamed(object, nativeExceptionObjectPointerField)) {
+            const pointer = AggregateValue.classFieldNamed(
+                object,
+                nativeExceptionObjectPointerField,
+            ).pointerAddress;
+            bindingPlace(catch_.var).storeReference(cast(void*) pointer);
+            mirrorEstablished[catch_.var] = true;
+        } else {
+            setLocal(catch_.var, object);
+        }
         uninitializedLocals.remove(catch_.var);
     }
 
