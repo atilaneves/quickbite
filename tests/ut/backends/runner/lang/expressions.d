@@ -3070,10 +3070,7 @@ static foreach (backend; Matrix!()) {
 // itself and directly on the array. SystemLinker's `p` aliases `a`'s real
 // storage, so the increment is visible both ways. The mature backend matrix
 // now confirms the same aliasing behavior.
-static foreach (backend; Matrix!(
-    Omit!(Interpreter, Because.unconfirmed,
-        "post-increment through an array-element pointer expects a native pointer representation"),
-)) {
+static foreach (backend; Matrix!()) {
     @("pointer.arrayElementPostIncrementedThroughPointerIsVisibleDirectly." ~
         backend.stringof)
     @Tags(backend.stringof)
