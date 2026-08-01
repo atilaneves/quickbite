@@ -557,17 +557,24 @@ row reaches them:
   `emitPointerDereferenceRefArgument` already uses for a wide-struct
   pointee) instead of the scalar-only 1/2/4/8 gate; `Tarray`/`Taarray`
   fields still decline
-  (`refArgument.classFieldOfWideStructTypeWritesThroughField`). Next
-  candidate in this same family: `emitStructPointerFieldRefArgument` has
-  the identical `Tstruct`/`Tsarray`/`Tarray`/`Taarray` decline for a struct
-  field reached through a struct pointer (`carrier.value` where `carrier:
-  Holder*`) -- confirmed red via `bin/qb`
+  (`refArgument.classFieldOfWideStructTypeWritesThroughField`).
+  `emitStructPointerFieldRefArgument` now covers the identical
+  `Tstruct`/`Tsarray` widening for a struct field reached through a struct
+  pointer (`carrier.value` where `carrier: Holder*`), sized from the
+  field's real byte width the same way; `Tarray`/`Taarray` fields still
+  decline (`refArgument.structPointerFieldOfWideStructTypeWritesThroughField`).
+  Next candidate in this same family, but outside the ref-argument path:
+  `loadStructPointerField`/`storeStructPointerField` (`compiler.d`), the
+  plain (non-ref-argument) read/write path for a field reached through
+  `tryStructPointerField`, both still call `scalarType(field.type)`
+  unconditionally and so throw "Unsupported type in bytecode core: Wide"
+  for a `Tstruct`/`Tsarray` field -- confirmed red via `bin/qb`
   (`struct Wide { long a; long b; long c; } struct Holder { Wide value; }
-  ... bump(carrier.value);`; `SystemLinker` mutates the field, `Bytecode`
-  throws "Unsupported ref argument in bytecode core: (*carrier).value").
-  Same fix shape: widen the `Tstruct`/`Tsarray` case to the field's real
-  byte width through `structFieldAddress`, leaving `Tarray`/`Taarray`
-  declined.
+  ... Holder* carrier = &holder; carrier.value.a = 10;` throws before ever
+  reaching a call). Same fix shape again: branch on `field.type`'s base
+  type the way `loadStructPointerField` already does for `Tarray`, sizing
+  the load/store from `staticArraySize`/`staticArrayAlign` instead of
+  `scalarType`/`size(scalarType(...))`.
 - Dynamic-array and string sub-slices reject an upper bound beyond the source
   length and a lower bound greater than the upper bound; pointer-slice bounds
   remain unchecked.

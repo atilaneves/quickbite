@@ -235,7 +235,7 @@ private struct Compiler {
         ushort valueSize;
     }
 
-    // The struct-pointer counterpart of `ClassFieldRefWriteBack`: a scalar
+    // The struct-pointer counterpart of `ClassFieldRefWriteBack`: a
     // `ref` argument reached through a struct pointer (`setTo(carrier.value,
     // ...)` where `carrier` is `Holder*`, which DMD represents as
     // `(*carrier).value`). The field's heap storage has no caller-frame
@@ -12166,6 +12166,7 @@ private struct Compiler {
                 writeBack.valueOffset,
                 writeBack.addressOffset,
                 compileSizeConstant(0),
+                writeBack.valueSize,
             );
         foreach (writeBack; refLocalPointerRefWriteBacks)
             _code ~= Instruction(
@@ -13838,13 +13839,16 @@ private struct Compiler {
         return true;
     }
 
-    // The struct-pointer counterpart of `emitClassFieldRefArgument`: a scalar
-    // `ref` argument reached through a struct pointer field
+    // The struct-pointer counterpart of `emitClassFieldRefArgument`: a `ref`
+    // argument reached through a struct pointer field
     // (`setTo(carrier.value, ...)`). `tryStructPointerField` resolves DMD's
     // `(*carrier).value` lowering back to the pointer's frame slot and the
     // field's byte offset; the field's heap storage has no caller-frame
     // offset of its own, so it needs the same mirror-into-a-fresh-slot and
-    // writeback-through-the-real-address pattern as a class field.
+    // writeback-through-the-real-address pattern as a class field. A
+    // `Tstruct`/`Tsarray` field lives inline at that same address, so it
+    // needs its own real byte width instead of the scalar-only 1/2/4/8 gate,
+    // mirroring `emitClassFieldRefArgument`'s identical widening.
     private bool emitStructPointerFieldRefArgument(
         in ushort slot,
         Expression argument,
@@ -13877,14 +13881,18 @@ private struct Compiler {
             return false;
 
         const ty = field.type.toBasetype.ty;
-        if (ty == TY.Tstruct || ty == TY.Tsarray || ty == TY.Tarray ||
-            ty == TY.Taarray)
+        if (ty == TY.Tarray || ty == TY.Taarray)
             return false;
 
-        const valueSize = cast(ushort) size(scalarType(field.type));
-        if (valueSize != 1 && valueSize != 2 && valueSize != 4 &&
-            valueSize != 8)
+        const isAggregate = ty == TY.Tstruct || ty == TY.Tsarray;
+        const valueSize = cast(ushort) (isAggregate
+            ? staticArraySize(field.type)
+            : size(scalarType(field.type)));
+        if (!isAggregate && valueSize != 1 && valueSize != 2 &&
+            valueSize != 4 && valueSize != 8)
             return false;
+        const valueAlign =
+            isAggregate ? staticArrayAlign(field.type) : valueSize;
 
         foreach (writeBack; writeBacks)
             if (writeBack.pointerSlot == field.pointerSlot &&
@@ -13899,13 +13907,14 @@ private struct Compiler {
                 return true;
             }
 
-        const valueOffset = allocateBytes(valueSize, valueSize);
+        const valueOffset = allocateBytes(valueSize, valueAlign);
         const addressOffset = structFieldAddress(*field);
         _code ~= Instruction(
             pointerLoadOp(valueSize),
             valueOffset,
             addressOffset,
             compileSizeConstant(0),
+            valueSize,
         );
         _code ~= Instruction(
             Op.loadConstant,
