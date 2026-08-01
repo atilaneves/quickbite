@@ -445,26 +445,39 @@ row reaches them:
   remain unchecked.
 - Captured array support does not yet cover every read, write, slice, append,
   view-preservation, and closure combination.
-- Struct aliases and whole-local assignment do not yet cover captured
-  structs, postblits, or `opAssign` semantics.
 - `Interpreter` declines an indexed write through a dereferenced
   static-array pointer (`(*p)[i] = v`, e.g. a class field's whole-array
   pointer indexed and written) with "Unsupported interpreter assignment
   target"; `Omit!(Interpreter, Because.unconfirmed)` on that row
   (`pointer.classStaticArrayFieldElementWrittenThroughWholeFieldPointerIsVisibleDirectly`,
   `expressions.d`).
-- Next candidate: whole-local reassignment of a captured struct from within
-  a nested function/delegate (`struct S { int x; } S s; void delegate() dg =
-  () { s = S(99); }; dg();`) throws "Unsupported type in bytecode core: S" on
-  Bytecode. `compileCapturedAssign` (`compiler.d`) unconditionally computes
-  `scalarType(declaration.type)` to both gate the assignment (comparing it
-  against the rhs's type) and size the store, with no `Tstruct`/`Tsarray`
-  branch at all -- unlike `loadCapturedLocal`, whose existing `Tstruct`
-  branch already reads the whole block via `Op.frameLoad` and
-  `staticArraySize`. `storeCapturedLocal` needs the same widening
-  `storeStructPointerField`/`storeClassPointerField` (above) already got,
-  and `compileCapturedAssign` needs to skip the scalar type-equality gate for
-  an aggregate the same way the class-field assignment fix above does.
+- Next candidate: whole-local struct assignment through a postblit does not
+  run the postblit. `struct Tracker { int x; int* postblits; this(this) {
+  ++*postblits; } } ... Tracker s; s = t;` throws "Unsupported struct
+  initializer in bytecode core: __copytmp2" on Bytecode
+  (`compileStructDeclaration`, `compiler.d`, ~line 4367; confirmed via a
+  throwaway fixture, not yet committed); `Interpreter` runs it as a silent
+  raw copy instead, so `s.x` is right but the postblit never fires. DMD
+  lowers the copy into a synthesized `__copytmp` local whose own initializer
+  is a `CallExp`: `expressionChars` on it reads
+  `(__copytmp2 = t).this(this)()` -- the postblit call's receiver (`e1`) is
+  itself the raw blit `__copytmp2 = t`, a shape none of
+  `compileStructDeclaration`'s existing branches
+  (`structBaseOffsetOrMaterialise`, `isStructLiteralExp`, `isVarExp`)
+  recognize. A general fix needs `compileStructDeclaration` (and the
+  parallel whole-local `s = t;` assignment path, `compileAssignExpression`'s
+  `_structLocals` branch) to recognize this shape -- a `CallExp` whose
+  receiver is itself an `AssignExp` -- block-copy the assignment's rhs into
+  the declared/assigned offset the way the plain
+  `structBaseOffsetOrMaterialise` branch already does, then compile the
+  `CallExp` itself (the postblit invocation) with that offset bound as
+  `this`, mirroring how `compileArrayConstructor` already recognizes the
+  analogous `_d_arrayctor` lowering for a static array of postblit
+  elements.
+  `opAssign` needs no separate work: DMD already lowers `s = t;` to an
+  ordinary `s.opAssign(t)` call when `S` defines one, which compiles through
+  the existing call path with no gap (also confirmed via a throwaway
+  fixture).
 - Static arrays of dynamic arrays copy each element's full 16-byte slice
   descriptor; nested mutation and general stale-cell reconciliation remain
   incomplete.

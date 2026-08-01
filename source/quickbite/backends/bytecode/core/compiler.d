@@ -5348,7 +5348,8 @@ private struct Compiler {
     ) {
         import dmd.astenums: TY;
 
-        if (declaration.type.toBasetype.ty == TY.Tstruct) {
+        const declaredTy = declaration.type.toBasetype.ty;
+        if (declaredTy == TY.Tstruct || declaredTy == TY.Tsarray) {
             const destination = allocateStructBlock(declaration.type);
             _code ~= Instruction(
                 Op.frameLoad,
@@ -5368,7 +5369,7 @@ private struct Compiler {
             capturedFrameIndex(capturedOffset),
             cast(ushort) valueSize,
         );
-        if (declaration.type.toBasetype.ty == TY.Tclass)
+        if (declaredTy == TY.Tclass)
             return Operand(
                 destination, ScalarType.ulong_, true, ScalarType.void_,
             );
@@ -5380,7 +5381,13 @@ private struct Compiler {
         in ushort capturedOffset,
         in Operand value,
     ) {
-        const valueSize = size(scalarType(declaration.type));
+        import dmd.astenums: TY;
+
+        const ty = declaration.type.toBasetype.ty;
+        const isAggregate = ty == TY.Tstruct || ty == TY.Tsarray;
+        const valueSize = isAggregate
+            ? cast(uint) staticArraySize(declaration.type)
+            : size(scalarType(declaration.type));
         _code ~= Instruction(
             Op.frameStore,
             value.offset,
@@ -10005,11 +10012,35 @@ private struct Compiler {
         in ushort capturedOffset,
         AssignExp assign,
     ) {
+        import dmd.astenums: TY;
         import std.conv: text;
 
-        const type = scalarType(declaration.type);
+        const ty = declaration.type.toBasetype.ty;
+
+        // A static-array rhs (an array literal in particular) is compiled
+        // generically as a dynamic-array descriptor by `compileExpression`,
+        // not the `staticArraySize(declaration.type)` bytes of element
+        // storage a captured `T[N]` needs; route it through the same
+        // literal/copy recognition `compileStaticArrayValueInto` already
+        // gives a plain local's whole-array reassignment (line ~9368 above).
+        if (ty == TY.Tsarray) {
+            const destination = allocateStructBlock(declaration.type);
+            if (!compileStaticArrayValueInto(
+                    destination, declaration.type, assign.e2))
+                throw new Exception(text(
+                    "Unsupported assignment in bytecode core: ",
+                    expressionChars(assign),
+                ));
+            storeCapturedLocal(
+                declaration, capturedOffset,
+                Operand(destination, ScalarType.void_),
+            );
+            return loadCapturedLocal(declaration, capturedOffset);
+        }
+
+        const isAggregate = ty == TY.Tstruct;
         const rhs = compileExpression(assign.e2);
-        if (rhs.type != type)
+        if (!isAggregate && rhs.type != scalarType(declaration.type))
             throw new Exception(text(
                 "Unsupported assignment in bytecode core: ",
                 expressionChars(assign),

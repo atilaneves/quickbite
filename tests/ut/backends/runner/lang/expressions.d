@@ -1488,6 +1488,49 @@ static foreach (backend; Matrix!()) {
     }
 }
 
+// A nested delegate reassigning a whole captured struct-typed local
+// (`s = S(99, 100);`, not a field write) exercises `compileCapturedAssign`'s
+// write side the same way `loadCapturedLocal` already reads a captured
+// struct whole.
+static foreach (backend; Matrix!()) {
+    @("delegate.nestedDelegateReassignsWholeCapturedStruct." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct S {
+                int x;
+                int y;
+            }
+
+            unittest {
+                S s = S(1, 2);
+                auto reassign = () { s = S(99, 100); };
+                reassign();
+                assert(s.x == 99 && s.y == 100);
+            }
+        });
+    }
+}
+
+// Static-array-typed twin of the fixture above: `arr = [...]` reassigns the
+// whole captured block rather than an individual element.
+static foreach (backend; Matrix!()) {
+    @("delegate.nestedDelegateReassignsWholeCapturedStaticArray." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            unittest {
+                int[3] arr = [1, 2, 3];
+                auto reassign = () { arr = [7, 8, 9]; };
+                reassign();
+                assert(arr[0] == 7 && arr[1] == 8 && arr[2] == 9);
+            }
+        });
+    }
+}
+
 
 /++
     Casts involving slices, pointers, arrays, and bool.
