@@ -880,6 +880,49 @@ static foreach (backend; Matrix!()) {
     }
 }
 
+// A class instance's static-array field, viewed as a dynamic array
+// (`c.arr[]`), whose element is a struct wider than 16 bytes (24 bytes): each
+// element read through the view must use the element's real width instead of
+// falling back to a zero-width read.
+static foreach (backend; Matrix!()) {
+    @("dynamicArray.classStaticArrayFieldViewWithStructElementsWiderThan16Bytes."
+        ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct S {
+                long a;
+                long b;
+                long c;
+            }
+
+            class C {
+                S[2] arr;
+            }
+
+            int seed(int value) {
+                return value;
+            }
+
+            unittest {
+                auto c = new C();
+                c.arr[0] = S(seed(1), seed(2), seed(3));
+                c.arr[1] = S(seed(4), seed(5), seed(6));
+
+                auto view = c.arr[];
+
+                assert(view.length == 2);
+                assert(view[0].a == 1);
+                assert(view[0].b == 2);
+                assert(view[0].c == 3);
+                assert(view[1].a == 4);
+                assert(view[1].b == 5);
+                assert(view[1].c == 6);
+            }
+        });
+    }
+}
+
 // A static array whose element is a struct wider than 16 bytes (24 bytes):
 // sub-slice assignment must copy each element's full width instead of
 // falling back to a narrower fixed-width copy or refusing the assignment.

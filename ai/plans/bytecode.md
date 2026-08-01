@@ -488,23 +488,18 @@ row reaches them:
   a raw pointer to a struct wider than 8 bytes (`p[lo .. hi]`) shares the
   original backing storage instead of asserting
   (`pointer.sliceWithStructElementsWiderThan16BytesSharesBackingStorage`).
-  Concrete next candidate: `compileClassStaticArrayAsDynamicInto`
-  (`compiler.d`, the class-field counterpart of
+  `compileClassStaticArrayAsDynamicInto` (the class-field counterpart of
   `compileStaticArrayAsDynamicInto`, backing `c.arr[]` where `arr` is a class
-  instance's static-array field) calls `pointerLoadOp(elementSize)` per
-  element but its `Instruction` only sets operands a/b/c, never d; for a
-  struct element wider than 16 bytes this silently selects `Op.pointerLoadN`
-  with an unset (zero) width instead of asserting, so the view reads zero
-  bytes per element -- a silently wrong answer, not a crash. Confirmed via
-  `bin/qb`: `class C { S[2] arr; } auto c = new C; c.arr[0] = S(1,2,3);
-  c.arr[1] = S(4,5,6); auto view = c.arr[]; return view[1].a;` (`S` a 24-byte
-  struct) returns `4` under `system-linker` but `0` under `bytecode`. Needs
-  the same fix as the `N`-variant call sites above: pass the element width as
-  operand d. Separately, `pointerLoadOp`'s ref-argument/write-back call sites
-  are still bounded to `<= 8` bytes by existing guards and were left
-  untouched (not currently reachable with a wide struct, since no
-  ref-argument path yet resolves a struct-typed pointee) -- reconfirm this is
-  still true before assuming it's fully covered.
+  instance's static-array field) now passes the element width as operand d on
+  its `pointerLoadOp` call site too, so a view over a class's static-array
+  field of a struct wider than 16 bytes reads each element's real width
+  instead of zero
+  (`dynamicArray.classStaticArrayFieldViewWithStructElementsWiderThan16Bytes`).
+  Concrete next candidate: `pointerLoadOp`'s ref-argument/write-back call
+  sites are still bounded to `<= 8` bytes by existing guards; reconfirm
+  whether that bound is still correct now that a struct-typed pointee can be
+  reached through a `ref` argument path, or whether it needs the same
+  `N`-variant escape as the plain-read call sites above.
 - Dynamic-array and string sub-slices reject an upper bound beyond the source
   length and a lower bound greater than the upper bound; pointer-slice bounds
   remain unchecked.

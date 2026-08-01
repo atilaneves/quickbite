@@ -6533,6 +6533,7 @@ private struct Compiler {
                 loaded,
                 elementPointer,
                 compileSizeConstant(0),
+                cast(ushort) elementSize,
             );
             const index = compileSizeConstant(elementIndex);
             _code ~= Instruction(
