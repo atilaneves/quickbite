@@ -8533,6 +8533,23 @@ private struct Walker {
             // be regrown through that pointer.  Read the typed header from
             // the evaluated native slice directly; `arrayPointer` remains
             // the checked address-of route for real `array[index]` places.
+            if (auto var = cast_.e1.isVarExp)
+                if (auto variable = var.var.isVarDeclaration) {
+                    import quickbite.backends.interpreter.place: Place;
+
+                    if (auto address = variable in nativeRefLocalAddresses)
+                        return Value.pointerValue(
+                            Place(*address, variable.type).sliceDataPointer,
+                        );
+                    if (
+                        hasMirrorSlot(variable) &&
+                        mirrorEstablished.get(variable, false)
+                    )
+                        return Value.pointerValue(
+                            bindingPlace(variable).sliceDataPointer,
+                        );
+                }
+
             const value = runExpression(cast_.e1);
             if (value.isNativeAggregate) {
                 import quickbite.backends.interpreter.aggregate_value: AggregateValue;
@@ -9258,6 +9275,14 @@ private struct Walker {
                     return readValue(Place(*address, variable.type).index(
                         arrayIndex,
                     ));
+                }
+                if (
+                    hasMirrorSlot(variable) &&
+                    mirrorEstablished.get(variable, false)
+                ) {
+                    import quickbite.backends.interpreter.place_value: readValue;
+
+                    return readValue(bindingPlace(variable).index(arrayIndex));
                 }
                 if (auto current = variable in locals)
                     if ((*current).isNativeAggregate)

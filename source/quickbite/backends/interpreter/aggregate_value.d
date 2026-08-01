@@ -633,9 +633,34 @@ public struct AggregateValue {
         in imported!"quickbite.backends.interpreter.runtime_value".Value element,
     ) {
         if (value.isNativeAggregate) {
+            import quickbite.backends.interpreter.native_array: NativeArray;
+            import quickbite.backends.interpreter.place: Place;
+            import quickbite.backends.interpreter.place_value: writeValue;
             import quickbite.backends.interpreter.runtime_value: Value;
 
             auto aggregate = native(value);
+            auto slice = baseTypeOf(aggregate.type).isTypeDArray;
+            if (slice !is null) {
+                import core.memory: GC;
+                import quickbite.backends.interpreter.layout: typeByteSize;
+
+                const length = elementCount(value);
+                auto address = cast(void*) Place(
+                    aggregate.address,
+                    aggregate.type,
+                ).sliceDataPointer;
+                const stride = typeByteSize(slice.next);
+                const capacity = address is null || stride == 0
+                    ? 0
+                    : GC.sizeOf(address) / stride;
+                if (length < capacity) {
+                    auto array = NativeArray.borrow(slice.next, address, length + 1);
+                    writeValue(Place(array.element(length).ptr, slice.next), element);
+                    array.writeSliceHeader(aggregate.address);
+                    return value;
+                }
+            }
+
             Value[] elements;
             foreach (index; 0 .. elementCount(value))
                 elements ~= elementAt(value, index);

@@ -446,6 +446,11 @@ checked fact; do not relearn them.
 - A written slice header is a snapshot of `{length, ptr}`; it goes stale
   when the array reallocates, exactly as a compiled-D slice does. Keeping
   a header in sync is the call site's problem.
+- A frame-resident slice header is authoritative after an interpreted
+  rebind: `.ptr`, indexed reads, and an append that fits its GC allocation
+  read or update that header directly. A transient native aggregate may
+  retain it for lifetime only; its copied header must not decide the
+  binding's current address or length.
 - A same-width native-scalar dynamic-array cast is another typed view over
   the source array's existing block, never an element-converted copy. Each
   binding reads and writes those shared bytes through its own element type.
