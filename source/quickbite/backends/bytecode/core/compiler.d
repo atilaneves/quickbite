@@ -4918,24 +4918,26 @@ private struct Compiler {
 
         if (auto dereference = expression.isPtrExp) {
             const pointer = compileExpression(dereference.e1);
-            const structSize = cast(uint) staticArraySize(expression.type);
-            if (pointer.isPointer &&
-                (structSize == 1 || structSize == 2 || structSize == 4 ||
-                    structSize == 8 || structSize == 16))
-            {
-                const offset = allocateBytes(
-                    structSize,
-                    staticArrayAlign(expression.type),
+            if (pointer.isPointer)
+                return loadStructThroughPointer(
+                    pointer.offset, compileSizeConstant(0), expression.type,
                 );
-                _code ~= Instruction(
-                    pointerLoadOp(structSize),
-                    offset,
-                    pointer.offset,
-                    compileSizeConstant(0),
-                );
-                return offset;
-            }
         }
+
+        // `p[i]` where `p` is a raw pointer (not an array): the element block
+        // lives at `p + i * structSize` in VM-owned heap memory rather than a
+        // frame offset, so read it through the same shared load as `*p`
+        // above. Gated on `index.e1`'s own static type, matching
+        // `tryPointerIndex`'s pointer check, so a struct array's own `arr[i]`
+        // (handled by `structBaseOffsetOrMaterialise` below) is untouched.
+        if (auto index = expression.isIndexExp)
+            if (isPointerType(index.e1.type)) {
+                const pointer = compileExpression(index.e1);
+                const indexSlot = compileExpression(index.e2);
+                return loadStructThroughPointer(
+                    pointer.offset, indexSlot.offset, expression.type,
+                );
+            }
 
         bool resolved;
         const base = structBaseOffsetOrMaterialise(expression, resolved);
@@ -4946,6 +4948,27 @@ private struct Compiler {
             "Unsupported struct value in bytecode core: ",
             expressionChars(expression),
         ));
+    }
+
+    // Read a struct of any width out of `[pointer + indexSlot * structSize]`
+    // into a fresh inline block, backing both `*p` (`indexSlot` a zero
+    // constant) and `p[i]` (`indexSlot` the compiled index expression) as a
+    // struct rvalue.
+    private ushort loadStructThroughPointer(
+        in ushort pointer,
+        in ushort indexSlot,
+        Type structType,
+    ) {
+        const structSize = cast(uint) staticArraySize(structType);
+        const offset = allocateBytes(structSize, staticArrayAlign(structType));
+        _code ~= Instruction(
+            pointerLoadOp(structSize),
+            offset,
+            pointer,
+            indexSlot,
+            cast(ushort) structSize,
+        );
+        return offset;
     }
 
     // A located struct field: its inline frame offset and DMD type.
@@ -16485,7 +16508,7 @@ private imported!"quickbite.backends.bytecode.core.program".Op pointerLoadOp(
         case 4: return Op.pointerLoad4;
         case 8: return Op.pointerLoad8;
         case 16: return Op.pointerLoad16;
-        default: assert(0, "Unsupported pointer load element size.");
+        default: return Op.pointerLoadN;
     }
 }
 

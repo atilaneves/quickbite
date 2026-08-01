@@ -397,8 +397,10 @@ package(quickbite.backends.bytecode) RunResult run(
                 break;
 
             case pointerLoad1, pointerLoad2, pointerLoad4, pointerLoad8,
-                pointerLoad16:
-                const pointerLoadSize = pointerElementSize(instruction.op);
+                pointerLoad16, pointerLoadN:
+                const pointerLoadSize = instruction.op == pointerLoadN
+                    ? instruction.d
+                    : pointerElementSize(instruction.op);
                 const pointerLoadAddress =
                     scalarValue!size_t(stack, base + instruction.b) +
                     scalarValue!size_t(stack, base + instruction.c) *

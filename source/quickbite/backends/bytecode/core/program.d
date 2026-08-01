@@ -365,6 +365,11 @@ package(quickbite.backends.bytecode) enum Op: ubyte {
     pointerLoad4,
     pointerLoad8,
     pointerLoad16,
+    // Same as `pointerLoad1`/etc, for an element width not covered by a
+    // fixed opcode (e.g. a struct element wider than 16 bytes): the byte
+    // width is operand d instead of being implied by the opcode. Backs `*p`
+    // and `p[i]` for such a pointee.
+    pointerLoadN,
     // Atomically read the 8-byte element at `[pointer + index * 8]` into the
     // slot at frame offset a. The atomic-load inline-asm lowering uses this
     // only after exact whole-sequence validation.

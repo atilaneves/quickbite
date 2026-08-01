@@ -6471,6 +6471,80 @@ static foreach (backend; Matrix!()) {
     }
 }
 
+// The read-through-pointer counterpart of the write fixtures above: passing
+// a struct wider than 16 bytes read through `*p` as a plain (non-ref)
+// function argument. `structOperandOffset`'s `PtrExp` branch used to gate
+// itself to a fixed 1/2/4/8/16 element size and fall through to "Unsupported
+// struct value" for anything wider; it now calls the same `pointerLoadOp`
+// general-width escape the store side already has.
+static foreach (backend; Matrix!()) {
+    @("pointer.dereferenceReadWithStructWiderThan16BytesReadsFullWidth." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct S {
+                long a;
+                long b;
+                long c;
+            }
+
+            int seed(int value) {
+                return value;
+            }
+
+            int sum(S value) {
+                return cast(int) (value.a + value.b + value.c);
+            }
+
+            unittest {
+                S s = S(seed(1), seed(2), seed(3));
+                S* p = &s;
+                assert(sum(*p) == 6);
+            }
+        });
+    }
+}
+
+// The `p[i]` sibling: indexing (rather than dereferencing at index 0)
+// through a raw pointer into a struct wider than 16 bytes, read as a
+// by-value argument. `structOperandOffset` did not resolve an `IndexExp`
+// through a raw pointer receiver at all before this change -- only the
+// array-of-structs index shapes `structBaseOffsetOrMaterialise` already
+// handles -- regardless of struct width.
+static foreach (backend; Matrix!()) {
+    @("pointer.indexReadWithStructWiderThan16BytesReadsFullWidth." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct S {
+                long a;
+                long b;
+                long c;
+            }
+
+            int seed(int value) {
+                return value;
+            }
+
+            int sum(S value) {
+                return cast(int) (value.a + value.b + value.c);
+            }
+
+            unittest {
+                S[] outer;
+                outer ~= S(seed(1), seed(2), seed(3));
+                outer ~= S(seed(4), seed(5), seed(6));
+                S* p = outer.ptr;
+
+                assert(sum(p[0]) == 6);
+                assert(sum(p[1]) == 15);
+            }
+        });
+    }
+}
+
 // `recordStructFieldAlias` records ANY
 // `DotVarExp` initializer bound to a `ref` local -- including a non-scalar
 // (array/nested-struct) field -- so `writeThroughStructFieldAlias` reached a

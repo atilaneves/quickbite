@@ -478,17 +478,19 @@ row reaches them:
   asserting; the element width for a struct/static-array pointee comes from
   the emplaced value's own DMD type size (`staticArraySize`), since
   `destination.pointerElement` is `ScalarType.void_` for such a pointee and
-  `size(void_)` is 0. Concrete next candidate: `pointerLoadOp`/
-  `pointerSliceOp` (`compiler.d`, defined alongside `pointerStoreOp`) still
-  `assert(0)` for a struct element wider than 16 (`pointerSliceOp`: wider
-  than 8) bytes, so reading `*p`/`p[0]` or slicing through such a pointer
-  remains unsupported; each needs the identical `N`-variant escape.
-  `pointerLoadOp` has far more call sites than `pointerStoreOp` did (20+),
-  so this is likely several commits: start with the plain-dereference/
-  index-read call sites and leave the ref-argument/write-back call sites
-  (already bounded to `<= 8` bytes by existing guards, so not currently
-  reachable with a wide
-  struct) for a follow-up.
+  `size(void_)` is 0. `pointerLoadOp`'s plain-dereference/index-read call
+  sites (`*p` and `p[i]` as struct rvalues, both now sharing a single
+  `loadStructThroughPointer` helper) have the identical `N`-variant escape,
+  so reading a struct wider than 16 bytes through a raw pointer works.
+  Concrete next candidate: `pointerSliceOp` (`compiler.d`, defined alongside
+  `pointerLoadOp`/`pointerStoreOp`) still `assert(0)`s for a struct element
+  wider than 8 bytes, so slicing through such a pointer (`p[lo .. hi]`)
+  remains unsupported; needs the identical `N`-variant escape. Separately,
+  `pointerLoadOp`'s ref-argument/write-back call sites are still bounded to
+  `<= 8` bytes by existing guards and were left untouched (not currently
+  reachable with a wide struct, since no ref-argument path yet resolves a
+  struct-typed pointee) -- reconfirm this is still true before assuming it's
+  fully covered.
 - Dynamic-array and string sub-slices reject an upper bound beyond the source
   length and a lower bound greater than the upper bound; pointer-slice bounds
   remain unchecked.
