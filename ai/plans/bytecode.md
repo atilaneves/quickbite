@@ -370,13 +370,26 @@ oracle.
 packed at a caller-supplied stride (`assocArrayValueWidth`, `compiler.d`),
 reusing `dynamicArrayElementSize`/`dynamicArrayElementType` the same way a
 dynamic array carries its own element size; the key side is still a
-hard-coded `int[]`. The remaining row,
+hard-coded `int[]` (`AssocArray.keys`, `find`/`insert`/`remove` all take a
+plain `int`). The remaining row,
 `assocArray.structKeyWithStringMemberComparesStructurally`
-(`tests/ut/backends/runner/lang/arrays.d`), needs that key side widened plus
-recovering DMD's synthesized `__aakeyN` variable's structural comparison
-(currently "Unsupported variable in bytecode core: __aakey3") -- a
-genuinely separate, harder problem than the value-width work, since a key
-also has to hash/compare structurally instead of by raw `int` equality.
+(`tests/ut/backends/runner/lang/arrays.d`), confirmed still red via a real
+`bin/ut` run ("Unsupported variable in bytecode core: __aakey3"): DMD's
+`InExp`/index lowering hoists a non-trivial key expression into a synthesized
+temporary (`extractSideEffect`, `__aakeyN`, an ordinary struct-typed local,
+not a hash/compare function) and passes it to the already-recognised
+`_d_aaIn`/`_d_aaGetY` hooks; `compileAssocArrayHook` resolves that key
+argument via the generic `compileExpression`, whose `VarExp` handling never
+consults `_structLocals` (unlike `structBaseOffsetOrMaterialise`, which
+does), so *any* struct-typed key -- even one with only scalar fields --
+throws there before reaching the key-storage question at all. Fixing that
+alone is not enough to close this row: a struct key with a string member
+also needs `AssocArray`'s key side widened (mirroring the value-side
+`ubyte[]`/stride work above) and structural, not raw-byte, comparison for
+the string member specifically (two equal-content strings from different
+calls have different slice-descriptor bytes). Both pieces are needed
+together and are a genuinely separate, harder problem than the value-width
+work; still not bounded for one commit.
 
 An AA value's storage width now accounts for a dynamic-array-typed value
 (`int[][int]`, sized as its own 16-byte slice descriptor via
@@ -493,11 +506,42 @@ bytecode core"); a nested field-chain depth (`arr[i].outer.fixedField[j] +=
 value`) and a class-array-field receiver (`c.arr[i].fixedField[j] += value`)
 both resolve correctly through the same fix.
 
-Next candidate: `assocArray.structKeyWithStringMemberComparesStructurally`
-(described above) -- the AA key side is still `int[]`-only and DMD's
-synthesized `__aakeyN` variable ("Unsupported variable in bytecode core:
-__aakey3") needs structural hash/compare support, a genuinely separate,
-harder problem than the value-width work already done.
+A *further*-nested index into a multi-dimensional static-array field
+(`arr[i].fixedField[j][k] = value` / `+= value`, e.g. `int[2][3] vals;
+arr[0].vals[1][0] = 99;`) had the identical silent-corruption shape one
+dimension deeper: `arr[i].fixedField[j]` is itself an `IndexExp`, not the
+`DotVarExp` the two fixes above pattern-matched on directly, so it fell
+through to the general nested-static-array resolver
+(`locateStaticArrayElement`/`staticArrayBaseOffset`), which still bottoms
+out on `tryStructField`'s throwaway copy for this receiver. Fixed by
+generalising both fixes' dot-detection into one recursive helper,
+`arrayElementFieldPointer`: it peels `IndexExp` layers one at a time ahead
+of the `DotVarExp` base, advancing the field's own real pointer one
+dimension via `advanceStaticArrayPointer` per layer, so it subsumes the
+single-index case (unchanged behaviour, still any field-chain depth and
+either receiver kind) and extends to any dimension count. Confirmed via real
+`bin/ut` that a sibling shape is a clean diagnostic refusal, not corruption,
+and left unfixed: a *dynamic*-array-typed field indexed through the same
+receiver (`arr[i].matrixField[j][k] = v` where the field is `int[][]`)
+throws "Unsupported assignment in bytecode core", since
+`arrayElementFieldPointer` only resolves a `Tsarray` dimension. Also
+confirmed via real `bin/ut`, with no bug found: `p.field += rhs` through a
+struct pointer (`tryStructPointerField`/`storeStructPointerField`) and
+`c.field += rhs` through a class reference (`tryClassPointerField`/
+`storeClassPointerField`) both already write back through the field's real
+address.
+
+Next candidate: the dynamic-array-of-dynamic-arrays field indexed write
+noted above (`arr[i].matrixField[j][k] = value`, a `Tarray`-typed field
+dimension) -- extending `arrayElementFieldPointer` to also resolve a
+`Tarray` field/dimension (its `{pointer, length}` descriptor, indexed at the
+runtime length rather than `advanceStaticArrayPointer`'s fixed
+compile-time-length stride) looks like the same bounded shape as the
+static-array generalisation just landed.
+`assocArray.structKeyWithStringMemberComparesStructurally` (described
+above) remains open and still not bounded for one commit: even after fixing
+`compileAssocArrayHook`'s struct-typed-key gap, a string-member key still
+needs the wider key-storage-plus-structural-comparison work.
 
 Every `Omit!(Bytecode, ...)` row left in `tests/ut/backends/runner/**` is one
 of the already-documented not-bounded rows above (`file.d:14`,

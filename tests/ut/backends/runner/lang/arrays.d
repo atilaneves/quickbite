@@ -4932,3 +4932,72 @@ static foreach (backend; Matrix!()) {
         });
     }
 }
+
+// A *doubly*-indexed write into a multi-dimensional static-array field
+// (`arr[i].fixedField[j][k] = value`, e.g. `struct Outer { int[2][3] vals;
+// int tag; }`): the same silent-corruption shape as the singly-indexed case
+// above, one dimension deeper. `arr[0].vals[1]`'s own `IndexExp` is not a
+// `DotVarExp`, so it fell through the singly-indexed fix's pattern match
+// straight to `tryStaticArrayElement`'s `locateStaticArrayElement`, which
+// resolves `arr[0].vals`'s base through `tryStructField`'s throwaway copy of
+// the whole `arr[0]` element -- silently discarding the store instead of
+// throwing. Fixed by generalising the singly-indexed fix into
+// `arrayElementFieldPointer` (`compiler.d`), which recurses through any
+// number of `IndexExp` layers, advancing the field's own real runtime
+// pointer one dimension at a time via `advanceStaticArrayPointer` instead of
+// ever falling through to the throwaway copy. Interpreter throws
+// "Unsupported interpreter assignment target." on this doubly-indexed shape
+// even though the singly-indexed sibling above already passes -- a separate,
+// unconfirmed backend gap, not this fix's scope.
+static foreach (backend; Matrix!(
+    Omit!(Interpreter, Because.unconfirmed,
+        "Unsupported interpreter assignment target."),
+)) {
+    @("dynamicArray.nestedStaticArrayFieldElementOfStructElementWritten." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct Outer { int[2][3] vals; int tag; }
+            unittest {
+                Outer[] arr = [Outer([[1, 2], [3, 4], [5, 6]], 10)];
+                arr[0].vals[1][0] = 99;
+                assert(arr[0].vals[1][0] == 99);
+                assert(arr[0].vals[0][0] == 1);
+                assert(arr[0].vals[0][1] == 2);
+                assert(arr[0].vals[1][1] == 4);
+                assert(arr[0].vals[2][0] == 5);
+                assert(arr[0].vals[2][1] == 6);
+                assert(arr[0].tag == 10);
+            }
+        });
+    }
+}
+
+// The compound-assignment sibling of the doubly-indexed write above
+// (`arr[i].fixedField[j][k] += value`): the identical silent-corruption
+// shape one dimension deeper than the singly-indexed compound-assignment
+// fix. Fixed the same way, through the shared `arrayElementFieldPointer`.
+// Interpreter throws the same "Unsupported interpreter assignment target."
+// gap as the plain-assignment sibling above.
+static foreach (backend; Matrix!(
+    Omit!(Interpreter, Because.unconfirmed,
+        "Unsupported interpreter assignment target."),
+)) {
+    @("dynamicArray.nestedStaticArrayFieldElementOfStructElementAddAssigned." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct Outer { int[2][3] vals; int tag; }
+            unittest {
+                Outer[] arr = [Outer([[1, 2], [3, 4], [5, 6]], 10)];
+                arr[0].vals[1][0] += 5;
+                assert(arr[0].vals[1][0] == 8);
+                assert(arr[0].vals[0][0] == 1);
+                assert(arr[0].vals[2][1] == 6);
+                assert(arr[0].tag == 10);
+            }
+        });
+    }
+}
