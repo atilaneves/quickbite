@@ -441,16 +441,31 @@ fix closes that shape too. `Interpreter` throws "Expected class object." on
 `c.arr[i].field = rhs` even for a plain scalar field, unrelated to this fix
 and left `Omit!(Interpreter, Because.unconfirmed)`.
 
-Next candidate: the `Tsarray` sibling of the fix above. `arr[i].fixedField =
-[x, y, z]` for a dynamic-array-of-structs element whose field is itself a
-static array (e.g. `struct Outer { int[3] vals; int tag; } Outer[] arr =
-[Outer([1, 2, 3], 10)]; arr[0].vals = [7, 8, 9];`) throws "Unsupported type
-in bytecode core: int[3]" on `Bytecode` (confirmed via real `bin/ut`), while
-`SystemLinker` runs it fine. `storeArrayElementFieldPointer` has no
-`Tsarray` branch at all yet; `tryStructFieldAssign`'s own `Tsarray` branch
-(same file) is the model to extend from -- it already handles a static-array
-field written from an `ArrayLiteralExp` rhs via `compileStaticArrayLiteral`,
-though notably not yet from an existing array-valued lvalue.
+A dynamic-array-of-structs element whose field is itself a static array now
+writes as a whole value through an array-element pointer
+(`arr[i].fixedField = [x, y, z]` and `arr[i].fixedField = existingVar;`,
+e.g. `struct Outer { int[3] vals; int tag; } Outer[] arr =
+[Outer([1, 2, 3], 10)]; arr[0].vals = [7, 8, 9];`): `storeArrayElementFieldPointer`
+gained a `Tsarray` branch that materialises the rhs via
+`compileStaticArrayValueInto` (already resolving both an array literal and
+an existing array lvalue) into a fresh slot, then block-stores it through
+the pointer, mirroring the function's own `Tstruct` branch. Since the same
+function also serves the class-array-field case, `c.arr[i].fixedField = rhs`
+is fixed too (`Interpreter` still throws "Expected class object." on that
+receiver shape, the pre-existing gap noted above, confirmed unchanged).
+
+Next candidate: an *indexed* write into that same static-array field,
+`arr[i].fixedField[j] = value` (e.g. continuing the `Outer` example above,
+`arr[0].vals[1] = 99;`), silently does nothing on `Bytecode` -- no
+exception, but the read-back value is unchanged (confirmed via real
+`bin/ut`: `assert(arr[0].vals[1] == 99)` fails with `2 != 99`, the original
+element), while `SystemLinker` writes it correctly. This is a wrong-result
+bug, not a thrown "unsupported" diagnostic, so it needs to be found and
+fixed rather than merely routed: the indexed-element write must be landing
+on a scratch/temporary slot instead of the real array-element storage this
+field's pointer denotes. Likely near whatever compiles an `IndexExp` lvalue
+over a `DotVarExp` field base reached through `storeArrayElementFieldPointer`
+or a sibling struct-field-index assignment path.
 
 Every `Omit!(Bytecode, ...)` row left in `tests/ut/backends/runner/**` is one
 of the already-documented not-bounded rows above (`file.d:14`,

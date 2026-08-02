@@ -10991,8 +10991,10 @@ private struct Compiler {
     // is a whole-block copy through `structOperandOffset`, mirroring
     // `storeThroughPointer`'s own struct branch (the rhs may be a literal/
     // constructor-call rvalue or an existing struct lvalue, neither of which
-    // `compileExpression` alone resolves); anything else is a scalar byte
-    // store at the pointer.
+    // `compileExpression` alone resolves); a static-array field is likewise a
+    // whole-block copy, via `compileStaticArrayValueInto` (an array literal
+    // or an existing array lvalue); anything else is a scalar byte store at
+    // the pointer.
     private Operand storeArrayElementFieldPointer(
         in ushort pointer,
         Type fieldType,
@@ -11015,6 +11017,31 @@ private struct Compiler {
         if (fieldType.toBasetype.ty == TY.Tstruct) {
             const valueOffset = structOperandOffset(rhs);
             const elementSize = cast(uint) staticArraySize(fieldType);
+            _code ~= Instruction(
+                pointerStoreOp(elementSize), valueOffset, pointer,
+                compileSizeConstant(0), cast(ushort) elementSize,
+            );
+            return Operand(valueOffset, ScalarType.void_);
+        }
+
+        // A static-array field `T[N] a` reached through an array-element
+        // pointer (`arr[i].fixedField = [x, y, z]` or `= existingArrayVar`):
+        // materialise the rhs into a fresh inline slot the same way a
+        // static-array local's own declaration/assignment does
+        // (`compileStaticArrayValueInto` already resolves both an array
+        // literal and an existing array lvalue), then block-store the whole
+        // value through the pointer, mirroring the `Tstruct` case above.
+        if (fieldType.toBasetype.ty == TY.Tsarray) {
+            import std.conv: text;
+
+            const elementSize = cast(uint) staticArraySize(fieldType);
+            const valueOffset =
+                allocateBytes(elementSize, staticArrayAlign(fieldType));
+            if (!compileStaticArrayValueInto(valueOffset, fieldType, rhs))
+                throw new Exception(text(
+                    "Unsupported static array field assignment in bytecode ",
+                    "core: ", expressionChars(rhs),
+                ));
             _code ~= Instruction(
                 pointerStoreOp(elementSize), valueOffset, pointer,
                 compileSizeConstant(0), cast(ushort) elementSize,

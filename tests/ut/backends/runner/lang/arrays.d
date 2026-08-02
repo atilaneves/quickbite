@@ -4827,3 +4827,47 @@ static foreach (backend; Matrix!(
         });
     }
 }
+
+// The `Tsarray` sibling of the struct-field case above: `arr[i].fixedField =
+// [x, y, z]` for a dynamic-array-of-structs element whose field is itself a
+// static array. `storeArrayElementFieldPointer` had no `Tsarray` branch at
+// all and threw "Unsupported type in bytecode core: int[3]"; it now routes
+// the field through `compileStaticArrayValueInto`, the same whole-value
+// helper a static-array local's own declaration/assignment uses.
+static foreach (backend; Matrix!()) {
+    @("dynamicArray.staticArrayFieldOfStructElementWrittenFromLiteral." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct Outer { int[3] vals; int tag; }
+            unittest {
+                Outer[] arr = [Outer([1, 2, 3], 10)];
+                arr[0].vals = [7, 8, 9];
+                assert(arr[0].vals == [7, 8, 9]);
+                assert(arr[0].tag == 10);
+            }
+        });
+    }
+}
+
+// The same shape, but the rhs is an existing static-array lvalue rather than
+// a literal: `compileStaticArrayValueInto` resolves both forms already, so
+// this needs no further change beyond the literal case above.
+static foreach (backend; Matrix!()) {
+    @("dynamicArray.staticArrayFieldOfStructElementWrittenFromVariable." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct Outer { int[3] vals; int tag; }
+            unittest {
+                Outer[] arr = [Outer([1, 2, 3], 10)];
+                int[3] existing = [4, 5, 6];
+                arr[0].vals = existing;
+                assert(arr[0].vals == [4, 5, 6]);
+                assert(arr[0].tag == 10);
+            }
+        });
+    }
+}
