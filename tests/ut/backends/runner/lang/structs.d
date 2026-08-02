@@ -70,6 +70,29 @@ static foreach (backend; Matrix!()) {
     }
 }
 
+// A struct-value delegate field's default (uninitialized) value is `null`:
+// `delegateOperandOffset` had no `DotVarExp` branch at all, so reading a
+// delegate straight out of a field for anything other than a direct call
+// (`s.f is null`, `s.f == null`, passing it onward, assigning it to a
+// local) threw "Unsupported delegate argument in bytecode core".
+static foreach (backend; Matrix!()) {
+    @("struct.delegateFieldDefaultIsNull." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct S {
+                int delegate(int) f;
+            }
+
+            unittest {
+                S s;
+                assert(s.f is null);
+                assert(s.f == null);
+            }
+        });
+    }
+}
+
 static foreach (backend; Matrix!()) {
     @("struct.multipleScalarFields." ~ backend.stringof)
     @Tags(backend.stringof)

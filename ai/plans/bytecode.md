@@ -966,6 +966,35 @@ above); reproduce with `bin/ut -s ut.backends.runner.lang.arrays
 ut.backends.runner.lang.structs` and get a real `gdb` backtrace before
 writing new codegen.
 
+A delegate-typed FIELD reached through a class reference or struct pointer
+(`c.f`, `p.f`) now supports every use `delegateOperandOffset` already gave a
+struct-value field (`s.f`): read as an operand (`is null`/`==` comparison,
+passed onward), direct assignment with no intermediate local (`c.f = &add`),
+and a call straight through the field (`c.f(2)`). `loadClassPointerField`/
+`storeClassPointerField` and `loadStructPointerField`/`storeStructPointerField`
+(`compiler.d`) fell through to the scalar-only `scalarType` path for a
+`Tdelegate` field (no case for it, since a delegate is not scalar), throwing
+instead of doing the same 16-byte `{functionIndex, context}` load/store the
+`Tarray` branch beside each already does; fixed by adding a matching
+`Tdelegate` branch to all four and grouping `Tdelegate` with
+`Tstruct`/`Tsarray` in each function's `isAggregate` gate (`staticArraySize`
+-- DMD's own `size()` -- already reports 16 for it). `delegateOperandOffset`'s
+`DotVarExp` case (previously absent entirely) and the call-dispatch
+`structFieldDelegateOffsetOf` (previously struct-value-only) now share one
+resolver, `delegateFieldOffsetOf`, dispatching on the receiver's static type
+(struct value / class / struct pointer) before probing, since
+`tryClassPointerField` unconditionally compiles its receiver and is not safe
+to call speculatively.
+
+Next candidate: a delegate returned from a LAMBDA literal, not a named
+nested function (`auto make = () => () => 42; auto getter = make();
+assert(getter() == 42);`) throws "Unsupported pointer initializer in
+bytecode core: make" from `compilePointerDeclaration` -- `make`'s own
+declaration (a delegate-returning-delegate local) routes through the
+pointer-declaration path rather than the delegate-declaration path the
+already-working named-function case (`makeGetter` above) uses; not yet
+root-caused to which type check misclassifies it.
+
 ### TDD and handoff discipline
 
 - Promote one named existing oracle-backed row, or one tightly related family,

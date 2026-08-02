@@ -4026,10 +4026,68 @@ private struct Compiler {
         return DelegateInitializer.init;
     }
 
+    // The frame offset of a delegate-typed FIELD's `{functionIndex, context}`
+    // value (`s.f`, `c.f`, `p.f`), reached as a plain struct-value field
+    // (local, captured, module, or AA-value-pointer receiver, resolved
+    // through `tryStructField`), a class-reference field, or a
+    // struct-pointer field -- or null if `dot` is not a delegate-typed
+    // field at all. Dispatch on the receiver's own static type first so
+    // only the matching resolver ever runs: the resolvers are not safe to
+    // probe speculatively (e.g. `tryClassPointerField` unconditionally
+    // compiles its receiver).
+    private ushort* delegateFieldOffsetOf(DotVarExp dot) {
+        import dmd.astenums: TY;
+
+        if (dot.e1.type !is null && dot.e1.type.toBasetype.ty == TY.Tclass) {
+            auto classField = tryClassPointerField(dot);
+            if (classField is null ||
+                classField.type.toBasetype.ty != TY.Tdelegate)
+                return null;
+            const destination =
+                allocateBytes(delegateValueSize, size_t.sizeof);
+            _code ~= Instruction(
+                Op.pointerLoad16,
+                destination,
+                classFieldAddress(*classField),
+                compileSizeConstant(0),
+            );
+            auto offset = new ushort;
+            *offset = destination;
+            return offset;
+        }
+
+        if (dot.e1.type !is null && isPointerType(dot.e1.type)) {
+            auto pointerField = tryStructPointerField(dot);
+            if (pointerField is null ||
+                pointerField.type.toBasetype.ty != TY.Tdelegate)
+                return null;
+            const destination =
+                allocateBytes(delegateValueSize, size_t.sizeof);
+            _code ~= Instruction(
+                Op.pointerLoad16,
+                destination,
+                structFieldAddress(*pointerField),
+                compileSizeConstant(0),
+            );
+            auto offset = new ushort;
+            *offset = destination;
+            return offset;
+        }
+
+        auto field = tryStructField(dot);
+        if (field is null || field.type.toBasetype.ty != TY.Tdelegate)
+            return null;
+        auto offset = new ushort;
+        *offset = field.offset;
+        return offset;
+    }
+
     // The frame offset of a delegate-typed expression's 16-byte
     // `{functionIndex, context}` pair: an already-materialised delegate
-    // local or parameter reuses its own slot; any other delegate expression
-    // (a lambda literal, `&freeFunction`, `&receiver.method`) is built fresh.
+    // local or parameter reuses its own slot; a struct/class/struct-pointer
+    // field resolves through `delegateFieldOffsetOf`; any other delegate
+    // expression (a lambda literal, `&freeFunction`, `&receiver.method`) is
+    // built fresh.
     private ushort delegateOperandOffset(Expression argument) {
         import std.conv: text;
 
@@ -4043,6 +4101,10 @@ private struct Compiler {
                 if (auto existing = declaration in _delegateParameterLocals)
                     return *existing;
             }
+
+        if (auto dot = argument.isDotVarExp)
+            if (auto offset = delegateFieldOffsetOf(dot))
+                return *offset;
 
         auto delegate_ = delegateInitializer(argument);
         if (delegate_.function_ !is null) {
@@ -6088,6 +6150,23 @@ private struct Compiler {
                 ScalarType.void_,
             );
 
+        // A delegate field (`int delegate(int) f`) is a 16-byte
+        // `{functionIndex, context}` pair, the same aggregate shape as a
+        // slice descriptor -- `scalarType` has no case for `Tdelegate` (it
+        // is not scalar), so the generic fallback below would throw instead
+        // of reading it.
+        if (field.type.toBasetype.ty == TY.Tdelegate) {
+            const destination =
+                allocateBytes(delegateValueSize, size_t.sizeof);
+            _code ~= Instruction(
+                Op.pointerLoad16,
+                destination,
+                structFieldAddress(field),
+                compileSizeConstant(0),
+            );
+            return Operand(destination, ScalarType.void_);
+        }
+
         const fieldScalar = scalarType(field.type);
         const elementSize = size(fieldScalar);
         const fieldPointer = structFieldAddress(field);
@@ -6107,7 +6186,11 @@ private struct Compiler {
     // struct pointer at `ptr + field.offset`. A `Tstruct`/`Tsarray` field
     // lives inline at that address, so it needs its own real byte width from
     // `staticArraySize`/`staticArrayAlign` instead of the scalar-only gate,
-    // mirroring `emitStructPointerFieldRefArgument`'s identical widening.
+    // mirroring `emitStructPointerFieldRefArgument`'s identical widening. A
+    // `Tdelegate` field is the same 16-byte aggregate shape (`staticArraySize`
+    // -- DMD's own `size()` -- already reports 16 for it, same as a slice
+    // descriptor), so it is grouped with the other aggregates rather than
+    // routed through `scalarType`, which has no `Tdelegate` case.
     private void storeStructPointerField(
         StructPointerField field,
         in ushort valueSlot,
@@ -6115,7 +6198,8 @@ private struct Compiler {
         import dmd.astenums: TY;
 
         const ty = field.type.toBasetype.ty;
-        const isAggregate = ty == TY.Tstruct || ty == TY.Tsarray;
+        const isAggregate =
+            ty == TY.Tstruct || ty == TY.Tsarray || ty == TY.Tdelegate;
         const elementSize = isAggregate
             ? cast(uint) staticArraySize(field.type)
             : size(scalarType(field.type));
@@ -6186,6 +6270,21 @@ private struct Compiler {
                 ScalarType.void_,
             );
 
+        // A delegate field (`int delegate(int) f`), the class-field twin of
+        // `loadStructPointerField`'s identical `Tdelegate` branch: a 16-byte
+        // `{functionIndex, context}` pair `scalarType` cannot size.
+        if (field.type.toBasetype.ty == TY.Tdelegate) {
+            const destination =
+                allocateBytes(delegateValueSize, size_t.sizeof);
+            _code ~= Instruction(
+                Op.pointerLoad16,
+                destination,
+                classFieldAddress(field),
+                compileSizeConstant(0),
+            );
+            return Operand(destination, ScalarType.void_);
+        }
+
         const fieldScalar = scalarType(field.type);
         const elementSize = size(fieldScalar);
         const fieldPointer = classFieldAddress(field);
@@ -6236,7 +6335,8 @@ private struct Compiler {
         import dmd.astenums: TY;
 
         const ty = field.type.toBasetype.ty;
-        const isAggregate = ty == TY.Tstruct || ty == TY.Tsarray;
+        const isAggregate =
+            ty == TY.Tstruct || ty == TY.Tsarray || ty == TY.Tdelegate;
         const elementSize = isAggregate
             ? cast(uint) staticArraySize(field.type)
             : size(scalarType(field.type));
@@ -10437,6 +10537,17 @@ private struct Compiler {
                     return Operand(destination, ScalarType.void_);
                 }
 
+                // A delegate field (`int delegate(int) f`) through a struct
+                // pointer (`p.f = &add`): its rhs is never a plain scalar
+                // `compileExpression` can size (`scalarType` has no
+                // `Tdelegate` case), so resolve it the same way a delegate
+                // local's own declaration/assignment does.
+                if (field.type.toBasetype.ty == TY.Tdelegate) {
+                    const source = delegateOperandOffset(assign.e2);
+                    storeStructPointerField(*field, source);
+                    return Operand(source, ScalarType.void_);
+                }
+
                 const isAggregate = field.type.toBasetype.ty == TY.Tstruct ||
                     field.type.toBasetype.ty == TY.Tsarray;
                 // A struct/static-array rhs (e.g. a bare struct-local
@@ -10493,6 +10604,17 @@ private struct Compiler {
                         compileSizeConstant(0),
                     );
                     return Operand(destination, ScalarType.void_);
+                }
+
+                // A delegate field (`int delegate(int) f`) through a class
+                // reference (`c.f = &add`), the class-field twin of
+                // `tryStructPointerField`'s identical `Tdelegate` branch
+                // above: its rhs is never a plain scalar `compileExpression`
+                // can size (`scalarType` has no `Tdelegate` case).
+                if (field.type.toBasetype.ty == TY.Tdelegate) {
+                    const source = delegateOperandOffset(assign.e2);
+                    storeClassPointerField(*field, source);
+                    return Operand(source, ScalarType.void_);
                 }
 
                 const isAggregate = field.type.toBasetype.ty == TY.Tstruct ||
@@ -14339,24 +14461,17 @@ private struct Compiler {
         return declaration in _delegateParameterLocals;
     }
 
-    // The frame offset of the delegate-typed struct FIELD invoked by
-    // `s.f(...)`, or null if `call` is not a call through one. The callee's
-    // target is a run-time value with no statically known `FuncDeclaration`,
-    // the same shape a delegate-typed parameter reaches.
+    // The frame offset of the delegate-typed struct/class/struct-pointer
+    // FIELD invoked by `s.f(...)`/`c.f(...)`/`p.f(...)`, or null if `call`
+    // is not a call through one. The callee's target is a run-time value
+    // with no statically known `FuncDeclaration`, the same shape a
+    // delegate-typed parameter reaches.
     private ushort* structFieldDelegateOffsetOf(CallExp call) {
-        import dmd.astenums: TY;
-
         auto dot = call.e1 is null ? null : call.e1.isDotVarExp;
         if (dot is null || dot.var.isFuncDeclaration !is null)
             return null;
 
-        auto field = tryStructField(dot);
-        if (field is null || field.type.toBasetype.ty != TY.Tdelegate)
-            return null;
-
-        auto offset = new ushort;
-        *offset = field.offset;
-        return offset;
+        return delegateFieldOffsetOf(dot);
     }
 
     // The frame offset of the delegate value read out of an INDEX into a

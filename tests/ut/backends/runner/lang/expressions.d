@@ -1909,6 +1909,41 @@ static foreach (backend; Matrix!(
     }
 }
 
+// A delegate-typed CLASS field: default value `null`, direct assignment
+// with no intermediate local (`c.f = &add`), and a call straight through
+// the field (`c.f(2)`). Distinct from the struct-field case
+// (`struct.liveDelegateFieldPreservesCallable`, `structs.d`): a class
+// field is heap-resident behind `tryClassPointerField`, whose
+// `loadClassPointerField`/`storeClassPointerField` fell through to the
+// scalar-only `scalarType` path (no `Tdelegate` case, so it threw) instead
+// of the 16-byte `{functionIndex, context}` load/store `Tarray` already
+// gets; the call-through-field dispatch
+// (`structFieldDelegateOffsetOf`) previously only recognised a struct-value
+// receiver, not a class reference.
+static foreach (backend; Matrix!(
+    Omit!(Interpreter, Because.unconfirmed),
+)) {
+    @("delegate.classFieldDefaultIsNullDirectlyAssignableAndCallable." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            class C {
+                int delegate(int) f;
+            }
+
+            unittest {
+                auto c = new C();
+                assert(c.f is null);
+
+                int captured = 4;
+                c.f = (int x) => x + captured;
+                assert(c.f(2) == 6);
+            }
+        });
+    }
+}
+
 // `==`/`!=`/`is`/`!is` between two lambda-literal delegate values: a
 // delegate is a builtin type with no `opEquals`, so all four compare the raw
 // `{functionIndex, context}` pair. Two separately-declared lambdas capturing
