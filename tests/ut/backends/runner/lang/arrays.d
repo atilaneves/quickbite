@@ -2754,12 +2754,91 @@ static foreach (backend; Matrix!()) {
     }
 }
 
+// `foreach (k, v; aa)` must read each key back at its own real width, not a
+// hardcoded 4-byte `int` truncation of it.
+static foreach (backend; Matrix!()) {
+    @("assocArray.foreachLongKeyReadsFullWidth." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            long key(long value) {
+                return value;
+            }
+
+            unittest {
+                int[long] table;
+                table[key(1L << 40)] = 7;
+                table[key(1L << 41)] = 9;
+
+                int count;
+                foreach (k, v; table) {
+                    assert(table[k] == v);
+                    count += v;
+                }
+                assert(count == 16);
+            }
+        });
+    }
+}
+
+static foreach (backend; Matrix!()) {
+    @("assocArray.foreachDoubleKeyReadsFullWidth." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            double key(double value) {
+                return value;
+            }
+
+            unittest {
+                int[double] table;
+                table[key(3.14159)] = 9;
+                table[key(2.71828)] = 11;
+
+                int count;
+                foreach (k, v; table) {
+                    assert(table[k] == v);
+                    count += v;
+                }
+                assert(count == 20);
+            }
+        });
+    }
+}
+
+static foreach (backend; Matrix!()) {
+    @("assocArray.foreachStringKeyReadsFullWidth." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            unittest {
+                int[string] table;
+                table["a"] = 42;
+                table["bb"] = 5;
+
+                int count;
+                int lengthSum;
+                foreach (k, v; table) {
+                    assert(table[k] == v);
+                    count += v;
+                    lengthSum += cast(int) k.length;
+                }
+                assert(count == 47);
+                assert(lengthSum == 3);
+            }
+        });
+    }
+}
+
 // Struct AA keys compare dynamic-array members by their elements, not by the
-// identity of their slice backing storage. Bytecode refuses DMD's synthesized
-// associative-array key variable before it can execute this fixture.
+// identity of their slice backing storage. Bytecode now refuses earlier than
+// before (`compileAssocArrayGetLvalue` computes `assocArrayKeyMeta` -- which
+// has no `Tstruct` case -- ahead of compiling the key expression itself, so
+// the diagnostic is `scalarType`'s generic one, not the previous
+// `__aakeyN`-variable refusal).
 static foreach (backend; Matrix!(
     Omit!(Bytecode, Because.refusal,
-        "Unsupported variable in bytecode core: __aakey3"),
+        "Unsupported type in bytecode core: Name"),
 )) {
     @("assocArray.structKeyWithStringMemberComparesStructurally." ~
         backend.stringof)

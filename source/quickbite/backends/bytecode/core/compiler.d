@@ -15806,23 +15806,35 @@ private struct Compiler {
             ? cast(uint) staticArraySize(valueParameter.type)
             : size(scalarType(valueParameter.type));
 
-        // The loop body below always reads each key back as a plain 4-byte
-        // `int` (`Op.indexLoad4`, `ScalarType.int_`); a `long`/`double`/
-        // `string`-keyed map now packs `AssocArray.keys` (machine.d) at its
-        // own real width, so refuse rather than read past/short of it.
-        if (keyParameter.type.toBasetype.ty != TY.Tint32)
-            throw new Exception(text(
-                "Unsupported associative array foreach key type in bytecode core: ",
-                typeChars(keyParameter.type),
-            ));
+        // `AssocArray.keys` (machine.d) packs each key at its real width --
+        // a scalar's own size, or a `string`'s 16-byte slice descriptor
+        // (`assocArrayKeyWidth`, the same stride the direct lookup/insert
+        // opcodes already key off via `assocArrayKeyMeta`). Reading it back
+        // at that same width (rather than a hardcoded 4-byte `int`) is the
+        // general fix; `assocArrayKeyIsArray`/`assocArrayKeyWidth` still
+        // throw explicitly for a key type direct lookup itself refuses
+        // (`wstring`/`dstring`, a struct key), so no separate check is
+        // needed here.
+        auto aaType = assocArrayType((*call.arguments)[0]);
+        const keyIsArray = assocArrayKeyIsArray(aaType);
+        const keyElementSize = assocArrayKeyWidth(aaType);
 
-        const keys = compileAssocArraySlice(Op.aaKeys, handle, int.sizeof);
+        const keys = compileAssocArraySlice(Op.aaKeys, handle, keyElementSize);
         const values = compileAssocArraySlice(
             Op.aaValues, handle, valueElementSize,
         );
 
-        const keySlot = allocate(ScalarType.int_);
-        _locals[keyParameter] = keySlot;
+        const keySlot = keyIsArray
+            ? allocateBytes(keyElementSize, size_t.sizeof)
+            : allocate(scalarType(keyParameter.type));
+        if (keyIsArray)
+            _dynamicArrayLocals[keyParameter] = DynamicArrayLocal(
+                keySlot,
+                dynamicArrayElementType(keyParameter.type),
+                arrayElementIsArray(keyParameter.type),
+            );
+        else
+            _locals[keyParameter] = keySlot;
 
         const valueSlot = allocateBytes(
             valueElementSize,
@@ -15848,7 +15860,10 @@ private struct Compiler {
         );
         const exitJump = emitJumpIfFalse(Operand(condition, ScalarType.bool_));
 
-        _code ~= Instruction(Op.indexLoad4, keySlot, keys.offset, index);
+        _code ~= Instruction(
+            indexLoadOp(keyElementSize), keySlot, keys.offset, index,
+            cast(ushort) keyElementSize,
+        );
         _code ~= Instruction(
             indexLoadOp(valueElementSize), valueSlot, values.offset, index,
             cast(ushort) valueElementSize,
