@@ -1343,6 +1343,33 @@ static foreach (backend; Matrix!()) {
     }
 }
 
+// Read counterpart of the fixture above: `readIt` never assigns into `arr`,
+// only reads an element from it, exercising the captured-static-array read
+// path (`tryCapturedStaticArrayElement`/`Op.frameLoad`) rather than the
+// write path (`tryCapturedStaticArrayElementAssign`/`Op.frameStore`).
+static foreach (backend; Matrix!()) {
+    @("function.nestedFunctionReadsEnclosingStaticArrayElement." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            int run() {
+                int[3] arr = [1, 2, 3];
+
+                int readIt() {
+                    return arr[1];
+                }
+
+                return readIt();
+            }
+
+            unittest {
+                assert(run() == 2);
+            }
+        });
+    }
+}
+
 // `middle` is both a relay (for `innerA`, which reaches `run`'s `a`) AND an
 // owner (for `innerB`, which reaches `middle`'s own `b`) -- the same caller
 // in both roles for different callees. `innerB` itself reads captures at two

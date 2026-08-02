@@ -1067,23 +1067,34 @@ element write (`arr[0] = 5` for a captured `int[] arr`) into the
 static-array path -- caught via a full-module `bin/ut` run of
 `expressions.d`/`arrays.d` together, not the single new fixture alone.
 
-Next candidate: reading a captured static array's element from inside a
-nested function/closure (`int[3] arr; void readIt() { return arr[1]; }`)
-throws "Unsupported static array access in bytecode core: arr" on `Bytecode`
--- confirmed via a real `bin/ut` fixture (write-only works via the entry
-above; a captured static array is never read through
-`indexesStaticArray`/`locateStaticArrayElement`, which -- like the write
-path before this session -- only recognise a `VarExp` base in *this*
-function's own `_staticArrayLocals`). `compileStaticArrayIndex`'s
-`locateStaticArrayElement` call, and every other reader that resolves a
-static-array element via `tryStaticArrayElement`/`indexesStaticArray`
-directly (not routed through the new captured-assignment entry point above),
-needs the same captured-base fallback
-`tryCapturedStaticArrayElementAssign` just added for the write side --
-likely a `loadCapturedLocal`-shaped read through `capturedFrameIndex`/
-`Op.frameLoad` at the element's relative offset, reusing
-`capturedStaticArrayBaseOffset`/`tryCapturedStaticArrayElement` from this
-session rather than re-deriving the captured offset walk.
+A captured static array's element read from inside a nested function/closure
+(`int[3] arr; int readIt() { return arr[1]; }`, including a further static-
+array index into it) now compiles: `tryCapturedStaticArrayElementRead`
+(`compiler.d`), tried in `compileExpression`'s `IndexExp` dispatch just
+before the unconditional `compileStaticArrayIndex` fallback, materialises the
+element into a fresh local slot via the same `capturedFrameIndex`/
+`Op.frameLoad` machinery `loadCapturedLocal` already uses to read a whole
+captured local, reusing `tryCapturedStaticArrayElement`'s offset resolution
+from the write-side commit rather than re-deriving it.
+
+Next candidate: `s.arr[1] = 55` where `s` is a struct-typed local captured
+into a nested function and `s`'s type has a static-array field (`struct S {
+int[3] arr; } S s; void mutate() { s.arr[1] = 55; }`) is a silent
+wrong-result bug on `Bytecode`, not a thrown diagnostic: it returns the
+original unmutated element instead of the write. `tryStructField` already has
+a captured-struct-receiver branch that materialises the whole block via
+`Op.frameLoad` and returns `writeBackThroughFrame`/`frameIndexOffset`
+`writeBackStructField` uses to store a mutated field back to real captured
+storage (why plain `s.x = 55` already works), but `indexesStaticArray`'s and
+`staticArrayBaseOffset`'s `DotVarExp` branches call `tryStructField` only for
+`.type`/`.offset`, discarding those writeback fields, so
+`compileStaticArrayElementAssign`'s `Op.copy` lands in the throwaway
+materialised copy with no writeback at all -- the same "throwaway copy, no
+writeback" bug class already fixed for other receiver shapes (see
+`arrayElementFieldPointer`). The dynamic-array (`Tarray`) field case already
+threads this correctly (`field.writeBackThroughFrame` into
+`DynamicArrayLocal.writeBackStructThroughFrame`); the static-array case needs
+the same treatment.
 
 ### TDD and handoff discipline
 

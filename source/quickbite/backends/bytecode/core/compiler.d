@@ -2535,6 +2535,8 @@ private struct Compiler {
                 return *element;
             if (auto element = tryStaticArrayRuntimeIndex(index))
                 return *element;
+            if (auto element = tryCapturedStaticArrayElementRead(index))
+                return *element;
             return compileStaticArrayIndex(index);
         }
 
@@ -13299,6 +13301,45 @@ private struct Compiler {
 
         auto result = new Operand;
         *result = Operand(value.offset, element.type);
+        return result;
+    }
+
+    // `arr[i]` for a static-array element captured from an enclosing function
+    // (`int[3] arr; int readIt() { return arr[1]; }`): the read counterpart of
+    // `tryCapturedStaticArrayElementAssign` above, sharing the same
+    // `tryCapturedStaticArrayElement` offset resolution. `arr`'s slot lives in
+    // the enclosing frame, not this function's own `_staticArrayLocals`, so
+    // `compileStaticArrayIndex`'s direct in-frame offset read cannot reach it;
+    // the element is materialised into a fresh local slot via
+    // `capturedFrameIndex`/`Op.frameLoad`, the same captured-variable
+    // machinery `loadCapturedLocal` already uses to read a whole captured
+    // local (not just one element of it).
+    private Operand* tryCapturedStaticArrayElementRead(IndexExp index) {
+        if (!_hasNestedContext)
+            return null;
+
+        auto element = tryCapturedStaticArrayElement(index);
+        if (element is null)
+            return null;
+
+        const captured = element.declaration in _capturedOffsets;
+        const absoluteOffset = cast(ushort) (*captured + element.relativeOffset);
+
+        const elementSize = element.type == ScalarType.void_
+            ? cast(uint) staticArraySize(index.type)
+            : size(element.type);
+        const destination = element.type == ScalarType.void_
+            ? allocateStructBlock(index.type)
+            : allocateBytes(elementSize, elementSize);
+        _code ~= Instruction(
+            Op.frameLoad,
+            destination,
+            capturedFrameIndex(_capturedOwners[element.declaration], absoluteOffset),
+            cast(ushort) elementSize,
+        );
+
+        auto result = new Operand;
+        *result = Operand(destination, element.type);
         return result;
     }
 
