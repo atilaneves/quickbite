@@ -10746,6 +10746,17 @@ private struct Compiler {
             if (auto store = tryArrayElementFieldIndexAssign(index, assign.e2))
                 return *store;
 
+        // `arr[i] = rhs` for a static-array element captured from an
+        // enclosing function: write through the captured-variable frame ops
+        // instead of the plain in-frame path below, which only recognises a
+        // base tracked in *this* function's own `_staticArrayLocals`.
+        // Checked first since `tryStaticArrayElement` declines a captured
+        // base outright (`indexesStaticArray` only probes
+        // `_staticArrayLocals`) and would otherwise fall through it silently.
+        if (auto index = assign.e1.isIndexExp)
+            if (auto store = tryCapturedStaticArrayElementAssign(index, assign.e2))
+                return *store;
+
         // `arr[i] = rhs` for a static-array element: write the scalar rhs into
         // the element's inline frame offset.
         if (auto index = assign.e1.isIndexExp)
@@ -13154,6 +13165,141 @@ private struct Compiler {
             cast(ushort) elementSize,
         );
         return Operand(element.offset, element.type);
+    }
+
+    // A static-array element resolved to a captured base -- the declaration
+    // and owner a `capturedFrameIndex` lookup needs, plus the element's byte
+    // offset relative to that base's own frame slot (not an absolute frame
+    // offset: the base is captured from an ancestor frame, so `capturedFrameIndex`
+    // must add this to the base's own `_capturedOffsets` entry itself).
+    private static struct CapturedStaticArrayElement {
+        VarDeclaration declaration;
+        ushort relativeOffset;
+        ScalarType type;
+    }
+
+    // The captured counterpart of `staticArrayBaseOffset`: the relative byte
+    // offset (from the captured base's own frame slot) of a static-array
+    // sub-expression rooted at a static-array local captured from an
+    // enclosing function, or `false` if `expression` does not bottom out at
+    // one. A base tracked in *this* function's own `_staticArrayLocals`
+    // declines here (even if also present in `_capturedOffsets` as another
+    // function's capture of it) so the plain in-frame path in
+    // `indexesStaticArray`/`locateStaticArrayElement` is tried instead.
+    private bool capturedStaticArrayBaseOffset(
+        Expression expression,
+        out VarDeclaration declaration,
+        out ushort relativeOffset,
+    ) {
+        import dmd.astenums: TY;
+
+        if (auto variable = expression.isVarExp)
+            if (auto decl = variable.var.isVarDeclaration)
+                if (decl.type.toBasetype.ty == TY.Tsarray)
+                    if (decl !in _staticArrayLocals)
+                        if (auto captured = decl in _capturedOffsets) {
+                            declaration = decl;
+                            relativeOffset = 0;
+                            return true;
+                        }
+
+        if (auto index = expression.isIndexExp)
+            if (auto element = tryCapturedStaticArrayElement(index)) {
+                declaration = element.declaration;
+                relativeOffset = element.relativeOffset;
+                return true;
+            }
+
+        return false;
+    }
+
+    // Resolve a static-array element access rooted at a captured base to its
+    // relative offset, mirroring `locateStaticArrayElement`'s compile-time
+    // walk. Null if `index.e1` does not bottom out at a captured static-array
+    // local, or the index itself is not a compile-time constant.
+    private CapturedStaticArrayElement* tryCapturedStaticArrayElement(
+        IndexExp index,
+    ) {
+        import dmd.astenums: TY;
+
+        auto indexInteger = index.e2.isIntegerExp;
+        if (indexInteger is null)
+            return null;
+
+        VarDeclaration declaration;
+        ushort baseOffset;
+        if (!capturedStaticArrayBaseOffset(index.e1, declaration, baseOffset))
+            return null;
+
+        const elementSize = cast(uint) staticArraySize(index.type);
+        const relativeOffset = cast(ushort)
+            (baseOffset + indexInteger.toInteger * elementSize);
+        // A sub-array, struct, or delegate element has no scalar type,
+        // matching `locateStaticArrayElement`'s identical carve-out.
+        const elementType = index.type.toBasetype.ty == TY.Tarray ||
+            index.type.toBasetype.ty == TY.Tsarray ||
+            index.type.toBasetype.ty == TY.Tstruct ||
+            index.type.toBasetype.ty == TY.Tdelegate
+                ? ScalarType.void_
+                : scalarType(index.type);
+
+        auto result = new CapturedStaticArrayElement;
+        *result = CapturedStaticArrayElement(declaration, relativeOffset, elementType);
+        return result;
+    }
+
+    // `arr[i] = rhs` for a static-array element captured from an enclosing
+    // function (`int[3] arr; void mutate() { arr[1] = 55; }`): `arr`'s slot
+    // lives in the enclosing frame, not this function's own
+    // `_staticArrayLocals`, so the write must go through
+    // `capturedFrameIndex`/`Op.frameStore` (the same captured-variable
+    // machinery `compileCapturedPostIncrement` already uses for a captured
+    // *scalar*) instead of `compileStaticArrayElementAssign`'s direct
+    // in-frame `Op.copy`.
+    private Operand* tryCapturedStaticArrayElementAssign(
+        IndexExp index,
+        Expression rhs,
+    ) {
+        import dmd.astenums: TY;
+        import std.conv: text;
+
+        if (!_hasNestedContext)
+            return null;
+
+        auto element = tryCapturedStaticArrayElement(index);
+        if (element is null)
+            return null;
+
+        const captured = element.declaration in _capturedOffsets;
+        const absoluteOffset = cast(ushort) (*captured + element.relativeOffset);
+
+        // Same rhs-materialisation rules as `compileStaticArrayElementAssign`:
+        // a struct or delegate rhs has no scalar `Operand` of its own.
+        const value = rhs.type !is null &&
+                rhs.type.toBasetype.ty == TY.Tstruct
+            ? Operand(structOperandOffset(rhs), ScalarType.void_)
+            : rhs.type !is null && rhs.type.toBasetype.ty == TY.Tdelegate
+            ? Operand(delegateOperandOffset(rhs), ScalarType.void_)
+            : compileExpression(rhs);
+        if (value.type != element.type)
+            throw new Exception(text(
+                "Unsupported static array element assignment in bytecode core: ",
+                expressionChars(rhs),
+            ));
+
+        const elementSize = element.type == ScalarType.void_
+            ? cast(uint) staticArraySize(rhs.type)
+            : size(element.type);
+        _code ~= Instruction(
+            Op.frameStore,
+            value.offset,
+            capturedFrameIndex(_capturedOwners[element.declaration], absoluteOffset),
+            cast(ushort) elementSize,
+        );
+
+        auto result = new Operand;
+        *result = Operand(value.offset, element.type);
+        return result;
     }
 
     // `matrix[] = [elem, elem+1]` or `buf[] = fillValue`: the whole-array

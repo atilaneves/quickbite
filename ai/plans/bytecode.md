@@ -1049,19 +1049,41 @@ sees it, so the existing `tryMemberRefIndexCompoundAssign` path already
 covers it -- confirmed via a real `bin/ut` fixture, not committed as a
 duplicate row.
 
-Next candidate: a captured static array's element write from inside a nested
-function/closure (`int[3] arr; void mutate() { arr[1] = 55; }`) throws
-"Unsupported assignment in bytecode core: arr[1] = 55" on `Bytecode` while
-`SystemLinker` runs it fine -- confirmed via a real `bin/ut` fixture.
-`indexesStaticArray` (`compiler.d`, ~line 13089), the gate
-`tryStaticArrayElement`/`compileAssignExpression`'s `IndexExp` dispatch both
-go through, only recognises a `VarExp` base when the declaration is in
-*this* function's own `_staticArrayLocals`; a static array captured from an
-enclosing function lives in `_capturedOffsets` instead (the same distinction
-`compilePostIncrement` already branches on for a captured *scalar* local via
-`compileCapturedPostIncrement`), so `indexesStaticArray` returns `false` for
-it and the whole static-array-element assignment family declines before any
-of them get a chance to resolve it through the captured-locals frame.
+A captured static array's element write from inside a nested function/closure
+(`int[3] arr; void mutate() { arr[1] = 55; }`, including a further static-
+array index into it, e.g. `arr[0][1] = 9` for `int[2][3] arr`) now compiles:
+`tryCapturedStaticArrayElementAssign` (`compiler.d`), tried first in
+`compileAssignExpression`'s `IndexExp` dispatch, resolves the element through
+the same captured-variable frame ops (`capturedFrameIndex`/`Op.frameStore`)
+`compileCapturedPostIncrement` already uses for a captured *scalar* local,
+instead of `compileStaticArrayElementAssign`'s direct in-frame `Op.copy`,
+which only ever addresses a base tracked in *this* function's own
+`_staticArrayLocals`. `capturedStaticArrayBaseOffset` mirrors
+`staticArrayBaseOffset`'s compile-time offset walk but requires the
+`VarExp` root's own type to be `Tsarray`: `_capturedOffsets` also holds
+every other captured local shape (dynamic arrays, structs, delegates, ...),
+so matching on presence alone would misroute a captured dynamic-array
+element write (`arr[0] = 5` for a captured `int[] arr`) into the
+static-array path -- caught via a full-module `bin/ut` run of
+`expressions.d`/`arrays.d` together, not the single new fixture alone.
+
+Next candidate: reading a captured static array's element from inside a
+nested function/closure (`int[3] arr; void readIt() { return arr[1]; }`)
+throws "Unsupported static array access in bytecode core: arr" on `Bytecode`
+-- confirmed via a real `bin/ut` fixture (write-only works via the entry
+above; a captured static array is never read through
+`indexesStaticArray`/`locateStaticArrayElement`, which -- like the write
+path before this session -- only recognise a `VarExp` base in *this*
+function's own `_staticArrayLocals`). `compileStaticArrayIndex`'s
+`locateStaticArrayElement` call, and every other reader that resolves a
+static-array element via `tryStaticArrayElement`/`indexesStaticArray`
+directly (not routed through the new captured-assignment entry point above),
+needs the same captured-base fallback
+`tryCapturedStaticArrayElementAssign` just added for the write side --
+likely a `loadCapturedLocal`-shaped read through `capturedFrameIndex`/
+`Op.frameLoad` at the element's relative offset, reusing
+`capturedStaticArrayBaseOffset`/`tryCapturedStaticArrayElement` from this
+session rather than re-deriving the captured offset walk.
 
 ### TDD and handoff discipline
 

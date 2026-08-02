@@ -1314,6 +1314,35 @@ static foreach (backend; Matrix!()) {
     }
 }
 
+// Static-array twin of the earlier dynamic-array fixture above: `arr`'s
+// inline block lives directly in `run`'s own frame (`_staticArrayLocals`)
+// rather than a heap-addressed descriptor, so this exercises
+// `indexesStaticArray`'s captured-static-array distinction instead of the
+// dynamic-array element write path.
+static foreach (backend; Matrix!()) {
+    @("function.nestedFunctionMutatesEnclosingStaticArrayElement." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            int[3] run() {
+                int[3] arr = [1, 2, 3];
+
+                void mutate() {
+                    arr[1] = 55;
+                }
+                mutate();
+
+                return arr;
+            }
+
+            unittest {
+                assert(run() == [1, 55, 3]);
+            }
+        });
+    }
+}
+
 // `middle` is both a relay (for `innerA`, which reaches `run`'s `a`) AND an
 // owner (for `innerB`, which reaches `middle`'s own `b`) -- the same caller
 // in both roles for different callees. `innerB` itself reads captures at two
