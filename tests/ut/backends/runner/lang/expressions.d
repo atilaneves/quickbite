@@ -1575,6 +1575,43 @@ static foreach (backend; AliasSeq!(Bytecode)) {
     }
 }
 
+// A lambda that captures nothing, itself returning another non-capturing
+// lambda: DMD's "no context needed" default types both `make` and `getter`
+// as plain function pointers (`int function() function()` and `int
+// function()`), never delegates -- unlike `makeConstantGetter` above, whose
+// explicit `int delegate()` return type retypes its lambda to `Tdelegate`
+// during semantic. `compileExpression`'s `FuncExp` branch previously built
+// every lambda literal as a 16-byte delegate pair unconditionally, so
+// `make`'s own declaration (a pointer-typed local) rejected that operand
+// with "Unsupported pointer initializer in bytecode core: make"; the
+// `FuncExp` branch now checks the literal's own inferred type first.
+// `compileIndirectCall` (the `fp()` dispatch `make()` and `getter()` both
+// route through) also needed the same pointer-result tagging
+// `compileCall`'s named-function path already gives, since `make()`'s
+// result assigns into another pointer-typed local (`getter`).
+static foreach (backend; Matrix!(
+    Omit!(Interpreter, Because.unconfirmed,
+        "Interpreter's pointer-local declaration requires a native " ~
+            "binding address for any Tpointer value; a lambda-literal " ~
+            "function pointer (no such address, just a VM function " ~
+            "index) throws \"data pointers must carry a native binding " ~
+            "address\" from Walker.runPointerExpression -- not yet " ~
+            "promoted"),
+)) {
+    @("delegate.nonCapturingLambdaReturningLambdaIsAFunctionPointer." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            unittest {
+                auto make = () => () => 42;
+                auto getter = make();
+                assert(getter() == 42);
+            }
+        });
+    }
+}
+
 // `&arr[i]` for a dynamic array of structs: `tryPointerToElement`'s general
 // fallback scaled the index by `program.size(elementType)`, but an
 // aggregate element (struct, static array, delegate) carries

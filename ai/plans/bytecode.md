@@ -986,14 +986,30 @@ resolver, `delegateFieldOffsetOf`, dispatching on the receiver's static type
 `tryClassPointerField` unconditionally compiles its receiver and is not safe
 to call speculatively.
 
-Next candidate: a delegate returned from a LAMBDA literal, not a named
-nested function (`auto make = () => () => 42; auto getter = make();
-assert(getter() == 42);`) throws "Unsupported pointer initializer in
-bytecode core: make" from `compilePointerDeclaration` -- `make`'s own
-declaration (a delegate-returning-delegate local) routes through the
-pointer-declaration path rather than the delegate-declaration path the
-already-working named-function case (`makeGetter` above) uses; not yet
-root-caused to which type check misclassifies it.
+A delegate returned from a LAMBDA literal, not a named nested function
+(`auto make = () => () => 42; auto getter = make(); assert(getter() ==
+42);`) now compiles: DMD types a non-capturing lambda as a plain function
+pointer by default (`make` itself is `int function() function()`, never a
+delegate), but `compileExpression`'s generic `FuncExp` branch built every
+lambda literal as a 16-byte delegate pair unconditionally, so `make`'s own
+pointer-typed declaration rejected that operand with "Unsupported pointer
+initializer in bytecode core: make". That branch now checks the literal's
+own inferred type first and routes a function-pointer-typed lambda through
+the same single-word value `&f` already builds (`functionPointer`).
+`compileIndirectCall` (the `fp()` dispatch both `make()` and `getter()`
+route through) also needed the pointer-result tagging `compileCall`'s
+named-function path already gives a direct call's pointer result, since
+`make()`'s own result assigns into another pointer-typed local (`getter`).
+
+Next candidate: a delegate-valued FIELD inside a STRUCT LITERAL (`struct
+Handler { int delegate() action; }`, then `handlers ~= Handler(() =>
+42);`) throws "Unsupported non-null delegate struct field in bytecode
+core: ..." -- `compileStructLiteralInto`'s `Tdelegate` field branch
+(`compiler.d`, ~line 4813) unconditionally throws for any non-null element
+instead of compiling it the way the `isPointerType` branch immediately
+below already does (`compileExpression` the element, then copy into the
+field offset); likely just needs the same treatment, writing the resulting
+16-byte delegate value into the field.
 
 ### TDD and handoff discipline
 

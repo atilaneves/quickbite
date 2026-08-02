@@ -2629,6 +2629,20 @@ private struct Compiler {
 
         if (auto literal = expression.isFuncExp)
             if (literal.fd !is null) {
+                // A lambda literal that captures nothing from its enclosing
+                // scope is, by DMD's own default, typed as a plain function
+                // pointer (`int function()`), not a delegate -- only an
+                // explicitly delegate-typed target (`int delegate() d = ()
+                // => 42;`) retypes it to `Tdelegate` during semantic. Route
+                // that shape through the same single-word function-pointer
+                // value `&f` builds, since a pointer-typed local's
+                // declaration only accepts an `isPointer` operand, not the
+                // 16-byte `{functionIndex, context}` pair below.
+                import dmd.astenums: TY;
+                if (literal.type !is null &&
+                    literal.type.toBasetype.ty == TY.Tpointer)
+                    return functionPointer(literal.fd);
+
                 _latestStaticDelegateAssocArrayFunction = literal.fd;
                 const offset = allocateBytes(delegateValueSize, size_t.sizeof);
                 emitDelegateValue(
@@ -14831,6 +14845,18 @@ private struct Compiler {
         _code ~= Instruction(
             Op.callIndirect, pointer.offset, argumentArea, destination,
         );
+        // A pointer-returning callee (raw `T*` or another function pointer,
+        // e.g. `auto make = () => () => 42;`'s `make()` call, whose result
+        // is itself a function pointer another declaration assigns from)
+        // needs the same `isPointer` tagging `compileCall`'s named-function
+        // path already gives a direct call's pointer result -- a plain
+        // scalar-typed operand is not accepted by a pointer-typed local's
+        // declaration.
+        if (isPointerType(functionType.next))
+            return Operand(
+                destination, ScalarType.ulong_, true,
+                pointerElementScalar(functionType.next),
+            );
         return Operand(destination, returnType.scalar);
     }
 
