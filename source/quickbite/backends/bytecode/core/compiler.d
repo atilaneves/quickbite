@@ -174,6 +174,10 @@ private struct Compiler {
     private ModuleDynamicArrayVariable[VarDeclaration]
         _moduleDynamicArrayVariables;
     private ModuleStructVariable[VarDeclaration] _moduleStructVariables;
+    // A `Tarray` class field's shared array-literal default, computed once
+    // per field and reused at every `new C()` site: see
+    // `classFieldArraySharedDefaultOrNull`.
+    private ClassFieldArrayDefault[VarDeclaration] _classFieldArrayDefaults;
     // Scalar locals' frame offsets, kept across functions (unlike `_locals`,
     // which is reset per function). A nested struct's method reads a captured
     // enclosing local through the struct's context pointer, which records the
@@ -6266,8 +6270,15 @@ private struct Compiler {
         in ushort pointer,
         ClassDeclaration class_,
     ) {
+        import dmd.astenums: TY;
+
         for (auto current = class_; current !is null; current = current.baseClass)
             foreach (field; current.fields) {
+                if (field.type.toBasetype.ty == TY.Tarray) {
+                    compileDefaultClassArrayField(pointer, field);
+                    continue;
+                }
+
                 auto initializer =
                     field._init is null ? null : field._init.isExpInitializer;
                 if (initializer is null)
@@ -6277,6 +6288,109 @@ private struct Compiler {
                     pointer, field, initializerExpression(initializer.exp),
                 );
             }
+    }
+
+    // A `Tarray` class field's own default initializer (`class C { int[]
+    // arr = [1, 2, 3]; }`) parses as an `ArrayInitializer`, not the
+    // `ExpInitializer` the loop above recognises directly -- the same DMD
+    // AST quirk `moduleDynamicArrayInitializerExpressionOrNull` already
+    // normalises for a module variable via `initializerToExpression`, so
+    // without this every `Tarray`-typed class field default was silently
+    // skipped (left zeroed by `allocClass`), not only an array-of-arrays
+    // one. A constant-scalar-element array literal (the shape
+    // `moduleDynamicArrayLiteralInitializerBytes` already supports) needs
+    // more than normalisation, though: confirmed against real `dmd` that
+    // every `new C()` which does not override the field shares one static
+    // backing array (mutating the array through one instance is visible
+    // through another) -- the same way a class's `.init` template is one
+    // static blob every allocation copies -- so a per-`new`-site runtime
+    // `compileDynamicArrayInto` build (fresh heap array per instance) would
+    // be observably wrong. `classFieldArraySharedDefaultOrNull` computes
+    // that shared `{pointer, count}` once per field, mirroring
+    // `moduleDynamicArrayVariableOrNull`'s once-at-registration
+    // `literalBlocks` mechanism, and every `new C()` site writes the same
+    // compile-time-constant descriptor. Any other `Tarray` default shape
+    // (a non-literal expression, `null`, or an array-of-arrays element,
+    // which `moduleDynamicArrayLiteralInitializerBytes` declines) falls
+    // back to the pre-existing per-instance `storeClassField` path.
+    private void compileDefaultClassArrayField(
+        in ushort pointer,
+        VarDeclaration field,
+    ) {
+        import dmd.initsem: initializerToExpression;
+
+        if (field._init is null)
+            return;
+
+        auto rawExpression = field._init.initializerToExpression;
+        if (rawExpression is null)
+            return;
+        auto normalized = initializerExpression(rawExpression);
+        if (normalized.isNullExp)
+            return;
+
+        if (auto shared_ = classFieldArraySharedDefaultOrNull(field, normalized)) {
+            const fieldPointer =
+                allocateBytes(cast(uint) size_t.sizeof, size_t.sizeof);
+            const offset = compileSizeConstant(field.offset);
+            _code ~= Instruction(Op.addInt8, fieldPointer, pointer, offset);
+
+            const destination =
+                allocateBytes(sliceDescriptorSize, size_t.sizeof);
+            const pointerSlot = compileSizeConstant(shared_.pointer);
+            const countSlot = compileSizeConstant(shared_.count);
+            _code ~= Instruction(
+                Op.copy, destination, pointerSlot, cast(ushort) size_t.sizeof,
+            );
+            _code ~= Instruction(
+                Op.copy,
+                cast(ushort) (destination + size_t.sizeof),
+                countSlot,
+                cast(ushort) size_t.sizeof,
+            );
+            _code ~= Instruction(
+                Op.pointerStore16,
+                destination,
+                fieldPointer,
+                compileSizeConstant(0),
+            );
+            return;
+        }
+
+        storeClassField(pointer, field, normalized);
+    }
+
+    // Compute (once per field, cached) the shared `{pointer, count}` a
+    // `Tarray` class field's constant-scalar-element array-literal default
+    // resolves to, or `null` when `normalized` is not that shape (an
+    // array-of-arrays element, a non-literal expression, ...), so the
+    // caller falls back to the ordinary per-instance path. Reuses
+    // `moduleDynamicArrayLiteralInitializerBytes` -- the same
+    // compile-time-bytes builder a module-level dynamic array's literal
+    // default already goes through -- so this inherits its exact supported
+    // shape (and its exact declined shapes) rather than reimplementing it.
+    private ClassFieldArrayDefault* classFieldArraySharedDefaultOrNull(
+        VarDeclaration field,
+        Expression normalized,
+    ) {
+        if (auto existing = field in _classFieldArrayDefaults)
+            return existing;
+
+        const elementType = dynamicArrayElementType(field.type);
+        const elementIsArray = arrayElementIsArray(field.type);
+
+        size_t count;
+        auto literalBytes = moduleDynamicArrayLiteralInitializerBytes(
+            normalized, elementType, elementIsArray, count,
+        );
+        if (literalBytes is null && count == 0)
+            return null;
+
+        _program.literalBlocks ~= literalBytes;
+        const blockPointer = cast(size_t) _program.literalBlocks[$ - 1].ptr;
+        _classFieldArrayDefaults[field] =
+            ClassFieldArrayDefault(blockPointer, count);
+        return field in _classFieldArrayDefaults;
     }
 
     private void initialiseClassObject(
@@ -6326,6 +6440,7 @@ private struct Compiler {
                 destination,
                 dynamicArrayElementType(field.type),
                 valueExpression,
+                arrayElementIsArray(field.type),
             );
             _code ~= Instruction(
                 Op.pointerStore16,
@@ -17914,6 +18029,15 @@ private struct ModuleDynamicArrayVariable {
     ushort offset;
     imported!"quickbite.backends.bytecode.core.program".ScalarType elementType;
     bool elementIsArray;
+}
+
+// A `Tarray` class field's array-literal default, shared by every `new C()`
+// site that does not override the field: `pointer` addresses its own
+// `literalBlocks` entry (a GC-rooted block that never moves), `count` is its
+// element count. See `classFieldArraySharedDefaultOrNull`.
+private struct ClassFieldArrayDefault {
+    size_t pointer;
+    size_t count;
 }
 
 // A module-level (`__gshared`/`static`) struct variable's own inline block

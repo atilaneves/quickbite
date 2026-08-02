@@ -566,27 +566,22 @@ Still open, same missing-`arrayElementIsArray` shape but each blocked on
 something bigger than threading the argument, so deliberately not
 attempted this round:
 
-- `storeClassField` (`compiler.d`) still defaults `elementIsArray` to
-  `false`, unfixed. Its `compileDefaultClassFields` caller (a class field's
-  own default-value initializer, e.g. `class C { int[][] m = [[1, 2], [3,
-  4, 5]]; }`) never even reaches `storeClassField` for a `Tarray` field's
-  literal default: `field._init.isExpInitializer` is `null` there
-  (confirmed via `bin/ut` debug trace -- it is an `ArrayInitializer`, the
-  same DMD AST quirk `moduleDynamicArrayInitializerExpressionOrNull`
-  (`compiler.d`) already normalises for module variables via
-  `dmd.initsem: initializerToExpression`), so every `Tarray`-typed class
-  field default is silently skipped today, not just array-of-arrays ones.
-  Fixing that is a prerequisite; then note real D shares one static backing
-  array across every `new C()` for an array-literal class-field default
-  (confirmed with real `dmd`), so a correct fix needs class-level static
-  storage (mirroring the module-dynamic-array-variable machinery,
-  `compiler.d` ~line 10913), not a bare `elementIsArray` thread. The other
-  caller, `initialiseClassObject` (`new C(args)` positional construction,
-  no explicit constructor), appears unreachable through any
-  `SystemLinker`-compilable D: `dmd` rejects `new C(args)` for any class
-  lacking an explicit constructor ("Error: no constructor for `C`"),
-  confirmed directly. Whether it is dead code or needed for some
-  undiscovered reachable shape is unresolved.
+- A `Tarray` class field's array-literal default (`int[] arr = [1, 2,
+  3];`) is now applied on allocation and, for a constant-scalar-element
+  literal, shared across every `new C()` that does not override it,
+  matching real `dmd` (confirmed directly). An array-of-arrays element
+  literal default (`int[][] m = [[1, 2], [3, 4]];`) is applied but still
+  not shared: `moduleDynamicArrayLiteralInitializerBytes` (`compiler.d`),
+  the same compile-time-bytes builder both the class-field default and a
+  module-level dynamic array's own literal default go through, declines
+  any `elementIsArray` shape outright (confirmed unchanged for the
+  pre-existing, unexercised module-variable case too), so both fall back
+  to a fresh per-`new`/per-load heap build instead of one static backing
+  structure -- confirmed via `bin/ut`: two `new C()` instances get
+  different `m.ptr` values, unlike real `dmd`. Needs the builder extended
+  to recurse into a nested array-literal element (build each inner array's
+  own bytes/descriptor, then the outer descriptor over them), not a bare
+  width fix.
 - `compileEqualExpression` and `tryArrayComparisonAssert` (`compiler.d`,
   `arr1 == arr2` / `assert(arr1 == arr2)`) call `arrayDescriptorOffset`
   without `elementIsArray` too, but threading it through is not enough:
