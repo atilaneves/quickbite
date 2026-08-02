@@ -351,10 +351,19 @@ package(quickbite.backends.bytecode) enum Op: ubyte {
     // holding an independent copy of all its elements, then write the
     // descriptor {newPtr, length} to frame offset a. The block is rooted in
     // `heap`. Mutating either array leaves the other intact (`arr.dup` /
-    // `arr.idup`). The element size is fixed by the opcode (1 or 4 bytes).
+    // `arr.idup`). The element size is fixed by the opcode (1, 2, 4, 8, or 16
+    // bytes), matching the indexLoad/indexStore split; 16 bytes is a whole
+    // slice-descriptor element, e.g. a `T[][]` row (`.dup` is shallow, so
+    // copying the outer descriptors as opaque 16-byte blocks is correct).
     dupArray1,
     dupArray2, // 2-byte element (wchar): backs `wstring s = wcharArray.idup`
     dupArray4,
+    dupArray8, // 8-byte element: long/double/pointer arrays
+    dupArray16,
+    // Same as `dupArray1`/etc, for an element width not covered by a fixed
+    // opcode (e.g. a struct element wider than 16 bytes): the byte width is
+    // operand c instead of being implied by the opcode.
+    dupArrayN,
     // Element-wise `dest[] = left[] + right[]` over three slice descriptors at
     // frame offsets a (dest), b (left), c (right): add each pair of 4-byte
     // integer elements and write the sum through the destination's backing

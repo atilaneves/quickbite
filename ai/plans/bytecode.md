@@ -563,8 +563,9 @@ remaining call sites of `arrayDescriptorOffset` either pass a `string`
 the argument alone does not fix.
 
 Still open, same missing-`arrayElementIsArray` shape but each blocked on
-something bigger than threading the argument, so deliberately not
-attempted this round:
+something bigger than threading the argument. Take the class-field-default
+sharing gap next -- it is the more concretely bounded of the two (a builder
+extension, not a new opcode):
 
 - A `Tarray` class field's array-literal default (`int[] arr = [1, 2,
   3];`) is now applied on allocation and, for a constant-scalar-element
@@ -591,16 +592,6 @@ attempted this round:
   their contents -- confirmed via `bin/ut`: even with `elementIsArray`
   threaded, `[[1,2],[3,4]] == [[1,2],[3,4]]` still comes back wrong. Needs
   a recursive/structural slice-equality opcode, not a width fix.
-- `compileArrayDuplication` (`.dup`/`.idup`) is a separate, broader gap:
-  `dupArrayOp`/`dupArrayElementSize` (`compiler.d`/`machine.d`) only
-  distinguish 1-, 2-, or "other" (silently treated as 4-)-byte elements, so
-  `.dup`/`.idup` already mis-sizes any 8-byte-or-wider element (`long[]`,
-  `double[]`, pointer arrays), not only array-of-arrays' 16-byte
-  descriptors -- confirmed via `bin/ut` even with `elementIsArray`
-  threaded through. No existing `arrays.d` row exercises `.dup`/`.idup`
-  wider than a 4-byte element, so this was silently unbounded until now.
-  Needs a real element-size-parameterised dup opcode (an explicit
-  `dupArray8`/`dupArray16`), not an `elementIsArray` thread.
 
 `assocArray.structKeyWithStringMemberComparesStructurally` (described
 above) remains open and still not bounded for one commit: even after fixing

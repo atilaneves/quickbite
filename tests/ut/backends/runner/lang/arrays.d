@@ -3251,6 +3251,52 @@ static foreach (backend; Matrix!()) {
     }
 }
 
+// `dupArrayOp`/`dupArrayElementSize` used to only distinguish 1-, 2-, or
+// "other" (silently treated as 4-)-byte elements, so `.dup`/`.idup` mis-sized
+// any 8-byte-or-wider element (`long`/`double`/pointer): the heap block was
+// under-allocated and under-copied, corrupting the tail element(s).
+static foreach (backend; Matrix!()) {
+    @("dynamicArray.dupIdupPreserveEightByteElements." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            long longValue(long seed) {
+                return seed;
+            }
+
+            double doubleValue(double seed) {
+                return seed;
+            }
+
+            unittest {
+                long first = longValue(1_000_000_000_000L);
+                long[] longs =
+                    [first, first + 1, first + 2, first + 3];
+
+                long[] longCopy = longs.dup;
+                longCopy[0] = longValue(-1);
+
+                assert(longCopy.length == 4);
+                assert(longCopy[0] == -1);
+                assert(longs[0] == 1_000_000_000_000L);
+                assert(longCopy[1] == longs[1]);
+                assert(longCopy[2] == longs[2]);
+                assert(longCopy[3] == longs[3]);
+
+                double firstDouble = doubleValue(1.5);
+                double[] doubles = [firstDouble, firstDouble + 1.5];
+
+                immutable(double)[] frozenDoubles = doubles.idup;
+                doubles[0] = doubleValue(-2.5);
+
+                assert(frozenDoubles[0] == 1.5);
+                assert(frozenDoubles[1] == 3.0);
+                assert(doubles[0] == -2.5);
+            }
+        });
+    }
+}
+
 // Bytecode ("Unsupported cast target: Tpointer") and IR (unsupported array
 // literal expression) cannot run this .ptr fixture.
 static foreach (backend; Matrix!()) {

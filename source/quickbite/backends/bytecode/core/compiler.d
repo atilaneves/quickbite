@@ -6789,7 +6789,9 @@ private struct Compiler {
         // `dest = arr.dup` / `dest = arr.idup`: an independent copy of `arr` in
         // a fresh heap block, so mutating either side leaves the other intact.
         if (auto duplicate = tryArrayDuplication(source)) {
-            compileArrayDuplication(destination, elementType, duplicate);
+            compileArrayDuplication(
+                destination, elementType, duplicate, elementIsArray,
+            );
             return;
         }
 
@@ -7537,6 +7539,7 @@ private struct Compiler {
         in ushort destination,
         in ScalarType elementType,
         Expression source,
+        in bool elementIsArray = false,
     ) {
         // The dup argument is the source array wrapped in an
         // implicit-const cast; unwrap it so a known dynamic-array local reuses
@@ -7545,11 +7548,15 @@ private struct Compiler {
         while (auto cast_ = array.isCastExp)
             array = cast_.e1;
 
-        const sourceDescriptor = arrayDescriptorOffset(elementType, array);
+        const sourceDescriptor =
+            arrayDescriptorOffset(elementType, array, elementIsArray);
+        const elementSize =
+            dynamicArrayElementSize(array.type, elementType, elementIsArray);
         _code ~= Instruction(
-            dupArrayOp(size(elementType)),
+            dupArrayOp(elementSize),
             destination,
             sourceDescriptor,
+            cast(ushort) elementSize,
         );
     }
 
@@ -18225,9 +18232,15 @@ private imported!"quickbite.backends.bytecode.core.program".Op dupArrayOp(
     in uint elementSize,
 ) @safe @nogc nothrow pure {
     import quickbite.backends.bytecode.core.program: Op;
-    if (elementSize == 1)
-        return Op.dupArray1;
-    return elementSize == 2 ? Op.dupArray2 : Op.dupArray4;
+
+    switch (elementSize) {
+        case 1: return Op.dupArray1;
+        case 2: return Op.dupArray2;
+        case 4: return Op.dupArray4;
+        case 8: return Op.dupArray8;
+        case 16: return Op.dupArray16;
+        default: return Op.dupArrayN;
+    }
 }
 
 private bool isDeclarationNamed(

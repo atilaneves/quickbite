@@ -384,12 +384,15 @@ package(quickbite.backends.bytecode) RunResult run(
                 ++ip;
                 break;
 
-            case dupArray1, dupArray2, dupArray4:
+            case dupArray1, dupArray2, dupArray4, dupArray8, dupArray16,
+                dupArrayN:
                 heap ~= dupArray(
                     stack,
                     base + instruction.a,
                     base + instruction.b,
-                    dupArrayElementSize(instruction.op),
+                    instruction.op == dupArrayN
+                        ? instruction.c
+                        : dupArrayElementSize(instruction.op),
                 );
                 ++ip;
                 break;
@@ -2480,7 +2483,11 @@ private uint dupArrayElementSize(
     import quickbite.backends.bytecode.core.program: Op;
     if (op == Op.dupArray1)
         return 1;
-    return op == Op.dupArray2 ? 2 : 4;
+    if (op == Op.dupArray2)
+        return 2;
+    if (op == Op.dupArray8)
+        return 8;
+    return op == Op.dupArray16 ? 16 : 4;
 }
 
 // Duplicate the slice descriptor at `sourceOffset` into a fresh heap block
