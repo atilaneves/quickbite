@@ -3028,6 +3028,40 @@ private struct Compiler {
                 return result;
             }
 
+        // `p[0]` where `p` is a pointer to a dynamic array (`int[]*`): DMD's
+        // associative-array rvalue-read lowering (`_d_aaGetRvalueX`) yields
+        // exactly this shape -- an `IndexExp` over the returned pointer, not
+        // the `PtrExp` (`*p`) form above -- for an array-typed AA value
+        // (`int[][int] a; a[1]`). Materialise the pointee's 16-byte
+        // descriptor the same way, indexing through the real (usually
+        // constant-zero, but not assumed so) index expression rather than
+        // the `PtrExp` branch's implicit zero.
+        if (auto index = expression.isIndexExp)
+            if (index.e1.type.toBasetype.ty == TY.Tpointer &&
+                index.e1.type.toBasetype.nextOf.toBasetype.ty == TY.Tarray) {
+                const pointer = compileExpression(index.e1);
+                if (pointer.isPointer) {
+                    const indexSlot = compileExpression(index.e2);
+                    const offset =
+                        allocateBytes(sliceDescriptorSize, size_t.sizeof);
+                    _code ~= Instruction(
+                        Op.pointerLoad16,
+                        offset,
+                        pointer.offset,
+                        indexSlot.offset,
+                    );
+                    auto result = new DynamicArrayLocal;
+                    *result = DynamicArrayLocal(
+                        offset,
+                        dynamicArrayElementType(expression.type),
+                        arrayElementIsArray(expression.type),
+                        true,
+                        pointer.offset,
+                    );
+                    return result;
+                }
+            }
+
         if (_hasNestedContext)
             if (auto variable = expression.isVarExp)
                 if (auto declaration = variable.var.isVarDeclaration)
@@ -15064,6 +15098,8 @@ private struct Compiler {
 
         if (aaType.toBasetype.nextOf.toBasetype.ty == TY.Tdelegate)
             return ScalarType.void_;
+        if (arrayElementIsArray(aaType))
+            return ScalarType.void_;
         return dynamicArrayElementType(aaType);
     }
 
@@ -15072,12 +15108,23 @@ private struct Compiler {
     // static-array value is its own block size, any other value is its scalar
     // width. `AssocArray.values` (`machine.d`) stores entries packed at this
     // stride, mirroring how a dynamic array carries its own element size.
+    // `arrayElementIsArray(aaType)` reuses the same "is the (`nextOf`)
+    // element itself an array" test a dynamic array's own element sizing
+    // uses -- an AA value plays the same role there as a dynamic array's
+    // element -- so a `T[]`/`T[N]`-typed value (`int[][int]`) is sized as
+    // its own 16-byte slice descriptor, not (mis)read as
+    // `dynamicArrayElementType` drilling one level further into `T`'s own
+    // element type.
     private uint assocArrayValueWidth(Type aaType) {
         import dmd.astenums: TY;
 
         if (aaType.toBasetype.nextOf.toBasetype.ty == TY.Tdelegate)
             return delegateValueSize;
-        return dynamicArrayElementSize(aaType, dynamicArrayElementType(aaType));
+        return dynamicArrayElementSize(
+            aaType,
+            dynamicArrayElementType(aaType),
+            arrayElementIsArray(aaType),
+        );
     }
 
     // The frame offset of an associative-array handle for `expression`: an AA

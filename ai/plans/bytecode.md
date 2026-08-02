@@ -378,17 +378,24 @@ recovering DMD's synthesized `__aakeyN` variable's structural comparison
 genuinely separate, harder problem than the value-width work, since a key
 also has to hash/compare structurally instead of by raw `int` equality.
 
-Next candidate: `assocArrayValueWidth`/`assocArrayValueScalarType`
-(`compiler.d`) size a value from `dynamicArrayElementType`/
-`dynamicArrayElementSize` without ever passing `elementIsArray`, so a
-dynamic-array-typed AA value (`int[][int]`) is mis-sized to a 4-byte scalar
-instead of a 16-byte slice descriptor. Confirmed against real `bin/ut` (not
-`bin/qb` alone): `int[][int] a; a[1] = [10, 20, 30]; a[1].length` passes on
-`SystemLinker` and fails on `Bytecode` with "Unsupported dynamic array
-access in bytecode core: a[1]"; no existing fixture or `Omit!` row covers
-this shape. Fixing it needs the same `elementIsArray`/row-descriptor
-plumbing `compileAppendElement`/`compileConcatenationAssign` already use for
-`T[N][]`/`T[][]`, threaded through the AA value-width helpers.
+An AA value's storage width now accounts for a dynamic-array-typed value
+(`int[][int]`, sized as its own 16-byte slice descriptor via
+`arrayElementIsArray`), and `dynamicArrayDescriptorOrNull` (`compiler.d`)
+resolves DMD's associative-array rvalue-read lowering (`p[0]`, an `IndexExp`
+over the `_d_aaGetRvalueX` pointer result) the same way it already resolved
+the `*p` `PtrExp` shape, so `a[k]`'s `.length`/indexing/assignment-from all
+materialise the value's descriptor correctly.
+
+Next candidate: a struct-typed AA value (`Point[int] a; a[1] = Point(10,
+20); a[1].x`) hits the same `p[0]` rvalue-read shape, but no struct-field
+helper recognises an `IndexExp`-over-pointer-to-struct base at all.
+Confirmed against real `bin/ut`: `SystemLinker` passes, `Bytecode` fails
+with "Unsupported expression in bytecode core: a[1].x" (the general
+`compileExpression` fallback, not a struct-field-specific diagnostic). The
+value is already sized/marked correctly (`dynamicArrayElementType` already
+returns `void_` for a `Tstruct` value), so this is purely a missing
+read-materialisation case -- the struct-field counterpart of the
+array-descriptor fix above.
 
 Every `Omit!(Bytecode, ...)` row left in `tests/ut/backends/runner/**` is one
 of the already-documented not-bounded rows above (`file.d:14`,

@@ -2641,6 +2641,36 @@ static foreach (backend; Matrix!()) {
     }
 }
 
+// A dynamic-array-typed value (`int[][int]`): the value slot is a 16-byte
+// slice descriptor, not an inline scalar. Interpreter reads back the wrong
+// element (`0 != 20`) for this shape -- a separate, unconfirmed backend gap.
+static foreach (backend; Matrix!(
+    Omit!(Interpreter, Because.unconfirmed,
+        "int[][int] element reads back 0 instead of the inserted value"),
+)) {
+    @("assocArray.dynamicArrayValueInsertsReadsAndMutates." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            unittest {
+                int[][int] a;
+                a[1] = [10, 20, 30];
+
+                assert(a.length == 1);
+                assert(a[1].length == 3);
+                assert(a[1][1] == 20);
+
+                a[1][2] = 99;
+                assert(a[1][2] == 99);
+
+                int[] fetched = a[1];
+                assert(fetched == [10, 20, 99]);
+            }
+        });
+    }
+}
+
 static foreach (backend; Matrix!()) {
     @("assocArray.equalityComparesRuntimeEntries." ~ backend.stringof)
     @Tags(backend.stringof)
