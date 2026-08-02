@@ -9462,6 +9462,21 @@ private struct Compiler {
     ) {
         import std.conv: text;
 
+        // `p.at(0) /= rhs` / `p.at(0) %= rhs`: a ref-returning method call
+        // used as a compound-assignment lvalue, the same shape
+        // `compileLocalIntegerCompoundAssign` handles for `+=`/`-=`/`*=`/
+        // shifts/bitwise. Tried before the plain-local-declaration case
+        // below, which a `CallExp` lvalue never matches. Unwrap a possible
+        // outer `CastExp` first: DMD wraps `e1` in one whenever the
+        // operation type differs from the callee's own return type, the
+        // same reason `compoundAssignLocalDeclaration` unwraps one to find a
+        // `VarExp` lvalue.
+        if (auto call = compoundAssignCallExp(assign.e1))
+            if (auto result = tryMemberRefIndexDivOrModCompoundAssign(
+                    call, assign, isModulo, unsupportedMessage,
+                ))
+                return *result;
+
         auto declaration = compoundAssignLocalDeclaration(assign.e1);
         auto slot = compoundAssignLocalSlot(declaration);
         if (slot is null)
@@ -10380,6 +10395,101 @@ private struct Compiler {
         return result;
     }
 
+    // The div/mod counterpart of `tryMemberRefIndexCompoundAssign`: `p.at(0)
+    // /= rhs` / `p.at(0) %= rhs` through the same `ref`-returning element-
+    // accessor shape. Division and modulo need the operation's own
+    // signedness to pick the opcode (see `compileDivOrModCompoundAssign`'s
+    // own comment); `assign.e1.type` gives that operation type directly
+    // whether or not the unwrapped lvalue underneath is this `CallExp` or a
+    // plain local, since DMD wraps whichever one it is in the same outer
+    // `CastExp` when the operation type differs.
+    private Operand* tryMemberRefIndexDivOrModCompoundAssign(
+        CallExp call,
+        BinExp assign,
+        in bool isModulo,
+        in string unsupportedMessage,
+    ) {
+        import dmd.sideeffect: hasSideEffect;
+        import std.conv: text;
+
+        auto function_ = callFunction(call);
+        auto type = function_ is null ? null : function_.type.isTypeFunction;
+        if (type is null || !type.isRef ||
+            function_.vthis is null || call.e1.isDotVarExp is null)
+            return null;
+
+        ushort evaluatedReceiver;
+        Expression indexArgument;
+        auto descriptor = memberReturnArrayElementDescriptor(
+            call, function_, evaluatedReceiver, indexArgument,
+        );
+        if (descriptor is null)
+            return null;
+        // The real call below evaluates this same argument expression again
+        // to bind the callee's own parameter; a second run must not repeat a
+        // side effect, so decline rather than double it.
+        if (hasSideEffect(indexArgument))
+            return null;
+
+        const elementType = descriptor.elementType;
+        const elementSize = size(elementType);
+        const indexSlot = compileExpression(indexArgument).offset;
+
+        const receiver = new MethodReceiver(evaluatedReceiver, 0, 0);
+        compileCall(call, receiver);
+
+        const current = allocateBytes(elementSize, elementSize);
+        _code ~= Instruction(
+            indexLoadOp(elementSize), current, descriptor.offset, indexSlot,
+            cast(ushort) elementSize,
+        );
+
+        const rhsValue = compileExpression(assign.e2);
+        if (!isCompoundIntegerScalar(elementType) ||
+            !isCompoundIntegerScalar(rhsValue.type))
+            throw new Exception(text(unsupportedMessage, expressionChars(call)));
+
+        if (isEightByteInteger(elementType) != isEightByteInteger(rhsValue.type) ||
+            (isEightByteInteger(elementType) && rhsValue.type != elementType))
+            throw new Exception(text(unsupportedMessage, expressionChars(call)));
+
+        const operationType = scalarType(assign.e1.type);
+        if (!isIntegerScalar(operationType))
+            throw new Exception(text(unsupportedMessage, expressionChars(call)));
+
+        Op op;
+        if (operationType == ScalarType.ulong_)
+            op = isModulo ? Op.modUnsignedInt8 : Op.divUnsignedInt8;
+        else if (operationType == ScalarType.long_)
+            op = isModulo ? Op.modInt8 : Op.divInt8;
+        else if (operationType == ScalarType.uint_)
+            op = isModulo ? Op.modUnsignedInt4 : Op.divUnsignedInt4;
+        else
+            op = isModulo ? Op.modInt4 : Op.divInt4;
+
+        const lhs = integerOperationOperand(
+            Operand(current, elementType), operationType,
+        );
+        const rhsOperand = integerOperationOperand(rhsValue, operationType);
+        const destination = elementSize == size(operationType)
+            ? current
+            : allocate(operationType);
+        _code ~= Instruction(op, destination, lhs.offset, rhsOperand.offset);
+        if (destination != current)
+            _code ~= Instruction(
+                Op.copy, current, destination, cast(ushort) elementSize,
+            );
+
+        _code ~= Instruction(
+            indexStoreOp(elementSize), current, descriptor.offset, indexSlot,
+            cast(ushort) elementSize,
+        );
+
+        auto result = new Operand;
+        *result = Operand(current, elementType);
+        return result;
+    }
+
     private ushort* compoundAssignLocalSlot(VarDeclaration declaration) {
         if (declaration is null)
             return null;
@@ -10466,6 +10576,13 @@ private struct Compiler {
             return compoundAssignIndex(cast_.e1);
 
         return lvalue.isIndexExp;
+    }
+
+    private CallExp compoundAssignCallExp(Expression lvalue) {
+        if (auto cast_ = lvalue.isCastExp)
+            return compoundAssignCallExp(cast_.e1);
+
+        return lvalue.isCallExp;
     }
 
     private Operand integerOperationOperand(

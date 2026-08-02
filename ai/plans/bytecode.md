@@ -1023,22 +1023,27 @@ ordinary `base.field[i]` -- so no extra load is needed. The callee still runs
 (preserving any preceding side effect, e.g. a bounds check); the write goes
 through the descriptor at the real index instead of the throwaway returned
 copy. `compileLocalIntegerCompoundAssign` (shared by `+=`/`-=`/`*=`/shifts/
-bitwise) gets the `CallExp`-lvalue branch directly, so every one of those
-operators is covered, not just `+=`. Scoped to a scalar element (an aggregate
-element's `ScalarType` tag is `void_`, the same zero-stride trap
-`pointerToElement` guards against for `&arr[i]`) and a side-effect-free index
-argument (the real call re-evaluates it to bind the callee's own parameter,
-so a side-effecting one is declined rather than double-run). A class
-receiver is not addressed, matching `tryMemberRefCallAssign`'s existing scope
-(its `methodReceiverOffset` path is struct-receiver-only there too).
+bitwise) and `compileDivOrModCompoundAssign` (`/=`/`%=`, which need the
+operation's own signedness -- from `assign.e1.type`, since DMD wraps `e1` in
+a `CastExp` to the usual-arithmetic-conversion type whenever it differs from
+the callee's return type -- to pick the divide/modulo opcode) both get the
+`CallExp`-lvalue branch, so every compound-assignment operator is covered.
+Scoped to a scalar element (an aggregate element's `ScalarType` tag is
+`void_`, the same zero-stride trap `pointerToElement` guards against for
+`&arr[i]`) and a side-effect-free index argument (the real call re-evaluates
+it to bind the callee's own parameter, so a side-effecting one is declined
+rather than double-run). A class receiver is not addressed, matching
+`tryMemberRefCallAssign`'s existing scope (its `methodReceiverOffset` path is
+struct-receiver-only there too).
 
-Next candidate: the same element-accessor shape with `/=`/`%=` (`p.at(0) /=
-2;`) throws "Unsupported compound assignment in bytecode core: p.at(0) /=
-2". `compileDivOrModCompoundAssign` (`compiler.d`, ~line 9458) is a separate
-dispatch from `compileLocalIntegerCompoundAssign` and resolves its lvalue
-only through `compoundAssignLocalDeclaration`/`compoundAssignLocalSlot`, with
-no `CallExp` branch, so it falls through to the same generic throw `+=`/`-=`
-had before this round's fix.
+Next candidate: the same element-accessor shape with post-increment/decrement
+(`p.at(0)++;`, `p.at(0)--;`) throws "Unsupported post-increment in bytecode
+core: p.at(1)++". `compilePostIncrement` (`compiler.d`, ~line 2711) only
+resolves its lvalue through a plain local (`VarExp`), a struct field
+(`DotVarExp`/`tryStructField`), or a static-array element (`IndexExp`/
+`tryStaticArrayElement`); it has no `CallExp` branch, so it falls through to
+the generic throw. `memberReturnArrayElementDescriptor` should resolve the
+same way as the compound-assignment branches above.
 
 ### TDD and handoff discipline
 

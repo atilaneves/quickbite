@@ -6657,6 +6657,60 @@ static foreach (backend; AliasSeq!(Bytecode, SystemLinker)) {
     }
 }
 
+// The div/mod compound-assignment counterpart: `p.at(i) /= rhs` and
+// `p.at(i) %= rhs` through the same ref-returning element accessor.
+static foreach (backend; AliasSeq!(Bytecode, SystemLinker)) {
+    @("refCall.divCompoundAssignmentToMemberRefIndexReturn." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct Vec {
+                int[] data;
+
+                ref int at(in int index) return {
+                    return data[index];
+                }
+            }
+
+            unittest {
+                Vec v;
+                v.data = [10, 20, 30];
+
+                v.at(1) /= 2;
+
+                assert(v.data[0] == 10);
+                assert(v.data[1] == 10);
+                assert(v.data[2] == 30);
+            }
+        });
+    }
+
+    @("refCall.modCompoundAssignmentToMemberRefIndexReturn." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct Vec {
+                int[] data;
+
+                ref int at(in int index) return {
+                    return data[index];
+                }
+            }
+
+            unittest {
+                Vec v;
+                v.data = [10, 21, 30];
+
+                v.at(1) %= 4;
+
+                assert(v.data[0] == 10);
+                assert(v.data[1] == 1);
+                assert(v.data[2] == 30);
+            }
+        });
+    }
+}
+
 // `new S` of a struct with a dynamic-array field passes the field's `null`
 // default initialiser as a positional argument; the interpreter must store it
 // as an empty array so a null array's `.length` is 0 (compiled D:
