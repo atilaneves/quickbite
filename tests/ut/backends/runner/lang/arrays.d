@@ -2671,6 +2671,31 @@ static foreach (backend; Matrix!(
     }
 }
 
+// A struct-typed value (`Point[int]`): the same `p[0]` `_d_aaGetRvalueX`
+// rvalue-read shape as `dynamicArrayValueInsertsReadsAndMutates` above, but
+// for a struct rather than a dynamic array. Interpreter refuses the field
+// write -- a separate, unconfirmed backend gap.
+static foreach (backend; Matrix!(
+    Omit!(Interpreter, Because.unconfirmed,
+        "Unsupported interpreter assignment target"),
+)) {
+    @("assocArray.structValueFieldReadWrite." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct Point { int x; int y; }
+            unittest {
+                Point[int] a;
+                a[1] = Point(10, 20);
+                assert(a[1].x == 10);
+                a[1].x = 5;
+                assert(a[1].x == 5);
+                assert(a[1].y == 20);
+            }
+        });
+    }
+}
+
 static foreach (backend; Matrix!()) {
     @("assocArray.equalityComparesRuntimeEntries." ~ backend.stringof)
     @Tags(backend.stringof)

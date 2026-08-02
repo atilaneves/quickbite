@@ -5188,6 +5188,18 @@ private struct Compiler {
         ushort structSize;
         bool writeBackThroughModule;
         ushort moduleOffset;
+        // Backed by an associative-array rvalue-read pointer (`a[1].x`):
+        // `structOffset`/`structSize` (above) are the whole materialised
+        // struct block's frame offset and byte width; `pointerBaseSlot` and
+        // `pointerIndexSlot` are the runtime AA-value pointer and index the
+        // block was read from, so a write copies the whole updated block
+        // back to `pointerBaseSlot + pointerIndexSlot * structSize` --
+        // exactly the live AA storage `_d_aaGetRvalueX` pointed at, the same
+        // whole-block-writeback shape `writeBackThroughFrame` already uses
+        // for a captured struct receiver.
+        bool writeBackThroughPointer;
+        ushort pointerBaseSlot;
+        ushort pointerIndexSlot;
     }
 
     // Resolve `base.field` (a DotVarExp over a struct lvalue) to the field's
@@ -5265,8 +5277,15 @@ private struct Compiler {
         bool viaModule;
         ushort moduleFrameOffset;
         ushort moduleOffset;
+        bool viaPointer;
+        ushort pointerFrameOffset;
+        ushort pointerBaseSlot;
+        ushort pointerIndexSlot;
+        ushort pointerStructSize;
         const base = structBaseOffsetOrMaterialise(
             dot.e1, resolved, viaModule, moduleFrameOffset, moduleOffset,
+            viaPointer, pointerFrameOffset, pointerBaseSlot, pointerIndexSlot,
+            pointerStructSize,
         );
         if (!resolved)
             return null;
@@ -5293,6 +5312,19 @@ private struct Compiler {
             result.writeBackThroughModule = true;
             result.structOffset = moduleFrameOffset;
             result.moduleOffset = moduleOffset;
+        }
+        // `dot.e1` resolved through a materialised copy of an
+        // associative-array rvalue-read pointer (`a[1]`, or a field chain
+        // rooted at one, `a[1].inner.x`): the field's writeback must copy
+        // the whole struct block back through that same pointer, the same
+        // whole-block shape `writeBackThroughFrame` already uses for a
+        // captured struct receiver.
+        if (viaPointer) {
+            result.writeBackThroughPointer = true;
+            result.structOffset = pointerFrameOffset;
+            result.structSize = pointerStructSize;
+            result.pointerBaseSlot = pointerBaseSlot;
+            result.pointerIndexSlot = pointerIndexSlot;
         }
         return result;
     }
@@ -5388,6 +5420,17 @@ private struct Compiler {
                 cast(ushort) (field.moduleOffset + fieldOffsetInStruct),
                 cast(ushort) staticArraySize(cast(Type) field.type),
             );
+            return;
+        }
+
+        if (field.writeBackThroughPointer) {
+            _code ~= Instruction(
+                pointerStoreOp(field.structSize),
+                field.structOffset,
+                field.pointerBaseSlot,
+                field.pointerIndexSlot,
+                field.structSize,
+            );
         }
     }
 
@@ -5402,8 +5445,15 @@ private struct Compiler {
         bool viaModule;
         ushort moduleFrameOffset;
         ushort moduleOffset;
+        bool viaPointer;
+        ushort pointerFrameOffset;
+        ushort pointerBaseSlot;
+        ushort pointerIndexSlot;
+        ushort pointerStructSize;
         return structBaseOffsetOrMaterialise(
             expression, resolved, viaModule, moduleFrameOffset, moduleOffset,
+            viaPointer, pointerFrameOffset, pointerBaseSlot, pointerIndexSlot,
+            pointerStructSize,
         );
     }
 
@@ -5415,12 +5465,25 @@ private struct Compiler {
     // returned base. This is the information `tryStructField`'s generic
     // fallback needs to wire up writeback for a field nested inside a module
     // struct, the same way its own bespoke one-level branch already does.
+    // `viaPointer` and its four companions report the struct counterpart for
+    // an associative-array rvalue-read pointer (`a[1]`, or a field chain
+    // rooted at one, `a[1].inner.x`): `pointerFrameOffset`/`pointerStructSize`
+    // are the whole materialised struct block's frame offset and byte width
+    // (the `moduleFrameOffset` counterpart), and `pointerBaseSlot`/
+    // `pointerIndexSlot` are the runtime AA-value pointer and index the block
+    // was read from -- all four constant across however many field levels a
+    // caller adds on top of the returned base, the same as the module trio.
     private ushort structBaseOffsetOrMaterialise(
         Expression expression,
         out bool resolved,
         out bool viaModule,
         out ushort moduleFrameOffset,
         out ushort moduleOffset,
+        out bool viaPointer,
+        out ushort pointerFrameOffset,
+        out ushort pointerBaseSlot,
+        out ushort pointerIndexSlot,
+        out ushort pointerStructSize,
     ) {
         import dmd.astenums: TY;
 
@@ -5475,18 +5538,33 @@ private struct Compiler {
                     bool outerViaModule;
                     ushort outerModuleFrameOffset;
                     ushort outerModuleOffset;
+                    bool outerViaPointer;
+                    ushort outerPointerFrameOffset;
+                    ushort outerPointerBaseSlot;
+                    ushort outerPointerIndexSlot;
+                    ushort outerPointerStructSize;
                     const outerBase = structBaseOffsetOrMaterialise(
                         dot.e1,
                         outerResolved,
                         outerViaModule,
                         outerModuleFrameOffset,
                         outerModuleOffset,
+                        outerViaPointer,
+                        outerPointerFrameOffset,
+                        outerPointerBaseSlot,
+                        outerPointerIndexSlot,
+                        outerPointerStructSize,
                     );
                     if (outerResolved) {
                         resolved = true;
                         viaModule = outerViaModule;
                         moduleFrameOffset = outerModuleFrameOffset;
                         moduleOffset = outerModuleOffset;
+                        viaPointer = outerViaPointer;
+                        pointerFrameOffset = outerPointerFrameOffset;
+                        pointerBaseSlot = outerPointerBaseSlot;
+                        pointerIndexSlot = outerPointerIndexSlot;
+                        pointerStructSize = outerPointerStructSize;
                         return cast(ushort) (outerBase + field.offset);
                     }
                 }
@@ -5518,6 +5596,38 @@ private struct Compiler {
                         index.e2,
                         expression.type,
                     ).offset;
+                }
+
+            // `p[0]` where `p` is a raw pointer to a struct (not an array of
+            // structs, both handled above): DMD's associative-array
+            // rvalue-read lowering (`_d_aaGetRvalueX`) yields exactly this
+            // shape -- an `IndexExp` over the returned pointer -- for a
+            // struct-typed AA value (`Point[int] a; a[1]`), the struct
+            // counterpart of `dynamicArrayDescriptorOrNull`'s identical
+            // `p[0]` branch for an array-typed value. Copy the pointee
+            // through the same `loadStructThroughPointer` helper
+            // `structOperandOffset` already uses for a bare `p[i]`/`*p`
+            // struct rvalue, so a further field access (`a[1].x`) addresses
+            // the materialised copy with ordinary `base + field.offset`
+            // arithmetic.
+            if (auto index = expression.isIndexExp)
+                if (isPointerType(index.e1.type)) {
+                    const pointer = compileExpression(index.e1);
+                    if (pointer.isPointer) {
+                        const indexSlot = compileExpression(index.e2);
+                        const structSize =
+                            cast(ushort) staticArraySize(expression.type);
+                        const blockOffset = loadStructThroughPointer(
+                            pointer.offset, indexSlot.offset, expression.type,
+                        );
+                        resolved = true;
+                        viaPointer = true;
+                        pointerFrameOffset = blockOffset;
+                        pointerBaseSlot = pointer.offset;
+                        pointerIndexSlot = indexSlot.offset;
+                        pointerStructSize = structSize;
+                        return blockOffset;
+                    }
                 }
 
             if (auto call = expression.isCallExp) {

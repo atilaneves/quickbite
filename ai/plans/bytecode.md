@@ -386,16 +386,30 @@ over the `_d_aaGetRvalueX` pointer result) the same way it already resolved
 the `*p` `PtrExp` shape, so `a[k]`'s `.length`/indexing/assignment-from all
 materialise the value's descriptor correctly.
 
-Next candidate: a struct-typed AA value (`Point[int] a; a[1] = Point(10,
-20); a[1].x`) hits the same `p[0]` rvalue-read shape, but no struct-field
-helper recognises an `IndexExp`-over-pointer-to-struct base at all.
-Confirmed against real `bin/ut`: `SystemLinker` passes, `Bytecode` fails
-with "Unsupported expression in bytecode core: a[1].x" (the general
-`compileExpression` fallback, not a struct-field-specific diagnostic). The
-value is already sized/marked correctly (`dynamicArrayElementType` already
-returns `void_` for a `Tstruct` value), so this is purely a missing
-read-materialisation case -- the struct-field counterpart of the
-array-descriptor fix above.
+A struct-typed AA value's field now reads and writes
+(`Point[int] a; a[1].x` / `a[1].x = 5`): `structBaseOffsetOrMaterialise`
+gained the `IndexExp`-over-pointer-to-`Tstruct` counterpart of the
+array-descriptor branch above, and field write-back gained a
+`writeBackThroughPointer` path (`StructField`'s
+`pointerBaseSlot`/`pointerIndexSlot`/`pointerStructSize`, mirroring the
+existing `viaModule` plumbing) that copies the whole struct block back to
+`pointer + index * structSize`.
+
+Next candidate: a *call* through that same AA-value struct receiver still
+drops the mutation. `methodReceiver` has branches for a struct-pointer/
+class-field receiver and a dynamic-array-of-structs element receiver, but
+none for the `IndexExp`-over-pointer-to-`Tstruct` shape above, so it falls
+through to `methodReceiverOffset` -> `structOperandOffset`, which reads the
+block fine but registers no write-back. Confirmed against real `bin/ut`:
+`Point[int] a; a[1] = Point(10, 20); a[1].bump();` (`int bump() { return x
++= 1; }`) runs on `Bytecode` without error but silently keeps the
+pre-mutation value (10, not 11). The same gap surfaces through plain `=`
+too: `a[1] = Setting(2)` throws outright ("Unsupported expression in
+bytecode core: a[1] = Setting(2)") when `Setting` has a user-defined
+`opAssign`, since DMD lowers that assignment to the identical receiver-call
+shape. Extend `methodReceiver` with an AA-value-pointer branch, reusing
+`writeBackThroughPointer`'s `pointer + index * structSize` write-back
+address, to fix both.
 
 Every `Omit!(Bytecode, ...)` row left in `tests/ut/backends/runner/**` is one
 of the already-documented not-bounded rows above (`file.d:14`,
