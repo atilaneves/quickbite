@@ -4748,3 +4748,82 @@ static foreach (backend; Matrix!()) {
         });
     }
 }
+
+// `arr[i].structField = rhs` for a dynamic array of structs, where the
+// written field is itself struct-typed and the rhs is an rvalue (a
+// constructor call): the resolved element-field pointer's write side,
+// `storeArrayElementFieldPointer`, special-cased a `Tarray` field but fell
+// through to a generic scalar path for everything else, which threw
+// resolving a struct field's scalar type. It now routes a `Tstruct` field
+// through `structOperandOffset`, the same way `storeThroughPointer` already
+// does for a struct-typed pointer write.
+static foreach (backend; Matrix!()) {
+    @("dynamicArray.structFieldOfStructElementWrittenFromConstructorCall." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct Inner { int v; }
+            struct Outer { Inner inner; int tag; }
+            unittest {
+                Outer[] arr = [Outer(Inner(1), 10)];
+                arr[0].inner = Inner(55);
+                assert(arr[0].inner.v == 55);
+                assert(arr[0].tag == 10);
+            }
+        });
+    }
+}
+
+// The same shape, but the rhs is an existing struct lvalue rather than a
+// constructor-call rvalue: `compileExpression` alone cannot materialise an
+// existing struct variable, the same gap `storeThroughPointer` already
+// works around via `structOperandOffset`.
+static foreach (backend; Matrix!()) {
+    @("dynamicArray.structFieldOfStructElementWrittenFromVariable." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct Inner { int v; }
+            struct Outer { Inner inner; int tag; }
+            unittest {
+                Outer[] arr = [Outer(Inner(1), 10)];
+                Inner existing = Inner(77);
+                arr[0].inner = existing;
+                assert(arr[0].inner.v == 77);
+            }
+        });
+    }
+}
+
+// The class-array-field sibling of the case above (`c.arr[i].field = rhs`):
+// `storeArrayElementFieldPointer` also serves
+// `tryClassArrayFieldElementFieldPointer`'s resolved pointer, so the same
+// `Tstruct` branch closes this shape too. `Interpreter` throws "Expected
+// class object." on this receiver shape even for a plain scalar field
+// (confirmed via bin/ut with `c.arr[0].tag = 99;`), a pre-existing gap
+// unrelated to the struct-field fix here.
+static foreach (backend; Matrix!(
+    Omit!(Interpreter, Because.unconfirmed,
+        "class array-of-structs element field write throws " ~
+        "\"Expected class object.\" even for a scalar field"),
+)) {
+    @("classField.structFieldOfArrayOfStructsElementWrittenFromConstructorCall." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct Inner { int v; }
+            struct Item { Inner inner; int tag; }
+            class C { Item[] arr; }
+            unittest {
+                auto c = new C();
+                c.arr = [Item(Inner(1), 10)];
+                c.arr[0].inner = Inner(55);
+                assert(c.arr[0].inner.v == 55);
+                assert(c.arr[0].tag == 10);
+            }
+        });
+    }
+}

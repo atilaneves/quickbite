@@ -10987,8 +10987,12 @@ private struct Compiler {
     // `tryClassArrayFieldElementFieldPointer` and
     // `tryStructSliceFieldElementFieldPointer`'s assignment use: a dynamic-
     // array field takes the rhs slice descriptor, matching
-    // `tryClassPointerField`'s own assignment branch; anything else is a
-    // scalar byte store at the pointer.
+    // `tryClassPointerField`'s own assignment branch; a struct-typed field
+    // is a whole-block copy through `structOperandOffset`, mirroring
+    // `storeThroughPointer`'s own struct branch (the rhs may be a literal/
+    // constructor-call rvalue or an existing struct lvalue, neither of which
+    // `compileExpression` alone resolves); anything else is a scalar byte
+    // store at the pointer.
     private Operand storeArrayElementFieldPointer(
         in ushort pointer,
         Type fieldType,
@@ -11006,6 +11010,16 @@ private struct Compiler {
                 Op.pointerStore16, destination, pointer, compileSizeConstant(0),
             );
             return Operand(destination, ScalarType.void_);
+        }
+
+        if (fieldType.toBasetype.ty == TY.Tstruct) {
+            const valueOffset = structOperandOffset(rhs);
+            const elementSize = cast(uint) staticArraySize(fieldType);
+            _code ~= Instruction(
+                pointerStoreOp(elementSize), valueOffset, pointer,
+                compileSizeConstant(0), cast(ushort) elementSize,
+            );
+            return Operand(valueOffset, ScalarType.void_);
         }
 
         const value = compileExpression(rhs);
