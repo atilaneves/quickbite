@@ -6711,6 +6711,64 @@ static foreach (backend; AliasSeq!(Bytecode, SystemLinker)) {
     }
 }
 
+// The post-increment/decrement counterpart: `p.at(i)++` / `p.at(i)--`
+// through the same ref-returning element accessor. The expression's own
+// value is the *old* element (post-increment semantics), and the write goes
+// through the array field's own backing store.
+static foreach (backend; AliasSeq!(Bytecode, SystemLinker)) {
+    @("refCall.postIncrementToMemberRefIndexReturn." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct Vec {
+                int[] data;
+
+                ref int at(in int index) return {
+                    return data[index];
+                }
+            }
+
+            unittest {
+                Vec v;
+                v.data = [1, 2, 3];
+
+                const old = v.at(1)++;
+
+                assert(old == 2);
+                assert(v.data[0] == 1);
+                assert(v.data[1] == 3);
+                assert(v.data[2] == 3);
+            }
+        });
+    }
+
+    @("refCall.postDecrementToMemberRefIndexReturn." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct Vec {
+                int[] data;
+
+                ref int at(in int index) return {
+                    return data[index];
+                }
+            }
+
+            unittest {
+                Vec v;
+                v.data = [1, 2, 3];
+
+                const old = v.at(1)--;
+
+                assert(old == 2);
+                assert(v.data[0] == 1);
+                assert(v.data[1] == 1);
+                assert(v.data[2] == 3);
+            }
+        });
+    }
+}
+
 // `new S` of a struct with a dynamic-array field passes the field's `null`
 // default initialiser as a positional argument; the interpreter must store it
 // as an empty array so a null array's `.length` is 0 (compiled D:

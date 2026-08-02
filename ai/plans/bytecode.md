@@ -1036,14 +1036,32 @@ rather than double-run). A class receiver is not addressed, matching
 `tryMemberRefCallAssign`'s existing scope (its `methodReceiverOffset` path is
 struct-receiver-only there too).
 
-Next candidate: the same element-accessor shape with post-increment/decrement
-(`p.at(0)++;`, `p.at(0)--;`) throws "Unsupported post-increment in bytecode
-core: p.at(1)++". `compilePostIncrement` (`compiler.d`, ~line 2711) only
-resolves its lvalue through a plain local (`VarExp`), a struct field
-(`DotVarExp`/`tryStructField`), or a static-array element (`IndexExp`/
-`tryStaticArrayElement`); it has no `CallExp` branch, so it falls through to
-the generic throw. `memberReturnArrayElementDescriptor` should resolve the
-same way as the compound-assignment branches above.
+Post-increment/decrement through the same element-accessor shape (`p.at(0)++;`,
+`p.at(0)--;`) now compiles: `tryMemberRefIndexPostIncrement` (`compiler.d`)
+resolves the lvalue through the same `memberReturnArrayElementDescriptor` the
+assignment/compound-assignment branches above share, tried first in
+`compilePostIncrement`, mirroring its own copy(old value)/step/store shape for
+a plain lvalue rather than reimplementing it. Scoped to the same integer
+widths (`int`/`uint`/`long`/`ulong`) `compilePostIncrement` already supports.
+Pre-increment (`++p.at(0)`) needed no change: DMD's `PreExp` semantic rewrites
+it to `p.at(0) += 1` (an `AddAssignExp`) before the bytecode compiler ever
+sees it, so the existing `tryMemberRefIndexCompoundAssign` path already
+covers it -- confirmed via a real `bin/ut` fixture, not committed as a
+duplicate row.
+
+Next candidate: a captured static array's element write from inside a nested
+function/closure (`int[3] arr; void mutate() { arr[1] = 55; }`) throws
+"Unsupported assignment in bytecode core: arr[1] = 55" on `Bytecode` while
+`SystemLinker` runs it fine -- confirmed via a real `bin/ut` fixture.
+`indexesStaticArray` (`compiler.d`, ~line 13089), the gate
+`tryStaticArrayElement`/`compileAssignExpression`'s `IndexExp` dispatch both
+go through, only recognises a `VarExp` base when the declaration is in
+*this* function's own `_staticArrayLocals`; a static array captured from an
+enclosing function lives in `_capturedOffsets` instead (the same distinction
+`compilePostIncrement` already branches on for a captured *scalar* local via
+`compileCapturedPostIncrement`), so `indexesStaticArray` returns `false` for
+it and the whole static-array-element assignment family declines before any
+of them get a chance to resolve it through the captured-locals frame.
 
 ### TDD and handoff discipline
 

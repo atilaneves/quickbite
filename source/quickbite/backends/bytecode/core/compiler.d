@@ -2750,6 +2750,14 @@ private struct Compiler {
             }
         }
 
+        // `p.at(0)++` / `p.at(0)--`: a ref-returning method call used as a
+        // post-increment lvalue. Tried before the plain-local/field/
+        // static-array-element cases below, which a `CallExp` lvalue never
+        // matches.
+        if (auto call = post.e1.isCallExp)
+            if (auto result = tryMemberRefIndexPostIncrement(call, post))
+                return *result;
+
         ushort lvalueSlot;
         auto lvalueType = ScalarType.void_;
         StructField* lvalueField;
@@ -10393,6 +10401,81 @@ private struct Compiler {
         auto result = new Operand;
         *result = Operand(current, elementType);
         return result;
+    }
+
+    // The post-increment/decrement counterpart of `tryMemberRefIndexCallAssign`:
+    // `p.at(0)++` / `p.at(0)--` through the same `ref`-returning element-
+    // accessor shape. The callee still runs (preserving any preceding side
+    // effect, e.g. a bounds check), then the real backing element is loaded
+    // through the field's own slice descriptor, copied to the result slot
+    // (the post-increment's value, the *old* element), stepped in place, and
+    // stored back through the same descriptor -- mirroring
+    // `compilePostIncrement`'s copy/step/store shape for a plain lvalue, the
+    // way `tryMemberRefIndexCompoundAssign` mirrors
+    // `compileLocalIntegerCompoundAssign`'s load/operate/store shape.
+    private Operand* tryMemberRefIndexPostIncrement(CallExp call, PostExp post) {
+        import dmd.sideeffect: hasSideEffect;
+        import dmd.tokens: EXP;
+
+        auto function_ = callFunction(call);
+        auto type = function_ is null ? null : function_.type.isTypeFunction;
+        if (type is null || !type.isRef ||
+            function_.vthis is null || call.e1.isDotVarExp is null)
+            return null;
+
+        ushort evaluatedReceiver;
+        Expression indexArgument;
+        auto descriptor = memberReturnArrayElementDescriptor(
+            call, function_, evaluatedReceiver, indexArgument,
+        );
+        if (descriptor is null)
+            return null;
+        // The real call below evaluates this same argument expression again
+        // to bind the callee's own parameter; a second run must not repeat a
+        // side effect, so decline rather than double it.
+        if (hasSideEffect(indexArgument))
+            return null;
+
+        const elementType = descriptor.elementType;
+        // Scoped to the same integer widths `compilePostIncrement` supports
+        // for a plain lvalue (`int`/`uint`/`long`/`ulong`).
+        if (!isIntegerScalar(elementType))
+            return null;
+        const elementSize = size(elementType);
+
+        const indexSlot = compileExpression(indexArgument).offset;
+
+        const receiver = new MethodReceiver(evaluatedReceiver, 0, 0);
+        compileCall(call, receiver);
+
+        const current = allocateBytes(elementSize, elementSize);
+        _code ~= Instruction(
+            indexLoadOp(elementSize), current, descriptor.offset, indexSlot,
+            cast(ushort) elementSize,
+        );
+
+        const result = allocate(elementType);
+        _code ~= Instruction(
+            Op.copy, result, current, cast(ushort) elementSize,
+        );
+
+        // `PostExp.e2` is always the literal `1`; `post.op` (`plusPlus` vs
+        // `minusMinus`) decides whether we add or subtract it.
+        const increment = compileExpression(post.e2);
+        const eightByte = isEightByteInteger(elementType);
+        const stepOp = post.op == EXP.minusMinus
+            ? (eightByte ? Op.subInt8 : Op.subInt4)
+            : (eightByte ? Op.addInt8 : Op.addInt4);
+        _code ~= Instruction(stepOp, current, current, increment.offset);
+
+        _code ~= Instruction(
+            indexStoreOp(elementSize), current, descriptor.offset, indexSlot,
+            cast(ushort) elementSize,
+        );
+
+        auto op = new Operand;
+        *op = Operand(result, elementType);
+        return op;
     }
 
     // The div/mod counterpart of `tryMemberRefIndexCompoundAssign`: `p.at(0)
