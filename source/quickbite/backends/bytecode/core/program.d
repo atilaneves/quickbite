@@ -311,6 +311,14 @@ package(quickbite.backends.bytecode) enum Op: ubyte {
     sliceEqual2, // 2-byte element (wchar/short): backs `wstring == wstring`
     sliceEqual4,
     sliceEqual8, // 8-byte element (long/double/pointer arrays)
+    // Structural comparison for an array-of-arrays (`int[][] == int[][]`):
+    // the descriptors at frame offsets b and c hold rows that are themselves
+    // 16-byte slice descriptors, so a raw `sliceEqual*` over the outer
+    // descriptor would compare each row's `.ptr` rather than its content.
+    // Compare outer lengths, then compare every row's own length and element
+    // bytes; operand d is the *row's own* element byte width (not 16).
+    // Handles exactly one level of array-of-arrays nesting.
+    sliceEqualNested,
     // Append the element at frame offset b to the dynamic-array slice descriptor
     // at frame offset a: allocate a fresh heap block of (length + 1) elements,
     // copy the existing elements, write the new element, root the block, and
@@ -750,6 +758,15 @@ package(quickbite.backends.bytecode) struct AssertDiagnostic {
     bool isString;
     bool lhsIsNull;
     bool rhsIsNull;
+    // When `isArray` is set, each element is itself an array of
+    // `operandType` (one level of array-of-arrays nesting) rather than a
+    // plain `operandType` scalar, so it renders recursively as `[e0, e1,
+    // ...]` too. Appended last (not inserted between existing fields) so
+    // every pre-existing positional `AssertDiagnostic(...)` construction
+    // site keeps its field mapping; several sites pass isString/lhsIsNull/
+    // rhsIsNull positionally and would silently shift onto the wrong field
+    // otherwise.
+    bool elementIsArray;
 }
 
 package(quickbite.backends.bytecode) struct VirtualFunction {

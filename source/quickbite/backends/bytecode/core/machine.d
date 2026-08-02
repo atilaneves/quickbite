@@ -355,6 +355,16 @@ package(quickbite.backends.bytecode) RunResult run(
                 ++ip;
                 break;
 
+            case sliceEqualNested:
+                stack[base + instruction.a] = nestedSlicesEqual(
+                    stack,
+                    base + instruction.b,
+                    base + instruction.c,
+                    instruction.d,
+                ) ? 1 : 0;
+                ++ip;
+                break;
+
             case appendElement1, appendElement2, appendElement4, appendElement8,
                 appendElement16, appendElementN:
                 auto appended = appendElement(
@@ -2692,6 +2702,51 @@ private bool slicesEqual(
         (cast(const(ubyte)*) rightPointer)[0 .. byteCount];
 }
 
+// True iff two array-of-arrays descriptors are structurally equal: same
+// outer length, and every row (itself a 16-byte `{ptr, length}` slice
+// descriptor, separately heap-allocated on each side) has the same length
+// and identical element bytes at `innerElementSize` each. Unlike
+// `slicesEqual`, this never compares a row's raw descriptor bytes -- two
+// separately-constructed but content-equal rows have different `.ptr`
+// values, so that would compare identity, not content. Handles exactly one
+// level of array-of-arrays nesting: a row that is itself an array of arrays
+// is not reachable through this opcode.
+private bool nestedSlicesEqual(
+    in ubyte[] stack,
+    in size_t leftOffset,
+    in size_t rightOffset,
+    in uint innerElementSize,
+) @trusted {
+    import quickbite.backends.bytecode.core.program: sliceDescriptorSize;
+
+    const leftLength = scalarValue!size_t(stack, leftOffset + size_t.sizeof);
+    const rightLength = scalarValue!size_t(stack, rightOffset + size_t.sizeof);
+    if (leftLength != rightLength)
+        return false;
+
+    const leftPointer = scalarValue!size_t(stack, leftOffset);
+    const rightPointer = scalarValue!size_t(stack, rightOffset);
+    foreach (index; 0 .. leftLength) {
+        const leftRow = leftPointer + index * sliceDescriptorSize;
+        const rightRow = rightPointer + index * sliceDescriptorSize;
+
+        const leftRowLength =
+            *cast(const(size_t)*) (leftRow + size_t.sizeof);
+        const rightRowLength =
+            *cast(const(size_t)*) (rightRow + size_t.sizeof);
+        if (leftRowLength != rightRowLength)
+            return false;
+
+        const leftRowPointer = *cast(const(size_t)*) leftRow;
+        const rightRowPointer = *cast(const(size_t)*) rightRow;
+        const byteCount = leftRowLength * innerElementSize;
+        if ((cast(const(ubyte)*) leftRowPointer)[0 .. byteCount] !=
+            (cast(const(ubyte)*) rightRowPointer)[0 .. byteCount])
+            return false;
+    }
+    return true;
+}
+
 // Copy the source slice's elements into the destination slice's backing
 // memory, write-through. The lengths must match; overlapping ranges abort with
 // druntime's plain "Range violation" message.
@@ -3040,11 +3095,17 @@ private string assertMessage(
 
     if (diagnostic.isArray)
         return text(
-            arrayOperandText(frame, diagnostic.lhs, diagnostic.operandType),
+            arrayOperandText(
+                frame, diagnostic.lhs, diagnostic.operandType,
+                diagnostic.elementIsArray,
+            ),
             " ",
             invertedOperator(diagnostic.operator),
             " ",
-            arrayOperandText(frame, diagnostic.rhs, diagnostic.operandType),
+            arrayOperandText(
+                frame, diagnostic.rhs, diagnostic.operandType,
+                diagnostic.elementIsArray,
+            ),
         );
 
     if (diagnostic.isString)
@@ -3082,28 +3143,33 @@ private string stringOperandText(
 
 // Render a dynamic-array operand as `[e0, e1, ...]`, reading the slice
 // descriptor at `offset` and formatting each element by its scalar type.
+// When `elementIsArray` is set (an array-of-arrays operand), each element is
+// itself a 16-byte slice descriptor of `elementType` scalars, rendered by
+// one recursive (non-nested) call, matching DMD's own `[[e0, e1], ...]`
+// rendering for one level of nesting.
 private string arrayOperandText(
     in ubyte[] frame,
     in size_t offset,
     in imported!"quickbite.backends.bytecode.core.program".ScalarType
         elementType,
+    in bool elementIsArray = false,
 ) @trusted {
-    import quickbite.backends.bytecode.core.program: size;
+    import quickbite.backends.bytecode.core.program: size, sliceDescriptorSize;
     import std.array: appender;
     import std.conv: text;
 
     const pointer = scalarValue!size_t(frame, offset);
     const length = scalarValue!size_t(frame, offset + size_t.sizeof);
-    const elementSize = size(elementType);
+    const elementSize = elementIsArray ? sliceDescriptorSize : size(elementType);
     const elements = (cast(const(ubyte)*) pointer)[0 .. length * elementSize];
 
     auto result = appender("[");
     foreach (index; 0 .. length) {
         if (index != 0)
             result ~= ", ";
-        result ~= operandText(
-            elements, index * elementSize, elementType,
-        );
+        result ~= elementIsArray
+            ? arrayOperandText(elements, index * elementSize, elementType)
+            : operandText(elements, index * elementSize, elementType);
     }
     result ~= "]";
     return result[];

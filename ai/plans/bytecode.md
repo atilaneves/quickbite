@@ -573,24 +573,25 @@ array's own `_program.literalBlocks` entry before writing the outer
 of nesting (`int[][][]`), a struct/static-array element, an empty literal
 (`[]`), or any non-constant element.
 
-Take the structural `==` comparison gap next -- a new opcode, not a builder
-extension:
+`compileEqualExpression` and `tryArrayComparisonAssert` (`compiler.d`,
+`arr1 == arr2` / `assert(arr1 == arr2)`) now compare an array-of-arrays
+structurally instead of by raw descriptor bytes: `Op.sliceEqualNested`
+(`machine.d`) compares outer lengths, then every row's own length and
+element bytes, so two separately-heap-allocated but content-equal inner
+arrays compare equal, matching `dmd`'s recursive `__equals` lowering.
+`arrayElementIsExactlyOneLevelNested`/`emitNestedArrayEqual` (`compiler.d`)
+gate and emit it; the assert-diagnostic renderer
+(`arrayOperandText`/`AssertDiagnostic.elementIsArray`) gained the matching
+one-level recursive rendering (`[[1, 2], [3, 4]] != [[1, 2], [3, 99]]`).
+Confirmed via `bin/ut` matching real `dmd`. Still declines (same as the
+literal-default and literal-initializer cases above) for two or more levels
+of nesting (`int[][][]`) and falls through to the pre-existing (not
+necessarily correct for that depth) flat comparison.
 
-- `compileEqualExpression` and `tryArrayComparisonAssert` (`compiler.d`,
-  `arr1 == arr2` / `assert(arr1 == arr2)`) call `arrayDescriptorOffset`
-  without `elementIsArray`, but threading it through is not enough:
-  `sliceEqualOp` compares array-of-arrays descriptors by raw bytes (each
-  16-byte element as an opaque blob), comparing the *pointers* two
-  separately-heap-allocated equal-content inner arrays happen to hold, not
-  their contents -- confirmed via `bin/ut`: even with `elementIsArray`
-  threaded, `[[1,2],[3,4]] == [[1,2],[3,4]]` still comes back wrong. Needs
-  a recursive/structural slice-equality opcode, not a width fix.
-
-Also newly confirmed, not yet bounded: `a.m[0][0] = 99` (a class field of
-type `int[][]`, indexed twice, no intervening struct/field dot) throws
-"Unsupported assignment in bytecode core" -- distinct from the
-already-fixed field-of-an-array-element shapes above
-(`arr[i].fixedField[j] = value`); not yet root-caused to a specific
+Take `a.m[0][0] = 99` next: a class field of type `int[][]`, indexed twice,
+no intervening struct/field dot, throws "Unsupported assignment in bytecode
+core" -- distinct from the already-fixed field-of-an-array-element shapes
+above (`arr[i].fixedField[j] = value`); not yet root-caused to a specific
 dispatch function.
 
 `assocArray.structKeyWithStringMemberComparesStructurally` (described

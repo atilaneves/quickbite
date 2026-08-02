@@ -13005,19 +13005,28 @@ private struct Compiler {
                 dynamicArrayElementType(equal.e2.type);
         if (bothDynamicArrays) {
             const elementType = dynamicArrayElementType(equal.e1.type);
-            const left =
-                arrayDescriptorOffset(elementType, equal.e1);
-            const right =
-                arrayDescriptorOffset(elementType, equal.e2);
-            const offset = allocate(ScalarType.bool_);
-            _code ~= Instruction(
-                sliceEqualOp(
-                    dynamicArrayElementSize(equal.e1.type, elementType),
-                ),
-                offset,
-                left,
-                right,
-            );
+            // `int[][] == int[][]`: each element is itself a heap-allocated
+            // row descriptor, so a flat `sliceEqualOp` below would compare
+            // the rows' `.ptr` values instead of their content -- two
+            // separately-constructed but content-equal rows would compare
+            // unequal. Structural comparison needs the dedicated nested
+            // opcode instead.
+            const nested = arrayElementIsExactlyOneLevelNested(equal.e1.type) &&
+                arrayElementIsExactlyOneLevelNested(equal.e2.type);
+            const left = arrayDescriptorOffset(elementType, equal.e1, nested);
+            const right = arrayDescriptorOffset(elementType, equal.e2, nested);
+            const offset = nested
+                ? emitNestedArrayEqual(left, right, equal.e1.type)
+                : allocate(ScalarType.bool_);
+            if (!nested)
+                _code ~= Instruction(
+                    sliceEqualOp(
+                        dynamicArrayElementSize(equal.e1.type, elementType),
+                    ),
+                    offset,
+                    left,
+                    right,
+                );
             if (equal.op == EXP.notEqual)
                 _code ~= Instruction(Op.notBool, offset, offset);
             return Operand(offset, ScalarType.bool_);
@@ -16893,16 +16902,30 @@ private struct Compiler {
             return false;
 
         const elementType = dynamicArrayElementType(lhs.type);
-        const lhsOffset = arrayDescriptorOffset(elementType, lhs);
-        const rhsOffset = arrayDescriptorOffset(elementType, rhs);
+        // `int[][] == int[][]`: both operands are genuine dynamic arrays
+        // whose own element is itself an array, one level deep (the mixed
+        // Tsarray/Tarray nested case above already declined; a Tsarray on
+        // both sides never reaches this function at all). Each row is a
+        // separately heap-allocated slice descriptor, so the flat
+        // `sliceEqualOp` byte compare below would compare row `.ptr` values
+        // instead of content -- structural comparison needs the dedicated
+        // nested opcode instead.
+        const nested = lhsTy == TY.Tarray && rhsTy == TY.Tarray &&
+            arrayElementIsExactlyOneLevelNested(lhs.type) &&
+            arrayElementIsExactlyOneLevelNested(rhs.type);
+        const lhsOffset = arrayDescriptorOffset(elementType, lhs, nested);
+        const rhsOffset = arrayDescriptorOffset(elementType, rhs, nested);
 
-        const equal = allocateBytes(1, 1);
-        _code ~= Instruction(
-            sliceEqualOp(dynamicArrayElementSize(lhs.type, elementType)),
-            equal,
-            lhsOffset,
-            rhsOffset,
-        );
+        const equal = nested
+            ? emitNestedArrayEqual(lhsOffset, rhsOffset, lhs.type)
+            : allocateBytes(1, 1);
+        if (!nested)
+            _code ~= Instruction(
+                sliceEqualOp(dynamicArrayElementSize(lhs.type, elementType)),
+                equal,
+                lhsOffset,
+                rhsOffset,
+            );
 
         // `==` holds when the slices are equal; `!=` holds when negated.
         ushort condition = equal;
@@ -16913,7 +16936,10 @@ private struct Compiler {
 
         const diagnostic = _program.assertDiagnostics.length;
         _program.assertDiagnostics ~=
-            AssertDiagnostic(op, lhsOffset, rhsOffset, elementType, true);
+            AssertDiagnostic(
+                op, lhsOffset, rhsOffset, elementType, true,
+                elementIsArray: nested,
+            );
         _code ~= Instruction(
             Op.assertTrue,
             condition,
@@ -17788,6 +17814,50 @@ private struct Compiler {
 
     private bool arrayElementIsString(Type type) {
         return isStringType(type.toBasetype.nextOf);
+    }
+
+    // True when `type` (`T[]`) is an array-of-arrays exactly one level deep:
+    // each element is itself an array, but every element's own elements are
+    // plain scalars. Gates `Op.sliceEqualNested`, which only handles this
+    // depth; two or more levels of nesting (`int[][][]`) still falls
+    // through to the existing (not yet correct for that shape) flat
+    // comparison.
+    private bool arrayElementIsExactlyOneLevelNested(Type type) {
+        if (!arrayElementIsArray(type))
+            return false;
+        return !arrayElementIsArray(type.toBasetype.nextOf);
+    }
+
+    // The byte width of one row's own elements for an array-of-arrays type
+    // gated by `arrayElementIsExactlyOneLevelNested`, e.g. 4 for `int[][]`'s
+    // `int` rows.
+    private uint nestedArrayRowElementSize(Type type) {
+        auto rowType = type.toBasetype.nextOf;
+        auto rowElementType = rowType.toBasetype.nextOf;
+        return dynamicArrayElementSize(rowType, scalarType(rowElementType));
+    }
+
+    // Emit `Op.sliceEqualNested`, comparing two array-of-arrays descriptors
+    // structurally rather than as raw descriptor bytes: DMD's real
+    // `__equals` lowering recurses into each element, so two separately
+    // heap-allocated but content-equal rows must compare equal, unlike a
+    // byte compare of the outer descriptor (which would compare the rows'
+    // `.ptr` values). Caller gates this with
+    // `arrayElementIsExactlyOneLevelNested`.
+    private ushort emitNestedArrayEqual(
+        in ushort left,
+        in ushort right,
+        Type outerType,
+    ) {
+        const result = allocateBytes(1, 1);
+        _code ~= Instruction(
+            Op.sliceEqualNested,
+            result,
+            left,
+            right,
+            cast(ushort) nestedArrayRowElementSize(outerType),
+        );
+        return result;
     }
 
     // Materialise a compile-time-constant `size_t` index into a frame slot, for

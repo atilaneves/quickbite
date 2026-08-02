@@ -486,6 +486,57 @@ static foreach (backend; Matrix!(
     }
 }
 
+// Array-of-arrays structural equality (`int[][] == int[][]`): DMD's real
+// `__equals` lowering recurses into each row's content, so two separately
+// heap-allocated but content-equal arrays-of-arrays must compare equal --
+// a raw byte compare of the outer descriptor would instead compare each
+// row's `.ptr`, which differs across the two separate literal allocations
+// below.
+static foreach (backend; Matrix!()) {
+    @("dynamicArray.arrayOfArraysEqualityIsStructural." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            unittest {
+                int[][] a = [[1, 2], [3, 4]];
+                int[][] b = [[1, 2], [3, 4]];
+                assert(a == b);
+                assert(!(a != b));
+            }
+        });
+    }
+}
+
+static foreach (backend; Matrix!()) {
+    @("assertDiagnostic.arrayOfArraysSameLengthDifferentContent." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            unittest {
+                int[][] a = [[1, 2], [3, 4]];
+                int[][] b = [[1, 2], [3, 99]];
+                assert(a == b);
+            }
+        }).shouldThrowWithMessage("[[1, 2], [3, 4]] != [[1, 2], [3, 99]]");
+    }
+}
+
+static foreach (backend; Matrix!()) {
+    @("assertDiagnostic.arrayOfArraysDifferentInnerLength." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            unittest {
+                int[][] a = [[1, 2], [3, 4]];
+                int[][] b = [[1, 2], [3]];
+                assert(a == b);
+            }
+        }).shouldThrowWithMessage("[[1, 2], [3, 4]] != [[1, 2], [3]]");
+    }
+}
+
 static foreach (backend; Matrix!()) {
     @("assertDiagnostic.characterEquality." ~ backend.stringof)
     @Tags(backend.stringof)
