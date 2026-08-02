@@ -13378,6 +13378,16 @@ private struct Compiler {
             if (auto offset = capturedDelegateOffsetOf(call))
                 return compileDynamicDelegateCall(*offset, call);
 
+        // `dgs[0]()` through an INDEX into a delegate-typed array, no
+        // intermediate delegate-typed local: the same run-time-typed
+        // dispatch as a delegate-typed parameter/field, with the indexed
+        // element's own descriptor offset (`delegateOperandOffset` already
+        // materialises it, in place for a static array element or a fresh
+        // copy for a dynamic array element).
+        if (function_ is null)
+            if (auto offset = indexedDelegateOffsetOf(call))
+                return compileDynamicDelegateCall(*offset, call);
+
         // `fp()` through a function-pointer value: the callee is not a named
         // `FuncDeclaration` but a function-pointer expression. Dispatch through
         // the run-time index it holds.
@@ -14212,6 +14222,25 @@ private struct Compiler {
 
         auto offset = new ushort;
         *offset = field.offset;
+        return offset;
+    }
+
+    // The frame offset of the delegate value read out of an INDEX into a
+    // delegate-typed array (`dgs[0]()`), or null if `call` is not a call
+    // through one. Unlike `delegateLocalOf`, there is no known
+    // `FuncDeclaration` behind this slot; `delegateOperandOffset` already
+    // knows how to materialise an indexed delegate element's own
+    // `{functionIndex, context}` pair for the argument/initializer case, so
+    // reuse it here.
+    private ushort* indexedDelegateOffsetOf(CallExp call) {
+        import dmd.astenums: TY;
+
+        auto index = call.e1 is null ? null : call.e1.isIndexExp;
+        if (index is null || index.type.toBasetype.ty != TY.Tdelegate)
+            return null;
+
+        auto offset = new ushort;
+        *offset = delegateOperandOffset(index);
         return offset;
     }
 

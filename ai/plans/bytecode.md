@@ -891,16 +891,28 @@ existing delegate-value machinery rather than the generic expression
 compiler, whose `FuncExp` case tags a placeholder `ulong_` that never
 matches an aggregate element's `void_`. `delegate.dynamicArrayElementIsAppendableAndCallable`/
 `delegate.staticArrayElementIsAssignableAndCallable` (`expressions.d`,
+omitted on `Interpreter`, unconfirmed) cover both shapes. Calling directly
+through the index with no intermediate delegate-typed local (`dgs[0]()`)
+now also works, the same way: `indexedDelegateOffsetOf` recognizes an
+`IndexExp` callee of delegate type and reuses `delegateOperandOffset` to
+feed `compileDynamicDelegateCall`.
+`delegate.dynamicArrayElementIsCallableThroughIndexDirectly`/
+`delegate.staticArrayElementIsCallableThroughIndexDirectly` (`expressions.d`,
 omitted on `Interpreter`, unconfirmed) cover both shapes.
 
-Next candidate: calling THROUGH the array index directly (`dgs[0]()`, no
-intermediate delegate-typed local) still throws "Unsupported call in
-bytecode core: dgs[0]()" -- `compileCall`'s delegate-dispatch chain
-(`delegateLocalOf`/`delegateParameterOffsetOf`/`structFieldDelegateOffsetOf`/
-`capturedDelegateOffsetOf`) has no case recognizing an `IndexExp` callee;
-needs a new offset helper computing the indexed element's descriptor (frame
-offset for a static array, a materialised copy for a dynamic array) and
-dispatching through the existing `compileDynamicDelegateCall`.
+Next candidate: an associative-array key other than a plain `int` is
+silently wrong rather than refused. `AssocArray` (`machine.d`) hardcodes
+`keys` as `int[]`; `aaInsert`/`aaGetRvalue`/`aaIn`/`aaRemove` all read the
+key operand via `scalarValue!int`, i.e. only its first 4 bytes. For
+`int[string] table`, the key operand is a 16-byte `{ptr, length}`
+descriptor, so two different `"a"` string-literal occurrences (different
+backing pointers) silently miscompare: `table["a"] = 42; assert(("a" in
+table) !is null);` reports the key absent even though `table.length == 1`
+(reading back through the exact same key variable used to insert works,
+isolating this to key identity, not insertion). Generalizes the
+already-known `assocArray.structKeyWithStringMemberComparesStructurally`
+gap below: needs `AssocArray` to hash/compare a key by its real byte width
+and type instead of reading 4 bytes and hoping they're an `int`.
 
 ### TDD and handoff discipline
 

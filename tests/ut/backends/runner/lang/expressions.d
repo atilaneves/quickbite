@@ -1772,6 +1772,43 @@ static foreach (backend; Matrix!(
     }
 }
 
+// Calling directly through an array index (`dgs[0]()`), with no
+// intermediate delegate-typed local, dispatches through the same run-time
+// descriptor an indexed read already materialises.
+static foreach (backend; Matrix!(
+    Omit!(Interpreter, Because.unconfirmed),
+)) {
+    @("delegate.dynamicArrayElementIsCallableThroughIndexDirectly." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            unittest {
+                int delegate()[] dgs = [() => 42];
+                assert(dgs[0]() == 42);
+            }
+        });
+    }
+}
+
+// The static-array twin of the fixture above.
+static foreach (backend; Matrix!(
+    Omit!(Interpreter, Because.unconfirmed),
+)) {
+    @("delegate.staticArrayElementIsCallableThroughIndexDirectly." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            unittest {
+                int delegate()[2] dgs;
+                dgs[0] = () => 42;
+                assert(dgs[0]() == 42);
+            }
+        });
+    }
+}
+
 /++
     Casts involving slices, pointers, arrays, and bool.
 +/
