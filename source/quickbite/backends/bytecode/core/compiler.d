@@ -4616,6 +4616,7 @@ private struct Compiler {
             if (fieldType.toBasetype.ty == TY.Tarray) {
                 compileDynamicArrayInto(
                     fieldOffset, dynamicArrayElementType(fieldType), element,
+                    arrayElementIsArray(fieldType),
                 );
                 continue;
             }
@@ -10138,6 +10139,7 @@ private struct Compiler {
                         destination,
                         dynamicArrayElementType(field.type),
                         assign.e2,
+                        arrayElementIsArray(field.type),
                     );
                     _code ~= Instruction(
                         Op.pointerStore16,
@@ -10195,6 +10197,7 @@ private struct Compiler {
                         destination,
                         dynamicArrayElementType(field.type),
                         assign.e2,
+                        arrayElementIsArray(field.type),
                     );
                     _code ~= Instruction(
                         Op.pointerStore16,
@@ -11246,6 +11249,7 @@ private struct Compiler {
                 allocateBytes(sliceDescriptorSize, size_t.sizeof);
             compileDynamicArrayInto(
                 destination, dynamicArrayElementType(fieldType), rhs,
+                arrayElementIsArray(fieldType),
             );
             _code ~= Instruction(
                 Op.pointerStore16, destination, pointer, compileSizeConstant(0),
@@ -11311,6 +11315,7 @@ private struct Compiler {
         if (field.type.toBasetype.ty == TY.Tarray) {
             compileDynamicArrayInto(
                 field.offset, dynamicArrayElementType(field.type), rhs,
+                arrayElementIsArray(field.type),
             );
             writeBackStructField(*field);
             auto descriptorResult = new Operand;

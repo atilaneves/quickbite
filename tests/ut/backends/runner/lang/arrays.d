@@ -5019,17 +5019,9 @@ static foreach (backend; Matrix!(
 //
 // The fixture builds `matrixField` from an intermediate `rows` local rather
 // than an inline array-of-arrays literal passed directly as the constructor
-// argument: a separate, pre-existing gap (`compileStructLiteralInto`/
-// `tryStructFieldAssign`/`storeArrayElementFieldPointer` and the two inline
-// `Tarray`-field branches in `compileAssignExpression`, `compiler.d`, all
-// call `compileDynamicArrayInto` for a `Tarray` field without passing
-// `arrayElementIsArray(fieldType)`) mis-sizes an array-of-arrays *literal*
-// landing directly in one of those field-typed slots, corrupting the outer
-// array's own element width. That gap is independent of this fix -- it is a
-// struct/class-field literal-construction defect, not an indexing defect --
-// and is out of scope here; routing the literal through a local first avoids
-// it, since copying an existing dynamic-array local's descriptor into a
-// field is a plain 16-byte copy regardless of `elementIsArray`.
+// argument, exercising the plain descriptor-copy path
+// (`dynamicArrayDescriptorOrNull`) rather than literal construction; the
+// sibling block below exercises the literal directly.
 static foreach (backend; Matrix!(
     Omit!(Interpreter, Because.unconfirmed,
         "Unsupported interpreter assignment target."),
@@ -5098,5 +5090,94 @@ static foreach (backend; AliasSeq!(Ctfe)) {
                 arr[0].matrixField[1][5] = 99;
             }
         }).shouldThrowWithMessage("array index 5 is out of bounds `[0..3]`");
+    }
+}
+
+// The construction-side sibling of the descriptor-copy fixture above: an
+// array-of-arrays *literal* landing directly in a `Tarray` field slot
+// (rather than through an existing dynamic-array local's descriptor copy).
+// Five call sites built a field's descriptor via `compileDynamicArrayInto`
+// without passing `arrayElementIsArray(fieldType)`, defaulting to `false`
+// and mis-sizing the element width to the scalar (4-byte) width instead of
+// the 16-byte slice-descriptor width a nested array element actually needs.
+// Every heap write through the resulting descriptor then landed at the
+// wrong address -- confirmed to SIGSEGV, not merely produce a wrong result.
+// `compileStructLiteralInto` covers a struct literal built inline; the
+// other four are its `compileAssignExpression`-reachable siblings.
+static foreach (backend; Matrix!()) {
+    @("dynamicArray.structLiteralArrayOfArraysFieldConstructedInline." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct Outer { int[][] matrixField; int tag; }
+            unittest {
+                Outer o = Outer([[1, 2], [3, 4, 5]], 10);
+                assert(o.matrixField[1][2] == 5);
+                assert(o.matrixField[0][1] == 2);
+                assert(o.tag == 10);
+            }
+        });
+    }
+
+    @("dynamicArray.directFieldAssignmentOfArrayOfArraysLiteral." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct Outer { int[][] matrixField; int tag; }
+            unittest {
+                Outer o;
+                o.matrixField = [[1, 2], [3, 4, 5]];
+                assert(o.matrixField[1][2] == 5);
+                assert(o.matrixField[0][1] == 2);
+            }
+        });
+    }
+
+    @("dynamicArray.arrayElementFieldAssignmentOfArrayOfArraysLiteral." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct Outer { int[][] matrixField; int tag; }
+            unittest {
+                Outer[] arr = [Outer(null, 0)];
+                arr[0].matrixField = [[1, 2], [3, 4, 5]];
+                assert(arr[0].matrixField[1][2] == 5);
+                assert(arr[0].matrixField[0][1] == 2);
+            }
+        });
+    }
+
+    @("dynamicArray.structPointerFieldAssignmentOfArrayOfArraysLiteral." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct Holder { int[][] matrixField; int tag; }
+            unittest {
+                Holder holder;
+                Holder* carrier = &holder;
+                carrier.matrixField = [[1, 2], [3, 4, 5]];
+                assert(carrier.matrixField[1][2] == 5);
+                assert(holder.matrixField[1][2] == 5);
+            }
+        });
+    }
+
+    @("dynamicArray.classPointerFieldAssignmentOfArrayOfArraysLiteral." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            class C { int[][] matrixField; }
+            unittest {
+                C c = new C();
+                c.matrixField = [[1, 2], [3, 4, 5]];
+                assert(c.matrixField[1][2] == 5);
+                assert(c.matrixField[0][1] == 2);
+            }
+        });
     }
 }
