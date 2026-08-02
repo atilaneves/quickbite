@@ -2547,6 +2547,48 @@ static foreach (backend; Matrix!(
     }
 }
 
+static foreach (backend; Matrix!(
+    Omit!(Interpreter, Because.unconfirmed,
+        "a Tarray class field's own array-literal default is never " ~
+        "applied on allocation"),
+    Omit!(Ctfe, Because.diverges,
+        "real dmd CTFE gives every `new C()` its own fresh array for an " ~
+        "array-literal field default instead of sharing one static " ~
+        "backing array the way compiled/runtime D does"),
+)) {
+    @("class.tarrayOfArraysFieldDefaultInitializerFromArrayLiteralIsSharedAcrossInstances." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            class C {
+                int[][] m = [[1, 2], [3, 4]];
+            }
+
+            unittest {
+                auto a = new C();
+                auto b = new C();
+                assert(a.m[0][0] == 1);
+                assert(a.m[0][1] == 2);
+                assert(a.m[1][0] == 3);
+                assert(a.m[1][1] == 4);
+                assert(b.m[0][0] == 1);
+
+                auto row = a.m[0];
+                row[0] = 99;
+                assert(b.m[0][0] == 99);
+
+                auto c = new C();
+                c.m = [[7, 8], [9, 10]];
+                assert(c.m[0][0] == 7);
+                assert(c.m[1][1] == 10);
+                assert(a.m[0][0] == 99);
+                assert(b.m[0][0] == 99);
+            }
+        });
+    }
+}
+
 // cerealed's `@ArrayLength` field decode (`Unit[] units; ... foreach(ref e;
 // units) cereal.grain(e);` inside a `ref Packet val` parameter) writes each
 // element's fields through a hidden temporary dmd's foreach-to-for lowering

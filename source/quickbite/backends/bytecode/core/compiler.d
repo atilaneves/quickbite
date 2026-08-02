@@ -11099,10 +11099,20 @@ private struct Compiler {
 
     // Compile-time bytes for a module-level dynamic array's non-null,
     // non-default initializer, when it is a non-empty array literal of
-    // constant scalar elements. Returns `null` (with `count` left at 0) when
-    // the initializer is not that shape, so the caller can tell "empty
-    // literal bytes" (`count == 0` from a genuinely empty `[]` initializer,
-    // not yet given real storage either) apart from "declined".
+    // constant scalar elements, or (`elementIsArray`) a non-empty array
+    // literal of constant-scalar-element array-literal elements (exactly one
+    // level of nesting, `int[][] m = [[1, 2], [3, 4]];`) -- each inner array
+    // is built into its own stable `literalBlocks` entry first, the same way
+    // `compileDynamicArrayInto`'s own array-of-arrays literal branch builds
+    // each row into its own heap block at runtime, so the outer bytes hold
+    // one 16-byte `{pointer, count}` descriptor per row rather than raw
+    // scalar bytes. A row that is not itself a constant-scalar-element array
+    // literal (deeper nesting, a non-literal expression, or an empty `[]`
+    // row) declines the whole array, matching the plain-scalar decline
+    // below. Returns `null` (with `count` left at 0) when the initializer is
+    // not one of these shapes, so the caller can tell "empty literal bytes"
+    // (`count == 0` from a genuinely empty `[]` initializer, not yet given
+    // real storage either) apart from "declined".
     private ubyte[] moduleDynamicArrayLiteralInitializerBytes(
         Expression initializerExpr,
         in ScalarType elementType,
@@ -11111,8 +11121,42 @@ private struct Compiler {
     ) {
         import std.bitmanip: nativeToLittleEndian;
 
-        if (elementIsArray || elementType == ScalarType.void_)
+        if (elementType == ScalarType.void_)
             return null;
+
+        if (elementIsArray) {
+            auto outer = initializerExpr.isArrayLiteralExp;
+            if (outer is null || outer.elements is null ||
+                outer.elements.length == 0)
+            {
+                return null;
+            }
+
+            count = outer.elements.length;
+            ubyte[] bytes;
+            bytes.length = count * sliceDescriptorSize;
+            foreach (elementIndex; 0 .. count) {
+                size_t rowCount;
+                auto rowBytes = moduleDynamicArrayLiteralInitializerBytes(
+                    (*outer.elements)[elementIndex], elementType, false,
+                    rowCount,
+                );
+                if (rowBytes is null && rowCount == 0) {
+                    count = 0;
+                    return null;
+                }
+
+                _program.literalBlocks ~= rowBytes;
+                const rowPointer =
+                    cast(size_t) _program.literalBlocks[$ - 1].ptr;
+                const rowOffset = elementIndex * sliceDescriptorSize;
+                bytes[rowOffset .. rowOffset + size_t.sizeof] =
+                    nativeToLittleEndian(rowPointer);
+                bytes[rowOffset + size_t.sizeof .. rowOffset + sliceDescriptorSize] =
+                    nativeToLittleEndian(cast(size_t) rowCount);
+            }
+            return bytes;
+        }
 
         auto literal = initializerExpr.isArrayLiteralExp;
         if (literal is null || literal.elements is null ||

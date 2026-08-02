@@ -562,36 +562,36 @@ remaining call sites of `arrayDescriptorOffset` either pass a `string`
 `false`) or are two deeper, separate gaps described below that threading
 the argument alone does not fix.
 
-Still open, same missing-`arrayElementIsArray` shape but each blocked on
-something bigger than threading the argument. Take the class-field-default
-sharing gap next -- it is the more concretely bounded of the two (a builder
-extension, not a new opcode):
+A `Tarray` class field's and a module-level dynamic array's own literal
+default are now shared for an array-of-arrays element too (`int[][] m =
+[[1, 2], [3, 4]];`): `moduleDynamicArrayLiteralInitializerBytes`
+(`compiler.d`), the shared compile-time-bytes builder both cases go
+through, recurses one level into each outer element, building each inner
+array's own `_program.literalBlocks` entry before writing the outer
+`{pointer, count}` descriptors -- confirmed via `bin/ut` matching real
+`dmd`. Still declines (same as the default-initializer case) for two levels
+of nesting (`int[][][]`), a struct/static-array element, an empty literal
+(`[]`), or any non-constant element.
 
-- A `Tarray` class field's array-literal default (`int[] arr = [1, 2,
-  3];`) is now applied on allocation and, for a constant-scalar-element
-  literal, shared across every `new C()` that does not override it,
-  matching real `dmd` (confirmed directly). An array-of-arrays element
-  literal default (`int[][] m = [[1, 2], [3, 4]];`) is applied but still
-  not shared: `moduleDynamicArrayLiteralInitializerBytes` (`compiler.d`),
-  the same compile-time-bytes builder both the class-field default and a
-  module-level dynamic array's own literal default go through, declines
-  any `elementIsArray` shape outright (confirmed unchanged for the
-  pre-existing, unexercised module-variable case too), so both fall back
-  to a fresh per-`new`/per-load heap build instead of one static backing
-  structure -- confirmed via `bin/ut`: two `new C()` instances get
-  different `m.ptr` values, unlike real `dmd`. Needs the builder extended
-  to recurse into a nested array-literal element (build each inner array's
-  own bytes/descriptor, then the outer descriptor over them), not a bare
-  width fix.
+Take the structural `==` comparison gap next -- a new opcode, not a builder
+extension:
+
 - `compileEqualExpression` and `tryArrayComparisonAssert` (`compiler.d`,
   `arr1 == arr2` / `assert(arr1 == arr2)`) call `arrayDescriptorOffset`
-  without `elementIsArray` too, but threading it through is not enough:
+  without `elementIsArray`, but threading it through is not enough:
   `sliceEqualOp` compares array-of-arrays descriptors by raw bytes (each
   16-byte element as an opaque blob), comparing the *pointers* two
   separately-heap-allocated equal-content inner arrays happen to hold, not
   their contents -- confirmed via `bin/ut`: even with `elementIsArray`
   threaded, `[[1,2],[3,4]] == [[1,2],[3,4]]` still comes back wrong. Needs
   a recursive/structural slice-equality opcode, not a width fix.
+
+Also newly confirmed, not yet bounded: `a.m[0][0] = 99` (a class field of
+type `int[][]`, indexed twice, no intervening struct/field dot) throws
+"Unsupported assignment in bytecode core" -- distinct from the
+already-fixed field-of-an-array-element shapes above
+(`arr[i].fixedField[j] = value`); not yet root-caused to a specific
+dispatch function.
 
 `assocArray.structKeyWithStringMemberComparesStructurally` (described
 above) remains open and still not bounded for one commit: even after fixing
@@ -700,10 +700,12 @@ row reaches them:
 - A `__gshared`/`static` module-level dynamic-array variable
   (`moduleDynamicArrayVariableOrNull`, `compiler.d`) with a non-null
   initializer now has real storage when the initializer is a non-empty array
-  literal of constant scalar elements (`int[] arr = [1, 2, 3];`); still
-  declines registration (same as the default-initializer case) for an
-  array-of-arrays element, a struct/static-array element, an empty literal
-  (`[]`), or any non-constant element (e.g. a function call). A module-level
+  literal of constant scalar elements (`int[] arr = [1, 2, 3];`) or, one
+  level deep, of constant-scalar-element array-literal elements
+  (`int[][] m = [[1, 2], [3, 4]];`); still declines registration (same as
+  the default-initializer case) for two levels of nesting (`int[][][]`), a
+  struct/static-array element, an empty literal (`[]`), or any non-constant
+  element (e.g. a function call). A module-level
   struct variable (`ModuleStructVariable`) is supported for the
   default-initialized case:
   field access materialises the whole block

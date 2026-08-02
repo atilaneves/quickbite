@@ -448,6 +448,44 @@ static foreach (backend; Matrix!(
     }
 }
 
+// The array-of-arrays-element sibling of the fixture above
+// (`int[][] arr = [[1, 2], [3, 4]];`): `moduleDynamicArrayLiteralInitializerBytes`
+// declined any `elementIsArray` shape outright, so `arr` fell all the way
+// through `moduleDynamicArrayVariableOrNull` to "declined" and the variable
+// was never registered as dataseg storage at all.
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.inexpressible,
+        "CTFE cannot read dataseg (__gshared/static) storage"),
+    Omit!(Interpreter, Because.unconfirmed),
+    Omit!(LLVMJit, Because.unconfirmed),
+)) {
+    @("dynamicArray.moduleArrayOfArraysLiteralInitializer." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            int[][] arr = [[1, 2], [3, 4]];
+
+            int sum() {
+                return arr[0][0] + arr[0][1] + arr[1][0] + arr[1][1];
+            }
+
+            unittest {
+                assert(sum() == 10);
+
+                assert(arr.length == 2);
+                assert(arr[0][0] == 1);
+                assert(arr[0][1] == 2);
+                assert(arr[1][0] == 3);
+                assert(arr[1][1] == 4);
+
+                auto row = arr[0];
+                row[0] = 99;
+                assert(arr[0][0] == 99);
+            }
+        });
+    }
+}
+
 static foreach (backend; Matrix!()) {
     @("assertDiagnostic.characterEquality." ~ backend.stringof)
     @Tags(backend.stringof)
