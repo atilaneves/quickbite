@@ -2686,6 +2686,74 @@ static foreach (backend; Matrix!()) {
     }
 }
 
+// A key wider than 4 bytes (`long`) must compare its full width, not just
+// its low 32 bits.
+static foreach (backend; Matrix!()) {
+    @("assocArray.longKeyLookupUsesFullWidth." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            long key(long value) {
+                return value;
+            }
+
+            unittest {
+                long big = key(1L << 40);
+                int[long] table;
+                table[big] = 7;
+
+                assert((big in table) !is null);
+                assert(table[big] == 7);
+                assert(table.length == 1);
+            }
+        });
+    }
+}
+
+// A `double` key's bytes are its IEEE-754 bit pattern, not a 4-byte `int`
+// truncation of them.
+static foreach (backend; Matrix!()) {
+    @("assocArray.doubleKeyLookupUsesFullWidth." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            double key(double value) {
+                return value;
+            }
+
+            unittest {
+                double pi = key(3.14159);
+                int[double] table;
+                table[pi] = 9;
+
+                assert((pi in table) !is null);
+                assert(table[pi] == 9);
+                assert(table.length == 1);
+            }
+        });
+    }
+}
+
+// A `string` key compares the content its slice descriptor points at, not
+// the descriptor's own bytes: two separately-materialised but content-equal
+// strings are the same key.
+static foreach (backend; Matrix!()) {
+    @("assocArray.stringKeyComparesByContentNotIdentity." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            unittest {
+                int[string] table;
+                table["a"] = 42;
+
+                assert(("a" in table) !is null);
+                assert(table["a"] == 42);
+                assert(table.length == 1);
+            }
+        });
+    }
+}
+
 // Struct AA keys compare dynamic-array members by their elements, not by the
 // identity of their slice backing storage. Bytecode refuses DMD's synthesized
 // associative-array key variable before it can execute this fixture.

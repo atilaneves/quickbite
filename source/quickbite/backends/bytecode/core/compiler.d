@@ -6802,13 +6802,14 @@ private struct Compiler {
             ));
 
         const width = assocArrayValueWidth(literal.type.toBasetype);
+        const keyMeta = assocArrayKeyMeta(literal.type.toBasetype);
         _code ~= Instruction(Op.aaNew, destination);
         foreach (index; 0 .. literal.keys.length) {
             const key = compileExpression((*literal.keys)[index]);
             const value = compileExpression((*literal.values)[index]);
             _code ~= Instruction(
                 Op.aaInsert, destination, key.offset, value.offset,
-                cast(ushort) width,
+                cast(ushort) width, keyMeta,
             );
         }
     }
@@ -11948,11 +11949,12 @@ private struct Compiler {
 
         const handle = (declaration in _locals);
         const width = assocArrayValueWidth(index.e1.type.toBasetype);
+        const keyMeta = assocArrayKeyMeta(index.e1.type.toBasetype);
         const key = compileExpression(index.e2);
         const value = compileExpression(rhs);
         _code ~= Instruction(
             Op.aaInsert, *handle, key.offset, value.offset,
-            cast(ushort) width,
+            cast(ushort) width, keyMeta,
         );
 
         auto result = new Operand;
@@ -13078,11 +13080,12 @@ private struct Compiler {
         // `_d_aaEqual`), so match the operand type here.
         if (equal.e1.type.toBasetype.ty == TY.Taarray) {
             const width = assocArrayValueWidth(equal.e1.type.toBasetype);
+            const keyMeta = assocArrayKeyMeta(equal.e1.type.toBasetype);
             const left = assocArrayHandleOffset(equal.e1);
             const right = assocArrayHandleOffset(equal.e2);
             const offset = allocate(ScalarType.bool_);
             _code ~= Instruction(
-                Op.aaEqual, offset, left, right, cast(ushort) width,
+                Op.aaEqual, offset, left, right, cast(ushort) width, keyMeta,
             );
             if (equal.op == EXP.notEqual)
                 _code ~= Instruction(Op.notBool, offset, offset);
@@ -15672,13 +15675,14 @@ private struct Compiler {
                 auto aaType = assocArrayType((*call.arguments)[0]);
                 const valueType = assocArrayValueScalarType(aaType);
                 const width = assocArrayValueWidth(aaType);
+                const keyMeta = assocArrayKeyMeta(aaType);
                 const key = compileExpression((*call.arguments)[1]);
                 const offset = allocateBytes(
                     cast(uint) size_t.sizeof, size_t.sizeof,
                 );
                 _code ~= Instruction(
                     Op.aaGetRvalue, offset, handle, key.offset,
-                    cast(ushort) width,
+                    cast(ushort) width, keyMeta,
                 );
                 return Operand(offset, ScalarType.ulong_, true, valueType);
             }
@@ -15691,35 +15695,40 @@ private struct Compiler {
                 auto aaType = assocArrayType((*call.arguments)[0]);
                 const valueType = assocArrayValueScalarType(aaType);
                 const width = assocArrayValueWidth(aaType);
+                const keyMeta = assocArrayKeyMeta(aaType);
                 const key = compileExpression((*call.arguments)[1]);
                 const offset = allocateBytes(
                     cast(uint) size_t.sizeof, size_t.sizeof,
                 );
                 _code ~= Instruction(
                     Op.aaIn, offset, handle, key.offset, cast(ushort) width,
+                    keyMeta,
                 );
                 return Operand(offset, ScalarType.ulong_, true, valueType);
             }
 
             case remove: {
-                const width =
-                    assocArrayValueWidth(assocArrayType((*call.arguments)[0]));
+                auto aaType = assocArrayType((*call.arguments)[0]);
+                const width = assocArrayValueWidth(aaType);
+                const keyMeta = assocArrayKeyMeta(aaType);
                 const key = compileExpression((*call.arguments)[1]);
                 const offset = allocate(ScalarType.bool_);
                 _code ~= Instruction(
                     Op.aaRemove, offset, handle, key.offset,
-                    cast(ushort) width,
+                    cast(ushort) width, keyMeta,
                 );
                 return Operand(offset, ScalarType.bool_);
             }
 
             case equal: {
-                const width =
-                    assocArrayValueWidth(assocArrayType((*call.arguments)[0]));
+                auto aaType = assocArrayType((*call.arguments)[0]);
+                const width = assocArrayValueWidth(aaType);
+                const keyMeta = assocArrayKeyMeta(aaType);
                 const right = assocArrayHandleOffset((*call.arguments)[1]);
                 const offset = allocate(ScalarType.bool_);
                 _code ~= Instruction(
                     Op.aaEqual, offset, handle, right, cast(ushort) width,
+                    keyMeta,
                 );
                 return Operand(offset, ScalarType.bool_);
             }
@@ -15732,8 +15741,12 @@ private struct Compiler {
                 return Operand(offset, ScalarType.ulong_);
             }
 
-            case keys:
-                return compileAssocArraySlice(Op.aaKeys, handle, int.sizeof);
+            case keys: {
+                auto aaType = assocArrayType((*call.arguments)[0]);
+                return compileAssocArraySlice(
+                    Op.aaKeys, handle, assocArrayKeyWidth(aaType),
+                );
+            }
 
             case values:
                 return compileAssocArraySlice(
@@ -15792,6 +15805,16 @@ private struct Compiler {
         const valueElementSize = valueParameter.type.toBasetype.ty == TY.Tstruct
             ? cast(uint) staticArraySize(valueParameter.type)
             : size(scalarType(valueParameter.type));
+
+        // The loop body below always reads each key back as a plain 4-byte
+        // `int` (`Op.indexLoad4`, `ScalarType.int_`); a `long`/`double`/
+        // `string`-keyed map now packs `AssocArray.keys` (machine.d) at its
+        // own real width, so refuse rather than read past/short of it.
+        if (keyParameter.type.toBasetype.ty != TY.Tint32)
+            throw new Exception(text(
+                "Unsupported associative array foreach key type in bytecode core: ",
+                typeChars(keyParameter.type),
+            ));
 
         const keys = compileAssocArraySlice(Op.aaKeys, handle, int.sizeof);
         const values = compileAssocArraySlice(
@@ -15864,6 +15887,7 @@ private struct Compiler {
         auto aaType = assocArrayType((*call.arguments)[0]);
         const valueType = assocArrayValueScalarType(aaType);
         const width = assocArrayValueWidth(aaType);
+        const keyMeta = assocArrayKeyMeta(aaType);
 
         const key = compileExpression((*call.arguments)[1]);
         // A fresh, appropriately-sized placeholder: its bytes are immediately
@@ -15876,9 +15900,10 @@ private struct Compiler {
             allocateBytes(cast(uint) size_t.sizeof, size_t.sizeof);
         _code ~= Instruction(
             Op.aaInsert, handle, key.offset, placeholder, cast(ushort) width,
+            keyMeta,
         );
         _code ~= Instruction(
-            Op.aaIn, offset, handle, key.offset, cast(ushort) width,
+            Op.aaIn, offset, handle, key.offset, cast(ushort) width, keyMeta,
         );
         return Operand(offset, ScalarType.ulong_, true, valueType);
     }
@@ -15935,6 +15960,62 @@ private struct Compiler {
             dynamicArrayElementType(aaType),
             arrayElementIsArray(aaType),
         );
+    }
+
+    // The associative array's own key type (`TypeAArray.index`), the
+    // key-side counterpart to `assocArrayValueWidth`'s value type.
+    private Type assocArrayKeyType(Type aaType) {
+        return aaType.isTypeAArray.index;
+    }
+
+    // True when the associative array's key is compared by the content its
+    // {ptr, length} descriptor points at (`keysEqual`'s `keyIsArray`,
+    // machine.d), rather than by the descriptor's own bytes --
+    // two separately-constructed but content-equal `string`s have different
+    // backing pointers, so a raw descriptor compare would wrongly treat them
+    // as distinct keys. Only a plain `string` (immutable `char[]`) is
+    // supported this way; `wstring`/`dstring` throw rather than silently
+    // miscompare by the wrong element width. A struct-typed key never
+    // reaches here: `compileAssocArrayHook`'s generic key-expression compile
+    // (`compileExpression`) throws first for DMD's synthesized `__aakeyN`
+    // struct-typed temporary.
+    private bool assocArrayKeyIsArray(Type aaType) {
+        import std.conv: text;
+
+        auto keyType = assocArrayKeyType(aaType);
+        if (!isStringType(keyType))
+            return false;
+        if (!isCharStringType(keyType))
+            throw new Exception(text(
+                "Unsupported associative array key type in bytecode core: ",
+                typeChars(keyType),
+            ));
+        return true;
+    }
+
+    // The byte width `AssocArray.keys` (`machine.d`) packs each key entry
+    // at, mirroring `assocArrayValueWidth`'s value-side stride: a `string`
+    // key is its own 16-byte slice descriptor; any other supported key is
+    // its scalar width.
+    private uint assocArrayKeyWidth(Type aaType) {
+        return assocArrayKeyIsArray(aaType)
+            ? sliceDescriptorSize
+            : size(scalarType(assocArrayKeyType(aaType)));
+    }
+
+    // Packs an AA key's width and comparison mode into `Instruction.e`
+    // (`assocArrayKeyIsArrayFlag`): every AA opcode that reads or writes a
+    // key needs both, and there is no operand to spare for a second field.
+    private ushort assocArrayKeyMeta(Type aaType) {
+        import quickbite.backends.bytecode.core.program:
+            assocArrayKeyIsArrayFlag;
+
+        const isArray = assocArrayKeyIsArray(aaType);
+        const width = isArray
+            ? sliceDescriptorSize
+            : size(scalarType(assocArrayKeyType(aaType)));
+        assert(width < assocArrayKeyIsArrayFlag);
+        return cast(ushort) (width | (isArray ? assocArrayKeyIsArrayFlag : 0));
     }
 
     // The frame offset of an associative-array handle for `expression`: an AA
@@ -17254,11 +17335,12 @@ private struct Compiler {
             return false;
 
         const width = assocArrayValueWidth(lhs.type.toBasetype);
+        const keyMeta = assocArrayKeyMeta(lhs.type.toBasetype);
         const left = assocArrayHandleOffset(lhs);
         const right = assocArrayHandleOffset(rhs);
         const equal = allocateBytes(1, 1);
         _code ~= Instruction(
-            Op.aaEqual, equal, left, right, cast(ushort) width,
+            Op.aaEqual, equal, left, right, cast(ushort) width, keyMeta,
         );
 
         // `==` holds when the maps are equal; `!=` holds when negated.

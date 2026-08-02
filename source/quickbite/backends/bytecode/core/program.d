@@ -704,12 +704,23 @@ package(quickbite.backends.bytecode) enum TranscodeMode: ushort {
 // is at most 8, so bit 8 is free for the flag.
 package(quickbite.backends.bytecode) enum unsignedConvertFlag = 0x100;
 
+// OR'd into an AA opcode's key-width operand (`Instruction.e`) to mark the key
+// as compared by the content its {ptr, length} descriptor points at (a plain
+// `string` key), rather than by the descriptor's own bytes. The width packed
+// alongside it (`keyMeta & (assocArrayKeyIsArrayFlag - 1)`) is then always
+// `sliceDescriptorSize`; every other supported key packs its own scalar width
+// (at most 8), so bit 15 is free for the flag.
+package(quickbite.backends.bytecode) enum assocArrayKeyIsArrayFlag = 0x8000;
+
 package(quickbite.backends.bytecode) struct Instruction {
     Op op;
     ushort a;
     ushort b;
     ushort c;
     ushort d;
+    // AA key metadata (`assocArrayKeyIsArrayFlag`-tagged width): unused by
+    // every other opcode.
+    ushort e;
 }
 
 // A pass-by-reference parameter: its slot in the callee frame holds the
