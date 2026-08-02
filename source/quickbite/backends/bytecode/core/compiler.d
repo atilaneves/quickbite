@@ -2865,9 +2865,11 @@ private struct Compiler {
             return null;
 
         const elementType = dynamicArrayElementType(expression.type);
-        const offset = arrayDescriptorOffset(elementType, expression);
+        const elementIsArray = arrayElementIsArray(expression.type);
+        const offset =
+            arrayDescriptorOffset(elementType, expression, elementIsArray);
         auto result = new DynamicArrayLocal;
-        *result = DynamicArrayLocal(offset, elementType);
+        *result = DynamicArrayLocal(offset, elementType, elementIsArray);
         return result;
     }
 
@@ -3236,10 +3238,13 @@ private struct Compiler {
                 (expression.type !is null && isStringType(expression.type))))
         {
             const elementType = dynamicArrayElementType(expression.type);
+            const elementIsArray = arrayElementIsArray(expression.type);
             const offset = allocateBytes(sliceDescriptorSize, size_t.sizeof);
-            compileDynamicArrayInto(offset, elementType, expression);
+            compileDynamicArrayInto(
+                offset, elementType, expression, elementIsArray,
+            );
             auto result = new DynamicArrayLocal;
-            *result = DynamicArrayLocal(offset, elementType);
+            *result = DynamicArrayLocal(offset, elementType, elementIsArray);
             return result;
         }
 
@@ -6364,6 +6369,7 @@ private struct Compiler {
                     fieldOffset,
                     dynamicArrayElementType(field.type),
                     (*arguments)[index],
+                    arrayElementIsArray(field.type),
                 );
                 continue;
             }
@@ -7332,11 +7338,16 @@ private struct Compiler {
         in ScalarType elementType,
         CatExp cat,
     ) {
+        const elementIsArray = arrayElementIsArray(cat.type);
         const elementSize = dynamicArrayElementSize(
-            cat.type, elementType, arrayElementIsArray(cat.type),
+            cat.type, elementType, elementIsArray,
         );
-        const left = catOperandDescriptor(elementType, elementSize, cat.e1);
-        const right = catOperandDescriptor(elementType, elementSize, cat.e2);
+        const left = catOperandDescriptor(
+            elementType, elementSize, elementIsArray, cat.e1,
+        );
+        const right = catOperandDescriptor(
+            elementType, elementSize, elementIsArray, cat.e2,
+        );
         _code ~= Instruction(
             concatArraysOp(elementSize),
             destination,
@@ -7355,13 +7366,14 @@ private struct Compiler {
     private ushort catOperandDescriptor(
         in ScalarType elementType,
         in uint elementSize,
+        in bool elementIsArray,
         Expression operand,
     ) {
         import dmd.astenums: TY;
 
         if (operand.type !is null &&
             operand.type.toBasetype.ty == TY.Tarray)
-            return arrayDescriptorOffset(elementType, operand);
+            return arrayDescriptorOffset(elementType, operand, elementIsArray);
 
         const offset = allocateBytes(sliceDescriptorSize, size_t.sizeof);
         _code ~= Instruction(
@@ -11555,10 +11567,13 @@ private struct Compiler {
         // real module storage first, mirroring `compileAppendElement`'s
         // identical fix for the single-element case.
         if (isModuleDynamicArrayVariable(concatenate.e1)) {
-            const elementType = moduleDynamicArrayVariableOrNull(
+            const moduleVariable = *moduleDynamicArrayVariableOrNull(
                 concatenate.e1.isVarExp.var.isVarDeclaration,
-            ).elementType;
-            const right = arrayDescriptorOffset(elementType, concatenate.e2);
+            );
+            const right = arrayDescriptorOffset(
+                moduleVariable.elementType, concatenate.e2,
+                moduleVariable.elementIsArray,
+            );
             const descriptor = dynamicArrayDescriptor(concatenate.e1);
             const elementSize = dynamicArrayElementSize(
                 concatenate.e1.type, descriptor.elementType,
@@ -11577,7 +11592,7 @@ private struct Compiler {
 
         const descriptor = dynamicArrayDescriptor(concatenate.e1);
         const right = arrayDescriptorOffset(
-            descriptor.elementType, concatenate.e2,
+            descriptor.elementType, concatenate.e2, descriptor.elementIsArray,
         );
         const elementSize = dynamicArrayElementSize(
             concatenate.e1.type, descriptor.elementType,
@@ -14580,6 +14595,7 @@ private struct Compiler {
 
             const descriptor = arrayDescriptorOffset(
                 dynamicArrayElementType(argument.type), argument,
+                arrayElementIsArray(argument.type),
             );
             _code ~= Instruction(
                 Op.copy,

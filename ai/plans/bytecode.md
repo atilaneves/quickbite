@@ -544,36 +544,68 @@ found: `p.field += rhs` through a struct pointer
 through a class reference (`tryClassPointerField`/`storeClassPointerField`)
 both already write back through the field's real address.
 
-Next candidate: the same `arrayElementIsArray`-defaulted-to-`false` shape
-as the two struct/class-field fixes above, but in call-argument marshaling
-rather than field construction. `emitCallArgument` (`compiler.d`, the
-by-value `Tarray`-parameter branch) resolves an argument's descriptor via
-`arrayDescriptorOffset(dynamicArrayElementType(argument.type), argument)`
-with no third argument, so an inline array-of-arrays literal passed
-directly as a call argument (`int sumInner(int[][] m, int idx) { return
-m[idx][2]; } ... sumInner([[1, 2], [3, 4, 5]], 1)`) mis-sizes the element
-width the same way the field sites did -- confirmed via real `bin/ut` to
-SIGSEGV, not merely misbehave. Fix: thread
-`arrayElementIsArray(argument.type)` through that call (and check
-`arrayDescriptorOffset`'s dozen-odd other call sites, `compiler.d`, for the
-same missing argument; only one, line ~16836, currently passes it). This
-is a broader-surface sibling of the just-fixed field-construction bug: it
-fires for *any* function or constructor call passed an array-of-arrays
-literal directly, not only struct/class field assignment.
+The `arrayElementIsArray`-defaulted-to-`false` shape (same root cause as
+the five sites above) was also fixed at every other genuinely-affected
+`arrayDescriptorOffset`/`compileDynamicArrayInto` call site reachable
+through real, `SystemLinker`-compilable D: `initialiseStructFields`
+(`new S(args)` positional struct construction, no explicit constructor);
+`emitCallArgument`'s by-value `Tarray`-parameter branch (any function call
+passed an array-of-arrays literal directly); both branches of
+`compileConcatenationAssign` (`arr ~= literal`, local- and module-variable
+forms); `catOperandDescriptor` (`a ~ literal`, via `compileCatInto`); and
+`dynamicArrayDescriptorOrNull`'s array-returning-call branch (`f()[i]`, or
+as the inner operand of `f()[i][j]`). All confirmed red (mostly SIGSEGV,
+one wrong-result) via real `bin/ut` before the fix and green after,
+matching `tests/ut/backends/runner/lang/arrays.d`'s new rows. The
+remaining call sites of `arrayDescriptorOffset` either pass a `string`
+(element is always scalar `char`, `elementIsArray` is always correctly
+`false`) or are two deeper, separate gaps described below that threading
+the argument alone does not fix.
 
-Also confirmed via real `bin/ut` but still open (same
-`compileDynamicArrayInto`-without-`arrayElementIsArray` shape, two more
-call sites, both reachable only through `new`, so distinct from the
-five just fixed): `storeClassField` (`compiler.d`), used by both
-`compileDefaultClassFields` (a class field's own default-value
-initializer, e.g. `class C { int[][] m = [[1, 2], [3, 4, 5]]; }` --
-corrupts silently, "index [1] is out of bounds for array of length 0") and
-`initialiseClassObject` (`new C(args)` positional field construction with
-no explicit constructor -- SIGSEGV); and `initialiseStructFields`
-(`compiler.d`), used by `new S(args)` positional struct construction with
-no explicit constructor (SIGSEGV, e.g. `new Outer([[1, 2], [3, 4, 5]],
-10)`). Fix shape is identical: pass `arrayElementIsArray(field.type)` at
-each.
+Still open, same missing-`arrayElementIsArray` shape but each blocked on
+something bigger than threading the argument, so deliberately not
+attempted this round:
+
+- `storeClassField` (`compiler.d`) still defaults `elementIsArray` to
+  `false`, unfixed. Its `compileDefaultClassFields` caller (a class field's
+  own default-value initializer, e.g. `class C { int[][] m = [[1, 2], [3,
+  4, 5]]; }`) never even reaches `storeClassField` for a `Tarray` field's
+  literal default: `field._init.isExpInitializer` is `null` there
+  (confirmed via `bin/ut` debug trace -- it is an `ArrayInitializer`, the
+  same DMD AST quirk `moduleDynamicArrayInitializerExpressionOrNull`
+  (`compiler.d`) already normalises for module variables via
+  `dmd.initsem: initializerToExpression`), so every `Tarray`-typed class
+  field default is silently skipped today, not just array-of-arrays ones.
+  Fixing that is a prerequisite; then note real D shares one static backing
+  array across every `new C()` for an array-literal class-field default
+  (confirmed with real `dmd`), so a correct fix needs class-level static
+  storage (mirroring the module-dynamic-array-variable machinery,
+  `compiler.d` ~line 10913), not a bare `elementIsArray` thread. The other
+  caller, `initialiseClassObject` (`new C(args)` positional construction,
+  no explicit constructor), appears unreachable through any
+  `SystemLinker`-compilable D: `dmd` rejects `new C(args)` for any class
+  lacking an explicit constructor ("Error: no constructor for `C`"),
+  confirmed directly. Whether it is dead code or needed for some
+  undiscovered reachable shape is unresolved.
+- `compileEqualExpression` and `tryArrayComparisonAssert` (`compiler.d`,
+  `arr1 == arr2` / `assert(arr1 == arr2)`) call `arrayDescriptorOffset`
+  without `elementIsArray` too, but threading it through is not enough:
+  `sliceEqualOp` compares array-of-arrays descriptors by raw bytes (each
+  16-byte element as an opaque blob), comparing the *pointers* two
+  separately-heap-allocated equal-content inner arrays happen to hold, not
+  their contents -- confirmed via `bin/ut`: even with `elementIsArray`
+  threaded, `[[1,2],[3,4]] == [[1,2],[3,4]]` still comes back wrong. Needs
+  a recursive/structural slice-equality opcode, not a width fix.
+- `compileArrayDuplication` (`.dup`/`.idup`) is a separate, broader gap:
+  `dupArrayOp`/`dupArrayElementSize` (`compiler.d`/`machine.d`) only
+  distinguish 1-, 2-, or "other" (silently treated as 4-)-byte elements, so
+  `.dup`/`.idup` already mis-sizes any 8-byte-or-wider element (`long[]`,
+  `double[]`, pointer arrays), not only array-of-arrays' 16-byte
+  descriptors -- confirmed via `bin/ut` even with `elementIsArray`
+  threaded through. No existing `arrays.d` row exercises `.dup`/`.idup`
+  wider than a 4-byte element, so this was silently unbounded until now.
+  Needs a real element-size-parameterised dup opcode (an explicit
+  `dupArray8`/`dupArray16`), not an `elementIsArray` thread.
 
 `assocArray.structKeyWithStringMemberComparesStructurally` (described
 above) remains open and still not bounded for one commit: even after fixing

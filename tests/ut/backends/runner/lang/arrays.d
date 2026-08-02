@@ -5181,3 +5181,149 @@ static foreach (backend; Matrix!()) {
         });
     }
 }
+
+// A sibling of the five-call-site fix above, in a field-construction path
+// distinct from all five: a constructor-less struct's positional
+// `new S(args)` construction (`initialiseStructFields`), which also called
+// `compileDynamicArrayInto` for a `Tarray` field without
+// `arrayElementIsArray(field.type)`, defaulting to `false` and mis-sizing
+// an array-of-arrays field's element width -- confirmed via real `bin/ut`
+// to SIGSEGV. Fixed by passing `arrayElementIsArray(field.type)`.
+static foreach (backend; Matrix!()) {
+    @("dynamicArray.structPositionalConstructionOfArrayOfArraysLiteral." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct Outer { int[][] matrixField; int tag; }
+            unittest {
+                auto o = new Outer([[1, 2], [3, 4, 5]], 10);
+                assert(o.matrixField[1][2] == 5);
+                assert(o.matrixField[0][1] == 2);
+                assert(o.tag == 10);
+            }
+        });
+    }
+}
+
+// A broader-surface sibling of the same shape: `emitCallArgument`'s
+// by-value `Tarray`-parameter branch resolves an argument's descriptor via
+// `arrayDescriptorOffset` without passing `arrayElementIsArray(argument.
+// type)` either, so an inline array-of-arrays literal passed directly as a
+// function-call argument mis-sizes the same way -- confirmed via real
+// `bin/ut` to SIGSEGV. Fixed by passing `arrayElementIsArray(argument.
+// type)`.
+static foreach (backend; Matrix!()) {
+    @("dynamicArray.functionCallArgumentArrayOfArraysLiteral." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            int sumInner(int[][] m, int idx) {
+                return m[idx][2];
+            }
+            unittest {
+                assert(sumInner([[1, 2], [3, 4, 5]], 1) == 5);
+            }
+        });
+    }
+}
+
+// Two more siblings of the identical shape, both in `compileConcatenationAssign`
+// (`arr ~= other`): the local-variable branch and the module-variable branch
+// each resolve the right-hand side's descriptor via `arrayDescriptorOffset`
+// without passing `elementIsArray`, mis-sizing an array-of-arrays right-hand
+// side that is not already a known local (a literal, here) -- confirmed via
+// real `bin/ut` to SIGSEGV in both branches. Fixed by threading
+// `elementIsArray` (the LHS descriptor's own, in each branch) through.
+static foreach (backend; Matrix!()) {
+    @("dynamicArray.catAssignArrayOfArraysLiteralIntoLocal." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            unittest {
+                int[][] arr = [[1, 2]];
+                arr ~= [[9, 9], [8, 8]];
+                assert(arr.length == 3);
+                assert(arr[1][0] == 9);
+                assert(arr[2][1] == 8);
+            }
+        });
+    }
+}
+
+// The module-variable branch needs its own `Matrix`: `Ctfe` cannot read a
+// mutable static variable at compile time at all (a genuine D CTFE
+// restriction, confirmed with real `dmd`: "static variable `arr` cannot be
+// read at compile time"), independent of this fix.
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.inexpressible,
+        "CTFE cannot read a mutable static/module variable"),
+)) {
+    @("dynamicArray.catAssignArrayOfArraysLiteralIntoModuleVariable." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            int[][] arr;
+            unittest {
+                arr ~= [[9, 9], [8, 8]];
+                assert(arr.length == 2);
+                assert(arr[0][0] == 9);
+                assert(arr[1][1] == 8);
+            }
+        });
+    }
+}
+
+// A concatenation sibling of the same shape: `catOperandDescriptor` (via
+// `compileCatInto`, for `a ~ b`) also resolved a `Tarray` operand's
+// descriptor via `arrayDescriptorOffset` without passing `elementIsArray`,
+// mis-sizing an array-of-arrays literal operand not already a known local
+// -- confirmed via real `bin/ut` to SIGSEGV. Fixed by threading the
+// concatenation's own `elementIsArray` through `catOperandDescriptor`.
+static foreach (backend; Matrix!()) {
+    @("dynamicArray.catArrayOfArraysLiteralOperand." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            unittest {
+                int[][] a = [[1, 2]];
+                auto c = a ~ [[3, 4], [5, 6]];
+                assert(c.length == 3);
+                assert(c[2][1] == 6);
+                assert(c[1][0] == 3);
+            }
+        });
+    }
+}
+
+// A read-side sibling: `dynamicArrayDescriptorOrNull`'s array-returning-call
+// branch (an array-returning call indexed directly, e.g. `f()[i]`, or as the
+// inner operand of a further index, e.g. `f()[i][j]`) also built its
+// `DynamicArrayLocal`/materialised its descriptor via `compileDynamicArrayInto`
+// without `arrayElementIsArray(expression.type)`, mis-sizing a call that
+// returns an array-of-arrays -- confirmed via real `bin/ut` to throw a wrong
+// "index out of bounds" (the outer descriptor's length read as 0). Fixed by
+// passing `arrayElementIsArray(expression.type)` both to
+// `compileDynamicArrayInto` and into the resulting `DynamicArrayLocal`.
+static foreach (backend; Matrix!(
+    Omit!(Interpreter, Because.unconfirmed,
+        "wrong result indexing an array-of-arrays-returning call's result"),
+)) {
+    @("dynamicArray.arrayOfArraysReturningCallResultIndexing." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            int[][] matrixMaker() {
+                return [[1, 2], [3, 4, 5]];
+            }
+            unittest {
+                assert(matrixMaker()[1][2] == 5);
+                assert(matrixMaker()[0][1] == 2);
+            }
+        });
+    }
+}
