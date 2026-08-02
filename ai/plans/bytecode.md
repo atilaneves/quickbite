@@ -594,6 +594,20 @@ core" -- distinct from the already-fixed field-of-an-array-element shapes
 above (`arr[i].fixedField[j] = value`); not yet root-caused to a specific
 dispatch function.
 
+A prior attempt at this exact row implemented a doubly-indexed write path
+that passed its own new tests in isolation but reproducibly `SIGSEGV`s
+(confirmed via `git stash`/rebuild against the unmodified parent commit:
+clean; with the change: exit 139) partway through an unrelated later test
+in a full `arrays.d`+`structs.d` sweep -- heap/frame-state corruption from
+the new codegen, not a logic bug caught by its own fixture. That attempt
+was reverted uncommitted rather than landed broken. Next attempt: reproduce
+with `bin/ut -s ut.backends.runner.lang.arrays
+ut.backends.runner.lang.structs` and get a real `gdb` backtrace
+(`gdb --args bin/ut -s ...`, `run`, `bt` on crash) before writing new
+codegen -- suspect an out-of-bounds write from an incorrect
+stride/offset when resolving the second index level, or a raw pointer to
+the outer/inner descriptor held across an intervening allocation.
+
 `assocArray.structKeyWithStringMemberComparesStructurally` (described
 above) remains open and still not bounded for one commit: even after fixing
 `compileAssocArrayHook`'s struct-typed-key gap, a string-member key still
@@ -840,6 +854,39 @@ works. A value loaded through a pointer dereference or index (`*p`, `p[i]`)
 whose static type is itself a pointer now carries `isPointer` (`compiler.d`'s
 `asPointerValue`), so a function pointer reached that way is an ordinary
 callable pointer local, the same as one bound directly from `&f`.
+
+A function whose declared return type is itself a delegate (`int delegate()
+makeGetter() { return () => 42; }`) now compiles and returns the delegate
+value correctly: `ResultType.isDelegate` (`program.d`) sizes it as the same
+16-byte `{functionIndex, context}` pair a delegate parameter/field already
+uses, so `compileReturnStatement` and all five call-result destination
+sites (`compileCall`, `compileLazyDelegateCall`, `compileDelegateCall`,
+`compileDynamicDelegateCall`, `compileIndirectCall`) allocate a real
+destination instead of silently treating the result as void.
+`compileDelegateDeclaration`/`delegateOperandOffset` gained a fallback for a
+delegate-valued initializer/argument with no statically known callee (a
+call returning a delegate), reusing the existing dynamic-delegate dispatch
+machinery. A returned delegate whose lambda/nested function actually reads
+a variable from the returning function's own frame
+(`FuncDeclaration.outerVars.length != 0`) has no heap closure environment
+to survive that frame going away (see Closures section below) and is
+refused with a diagnostic instead of silently reading garbage; this is a
+deliberate refusal, not a bug -- closing it for real needs the same
+GC-heap closure environment the Closures section already describes as
+unimplemented. `delegate.functionReturningNonCapturingDelegateIsCallable`/
+`delegate.functionReturningCapturingDelegateIsRejected` (`expressions.d`)
+cover both cases.
+
+Next candidate: an array of delegates (`int delegate()[] dgs;`, and the
+static-array form `int delegate()[2] dgs;`) is not yet supported --
+confirmed via a real `bin/ut` fixture, not just `bin/qb` (`int delegate()[]
+dgs; dgs ~= () => seed;` throws "Unsupported type in bytecode core: int
+delegate()" at the single throw site in `compiler.d`, ~line 18020; the
+static-array form throws "Unsupported static array initializer in
+bytecode core" instead). Not yet root-caused to a specific missing case in
+`dynamicArrayElementSize`/`dynamicArrayElementType` (dynamic form) or the
+static-array initializer path (static form); no test row exists for this
+shape yet.
 
 ### TDD and handoff discipline
 

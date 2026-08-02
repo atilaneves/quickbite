@@ -1519,6 +1519,62 @@ static foreach (backend; Matrix!()) {
     }
 }
 
+// A function whose declared return type is itself `int delegate()`: the
+// returned lambda captures nothing from `makeConstantGetter`'s own frame, so
+// its `{functionIndex, context}` pair is safe to read back after that frame
+// is gone -- the caller assigns the call's result straight into a plain
+// local (`auto getter = ...`) and calls it from there.
+static foreach (backend; Matrix!()) {
+    @("delegate.functionReturningNonCapturingDelegateIsCallable." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            int delegate() makeConstantGetter() {
+                int delegate() getter = () => 42;
+                return getter;
+            }
+
+            unittest {
+                auto getter = makeConstantGetter();
+                assert(getter() == 42);
+            }
+        });
+    }
+}
+
+// The same shape as above, but the returned lambda captures a local owned by
+// the returning function's own frame. Real compiled D promotes `total` to a
+// GC-heap closure so the returned delegate keeps working after
+// `makeCounterGetter` returns; the bytecode core has no heap closure
+// environment yet (`ai/plans/bytecode.md`'s Closures section) and previously
+// either refused the declaration outright or silently returned a stale
+// frame-index context. It now refuses the return itself with a clear
+// diagnostic rather than handing back a delegate that reads garbage the
+// first time it is called.
+static foreach (backend; AliasSeq!(Bytecode)) {
+    @("delegate.functionReturningCapturingDelegateIsRejected." ~
+        backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            int delegate() makeCounterGetter(int seed) {
+                int total = seed;
+                int delegate() getter = () => total + 1;
+                return getter;
+            }
+
+            unittest {
+                auto getter = makeCounterGetter(3);
+                assert(getter() == 4);
+            }
+        }).shouldThrowWithMessage(
+            "Unsupported delegate return in bytecode core: returning a " ~
+                "closure over this function's own locals outlives its " ~
+                "frame: getter",
+        );
+    }
+}
+
 // A lambda (`FuncExp`, not a named nested function) captures a local and is
 // passed as a VALUE into another function that invokes it -- `applyTwice`
 // is itself nested inside `addCaptured` so its own activation inherits

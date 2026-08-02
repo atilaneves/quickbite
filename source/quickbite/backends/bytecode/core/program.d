@@ -83,6 +83,11 @@ package(quickbite.backends.bytecode) struct ResultType {
     uint elementStructSize;
     string elementStructName;
     StructDisplayField[] elementStructFields;
+    // A delegate result is a 16-byte `{functionIndex, context}` pair, real
+    // data the caller must receive -- unlike `isUndisplayable`, which only
+    // means the REPL cannot render it. `size()` below must check this before
+    // `isUndisplayable`.
+    bool isDelegate;
 
     static ResultType scalarResult(
         in ScalarType scalar,
@@ -132,6 +137,8 @@ package(quickbite.backends.bytecode) uint size(in ResultType type)
 {
     if (type.isStruct)
         return type.structSize;
+    if (type.isDelegate)
+        return sliceDescriptorSize; // {functionIndex, context}, same width
     if (type.isUndisplayable)
         return 0;
     if (type.isStaticArray)

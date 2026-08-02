@@ -1141,6 +1141,10 @@ private struct Compiler {
                 // back to the caller's destination.
                 result = structOperandOffset(return_.exp);
             hasResult = true;
+        } else if (_currentReturnType.isDelegate) {
+            refuseFrameEscapingDelegateReturn(return_.exp);
+            result = delegateOperandOffset(return_.exp);
+            hasResult = true;
         } else if (return_.exp !is null &&
             !_currentReturnType.isUndisplayable &&
             _currentReturnType.scalar != ScalarType.void_) {
@@ -3931,20 +3935,41 @@ private struct Compiler {
         auto delegate_ = initializer is null
             ? DelegateInitializer.init
             : delegateInitializer(initializerExpression(initializer.exp));
-        if (delegate_.function_ is null)
-            throw new Exception(text(
-                "Unsupported delegate initializer in bytecode core: ",
-                declarationChars(variable),
-            ));
+        if (delegate_.function_ !is null) {
+            const offset = allocateBytes(delegateValueSize, size_t.sizeof);
+            emitDelegateValue(
+                offset, delegate_.function_, delegate_.contextOffset,
+            );
+            _delegateLocals[variable] = DelegateLocal(offset, delegate_.function_);
+            // A nested function reading `dg` sees only the captured-locals
+            // environment, not `_delegateLocals` (reset per compiled
+            // function); register the offset like every other local so its
+            // value is reachable there too.
+            registerCapturedOffset(variable, offset);
+            return;
+        }
 
-        const offset = allocateBytes(delegateValueSize, size_t.sizeof);
-        emitDelegateValue(offset, delegate_.function_, delegate_.contextOffset);
-        _delegateLocals[variable] = DelegateLocal(offset, delegate_.function_);
-        // A nested function reading `dg` sees only the captured-locals
-        // environment, not `_delegateLocals` (reset per compiled function);
-        // register the offset like every other local so its value is
-        // reachable there too.
-        registerCapturedOffset(variable, offset);
+        // Any other delegate-typed initializer -- a function call returning
+        // a delegate, or an existing delegate-typed local/parameter/field
+        // copied by value -- has no statically known callee. Resolve it the
+        // same way a delegate-typed parameter is resolved and dispatch calls
+        // through it at run time via its own function-index word.
+        if (initializer !is null) {
+            const source =
+                delegateOperandOffset(initializerExpression(initializer.exp));
+            const offset = allocateBytes(delegateValueSize, size_t.sizeof);
+            _code ~= Instruction(
+                Op.copy, offset, source, cast(ushort) delegateValueSize,
+            );
+            _delegateParameterLocals[variable] = offset;
+            registerCapturedOffset(variable, offset);
+            return;
+        }
+
+        throw new Exception(text(
+            "Unsupported delegate initializer in bytecode core: ",
+            declarationChars(variable),
+        ));
     }
 
     // Store a `{functionIndex, context}` delegate pair into the 16-byte slot at
@@ -4018,15 +4043,66 @@ private struct Compiler {
             }
 
         auto delegate_ = delegateInitializer(argument);
-        if (delegate_.function_ is null)
-            throw new Exception(text(
-                "Unsupported delegate argument in bytecode core: ",
-                expressionChars(argument),
-            ));
+        if (delegate_.function_ !is null) {
+            const offset = allocateBytes(delegateValueSize, size_t.sizeof);
+            emitDelegateValue(
+                offset, delegate_.function_, delegate_.contextOffset,
+            );
+            return offset;
+        }
 
-        const offset = allocateBytes(delegateValueSize, size_t.sizeof);
-        emitDelegateValue(offset, delegate_.function_, delegate_.contextOffset);
-        return offset;
+        // Any other delegate-typed expression -- a function call returning a
+        // delegate is the only remaining shape -- already yields its own
+        // 16-byte `{functionIndex, context}` block through the general
+        // expression compiler.
+        if (argument.isCallExp !is null)
+            return compileExpression(argument).offset;
+
+        throw new Exception(text(
+            "Unsupported delegate argument in bytecode core: ",
+            expressionChars(argument),
+        ));
+    }
+
+    // Refuses `return dg;` when `dg` is a lambda literal or nested-function
+    // delegate that actually reads a variable from an enclosing frame
+    // (`outerVars`, DMD's own record of the reverse of `closureVars` --
+    // `ai/plans/bytecode.md`'s Closures section: "DMD semantic analysis has
+    // already determined `needsClosure()` and `closureVars`"): the current call's
+    // frame is gone by the time the caller invokes the returned delegate, so
+    // that captured-local read would land on whatever later reused the
+    // stack region. Real compiled D promotes such a capture to a GC-heap
+    // closure; this core has no heap closure environment yet (see
+    // `ai/plans/bytecode.md`'s Closures section), so decline loudly instead
+    // of returning a value that reads as garbage once the frame is reused.
+    // A delegate literal that captures nothing (`outerVars.length == 0`,
+    // e.g. `() => 5`) is unaffected: its context word is never
+    // dereferenced, so a stale frame index in it is harmless. A delegate
+    // value read back from a parameter, field, or another call (no
+    // statically known callee here) is also unaffected: its own origin
+    // already resolved this question, either by never depending on this
+    // function's frame or by having already thrown when it was first
+    // declared.
+    private void refuseFrameEscapingDelegateReturn(Expression source) {
+        import std.conv: text;
+
+        while (auto cast_ = source.isCastExp)
+            source = cast_.e1;
+
+        FuncDeclaration function_;
+        if (auto variable = source.isVarExp)
+            if (auto declaration = variable.var.isVarDeclaration)
+                if (auto existing = declaration in _delegateLocals)
+                    function_ = existing.function_;
+        if (function_ is null)
+            function_ = delegateInitializer(source).function_;
+
+        if (function_ !is null && function_.outerVars.length != 0)
+            throw new Exception(text(
+                "Unsupported delegate return in bytecode core: returning ",
+                "a closure over this function's own locals outlives its ",
+                "frame: ", expressionChars(source),
+            ));
     }
 
     private ushort delegateContextOffset(
@@ -13506,6 +13582,7 @@ private struct Compiler {
         const destination =
             (!returnType.isArray &&
                 !returnType.isStruct &&
+                !returnType.isDelegate &&
                 returnType.scalar == ScalarType.void_)
                 ? cast(ushort) 0
                 : allocateBytes(size(returnType), 8);
@@ -14173,6 +14250,7 @@ private struct Compiler {
         const destination =
             (!returnType.isArray &&
                 !returnType.isStruct &&
+                !returnType.isDelegate &&
                 returnType.scalar == ScalarType.void_)
                 ? cast(ushort) 0
                 : allocateBytes(size(returnType), 8);
@@ -14279,6 +14357,7 @@ private struct Compiler {
         const destination =
             (!returnType.isArray &&
                 !returnType.isStruct &&
+                !returnType.isDelegate &&
                 returnType.scalar == ScalarType.void_)
                 ? cast(ushort) 0
                 : allocateBytes(size(returnType), 8);
@@ -14342,6 +14421,7 @@ private struct Compiler {
         const destination =
             (!returnType.isArray &&
                 !returnType.isStruct &&
+                !returnType.isDelegate &&
                 returnType.scalar == ScalarType.void_)
                 ? cast(ushort) 0
                 : allocateBytes(size(returnType), 8);
@@ -14443,6 +14523,7 @@ private struct Compiler {
         const destination =
             (!returnType.isArray &&
                 !returnType.isStruct &&
+                !returnType.isDelegate &&
                 returnType.scalar == ScalarType.void_)
                 ? cast(ushort) 0
                 : allocateBytes(size(returnType), 8);
@@ -17604,6 +17685,20 @@ private struct Compiler {
                 false, true, cast(uint) staticArraySize(type),
             );
             populateStructDisplay(result, type);
+            return result;
+        }
+
+        // A delegate result is a real 16-byte `{functionIndex, context}`
+        // pair the caller must receive, not just an REPL-undisplayable
+        // value with no bytes -- distinct from the generic
+        // `isUndisplayableType` branch below, which only marks display
+        // scaffolding.
+        if (type.toBasetype.ty == TY.Tdelegate) {
+            auto result = ResultType(
+                ScalarType.void_, false, ScalarType.void_,
+                false, false, 0, true,
+            );
+            result.isDelegate = true;
             return result;
         }
 
