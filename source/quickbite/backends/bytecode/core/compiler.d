@@ -4053,6 +4053,17 @@ private struct Compiler {
             return offset;
         }
 
+        // A bare `null` literal (`dg == null`, `dg is null`) -- the delegate
+        // counterpart of the zeroed-block default-initializer/array-element
+        // `NullExp` handling elsewhere -- yields a zeroed 16-byte block, the
+        // same all-zero `{functionIndex, context}` pair a defaulted delegate
+        // local already holds.
+        if (argument.isNullExp !is null) {
+            const offset = allocateBytes(delegateValueSize, size_t.sizeof);
+            zeroFrameBlock(offset, delegateValueSize);
+            return offset;
+        }
+
         // Any other delegate-typed expression -- a function call returning a
         // delegate, or an index into an array of delegates (`dgs[0]`) --
         // already yields its own 16-byte `{functionIndex, context}` block
@@ -13101,6 +13112,21 @@ private struct Compiler {
                 equal.op == EXP.notEqual,
             );
 
+        // `dg1 == dg2` / `dg1 != dg2`, including a `null` operand: a delegate
+        // is a builtin type with no `opEquals` to lower through, so DMD keeps
+        // this as a plain `EqualExp` over the 16-byte `{functionIndex,
+        // context}` pair. `compileExpression` below has no generic VarExp
+        // case for a delegate-typed local (delegate locals live in their own
+        // `_delegateLocals` table, resolved through `delegateOperandOffset`
+        // instead), so this needs its own branch the same way the aggregate
+        // cases above do.
+        if (equal.e1.type.toBasetype.ty == TY.Tdelegate)
+            return compileDelegateEquality(
+                delegateOperandOffset(equal.e1),
+                delegateOperandOffset(equal.e2),
+                equal.op == EXP.notEqual,
+            );
+
         const bothDynamicArrays = equal.e1.type.toBasetype.ty == TY.Tarray &&
             equal.e2.type.toBasetype.ty == TY.Tarray &&
             dynamicArrayElementType(equal.e1.type) ==
@@ -13160,8 +13186,60 @@ private struct Compiler {
         return Operand(offset, ScalarType.bool_);
     }
 
+    // `dg1 == dg2` / `dg1 is dg2` (and the negated forms): compare the two
+    // 8-byte halves of the 16-byte `{functionIndex, context}` pair -- there
+    // is no 16-byte equality opcode -- and combine them with the same
+    // short-circuiting `&&` shape `compileStructIdentity` above uses for a
+    // multi-field struct, specialised to exactly two fixed-offset fields.
+    private Operand compileDelegateEquality(
+        in ushort left,
+        in ushort right,
+        in bool invert,
+    ) {
+        const result = allocate(ScalarType.bool_);
+        _code ~= Instruction(Op.loadConstant, result, constantIndex(1), 1);
+
+        const functionEqual = allocate(ScalarType.bool_);
+        _code ~= Instruction(Op.equal8, functionEqual, left, right);
+        const functionFalseJump =
+            emitJumpIfFalse(Operand(functionEqual, ScalarType.bool_));
+
+        const contextEqual = allocate(ScalarType.bool_);
+        _code ~= Instruction(
+            Op.equal8,
+            contextEqual,
+            cast(ushort) (left + size_t.sizeof),
+            cast(ushort) (right + size_t.sizeof),
+        );
+        const contextFalseJump =
+            emitJumpIfFalse(Operand(contextEqual, ScalarType.bool_));
+
+        const endJump = emitJump;
+        patchJump(functionFalseJump);
+        patchJump(contextFalseJump);
+        _code ~= Instruction(Op.loadConstant, result, constantIndex(0), 1);
+        patchJump(endJump);
+
+        if (invert)
+            _code ~= Instruction(Op.notBool, result, result);
+        return Operand(result, ScalarType.bool_);
+    }
+
     private Operand compileIdentityExpression(IdentityExp identity) {
+        import dmd.astenums: TY;
         import dmd.tokens: EXP;
+
+        // `dg1 is dg2` / `dg1 !is dg2`: a delegate has no `opEquals`, so `is`
+        // is the same bitwise comparison `==` already needs
+        // (`compileEqualExpression`'s `Tdelegate` branch above); route
+        // through the same two-halves helper instead of the generic
+        // `compileExpression`, which has no delegate-typed `VarExp` case.
+        if (identity.e1.type.toBasetype.ty == TY.Tdelegate)
+            return compileDelegateEquality(
+                delegateOperandOffset(identity.e1),
+                delegateOperandOffset(identity.e2),
+                identity.op == EXP.notIdentity,
+            );
 
         const lhs = compileExpression(identity.e1);
         const rhs = compileExpression(identity.e2);
@@ -16723,6 +16801,18 @@ private struct Compiler {
             (*call.arguments)[2].type.toBasetype.ty == TY.Tstruct)
             return compileBoolConditionAssert(assert_.e1, op);
 
+        // A delegate comparison (`==`, `!=`, `is`, `!is`; a delegate has no
+        // relational operators): a delegate has no `opEquals` either, so
+        // `assert_.e1` is already the authoritative `EqualExp`/`IdentityExp`
+        // `compileBoolValue` (via `compileEqualExpression`/
+        // `compileIdentityExpression`) now handles directly. Compile that
+        // condition and assert it the same fixed-message way the struct case
+        // above does, instead of destructuring the rendered
+        // `_d_assert_fail` operands.
+        if ((*call.arguments)[1].type.toBasetype.ty == TY.Tdelegate ||
+            (*call.arguments)[2].type.toBasetype.ty == TY.Tdelegate)
+            return compileBoolConditionAssert(assert_.e1, op);
+
         // Pointer relations `p < q`, `p == q`, `p is q` (and negations) compare
         // raw `size_t` pointer values; `is`/`!is` arrive only over pointers.
         if (isPointerType((*call.arguments)[1].type) ||
@@ -16936,11 +17026,19 @@ private struct Compiler {
 
     // Compile an expression to a one-byte boolean. A struct identity `a is b`
     // (DMD's lowering of a POD struct `==`) compares the two inline blocks
-    // byte-wise; everything else is an ordinary boolean expression (an
-    // `opEquals` call, an `opCmp` relation, a `&&` chain).
+    // byte-wise; a delegate identity (`dg1 is dg2`, no such lowering since a
+    // delegate has no `opEquals`) routes through the same two-halves
+    // comparison `compileEqualExpression`'s `Tdelegate` branch uses;
+    // everything else is an ordinary boolean expression (an `opEquals` call,
+    // an `opCmp` relation, a `&&` chain).
     private Operand compileBoolValue(Expression expression) {
-        if (auto identity = expression.isIdentityExp)
+        import dmd.astenums: TY;
+
+        if (auto identity = expression.isIdentityExp) {
+            if (identity.e1.type.toBasetype.ty == TY.Tdelegate)
+                return compileIdentityExpression(identity);
             return compileStructIdentity(identity);
+        }
         return compileExpression(expression);
     }
 

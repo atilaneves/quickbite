@@ -914,12 +914,37 @@ feed `compileDynamicDelegateCall`.
 `delegate.staticArrayElementIsCallableThroughIndexDirectly` (`expressions.d`,
 omitted on `Interpreter`, unconfirmed) cover both shapes.
 
-Next candidate: `foreach (k, v; aa)` (`_d_aaApply2`,
-`compileAssocArrayApply2`) only supports a plain `int`-typed key (see
-above); widening it means threading the same `assocArrayKeyWidth`-shaped key
-type through the loop body's index-load and the `keyParameter`'s local slot,
-mirroring how `valueParameter` already does this for the value side
-(`indexLoadOp(valueElementSize)`, `_structLocals`/`_locals`).
+A delegate comparison (`==`, `!=`, `is`, `!is`, including against a `null`
+literal) now compiles. Neither `compileEqualExpression` nor
+`compileIdentityExpression` had a `Tdelegate` branch, so all four fell
+through to the generic `compileExpression`, which has no `VarExp` case for a
+delegate-typed local (delegate locals live in `_delegateLocals`/
+`_delegateParameterLocals`, resolved only through `delegateOperandOffset`)
+and threw "Unsupported variable in bytecode core". A delegate has no
+`opEquals`, so DMD keeps all four forms as a bitwise compare of the 16-byte
+`{functionIndex, context}` pair; both functions now route a `Tdelegate`
+operand through a shared `compileDelegateEquality` helper that compares the
+two 8-byte halves and combines them the same short-circuiting way
+`compileStructIdentity` combines per-field results (there is no 16-byte
+equality opcode). DMD's rich `assert(...)` message lowering
+(`compileLoweredComparisonAssert`'s `_d_assert_fail`-operand dispatch, and
+`compileBoolValue`'s struct-identity path for the `is`/`!is` form) is a
+separate code path from a bare `EqualExp`/`IdentityExp` and needed the
+matching `Tdelegate` branch too. `delegateOperandOffset` gained a `NullExp`
+case (a zeroed 16-byte block, the same value a defaulted delegate local
+already holds) for the `dg == null`/`dg is null` shape. Covers a
+lambda/nested-function delegate, a method delegate (receiver-address
+context), and a delegate read back from a dynamic-array element;
+`Interpreter` still throws on the method-delegate and array-element shapes
+for unrelated reasons (`Omit!(Interpreter, Because.unconfirmed)`).
+
+Next candidate: `a.m[0][0] = 99` above (a class field of type `int[][]`,
+indexed twice, no intervening struct/field dot) -- not yet root-caused to a
+specific dispatch function, and a prior attempt at it `SIGSEGV`ed partway
+through an unrelated later test rather than failing its own fixture (see
+above); reproduce with `bin/ut -s ut.backends.runner.lang.arrays
+ut.backends.runner.lang.structs` and get a real `gdb` backtrace before
+writing new codegen.
 
 ### TDD and handoff discipline
 

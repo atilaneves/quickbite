@@ -1809,6 +1809,98 @@ static foreach (backend; Matrix!(
     }
 }
 
+// `==`/`!=`/`is`/`!is` between two lambda-literal delegate values: a
+// delegate is a builtin type with no `opEquals`, so all four compare the raw
+// `{functionIndex, context}` pair. Two separately-declared lambdas capturing
+// the same variable are unequal (different function), while assigning one
+// delegate value to another preserves both equality and identity.
+static foreach (backend; Matrix!()) {
+    @("delegate.equalityComparesFunctionAndContext." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            unittest {
+                int x = 1;
+                int delegate() a = () => x;
+                int delegate() b = () => x;
+                int delegate() c = a;
+                assert(a != b);
+                assert(a == c);
+                assert(a is c);
+                assert(b !is a);
+            }
+        });
+    }
+}
+
+// A delegate compares equal to a `null` literal only when default- or
+// explicitly null-initialized, and unequal once assigned a real value.
+static foreach (backend; Matrix!()) {
+    @("delegate.comparesAgainstNullLiteral." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            unittest {
+                int delegate() a;
+                assert(a is null);
+                assert(a == null);
+                int x = 1;
+                int delegate() b = () => x;
+                assert(b !is null);
+                assert(b != null);
+            }
+        });
+    }
+}
+
+// A method delegate's context word is the receiver's own address, so two
+// delegates bound to the same method through different receivers compare
+// unequal, while two bound through the same receiver compare equal.
+static foreach (backend; Matrix!(
+    Omit!(Interpreter, Because.unconfirmed),
+)) {
+    @("delegate.methodDelegateComparesByReceiverAndFunction." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct S {
+                int x;
+                int get() { return x; }
+            }
+
+            unittest {
+                S s1 = S(1);
+                S s2 = S(2);
+                auto d1 = &s1.get;
+                auto d2 = &s2.get;
+                assert(d1 != d2);
+                auto d1Again = &s1.get;
+                assert(d1 == d1Again);
+            }
+        });
+    }
+}
+
+// The array-element twin of the fixture above: comparing two delegate
+// elements read back from a dynamic array.
+static foreach (backend; Matrix!(
+    Omit!(Interpreter, Because.unconfirmed),
+)) {
+    @("delegate.arrayElementsCompareByFunctionAndContext." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            unittest {
+                int delegate()[] dgs = [() => 1, () => 2];
+                assert(dgs[0] != dgs[1]);
+                assert(dgs[0] == dgs[0]);
+            }
+        });
+    }
+}
+
 /++
     Casts involving slices, pointers, arrays, and bool.
 +/
