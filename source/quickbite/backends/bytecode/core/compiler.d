@@ -2902,12 +2902,14 @@ private struct Compiler {
         ));
         const indexSlot = compileExpression(indexExpr);
         _activeDollarLength = savedDollarLength;
-        const elementSize = resultType.toBasetype.ty == TY.Tstruct
+        const isAggregateElement = resultType.toBasetype.ty == TY.Tstruct ||
+            resultType.toBasetype.ty == TY.Tdelegate;
+        const elementSize = isAggregateElement
             ? cast(uint) staticArraySize(resultType)
             : elementIsArray
             ? sliceDescriptorSize
             : size(elementType);
-        const alignment = resultType.toBasetype.ty == TY.Tstruct
+        const alignment = isAggregateElement
             ? staticArrayAlign(resultType)
             : elementIsArray
             ? size_t.sizeof
@@ -2922,7 +2924,7 @@ private struct Compiler {
         );
 
         auto result = new Operand;
-        *result = resultType.toBasetype.ty == TY.Tstruct || elementIsArray
+        *result = isAggregateElement || elementIsArray
             ? Operand(offset, ScalarType.void_)
             : isPointerType(resultType)
             ? Operand(
@@ -4052,10 +4054,10 @@ private struct Compiler {
         }
 
         // Any other delegate-typed expression -- a function call returning a
-        // delegate is the only remaining shape -- already yields its own
-        // 16-byte `{functionIndex, context}` block through the general
-        // expression compiler.
-        if (argument.isCallExp !is null)
+        // delegate, or an index into an array of delegates (`dgs[0]`) --
+        // already yields its own 16-byte `{functionIndex, context}` block
+        // through the general expression compiler.
+        if (argument.isCallExp !is null || argument.isIndexExp !is null)
             return compileExpression(argument).offset;
 
         throw new Exception(text(
@@ -4232,6 +4234,16 @@ private struct Compiler {
                     zeroFrameBlock(offset, totalSize);
                     return;
                 }
+
+        // A static array whose element type default-initializes to `null`
+        // (delegates, pointers, classes) blits a single `NullExp` over the
+        // whole inline block (`int delegate()[2] dgs;`), the delegate-array
+        // counterpart of the integer-`0` blit above.
+        if (auto blit = initializer.exp.isBlitExp)
+            if (blit.e2.isNullExp !is null) {
+                zeroFrameBlock(offset, totalSize);
+                return;
+            }
 
         auto source = initializerExpression(initializer.exp);
 
@@ -12379,11 +12391,13 @@ private struct Compiler {
         const elementSize = cast(uint) staticArraySize(index.type);
         const offset = cast(ushort)
             (baseOffset + indexInteger.toInteger * elementSize);
-        // A sub-array or struct element has no scalar type; callers that handle
-        // those use only the offset (a static-array index chain, a struct base).
+        // A sub-array, struct, or delegate element has no scalar type;
+        // callers that handle those use only the offset (a static-array
+        // index chain, a struct base, a delegate's own 16-byte pair).
         const elementType = index.type.toBasetype.ty == TY.Tarray ||
             index.type.toBasetype.ty == TY.Tsarray ||
-            index.type.toBasetype.ty == TY.Tstruct
+            index.type.toBasetype.ty == TY.Tstruct ||
+            index.type.toBasetype.ty == TY.Tdelegate
                 ? ScalarType.void_
                 : scalarType(index.type);
         return StaticArrayElement(offset, elementType);
@@ -12470,9 +12484,18 @@ private struct Compiler {
         // (`arr[1] = existingVar;`) must route through `structOperandOffset`
         // instead, the same fix `tryDynamicArrayElementAssign` applies for
         // the dynamic-array-element shape.
+        //
+        // A delegate-typed rhs (`dgs[0] = () => 1;`) is similarly routed
+        // through `delegateOperandOffset` rather than the generic expression
+        // compiler: `compileExpression`'s own `FuncExp` case tags a fresh
+        // delegate value `ulong_` (a placeholder scalar tag, not the real
+        // 16-byte width), which would never match `element.type`'s `void_`
+        // below for a delegate array element.
         const value = rhs.type !is null &&
                 rhs.type.toBasetype.ty == TY.Tstruct
             ? Operand(structOperandOffset(rhs), ScalarType.void_)
+            : rhs.type !is null && rhs.type.toBasetype.ty == TY.Tdelegate
+            ? Operand(delegateOperandOffset(rhs), ScalarType.void_)
             : compileExpression(rhs);
         if (value.type != element.type)
             throw new Exception(text(
@@ -17852,7 +17875,8 @@ private struct Compiler {
         if (element.toBasetype.ty == TY.Tpointer)
             return ScalarType.ulong_;
         if (element.toBasetype.ty == TY.Tstruct ||
-            element.toBasetype.ty == TY.Tsarray)
+            element.toBasetype.ty == TY.Tsarray ||
+            element.toBasetype.ty == TY.Tdelegate)
             return ScalarType.void_;
         return scalarType(element);
     }
@@ -17893,7 +17917,8 @@ private struct Compiler {
         if (element.toBasetype.ty == TY.Tvoid)
             return 1;
         if (element.toBasetype.ty == TY.Tstruct ||
-            element.toBasetype.ty == TY.Tsarray)
+            element.toBasetype.ty == TY.Tsarray ||
+            element.toBasetype.ty == TY.Tdelegate)
             return cast(uint) staticArraySize(element);
         return size(elementType);
     }

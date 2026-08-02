@@ -1725,6 +1725,52 @@ static foreach (backend; Matrix!()) {
     }
 }
 
+// A delegate is a 16-byte `{functionIndex, context}` pair, the same width as
+// a dynamic-array slice descriptor; appending one to a dynamic array and
+// reading it back exercises that shared 16-byte-width machinery rather than
+// any delegate-specific storage.
+static foreach (backend; Matrix!(
+    Omit!(Interpreter, Because.unconfirmed),
+)) {
+    @("delegate.dynamicArrayElementIsAppendableAndCallable." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            unittest {
+                int seed = 42;
+                int delegate()[] dgs;
+                dgs ~= () => seed;
+                auto d = dgs[0];
+                assert(d() == 42);
+            }
+        });
+    }
+}
+
+// The static-array twin: `int delegate()[2] dgs;` default-initializes each
+// element to `null` (DMD's whole-array `NullExp` blit), and each element is
+// then assignable and readable like any other inline aggregate slot.
+static foreach (backend; Matrix!(
+    Omit!(Interpreter, Because.unconfirmed),
+)) {
+    @("delegate.staticArrayElementIsAssignableAndCallable." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            unittest {
+                int delegate()[2] dgs;
+                dgs[0] = () => 1;
+                dgs[1] = () => 2;
+                auto first = dgs[0];
+                auto second = dgs[1];
+                assert(first() == 1);
+                assert(second() == 2);
+            }
+        });
+    }
+}
 
 /++
     Casts involving slices, pointers, arrays, and bool.

@@ -877,16 +877,30 @@ unimplemented. `delegate.functionReturningNonCapturingDelegateIsCallable`/
 `delegate.functionReturningCapturingDelegateIsRejected` (`expressions.d`)
 cover both cases.
 
-Next candidate: an array of delegates (`int delegate()[] dgs;`, and the
-static-array form `int delegate()[2] dgs;`) is not yet supported --
-confirmed via a real `bin/ut` fixture, not just `bin/qb` (`int delegate()[]
-dgs; dgs ~= () => seed;` throws "Unsupported type in bytecode core: int
-delegate()" at the single throw site in `compiler.d`, ~line 18020; the
-static-array form throws "Unsupported static array initializer in
-bytecode core" instead). Not yet root-caused to a specific missing case in
-`dynamicArrayElementSize`/`dynamicArrayElementType` (dynamic form) or the
-static-array initializer path (static form); no test row exists for this
-shape yet.
+A delegate element in a dynamic or static array (`int delegate()[] dgs;
+dgs ~= () => seed;`, `int delegate()[2] dgs; dgs[0] = () => 1;`) now works:
+construct, default-init to `null` (a whole-array `NullExp` blit, the
+delegate counterpart of the integer-`0` static-array default), append,
+index-read into a delegate-typed local, and call the result. A delegate is
+treated as a 16-byte opaque aggregate element throughout
+(`dynamicArrayElementSize`/`dynamicArrayElementType`,
+`loadDynamicArrayElement`, `locateStaticArrayElement`), the same shape a
+struct element already uses; `delegateOperandOffset` and
+`compileStaticArrayElementAssign` route a delegate-typed rhs through the
+existing delegate-value machinery rather than the generic expression
+compiler, whose `FuncExp` case tags a placeholder `ulong_` that never
+matches an aggregate element's `void_`. `delegate.dynamicArrayElementIsAppendableAndCallable`/
+`delegate.staticArrayElementIsAssignableAndCallable` (`expressions.d`,
+omitted on `Interpreter`, unconfirmed) cover both shapes.
+
+Next candidate: calling THROUGH the array index directly (`dgs[0]()`, no
+intermediate delegate-typed local) still throws "Unsupported call in
+bytecode core: dgs[0]()" -- `compileCall`'s delegate-dispatch chain
+(`delegateLocalOf`/`delegateParameterOffsetOf`/`structFieldDelegateOffsetOf`/
+`capturedDelegateOffsetOf`) has no case recognizing an `IndexExp` callee;
+needs a new offset helper computing the indexed element's descriptor (frame
+offset for a static array, a materialised copy for a dynamic array) and
+dispatching through the existing `compileDynamicDelegateCall`.
 
 ### TDD and handoff discipline
 
