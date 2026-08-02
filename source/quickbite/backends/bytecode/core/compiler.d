@@ -3144,6 +3144,7 @@ private struct Compiler {
                     auto result = new DynamicArrayLocal;
                     *result = DynamicArrayLocal(
                         field.offset, dynamicArrayElementType(field.type),
+                        arrayElementIsArray(field.type),
                     );
                     result.writeBackStructThroughFrame =
                         field.writeBackThroughFrame;
@@ -3178,7 +3179,7 @@ private struct Compiler {
                     *result = DynamicArrayLocal(
                         offset,
                         dynamicArrayElementType(field.type),
-                        false,
+                        arrayElementIsArray(field.type),
                         true,
                         pointer,
                     );
@@ -3205,7 +3206,7 @@ private struct Compiler {
                     *result = DynamicArrayLocal(
                         offset,
                         dynamicArrayElementType(field.type),
-                        false,
+                        arrayElementIsArray(field.type),
                         true,
                         pointer,
                     );
@@ -8187,15 +8188,17 @@ private struct Compiler {
         Type type;
     }
 
-    // The real runtime pointer and DMD type of a static-array-typed field
-    // reached through an array-element pointer (`arr[i].fixedField`, or any
-    // nested-field depth, e.g. `arr[i].outer.fixedField`), or of a further
-    // static-array index into one (`arr[i].fixedField[j]`, and so on for any
-    // dimension of a multi-dimensional static-array field). Recursion peels
-    // one `IndexExp` layer at a time, advancing the field's own real pointer
+    // The real runtime pointer and DMD type of a static- or dynamic-array-
+    // typed field reached through an array-element pointer
+    // (`arr[i].fixedField`, or any nested-field depth, e.g.
+    // `arr[i].outer.fixedField`), or of a further index into one
+    // (`arr[i].fixedField[j]`, and so on for any dimension of a
+    // multi-dimensional field, static or dynamic, in any combination, e.g.
+    // `arr[i].matrixField[j][k]` for a `int[][]` field). Recursion peels one
+    // `IndexExp` layer at a time, advancing the field's own real pointer
     // (`tryClassArrayFieldElementFieldPointer` /
     // `tryStructSliceFieldElementFieldPointer`) one dimension via
-    // `advanceStaticArrayPointer`, instead of ever falling through to
+    // `advanceArrayElementFieldPointer`, instead of ever falling through to
     // `tryStructField`'s throwaway copy of the whole `arr[i]` element (used
     // by the module-struct and AA-value-struct branches beside it, neither of
     // which tracks a writeback for this receiver shape). Null if `expression`
@@ -8203,8 +8206,6 @@ private struct Compiler {
     private ArrayElementFieldPointer* arrayElementFieldPointer(
         Expression expression,
     ) {
-        import dmd.astenums: TY;
-
         if (auto dot = expression.isDotVarExp) {
             ushort fieldPointer;
             Type fieldType;
@@ -8227,16 +8228,11 @@ private struct Compiler {
             auto base = arrayElementFieldPointer(index.e1);
             if (base is null)
                 return null;
-            if (base.type.toBasetype.ty != TY.Tsarray)
-                return null;
 
-            const elementPointer = advanceStaticArrayPointer(
-                Operand(
-                    base.pointer, ScalarType.ulong_, true, ScalarType.void_,
-                ),
-                index.e2, base.type.toBasetype.nextOf,
-                compileSizeConstant(staticArrayLength(base.type)),
-            );
+            auto elementPointer =
+                advanceArrayElementFieldPointer(base, index.e2);
+            if (elementPointer is null)
+                return null;
             auto result = new ArrayElementFieldPointer;
             *result = ArrayElementFieldPointer(
                 elementPointer.offset, base.type.toBasetype.nextOf,
@@ -8254,60 +8250,114 @@ private struct Compiler {
         Type type;
     }
 
+    // Advance `base`'s own real pointer by one indexing dimension, dispatched
+    // on `base.type`: a `Tsarray` dimension advances directly via
+    // `advanceStaticArrayPointer` (fixed compile-time length, storage inline
+    // at `base.pointer`). A `Tarray` dimension is not stored inline -- what
+    // lives at `base.pointer` is the field's own `{pointer, length}`
+    // descriptor -- so it is first materialised through the pointer
+    // (`Op.pointerLoad16`, the same dereference every other runtime-pointer
+    // slice descriptor read in this file uses), then advanced by the very
+    // same `advanceStaticArrayPointer`, fed the descriptor's own data pointer
+    // and its runtime length word (`sliceLengthSlot`) instead of a frame
+    // address and a compile-time constant -- the identical bounds-check
+    // (`Op.checkStaticArrayIndex`) and pointer arithmetic ordinary dynamic-
+    // array indexing already goes through, not a reimplementation of it.
+    // Null if `base.type` is neither.
+    private Operand* advanceArrayElementFieldPointer(
+        ArrayElementFieldPointer* base,
+        Expression indexExpression,
+    ) {
+        import dmd.astenums: TY;
+
+        if (base.type.toBasetype.ty == TY.Tsarray) {
+            const basePointerOperand = Operand(
+                base.pointer, ScalarType.ulong_, true, ScalarType.void_,
+            );
+            auto result = new Operand;
+            *result = advanceStaticArrayPointer(
+                basePointerOperand, indexExpression,
+                base.type.toBasetype.nextOf,
+                compileSizeConstant(staticArrayLength(base.type)),
+            );
+            return result;
+        }
+
+        if (base.type.toBasetype.ty == TY.Tarray) {
+            const descriptorOffset =
+                allocateBytes(sliceDescriptorSize, size_t.sizeof);
+            _code ~= Instruction(
+                Op.pointerLoad16, descriptorOffset, base.pointer,
+                compileSizeConstant(0),
+            );
+            const dataPointer =
+                allocateBytes(cast(uint) size_t.sizeof, size_t.sizeof);
+            _code ~= Instruction(
+                Op.copy, dataPointer, descriptorOffset,
+                cast(ushort) size_t.sizeof,
+            );
+            const lengthSlot = sliceLengthSlot(
+                DynamicArrayLocal(descriptorOffset, ScalarType.void_),
+            );
+
+            auto result = new Operand;
+            *result = advanceStaticArrayPointer(
+                Operand(
+                    dataPointer, ScalarType.ulong_, true, ScalarType.void_,
+                ),
+                indexExpression, base.type.toBasetype.nextOf, lengthSlot,
+            );
+            return result;
+        }
+
+        return null;
+    }
+
     // `arr[i].fixedField[j] = rhs` (or any nested-field or nested-dimension
     // depth, e.g. `arr[i].outer.fixedField[j] = rhs` or
-    // `arr[i].fixedField[j][k] = rhs` for a multi-dimensional static-array
-    // field): an indexed write into a static-array-typed field reached
-    // through an array-element pointer. Null if `index.e1` does not bottom
-    // out at a `Tsarray` field reached through an array-element pointer.
+    // `arr[i].fixedField[j][k] = rhs` for a multi-dimensional static- or
+    // dynamic-array field, in any combination): an indexed write into a
+    // static- or dynamic-array-typed field reached through an array-element
+    // pointer. Null if `index.e1` does not bottom out at such a field
+    // reached through an array-element pointer.
     private Operand* tryArrayElementFieldIndexAssign(
         IndexExp index,
         Expression rhs,
     ) {
-        import dmd.astenums: TY;
-
         auto base = arrayElementFieldPointer(index.e1);
         if (base is null)
             return null;
-        if (base.type.toBasetype.ty != TY.Tsarray)
-            return null;
 
-        const basePointer =
-            Operand(base.pointer, ScalarType.ulong_, true, ScalarType.void_);
-        const elementPointer = advanceStaticArrayPointer(
-            basePointer, index.e2, base.type.toBasetype.nextOf,
-            compileSizeConstant(staticArrayLength(base.type)),
-        );
+        auto elementPointer =
+            advanceArrayElementFieldPointer(base, index.e2);
+        if (elementPointer is null)
+            return null;
         auto result = new Operand;
         *result =
-            storeThroughPointer(elementPointer, compileSizeConstant(0), rhs);
+            storeThroughPointer(*elementPointer, compileSizeConstant(0), rhs);
         return result;
     }
 
     // `arr[i].fixedField[j] += rhs` (or any nested-field or nested-dimension
     // depth): the compound-assignment sibling of
     // `tryArrayElementFieldIndexAssign` above. Null if `index.e1` does not
-    // bottom out at a `Tsarray` field reached through an array-element
-    // pointer.
+    // bottom out at a static- or dynamic-array field reached through an
+    // array-element pointer.
     private Operand* tryArrayElementFieldIndexAddAssign(
         IndexExp index,
         Expression rhs,
     ) {
-        import dmd.astenums: TY;
         import std.conv: text;
 
         auto base = arrayElementFieldPointer(index.e1);
         if (base is null)
             return null;
-        if (base.type.toBasetype.ty != TY.Tsarray)
-            return null;
 
-        const basePointer =
-            Operand(base.pointer, ScalarType.ulong_, true, ScalarType.void_);
-        const elementPointer = advanceStaticArrayPointer(
-            basePointer, index.e2, base.type.toBasetype.nextOf,
-            compileSizeConstant(staticArrayLength(base.type)),
-        );
+        auto elementPointerP =
+            advanceArrayElementFieldPointer(base, index.e2);
+        if (elementPointerP is null)
+            return null;
+        const elementPointer = *elementPointerP;
 
         const zero = compileSizeConstant(0);
         const current = loadThroughPointer(elementPointer, zero);

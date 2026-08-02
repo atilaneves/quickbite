@@ -5001,3 +5001,102 @@ static foreach (backend; Matrix!(
         });
     }
 }
+
+// The `Tarray` sibling of the doubly-indexed static-array-field write above
+// (`arr[i].matrixField[j][k] = value`, e.g. `int[][] matrixField`, a
+// dynamic-array-of-dynamic-arrays field): `arrayElementFieldPointer` only
+// resolved a `Tsarray` dimension, so this shape threw "Unsupported
+// assignment in bytecode core" rather than corrupting anything, but it was
+// still unsupported. Fixed by extending `arrayElementFieldPointer` (via
+// `advanceArrayElementFieldPointer`) to also resolve a `Tarray` dimension:
+// the field's own real pointer is dereferenced to load its `{pointer,
+// length}` descriptor, and the same `advanceStaticArrayPointer` bounds-check
+// and pointer arithmetic ordinary dynamic-array indexing already uses is fed
+// that descriptor's runtime pointer and length instead of a frame address
+// and a compile-time-constant length. Interpreter throws "Unsupported
+// interpreter assignment target." on this shape, the same pre-existing gap
+// as the `Tsarray` sibling above.
+//
+// The fixture builds `matrixField` from an intermediate `rows` local rather
+// than an inline array-of-arrays literal passed directly as the constructor
+// argument: a separate, pre-existing gap (`compileStructLiteralInto`/
+// `tryStructFieldAssign`/`storeArrayElementFieldPointer` and the two inline
+// `Tarray`-field branches in `compileAssignExpression`, `compiler.d`, all
+// call `compileDynamicArrayInto` for a `Tarray` field without passing
+// `arrayElementIsArray(fieldType)`) mis-sizes an array-of-arrays *literal*
+// landing directly in one of those field-typed slots, corrupting the outer
+// array's own element width. That gap is independent of this fix -- it is a
+// struct/class-field literal-construction defect, not an indexing defect --
+// and is out of scope here; routing the literal through a local first avoids
+// it, since copying an existing dynamic-array local's descriptor into a
+// field is a plain 16-byte copy regardless of `elementIsArray`.
+static foreach (backend; Matrix!(
+    Omit!(Interpreter, Because.unconfirmed,
+        "Unsupported interpreter assignment target."),
+)) {
+    @("dynamicArray.nestedDynamicArrayFieldElementOfStructElementWritten." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct Outer { int[][] matrixField; int tag; }
+            unittest {
+                int[][] rows = [[1, 2], [3, 4, 5], [6, 7]];
+                Outer[] arr = [Outer(rows, 10)];
+                arr[0].matrixField[1][2] = 99;
+                assert(arr[0].matrixField[1][2] == 99);
+                assert(arr[0].matrixField[0][0] == 1);
+                assert(arr[0].matrixField[0][1] == 2);
+                assert(arr[0].matrixField[1][0] == 3);
+                assert(arr[0].matrixField[1][1] == 4);
+                assert(arr[0].matrixField[2][0] == 6);
+                assert(arr[0].matrixField[2][1] == 7);
+                assert(arr[0].tag == 10);
+            }
+        });
+    }
+}
+
+// An out-of-bounds index into the `Tarray` dimension throws, rather than
+// corrupting memory: `advanceArrayElementFieldPointer`'s `Tarray` branch
+// bounds-checks against the descriptor's own runtime length word
+// (`Op.checkStaticArrayIndex`, the same check ordinary dynamic-array
+// indexing raises), so this is druntime's ordinary `ArrayIndexError` text,
+// byte for byte matching `SystemLinker`. `Ctfe`'s own bounds check uses the
+// divergent backtick-range wording pinned below.
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.diverges, "see sibling pin below (Ctfe)"),
+    Omit!(Interpreter, Because.unconfirmed,
+        "Unsupported interpreter assignment target."),
+)) {
+    @("dynamicArray.nestedDynamicArrayFieldElementOutOfBoundsIndexThrows." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct Outer { int[][] matrixField; int tag; }
+            unittest {
+                int[][] rows = [[1, 2], [3, 4, 5]];
+                Outer[] arr = [Outer(rows, 10)];
+                arr[0].matrixField[1][5] = 99;
+            }
+        }).shouldThrowWithMessage(
+            "index [5] is out of bounds for array of length 3",
+        );
+    }
+}
+
+static foreach (backend; AliasSeq!(Ctfe)) {
+    @("dynamicArray.nestedDynamicArrayFieldElementOutOfBoundsIndexThrows." ~
+        backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct Outer { int[][] matrixField; int tag; }
+            unittest {
+                int[][] rows = [[1, 2], [3, 4, 5]];
+                Outer[] arr = [Outer(rows, 10)];
+                arr[0].matrixField[1][5] = 99;
+            }
+        }).shouldThrowWithMessage("array index 5 is out of bounds `[0..3]`");
+    }
+}

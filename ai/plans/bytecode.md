@@ -519,25 +519,50 @@ generalising both fixes' dot-detection into one recursive helper,
 of the `DotVarExp` base, advancing the field's own real pointer one
 dimension via `advanceStaticArrayPointer` per layer, so it subsumes the
 single-index case (unchanged behaviour, still any field-chain depth and
-either receiver kind) and extends to any dimension count. Confirmed via real
-`bin/ut` that a sibling shape is a clean diagnostic refusal, not corruption,
-and left unfixed: a *dynamic*-array-typed field indexed through the same
-receiver (`arr[i].matrixField[j][k] = v` where the field is `int[][]`)
-throws "Unsupported assignment in bytecode core", since
-`arrayElementFieldPointer` only resolves a `Tsarray` dimension. Also
-confirmed via real `bin/ut`, with no bug found: `p.field += rhs` through a
-struct pointer (`tryStructPointerField`/`storeStructPointerField`) and
-`c.field += rhs` through a class reference (`tryClassPointerField`/
-`storeClassPointerField`) both already write back through the field's real
-address.
+either receiver kind) and extends to any dimension count. A *dynamic*-array-
+typed field dimension indexed through the same receiver
+(`arr[i].matrixField[j][k] = value` where the field is `int[][]`, any
+combination of static and dynamic dimensions, any depth) now resolves too:
+`advanceArrayElementFieldPointer` (`compiler.d`) dispatches on the dimension's
+own type, advancing a `Tsarray` dimension exactly as before, and for a
+`Tarray` dimension first materialising the field's own `{pointer, length}`
+descriptor through its real pointer (`Op.pointerLoad16`) before feeding that
+descriptor's runtime pointer and length into the *same*
+`advanceStaticArrayPointer` used for the `Tsarray` case (so the bounds check
+and pointer arithmetic are shared, not reimplemented). This uncovered a
+separate pre-existing bug it depends on for correctness:
+`dynamicArrayDescriptorOrNull`'s three struct/class `Tarray`-field branches
+(`tryStructField`/`tryStructPointerField`/`tryClassPointerField` cases,
+`compiler.d`) built their `DynamicArrayLocal` without
+`arrayElementIsArray(field.type)` (silently defaulting to `false`), so
+reading a `Tarray`-of-`Tarray` field indexed its
+outer dimension at the wrong (scalar) element width. Fixed by passing
+`arrayElementIsArray(field.type)` at all three, matching the five other
+correct call sites in the file. Also confirmed via real `bin/ut`, with no bug
+found: `p.field += rhs` through a struct pointer
+(`tryStructPointerField`/`storeStructPointerField`) and `c.field += rhs`
+through a class reference (`tryClassPointerField`/`storeClassPointerField`)
+both already write back through the field's real address.
 
-Next candidate: the dynamic-array-of-dynamic-arrays field indexed write
-noted above (`arr[i].matrixField[j][k] = value`, a `Tarray`-typed field
-dimension) -- extending `arrayElementFieldPointer` to also resolve a
-`Tarray` field/dimension (its `{pointer, length}` descriptor, indexed at the
-runtime length rather than `advanceStaticArrayPointer`'s fixed
-compile-time-length stride) looks like the same bounded shape as the
-static-array generalisation just landed.
+Next candidate: a sibling of the `dynamicArrayDescriptorOrNull` bug just
+fixed, on the *construction* side rather than the read side. An array-of-
+arrays literal landing directly in a `Tarray`-typed struct/class field
+corrupts the outer array's element width (confirmed via real `bin/ut`,
+SIGSEGV on read-back), because five call sites build it via
+`compileDynamicArrayInto` without passing `arrayElementIsArray(fieldType)`
+(silently defaulting to `false`, the same shape as the bug just fixed):
+`compileStructLiteralInto`'s `Tarray` field branch (a struct-literal
+constructor argument, e.g. `Outer([[1, 2], [3, 4]], ...)`),
+`tryStructFieldAssign`'s `Tarray` branch (`o.field = [[1, 2], [3, 4]];`),
+`storeArrayElementFieldPointer`'s `Tarray` branch
+(`arr[i].field = [[1, 2], [3, 4]];`), and `compileAssignExpression`'s two
+inline struct-pointer-field/class-pointer-field `Tarray` branches
+(`p.field = [[1, 2], [3, 4]];` / `c.field = [[1, 2], [3, 4]];`, all
+`compiler.d`). Assigning from an existing `int[][]` local instead of a bare
+literal sidesteps all five (a straight 16-byte descriptor copy is
+`elementIsArray`-agnostic), which is why no prior row caught this. Fix:
+thread `arrayElementIsArray(fieldType)` through each call site the same way
+the three read-side sites above were just fixed.
 `assocArray.structKeyWithStringMemberComparesStructurally` (described
 above) remains open and still not bounded for one commit: even after fixing
 `compileAssocArrayHook`'s struct-typed-key gap, a string-member key still
