@@ -2626,9 +2626,7 @@ static foreach (backend; Matrix!(
     }
 }
 
-static foreach (backend; Matrix!(
-    Omit!(Bytecode, Because.inexpressible, "nested associative-array operand"),
-)) {
+static foreach (backend; Matrix!()) {
     @("assocArray.nestedLookupDereferencesAssociativeArrayPointee." ~
         backend.stringof)
     @Tags(backend.stringof)

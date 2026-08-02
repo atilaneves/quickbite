@@ -6394,12 +6394,14 @@ private struct Compiler {
                 expressionChars(source),
             ));
 
+        const width = assocArrayValueWidth(literal.type.toBasetype);
         _code ~= Instruction(Op.aaNew, destination);
         foreach (index; 0 .. literal.keys.length) {
             const key = compileExpression((*literal.keys)[index]);
             const value = compileExpression((*literal.values)[index]);
             _code ~= Instruction(
                 Op.aaInsert, destination, key.offset, value.offset,
+                cast(ushort) width,
             );
         }
     }
@@ -11195,10 +11197,12 @@ private struct Compiler {
             return null;
 
         const handle = (declaration in _locals);
+        const width = assocArrayValueWidth(index.e1.type.toBasetype);
         const key = compileExpression(index.e2);
         const value = compileExpression(rhs);
         _code ~= Instruction(
             Op.aaInsert, *handle, key.offset, value.offset,
+            cast(ushort) width,
         );
 
         auto result = new Operand;
@@ -12273,10 +12277,13 @@ private struct Compiler {
         // the VM-owned maps. DMD keeps the EqualExp (with an unused lowering to
         // `_d_aaEqual`), so match the operand type here.
         if (equal.e1.type.toBasetype.ty == TY.Taarray) {
+            const width = assocArrayValueWidth(equal.e1.type.toBasetype);
             const left = assocArrayHandleOffset(equal.e1);
             const right = assocArrayHandleOffset(equal.e2);
             const offset = allocate(ScalarType.bool_);
-            _code ~= Instruction(Op.aaEqual, offset, left, right);
+            _code ~= Instruction(
+                Op.aaEqual, offset, left, right, cast(ushort) width,
+            );
             if (equal.op == EXP.notEqual)
                 _code ~= Instruction(Op.notBool, offset, offset);
             return Operand(offset, ScalarType.bool_);
@@ -14817,43 +14824,59 @@ private struct Compiler {
             }
 
             case getRvalue: {
+                // `const` fails: `Type` is DMD's mutable AST ref.
+                auto aaType = assocArrayType((*call.arguments)[0]);
+                const valueType = assocArrayValueScalarType(aaType);
+                const width = assocArrayValueWidth(aaType);
                 const key = compileExpression((*call.arguments)[1]);
                 const offset = allocateBytes(
                     cast(uint) size_t.sizeof, size_t.sizeof,
                 );
                 _code ~= Instruction(
                     Op.aaGetRvalue, offset, handle, key.offset,
+                    cast(ushort) width,
                 );
-                return Operand(
-                    offset, ScalarType.ulong_, true, ScalarType.int_,
-                );
+                return Operand(offset, ScalarType.ulong_, true, valueType);
             }
 
             case getLvalue:
                 return compileAssocArrayGetLvalue(call, handle);
 
             case in_: {
+                // `const` fails: `Type` is DMD's mutable AST ref.
+                auto aaType = assocArrayType((*call.arguments)[0]);
+                const valueType = assocArrayValueScalarType(aaType);
+                const width = assocArrayValueWidth(aaType);
                 const key = compileExpression((*call.arguments)[1]);
                 const offset = allocateBytes(
                     cast(uint) size_t.sizeof, size_t.sizeof,
                 );
-                _code ~= Instruction(Op.aaIn, offset, handle, key.offset);
-                return Operand(
-                    offset, ScalarType.ulong_, true, ScalarType.int_,
+                _code ~= Instruction(
+                    Op.aaIn, offset, handle, key.offset, cast(ushort) width,
                 );
+                return Operand(offset, ScalarType.ulong_, true, valueType);
             }
 
             case remove: {
+                const width =
+                    assocArrayValueWidth(assocArrayType((*call.arguments)[0]));
                 const key = compileExpression((*call.arguments)[1]);
                 const offset = allocate(ScalarType.bool_);
-                _code ~= Instruction(Op.aaRemove, offset, handle, key.offset);
+                _code ~= Instruction(
+                    Op.aaRemove, offset, handle, key.offset,
+                    cast(ushort) width,
+                );
                 return Operand(offset, ScalarType.bool_);
             }
 
             case equal: {
+                const width =
+                    assocArrayValueWidth(assocArrayType((*call.arguments)[0]));
                 const right = assocArrayHandleOffset((*call.arguments)[1]);
                 const offset = allocate(ScalarType.bool_);
-                _code ~= Instruction(Op.aaEqual, offset, handle, right);
+                _code ~= Instruction(
+                    Op.aaEqual, offset, handle, right, cast(ushort) width,
+                );
                 return Operand(offset, ScalarType.bool_);
             }
 
@@ -14993,14 +15016,68 @@ private struct Compiler {
         CallExp call,
         in ushort handle,
     ) {
+        // `const` fails: `Type` is DMD's mutable AST ref.
+        auto aaType = assocArrayType((*call.arguments)[0]);
+        const valueType = assocArrayValueScalarType(aaType);
+        const width = assocArrayValueWidth(aaType);
+
         const key = compileExpression((*call.arguments)[1]);
+        // A fresh, appropriately-sized placeholder: its bytes are immediately
+        // overwritten by the surrounding assignment through the returned
+        // pointer, so its initial content never matters, but it must be
+        // exactly `width` bytes so a wider-than-`key`-sized value (e.g. a
+        // nested AA handle) never reads past `key`'s own slot.
+        const placeholder = allocateBytes(width, width);
         const offset =
             allocateBytes(cast(uint) size_t.sizeof, size_t.sizeof);
-        _code ~= Instruction(Op.aaInsert, handle, key.offset, key.offset);
-        _code ~= Instruction(Op.aaIn, offset, handle, key.offset);
-        return Operand(
-            offset, ScalarType.ulong_, true, ScalarType.int_,
+        _code ~= Instruction(
+            Op.aaInsert, handle, key.offset, placeholder, cast(ushort) width,
         );
+        _code ~= Instruction(
+            Op.aaIn, offset, handle, key.offset, cast(ushort) width,
+        );
+        return Operand(offset, ScalarType.ulong_, true, valueType);
+    }
+
+    // The static `V[K]` type of an associative-array operand (after
+    // unwrapping `&aa`/`*aa`, the same shapes the hook lowering wraps the AA
+    // argument in), for deriving its value type `V`.
+    private Type assocArrayType(Expression expression) {
+        auto inner = expression;
+        if (auto address = inner.isAddrExp)
+            inner = address.e1;
+        if (auto deref = inner.isPtrExp)
+            inner = deref.e1;
+        return inner.type.toBasetype;
+    }
+
+    // The pointee scalar for an associative array's value type, matching
+    // `dynamicArrayElementType`'s convention (`void_` marks an opaque
+    // aggregate block rather than a plain machine scalar). `scalarType`
+    // itself never classifies `Tdelegate` (a static-registry AA such as
+    // `void delegate(...)[string]`, `staticDelegateAssocArrayDeclaration`,
+    // still gives its value slot real -- if never runtime-read -- storage);
+    // a delegate value is the same opaque 16-byte `{context, funcptr}` pair
+    // `emitDelegateValue` lays out for every other delegate-typed slot.
+    private ScalarType assocArrayValueScalarType(Type aaType) {
+        import dmd.astenums: TY;
+
+        if (aaType.toBasetype.nextOf.toBasetype.ty == TY.Tdelegate)
+            return ScalarType.void_;
+        return dynamicArrayElementType(aaType);
+    }
+
+    // The byte width of an associative array's value type, the same way
+    // `dynamicArrayElementSize` sizes a dynamic array's element: a struct or
+    // static-array value is its own block size, any other value is its scalar
+    // width. `AssocArray.values` (`machine.d`) stores entries packed at this
+    // stride, mirroring how a dynamic array carries its own element size.
+    private uint assocArrayValueWidth(Type aaType) {
+        import dmd.astenums: TY;
+
+        if (aaType.toBasetype.nextOf.toBasetype.ty == TY.Tdelegate)
+            return delegateValueSize;
+        return dynamicArrayElementSize(aaType, dynamicArrayElementType(aaType));
     }
 
     // The frame offset of an associative-array handle for `expression`: an AA
@@ -15035,6 +15112,26 @@ private struct Compiler {
             _code ~= Instruction(Op.aaNew, offset);
             return offset;
         }
+
+        // A nested associative-array read used as an operand of an outer AA
+        // hook (`a[1][2]`'s outer `_d_aaGetRvalueX(a[1], 2)` takes the raw,
+        // unresolved `a[1]` as its first argument): DMD represents the
+        // rvalue read of an AA-typed sub-expression as an ordinary `IndexExp`
+        // whose `e1` is the bounds-checked pointer-yielding hook glue and
+        // whose `e2` is the constant `0` (the same `*p` == `p[0]` idiom DMD
+        // uses generally), rather than lowering it to a further nested
+        // `CallExp`. `tryPointerIndex` already compiles this exact shape
+        // correctly for a plain `int x = a[1];`, loading through the pointer
+        // at the value's own scalar width; reuse it here so the loaded
+        // AA-handle value (or ordinary scalar) lands in a real frame slot,
+        // and use that slot as the resolved handle.
+        if (auto index = inner.isIndexExp)
+            if (auto zero = index.e2.isIntegerExp)
+                if (zero.toInteger == 0 &&
+                    isPointerType(index.e1.type)) {
+                    const value = compileExpression(inner);
+                    return value.offset;
+                }
 
         throw new Exception(text(
             "Unsupported associative array operand in bytecode core: ",
@@ -16282,10 +16379,13 @@ private struct Compiler {
             rhs.type.toBasetype.ty != TY.Taarray)
             return false;
 
+        const width = assocArrayValueWidth(lhs.type.toBasetype);
         const left = assocArrayHandleOffset(lhs);
         const right = assocArrayHandleOffset(rhs);
         const equal = allocateBytes(1, 1);
-        _code ~= Instruction(Op.aaEqual, equal, left, right);
+        _code ~= Instruction(
+            Op.aaEqual, equal, left, right, cast(ushort) width,
+        );
 
         // `==` holds when the maps are equal; `!=` holds when negated.
         ushort condition = equal;

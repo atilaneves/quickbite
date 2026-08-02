@@ -366,27 +366,36 @@ architectural non-goals with an explicit reason. An unsupported
 implementation is not, by itself, a permanent divergence from the compiled-D
 oracle.
 
-Next candidate: both remaining `Omit!(Bytecode, ...)` rows in
-`tests/ut/backends/runner/lang/arrays.d`
-(`assocArray.structKeyWithStringMemberComparesStructurally`,
-`assocArray.nestedLookupDereferencesAssociativeArrayPointee`) are blocked on
-the same architectural limitation, not on their own compiler-frontend
-plumbing: `AssocArray` (`machine.d`) hard-codes `int[] keys; int[] values;`
-and every `aa*` opcode handler reads/writes keys and values via
-`scalarValue!int`/`AssocArray.insert(in int, in int)`. A struct key (the
-first row) and an AA-handle value (the second row, a `ulong` handle for the
-nested map) both need a wider representation than 4-byte `int`; the
-compiler-side operand plumbing for both (recovering `__aakeyN`'s structural
-comparison and the nested handle's expression form respectively) is
-tractable on its own, but the machine's map storage has to grow arbitrary
-key/value width first, mirroring how dynamic arrays already carry their own
-element size. That is the prerequisite, not a narrow per-row fix.
+`AssocArray` (`machine.d`) now stores `V[K]`'s value side as `ubyte[]`
+packed at a caller-supplied stride (`assocArrayValueWidth`, `compiler.d`),
+reusing `dynamicArrayElementSize`/`dynamicArrayElementType` the same way a
+dynamic array carries its own element size; the key side is still a
+hard-coded `int[]`. The remaining row,
+`assocArray.structKeyWithStringMemberComparesStructurally`
+(`tests/ut/backends/runner/lang/arrays.d`), needs that key side widened plus
+recovering DMD's synthesized `__aakeyN` variable's structural comparison
+(currently "Unsupported variable in bytecode core: __aakey3") -- a
+genuinely separate, harder problem than the value-width work, since a key
+also has to hash/compare structurally instead of by raw `int` equality.
+
+Next candidate: `assocArrayValueWidth`/`assocArrayValueScalarType`
+(`compiler.d`) size a value from `dynamicArrayElementType`/
+`dynamicArrayElementSize` without ever passing `elementIsArray`, so a
+dynamic-array-typed AA value (`int[][int]`) is mis-sized to a 4-byte scalar
+instead of a 16-byte slice descriptor. Confirmed against real `bin/ut` (not
+`bin/qb` alone): `int[][int] a; a[1] = [10, 20, 30]; a[1].length` passes on
+`SystemLinker` and fails on `Bytecode` with "Unsupported dynamic array
+access in bytecode core: a[1]"; no existing fixture or `Omit!` row covers
+this shape. Fixing it needs the same `elementIsArray`/row-descriptor
+plumbing `compileAppendElement`/`compileConcatenationAssign` already use for
+`T[N][]`/`T[][]`, threaded through the AA value-width helpers.
 
 Every `Omit!(Bytecode, ...)` row left in `tests/ut/backends/runner/**` is one
 of the already-documented not-bounded rows above (`file.d:14`,
 `concurrency.d:24`, the cerealed exception-message row, the three
-`expressions.d` ref-calling-convention rows, the two `arrays.d` assoc-array
-rows, and the four `archive.d` rows); re-search before assuming otherwise.
+`expressions.d` ref-calling-convention rows, the one remaining `arrays.d`
+assoc-array row, and the four `archive.d` rows); re-search before assuming
+otherwise.
 A module-level struct's own nested struct field (`go.inner.x`, `struct Inner
 { int x; } struct Outer { Inner inner; } Outer go;`) now reads and writes
 correctly, including a nested array field (`go.inner.arr ~= ...`):

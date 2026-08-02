@@ -1768,9 +1768,10 @@ package(quickbite.backends.bytecode) RunResult run(
                     handle = maps.length;
                     writeScalar!size_t(stack, base + instruction.a, handle);
                 }
+                const width = instruction.d;
                 maps[handle - 1].insert(
                     scalarValue!int(stack, base + instruction.b),
-                    scalarValue!int(stack, base + instruction.c),
+                    stack[base + instruction.c .. base + instruction.c + width],
                 );
                 ++ip;
                 break;
@@ -1779,7 +1780,9 @@ package(quickbite.backends.bytecode) RunResult run(
             case aaGetRvalue, aaIn: {
                 const handle = scalarValue!size_t(stack, base + instruction.b);
                 const key = scalarValue!int(stack, base + instruction.c);
-                auto slot = handle == 0 ? null : maps[handle - 1].find(key);
+                const width = instruction.d;
+                auto slot =
+                    handle == 0 ? null : maps[handle - 1].find(key, width);
                 writeScalar!size_t(
                     stack, base + instruction.a, cast(size_t) slot,
                 );
@@ -1790,7 +1793,9 @@ package(quickbite.backends.bytecode) RunResult run(
             case aaRemove: {
                 const handle = scalarValue!size_t(stack, base + instruction.b);
                 const key = scalarValue!int(stack, base + instruction.c);
-                const removed = handle != 0 && maps[handle - 1].remove(key);
+                const width = instruction.d;
+                const removed =
+                    handle != 0 && maps[handle - 1].remove(key, width);
                 writeScalar!bool(stack, base + instruction.a, removed);
                 ++ip;
                 break;
@@ -1799,9 +1804,11 @@ package(quickbite.backends.bytecode) RunResult run(
             case aaEqual: {
                 const left = scalarValue!size_t(stack, base + instruction.b);
                 const right = scalarValue!size_t(stack, base + instruction.c);
+                const width = instruction.d;
                 const equal = assocArrayEqual(
                     left == 0 ? AssocArray.init : maps[left - 1],
                     right == 0 ? AssocArray.init : maps[right - 1],
+                    width,
                 );
                 writeScalar!bool(stack, base + instruction.a, equal);
                 ++ip;
@@ -1832,10 +1839,11 @@ package(quickbite.backends.bytecode) RunResult run(
                                 block, index * outputElementSize, element,
                             );
                     else
-                        foreach (index, element; maps[handle - 1].values)
-                            writeScalar!int(
-                                block, index * outputElementSize, element,
-                            );
+                        // The map's own values are already packed at this
+                        // exact stride (`AssocArray.insert`'s width comes
+                        // from the same static value type), so copy them
+                        // verbatim rather than re-widening a narrower scalar.
+                        block[] = maps[handle - 1].values[];
                 }
                 heap ~= block;
                 writeSliceDescriptor(
@@ -3230,37 +3238,48 @@ private void writeScalar(T)(
     }
 }
 
-// A VM-owned `int[int]` map, stored as parallel insertion-ordered keys and
-// values. Insertion order does not match druntime's hash order, but the tests
-// only sum keys/values and compare entry sets, so order is immaterial.
+// A VM-owned `V[int]` map, stored as parallel insertion-ordered keys and
+// values (the key stays a plain `int`; only the value width is generalised).
+// Insertion order does not match druntime's hash order, but the tests only
+// sum keys/values and compare entry sets, so order is immaterial.
+// `values` packs each entry as a fixed-width raw byte block, the same way a
+// dynamic array carries its own element size: the width is never stored on
+// `AssocArray` itself, only passed in by the caller (the compiler emits the
+// same static value-type width at every access site for a given map, so a
+// single map's entries are always consistently strided).
 private struct AssocArray {
     int[] keys;
-    int[] values;
+    ubyte[] values;
 
-    // The address of the value stored for `key`, or null when absent. Held
-    // pointers stay valid until the next insert reallocates `values`.
-    int* find(in int key) @trusted @nogc nothrow pure {
+    // The address of the `width`-byte value block stored for `key`, or null
+    // when absent. Held pointers stay valid until the next insert
+    // reallocates `values`.
+    ubyte* find(in int key, in size_t width) @trusted @nogc nothrow pure {
         foreach (index, existing; keys)
             if (existing == key)
-                return &values[index];
+                return &values[index * width];
         return null;
     }
 
-    void insert(in int key, in int value) @safe nothrow pure {
+    // `value.length` is the entry width; the same width is passed to every
+    // other access for this map.
+    void insert(in int key, in const(ubyte)[] value) @safe nothrow pure {
         const index = findIndex(key);
         if (index != size_t.max) {
-            values[index] = value;
+            values[index * value.length .. (index + 1) * value.length] =
+                value[];
             return;
         }
         keys ~= key;
         values ~= value;
     }
 
-    bool remove(in int key) @safe nothrow pure {
+    bool remove(in int key, in size_t width) @safe nothrow pure {
         foreach (index, existing; keys)
             if (existing == key) {
                 keys = keys[0 .. index] ~ keys[index + 1 .. $];
-                values = values[0 .. index] ~ values[index + 1 .. $];
+                values = values[0 .. index * width] ~
+                    values[(index + 1) * width .. $];
                 return true;
             }
         return false;
@@ -3531,16 +3550,19 @@ private AssocArray copyAssocArray(AssocArray source) @safe nothrow pure {
     return AssocArray(source.keys.dup, source.values.dup);
 }
 
-// Entry-set equality: equal counts and, for every key in `left`, an equal value
-// in `right`. Order-independent, matching `int[int]` `==`.
-private bool assocArrayEqual(in AssocArray left, in AssocArray right)
-    @trusted @nogc nothrow pure
-{
+// Entry-set equality: equal counts and, for every key in `left`, an equal
+// `width`-byte value in `right`. Order-independent, matching `V[K]` `==`.
+private bool assocArrayEqual(
+    in AssocArray left,
+    in AssocArray right,
+    in size_t width,
+) @trusted @nogc nothrow pure {
     if (left.keys.length != right.keys.length)
         return false;
     foreach (index, key; left.keys) {
-        auto slot = (cast() right).find(key);
-        if (slot is null || *slot != left.values[index])
+        auto slot = (cast() right).find(key, width);
+        const entry = left.values[index * width .. (index + 1) * width];
+        if (slot is null || slot[0 .. width] != entry)
             return false;
     }
     return true;
