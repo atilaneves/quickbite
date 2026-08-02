@@ -11659,7 +11659,18 @@ private struct Compiler {
             return rowResult;
         }
 
-        const value = compileExpression(rhs);
+        // A struct-typed rhs that is itself an existing lvalue (a local, a
+        // field, ...) has no scalar Operand of its own; it lives at its own
+        // inline frame block, the same storage `structOperandOffset`
+        // resolves for every other struct-value read. `compileExpression`
+        // only materialises a struct rvalue (literal/constructor call)
+        // directly, so a bare lvalue (`arr[i] = existingVar;`) must route
+        // through `structOperandOffset` instead, the same fix
+        // `storeThroughPointer` applies for the AA-value slot-pointer shape.
+        const valueOffset = rhs.type !is null &&
+                rhs.type.toBasetype.ty == TY.Tstruct
+            ? structOperandOffset(rhs)
+            : compileExpression(rhs).offset;
         const savedDollarLength = _activeDollarLength;
         _activeDollarLength = sliceLengthSlot(*descriptor);
         const indexSlot = compileExpression(index.e2);
@@ -11668,14 +11679,14 @@ private struct Compiler {
             dynamicArrayElementSize(index.e1.type, descriptor.elementType);
         _code ~= Instruction(
             indexStoreOp(elementSize),
-            value.offset,
+            valueOffset,
             descriptor.offset,
             indexSlot.offset,
             cast(ushort) elementSize,
         );
 
         auto result = new Operand;
-        *result = Operand(value.offset, descriptor.elementType);
+        *result = Operand(valueOffset, descriptor.elementType);
         return result;
     }
 
@@ -11905,9 +11916,22 @@ private struct Compiler {
         in StaticArrayElement element,
         Expression rhs,
     ) {
+        import dmd.astenums: TY;
         import std.conv: text;
 
-        const value = compileExpression(rhs);
+        // A struct-typed rhs that is itself an existing lvalue (a local, a
+        // field, another array element, ...) has no scalar Operand of its
+        // own; it lives at its own inline frame block, the same storage
+        // `structOperandOffset` resolves for every other struct-value read.
+        // `compileExpression` only materialises a struct rvalue
+        // (literal/constructor call) directly, so a bare lvalue
+        // (`arr[1] = existingVar;`) must route through `structOperandOffset`
+        // instead, the same fix `tryDynamicArrayElementAssign` applies for
+        // the dynamic-array-element shape.
+        const value = rhs.type !is null &&
+                rhs.type.toBasetype.ty == TY.Tstruct
+            ? Operand(structOperandOffset(rhs), ScalarType.void_)
+            : compileExpression(rhs);
         if (value.type != element.type)
             throw new Exception(text(
                 "Unsupported static array element assignment in bytecode core: ",

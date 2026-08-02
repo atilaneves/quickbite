@@ -417,18 +417,43 @@ the `_d_aaGetY` slot-pointer write shape (`tryPointerElementAssign` /
 but not a struct lvalue; `storeThroughPointer` now routes a struct-typed rhs
 through `structOperandOffset` instead.
 
-Next candidate: the identical `compileExpression`-only-handles-a-struct-
-rvalue gap, one level up. `tryDynamicArrayElementAssign`'s main branch
-(`compiler.d`) has the same bug `storeThroughPointer` just lost: `arr[i] =
-existingVar;` for a plain dynamic array of structs (no AA involved) throws
-"Unsupported variable in bytecode core: existingVar". Confirmed against
-real `bin/ut`: `S[] outer; outer ~= S(1, 2); outer ~= S(4, 5); S
-replacement = S(7, 8); outer[0] = replacement;` throws on `Bytecode`;
-`SystemLinker` runs it fine. Route that branch's rhs through
-`structOperandOffset` the same way, and audit the file's other
-`compileExpression(rhs)` call sites for a struct-typed rhs
-(`tryStaticArrayElement`/`tryClassStaticArrayFieldElementAssign` and
-friends) for the same gap before assuming this is the only one left.
+`tryDynamicArrayElementAssign`'s main branch and
+`compileStaticArrayElementAssign` (`compiler.d`) had the identical
+`compileExpression`-only-handles-a-struct-rvalue gap `storeThroughPointer`
+lost earlier: `arr[i] = existingVar;` for a plain dynamic array of structs,
+and the same shape for a compile-time-indexed static array of structs, threw
+"Unsupported variable in bytecode core: existingVar" on `Bytecode` while
+`SystemLinker` ran both fine. Both now route a struct-typed rhs through
+`structOperandOffset`. The other `compileExpression(rhs)`-based assignment
+sites in the file (`tryStaticArrayRuntimeElementAssign`,
+`tryClassStaticArrayFieldElementAssign`) already went through
+`storeThroughPointer` and needed no change.
+
+Next candidate: writing (not reading) a struct-typed field of a struct
+reached through a *dynamic*-array index -- `arr[i].structField = rhs`, e.g.
+`struct Inner { int v; } struct Outer { Inner inner; int tag; } Outer[] arr
+= [Outer(Inner(1), 10)]; arr[0].inner = Inner(55);` -- fails on `Bytecode`
+entirely, for both an rvalue and an existing-lvalue rhs ("Unsupported type
+in bytecode core: Inner" / "Unsupported variable in bytecode core:
+existing" respectively, confirmed via real `bin/ut`), while `SystemLinker`
+runs both fine. The sibling *scalar*-field case on the same receiver
+(`arr[0].tag = 5;`) already works, as does *reading* the struct field
+(`arr[0].inner.v`). The dispatch chain in `compileAssignExp` tries
+`tryStructSliceFieldElementFieldPointer` (via `tryPointerToElement` /
+`dynamicArrayDescriptorOrNull`) *before* `tryStructFieldAssign`, and it does
+resolve `arr[0].inner`'s real heap pointer correctly -- `tryStructField`/
+`structBaseOffsetOrMaterialise` are never even reached. The gap is in the
+resolved pointer's write side, `storeArrayElementFieldPointer`: it special-
+cases a `Tarray` field but falls through to a generic scalar path
+(`compileExpression(rhs)` sized by `scalarType(fieldType)`) for everything
+else, including `Tstruct`, which is exactly the `compileExpression`-only-
+handles-a-struct-rvalue gap this plan's last several commits kept finding
+in other shapes. The fix is a `Tstruct` branch there mirroring
+`storeThroughPointer`'s: route `rhs` through `structOperandOffset` and store
+`staticArraySize(fieldType)` bytes through the pointer instead of a scalar
+width. `storeArrayElementFieldPointer` also serves the class-array-field
+case (`c.arr[i].field = rhs`, `tryClassArrayFieldElementFieldPointer`) at
+the same call site shape, so the same fix likely closes both.
 
 Every `Omit!(Bytecode, ...)` row left in `tests/ut/backends/runner/**` is one
 of the already-documented not-bounded rows above (`file.d:14`,

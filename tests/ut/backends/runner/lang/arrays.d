@@ -4704,3 +4704,47 @@ static foreach (backend; Matrix!()) {
         });
     }
 }
+
+// The dynamic-array-element counterpart of
+// `assocArray.structValueOverwriteFromVariable` above:
+// `tryDynamicArrayElementAssign`'s main branch only materialised its rhs
+// through `compileExpression`, which handles a struct rvalue (a literal or
+// constructor call) but not a struct lvalue (an existing local, reached the
+// same way `structOperandOffset` resolves every other struct-value read).
+static foreach (backend; Matrix!()) {
+    @("dynamicArray.structElementOverwriteFromVariable." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct Point { int x; int y; }
+            unittest {
+                Point[] arr = [Point(1, 2)];
+                Point p = Point(9, 9);
+                arr[0] = p;
+                assert(arr[0].x == 9);
+                assert(arr[0].y == 9);
+            }
+        });
+    }
+}
+
+// The static-array-element counterpart, resolved to a compile-time-constant
+// inline frame offset rather than a runtime descriptor:
+// `compileStaticArrayElementAssign` had the identical
+// compileExpression-only-handles-a-struct-rvalue gap.
+static foreach (backend; Matrix!()) {
+    @("staticArray.structElementOverwriteFromVariable." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct Point { int x; int y; }
+            unittest {
+                Point[2] arr = [Point(1, 2), Point(3, 4)];
+                Point p = Point(9, 9);
+                arr[1] = p;
+                assert(arr[1].x == 9);
+                assert(arr[1].y == 9);
+            }
+        });
+    }
+}
