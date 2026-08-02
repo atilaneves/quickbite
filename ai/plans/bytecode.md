@@ -938,6 +938,26 @@ context), and a delegate read back from a dynamic-array element;
 `Interpreter` still throws on the method-delegate and array-element shapes
 for unrelated reasons (`Omit!(Interpreter, Because.unconfirmed)`).
 
+`&arr[i]`/`arr.ptr` for a dynamic array of structs (or any aggregate
+element) now scales by the element's real byte width instead of silently
+computing a null stride: `pointerToElement`/`offsetPointer` took an
+explicit `elementByteWidth` (`dynamicArrayElementSize`) rather than
+deriving one from the element's `ScalarType` opcode tag, since an
+aggregate element's tag is `void_` and `program.size(void_) == 0` --
+every `&arr[i]` silently addressed element 0 regardless of `i`, a
+same-root-cause sibling of the "Pointer metadata" section's
+opcode-type/byte-stride conflation. A `*p = rhs`/`*p op= rhs` lowered by
+DMD to a call on a struct pointee with a user-defined
+`opAssign`/`opOpAssign` also now writes back correctly: `methodReceiver`
+had no branch for a bare pointer-dereference receiver (as opposed to the
+struct-pointer-field/class-field/AA-value-pointer receivers already
+handled), so it fell through to a read-only throwaway copy and silently
+discarded the mutation. Both were needed together for the array-element
+receiver case (`S* p = &arr[i]; *p op= rhs;`); confirmed via real
+`bin/ut`, not `bin/qb` alone -- `bin/qb file.d` without `-l` never
+executes the file's module unittests at all, so an apparent zero-exit
+"pass" there proves nothing.
+
 Next candidate: `a.m[0][0] = 99` above (a class field of type `int[][]`,
 indexed twice, no intervening struct/field dot) -- not yet root-caused to a
 specific dispatch function, and a prior attempt at it `SIGSEGV`ed partway

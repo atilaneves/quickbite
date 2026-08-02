@@ -5015,6 +5015,40 @@ private struct Compiler {
                             return MethodReceiver(offset, frameIndex, blockSize);
                         }
 
+        // `(*p).method()` (including `*p = rhs`/`*p += rhs` lowered to an
+        // `opAssign`/`opOpAssign` call on the dereferenced receiver): the
+        // receiver `*p` is a struct's real heap/frame storage reached through
+        // a bare pointer, not an already frame-resident struct.
+        // `structOperandOffset`'s `PtrExp` branch (the generic fallback
+        // `methodReceiverOffset` below would otherwise use) only reads a
+        // throwaway copy with no writeback, so a mutating method silently
+        // discards its effect. Resolve the pointer, materialise a fresh
+        // inline copy for the call, and write the (possibly mutated) copy
+        // back through the real address afterward, the same shape as the
+        // struct-pointer-field/class-field receiver branch below.
+        if (auto dot = call.e1.isDotVarExp)
+            if (auto deref = dot.e1.isPtrExp) {
+                const pointer = compileExpression(deref.e1);
+                if (pointer.isPointer) {
+                    const structSize =
+                        cast(ushort) staticArraySize(dot.e1.type);
+                    const offset = allocateBytes(
+                        structSize, staticArrayAlign(dot.e1.type),
+                    );
+                    _code ~= Instruction(
+                        pointerLoadOp(structSize),
+                        offset,
+                        pointer.offset,
+                        compileSizeConstant(0),
+                        structSize,
+                    );
+                    return MethodReceiver(
+                        offset, 0, 0, pointer.offset, structSize,
+                        compileSizeConstant(0),
+                    );
+                }
+            }
+
         // `p.t.method()` / `c.t.method()`: the receiver `p.t`/`c.t` (DMD's
         // `(*p).t`/`c.t`) is a struct-typed field reached through a struct
         // pointer or class reference rather than an already frame-resident
@@ -7892,8 +7926,12 @@ private struct Compiler {
     // type. `&arr[0]` produces the same address, so the two compare `is`-equal.
     private Operand compileArrayPointer(CastExp cast_) {
         const descriptor = dynamicArrayDescriptor(cast_.e1);
+        const elementByteWidth = dynamicArrayElementSize(
+            cast_.e1.type, descriptor.elementType, descriptor.elementIsArray,
+        );
         return pointerToElement(
             descriptor.offset, descriptor.elementType, compileSizeConstant(0),
+            elementByteWidth,
         );
     }
 
@@ -7968,9 +8006,13 @@ private struct Compiler {
             return result;
         }
 
+        const elementByteWidth = dynamicArrayElementSize(
+            index.e1.type, descriptor.elementType, descriptor.elementIsArray,
+        );
         auto result = new Operand;
         *result = pointerToElement(
             descriptor.offset, descriptor.elementType, indexSlot.offset,
+            elementByteWidth,
         );
         return result;
     }
@@ -8927,30 +8969,41 @@ private struct Compiler {
         return result;
     }
 
-    // A pointer operand holding `descriptor.ptr + index * elementSize`: read the
-    // descriptor's pointer word, scale the index by the element size, and add.
+    // A pointer operand holding `descriptor.ptr + index * elementByteWidth`:
+    // read the descriptor's pointer word, scale the index by the element's
+    // real byte width, and add. `elementByteWidth` is the caller's own byte
+    // stride (`dynamicArrayElementSize`, not `program.size(elementType)`):
+    // an aggregate element (struct, static array, delegate) reports
+    // `ScalarType.void_` as its opcode type, and `size(void_) == 0` would
+    // silently collapse every index to element 0 instead of throwing --
+    // opcode scalar type and native byte stride are separate facts
+    // (`ai/plans/bytecode.md`'s "Pointer metadata" section).
     private Operand pointerToElement(
         in ushort descriptorOffset,
         in ScalarType elementType,
         in ushort indexSlot,
+        in uint elementByteWidth,
     ) {
         const pointer = allocateBytes(cast(uint) size_t.sizeof, size_t.sizeof);
         _code ~= Instruction(
             Op.copy, pointer, descriptorOffset, cast(ushort) size_t.sizeof,
         );
-        return offsetPointer(pointer, elementType, indexSlot);
+        return offsetPointer(pointer, elementType, indexSlot, elementByteWidth);
     }
 
-    // Advance the `size_t` pointer at `pointerOffset` by `index * elementSize`
-    // into a fresh pointer slot, the shared scaling for `&arr[i]`, `p + n`, and
-    // `n + p`.
+    // Advance the `size_t` pointer at `pointerOffset` by `index *
+    // elementByteWidth` into a fresh pointer slot, the shared scaling for
+    // `&arr[i]` and `.ptr`. See `pointerToElement` above for why the byte
+    // stride is an explicit caller-supplied fact rather than derived from
+    // `elementType`.
     private Operand offsetPointer(
         in ushort pointerOffset,
         in ScalarType elementType,
         in ushort indexSlot,
+        in uint elementByteWidth,
     ) {
         const scaled = allocateBytes(cast(uint) size_t.sizeof, size_t.sizeof);
-        const stride = compileSizeConstant(size(elementType));
+        const stride = compileSizeConstant(elementByteWidth);
         _code ~= Instruction(Op.mulInt8, scaled, indexSlot, stride);
         const result = allocateBytes(cast(uint) size_t.sizeof, size_t.sizeof);
         _code ~= Instruction(Op.addInt8, result, pointerOffset, scaled);

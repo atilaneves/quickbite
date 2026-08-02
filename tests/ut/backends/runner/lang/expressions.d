@@ -1575,6 +1575,106 @@ static foreach (backend; AliasSeq!(Bytecode)) {
     }
 }
 
+// `&arr[i]` for a dynamic array of structs: `tryPointerToElement`'s general
+// fallback scaled the index by `program.size(elementType)`, but an
+// aggregate element (struct, static array, delegate) carries
+// `ScalarType.void_` as its opcode type and `size(void_) == 0` -- so every
+// index silently collapsed to element 0 instead of the real byte stride
+// (`ai/plans/bytecode.md`'s "Pointer metadata" section: opcode scalar type
+// and native byte stride are separate facts, never infer one from the
+// other). `p.value = 42` above silently wrote `arr[0]`, not `arr[1]`.
+// `pointerToElement`/`offsetPointer` now take the caller's own
+// `dynamicArrayElementSize` byte width instead of deriving one from the
+// element's opcode type.
+static foreach (backend; Matrix!()) {
+    @("pointer.addressOfDynamicArrayStructElementUsesRealByteStride." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct S {
+                int value;
+            }
+
+            unittest {
+                S[] arr = [S(1), S(2)];
+                S* p = &arr[1];
+                p.value = 42;
+                assert(arr[0].value == 1);
+                assert(arr[1].value == 42);
+            }
+        });
+    }
+}
+
+// `*p = rhs`/`*p op= rhs` where `p`'s pointee has a user-defined
+// `opAssign`/`opOpAssign`: DMD lowers this to a method call on the
+// dereferenced receiver `(*p).opAssign(rhs)`, but `methodReceiver` had no
+// branch for a bare `PtrExp` receiver (as opposed to a struct-pointer/
+// class field or dynamic-array-element field already covered), so it fell
+// through to the generic `structOperandOffset` fallback -- a read-only
+// throwaway copy with no writeback. The call ran on the copy and its
+// mutation was silently discarded; `s.value` above stayed at its
+// construction value instead of becoming 42. `methodReceiver` now
+// resolves a bare pointer-to-struct receiver the same way, materialising a
+// fresh inline copy and writing the (possibly mutated) copy back through
+// the real pointer address afterward.
+static foreach (backend; Matrix!(
+    Omit!(Interpreter, Because.unconfirmed),
+)) {
+    @("struct.opAssignCalledThroughBarePointerToLocal." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct Setting {
+                int value;
+
+                void opAssign(in int newValue) {
+                    value = newValue;
+                }
+            }
+
+            unittest {
+                Setting s;
+                Setting* p = &s;
+                *p = 42;
+                assert(s.value == 42);
+            }
+        });
+    }
+}
+
+// The array-element-receiver combination of the two fixtures above:
+// `&arr[1]` needs the real byte stride to address the right element, and
+// the `opOpAssign` call through that pointer needs the write-back-through-
+// pointer receiver branch, together.
+static foreach (backend; Matrix!(
+    Omit!(Interpreter, Because.unconfirmed),
+)) {
+    @("struct.opOpAssignCalledThroughDynamicArrayElementPointer." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct Counter {
+                int value;
+
+                void opOpAssign(string op: "+")(int amount) {
+                    value += amount;
+                }
+            }
+
+            unittest {
+                Counter[] arr = [Counter(1), Counter(2)];
+                Counter* p = &arr[1];
+                *p += 40;
+                assert(arr[0].value == 1);
+                assert(arr[1].value == 42);
+            }
+        });
+    }
+}
+
 // A lambda (`FuncExp`, not a named nested function) captures a local and is
 // passed as a VALUE into another function that invokes it -- `applyTwice`
 // is itself nested inside `addCaptured` so its own activation inherits
