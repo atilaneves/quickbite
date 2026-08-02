@@ -4871,3 +4871,35 @@ static foreach (backend; Matrix!()) {
         });
     }
 }
+
+// An *indexed* write into that same static-array field (`arr[i].fixedField[j]
+// = value`): `staticArrayBaseOffset` resolved `arr[0].vals`'s base offset
+// through `tryStructField`, which for a dynamic-array-of-structs element
+// (`structBaseOffsetOrMaterialise`'s `dynamicArrayDescriptorOrNull` branch)
+// returns a throwaway copy of the element with no writeback wiring at all --
+// silently discarding the store instead of throwing. `arr[0].vals` (the whole
+// field) previously used the same throwaway base for its own reads, but the
+// whole-value *write* case above bypasses it via
+// `tryStructSliceFieldElementFieldPointer`'s real pointer; this indexed case
+// had no such bypass. Fixed by resolving the field's real runtime pointer the
+// same way and advancing it by the index, mirroring
+// `tryStaticArrayRuntimeAddress`'s pointer-advance for a plain static-array
+// local.
+static foreach (backend; Matrix!()) {
+    @("dynamicArray.staticArrayFieldElementOfStructElementWritten." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct Outer { int[3] vals; int tag; }
+            unittest {
+                Outer[] arr = [Outer([1, 2, 3], 10)];
+                arr[0].vals[1] = 99;
+                assert(arr[0].vals[1] == 99);
+                assert(arr[0].vals[0] == 1);
+                assert(arr[0].vals[2] == 3);
+                assert(arr[0].tag == 10);
+            }
+        });
+    }
+}

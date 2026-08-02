@@ -8187,6 +8187,61 @@ private struct Compiler {
         Type type;
     }
 
+    // `arr[i].fixedField[j] = rhs` (or any nested-field depth, e.g.
+    // `arr[i].outer.fixedField[j] = rhs`): an indexed write into a
+    // static-array-typed field reached through an array-element pointer.
+    // `arr[i].fixedField`'s own base offset (`tryStructField`, via
+    // `structBaseOffsetOrMaterialise`'s dynamic-array-of-structs branch)
+    // resolves to a throwaway copy of the whole `arr[i]` element with no
+    // writeback wiring at all -- unlike the module-struct and AA-value-struct
+    // branches beside it, each of which tracks how to write a field back to
+    // its real storage. Folding an index into that throwaway copy's offset
+    // (the whole-array-index path below) silently discards the store instead
+    // of throwing. Resolve the field's own real runtime pointer instead, the
+    // same way the whole-field-write case does
+    // (`tryClassArrayFieldElementFieldPointer` /
+    // `tryStructSliceFieldElementFieldPointer`), and advance it by the
+    // index, mirroring `tryStaticArrayRuntimeAddress`'s pointer-advance for
+    // a plain static-array local. Null if `index.e1` is not a `Tsarray`
+    // field reached through an array-element pointer.
+    private Operand* tryArrayElementFieldIndexAssign(
+        IndexExp index,
+        Expression rhs,
+    ) {
+        import dmd.astenums: TY;
+
+        auto dot = index.e1.isDotVarExp;
+        if (dot is null)
+            return null;
+
+        ushort fieldPointer;
+        Type fieldType;
+        if (auto classField = tryClassArrayFieldElementFieldPointer(dot)) {
+            fieldPointer = classField.pointer;
+            fieldType = classField.type;
+        } else if (auto structField =
+                tryStructSliceFieldElementFieldPointer(dot)) {
+            fieldPointer = structField.pointer;
+            fieldType = structField.type;
+        } else {
+            return null;
+        }
+
+        if (fieldType.toBasetype.ty != TY.Tsarray)
+            return null;
+
+        const basePointer =
+            Operand(fieldPointer, ScalarType.ulong_, true, ScalarType.void_);
+        const elementPointer = advanceStaticArrayPointer(
+            basePointer, index.e2, fieldType.toBasetype.nextOf,
+            compileSizeConstant(staticArrayLength(fieldType)),
+        );
+        auto result = new Operand;
+        *result =
+            storeThroughPointer(elementPointer, compileSizeConstant(0), rhs);
+        return result;
+    }
+
     // `&local` / `&base.field`: the native address of a scalar local's frame
     // slot (or a struct field's inline slot), yielding an `int*`-style pointer
     // operand over the pointed-at element type. Null if the operand is not a
@@ -9797,6 +9852,18 @@ private struct Compiler {
         // `*p = rhs` through a pointer.
         if (auto deref = assign.e1.isPtrExp)
             if (auto store = tryPointerDereferenceAssign(deref, assign.e2))
+                return *store;
+
+        // `arr[i].fixedField[j] = rhs`: an indexed write into a static-array
+        // field reached through an array-element pointer. Checked before
+        // `tryStaticArrayElement` below, which would otherwise resolve
+        // `arr[i].fixedField`'s base offset through `tryStructField`'s
+        // dynamic-array-of-structs branch -- a throwaway copy of the element
+        // with no writeback wiring at all (unlike the AA-value-struct and
+        // module-struct branches beside it), silently discarding the store
+        // instead of throwing.
+        if (auto index = assign.e1.isIndexExp)
+            if (auto store = tryArrayElementFieldIndexAssign(index, assign.e2))
                 return *store;
 
         // `arr[i] = rhs` for a static-array element: write the scalar rhs into

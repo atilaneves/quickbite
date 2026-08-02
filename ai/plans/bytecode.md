@@ -454,18 +454,46 @@ function also serves the class-array-field case, `c.arr[i].fixedField = rhs`
 is fixed too (`Interpreter` still throws "Expected class object." on that
 receiver shape, the pre-existing gap noted above, confirmed unchanged).
 
-Next candidate: an *indexed* write into that same static-array field,
-`arr[i].fixedField[j] = value` (e.g. continuing the `Outer` example above,
-`arr[0].vals[1] = 99;`), silently does nothing on `Bytecode` -- no
-exception, but the read-back value is unchanged (confirmed via real
-`bin/ut`: `assert(arr[0].vals[1] == 99)` fails with `2 != 99`, the original
-element), while `SystemLinker` writes it correctly. This is a wrong-result
-bug, not a thrown "unsupported" diagnostic, so it needs to be found and
-fixed rather than merely routed: the indexed-element write must be landing
-on a scratch/temporary slot instead of the real array-element storage this
-field's pointer denotes. Likely near whatever compiles an `IndexExp` lvalue
-over a `DotVarExp` field base reached through `storeArrayElementFieldPointer`
-or a sibling struct-field-index assignment path.
+An *indexed* write into that same static-array field
+(`arr[i].fixedField[j] = value`, e.g. continuing the `Outer` example above,
+`arr[0].vals[1] = 99;`) was a silent-corruption bug, not a thrown
+"unsupported" diagnostic: `staticArrayBaseOffset` resolved
+`arr[i].fixedField`'s base offset through `tryStructField`, which for a
+dynamic-array-of-structs element (`structBaseOffsetOrMaterialise`'s
+`dynamicArrayDescriptorOrNull` branch) returns a throwaway copy of the whole
+element with no writeback wiring at all -- unlike the module-struct and
+AA-value-struct branches beside it, each of which tracks how to write a
+field back to its real storage -- so the indexed write silently landed on
+that scratch copy. Fixed generally: `tryArrayElementFieldIndexAssign`
+(`compiler.d`) resolves the field's own real runtime pointer the same way
+the whole-field-write case does (`tryClassArrayFieldElementFieldPointer` /
+`tryStructSliceFieldElementFieldPointer`, so this covers any field-chain
+nesting depth and both the struct- and class-array-field receivers) and
+advances it by the index via `advanceStaticArrayPointer` (bounds-checked,
+and handling a runtime as well as a compile-time index), checked ahead of
+`tryStaticArrayElement`/`tryStaticArrayRuntimeElementAssign` in the
+`AssignExp` dispatch so neither ever folds an index into the throwaway copy.
+
+Next candidate: the compound-assignment sibling of the fix above,
+`arr[i].fixedField[j] += value` (continuing the same `Outer` example,
+`arr[0].vals[1] += 5;`), has the identical silent-corruption shape on
+`Bytecode` -- confirmed via real `bin/ut`: `assert(arr[0].vals[1] == 7)`
+fails with `2 != 7`, not an exception -- while `SystemLinker` computes it
+correctly. `compileAddAssignExpression`'s `IndexExp` handling
+(`tryStaticArrayElementAddAssign`, which calls the same buggy
+`tryStaticArrayElement` the plain-assignment fix above now bypasses) is a
+separate dispatch from `compileAssignExpression` and was not touched by that
+fix, so it still resolves the field's base through the same throwaway
+`tryStructField` copy. Fix it the same way: reuse (or mirror)
+`tryArrayElementFieldIndexAssign`'s real-pointer resolution for the
+compound-assignment path, likely a `tryArrayElementFieldIndexAddAssign`. The
+other compound-assignment operators do *not* share this bug or this code
+path: `-=`/`*=`/`<<=`/`>>=`/`|=`/`&=`/`^=` all route through
+`compileLocalIntegerCompoundAssign`, which only resolves a plain local
+declaration and throws "Unsupported compound assignment in bytecode core"
+for any non-local target (confirmed via real `bin/ut`:
+`arr[0].vals[1] -= 1;` throws cleanly rather than corrupting) -- a
+lower-priority, already-diagnostic gap, not part of this candidate.
 
 Every `Omit!(Bytecode, ...)` row left in `tests/ut/backends/runner/**` is one
 of the already-documented not-bounded rows above (`file.d:14`,
