@@ -1011,17 +1011,34 @@ already shares) and copying the 16-byte `{functionIndex, context}` pair into
 the field, the way the `isPointerType` branch beside it already handles a
 non-null pointer element.
 
-Next candidate: assignment and compound assignment through a `ref`-returning
-method call used as an lvalue (`ref int at(in int index) return { return
-data[index]; }`, then `p.at(0) = 42;` or `p.at(0) += 2;`) throws "Unsupported
-assignment in bytecode core: p.at(0) = 42" / "Unsupported compound
-assignment in bytecode core: p.at(0) += 2" -- confirmed with a real fixture
-via `bin/ut`. Root-caused to `compileLocalIntegerCompoundAssign`'s fallback
-throw (`compiler.d`, ~line 10202/10213): no branch in
-`compoundAssignLocalDeclaration`/`compoundAssignDotVar`/`compoundAssignIndex`
-handles a `CallExp` lvalue, so a ref-returning method call as the assignment
-target falls through to the generic "no known lvalue" throw both the plain
-and compound assignment paths share.
+Assignment and compound assignment through a `ref`-returning method call used
+as an lvalue, for a scalar array-field element accessor (`ref int at(in int
+index) return { return data[index]; }`, then `p.at(0) = 42;` and `p.at(0) +=
+2;`) now both compile: `tryMemberRefIndexCallAssign`/
+`tryMemberRefIndexCompoundAssign` share `memberReturnArrayElementDescriptor`
+(`compiler.d`) to resolve the field's slice descriptor, inline in the
+receiver's own frame block at `receiverOffset + field.offset` -- the same
+shape `tryStructField`'s dynamic-array branch already resolves for an
+ordinary `base.field[i]` -- so no extra load is needed. The callee still runs
+(preserving any preceding side effect, e.g. a bounds check); the write goes
+through the descriptor at the real index instead of the throwaway returned
+copy. `compileLocalIntegerCompoundAssign` (shared by `+=`/`-=`/`*=`/shifts/
+bitwise) gets the `CallExp`-lvalue branch directly, so every one of those
+operators is covered, not just `+=`. Scoped to a scalar element (an aggregate
+element's `ScalarType` tag is `void_`, the same zero-stride trap
+`pointerToElement` guards against for `&arr[i]`) and a side-effect-free index
+argument (the real call re-evaluates it to bind the callee's own parameter,
+so a side-effecting one is declined rather than double-run). A class
+receiver is not addressed, matching `tryMemberRefCallAssign`'s existing scope
+(its `methodReceiverOffset` path is struct-receiver-only there too).
+
+Next candidate: the same element-accessor shape with `/=`/`%=` (`p.at(0) /=
+2;`) throws "Unsupported compound assignment in bytecode core: p.at(0) /=
+2". `compileDivOrModCompoundAssign` (`compiler.d`, ~line 9458) is a separate
+dispatch from `compileLocalIntegerCompoundAssign` and resolves its lvalue
+only through `compoundAssignLocalDeclaration`/`compoundAssignLocalSlot`, with
+no `CallExp` branch, so it falls through to the same generic throw `+=`/`-=`
+had before this round's fix.
 
 ### TDD and handoff discipline
 

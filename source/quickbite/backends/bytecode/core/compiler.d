@@ -10199,6 +10199,15 @@ private struct Compiler {
     ) {
         import std.conv: text;
 
+        // `p.at(0) += rhs`: a ref-returning method call used as a compound-
+        // assignment lvalue. Tried before the plain-local-declaration case
+        // below, which a `CallExp` lvalue never matches.
+        if (auto call = assign.e1.isCallExp)
+            if (auto result = tryMemberRefIndexCompoundAssign(
+                    call, assign.e2, op4, op8, unsupportedMessage,
+                ))
+                return *result;
+
         auto declaration = compoundAssignLocalDeclaration(assign.e1);
         auto slot = compoundAssignLocalSlot(declaration);
         if (slot is null && _hasNestedContext && declaration !is null)
@@ -10272,6 +10281,103 @@ private struct Compiler {
             );
 
         return Operand(*slot, lvalueType);
+    }
+
+    // The compound-assignment counterpart of `tryMemberRefIndexCallAssign`:
+    // `p.at(0) += rhs` (and every other integer compound operator sharing
+    // `compileLocalIntegerCompoundAssign`) through the same `ref`-returning
+    // element-accessor shape. The callee still runs (preserving any
+    // preceding side effect, e.g. a bounds check), then the real backing
+    // element is loaded through the field's own slice descriptor, combined
+    // with `rhs`, and stored back through the same descriptor -- mirroring
+    // `tryDynamicArrayElementAddAssign`'s load/operate/store shape for an
+    // ordinary indexed compound assignment.
+    private Operand* tryMemberRefIndexCompoundAssign(
+        CallExp call,
+        Expression rhs,
+        in Op op4,
+        in Op op8,
+        in string unsupportedMessage,
+    ) {
+        import dmd.sideeffect: hasSideEffect;
+        import std.conv: text;
+
+        auto function_ = callFunction(call);
+        auto type = function_ is null ? null : function_.type.isTypeFunction;
+        if (type is null || !type.isRef ||
+            function_.vthis is null || call.e1.isDotVarExp is null)
+            return null;
+
+        ushort evaluatedReceiver;
+        Expression indexArgument;
+        auto descriptor = memberReturnArrayElementDescriptor(
+            call, function_, evaluatedReceiver, indexArgument,
+        );
+        if (descriptor is null)
+            return null;
+        // The real call below evaluates this same argument expression again
+        // to bind the callee's own parameter; a second run must not repeat a
+        // side effect, so decline rather than double it.
+        if (hasSideEffect(indexArgument))
+            return null;
+
+        const elementType = descriptor.elementType;
+        const elementSize = size(elementType);
+        const indexSlot = compileExpression(indexArgument).offset;
+
+        const receiver = new MethodReceiver(evaluatedReceiver, 0, 0);
+        compileCall(call, receiver);
+
+        const current = allocateBytes(elementSize, elementSize);
+        _code ~= Instruction(
+            indexLoadOp(elementSize), current, descriptor.offset, indexSlot,
+            cast(ushort) elementSize,
+        );
+
+        const rhsValue = compileExpression(rhs);
+        if (!isCompoundIntegerScalar(elementType) ||
+            !isCompoundIntegerScalar(rhsValue.type))
+            throw new Exception(text(unsupportedMessage, expressionChars(call)));
+
+        const eightByteShift = op8 == Op.shlInt8 ||
+            op8 == Op.shrInt8 || op8 == Op.ushrInt8;
+        const elementIsEightByte = isEightByteInteger(elementType);
+        const validRhs = elementIsEightByte
+            ? eightByteShift
+                ? size(rhsValue.type) <= int.sizeof
+                : rhsValue.type == elementType
+            : !isEightByteInteger(rhsValue.type);
+        if (!validRhs || elementIsEightByte && op8 == op4)
+            throw new Exception(text(unsupportedMessage, expressionChars(call)));
+
+        const operationType = elementIsEightByte ? elementType : ScalarType.int_;
+        const lhs = integerOperationOperand(
+            Operand(current, elementType), operationType,
+        );
+        const right = integerOperationOperand(
+            rhsValue,
+            elementIsEightByte && eightByteShift ? ScalarType.int_ : operationType,
+        );
+        const destination = elementSize == size(operationType)
+            ? current
+            : allocate(operationType);
+        _code ~= Instruction(
+            isEightByteInteger(operationType) ? op8 : op4,
+            destination, lhs.offset, right.offset,
+        );
+        if (destination != current)
+            _code ~= Instruction(
+                Op.copy, current, destination, cast(ushort) elementSize,
+            );
+
+        _code ~= Instruction(
+            indexStoreOp(elementSize), current, descriptor.offset, indexSlot,
+            cast(ushort) elementSize,
+        );
+
+        auto result = new Operand;
+        *result = Operand(current, elementType);
+        return result;
     }
 
     private ushort* compoundAssignLocalSlot(VarDeclaration declaration) {
@@ -10812,6 +10918,9 @@ private struct Compiler {
         if (auto result = tryMemberRefCallAssign(call, function_, rhs))
             return result;
 
+        if (auto result = tryMemberRefIndexCallAssign(call, function_, rhs))
+            return result;
+
         if (call.arguments is null)
             return null;
 
@@ -10908,6 +11017,131 @@ private struct Compiler {
         );
         auto result = new Operand;
         *result = Operand(value.offset, scalar);
+        return result;
+    }
+
+    // `p.at(0) = 42;` through a struct method whose entire body is `return
+    // <arrayField>[<param>];` (a bounds-checked element accessor like `ref
+    // int at(in int index) return { return data[index]; }`): the returned
+    // value is an alias into the array field's own backing store, not a
+    // copy, so the callee still runs (any preceding statement -- a bounds
+    // check -- keeps its side effect), but the assignment writes through
+    // the field's own slice descriptor at the real element index instead of
+    // the throwaway returned copy. The compound-assignment counterpart is
+    // `tryMemberRefIndexCompoundAssign`.
+    private Operand* tryMemberRefIndexCallAssign(
+        CallExp call,
+        FuncDeclaration function_,
+        Expression rhs,
+    ) {
+        import dmd.sideeffect: hasSideEffect;
+        import std.conv: text;
+
+        if (function_.vthis is null || call.e1.isDotVarExp is null)
+            return null;
+
+        ushort evaluatedReceiver;
+        Expression indexArgument;
+        auto descriptor = memberReturnArrayElementDescriptor(
+            call, function_, evaluatedReceiver, indexArgument,
+        );
+        if (descriptor is null)
+            return null;
+        // The real call below evaluates this same argument expression again
+        // to bind the callee's own parameter; a second run must not repeat a
+        // side effect (`p.at(i++) = 1;`), so decline rather than double it.
+        if (hasSideEffect(indexArgument))
+            return null;
+
+        const indexSlot = compileExpression(indexArgument);
+        const receiver = new MethodReceiver(evaluatedReceiver, 0, 0);
+        compileCall(call, receiver);
+
+        const value = compileExpression(rhs);
+        if (value.type != descriptor.elementType)
+            throw new Exception(text(
+                "Unsupported assignment in bytecode core: ",
+                expressionChars(call),
+            ));
+
+        const elementSize = size(descriptor.elementType);
+        _code ~= Instruction(
+            indexStoreOp(elementSize),
+            value.offset,
+            descriptor.offset,
+            indexSlot.offset,
+            cast(ushort) elementSize,
+        );
+
+        auto result = new Operand;
+        *result = Operand(value.offset, descriptor.elementType);
+        return result;
+    }
+
+    // The shared shape resolver behind `tryMemberRefIndexCallAssign` and
+    // `tryMemberRefIndexCompoundAssign`: `function_`'s body must be exactly
+    // `return <this-or-super field>[<parameter>];`, where the field is a
+    // dynamic array. Its slice descriptor is inline in the receiver's own
+    // frame block at `receiverOffset + field.offset`, the same shape
+    // `tryStructField`'s dynamic-array branch resolves for an ordinary
+    // `base.field[i]` read/write, so no extra load is needed to reach it.
+    // `indexArgument` is the call's own index-argument expression (not yet
+    // compiled), returned so both callers can guard it against being
+    // evaluated twice before compiling it.
+    private DynamicArrayLocal* memberReturnArrayElementDescriptor(
+        CallExp call,
+        FuncDeclaration function_,
+        out ushort evaluatedReceiver,
+        out Expression indexArgument,
+    ) {
+        import dmd.astenums: TY;
+
+        auto returned = provenFinalReturnExpression(function_.fbody);
+        auto index = returned is null ? null : returned.isIndexExp;
+        if (index is null)
+            return null;
+
+        auto dot = index.e1.isDotVarExp;
+        if (dot is null ||
+            (dot.e1.isThisExp is null && dot.e1.isSuperExp is null))
+            return null;
+
+        auto field = dot.var.isVarDeclaration;
+        if (field is null || !field.isField ||
+            field.type.toBasetype.ty != TY.Tarray)
+            return null;
+
+        // Scoped to a scalar element (matching `function_`'s own `ref
+        // <scalar>` return type): an aggregate element's `ScalarType` tag is
+        // `void_` with `program.size` reporting 0, the same zero-stride trap
+        // `pointerToElement`/`offsetPointer` guard against for `&arr[i]`.
+        // `indexStoreOp`/`indexLoadOp` below size themselves from
+        // `descriptor.elementType` alone, so an aggregate element here would
+        // silently corrupt with a 0-byte store instead of throwing.
+        auto elementBaseType = field.type.toBasetype.nextOf.toBasetype;
+        if (elementBaseType.ty == TY.Tstruct || elementBaseType.ty == TY.Tsarray ||
+            elementBaseType.ty == TY.Tarray || elementBaseType.ty == TY.Tdelegate)
+            return null;
+
+        auto indexOperand = index.e2;
+        while (auto cast_ = indexOperand.isCastExp)
+            indexOperand = cast_.e1;
+        auto variable = indexOperand.isVarExp;
+        auto parameter = variable is null ? null : variable.var.isVarDeclaration;
+        auto argumentIndex = parameter is null
+            ? null
+            : parameterIndex(function_, parameter);
+        if (argumentIndex is null || *argumentIndex >= call.arguments.length)
+            return null;
+
+        indexArgument = (*call.arguments)[*argumentIndex];
+
+        evaluatedReceiver = methodReceiverOffset(call);
+        auto result = new DynamicArrayLocal;
+        *result = DynamicArrayLocal(
+            cast(ushort) (evaluatedReceiver + field.offset),
+            dynamicArrayElementType(field.type),
+        );
         return result;
     }
 
