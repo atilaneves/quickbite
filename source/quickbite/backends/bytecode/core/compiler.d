@@ -2786,6 +2786,7 @@ private struct Compiler {
             if (auto element = tryStaticArrayElement(index)) {
                 lvalueSlot = element.offset;
                 lvalueType = element.type;
+                lvalueField = element.writeback;
             }
         }
 
@@ -13007,6 +13008,11 @@ private struct Compiler {
                 destination,
                 cast(ushort) size(lvalueType),
             );
+        // Same throwaway-copy writeback as `compileStaticArrayElementAssign`
+        // above (`s.arr[1] += 1;` through a captured/module/AA-pointer
+        // struct receiver).
+        if (element.writeback !is null)
+            writeBackStructField(*element.writeback);
 
         auto result = new Operand;
         *result = Operand(element.offset, lvalueType);
@@ -13017,6 +13023,17 @@ private struct Compiler {
     private static struct StaticArrayElement {
         ushort offset;
         ScalarType type;
+        // Set when the element's base ultimately resolved through
+        // `tryStructField`'s captured-struct-receiver (or module/pointer)
+        // branch: `element.offset` then lands in a throwaway materialised
+        // copy of the struct, not its real storage, so a write through it
+        // must also call `writeBackStructField` -- the same "throwaway
+        // copy, no writeback" bug class `arrayElementFieldPointer` and the
+        // dynamic-array field case (`DynamicArrayLocal.writeBackStructThroughFrame`)
+        // already fixed for other receiver shapes. Null when the base is a
+        // plain (uncaptured) static-array local, whose frame slot already
+        // is the real storage.
+        StructField* writeback;
     }
 
     // Resolve a static-array element access with compile-time-constant indices
@@ -13029,7 +13046,8 @@ private struct Compiler {
         import dmd.astenums: TY;
         import std.conv: text;
 
-        const baseOffset = staticArrayBaseOffset(index.e1);
+        StructField* writeback;
+        const baseOffset = staticArrayBaseOffset(index.e1, writeback);
         auto indexInteger = index.e2.isIntegerExp;
         if (indexInteger is null)
             throw new Exception(text(
@@ -13049,12 +13067,22 @@ private struct Compiler {
             index.type.toBasetype.ty == TY.Tdelegate
                 ? ScalarType.void_
                 : scalarType(index.type);
-        return StaticArrayElement(offset, elementType);
+        return StaticArrayElement(offset, elementType, writeback);
     }
 
     // The inline frame base offset of a static-array sub-expression: either a
-    // static-array local (a VarExp) or a further static-array index.
+    // static-array local (a VarExp) or a further static-array index. Callers
+    // that only ever read through the offset (e.g. `&arr[i]`) can ignore
+    // `writeback`; a caller writing through the returned offset must check
+    // it -- see `StaticArrayElement.writeback`.
     private ushort staticArrayBaseOffset(Expression expression) {
+        StructField* writeback;
+        return staticArrayBaseOffset(expression, writeback);
+    }
+
+    private ushort staticArrayBaseOffset(
+        Expression expression, out StructField* writeback,
+    ) {
         import std.conv: text;
 
         if (auto variable = expression.isVarExp)
@@ -13062,14 +13090,25 @@ private struct Compiler {
                 if (auto existing = declaration in _staticArrayLocals)
                     return *existing;
 
-        if (auto index = expression.isIndexExp)
-            return locateStaticArrayElement(index).offset;
+        if (auto index = expression.isIndexExp) {
+            auto located = locateStaticArrayElement(index);
+            writeback = located.writeback;
+            return located.offset;
+        }
 
-        // `base.field` where the field is a static array: its inline block lives
-        // at `base + field.offset`.
+        // `base.field` where the field is a static array: its inline block
+        // lives at `base + field.offset`. When `field` resolved through a
+        // materialised copy (a captured struct receiver, a module struct, or
+        // an AA-value-read pointer), `field` itself carries the writeback
+        // info a write through this offset must use instead of silently
+        // landing in the throwaway copy -- the same bug class already fixed
+        // for the dynamic-array field case (`DynamicArrayLocal
+        // .writeBackStructThroughFrame`, set from this same `field`).
         if (auto dot = expression.isDotVarExp)
-            if (auto field = tryStructField(dot))
+            if (auto field = tryStructField(dot)) {
+                writeback = field;
                 return field.offset;
+            }
 
         throw new Exception(text(
             "Unsupported static array access in bytecode core: ",
@@ -13166,6 +13205,14 @@ private struct Compiler {
             value.offset,
             cast(ushort) elementSize,
         );
+        // `element.offset` may be inside a throwaway materialised copy of a
+        // struct field's base (a captured struct receiver, a module struct,
+        // or an AA-value-read pointer, e.g. `s.arr[1] = 55;`), not real
+        // storage -- write the change back through the same mechanism
+        // `writeBackStructField` already uses for a plain (non-indexed)
+        // field write.
+        if (element.writeback !is null)
+            writeBackStructField(*element.writeback);
         return Operand(element.offset, element.type);
     }
 

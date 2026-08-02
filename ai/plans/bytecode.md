@@ -1077,24 +1077,21 @@ element into a fresh local slot via the same `capturedFrameIndex`/
 captured local, reusing `tryCapturedStaticArrayElement`'s offset resolution
 from the write-side commit rather than re-deriving it.
 
-Next candidate: `s.arr[1] = 55` where `s` is a struct-typed local captured
-into a nested function and `s`'s type has a static-array field (`struct S {
-int[3] arr; } S s; void mutate() { s.arr[1] = 55; }`) is a silent
-wrong-result bug on `Bytecode`, not a thrown diagnostic: it returns the
-original unmutated element instead of the write. `tryStructField` already has
-a captured-struct-receiver branch that materialises the whole block via
-`Op.frameLoad` and returns `writeBackThroughFrame`/`frameIndexOffset`
-`writeBackStructField` uses to store a mutated field back to real captured
-storage (why plain `s.x = 55` already works), but `indexesStaticArray`'s and
-`staticArrayBaseOffset`'s `DotVarExp` branches call `tryStructField` only for
-`.type`/`.offset`, discarding those writeback fields, so
-`compileStaticArrayElementAssign`'s `Op.copy` lands in the throwaway
-materialised copy with no writeback at all -- the same "throwaway copy, no
-writeback" bug class already fixed for other receiver shapes (see
-`arrayElementFieldPointer`). The dynamic-array (`Tarray`) field case already
-threads this correctly (`field.writeBackThroughFrame` into
-`DynamicArrayLocal.writeBackStructThroughFrame`); the static-array case needs
-the same treatment.
+Next candidate: `o.inner.arr[1] = 55` -- a *two-level* captured struct-field
+chain (`struct Inner { int[3] arr; } struct Outer { Inner inner; } Outer o;
+void mutate() { o.inner.arr[1] = 55; }`) is still a silent wrong-result bug
+on `Bytecode`: confirmed via a real `bin/ut` fixture, it returns the
+original unmutated element instead of the write, while `Ctfe`, `Interpreter`,
+`LLVMJit`, and `SystemLinker` all return the mutated value. `tryStructField`'s
+captured-struct-receiver branch only recognises a *direct* captured receiver
+(`capturedStructReceiver(dot.e1)` requires `dot.e1` itself be a `VarExp`/
+`ThisExp`), so for `o.inner.arr[1]` the outer `DotVarExp`'s `e1` is `o.inner`
+(itself a `DotVarExp`), which falls through to the general
+`structBaseOffsetOrMaterialise` path instead -- investigate whether that path
+already resolves nested captured chains for a plain field write
+(`o.inner.x = 55`, which the plan implies already works) but not for the
+static-array-element case, or whether the captured-receiver branch itself
+needs to recurse for a `DotVarExp` base.
 
 ### TDD and handoff discipline
 

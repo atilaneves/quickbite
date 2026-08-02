@@ -1370,6 +1370,39 @@ static foreach (backend; Matrix!()) {
     }
 }
 
+// Struct-field twin of `nestedFunctionMutatesEnclosingStaticArrayElement`
+// above: `s`'s type has a static-array field, so `s.arr[1] = 55` from the
+// nested function must resolve through `tryStructField`'s captured-struct-
+// receiver branch (materialised block + writeback) together with the
+// static-array element write, not either alone.
+static foreach (backend; Matrix!()) {
+    @("function.nestedFunctionMutatesCapturedStructStaticArrayField." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct S {
+                int[3] arr;
+            }
+
+            int run() {
+                S s = S([1, 2, 3]);
+
+                void mutate() {
+                    s.arr[1] = 55;
+                }
+                mutate();
+
+                return s.arr[1];
+            }
+
+            unittest {
+                assert(run() == 55);
+            }
+        });
+    }
+}
+
 // `middle` is both a relay (for `innerA`, which reaches `run`'s `a`) AND an
 // owner (for `innerB`, which reaches `middle`'s own `b`) -- the same caller
 // in both roles for different callees. `innerB` itself reads captures at two
