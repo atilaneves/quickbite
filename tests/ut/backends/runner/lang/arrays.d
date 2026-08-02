@@ -2696,6 +2696,96 @@ static foreach (backend; Matrix!(
     }
 }
 
+// A direct consequence of the fix above: calling a mutating method through
+// an AA-value struct receiver (`a[1].bump()`) is the same
+// `IndexExp`-over-pointer-to-`Tstruct` receiver shape as the plain field
+// write above, but reached through `methodReceiver` rather than
+// `tryStructField`. Interpreter segfaults on the same shape -- a separate,
+// unconfirmed backend gap.
+static foreach (backend; Matrix!(
+    Omit!(Interpreter, Because.unconfirmed,
+        "segfaults calling a mutating method through an AA-value struct "
+            ~ "receiver"),
+)) {
+    @("assocArray.structValueMethodCallMutatesEntry." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct Point {
+                int x;
+                int y;
+                int bump() { return x += 1; }
+            }
+            unittest {
+                Point[int] a;
+                a[1] = Point(10, 20);
+                a[1].bump();
+                assert(a[1].x == 11);
+                assert(a[1].y == 20);
+            }
+        });
+    }
+}
+
+// A struct value with a user-defined `opAssign` (`Setting`, as opposed to
+// the plain `Point` above): DMD represents `a[1] = Setting(2)` as a
+// ConstructExp (blitting the fresh rvalue directly into the newly obtained
+// AA slot -- `opAssign` is never invoked for this initial-insert shape) with
+// an `IndexExp` `e1`, a lvalue shape `compileExpression`'s ConstructExp
+// dispatch previously only recognised over a `DotVarExp`/`VarExp`/
+// `SliceExp`/`ThisExp` lvalue, not an AA-element `IndexExp`.
+static foreach (backend; Matrix!()) {
+    @("assocArray.structValueWithOpAssignInsertsFromLiteral." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct Setting {
+                int value;
+
+                void opAssign(Setting rhs) {
+                    value = rhs.value;
+                }
+            }
+            unittest {
+                Setting[int] a;
+                a[1] = Setting(2);
+                assert(a[1].value == 2);
+            }
+        });
+    }
+}
+
+// Overwriting an existing AA entry from another struct value (as opposed to
+// the fresh-insert case above) lowers through the `_d_aaGetY` slot-pointer
+// write shape (`p[i] = rhs`, `tryPointerElementAssign`/`storeThroughPointer`)
+// regardless of whether the value type defines `opAssign` -- an AA element
+// overwrite blits the value's raw bytes rather than dispatching through
+// `opAssign`. `storeThroughPointer` previously only materialised the rhs
+// through `compileExpression`, which handles a struct rvalue (a literal or
+// constructor call) but not a struct lvalue (an existing local, reached the
+// same way `structOperandOffset` resolves every other struct-value read).
+static foreach (backend; Matrix!()) {
+    @("assocArray.structValueOverwriteFromVariable." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct Point { int x; int y; }
+            unittest {
+                Point pt;
+                pt.x = 3;
+                pt.y = 4;
+
+                Point[int] a;
+                a[1] = Point(10, 20);
+                a[1] = pt;
+                assert(a[1].x == 3);
+                assert(a[1].y == 4);
+            }
+        });
+    }
+}
+
 static foreach (backend; Matrix!()) {
     @("assocArray.equalityComparesRuntimeEntries." ~ backend.stringof)
     @Tags(backend.stringof)

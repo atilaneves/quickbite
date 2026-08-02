@@ -395,21 +395,40 @@ array-descriptor branch above, and field write-back gained a
 existing `viaModule` plumbing) that copies the whole struct block back to
 `pointer + index * structSize`.
 
-Next candidate: a *call* through that same AA-value struct receiver still
-drops the mutation. `methodReceiver` has branches for a struct-pointer/
-class-field receiver and a dynamic-array-of-structs element receiver, but
-none for the `IndexExp`-over-pointer-to-`Tstruct` shape above, so it falls
-through to `methodReceiverOffset` -> `structOperandOffset`, which reads the
-block fine but registers no write-back. Confirmed against real `bin/ut`:
-`Point[int] a; a[1] = Point(10, 20); a[1].bump();` (`int bump() { return x
-+= 1; }`) runs on `Bytecode` without error but silently keeps the
-pre-mutation value (10, not 11). The same gap surfaces through plain `=`
-too: `a[1] = Setting(2)` throws outright ("Unsupported expression in
-bytecode core: a[1] = Setting(2)") when `Setting` has a user-defined
-`opAssign`, since DMD lowers that assignment to the identical receiver-call
-shape. Extend `methodReceiver` with an AA-value-pointer branch, reusing
-`writeBackThroughPointer`'s `pointer + index * structSize` write-back
-address, to fix both.
+A *call* through that same AA-value struct receiver now writes its mutation
+back too (`Point[int] a; a[1].bump();`): `methodReceiver` gained the
+`IndexExp`-over-pointer-to-`Tstruct` receiver branch, reusing
+`structBaseOffsetOrMaterialise`'s `viaPointer` output and writing the
+(possibly mutated) copy back through `pointerBaseSlot + pointerIndexSlot *
+structSize` the same way `writeBackStructField` does for the field case.
+`Interpreter` segfaults on the identical shape (`Omit!(Interpreter,
+Because.unconfirmed)`, `arrays.d`). Two sibling gaps surfaced by real
+`bin/ut` testing (not the `methodReceiver`/receiver-call shape the plan
+previously assumed) are fixed alongside it: a struct-typed AA value with a
+user-defined `opAssign`, inserted from a literal (`a[1] = Setting(2)`),
+lowers to a `ConstructExp` over an `IndexExp` lvalue (DMD blits directly
+into the fresh slot; `opAssign` is never called for this shape) --
+`compileExpression`'s `ConstructExp` dispatch now also recognises an
+`IndexExp` lvalue. Overwriting an *existing* AA entry from another struct
+value (`a[1] = existingVar;`, any struct, `opAssign` or not) lowers through
+the `_d_aaGetY` slot-pointer write shape (`tryPointerElementAssign` /
+`storeThroughPointer`), which only materialised its rhs via
+`compileExpression` -- fine for a struct rvalue (literal/constructor call)
+but not a struct lvalue; `storeThroughPointer` now routes a struct-typed rhs
+through `structOperandOffset` instead.
+
+Next candidate: the identical `compileExpression`-only-handles-a-struct-
+rvalue gap, one level up. `tryDynamicArrayElementAssign`'s main branch
+(`compiler.d`) has the same bug `storeThroughPointer` just lost: `arr[i] =
+existingVar;` for a plain dynamic array of structs (no AA involved) throws
+"Unsupported variable in bytecode core: existingVar". Confirmed against
+real `bin/ut`: `S[] outer; outer ~= S(1, 2); outer ~= S(4, 5); S
+replacement = S(7, 8); outer[0] = replacement;` throws on `Bytecode`;
+`SystemLinker` runs it fine. Route that branch's rhs through
+`structOperandOffset` the same way, and audit the file's other
+`compileExpression(rhs)` call sites for a struct-typed rhs
+(`tryStaticArrayElement`/`tryClassStaticArrayFieldElementAssign` and
+friends) for the same gap before assuming this is the only one left.
 
 Every `Omit!(Bytecode, ...)` row left in `tests/ut/backends/runner/**` is one
 of the already-documented not-bounded rows above (`file.d:14`,

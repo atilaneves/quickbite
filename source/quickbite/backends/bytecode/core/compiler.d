@@ -309,9 +309,15 @@ private struct Compiler {
         // real address, and a nonzero `writeBackPointerSize` signals the
         // block must be written back through it, mirroring
         // `StructPointerFieldRefWriteBack`/`ClassFieldRefWriteBack` for
-        // `ref` arguments reached the same way.
+        // `ref` arguments reached the same way. `writeBackPointerIndexSlot`
+        // is the runtime index scaling that address (a constant-zero slot
+        // for the two address-only cases above; a real AA-value index slot
+        // for the associative-array-value case below), mirroring
+        // `StructField.pointerIndexSlot`/`writeBackStructField`'s identical
+        // `pointerStoreOp` addressing for the field case.
         ushort writeBackPointerAddress;
         ushort writeBackPointerSize;
+        ushort writeBackPointerIndexSlot;
         // Set instead of the fields above when the receiver was materialised
         // from a dynamic array of structs' indexed element
         // (`arr[i].method()`): `writeBackDescriptorOffset`/
@@ -2417,12 +2423,19 @@ private struct Compiler {
         // over a `SliceExp` lvalue (`buf[] = '\xff'`). `this = rhs;` inside a
         // struct method -- e.g. the compiler-synthesized `opAssign` a
         // postblit-typed struct's whole-local reassignment lowers through --
-        // arrives the same way over a `ThisExp` lvalue.
+        // arrives the same way over a `ThisExp` lvalue. Inserting a
+        // struct-typed value into a fresh associative-array slot from an
+        // rvalue (`Point[int] a; a[1] = Point(10, 20);`) arrives the same
+        // way over an `IndexExp` lvalue -- DMD blits directly into the
+        // freshly obtained slot rather than calling the value type's
+        // `opAssign` (if any), since there is no prior value to assign
+        // over.
         if (auto construct = expression.isConstructExp)
             if (construct.e1.isDotVarExp !is null ||
                 construct.e1.isVarExp !is null ||
                 construct.e1.isSliceExp !is null ||
-                construct.e1.isThisExp !is null)
+                construct.e1.isThisExp !is null ||
+                construct.e1.isIndexExp !is null)
                 return compileAssignExpression(construct);
         if (auto blit = expression.isBlitExp)
             if (blit.e1.isDotVarExp !is null ||
@@ -4930,6 +4943,7 @@ private struct Compiler {
                             );
                             return MethodReceiver(
                                 offset, 0, 0, address, structSize,
+                                compileSizeConstant(0),
                             );
                         }
                     }
@@ -4965,10 +4979,48 @@ private struct Compiler {
                             elementSize,
                         );
                         return MethodReceiver(
-                            offset, 0, 0, 0, 0,
+                            offset, 0, 0, 0, 0, 0,
                             descriptor.offset, indexOffset, elementSize,
                         );
                     }
+
+        // `a[i].method()` where `a`'s value type is a struct
+        // (`Point[int] a`): the receiver `a[i]` (DMD's `_d_aaGetRvalueX`
+        // lowering, an `IndexExp` over a pointer to `Tstruct`) has no
+        // frame-relative storage of its own, the same way the struct-
+        // pointer/class-field and dynamic-array-element receivers above do
+        // not. Resolve it exactly the way a plain field read/write does
+        // (`structBaseOffsetOrMaterialise`'s `viaPointer` branch), and
+        // write the (possibly mutated) copy back through the same
+        // `pointer + index * structSize` address afterward -- the
+        // `pointerBaseSlot`/`pointerIndexSlot`/`pointerStructSize` trio
+        // `writeBackStructField`'s `writeBackThroughPointer` branch already
+        // uses for the field case.
+        if (auto dot = call.e1.isDotVarExp)
+            if (auto index = dot.e1.isIndexExp)
+                if (dot.e1.type !is null &&
+                    dot.e1.type.toBasetype.ty == TY.Tstruct &&
+                    isPointerType(index.e1.type)) {
+                    bool resolved;
+                    bool viaModule;
+                    ushort moduleFrameOffset;
+                    ushort moduleOffset;
+                    bool viaPointer;
+                    ushort pointerFrameOffset;
+                    ushort pointerBaseSlot;
+                    ushort pointerIndexSlot;
+                    ushort pointerStructSize;
+                    const base = structBaseOffsetOrMaterialise(
+                        dot.e1, resolved, viaModule, moduleFrameOffset,
+                        moduleOffset, viaPointer, pointerFrameOffset,
+                        pointerBaseSlot, pointerIndexSlot, pointerStructSize,
+                    );
+                    if (resolved && viaPointer)
+                        return MethodReceiver(
+                            base, 0, 0, pointerBaseSlot, pointerStructSize,
+                            pointerIndexSlot,
+                        );
+                }
 
         return MethodReceiver(methodReceiverOffset(call), 0, 0);
     }
@@ -11525,18 +11577,33 @@ private struct Compiler {
         in ushort indexSlot,
         Expression rhs,
     ) {
-        const value = compileExpression(rhs);
+        import dmd.astenums: TY;
+
+        // A struct-typed rhs that is itself an existing lvalue (a local, a
+        // field, or another struct value reached through a pointer/AA-value
+        // -- as opposed to a literal or constructor-call rvalue, which
+        // `compileExpression` already materialises directly) has no scalar
+        // Operand of its own; it lives at its own inline frame block, the
+        // same storage `structOperandOffset` resolves for every other
+        // struct-value read. This is the write-side counterpart of that:
+        // `m[k] = existingStruct;` (DMD's `_d_aaGetY` slot-pointer lowering
+        // for an associative-array value UPDATE, as opposed to an initial
+        // insert) reaches here with exactly this rhs shape.
+        const valueOffset = rhs.type !is null &&
+                rhs.type.toBasetype.ty == TY.Tstruct
+            ? structOperandOffset(rhs)
+            : compileExpression(rhs).offset;
         const elementSize = pointer.pointerElement == ScalarType.void_
             ? cast(uint) staticArraySize(rhs.type)
             : size(pointer.pointerElement);
         _code ~= Instruction(
             pointerStoreOp(elementSize),
-            value.offset,
+            valueOffset,
             pointer.offset,
             indexSlot,
             cast(ushort) elementSize,
         );
-        return Operand(value.offset, pointer.pointerElement);
+        return Operand(valueOffset, pointer.pointerElement);
     }
 
     // `arr[i] = rhs` for a dynamic-array element: store the scalar rhs into the
@@ -13029,7 +13096,7 @@ private struct Compiler {
                 pointerStoreOp(structReceiver.writeBackPointerSize),
                 structReceiver.offset,
                 structReceiver.writeBackPointerAddress,
-                compileSizeConstant(0),
+                structReceiver.writeBackPointerIndexSlot,
                 structReceiver.writeBackPointerSize,
             );
         if (hasStructReceiver && structReceiver.writeBackElementSize != 0)
