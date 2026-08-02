@@ -4903,3 +4903,32 @@ static foreach (backend; Matrix!()) {
         });
     }
 }
+
+// The compound-assignment sibling of the indexed write above
+// (`arr[i].fixedField[j] += value`): the identical silent-corruption shape.
+// `compileAddAssignExpression`'s `IndexExp` handling
+// (`tryStaticArrayElementAddAssign`) is a separate dispatch from
+// `compileAssignExpression` and still resolved the field's base through the
+// same throwaway `tryStructField` copy the plain-assignment case used to,
+// silently discarding the increment instead of throwing. Fixed the same way:
+// `tryArrayElementFieldIndexAddAssign` resolves the field's real runtime
+// pointer and advances it by the index, then reads, adds, and stores back
+// through that real address.
+static foreach (backend; Matrix!()) {
+    @("dynamicArray.staticArrayFieldElementOfStructElementAddAssigned." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct Outer { int[3] vals; int tag; }
+            unittest {
+                Outer[] arr = [Outer([1, 2, 3], 10)];
+                arr[0].vals[1] += 5;
+                assert(arr[0].vals[1] == 7);
+                assert(arr[0].vals[0] == 1);
+                assert(arr[0].vals[2] == 3);
+                assert(arr[0].tag == 10);
+            }
+        });
+    }
+}

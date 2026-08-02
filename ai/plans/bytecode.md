@@ -474,26 +474,30 @@ and handling a runtime as well as a compile-time index), checked ahead of
 `tryStaticArrayElement`/`tryStaticArrayRuntimeElementAssign` in the
 `AssignExp` dispatch so neither ever folds an index into the throwaway copy.
 
-Next candidate: the compound-assignment sibling of the fix above,
-`arr[i].fixedField[j] += value` (continuing the same `Outer` example,
-`arr[0].vals[1] += 5;`), has the identical silent-corruption shape on
-`Bytecode` -- confirmed via real `bin/ut`: `assert(arr[0].vals[1] == 7)`
-fails with `2 != 7`, not an exception -- while `SystemLinker` computes it
-correctly. `compileAddAssignExpression`'s `IndexExp` handling
-(`tryStaticArrayElementAddAssign`, which calls the same buggy
-`tryStaticArrayElement` the plain-assignment fix above now bypasses) is a
-separate dispatch from `compileAssignExpression` and was not touched by that
-fix, so it still resolves the field's base through the same throwaway
-`tryStructField` copy. Fix it the same way: reuse (or mirror)
-`tryArrayElementFieldIndexAssign`'s real-pointer resolution for the
-compound-assignment path, likely a `tryArrayElementFieldIndexAddAssign`. The
-other compound-assignment operators do *not* share this bug or this code
-path: `-=`/`*=`/`<<=`/`>>=`/`|=`/`&=`/`^=` all route through
-`compileLocalIntegerCompoundAssign`, which only resolves a plain local
-declaration and throws "Unsupported compound assignment in bytecode core"
-for any non-local target (confirmed via real `bin/ut`:
-`arr[0].vals[1] -= 1;` throws cleanly rather than corrupting) -- a
-lower-priority, already-diagnostic gap, not part of this candidate.
+The compound-assignment sibling of the fix above
+(`arr[i].fixedField[j] += value`) had the identical silent-corruption shape:
+`compileAddAssignExpression`'s `IndexExp` handling
+(`tryStaticArrayElementAddAssign`) is a separate dispatch from
+`compileAssignExpression` and still resolved the field's base through the
+same throwaway `tryStructField` copy, silently discarding the increment
+instead of throwing. Fixed the same way: `tryArrayElementFieldIndexAddAssign`
+(`compiler.d`) resolves the field's real runtime pointer, advances it by the
+index via `advanceStaticArrayPointer`, and reads/adds/stores back through
+that real address, checked ahead of `tryStaticArrayElementAddAssign` in
+`compileAddAssignExpression`. Confirmed via real `bin/ut` that no sibling gap
+remains in this family: the other compound-assignment operators
+(`-=`/`*=`/`<<=`/`>>=`/`|=`/`&=`/`^=`) still route through
+`compileLocalIntegerCompoundAssign`, which throws cleanly for this receiver
+shape (`arr[0].vals[1] -= 1;` throws "Unsupported compound assignment in
+bytecode core"); a nested field-chain depth (`arr[i].outer.fixedField[j] +=
+value`) and a class-array-field receiver (`c.arr[i].fixedField[j] += value`)
+both resolve correctly through the same fix.
+
+Next candidate: `assocArray.structKeyWithStringMemberComparesStructurally`
+(described above) -- the AA key side is still `int[]`-only and DMD's
+synthesized `__aakeyN` variable ("Unsupported variable in bytecode core:
+__aakey3") needs structural hash/compare support, a genuinely separate,
+harder problem than the value-width work already done.
 
 Every `Omit!(Bytecode, ...)` row left in `tests/ut/backends/runner/**` is one
 of the already-documented not-bounded rows above (`file.d:14`,

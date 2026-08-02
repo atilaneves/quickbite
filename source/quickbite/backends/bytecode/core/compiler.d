@@ -8242,6 +8242,94 @@ private struct Compiler {
         return result;
     }
 
+    // `arr[i].fixedField[j] += rhs` (or any nested-field depth): the
+    // compound-assignment sibling of `tryArrayElementFieldIndexAssign` above.
+    // `compileAddAssignExpression`'s `IndexExp` handling
+    // (`tryStaticArrayElementAddAssign`) is a separate dispatch that still
+    // resolves `arr[i].fixedField`'s base through `tryStaticArrayElement`'s
+    // throwaway copy of the whole element, silently discarding the store
+    // instead of throwing. Resolve the field's own real runtime pointer the
+    // same way the plain-assignment case does, advance it by the index, then
+    // read-modify-write through that real address instead of the scratch
+    // copy. Null if `index.e1` is not a `Tsarray` field reached through an
+    // array-element pointer.
+    private Operand* tryArrayElementFieldIndexAddAssign(
+        IndexExp index,
+        Expression rhs,
+    ) {
+        import dmd.astenums: TY;
+        import std.conv: text;
+
+        auto dot = index.e1.isDotVarExp;
+        if (dot is null)
+            return null;
+
+        ushort fieldPointer;
+        Type fieldType;
+        if (auto classField = tryClassArrayFieldElementFieldPointer(dot)) {
+            fieldPointer = classField.pointer;
+            fieldType = classField.type;
+        } else if (auto structField =
+                tryStructSliceFieldElementFieldPointer(dot)) {
+            fieldPointer = structField.pointer;
+            fieldType = structField.type;
+        } else {
+            return null;
+        }
+
+        if (fieldType.toBasetype.ty != TY.Tsarray)
+            return null;
+
+        const basePointer =
+            Operand(fieldPointer, ScalarType.ulong_, true, ScalarType.void_);
+        const elementPointer = advanceStaticArrayPointer(
+            basePointer, index.e2, fieldType.toBasetype.nextOf,
+            compileSizeConstant(staticArrayLength(fieldType)),
+        );
+
+        const zero = compileSizeConstant(0);
+        const current = loadThroughPointer(elementPointer, zero);
+        const rhsValue = compileExpression(rhs);
+        if (!isCompoundIntegerScalar(current.type) ||
+            !isCompoundIntegerScalar(rhsValue.type) ||
+            isEightByteInteger(current.type) != isEightByteInteger(rhsValue.type))
+            throw new Exception(text(
+                "Unsupported compound assignment in bytecode core: ",
+                expressionChars(index),
+            ));
+
+        const operationType = isEightByteInteger(current.type)
+            ? current.type
+            : ScalarType.int_;
+        const lhs = integerOperationOperand(current, operationType);
+        const right = integerOperationOperand(rhsValue, operationType);
+        const destination = size(current.type) == size(operationType)
+            ? current.offset
+            : allocate(operationType);
+        const addOp = isEightByteInteger(operationType)
+            ? Op.addInt8
+            : Op.addInt4;
+        _code ~= Instruction(addOp, destination, lhs.offset, right.offset);
+        if (destination != current.offset)
+            _code ~= Instruction(
+                Op.copy,
+                current.offset,
+                destination,
+                cast(ushort) size(current.type),
+            );
+
+        _code ~= Instruction(
+            pointerStoreOp(size(elementPointer.pointerElement)),
+            current.offset,
+            elementPointer.offset,
+            zero,
+        );
+
+        auto result = new Operand;
+        *result = Operand(current.offset, current.type);
+        return result;
+    }
+
     // `&local` / `&base.field`: the native address of a scalar local's frame
     // slot (or a struct field's inline slot), yielding an `int*`-style pointer
     // operand over the pointed-at element type. Null if the operand is not a
@@ -9403,6 +9491,18 @@ private struct Compiler {
         if (auto deref = addAssign.e1.isPtrExp)
             if (auto store = tryPointerDereferenceAddAssign(deref, addAssign.e2))
                 return *store;
+
+        // `arr[i].fixedField[j] += rhs`: an indexed compound assignment into a
+        // static-array field reached through an array-element pointer.
+        // Checked before `tryStaticArrayElementAddAssign` below, which would
+        // otherwise resolve `arr[i].fixedField`'s base through
+        // `tryStaticArrayElement`'s throwaway copy of the whole element (the
+        // compound-assignment counterpart of the plain-assignment silent-
+        // corruption bug fixed by `tryArrayElementFieldIndexAssign`).
+        if (auto index = compoundAssignIndex(addAssign.e1))
+            if (auto element =
+                    tryArrayElementFieldIndexAddAssign(index, addAssign.e2))
+                return *element;
 
         // `a[0] += rhs` / `s.a[1] += rhs`: a compile-time-constant index into
         // a static-array chain (a plain local or a struct field's inline
