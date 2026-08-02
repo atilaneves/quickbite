@@ -4772,7 +4772,6 @@ private struct Compiler {
         StructLiteralExp literal,
     ) {
         import dmd.astenums: TY;
-        import std.conv: text;
 
         if (literal.elements is null)
             return;
@@ -4814,10 +4813,11 @@ private struct Compiler {
                 if (isNullLiteral(element))
                     continue;
 
-                throw new Exception(text(
-                    "Unsupported non-null delegate struct field in bytecode core: ",
-                    expressionChars(element),
-                ));
+                const source = delegateOperandOffset(element);
+                _code ~= Instruction(
+                    Op.copy, fieldOffset, source, cast(ushort) delegateValueSize,
+                );
+                continue;
             }
 
             if (isPointerType(fieldType)) {

@@ -93,6 +93,90 @@ static foreach (backend; Matrix!()) {
     }
 }
 
+// A non-null delegate value in a STRUCT LITERAL field (as opposed to a
+// direct field assignment, `struct.liveDelegateFieldPreservesCallable`
+// above): `compileStructLiteralInto`'s `Tdelegate` branch unconditionally
+// threw "Unsupported non-null delegate struct field in bytecode core" for
+// any non-null element instead of resolving it through
+// `delegateOperandOffset` and copying the 16-byte `{functionIndex,
+// context}` pair into the field, the way the `isPointerType` branch beside
+// it already handled a non-null pointer element. Interpreter's
+// `place_value.writeValue` throws "unsupported at place" for a delegate
+// written through a struct-literal initializer specifically (the direct
+// field-assignment path above already works there); never tried.
+static foreach (backend; Matrix!(
+    Omit!(Interpreter, Because.unconfirmed,
+        "place_value.writeValue has no case for a delegate value written " ~
+            "through a struct-literal initializer place"),
+)) {
+    @("struct.literalDelegateFieldFromFreshLambdaIsCallable." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct Handler {
+                int delegate() action;
+            }
+
+            unittest {
+                auto h = Handler(() => 42);
+                assert(h.action() == 42);
+            }
+        });
+    }
+}
+
+static foreach (backend; Matrix!(
+    Omit!(Interpreter, Because.unconfirmed,
+        "place_value.writeValue has no case for a delegate value written " ~
+            "through a struct-literal initializer place"),
+)) {
+    @("struct.literalDelegateFieldFromExistingLocalIsCallable." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct Handler {
+                int delegate() action;
+            }
+
+            unittest {
+                int captured = 40;
+                int addTwo() { return captured + 2; }
+                int delegate() dg = &addTwo;
+
+                auto h = Handler(dg);
+                assert(h.action() == 42);
+            }
+        });
+    }
+}
+
+static foreach (backend; Matrix!(
+    Omit!(Interpreter, Because.unconfirmed,
+        "place_value.writeValue has no case for a delegate value written " ~
+            "through a struct-literal initializer place"),
+)) {
+    @("struct.literalDelegateFieldAppendedToArrayIsCallable." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct Handler {
+                int delegate() action;
+            }
+
+            unittest {
+                Handler[] handlers;
+                handlers ~= Handler(() => 42);
+
+                assert(handlers.length == 1);
+                assert(handlers[0].action() == 42);
+            }
+        });
+    }
+}
+
 static foreach (backend; Matrix!()) {
     @("struct.multipleScalarFields." ~ backend.stringof)
     @Tags(backend.stringof)

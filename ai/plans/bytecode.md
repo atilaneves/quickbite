@@ -1001,15 +1001,27 @@ route through) also needed the pointer-result tagging `compileCall`'s
 named-function path already gives a direct call's pointer result, since
 `make()`'s own result assigns into another pointer-typed local (`getter`).
 
-Next candidate: a delegate-valued FIELD inside a STRUCT LITERAL (`struct
-Handler { int delegate() action; }`, then `handlers ~= Handler(() =>
-42);`) throws "Unsupported non-null delegate struct field in bytecode
-core: ..." -- `compileStructLiteralInto`'s `Tdelegate` field branch
-(`compiler.d`, ~line 4813) unconditionally throws for any non-null element
-instead of compiling it the way the `isPointerType` branch immediately
-below already does (`compileExpression` the element, then copy into the
-field offset); likely just needs the same treatment, writing the resulting
-16-byte delegate value into the field.
+A delegate-valued FIELD inside a STRUCT LITERAL (`struct Handler { int
+delegate() action; }`, then `handlers ~= Handler(() => 42);`) now compiles:
+`compileStructLiteralInto`'s `Tdelegate` field branch (`compiler.d`)
+unconditionally threw "Unsupported non-null delegate struct field in
+bytecode core: ..." for any non-null element instead of resolving it through
+`delegateOperandOffset` (the same resolver every other delegate-valued site
+already shares) and copying the 16-byte `{functionIndex, context}` pair into
+the field, the way the `isPointerType` branch beside it already handles a
+non-null pointer element.
+
+Next candidate: assignment and compound assignment through a `ref`-returning
+method call used as an lvalue (`ref int at(in int index) return { return
+data[index]; }`, then `p.at(0) = 42;` or `p.at(0) += 2;`) throws "Unsupported
+assignment in bytecode core: p.at(0) = 42" / "Unsupported compound
+assignment in bytecode core: p.at(0) += 2" -- confirmed with a real fixture
+via `bin/ut`. Root-caused to `compileLocalIntegerCompoundAssign`'s fallback
+throw (`compiler.d`, ~line 10202/10213): no branch in
+`compoundAssignLocalDeclaration`/`compoundAssignDotVar`/`compoundAssignIndex`
+handles a `CallExp` lvalue, so a ref-returning method call as the assignment
+target falls through to the generic "no known lvalue" throw both the plain
+and compound assignment paths share.
 
 ### TDD and handoff discipline
 
