@@ -70,6 +70,113 @@ static foreach (backend; Matrix!()) {
     }
 }
 
+// A struct-value delegate field's default (uninitialized) value is `null`:
+// `delegateOperandOffset` had no `DotVarExp` branch at all, so reading a
+// delegate straight out of a field for anything other than a direct call
+// (`s.f is null`, `s.f == null`, passing it onward, assigning it to a
+// local) threw "Unsupported delegate argument in bytecode core".
+static foreach (backend; Matrix!()) {
+    @("struct.delegateFieldDefaultIsNull." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct S {
+                int delegate(int) f;
+            }
+
+            unittest {
+                S s;
+                assert(s.f is null);
+                assert(s.f == null);
+            }
+        });
+    }
+}
+
+// A non-null delegate value in a STRUCT LITERAL field (as opposed to a
+// direct field assignment, `struct.liveDelegateFieldPreservesCallable`
+// above): `compileStructLiteralInto`'s `Tdelegate` branch unconditionally
+// threw "Unsupported non-null delegate struct field in bytecode core" for
+// any non-null element instead of resolving it through
+// `delegateOperandOffset` and copying the 16-byte `{functionIndex,
+// context}` pair into the field, the way the `isPointerType` branch beside
+// it already handled a non-null pointer element. Interpreter's
+// `place_value.writeValue` throws "unsupported at place" for a delegate
+// written through a struct-literal initializer specifically (the direct
+// field-assignment path above already works there); never tried.
+static foreach (backend; Matrix!(
+    Omit!(Interpreter, Because.unconfirmed,
+        "place_value.writeValue has no case for a delegate value written " ~
+            "through a struct-literal initializer place"),
+)) {
+    @("struct.literalDelegateFieldFromFreshLambdaIsCallable." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct Handler {
+                int delegate() action;
+            }
+
+            unittest {
+                auto h = Handler(() => 42);
+                assert(h.action() == 42);
+            }
+        });
+    }
+}
+
+static foreach (backend; Matrix!(
+    Omit!(Interpreter, Because.unconfirmed,
+        "place_value.writeValue has no case for a delegate value written " ~
+            "through a struct-literal initializer place"),
+)) {
+    @("struct.literalDelegateFieldFromExistingLocalIsCallable." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct Handler {
+                int delegate() action;
+            }
+
+            unittest {
+                int captured = 40;
+                int addTwo() { return captured + 2; }
+                int delegate() dg = &addTwo;
+
+                auto h = Handler(dg);
+                assert(h.action() == 42);
+            }
+        });
+    }
+}
+
+static foreach (backend; Matrix!(
+    Omit!(Interpreter, Because.unconfirmed,
+        "place_value.writeValue has no case for a delegate value written " ~
+            "through a struct-literal initializer place"),
+)) {
+    @("struct.literalDelegateFieldAppendedToArrayIsCallable." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct Handler {
+                int delegate() action;
+            }
+
+            unittest {
+                Handler[] handlers;
+                handlers ~= Handler(() => 42);
+
+                assert(handlers.length == 1);
+                assert(handlers[0].action() == 42);
+            }
+        });
+    }
+}
+
 static foreach (backend; Matrix!()) {
     @("struct.multipleScalarFields." ~ backend.stringof)
     @Tags(backend.stringof)
@@ -1303,6 +1410,82 @@ static foreach (backend; Matrix!(
     }
 }
 
+// `s = t;` for a whole struct local: `S` has a postblit but no user-defined
+// `opAssign`, so DMD synthesizes one and lowers the call argument through a
+// `__copytmp` temporary whose own postblit runs once on the copy, matching
+// `SystemLinker`. Interpreter's own assignment for this shape loses the
+// field copy entirely (`s.x` stays its default, not `t.x`'s value), pinned
+// below.
+static foreach (backend; Matrix!(
+    Omit!(Interpreter, Because.diverges,
+        "loses the field copy for a postblit-typed whole-local assignment, see sibling pin below"),
+)) {
+    @("struct.wholeLocalAssignmentRunsPostblit." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct Tracker {
+                int x;
+                int* postblits;
+
+                this(this) {
+                    ++*postblits;
+                }
+            }
+
+            unittest {
+                int postblits = 0;
+
+                Tracker t;
+                t.x = 5;
+                t.postblits = &postblits;
+
+                Tracker s;
+                s = t;
+
+                assert(s.x == 5);
+                assert(postblits == 1);
+            }
+        });
+    }
+}
+
+// The `Because.diverges` pin the fixture above owes: Interpreter runs the
+// exact same fixture -- including its `SystemLinker`-correct
+// `assert(s.x == 5)` -- but its own whole-local assignment for a
+// postblit-typed struct never copies `t.x` into `s.x`, so that first assert
+// fails the ordinary way inside the guest program.
+static foreach (backend; AliasSeq!(Interpreter)) {
+    @("structWholeLocalAssignmentDoesNotRunPostblit." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct Tracker {
+                int x;
+                int* postblits;
+
+                this(this) {
+                    ++*postblits;
+                }
+            }
+
+            unittest {
+                int postblits = 0;
+
+                Tracker t;
+                t.x = 5;
+                t.postblits = &postblits;
+
+                Tracker s;
+                s = t;
+
+                assert(s.x == 5);
+                assert(postblits == 1);
+            }
+        }).shouldThrowWithMessage("0 != 5");
+    }
+}
+
 
 /++
     Nested structs.
@@ -2369,6 +2552,145 @@ static foreach (backend; Matrix!()) {
                 bump(parent.child);
                 setTo(parent.child.x, 9);
                 assert(parent.child.x == 9);
+            }
+        });
+    }
+}
+
+// A class field's own default initializer (`int x = 5;`) must be applied
+// when the object is allocated, whether or not an explicit constructor runs:
+// an untouched field (own or inherited from a base class) keeps its declared
+// default rather than reading zero, and an explicit constructor's own field
+// write still overrides the default for the field it actually touches.
+static foreach (backend; Matrix!(
+    Omit!(Interpreter, Because.unconfirmed,
+        "a class field's own default initializer is never applied on allocation"),
+)) {
+    @("class.defaultFieldInitializerAppliesOnAllocationAndSurvivesConstructor." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            class Base {
+                int inherited = 111;
+            }
+
+            class Derived : Base {
+                int untouched = 42;
+                int overridden = 7;
+
+                this(int value) {
+                    overridden = value;
+                }
+            }
+
+            unittest {
+                auto noConstructor = new Base;
+                assert(noConstructor.inherited == 111);
+
+                auto derived = new Derived(99);
+                assert(derived.inherited == 111);
+                assert(derived.untouched == 42);
+                assert(derived.overridden == 99);
+            }
+        });
+    }
+}
+
+// A `Tarray` class field's own array-literal default (`int[] arr = [1, 2,
+// 3];`) parses as an `ArrayInitializer`, not the `ExpInitializer` the
+// scalar-field fixture above exercises, and `compileDefaultClassFields`
+// never even reached the field's initializer for that shape: every
+// `Tarray`-typed class field default was silently skipped, left zeroed by
+// `allocClass`. Also exercises real D's shared-static-default semantics
+// (confirmed against real `dmd`): every `new C()` that does not override
+// the field shares one backing array, so mutating it through one instance
+// is visible through another -- assigning a fresh array to one instance's
+// field only replaces that instance's own descriptor, leaving the shared
+// default and every other instance still pointing at it untouched.
+// `Interpreter` fails the same way the scalar-field sibling above does
+// (confirmed via real `bin/ut`: `[] != [1, 2, 3]`, the field stays
+// zero-initialised). `Ctfe` genuinely diverges here, confirmed directly
+// against real `dmd`: CTFE evaluates each `new C()`'s array-literal field
+// default as a fresh, independent array rather than sharing one static
+// backing array the way compiled/runtime D does (`static assert(({ auto a
+// = new C(); auto b = new C(); a.arr[0] = 99; return b.arr[0]; })() ==
+// 99)` fails under real `dmd`), so it cannot pass the sharing assertions
+// below.
+static foreach (backend; Matrix!(
+    Omit!(Interpreter, Because.unconfirmed,
+        "a Tarray class field's own array-literal default is never " ~
+        "applied on allocation"),
+    Omit!(Ctfe, Because.diverges,
+        "real dmd CTFE gives every `new C()` its own fresh array for an " ~
+        "array-literal field default instead of sharing one static " ~
+        "backing array the way compiled/runtime D does"),
+)) {
+    @("class.tarrayFieldDefaultInitializerFromArrayLiteralIsSharedAcrossInstances." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            class C {
+                int[] arr = [1, 2, 3];
+            }
+
+            unittest {
+                auto a = new C();
+                auto b = new C();
+                assert(a.arr == [1, 2, 3]);
+                assert(b.arr == [1, 2, 3]);
+
+                a.arr[0] = 99;
+                assert(b.arr[0] == 99);
+
+                auto c = new C();
+                c.arr = [7, 8];
+                assert(c.arr == [7, 8]);
+                assert(a.arr[0] == 99);
+                assert(b.arr[0] == 99);
+            }
+        });
+    }
+}
+
+static foreach (backend; Matrix!(
+    Omit!(Interpreter, Because.unconfirmed,
+        "a Tarray class field's own array-literal default is never " ~
+        "applied on allocation"),
+    Omit!(Ctfe, Because.diverges,
+        "real dmd CTFE gives every `new C()` its own fresh array for an " ~
+        "array-literal field default instead of sharing one static " ~
+        "backing array the way compiled/runtime D does"),
+)) {
+    @("class.tarrayOfArraysFieldDefaultInitializerFromArrayLiteralIsSharedAcrossInstances." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            class C {
+                int[][] m = [[1, 2], [3, 4]];
+            }
+
+            unittest {
+                auto a = new C();
+                auto b = new C();
+                assert(a.m[0][0] == 1);
+                assert(a.m[0][1] == 2);
+                assert(a.m[1][0] == 3);
+                assert(a.m[1][1] == 4);
+                assert(b.m[0][0] == 1);
+
+                auto row = a.m[0];
+                row[0] = 99;
+                assert(b.m[0][0] == 99);
+
+                auto c = new C();
+                c.m = [[7, 8], [9, 10]];
+                assert(c.m[0][0] == 7);
+                assert(c.m[1][1] == 10);
+                assert(a.m[0][0] == 99);
+                assert(b.m[0][0] == 99);
             }
         });
     }
@@ -3822,3 +4144,250 @@ static foreach (backend; Matrix!()) {
         });
     }
 }
+
+// The plain (non-ref-argument) read/write sibling of the fixture above: a
+// struct field reached through a struct pointer is itself a struct wider than
+// a register, and a nested field of that field is read and written directly
+// (`carrier.value.a = 10`), not passed as a `ref` argument.
+// `loadStructPointerField`/`storeStructPointerField` called `scalarType`
+// unconditionally and so threw "Unsupported type in bytecode core: Wide"
+// before ever reaching a call. The nested field access is compiled through
+// `tryClassPointerField`'s generic pointer-receiver mechanism (it only
+// requires `isPointer`, not an actual class), so `loadStructPointerField`'s
+// `Tstruct`/`Tsarray` branch now mirrors `loadClassPointerField`'s identical
+// branch: the field's own address is already correct, it only needed to be
+// exposed as a further-dereferenceable pointer instead of being read as a
+// scalar. `storeStructPointerField` widens the same way
+// `emitStructPointerFieldRefArgument` already does, sizing from
+// `staticArraySize`/`staticArrayAlign` for the single-level
+// `carrier.value = ...` assignment case.
+static foreach (backend; Matrix!()) {
+    @("pointer.structPointerFieldOfWideStructTypeReadsAndWritesNestedField." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct Wide {
+                long a;
+                long b;
+                long c;
+            }
+
+            struct Holder {
+                Wide value;
+            }
+
+            unittest {
+                Holder holder;
+                Holder* carrier = &holder;
+                carrier.value.a = 10;
+                carrier.value.b = 20;
+                carrier.value.c = 30;
+                assert(carrier.value.a == 10);
+                assert(carrier.value.b == 20);
+                assert(carrier.value.c == 30);
+                assert(holder.value.a == 10);
+                assert(holder.value.b == 20);
+                assert(holder.value.c == 30);
+            }
+        });
+    }
+}
+
+// A whole-struct assignment into a field reached through a struct pointer,
+// where the right-hand side is a bare struct-local `VarExp` rather than a
+// struct literal or call. `tryStructPointerField`'s assignment branch
+// unconditionally called `compileExpression(assign.e2)` to get the rhs
+// value; `compileExpression`'s generic `VarExp` handling has no case for a
+// bare struct-typed local, since structs are only ever addressed through
+// `_structLocals`, so this threw "Unsupported variable in bytecode core:
+// a". Routes the aggregate rhs through `structBaseOffsetOrMaterialise`
+// instead, then block-copies through `storeStructPointerField`'s existing
+// width the same way a literal/call rhs already does. `guard` (a sibling
+// field after `t` in `Holder`) checks the block copy uses the field's own
+// width and does not overrun into adjacent storage.
+static foreach (backend; Matrix!()) {
+    @("pointer.structPointerFieldWholeStructAssignmentFromBareLocal." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            long seed() {
+                return 5;
+            }
+
+            struct Plain {
+                long x;
+            }
+
+            struct Holder {
+                Plain t;
+                long guard;
+            }
+
+            unittest {
+                Holder holder;
+                holder.guard = 999;
+                Holder* carrier = &holder;
+                Plain a;
+                a.x = seed;
+                carrier.t = a;
+                assert(carrier.t.x == 5);
+                assert(carrier.guard == 999);
+            }
+        });
+    }
+}
+
+// The class-field counterpart of the struct-pointer fixture above:
+// `tryClassPointerField`'s assignment branch has the identical bug, fixed
+// the same way through `storeClassPointerField`.
+static foreach (backend; Matrix!()) {
+    @("struct.classFieldWholeStructAssignmentFromBareLocal." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            long seed() {
+                return 7;
+            }
+
+            struct Plain {
+                long x;
+            }
+
+            class Holder {
+                Plain t;
+                long guard;
+            }
+
+            unittest {
+                auto holder = new Holder;
+                holder.guard = 999;
+                Plain a;
+                a.x = seed;
+                holder.t = a;
+                assert(holder.t.x == 7);
+                assert(holder.guard == 999);
+            }
+        });
+    }
+}
+
+// Calling a method through a receiver reached one level past a struct
+// pointer field (`p.t.bump()`, DMD's `(*p).t.bump()`): `methodReceiver`'s
+// fallback (`methodReceiverOffset` -> `structOperandOffset` ->
+// `structBaseOffsetOrMaterialise`) had no case for a `DotVarExp` callee
+// receiver whose own base is a pointer dereference, so this threw
+// "Unsupported struct value in bytecode core: (*p).t". `methodReceiver` now
+// resolves `t`'s real heap address the same way a plain field read does
+// (`tryStructPointerField`), materialises a fresh inline copy for the call
+// so the callee's frame-relative `this` convention is satisfied, and writes
+// the (possibly mutated) copy back through that real address afterward --
+// the receiver-analogue of `StructPointerFieldRefWriteBack` used for `ref`
+// arguments reached the same way. Two `bump()` calls before the read check
+// the writeback actually lands (a no-writeback bug would silently discard
+// both mutations rather than crash).
+static foreach (backend; Matrix!()) {
+    @("pointer.methodCallThroughStructPointerFieldReceiverMutatesField." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct Plain {
+                int x;
+                int get() const { return x; }
+                void bump() { x++; }
+            }
+
+            struct Holder {
+                Plain t;
+            }
+
+            unittest {
+                Holder holder;
+                Holder* p = &holder;
+                p.t.bump();
+                p.t.bump();
+                assert(p.t.get() == 2);
+            }
+        });
+    }
+}
+
+// The class-field counterpart of the struct-pointer fixture above
+// (`c.t.bump()`): `tryClassPointerField` resolves the receiver's real
+// address the same way `tryStructPointerField` does for a struct pointer.
+static foreach (backend; Matrix!()) {
+    @("struct.classFieldMethodCallReceiverMutatesField." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct Plain {
+                int x;
+                int get() const { return x; }
+                void bump() { x++; }
+            }
+
+            class CHolder {
+                Plain t;
+            }
+
+            unittest {
+                auto c = new CHolder;
+                c.t.bump();
+                c.t.bump();
+                assert(c.t.get() == 2);
+            }
+        });
+    }
+}
+
+// A direct consequence of the fix above: `p.t = a;` where `Tracker` has a
+// postblit but no user-defined `opAssign` lowers to a call,
+// `(*p).t.opAssign(copytmp)`, whose receiver is the exact same
+// pointer-reached-struct-field shape as a method call. Interpreter runs the
+// same postblit-losing whole-local assignment as
+// `struct.wholeLocalAssignmentRunsPostblit`'s sibling pin, so it stays
+// omitted here for the identical reason.
+static foreach (backend; Matrix!(
+    Omit!(Interpreter, Because.diverges,
+        "loses the field copy for a postblit-typed whole-struct assignment "
+            ~ "through a pointer field, see struct.wholeLocalAssignmentRunsPostblit"),
+)) {
+    @("pointer.structPointerFieldPostblitAssignmentRunsPostblit." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct Tracker {
+                int x;
+                int* postblits;
+
+                this(this) {
+                    ++*postblits;
+                }
+            }
+
+            struct Holder {
+                Tracker t;
+            }
+
+            unittest {
+                int postblits = 0;
+
+                Tracker a;
+                a.x = 5;
+                a.postblits = &postblits;
+
+                Holder holder;
+                Holder* p = &holder;
+                p.t = a;
+
+                assert(p.t.x == 5);
+                assert(postblits == 1);
+            }
+        });
+    }
+}
+

@@ -1219,6 +1219,372 @@ static foreach (backend; Matrix!()) {
     }
 }
 
+// `inner`'s immediate enclosing function is `middle`, which owns no capture
+// of its own -- `captured` belongs to `run`, one level further up. A call
+// site must forward the context `middle` itself received from `run` rather
+// than handing `inner` `middle`'s own frame; matches this exact regression.
+static foreach (backend; Matrix!()) {
+    @("function.nestedFunctionTwoLevelsDeepMutatesEnclosingScalar." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            int run() {
+                int captured = 42;
+
+                void middle() {
+                    void inner() {
+                        captured = 43;
+                    }
+                    inner();
+                }
+                middle();
+
+                return captured;
+            }
+
+            unittest {
+                assert(run() == 43);
+            }
+        });
+    }
+}
+
+// Heap-referencing twin of the fixture above: `arr`'s slice descriptor lives
+// in `run`'s frame, so reading it through the wrong (`middle`'s own) frame
+// misreads unrelated bytes as the descriptor's pointer field and dereferences
+// them as a raw heap address.
+static foreach (backend; Matrix!()) {
+    @("function.nestedFunctionTwoLevelsDeepMutatesEnclosingArrayElement." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            int[] run() {
+                int[] arr = [1, 2, 3];
+
+                void middle() {
+                    void inner() {
+                        arr[0] = 5;
+                    }
+                    inner();
+                }
+                middle();
+
+                return arr;
+            }
+
+            unittest {
+                assert(run() == [5, 2, 3]);
+            }
+        });
+    }
+}
+
+// Four levels deep: `levelC`'s captured local is owned three levels up, so
+// resolving it needs two relayed hops (through `levelB`'s and `levelA`'s own
+// received contexts), not just the single hop the fixture above exercises.
+static foreach (backend; Matrix!()) {
+    @("function.nestedFunctionThreeLevelsDeepMutatesEnclosingScalar." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            int run() {
+                int captured = 1;
+
+                void levelA() {
+                    void levelB() {
+                        void levelC() {
+                            captured += 1;
+                        }
+                        levelC();
+                    }
+                    levelB();
+                }
+                levelA();
+
+                return captured;
+            }
+
+            unittest {
+                assert(run() == 2);
+            }
+        });
+    }
+}
+
+// Static-array twin of the earlier dynamic-array fixture above: `arr`'s
+// inline block lives directly in `run`'s own frame (`_staticArrayLocals`)
+// rather than a heap-addressed descriptor, so this exercises
+// `indexesStaticArray`'s captured-static-array distinction instead of the
+// dynamic-array element write path.
+static foreach (backend; Matrix!()) {
+    @("function.nestedFunctionMutatesEnclosingStaticArrayElement." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            int[3] run() {
+                int[3] arr = [1, 2, 3];
+
+                void mutate() {
+                    arr[1] = 55;
+                }
+                mutate();
+
+                return arr;
+            }
+
+            unittest {
+                assert(run() == [1, 55, 3]);
+            }
+        });
+    }
+}
+
+// Read counterpart of the fixture above: `readIt` never assigns into `arr`,
+// only reads an element from it, exercising the captured-static-array read
+// path (`tryCapturedStaticArrayElement`/`Op.frameLoad`) rather than the
+// write path (`tryCapturedStaticArrayElementAssign`/`Op.frameStore`).
+static foreach (backend; Matrix!()) {
+    @("function.nestedFunctionReadsEnclosingStaticArrayElement." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            int run() {
+                int[3] arr = [1, 2, 3];
+
+                int readIt() {
+                    return arr[1];
+                }
+
+                return readIt();
+            }
+
+            unittest {
+                assert(run() == 2);
+            }
+        });
+    }
+}
+
+// Struct-field twin of `nestedFunctionMutatesEnclosingStaticArrayElement`
+// above: `s`'s type has a static-array field, so `s.arr[1] = 55` from the
+// nested function must resolve through `tryStructField`'s captured-struct-
+// receiver branch (materialised block + writeback) together with the
+// static-array element write, not either alone.
+static foreach (backend; Matrix!()) {
+    @("function.nestedFunctionMutatesCapturedStructStaticArrayField." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct S {
+                int[3] arr;
+            }
+
+            int run() {
+                S s = S([1, 2, 3]);
+
+                void mutate() {
+                    s.arr[1] = 55;
+                }
+                mutate();
+
+                return s.arr[1];
+            }
+
+            unittest {
+                assert(run() == 55);
+            }
+        });
+    }
+}
+
+// Two-level twin of `nestedFunctionMutatesCapturedStructStaticArrayField`
+// above: the captured receiver (`o`) is reached through an intervening
+// struct field (`o.inner`) before the static-array field (`arr`), so
+// `tryStructField`'s captured-struct-receiver branch (which only recognises
+// a *direct* `VarExp`/`ThisExp` receiver) cannot match `o.inner.arr[1]`
+// directly and must fall through to `structBaseOffsetOrMaterialise`'s
+// generic recursion instead, which has to propagate the captured-frame
+// writeback through the intervening `inner` field the same way it already
+// does for a module-struct or AA-pointer receiver.
+static foreach (backend; Matrix!()) {
+    @("function.nestedFunctionMutatesTwoLevelCapturedStructStaticArrayField." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct Inner {
+                int[3] arr;
+            }
+
+            struct Outer {
+                Inner inner;
+            }
+
+            int run() {
+                Outer o = Outer(Inner([1, 2, 3]));
+
+                void mutate() {
+                    o.inner.arr[1] = 55;
+                }
+                mutate();
+
+                return o.inner.arr[1];
+            }
+
+            unittest {
+                assert(run() == 55);
+            }
+        });
+    }
+}
+
+// Class twin of `nestedFunctionMutatesTwoLevelCapturedStructStaticArrayField`
+// above: the captured receiver (`c`) is a class *reference*, not a struct
+// value, so `capturedStructReceiver` (which only matches a `Tstruct`-typed
+// captured local) never matches `c.inner`, and `c.inner.arr[1] = 55` used to
+// throw "Unsupported static array access in bytecode core" instead of
+// falling through to any writeback machinery at all. A class field's
+// storage is real heap memory addressed through a runtime pointer
+// (`classFieldAddress`), not a captured frame block copy needing writeback,
+// so the fix is in `classStaticArrayFieldOf` (the class-field counterpart of
+// `staticArrayOffsetOf`): it now recognises a static-array field reached
+// through an intervening struct-field hop (`inner`) rooted at a class
+// reference (`structFieldReachedThroughClass`), not just a *direct* class
+// receiver (`c.arr`), and resolves it through the same
+// `tryClassPointerField`/`classFieldAddress` real-pointer plumbing a direct
+// class field already uses -- whether `c` itself is captured or not.
+// Reading back every element (not just the mutated one) catches a fix that
+// only gets the mutated index right by resolving to the wrong base offset.
+static foreach (backend; Matrix!()) {
+    @("function.nestedFunctionMutatesCapturedClassStructStaticArrayField." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct Inner {
+                int[3] arr;
+            }
+
+            class COuter {
+                Inner inner;
+            }
+
+            int run() {
+                COuter c = new COuter();
+                c.inner.arr[0] = 1;
+                c.inner.arr[1] = 2;
+                c.inner.arr[2] = 3;
+
+                void mutate() {
+                    c.inner.arr[1] = 55;
+                }
+                mutate();
+
+                return c.inner.arr[0] * 100 + c.inner.arr[1] * 10 + c.inner.arr[2];
+            }
+
+            unittest {
+                assert(run() == 653);
+            }
+        });
+    }
+}
+
+// Three-level twin of `nestedFunctionMutatesCapturedClassStructStaticArrayField`
+// above: two struct-field hops (`inner`, `deepest`) separate the class
+// receiver from the static-array field, pinning that `classStaticArrayFieldOf`
+// / `structFieldReachedThroughClass` compose through an arbitrary number of
+// hops rather than just the one hop the depth-2 test above exercises.
+static foreach (backend; Matrix!()) {
+    @("function.nestedFunctionMutatesCapturedClassStructStaticArrayFieldThreeLevelsDeep." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct Deepest {
+                int[3] arr;
+            }
+
+            struct Inner {
+                Deepest deepest;
+            }
+
+            class COuter {
+                Inner inner;
+            }
+
+            int run() {
+                COuter c = new COuter();
+                c.inner.deepest.arr[0] = 1;
+                c.inner.deepest.arr[1] = 2;
+                c.inner.deepest.arr[2] = 3;
+
+                void mutate() {
+                    c.inner.deepest.arr[1] = 55;
+                }
+                mutate();
+
+                return c.inner.deepest.arr[0] * 100
+                    + c.inner.deepest.arr[1] * 10
+                    + c.inner.deepest.arr[2];
+            }
+
+            unittest {
+                assert(run() == 653);
+            }
+        });
+    }
+}
+
+// `middle` is both a relay (for `innerA`, which reaches `run`'s `a`) AND an
+// owner (for `innerB`, which reaches `middle`'s own `b`) -- the same caller
+// in both roles for different callees. `innerB` itself reads captures at two
+// different depths in the same body (`b` one level up, `total` two), so a
+// single function needing more than one hop count at once is exercised too.
+static foreach (backend; Matrix!()) {
+    @("function.nestedFunctionCapturesOwnAndAncestorLocalsAtDifferentDepths." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            int run() {
+                int a = 1;
+                int total = 0;
+
+                void middle() {
+                    int b = 10;
+
+                    void innerA() {
+                        a += 1;
+                    }
+
+                    void innerB() {
+                        b += 1;
+                        total += b;
+                    }
+
+                    innerA();
+                    innerB();
+                    innerA();
+                }
+                middle();
+
+                return a * 100 + total;
+            }
+
+            unittest {
+                assert(run() == 311);
+            }
+        });
+    }
+}
+
 // Recursion means several activations of `recurse` are live at once, each
 // with its own `total` local and its own `bump` activation reaching it --
 // this fails if a nested function's captured-variable binding is ever
@@ -1381,6 +1747,216 @@ static foreach (backend; Matrix!()) {
     }
 }
 
+// A function whose declared return type is itself `int delegate()`: the
+// returned lambda captures nothing from `makeConstantGetter`'s own frame, so
+// its `{functionIndex, context}` pair is safe to read back after that frame
+// is gone -- the caller assigns the call's result straight into a plain
+// local (`auto getter = ...`) and calls it from there.
+static foreach (backend; Matrix!()) {
+    @("delegate.functionReturningNonCapturingDelegateIsCallable." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            int delegate() makeConstantGetter() {
+                int delegate() getter = () => 42;
+                return getter;
+            }
+
+            unittest {
+                auto getter = makeConstantGetter();
+                assert(getter() == 42);
+            }
+        });
+    }
+}
+
+// The same shape as above, but the returned lambda captures a local owned by
+// the returning function's own frame. Real compiled D (SystemLinker,
+// LLVMJit) promotes `total` to a GC-heap closure so the returned delegate
+// keeps working after `makeCounterGetter` returns. Ctfe's own dmd.dinterpret
+// engine refuses this outright, the Interpreter silently hands back a
+// delegate reading a stale frame slot, and the bytecode core has no heap
+// closure environment yet (`ai/plans/bytecode.md`'s Closures section) so it
+// refuses the return with a clear diagnostic rather than handing back a
+// dangling one -- three separate, pre-existing promotion-backlog gaps, not
+// a Bytecode-only characterization.
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.inexpressible,
+        "Ctfe wraps dmd.dinterpret, whose CTFE engine refuses the "
+            ~ "returned closure outright with \"closures are not yet "
+            ~ "supported in CTFE\""),
+    Omit!(Interpreter, Because.unconfirmed,
+        "the Interpreter does not yet promote a frame-escaping " ~
+            "captured local to a heap closure either; it returns a " ~
+            "call whose delegate reads a stale/reused frame slot " ~
+            "instead of the closed-over value (observed returning 1 " ~
+            "instead of 4) -- not yet promoted"),
+    Omit!(Bytecode, Because.unconfirmed,
+        "the bytecode core has no heap closure environment yet; a "
+            ~ "delegate that captures its own function's locals and "
+            ~ "escapes via `return` is refused with \"Unsupported "
+            ~ "delegate return in bytecode core: returning a closure "
+            ~ "over this function's own locals outlives its frame: "
+            ~ "<name>\" rather than handing back a dangling frame "
+            ~ "reference -- not yet promoted"),
+)) {
+    @("delegate.functionReturningCapturingDelegateIsCallable." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            int delegate() makeCounterGetter(int seed) {
+                int total = seed;
+                int delegate() getter = () => total + 1;
+                return getter;
+            }
+
+            unittest {
+                auto getter = makeCounterGetter(3);
+                assert(getter() == 4);
+            }
+        });
+    }
+}
+
+// A lambda that captures nothing, itself returning another non-capturing
+// lambda: DMD's "no context needed" default types both `make` and `getter`
+// as plain function pointers (`int function() function()` and `int
+// function()`), never delegates -- unlike `makeConstantGetter` above, whose
+// explicit `int delegate()` return type retypes its lambda to `Tdelegate`
+// during semantic. `compileExpression`'s `FuncExp` branch previously built
+// every lambda literal as a 16-byte delegate pair unconditionally, so
+// `make`'s own declaration (a pointer-typed local) rejected that operand
+// with "Unsupported pointer initializer in bytecode core: make"; the
+// `FuncExp` branch now checks the literal's own inferred type first.
+// `compileIndirectCall` (the `fp()` dispatch `make()` and `getter()` both
+// route through) also needed the same pointer-result tagging
+// `compileCall`'s named-function path already gives, since `make()`'s
+// result assigns into another pointer-typed local (`getter`).
+static foreach (backend; Matrix!(
+    Omit!(Interpreter, Because.unconfirmed,
+        "Interpreter's pointer-local declaration requires a native " ~
+            "binding address for any Tpointer value; a lambda-literal " ~
+            "function pointer (no such address, just a VM function " ~
+            "index) throws \"data pointers must carry a native binding " ~
+            "address\" from Walker.runPointerExpression -- not yet " ~
+            "promoted"),
+)) {
+    @("delegate.nonCapturingLambdaReturningLambdaIsAFunctionPointer." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            unittest {
+                auto make = () => () => 42;
+                auto getter = make();
+                assert(getter() == 42);
+            }
+        });
+    }
+}
+
+// `&arr[i]` for a dynamic array of structs: `tryPointerToElement`'s general
+// fallback scaled the index by `program.size(elementType)`, but an
+// aggregate element (struct, static array, delegate) carries
+// `ScalarType.void_` as its opcode type and `size(void_) == 0` -- so every
+// index silently collapsed to element 0 instead of the real byte stride
+// (`ai/plans/bytecode.md`'s "Pointer metadata" section: opcode scalar type
+// and native byte stride are separate facts, never infer one from the
+// other). `p.value = 42` above silently wrote `arr[0]`, not `arr[1]`.
+// `pointerToElement`/`offsetPointer` now take the caller's own
+// `dynamicArrayElementSize` byte width instead of deriving one from the
+// element's opcode type.
+static foreach (backend; Matrix!()) {
+    @("pointer.addressOfDynamicArrayStructElementUsesRealByteStride." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct S {
+                int value;
+            }
+
+            unittest {
+                S[] arr = [S(1), S(2)];
+                S* p = &arr[1];
+                p.value = 42;
+                assert(arr[0].value == 1);
+                assert(arr[1].value == 42);
+            }
+        });
+    }
+}
+
+// `*p = rhs`/`*p op= rhs` where `p`'s pointee has a user-defined
+// `opAssign`/`opOpAssign`: DMD lowers this to a method call on the
+// dereferenced receiver `(*p).opAssign(rhs)`, but `methodReceiver` had no
+// branch for a bare `PtrExp` receiver (as opposed to a struct-pointer/
+// class field or dynamic-array-element field already covered), so it fell
+// through to the generic `structOperandOffset` fallback -- a read-only
+// throwaway copy with no writeback. The call ran on the copy and its
+// mutation was silently discarded; `s.value` above stayed at its
+// construction value instead of becoming 42. `methodReceiver` now
+// resolves a bare pointer-to-struct receiver the same way, materialising a
+// fresh inline copy and writing the (possibly mutated) copy back through
+// the real pointer address afterward.
+static foreach (backend; Matrix!(
+    Omit!(Interpreter, Because.unconfirmed),
+)) {
+    @("struct.opAssignCalledThroughBarePointerToLocal." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct Setting {
+                int value;
+
+                void opAssign(in int newValue) {
+                    value = newValue;
+                }
+            }
+
+            unittest {
+                Setting s;
+                Setting* p = &s;
+                *p = 42;
+                assert(s.value == 42);
+            }
+        });
+    }
+}
+
+// The array-element-receiver combination of the two fixtures above:
+// `&arr[1]` needs the real byte stride to address the right element, and
+// the `opOpAssign` call through that pointer needs the write-back-through-
+// pointer receiver branch, together.
+static foreach (backend; Matrix!(
+    Omit!(Interpreter, Because.unconfirmed),
+)) {
+    @("struct.opOpAssignCalledThroughDynamicArrayElementPointer." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct Counter {
+                int value;
+
+                void opOpAssign(string op: "+")(int amount) {
+                    value += amount;
+                }
+            }
+
+            unittest {
+                Counter[] arr = [Counter(1), Counter(2)];
+                Counter* p = &arr[1];
+                *p += 40;
+                assert(arr[0].value == 1);
+                assert(arr[1].value == 42);
+            }
+        });
+    }
+}
+
 // A lambda (`FuncExp`, not a named nested function) captures a local and is
 // passed as a VALUE into another function that invokes it -- `applyTwice`
 // is itself nested inside `addCaptured` so its own activation inherits
@@ -1488,6 +2064,259 @@ static foreach (backend; Matrix!()) {
     }
 }
 
+// A nested delegate reassigning a whole captured struct-typed local
+// (`s = S(99, 100);`, not a field write) exercises `compileCapturedAssign`'s
+// write side the same way `loadCapturedLocal` already reads a captured
+// struct whole.
+static foreach (backend; Matrix!()) {
+    @("delegate.nestedDelegateReassignsWholeCapturedStruct." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct S {
+                int x;
+                int y;
+            }
+
+            unittest {
+                S s = S(1, 2);
+                auto reassign = () { s = S(99, 100); };
+                reassign();
+                assert(s.x == 99 && s.y == 100);
+            }
+        });
+    }
+}
+
+// Static-array-typed twin of the fixture above: `arr = [...]` reassigns the
+// whole captured block rather than an individual element.
+static foreach (backend; Matrix!()) {
+    @("delegate.nestedDelegateReassignsWholeCapturedStaticArray." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            unittest {
+                int[3] arr = [1, 2, 3];
+                auto reassign = () { arr = [7, 8, 9]; };
+                reassign();
+                assert(arr[0] == 7 && arr[1] == 8 && arr[2] == 9);
+            }
+        });
+    }
+}
+
+// A delegate is a 16-byte `{functionIndex, context}` pair, the same width as
+// a dynamic-array slice descriptor; appending one to a dynamic array and
+// reading it back exercises that shared 16-byte-width machinery rather than
+// any delegate-specific storage.
+static foreach (backend; Matrix!(
+    Omit!(Interpreter, Because.unconfirmed),
+)) {
+    @("delegate.dynamicArrayElementIsAppendableAndCallable." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            unittest {
+                int seed = 42;
+                int delegate()[] dgs;
+                dgs ~= () => seed;
+                auto d = dgs[0];
+                assert(d() == 42);
+            }
+        });
+    }
+}
+
+// The static-array twin: `int delegate()[2] dgs;` default-initializes each
+// element to `null` (DMD's whole-array `NullExp` blit), and each element is
+// then assignable and readable like any other inline aggregate slot.
+static foreach (backend; Matrix!(
+    Omit!(Interpreter, Because.unconfirmed),
+)) {
+    @("delegate.staticArrayElementIsAssignableAndCallable." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            unittest {
+                int delegate()[2] dgs;
+                dgs[0] = () => 1;
+                dgs[1] = () => 2;
+                auto first = dgs[0];
+                auto second = dgs[1];
+                assert(first() == 1);
+                assert(second() == 2);
+            }
+        });
+    }
+}
+
+// Calling directly through an array index (`dgs[0]()`), with no
+// intermediate delegate-typed local, dispatches through the same run-time
+// descriptor an indexed read already materialises.
+static foreach (backend; Matrix!(
+    Omit!(Interpreter, Because.unconfirmed),
+)) {
+    @("delegate.dynamicArrayElementIsCallableThroughIndexDirectly." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            unittest {
+                int delegate()[] dgs = [() => 42];
+                assert(dgs[0]() == 42);
+            }
+        });
+    }
+}
+
+// The static-array twin of the fixture above.
+static foreach (backend; Matrix!(
+    Omit!(Interpreter, Because.unconfirmed),
+)) {
+    @("delegate.staticArrayElementIsCallableThroughIndexDirectly." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            unittest {
+                int delegate()[2] dgs;
+                dgs[0] = () => 42;
+                assert(dgs[0]() == 42);
+            }
+        });
+    }
+}
+
+// A delegate-typed CLASS field: default value `null`, direct assignment
+// with no intermediate local (`c.f = &add`), and a call straight through
+// the field (`c.f(2)`). Distinct from the struct-field case
+// (`struct.liveDelegateFieldPreservesCallable`, `structs.d`): a class
+// field is heap-resident behind `tryClassPointerField`, whose
+// `loadClassPointerField`/`storeClassPointerField` fell through to the
+// scalar-only `scalarType` path (no `Tdelegate` case, so it threw) instead
+// of the 16-byte `{functionIndex, context}` load/store `Tarray` already
+// gets; the call-through-field dispatch
+// (`structFieldDelegateOffsetOf`) previously only recognised a struct-value
+// receiver, not a class reference.
+static foreach (backend; Matrix!(
+    Omit!(Interpreter, Because.unconfirmed),
+)) {
+    @("delegate.classFieldDefaultIsNullDirectlyAssignableAndCallable." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            class C {
+                int delegate(int) f;
+            }
+
+            unittest {
+                auto c = new C();
+                assert(c.f is null);
+
+                int captured = 4;
+                c.f = (int x) => x + captured;
+                assert(c.f(2) == 6);
+            }
+        });
+    }
+}
+
+// `==`/`!=`/`is`/`!is` between two lambda-literal delegate values: a
+// delegate is a builtin type with no `opEquals`, so all four compare the raw
+// `{functionIndex, context}` pair. Two separately-declared lambdas capturing
+// the same variable are unequal (different function), while assigning one
+// delegate value to another preserves both equality and identity.
+static foreach (backend; Matrix!()) {
+    @("delegate.equalityComparesFunctionAndContext." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            unittest {
+                int x = 1;
+                int delegate() a = () => x;
+                int delegate() b = () => x;
+                int delegate() c = a;
+                assert(a != b);
+                assert(a == c);
+                assert(a is c);
+                assert(b !is a);
+            }
+        });
+    }
+}
+
+// A delegate compares equal to a `null` literal only when default- or
+// explicitly null-initialized, and unequal once assigned a real value.
+static foreach (backend; Matrix!()) {
+    @("delegate.comparesAgainstNullLiteral." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            unittest {
+                int delegate() a;
+                assert(a is null);
+                assert(a == null);
+                int x = 1;
+                int delegate() b = () => x;
+                assert(b !is null);
+                assert(b != null);
+            }
+        });
+    }
+}
+
+// A method delegate's context word is the receiver's own address, so two
+// delegates bound to the same method through different receivers compare
+// unequal, while two bound through the same receiver compare equal.
+static foreach (backend; Matrix!(
+    Omit!(Interpreter, Because.unconfirmed),
+)) {
+    @("delegate.methodDelegateComparesByReceiverAndFunction." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct S {
+                int x;
+                int get() { return x; }
+            }
+
+            unittest {
+                S s1 = S(1);
+                S s2 = S(2);
+                auto d1 = &s1.get;
+                auto d2 = &s2.get;
+                assert(d1 != d2);
+                auto d1Again = &s1.get;
+                assert(d1 == d1Again);
+            }
+        });
+    }
+}
+
+// The array-element twin of the fixture above: comparing two delegate
+// elements read back from a dynamic array.
+static foreach (backend; Matrix!(
+    Omit!(Interpreter, Because.unconfirmed),
+)) {
+    @("delegate.arrayElementsCompareByFunctionAndContext." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            unittest {
+                int delegate()[] dgs = [() => 1, () => 2];
+                assert(dgs[0] != dgs[1]);
+                assert(dgs[0] == dgs[0]);
+            }
+        });
+    }
+}
 
 /++
     Casts involving slices, pointers, arrays, and bool.
@@ -2554,6 +3383,44 @@ static foreach (backend; Matrix!(
                 quickbiteDatasegCompoundPoint.x +=
                     writeDirectFieldAndReturnOne();
                 assert(quickbiteDatasegCompoundPoint.x == 101);
+            }
+        });
+    }
+}
+
+// A module-level struct with a non-default initializer
+// (`Point p = Point(1, 2);`): `moduleStructVariableOrNull` used to decline
+// registration outright ("Unsupported variable in bytecode core") whenever
+// `moduleVariableHasDefaultInitializer` reported a non-default initializer,
+// leaving the module struct entirely unsupported instead of giving it real
+// storage with the literal's field values. `Ctfe` cannot read or write
+// dataseg storage at all. `LLVMJit` has a pre-existing, unrelated bug on
+// this shape (confirmed via a standalone probe: it reads back 131072
+// instead of 1), so it stays unconfirmed here rather than being fixed as a
+// side effect of this change.
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.inexpressible,
+        "CTFE cannot read or write dataseg (__gshared/static) storage"),
+    Omit!(LLVMJit, Because.unconfirmed),
+)) {
+    @("dataseg.moduleStructNonDefaultInitializer." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct Point { int x; int y; }
+            Point quickbiteDatasegInitializedPoint = Point(1, 2);
+
+            void bumpX() {
+                quickbiteDatasegInitializedPoint.x =
+                    quickbiteDatasegInitializedPoint.x + 10;
+            }
+
+            unittest {
+                assert(quickbiteDatasegInitializedPoint.x == 1);
+                assert(quickbiteDatasegInitializedPoint.y == 2);
+                bumpX();
+                assert(quickbiteDatasegInitializedPoint.x == 11);
+                assert(quickbiteDatasegInitializedPoint.y == 2);
             }
         });
     }
@@ -5976,6 +6843,177 @@ static foreach (backend; AliasSeq!(Bytecode, SystemLinker)) {
     }
 }
 
+// A bounds-checked element accessor (`ref int at(in int index) return {
+// return data[index]; }`) used as an assignment target must write through
+// the array field's own backing store, not the throwaway returned copy.
+static foreach (backend; AliasSeq!(Bytecode, SystemLinker)) {
+    @("refCall.assignmentToMemberRefIndexReturn." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct Vec {
+                int[] data;
+
+                ref int at(in int index) return {
+                    return data[index];
+                }
+            }
+
+            unittest {
+                Vec v;
+                v.data = [1, 2, 3];
+
+                v.at(1) = 42;
+
+                assert(v.data[0] == 1);
+                assert(v.data[1] == 42);
+                assert(v.data[2] == 3);
+            }
+        });
+    }
+}
+
+// The compound-assignment counterpart: `p.at(i) += rhs` through the same
+// ref-returning element accessor.
+static foreach (backend; AliasSeq!(Bytecode, SystemLinker)) {
+    @("refCall.compoundAssignmentToMemberRefIndexReturn." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct Vec {
+                int[] data;
+
+                ref int at(in int index) return {
+                    return data[index];
+                }
+            }
+
+            unittest {
+                Vec v;
+                v.data = [1, 2, 3];
+
+                v.at(1) += 5;
+
+                assert(v.data[0] == 1);
+                assert(v.data[1] == 7);
+                assert(v.data[2] == 3);
+            }
+        });
+    }
+}
+
+// The div/mod compound-assignment counterpart: `p.at(i) /= rhs` and
+// `p.at(i) %= rhs` through the same ref-returning element accessor.
+static foreach (backend; AliasSeq!(Bytecode, SystemLinker)) {
+    @("refCall.divCompoundAssignmentToMemberRefIndexReturn." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct Vec {
+                int[] data;
+
+                ref int at(in int index) return {
+                    return data[index];
+                }
+            }
+
+            unittest {
+                Vec v;
+                v.data = [10, 20, 30];
+
+                v.at(1) /= 2;
+
+                assert(v.data[0] == 10);
+                assert(v.data[1] == 10);
+                assert(v.data[2] == 30);
+            }
+        });
+    }
+
+    @("refCall.modCompoundAssignmentToMemberRefIndexReturn." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct Vec {
+                int[] data;
+
+                ref int at(in int index) return {
+                    return data[index];
+                }
+            }
+
+            unittest {
+                Vec v;
+                v.data = [10, 21, 30];
+
+                v.at(1) %= 4;
+
+                assert(v.data[0] == 10);
+                assert(v.data[1] == 1);
+                assert(v.data[2] == 30);
+            }
+        });
+    }
+}
+
+// The post-increment/decrement counterpart: `p.at(i)++` / `p.at(i)--`
+// through the same ref-returning element accessor. The expression's own
+// value is the *old* element (post-increment semantics), and the write goes
+// through the array field's own backing store.
+static foreach (backend; AliasSeq!(Bytecode, SystemLinker)) {
+    @("refCall.postIncrementToMemberRefIndexReturn." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct Vec {
+                int[] data;
+
+                ref int at(in int index) return {
+                    return data[index];
+                }
+            }
+
+            unittest {
+                Vec v;
+                v.data = [1, 2, 3];
+
+                const old = v.at(1)++;
+
+                assert(old == 2);
+                assert(v.data[0] == 1);
+                assert(v.data[1] == 3);
+                assert(v.data[2] == 3);
+            }
+        });
+    }
+
+    @("refCall.postDecrementToMemberRefIndexReturn." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct Vec {
+                int[] data;
+
+                ref int at(in int index) return {
+                    return data[index];
+                }
+            }
+
+            unittest {
+                Vec v;
+                v.data = [1, 2, 3];
+
+                const old = v.at(1)--;
+
+                assert(old == 2);
+                assert(v.data[0] == 1);
+                assert(v.data[1] == 1);
+                assert(v.data[2] == 3);
+            }
+        });
+    }
+}
+
 // `new S` of a struct with a dynamic-array field passes the field's `null`
 // default initialiser as a positional argument; the interpreter must store it
 // as an empty array so a null array's `.length` is 0 (compiled D:
@@ -7598,6 +8636,100 @@ static foreach (backend; Matrix!()) {
 
             unittest {
                 assert(f() == 198);
+            }
+        });
+    }
+}
+
+// Whole-field sibling of `pointer.
+// classArrayFieldElementWrittenThroughPointerIsVisibleDirectly` above: take
+// the address of a class's own static-array FIELD as a whole (`&c.arr`, an
+// `int[3]*`), not one of its elements (`&c.arr[0]`, an `int*`), then write
+// the whole object through the pointer and read it back both as a whole
+// (`*p`) and elementwise. SystemLinker is the oracle.
+static foreach (backend; Matrix!()) {
+    @("pointer.classStaticArrayFieldWholeObjectWrittenThroughPointerIsVisibleDirectly." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            class C {
+                int[3] arr;
+            }
+
+            unittest {
+                C c = new C();
+                c.arr = [1, 2, 3];
+                int[3]* p = &c.arr;
+                *p = [4, 5, 6];
+
+                assert(c.arr[0] == 4);
+                assert(c.arr[1] == 5);
+                assert(c.arr[2] == 6);
+                assert((*p)[1] == 5);
+            }
+        });
+    }
+}
+
+// Indexed-through-the-whole-field-pointer sibling of the fixture above:
+// `(*p)[i] = v` where `p`'s pointee is a class field's static array, the
+// class-receiver counterpart of
+// `pointer.wholeStaticArrayAssignmentWritesRealStorage`'s local-variable
+// case. SystemLinker is the oracle.
+static foreach (backend; Matrix!(
+    Omit!(Interpreter, Because.unconfirmed,
+        "an indexed write through a dereferenced static-array pointer " ~
+        "(`(*p)[i] = v`) expects a native pointer representation"),
+)) {
+    @("pointer.classStaticArrayFieldElementWrittenThroughWholeFieldPointerIsVisibleDirectly." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            class C {
+                int[3] arr;
+            }
+
+            unittest {
+                C c = new C();
+                c.arr = [1, 2, 3];
+                int[3]* p = &c.arr;
+                (*p)[1] = 99;
+
+                assert(c.arr[1] == 99);
+            }
+        });
+    }
+}
+
+// Pointer-free sibling of the two fixtures above: a direct whole-object
+// array-literal assignment to a class's own static-array field (`c.arr =
+// [1, 2, 3];`), no `&`/pointer involved at all. `compileAssignExpression`'s
+// `tryClassPointerField` branch special-cased only a `Tarray` field (the
+// 16-byte descriptor case) and otherwise called `scalarType` directly on the
+// field's DMD type, throwing "Unsupported type in bytecode core: int[3]" for
+// any `Tstruct`/`Tsarray` field; `storeClassPointerField` now widens to the
+// field's real `staticArraySize` byte width for those two kinds, mirroring
+// `storeStructPointerField`'s identical widening for a struct-pointer field.
+// SystemLinker is the oracle.
+static foreach (backend; Matrix!()) {
+    @("assignment.classStaticArrayFieldWholeObjectArrayLiteralAssignmentWritesRealStorage." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            class C {
+                int[3] arr;
+            }
+
+            unittest {
+                C c = new C();
+                c.arr = [1, 2, 3];
+
+                assert(c.arr[0] == 1);
+                assert(c.arr[1] == 2);
+                assert(c.arr[2] == 3);
             }
         });
     }

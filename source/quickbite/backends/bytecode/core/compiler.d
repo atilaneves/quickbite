@@ -174,12 +174,25 @@ private struct Compiler {
     private ModuleDynamicArrayVariable[VarDeclaration]
         _moduleDynamicArrayVariables;
     private ModuleStructVariable[VarDeclaration] _moduleStructVariables;
+    // A `Tarray` class field's shared array-literal default, computed once
+    // per field and reused at every `new C()` site: see
+    // `classFieldArraySharedDefaultOrNull`.
+    private ClassFieldArrayDefault[VarDeclaration] _classFieldArrayDefaults;
     // Scalar locals' frame offsets, kept across functions (unlike `_locals`,
     // which is reset per function). A nested struct's method reads a captured
     // enclosing local through the struct's context pointer, which records the
     // enclosing frame's base; this map recovers the captured local's offset
     // within that frame at the point the method (a separate function) compiles.
     private ushort[VarDeclaration] _capturedOffsets;
+    // The function that declared each `_capturedOffsets` entry -- the frame
+    // that offset is relative to. A captured variable's owner may be more
+    // than one nesting level above the function currently reading or writing
+    // it; `capturedFrameIndex` walks the enclosing-function chain from the
+    // current function to this owner, one received-context hop per level.
+    private FuncDeclaration[VarDeclaration] _capturedOwners;
+    // The function whose body is currently being compiled; `_capturedOwners`
+    // entries recorded while compiling it are attributed to it.
+    private FuncDeclaration _currentFunction;
     // The frame offset of the current method's hidden `this` block when it is a
     // nested struct whose first field (`vthis`) holds the enclosing-frame
     // context index; 0 otherwise. Set while compiling such a method.
@@ -293,6 +306,33 @@ private struct Compiler {
         ushort offset;
         ushort writeBackFrameIndex;
         ushort writeBackSize;
+        // Set instead of the two fields above when the receiver was
+        // materialised from a struct-pointer/class field's real heap
+        // address (`p.t.method()`, `c.t.method()`) rather than a captured
+        // frame: `writeBackPointerAddress` holds the frame slot with that
+        // real address, and a nonzero `writeBackPointerSize` signals the
+        // block must be written back through it, mirroring
+        // `StructPointerFieldRefWriteBack`/`ClassFieldRefWriteBack` for
+        // `ref` arguments reached the same way. `writeBackPointerIndexSlot`
+        // is the runtime index scaling that address (a constant-zero slot
+        // for the two address-only cases above; a real AA-value index slot
+        // for the associative-array-value case below), mirroring
+        // `StructField.pointerIndexSlot`/`writeBackStructField`'s identical
+        // `pointerStoreOp` addressing for the field case.
+        ushort writeBackPointerAddress;
+        ushort writeBackPointerSize;
+        ushort writeBackPointerIndexSlot;
+        // Set instead of the fields above when the receiver was materialised
+        // from a dynamic array of structs' indexed element
+        // (`arr[i].method()`): `writeBackDescriptorOffset`/
+        // `writeBackIndexOffset` are the same descriptor/index frame slots
+        // `emitDynamicArrayElementRefArgument`'s `DynamicArrayRefWriteBack`
+        // already carries for the identical shape reached as a `ref`
+        // argument, and a nonzero `writeBackElementSize` signals the block
+        // must be written back through `indexStoreOp`.
+        ushort writeBackDescriptorOffset;
+        ushort writeBackIndexOffset;
+        ushort writeBackElementSize;
     }
 
     private void compileFunctionBody(in size_t index) {
@@ -326,6 +366,7 @@ private struct Compiler {
             ));
         }
 
+        _currentFunction = function_;
         _code = null;
         _locals = null;
         _staticArrayLocals = null;
@@ -380,7 +421,7 @@ private struct Compiler {
                 layout.thisOffset, thisStructDeclaration(function_),
             );
             if (function_.vthis !is null)
-                _capturedOffsets[function_.vthis] = layout.thisOffset;
+                registerCapturedOffset(function_.vthis, layout.thisOffset);
             _hasNestedContext = _thisLocal.declaration !is null &&
                 _thisLocal.declaration.isNested;
         }
@@ -397,13 +438,13 @@ private struct Compiler {
             // mechanism as any other captured outer local, mirroring the
             // struct-receiver case just above.
             if (function_.vthis !is null)
-                _capturedOffsets[function_.vthis] = layout.classThisOffset;
+                registerCapturedOffset(function_.vthis, layout.classThisOffset);
         }
         if (function_.parameters !is null)
             foreach (parameterIndex; 0 .. function_.parameters.length) {
                 auto parameter = (*function_.parameters)[parameterIndex];
                 const offset = layout.offsets[parameterIndex];
-                _capturedOffsets[parameter] = offset;
+                registerCapturedOffset(parameter, offset);
 
                 if (parameterIsLazy(parameter)) {
                     _lazyDelegateLocals[parameter] = offset;
@@ -1099,6 +1140,10 @@ private struct Compiler {
                 // operand's inline base; `ret` copies its `structSize` bytes
                 // back to the caller's destination.
                 result = structOperandOffset(return_.exp);
+            hasResult = true;
+        } else if (_currentReturnType.isDelegate) {
+            refuseFrameEscapingDelegateReturn(return_.exp);
+            result = delegateOperandOffset(return_.exp);
             hasResult = true;
         } else if (return_.exp !is null &&
             !_currentReturnType.isUndisplayable &&
@@ -2383,16 +2428,28 @@ private struct Compiler {
         // is a scalar construction onto a `VarExp` local, also routed here.
         // A static array's default-init fill on function entry (an `out
         // char[4] buf` parameter zeroed to `char.init`) arrives the same way
-        // over a `SliceExp` lvalue (`buf[] = '\xff'`).
+        // over a `SliceExp` lvalue (`buf[] = '\xff'`). `this = rhs;` inside a
+        // struct method -- e.g. the compiler-synthesized `opAssign` a
+        // postblit-typed struct's whole-local reassignment lowers through --
+        // arrives the same way over a `ThisExp` lvalue. Inserting a
+        // struct-typed value into a fresh associative-array slot from an
+        // rvalue (`Point[int] a; a[1] = Point(10, 20);`) arrives the same
+        // way over an `IndexExp` lvalue -- DMD blits directly into the
+        // freshly obtained slot rather than calling the value type's
+        // `opAssign` (if any), since there is no prior value to assign
+        // over.
         if (auto construct = expression.isConstructExp)
             if (construct.e1.isDotVarExp !is null ||
                 construct.e1.isVarExp !is null ||
-                construct.e1.isSliceExp !is null)
+                construct.e1.isSliceExp !is null ||
+                construct.e1.isThisExp !is null ||
+                construct.e1.isIndexExp !is null)
                 return compileAssignExpression(construct);
         if (auto blit = expression.isBlitExp)
             if (blit.e1.isDotVarExp !is null ||
                 blit.e1.isVarExp !is null ||
-                blit.e1.isSliceExp !is null)
+                blit.e1.isSliceExp !is null ||
+                blit.e1.isThisExp !is null)
                 return compileAssignExpression(blit);
 
         // `arr ~= x` (append element) arrives as a CatElemAssignExp (op
@@ -2477,6 +2534,8 @@ private struct Compiler {
             if (auto element = tryClassStaticArrayFieldElement(index))
                 return *element;
             if (auto element = tryStaticArrayRuntimeIndex(index))
+                return *element;
+            if (auto element = tryCapturedStaticArrayElementRead(index))
                 return *element;
             return compileStaticArrayIndex(index);
         }
@@ -2572,6 +2631,20 @@ private struct Compiler {
 
         if (auto literal = expression.isFuncExp)
             if (literal.fd !is null) {
+                // A lambda literal that captures nothing from its enclosing
+                // scope is, by DMD's own default, typed as a plain function
+                // pointer (`int function()`), not a delegate -- only an
+                // explicitly delegate-typed target (`int delegate() d = ()
+                // => 42;`) retypes it to `Tdelegate` during semantic. Route
+                // that shape through the same single-word function-pointer
+                // value `&f` builds, since a pointer-typed local's
+                // declaration only accepts an `isPointer` operand, not the
+                // 16-byte `{functionIndex, context}` pair below.
+                import dmd.astenums: TY;
+                if (literal.type !is null &&
+                    literal.type.toBasetype.ty == TY.Tpointer)
+                    return functionPointer(literal.fd);
+
                 _latestStaticDelegateAssocArrayFunction = literal.fd;
                 const offset = allocateBytes(delegateValueSize, size_t.sizeof);
                 emitDelegateValue(
@@ -2679,6 +2752,14 @@ private struct Compiler {
             }
         }
 
+        // `p.at(0)++` / `p.at(0)--`: a ref-returning method call used as a
+        // post-increment lvalue. Tried before the plain-local/field/
+        // static-array-element cases below, which a `CallExp` lvalue never
+        // matches.
+        if (auto call = post.e1.isCallExp)
+            if (auto result = tryMemberRefIndexPostIncrement(call, post))
+                return *result;
+
         ushort lvalueSlot;
         auto lvalueType = ScalarType.void_;
         StructField* lvalueField;
@@ -2705,6 +2786,7 @@ private struct Compiler {
             if (auto element = tryStaticArrayElement(index)) {
                 lvalueSlot = element.offset;
                 lvalueType = element.type;
+                lvalueField = element.writeback;
             }
         }
 
@@ -2816,9 +2898,11 @@ private struct Compiler {
             return null;
 
         const elementType = dynamicArrayElementType(expression.type);
-        const offset = arrayDescriptorOffset(elementType, expression);
+        const elementIsArray = arrayElementIsArray(expression.type);
+        const offset =
+            arrayDescriptorOffset(elementType, expression, elementIsArray);
         auto result = new DynamicArrayLocal;
-        *result = DynamicArrayLocal(offset, elementType);
+        *result = DynamicArrayLocal(offset, elementType, elementIsArray);
         return result;
     }
 
@@ -2843,12 +2927,14 @@ private struct Compiler {
         ));
         const indexSlot = compileExpression(indexExpr);
         _activeDollarLength = savedDollarLength;
-        const elementSize = resultType.toBasetype.ty == TY.Tstruct
+        const isAggregateElement = resultType.toBasetype.ty == TY.Tstruct ||
+            resultType.toBasetype.ty == TY.Tdelegate;
+        const elementSize = isAggregateElement
             ? cast(uint) staticArraySize(resultType)
             : elementIsArray
             ? sliceDescriptorSize
             : size(elementType);
-        const alignment = resultType.toBasetype.ty == TY.Tstruct
+        const alignment = isAggregateElement
             ? staticArrayAlign(resultType)
             : elementIsArray
             ? size_t.sizeof
@@ -2863,7 +2949,7 @@ private struct Compiler {
         );
 
         auto result = new Operand;
-        *result = resultType.toBasetype.ty == TY.Tstruct || elementIsArray
+        *result = isAggregateElement || elementIsArray
             ? Operand(offset, ScalarType.void_)
             : isPointerType(resultType)
             ? Operand(
@@ -2992,6 +3078,40 @@ private struct Compiler {
                 return result;
             }
 
+        // `p[0]` where `p` is a pointer to a dynamic array (`int[]*`): DMD's
+        // associative-array rvalue-read lowering (`_d_aaGetRvalueX`) yields
+        // exactly this shape -- an `IndexExp` over the returned pointer, not
+        // the `PtrExp` (`*p`) form above -- for an array-typed AA value
+        // (`int[][int] a; a[1]`). Materialise the pointee's 16-byte
+        // descriptor the same way, indexing through the real (usually
+        // constant-zero, but not assumed so) index expression rather than
+        // the `PtrExp` branch's implicit zero.
+        if (auto index = expression.isIndexExp)
+            if (index.e1.type.toBasetype.ty == TY.Tpointer &&
+                index.e1.type.toBasetype.nextOf.toBasetype.ty == TY.Tarray) {
+                const pointer = compileExpression(index.e1);
+                if (pointer.isPointer) {
+                    const indexSlot = compileExpression(index.e2);
+                    const offset =
+                        allocateBytes(sliceDescriptorSize, size_t.sizeof);
+                    _code ~= Instruction(
+                        Op.pointerLoad16,
+                        offset,
+                        pointer.offset,
+                        indexSlot.offset,
+                    );
+                    auto result = new DynamicArrayLocal;
+                    *result = DynamicArrayLocal(
+                        offset,
+                        dynamicArrayElementType(expression.type),
+                        arrayElementIsArray(expression.type),
+                        true,
+                        pointer.offset,
+                    );
+                    return result;
+                }
+            }
+
         if (_hasNestedContext)
             if (auto variable = expression.isVarExp)
                 if (auto declaration = variable.var.isVarDeclaration)
@@ -3003,7 +3123,9 @@ private struct Compiler {
                             _code ~= Instruction(
                                 Op.frameLoad,
                                 offset,
-                                capturedFrameIndex(*captured),
+                                capturedFrameIndex(
+                                    _capturedOwners[declaration], *captured,
+                                ),
                                 cast(ushort) sliceDescriptorSize,
                             );
                             auto result = new DynamicArrayLocal;
@@ -3012,8 +3134,9 @@ private struct Compiler {
                                 dynamicArrayElementType(declaration.type),
                             );
                             result.writeBackThroughFrame = true;
-                            result.frameIndexOffset =
-                                capturedFrameIndex(*captured);
+                            result.frameIndexOffset = capturedFrameIndex(
+                                _capturedOwners[declaration], *captured,
+                            );
                             return result;
                         }
 
@@ -3058,6 +3181,7 @@ private struct Compiler {
                     auto result = new DynamicArrayLocal;
                     *result = DynamicArrayLocal(
                         field.offset, dynamicArrayElementType(field.type),
+                        arrayElementIsArray(field.type),
                     );
                     result.writeBackStructThroughFrame =
                         field.writeBackThroughFrame;
@@ -3092,7 +3216,7 @@ private struct Compiler {
                     *result = DynamicArrayLocal(
                         offset,
                         dynamicArrayElementType(field.type),
-                        false,
+                        arrayElementIsArray(field.type),
                         true,
                         pointer,
                     );
@@ -3119,7 +3243,7 @@ private struct Compiler {
                     *result = DynamicArrayLocal(
                         offset,
                         dynamicArrayElementType(field.type),
-                        false,
+                        arrayElementIsArray(field.type),
                         true,
                         pointer,
                     );
@@ -3149,10 +3273,13 @@ private struct Compiler {
                 (expression.type !is null && isStringType(expression.type))))
         {
             const elementType = dynamicArrayElementType(expression.type);
+            const elementIsArray = arrayElementIsArray(expression.type);
             const offset = allocateBytes(sliceDescriptorSize, size_t.sizeof);
-            compileDynamicArrayInto(offset, elementType, expression);
+            compileDynamicArrayInto(
+                offset, elementType, expression, elementIsArray,
+            );
             auto result = new DynamicArrayLocal;
-            *result = DynamicArrayLocal(offset, elementType);
+            *result = DynamicArrayLocal(offset, elementType, elementIsArray);
             return result;
         }
 
@@ -3529,7 +3656,7 @@ private struct Compiler {
         const type = scalarType(variable.type);
         const offset = allocateBytes(size(type), size(type));
         _locals[variable] = offset;
-        _capturedOffsets[variable] = offset;
+        registerCapturedOffset(variable, offset);
 
         auto initializer =
             variable._init is null ? null : variable._init.isExpInitializer;
@@ -3760,7 +3887,7 @@ private struct Compiler {
         _locals[variable] = offset;
         _classPointerLocals[variable] =
             variable.type.toBasetype.isTypeClass.sym;
-        _capturedOffsets[variable] = offset;
+        registerCapturedOffset(variable, offset);
         _code ~= Instruction(
             Op.copy, offset, pointer.offset, cast(ushort) size_t.sizeof,
         );
@@ -3782,7 +3909,7 @@ private struct Compiler {
             initializerExpression(initializer.exp).isNullExp !is null) {
             _locals[variable] = offset;
             _pointerLocals[variable] = pointerElementScalar(variable.type);
-            _capturedOffsets[variable] = offset;
+            registerCapturedOffset(variable, offset);
             _code ~= Instruction(
                 Op.loadConstant,
                 offset,
@@ -3807,7 +3934,7 @@ private struct Compiler {
             declaredElement.toBasetype.ty == TY.Tdelegate
             ? pointer.pointerElement
             : pointerElementScalar(variable.type);
-        _capturedOffsets[variable] = offset;
+        registerCapturedOffset(variable, offset);
         // A `S* p = new S(...)` pointer addresses a heap struct block; record the
         // struct declaration so `p.field` resolves through the pointer.
         if (auto structDeclaration = structPointerDeclaration(variable.type))
@@ -3835,20 +3962,41 @@ private struct Compiler {
         auto delegate_ = initializer is null
             ? DelegateInitializer.init
             : delegateInitializer(initializerExpression(initializer.exp));
-        if (delegate_.function_ is null)
-            throw new Exception(text(
-                "Unsupported delegate initializer in bytecode core: ",
-                declarationChars(variable),
-            ));
+        if (delegate_.function_ !is null) {
+            const offset = allocateBytes(delegateValueSize, size_t.sizeof);
+            emitDelegateValue(
+                offset, delegate_.function_, delegate_.contextOffset,
+            );
+            _delegateLocals[variable] = DelegateLocal(offset, delegate_.function_);
+            // A nested function reading `dg` sees only the captured-locals
+            // environment, not `_delegateLocals` (reset per compiled
+            // function); register the offset like every other local so its
+            // value is reachable there too.
+            registerCapturedOffset(variable, offset);
+            return;
+        }
 
-        const offset = allocateBytes(delegateValueSize, size_t.sizeof);
-        emitDelegateValue(offset, delegate_.function_, delegate_.contextOffset);
-        _delegateLocals[variable] = DelegateLocal(offset, delegate_.function_);
-        // A nested function reading `dg` sees only the captured-locals
-        // environment, not `_delegateLocals` (reset per compiled function);
-        // register the offset like every other local so its value is
-        // reachable there too.
-        _capturedOffsets[variable] = offset;
+        // Any other delegate-typed initializer -- a function call returning
+        // a delegate, or an existing delegate-typed local/parameter/field
+        // copied by value -- has no statically known callee. Resolve it the
+        // same way a delegate-typed parameter is resolved and dispatch calls
+        // through it at run time via its own function-index word.
+        if (initializer !is null) {
+            const source =
+                delegateOperandOffset(initializerExpression(initializer.exp));
+            const offset = allocateBytes(delegateValueSize, size_t.sizeof);
+            _code ~= Instruction(
+                Op.copy, offset, source, cast(ushort) delegateValueSize,
+            );
+            _delegateParameterLocals[variable] = offset;
+            registerCapturedOffset(variable, offset);
+            return;
+        }
+
+        throw new Exception(text(
+            "Unsupported delegate initializer in bytecode core: ",
+            declarationChars(variable),
+        ));
     }
 
     // Store a `{functionIndex, context}` delegate pair into the 16-byte slot at
@@ -3903,10 +4051,68 @@ private struct Compiler {
         return DelegateInitializer.init;
     }
 
+    // The frame offset of a delegate-typed FIELD's `{functionIndex, context}`
+    // value (`s.f`, `c.f`, `p.f`), reached as a plain struct-value field
+    // (local, captured, module, or AA-value-pointer receiver, resolved
+    // through `tryStructField`), a class-reference field, or a
+    // struct-pointer field -- or null if `dot` is not a delegate-typed
+    // field at all. Dispatch on the receiver's own static type first so
+    // only the matching resolver ever runs: the resolvers are not safe to
+    // probe speculatively (e.g. `tryClassPointerField` unconditionally
+    // compiles its receiver).
+    private ushort* delegateFieldOffsetOf(DotVarExp dot) {
+        import dmd.astenums: TY;
+
+        if (dot.e1.type !is null && dot.e1.type.toBasetype.ty == TY.Tclass) {
+            auto classField = tryClassPointerField(dot);
+            if (classField is null ||
+                classField.type.toBasetype.ty != TY.Tdelegate)
+                return null;
+            const destination =
+                allocateBytes(delegateValueSize, size_t.sizeof);
+            _code ~= Instruction(
+                Op.pointerLoad16,
+                destination,
+                classFieldAddress(*classField),
+                compileSizeConstant(0),
+            );
+            auto offset = new ushort;
+            *offset = destination;
+            return offset;
+        }
+
+        if (dot.e1.type !is null && isPointerType(dot.e1.type)) {
+            auto pointerField = tryStructPointerField(dot);
+            if (pointerField is null ||
+                pointerField.type.toBasetype.ty != TY.Tdelegate)
+                return null;
+            const destination =
+                allocateBytes(delegateValueSize, size_t.sizeof);
+            _code ~= Instruction(
+                Op.pointerLoad16,
+                destination,
+                structFieldAddress(*pointerField),
+                compileSizeConstant(0),
+            );
+            auto offset = new ushort;
+            *offset = destination;
+            return offset;
+        }
+
+        auto field = tryStructField(dot);
+        if (field is null || field.type.toBasetype.ty != TY.Tdelegate)
+            return null;
+        auto offset = new ushort;
+        *offset = field.offset;
+        return offset;
+    }
+
     // The frame offset of a delegate-typed expression's 16-byte
     // `{functionIndex, context}` pair: an already-materialised delegate
-    // local or parameter reuses its own slot; any other delegate expression
-    // (a lambda literal, `&freeFunction`, `&receiver.method`) is built fresh.
+    // local or parameter reuses its own slot; a struct/class/struct-pointer
+    // field resolves through `delegateFieldOffsetOf`; any other delegate
+    // expression (a lambda literal, `&freeFunction`, `&receiver.method`) is
+    // built fresh.
     private ushort delegateOperandOffset(Expression argument) {
         import std.conv: text;
 
@@ -3921,16 +4127,82 @@ private struct Compiler {
                     return *existing;
             }
 
-        auto delegate_ = delegateInitializer(argument);
-        if (delegate_.function_ is null)
-            throw new Exception(text(
-                "Unsupported delegate argument in bytecode core: ",
-                expressionChars(argument),
-            ));
+        if (auto dot = argument.isDotVarExp)
+            if (auto offset = delegateFieldOffsetOf(dot))
+                return *offset;
 
-        const offset = allocateBytes(delegateValueSize, size_t.sizeof);
-        emitDelegateValue(offset, delegate_.function_, delegate_.contextOffset);
-        return offset;
+        auto delegate_ = delegateInitializer(argument);
+        if (delegate_.function_ !is null) {
+            const offset = allocateBytes(delegateValueSize, size_t.sizeof);
+            emitDelegateValue(
+                offset, delegate_.function_, delegate_.contextOffset,
+            );
+            return offset;
+        }
+
+        // A bare `null` literal (`dg == null`, `dg is null`) -- the delegate
+        // counterpart of the zeroed-block default-initializer/array-element
+        // `NullExp` handling elsewhere -- yields a zeroed 16-byte block, the
+        // same all-zero `{functionIndex, context}` pair a defaulted delegate
+        // local already holds.
+        if (argument.isNullExp !is null) {
+            const offset = allocateBytes(delegateValueSize, size_t.sizeof);
+            zeroFrameBlock(offset, delegateValueSize);
+            return offset;
+        }
+
+        // Any other delegate-typed expression -- a function call returning a
+        // delegate, or an index into an array of delegates (`dgs[0]`) --
+        // already yields its own 16-byte `{functionIndex, context}` block
+        // through the general expression compiler.
+        if (argument.isCallExp !is null || argument.isIndexExp !is null)
+            return compileExpression(argument).offset;
+
+        throw new Exception(text(
+            "Unsupported delegate argument in bytecode core: ",
+            expressionChars(argument),
+        ));
+    }
+
+    // Refuses `return dg;` when `dg` is a lambda literal or nested-function
+    // delegate that actually reads a variable from an enclosing frame
+    // (`outerVars`, DMD's own record of the reverse of `closureVars` --
+    // `ai/plans/bytecode.md`'s Closures section: "DMD semantic analysis has
+    // already determined `needsClosure()` and `closureVars`"): the current call's
+    // frame is gone by the time the caller invokes the returned delegate, so
+    // that captured-local read would land on whatever later reused the
+    // stack region. Real compiled D promotes such a capture to a GC-heap
+    // closure; this core has no heap closure environment yet (see
+    // `ai/plans/bytecode.md`'s Closures section), so decline loudly instead
+    // of returning a value that reads as garbage once the frame is reused.
+    // A delegate literal that captures nothing (`outerVars.length == 0`,
+    // e.g. `() => 5`) is unaffected: its context word is never
+    // dereferenced, so a stale frame index in it is harmless. A delegate
+    // value read back from a parameter, field, or another call (no
+    // statically known callee here) is also unaffected: its own origin
+    // already resolved this question, either by never depending on this
+    // function's frame or by having already thrown when it was first
+    // declared.
+    private void refuseFrameEscapingDelegateReturn(Expression source) {
+        import std.conv: text;
+
+        while (auto cast_ = source.isCastExp)
+            source = cast_.e1;
+
+        FuncDeclaration function_;
+        if (auto variable = source.isVarExp)
+            if (auto declaration = variable.var.isVarDeclaration)
+                if (auto existing = declaration in _delegateLocals)
+                    function_ = existing.function_;
+        if (function_ is null)
+            function_ = delegateInitializer(source).function_;
+
+        if (function_ !is null && function_.outerVars.length != 0)
+            throw new Exception(text(
+                "Unsupported delegate return in bytecode core: returning ",
+                "a closure over this function's own locals outlives its ",
+                "frame: ", expressionChars(source),
+            ));
     }
 
     private ushort delegateContextOffset(
@@ -4027,7 +4299,7 @@ private struct Compiler {
         // `_locals`: the scalar VarExp/assignment paths must not treat its
         // inline block as a scalar slot.
         _staticArrayLocals[variable] = offset;
-        _capturedOffsets[variable] = offset;
+        registerCapturedOffset(variable, offset);
 
         if (totalSize == 0)
             return;
@@ -4060,6 +4332,16 @@ private struct Compiler {
                     zeroFrameBlock(offset, totalSize);
                     return;
                 }
+
+        // A static array whose element type default-initializes to `null`
+        // (delegates, pointers, classes) blits a single `NullExp` over the
+        // whole inline block (`int delegate()[2] dgs;`), the delegate-array
+        // counterpart of the integer-`0` blit above.
+        if (auto blit = initializer.exp.isBlitExp)
+            if (blit.e2.isNullExp !is null) {
+                zeroFrameBlock(offset, totalSize);
+                return;
+            }
 
         auto source = initializerExpression(initializer.exp);
 
@@ -4290,7 +4572,7 @@ private struct Compiler {
         const offset = allocateStructBlock(variable.type);
         auto declaration = structDeclarationOf(variable.type);
         _structLocals[variable] = StructLocal(offset, declaration);
-        _capturedOffsets[variable] = offset;
+        registerCapturedOffset(variable, offset);
 
         zeroFrameBlock(offset, cast(uint) staticArraySize(variable.type));
 
@@ -4329,6 +4611,54 @@ private struct Compiler {
             compileStructLiteralInto(offset, literal);
             return;
         }
+
+        // `s = t;` where `S` has a postblit but no user-defined `opAssign`:
+        // DMD synthesizes an `opAssign` and lowers its by-value argument
+        // into a synthesized `__copytmp` local -- this very declaration --
+        // whose own initializer is the postblit call
+        // `(__copytmp = src).__postblit()`: a raw blit into this
+        // declaration's own storage, immediately followed by running the
+        // postblit on it. Block-copy the blit's right-hand side into this
+        // declaration's offset (already registered in `_structLocals`
+        // above), then run the postblit, mirroring
+        // `compileArrayConstructor`'s identical `_d_arrayctor` handling for
+        // a static array of postblit elements.
+        if (auto call = source.isCallExp)
+            if (auto dot = call.e1.isDotVarExp) {
+                // The receiver is `__copytmp = t`, which -- since
+                // `__copytmp` is being written for the first time here --
+                // DMD types as a ConstructExp/BlitExp (op `construct`/
+                // `blit`), not a plain AssignExp (op `assign`); all three
+                // share the `AssignExp` base and its `e1`/`e2` fields, the
+                // same family `compileExpression`'s ConstructExp/BlitExp
+                // routing above already distinguishes from a real
+                // `EXP.assign`.
+                auto blit = dot.e1.isAssignExp;
+                if (blit is null)
+                    blit = dot.e1.isConstructExp;
+                if (blit is null)
+                    blit = dot.e1.isBlitExp;
+                if (blit !is null)
+                    if (auto blitTarget = blit.e1.isVarExp)
+                        if (blitTarget.var is variable) {
+                            bool blitResolved;
+                            const blitSource = structBaseOffsetOrMaterialise(
+                                blit.e2, blitResolved,
+                            );
+                            if (blitResolved) {
+                                _code ~= Instruction(
+                                    Op.copy,
+                                    offset,
+                                    blitSource,
+                                    cast(ushort) staticArraySize(variable.type),
+                                );
+                                auto postblitFunction = callFunction(call);
+                                if (postblitFunction !is null)
+                                    runStructMethod(offset, postblitFunction);
+                                return;
+                            }
+                        }
+            }
 
         // `S dest = src` / `S dest = make(...)`: a value-type block copy of the
         // whole struct from its inline base (a local, a nested field, or a
@@ -4453,7 +4783,6 @@ private struct Compiler {
         StructLiteralExp literal,
     ) {
         import dmd.astenums: TY;
-        import std.conv: text;
 
         if (literal.elements is null)
             return;
@@ -4481,6 +4810,7 @@ private struct Compiler {
             if (fieldType.toBasetype.ty == TY.Tarray) {
                 compileDynamicArrayInto(
                     fieldOffset, dynamicArrayElementType(fieldType), element,
+                    arrayElementIsArray(fieldType),
                 );
                 continue;
             }
@@ -4494,10 +4824,11 @@ private struct Compiler {
                 if (isNullLiteral(element))
                     continue;
 
-                throw new Exception(text(
-                    "Unsupported non-null delegate struct field in bytecode core: ",
-                    expressionChars(element),
-                ));
+                const source = delegateOperandOffset(element);
+                _code ~= Instruction(
+                    Op.copy, fieldOffset, source, cast(ushort) delegateValueSize,
+                );
+                continue;
             }
 
             if (isPointerType(fieldType)) {
@@ -4760,7 +5091,9 @@ private struct Compiler {
                         declaration !in _structLocals)
                         if (auto captured = declaration in _capturedOffsets) {
                             const offset = allocateStructBlock(declaration.type);
-                            const frameIndex = capturedFrameIndex(*captured);
+                            const frameIndex = capturedFrameIndex(
+                                _capturedOwners[declaration], *captured,
+                            );
                             const blockSize = cast(ushort)
                                 staticArraySize(declaration.type);
                             _code ~= Instruction(
@@ -4768,6 +5101,163 @@ private struct Compiler {
                             );
                             return MethodReceiver(offset, frameIndex, blockSize);
                         }
+
+        // `(*p).method()` (including `*p = rhs`/`*p += rhs` lowered to an
+        // `opAssign`/`opOpAssign` call on the dereferenced receiver): the
+        // receiver `*p` is a struct's real heap/frame storage reached through
+        // a bare pointer, not an already frame-resident struct.
+        // `structOperandOffset`'s `PtrExp` branch (the generic fallback
+        // `methodReceiverOffset` below would otherwise use) only reads a
+        // throwaway copy with no writeback, so a mutating method silently
+        // discards its effect. Resolve the pointer, materialise a fresh
+        // inline copy for the call, and write the (possibly mutated) copy
+        // back through the real address afterward, the same shape as the
+        // struct-pointer-field/class-field receiver branch below.
+        if (auto dot = call.e1.isDotVarExp)
+            if (auto deref = dot.e1.isPtrExp) {
+                const pointer = compileExpression(deref.e1);
+                if (pointer.isPointer) {
+                    const structSize =
+                        cast(ushort) staticArraySize(dot.e1.type);
+                    const offset = allocateBytes(
+                        structSize, staticArrayAlign(dot.e1.type),
+                    );
+                    _code ~= Instruction(
+                        pointerLoadOp(structSize),
+                        offset,
+                        pointer.offset,
+                        compileSizeConstant(0),
+                        structSize,
+                    );
+                    return MethodReceiver(
+                        offset, 0, 0, pointer.offset, structSize,
+                        compileSizeConstant(0),
+                    );
+                }
+            }
+
+        // `p.t.method()` / `c.t.method()`: the receiver `p.t`/`c.t` (DMD's
+        // `(*p).t`/`c.t`) is a struct-typed field reached through a struct
+        // pointer or class reference rather than an already frame-resident
+        // struct. Its real storage lives at a heap address, which the
+        // frame-relative `this` convention below cannot address directly
+        // (mirroring the captured-context case above): resolve that address
+        // the same way a plain field read does
+        // (`tryStructPointerField`/`tryClassPointerField`), materialise a
+        // fresh inline copy for the call, and write the (possibly mutated)
+        // copy back through the real address afterward.
+        if (auto dot = call.e1.isDotVarExp)
+            if (auto fieldDot = dot.e1.isDotVarExp)
+                if (auto field = fieldDot.var.isVarDeclaration)
+                    if (field.type.toBasetype.ty == TY.Tstruct) {
+                        ushort address;
+                        bool haveAddress;
+                        if (auto pointerField = tryStructPointerField(fieldDot)) {
+                            address = structFieldAddress(*pointerField);
+                            haveAddress = true;
+                        } else if (auto classField = tryClassPointerField(fieldDot)) {
+                            address = classFieldAddress(*classField);
+                            haveAddress = true;
+                        }
+                        if (haveAddress) {
+                            const structSize =
+                                cast(ushort) staticArraySize(field.type);
+                            const offset = allocateBytes(
+                                structSize, staticArrayAlign(field.type),
+                            );
+                            _code ~= Instruction(
+                                pointerLoadOp(structSize),
+                                offset,
+                                address,
+                                compileSizeConstant(0),
+                                structSize,
+                            );
+                            return MethodReceiver(
+                                offset, 0, 0, address, structSize,
+                                compileSizeConstant(0),
+                            );
+                        }
+                    }
+
+        // `arr[i].method()` where `arr` is a dynamic array of structs: the
+        // receiver `arr[i]` has no frame-relative storage of its own, the
+        // same way a struct-pointer/class field's receiver above does not.
+        // Resolve it the same way `emitDynamicArrayElementRefArgument`
+        // already does for the identical shape reached as a `ref` argument:
+        // load the element into a fresh inline copy for the call, then write
+        // the (possibly mutated) copy back through `indexStoreOp` afterward.
+        // Guard against a static array merely viewed as a dynamic-array
+        // descriptor (`indexesStaticArray`) the same way that helper does --
+        // that view is a fresh read-only copy of the whole array, not the
+        // static array's own storage.
+        if (auto dot = call.e1.isDotVarExp)
+            if (auto index = dot.e1.isIndexExp)
+                if (dot.e1.type !is null &&
+                    dot.e1.type.toBasetype.ty == TY.Tstruct &&
+                    !indexesStaticArray(index.e1))
+                    if (auto descriptor = dynamicArrayDescriptorOrNull(index.e1)) {
+                        const elementSize = cast(ushort)
+                            staticArraySize(dot.e1.type);
+                        const indexOffset = compileExpression(index.e2).offset;
+                        const offset = allocateBytes(
+                            elementSize, staticArrayAlign(dot.e1.type),
+                        );
+                        _code ~= Instruction(
+                            indexLoadOp(elementSize),
+                            offset,
+                            descriptor.offset,
+                            indexOffset,
+                            elementSize,
+                        );
+                        return MethodReceiver(
+                            offset, 0, 0, 0, 0, 0,
+                            descriptor.offset, indexOffset, elementSize,
+                        );
+                    }
+
+        // `a[i].method()` where `a`'s value type is a struct
+        // (`Point[int] a`): the receiver `a[i]` (DMD's `_d_aaGetRvalueX`
+        // lowering, an `IndexExp` over a pointer to `Tstruct`) has no
+        // frame-relative storage of its own, the same way the struct-
+        // pointer/class-field and dynamic-array-element receivers above do
+        // not. Resolve it exactly the way a plain field read/write does
+        // (`structBaseOffsetOrMaterialise`'s `viaPointer` branch), and
+        // write the (possibly mutated) copy back through the same
+        // `pointer + index * structSize` address afterward -- the
+        // `pointerBaseSlot`/`pointerIndexSlot`/`pointerStructSize` trio
+        // `writeBackStructField`'s `writeBackThroughPointer` branch already
+        // uses for the field case.
+        if (auto dot = call.e1.isDotVarExp)
+            if (auto index = dot.e1.isIndexExp)
+                if (dot.e1.type !is null &&
+                    dot.e1.type.toBasetype.ty == TY.Tstruct &&
+                    isPointerType(index.e1.type)) {
+                    bool resolved;
+                    bool viaModule;
+                    ushort moduleFrameOffset;
+                    ushort moduleOffset;
+                    bool viaPointer;
+                    ushort pointerFrameOffset;
+                    ushort pointerBaseSlot;
+                    ushort pointerIndexSlot;
+                    ushort pointerStructSize;
+                    bool viaFrame;
+                    ushort frameBaseOffset;
+                    ushort frameIndexOffset;
+                    ushort frameStructSize;
+                    const base = structBaseOffsetOrMaterialise(
+                        dot.e1, resolved, viaModule, moduleFrameOffset,
+                        moduleOffset, viaPointer, pointerFrameOffset,
+                        pointerBaseSlot, pointerIndexSlot, pointerStructSize,
+                        viaFrame, frameBaseOffset, frameIndexOffset,
+                        frameStructSize,
+                    );
+                    if (resolved && viaPointer)
+                        return MethodReceiver(
+                            base, 0, 0, pointerBaseSlot, pointerStructSize,
+                            pointerIndexSlot,
+                        );
+                }
 
         return MethodReceiver(methodReceiverOffset(call), 0, 0);
     }
@@ -4987,6 +5477,18 @@ private struct Compiler {
         ushort structSize;
         bool writeBackThroughModule;
         ushort moduleOffset;
+        // Backed by an associative-array rvalue-read pointer (`a[1].x`):
+        // `structOffset`/`structSize` (above) are the whole materialised
+        // struct block's frame offset and byte width; `pointerBaseSlot` and
+        // `pointerIndexSlot` are the runtime AA-value pointer and index the
+        // block was read from, so a write copies the whole updated block
+        // back to `pointerBaseSlot + pointerIndexSlot * structSize` --
+        // exactly the live AA storage `_d_aaGetRvalueX` pointed at, the same
+        // whole-block-writeback shape `writeBackThroughFrame` already uses
+        // for a captured struct receiver.
+        bool writeBackThroughPointer;
+        ushort pointerBaseSlot;
+        ushort pointerIndexSlot;
     }
 
     // Resolve `base.field` (a DotVarExp over a struct lvalue) to the field's
@@ -5007,7 +5509,9 @@ private struct Compiler {
             if (auto receiver = capturedStructReceiver(dot.e1))
                 if (auto captured = receiver in _capturedOffsets) {
                     const structOffset = allocateStructBlock(dot.e1.type);
-                    const frameIndexOffset = capturedFrameIndex(*captured);
+                    const frameIndexOffset = capturedFrameIndex(
+                        _capturedOwners[receiver], *captured,
+                    );
                     const structSize = cast(ushort) staticArraySize(dot.e1.type);
                     _code ~= Instruction(
                         Op.frameLoad,
@@ -5062,8 +5566,20 @@ private struct Compiler {
         bool viaModule;
         ushort moduleFrameOffset;
         ushort moduleOffset;
+        bool viaPointer;
+        ushort pointerFrameOffset;
+        ushort pointerBaseSlot;
+        ushort pointerIndexSlot;
+        ushort pointerStructSize;
+        bool viaFrame;
+        ushort frameBaseOffset;
+        ushort frameIndexOffset;
+        ushort frameStructSize;
         const base = structBaseOffsetOrMaterialise(
             dot.e1, resolved, viaModule, moduleFrameOffset, moduleOffset,
+            viaPointer, pointerFrameOffset, pointerBaseSlot, pointerIndexSlot,
+            pointerStructSize, viaFrame, frameBaseOffset, frameIndexOffset,
+            frameStructSize,
         );
         if (!resolved)
             return null;
@@ -5090,6 +5606,34 @@ private struct Compiler {
             result.writeBackThroughModule = true;
             result.structOffset = moduleFrameOffset;
             result.moduleOffset = moduleOffset;
+        }
+        // `dot.e1` resolved through a materialised copy of an
+        // associative-array rvalue-read pointer (`a[1]`, or a field chain
+        // rooted at one, `a[1].inner.x`): the field's writeback must copy
+        // the whole struct block back through that same pointer, the same
+        // whole-block shape `writeBackThroughFrame` already uses for a
+        // captured struct receiver.
+        if (viaPointer) {
+            result.writeBackThroughPointer = true;
+            result.structOffset = pointerFrameOffset;
+            result.structSize = pointerStructSize;
+            result.pointerBaseSlot = pointerBaseSlot;
+            result.pointerIndexSlot = pointerIndexSlot;
+        }
+        // `dot.e1` resolved through a materialised copy of an *indirectly*
+        // captured struct receiver (e.g. `o.inner` inside `o.inner.arr[1]`,
+        // where `o` itself -- not `o.inner` -- is the captured outer local):
+        // this function's own bespoke branch above only matches a *direct*
+        // captured receiver (`dot.e1` itself a `VarExp`/`ThisExp`), so a
+        // chain reaches here instead. The writeback is the same whole-block
+        // `Op.frameStore` the direct case already uses, just with the base
+        // offset/frame index/size threaded up from the recursive resolution
+        // of `dot.e1` rather than computed locally.
+        if (viaFrame) {
+            result.writeBackThroughFrame = true;
+            result.structOffset = frameBaseOffset;
+            result.frameIndexOffset = frameIndexOffset;
+            result.structSize = frameStructSize;
         }
         return result;
     }
@@ -5128,6 +5672,14 @@ private struct Compiler {
         return null;
     }
 
+    // A captured field's frame offset together with the function whose
+    // frame it is relative to, mirroring `_capturedOffsets`/`_capturedOwners`
+    // for a field reached through a captured struct receiver.
+    private static struct CapturedFieldOffset {
+        ushort offset;
+        FuncDeclaration owner;
+    }
+
     // The captured-frame offset of `expression`'s field, when `expression`
     // is a (possibly multi-level) field access chain whose ultimate receiver
     // is a captured outer local (`capturedStructReceiver`) -- `s.field` or
@@ -5136,16 +5688,21 @@ private struct Compiler {
     // (`tryAddressOfCaptured`); reusing it for a field gives `&s.field` the
     // same real outer-frame storage as `&s` itself, rather than the address
     // of a copy.
-    private ushort* capturedFieldFrameOffset(Expression expression) {
+    private CapturedFieldOffset* capturedFieldFrameOffset(Expression expression) {
         if (auto receiver = capturedStructReceiver(expression))
-            if (auto captured = receiver in _capturedOffsets)
-                return captured;
+            if (auto captured = receiver in _capturedOffsets) {
+                auto result = new CapturedFieldOffset;
+                *result = CapturedFieldOffset(*captured, _capturedOwners[receiver]);
+                return result;
+            }
 
         if (auto dot = expression.isDotVarExp)
             if (auto field = dot.var.isVarDeclaration)
-                if (auto baseOffset = capturedFieldFrameOffset(dot.e1)) {
-                    auto result = new ushort;
-                    *result = cast(ushort) (*baseOffset + field.offset);
+                if (auto base = capturedFieldFrameOffset(dot.e1)) {
+                    auto result = new CapturedFieldOffset;
+                    *result = CapturedFieldOffset(
+                        cast(ushort) (base.offset + field.offset), base.owner,
+                    );
                     return result;
                 }
 
@@ -5172,6 +5729,17 @@ private struct Compiler {
                 cast(ushort) (field.moduleOffset + fieldOffsetInStruct),
                 cast(ushort) staticArraySize(cast(Type) field.type),
             );
+            return;
+        }
+
+        if (field.writeBackThroughPointer) {
+            _code ~= Instruction(
+                pointerStoreOp(field.structSize),
+                field.structOffset,
+                field.pointerBaseSlot,
+                field.pointerIndexSlot,
+                field.structSize,
+            );
         }
     }
 
@@ -5186,8 +5754,20 @@ private struct Compiler {
         bool viaModule;
         ushort moduleFrameOffset;
         ushort moduleOffset;
+        bool viaPointer;
+        ushort pointerFrameOffset;
+        ushort pointerBaseSlot;
+        ushort pointerIndexSlot;
+        ushort pointerStructSize;
+        bool viaFrame;
+        ushort frameBaseOffset;
+        ushort frameIndexOffset;
+        ushort frameStructSize;
         return structBaseOffsetOrMaterialise(
             expression, resolved, viaModule, moduleFrameOffset, moduleOffset,
+            viaPointer, pointerFrameOffset, pointerBaseSlot, pointerIndexSlot,
+            pointerStructSize, viaFrame, frameBaseOffset, frameIndexOffset,
+            frameStructSize,
         );
     }
 
@@ -5199,12 +5779,38 @@ private struct Compiler {
     // returned base. This is the information `tryStructField`'s generic
     // fallback needs to wire up writeback for a field nested inside a module
     // struct, the same way its own bespoke one-level branch already does.
+    // `viaPointer` and its four companions report the struct counterpart for
+    // an associative-array rvalue-read pointer (`a[1]`, or a field chain
+    // rooted at one, `a[1].inner.x`): `pointerFrameOffset`/`pointerStructSize`
+    // are the whole materialised struct block's frame offset and byte width
+    // (the `moduleFrameOffset` counterpart), and `pointerBaseSlot`/
+    // `pointerIndexSlot` are the runtime AA-value pointer and index the block
+    // was read from -- all four constant across however many field levels a
+    // caller adds on top of the returned base, the same as the module trio.
+    // `viaFrame` and its three companions report the struct counterpart for
+    // an indirectly captured struct receiver (`o` captured, reached through
+    // a field chain like `o.inner`): `frameBaseOffset`/`frameStructSize` are
+    // the whole materialised struct block's frame offset and byte width (the
+    // `moduleFrameOffset` counterpart), and `frameIndexOffset` is the
+    // captured enclosing-frame index the block was loaded from (`Op
+    // .frameLoad`'s own second operand) -- both constant across however many
+    // field levels a caller adds on top of the returned base, the same as
+    // the module pair.
     private ushort structBaseOffsetOrMaterialise(
         Expression expression,
         out bool resolved,
         out bool viaModule,
         out ushort moduleFrameOffset,
         out ushort moduleOffset,
+        out bool viaPointer,
+        out ushort pointerFrameOffset,
+        out ushort pointerBaseSlot,
+        out ushort pointerIndexSlot,
+        out ushort pointerStructSize,
+        out bool viaFrame,
+        out ushort frameBaseOffset,
+        out ushort frameIndexOffset,
+        out ushort frameStructSize,
     ) {
         import dmd.astenums: TY;
 
@@ -5218,11 +5824,25 @@ private struct Compiler {
                 if (auto declaration = variable.var.isVarDeclaration)
                     if (declaration.type.toBasetype.ty == TY.Tstruct)
                         if (auto captured = declaration in _capturedOffsets) {
+                            const structOffset =
+                                allocateStructBlock(declaration.type);
+                            const frameIndex = capturedFrameIndex(
+                                _capturedOwners[declaration], *captured,
+                            );
+                            const structSize = cast(ushort)
+                                staticArraySize(declaration.type);
+                            _code ~= Instruction(
+                                Op.frameLoad,
+                                structOffset,
+                                frameIndex,
+                                structSize,
+                            );
                             resolved = true;
-                            return loadCapturedLocal(
-                                declaration,
-                                *captured,
-                            ).offset;
+                            viaFrame = true;
+                            frameBaseOffset = structOffset;
+                            frameIndexOffset = frameIndex;
+                            frameStructSize = structSize;
+                            return structOffset;
                         }
 
         // A bare module-level (`__gshared`/`static`) struct variable
@@ -5259,18 +5879,45 @@ private struct Compiler {
                     bool outerViaModule;
                     ushort outerModuleFrameOffset;
                     ushort outerModuleOffset;
+                    bool outerViaPointer;
+                    ushort outerPointerFrameOffset;
+                    ushort outerPointerBaseSlot;
+                    ushort outerPointerIndexSlot;
+                    ushort outerPointerStructSize;
+                    bool outerViaFrame;
+                    ushort outerFrameBaseOffset;
+                    ushort outerFrameIndexOffset;
+                    ushort outerFrameStructSize;
                     const outerBase = structBaseOffsetOrMaterialise(
                         dot.e1,
                         outerResolved,
                         outerViaModule,
                         outerModuleFrameOffset,
                         outerModuleOffset,
+                        outerViaPointer,
+                        outerPointerFrameOffset,
+                        outerPointerBaseSlot,
+                        outerPointerIndexSlot,
+                        outerPointerStructSize,
+                        outerViaFrame,
+                        outerFrameBaseOffset,
+                        outerFrameIndexOffset,
+                        outerFrameStructSize,
                     );
                     if (outerResolved) {
                         resolved = true;
                         viaModule = outerViaModule;
                         moduleFrameOffset = outerModuleFrameOffset;
                         moduleOffset = outerModuleOffset;
+                        viaPointer = outerViaPointer;
+                        pointerFrameOffset = outerPointerFrameOffset;
+                        pointerBaseSlot = outerPointerBaseSlot;
+                        pointerIndexSlot = outerPointerIndexSlot;
+                        pointerStructSize = outerPointerStructSize;
+                        viaFrame = outerViaFrame;
+                        frameBaseOffset = outerFrameBaseOffset;
+                        frameIndexOffset = outerFrameIndexOffset;
+                        frameStructSize = outerFrameStructSize;
                         return cast(ushort) (outerBase + field.offset);
                     }
                 }
@@ -5302,6 +5949,38 @@ private struct Compiler {
                         index.e2,
                         expression.type,
                     ).offset;
+                }
+
+            // `p[0]` where `p` is a raw pointer to a struct (not an array of
+            // structs, both handled above): DMD's associative-array
+            // rvalue-read lowering (`_d_aaGetRvalueX`) yields exactly this
+            // shape -- an `IndexExp` over the returned pointer -- for a
+            // struct-typed AA value (`Point[int] a; a[1]`), the struct
+            // counterpart of `dynamicArrayDescriptorOrNull`'s identical
+            // `p[0]` branch for an array-typed value. Copy the pointee
+            // through the same `loadStructThroughPointer` helper
+            // `structOperandOffset` already uses for a bare `p[i]`/`*p`
+            // struct rvalue, so a further field access (`a[1].x`) addresses
+            // the materialised copy with ordinary `base + field.offset`
+            // arithmetic.
+            if (auto index = expression.isIndexExp)
+                if (isPointerType(index.e1.type)) {
+                    const pointer = compileExpression(index.e1);
+                    if (pointer.isPointer) {
+                        const indexSlot = compileExpression(index.e2);
+                        const structSize =
+                            cast(ushort) staticArraySize(expression.type);
+                        const blockOffset = loadStructThroughPointer(
+                            pointer.offset, indexSlot.offset, expression.type,
+                        );
+                        resolved = true;
+                        viaPointer = true;
+                        pointerFrameOffset = blockOffset;
+                        pointerBaseSlot = pointer.offset;
+                        pointerIndexSlot = indexSlot.offset;
+                        pointerStructSize = structSize;
+                        return blockOffset;
+                    }
                 }
 
             if (auto call = expression.isCallExp) {
@@ -5348,12 +6027,13 @@ private struct Compiler {
     ) {
         import dmd.astenums: TY;
 
-        if (declaration.type.toBasetype.ty == TY.Tstruct) {
+        const declaredTy = declaration.type.toBasetype.ty;
+        if (declaredTy == TY.Tstruct || declaredTy == TY.Tsarray) {
             const destination = allocateStructBlock(declaration.type);
             _code ~= Instruction(
                 Op.frameLoad,
                 destination,
-                capturedFrameIndex(capturedOffset),
+                capturedFrameIndex(_capturedOwners[declaration], capturedOffset),
                 cast(ushort) staticArraySize(declaration.type),
             );
             return Operand(destination, ScalarType.void_);
@@ -5365,10 +6045,10 @@ private struct Compiler {
         _code ~= Instruction(
             Op.frameLoad,
             destination,
-            capturedFrameIndex(capturedOffset),
+            capturedFrameIndex(_capturedOwners[declaration], capturedOffset),
             cast(ushort) valueSize,
         );
-        if (declaration.type.toBasetype.ty == TY.Tclass)
+        if (declaredTy == TY.Tclass)
             return Operand(
                 destination, ScalarType.ulong_, true, ScalarType.void_,
             );
@@ -5380,17 +6060,48 @@ private struct Compiler {
         in ushort capturedOffset,
         in Operand value,
     ) {
-        const valueSize = size(scalarType(declaration.type));
+        import dmd.astenums: TY;
+
+        const ty = declaration.type.toBasetype.ty;
+        const isAggregate = ty == TY.Tstruct || ty == TY.Tsarray;
+        const valueSize = isAggregate
+            ? cast(uint) staticArraySize(declaration.type)
+            : size(scalarType(declaration.type));
         _code ~= Instruction(
             Op.frameStore,
             value.offset,
-            capturedFrameIndex(capturedOffset),
+            capturedFrameIndex(_capturedOwners[declaration], capturedOffset),
             cast(ushort) valueSize,
         );
     }
 
-    private ushort capturedFrameIndex(in ushort capturedOffset) {
-        const contextBase =
+    // Records `variable`'s frame offset alongside the function currently
+    // being compiled -- the frame that offset is relative to -- so a later
+    // read from a differently-nested function can find its way back to it
+    // (`capturedFrameIndex`).
+    private void registerCapturedOffset(VarDeclaration variable, in ushort offset) {
+        _capturedOffsets[variable] = offset;
+        _capturedOwners[variable] = _currentFunction;
+    }
+
+    // The frame index (an absolute `stack[]` slot, offset by `capturedOffset`)
+    // of a captured variable declared in `owner`'s own frame, read or written
+    // from the function currently being compiled.
+    //
+    // A call site always hands a callee its own live frame as that callee's
+    // received context (`compileCall`'s `Op.frameBaseIndex`), matching real D:
+    // a nested function's context is its immediate enclosing function's frame,
+    // never a further ancestor's. So the current function's own received
+    // context (`_nestedContextOffset`) is exactly one hop -- its immediate
+    // enclosing function's frame -- which is `owner` only for a single level
+    // of nesting. When `owner` sits further up, each intermediate ancestor's
+    // own received context is a further hop: it lives at that ancestor's own
+    // `nestedContextOffset` within the frame just reached, and that frame is
+    // still live on the stack as the current call's (transitive) caller.
+    private ushort capturedFrameIndex(in FuncDeclaration owner, in ushort capturedOffset) {
+        import std.conv: text;
+
+        ushort contextBase =
             allocateBytes(cast(uint) size_t.sizeof, size_t.sizeof);
         _code ~= Instruction(
             Op.copy,
@@ -5403,6 +6114,41 @@ private struct Compiler {
         if (_nestedContextOffset != ushort.max) {
             const one = compileSizeConstant(1);
             _code ~= Instruction(Op.subInt8, contextBase, contextBase, one);
+
+            for (auto ancestor = enclosingMethodOf(_currentFunction);
+                 ancestor !is null && ancestor !is owner;
+                 ancestor = enclosingMethodOf(ancestor))
+            {
+                const ancestorLayout = parameterLayout(ancestor);
+                // An intermediate ancestor with no relayable context of its
+                // own (a struct method whose hidden `this` receiver takes
+                // the nested-context slot instead, `capturedThisStructDeclaration`)
+                // cannot forward a further hop; this shape is not modelled.
+                if (!ancestorLayout.hasNestedContext)
+                    throw new Exception(text(
+                        "Unsupported multi-level captured-variable access ",
+                        "in bytecode core: `",
+                        ancestor.ident is null ? "" : ancestor.ident.toString,
+                        "` has no relayable nested-function context",
+                    ));
+                const slotAddress =
+                    allocateBytes(cast(uint) size_t.sizeof, size_t.sizeof);
+                _code ~= Instruction(
+                    Op.addInt8, slotAddress, contextBase,
+                    compileSizeConstant(ancestorLayout.nestedContextOffset),
+                );
+                const nextContext =
+                    allocateBytes(cast(uint) size_t.sizeof, size_t.sizeof);
+                _code ~= Instruction(
+                    Op.frameLoad, nextContext, slotAddress,
+                    cast(ushort) size_t.sizeof,
+                );
+                contextBase =
+                    allocateBytes(cast(uint) size_t.sizeof, size_t.sizeof);
+                _code ~= Instruction(
+                    Op.subInt8, contextBase, nextContext, compileSizeConstant(1),
+                );
+            }
         }
         const sourceIndex =
             allocateBytes(cast(uint) size_t.sizeof, size_t.sizeof);
@@ -5484,6 +6230,38 @@ private struct Compiler {
             return Operand(destination, ScalarType.void_);
         }
 
+        // A struct or static-array field lives inline in the pointed-to
+        // block, the same as `loadClassPointerField`'s identical `Tstruct`
+        // branch: its own address is the field's address, with no load to
+        // perform. Mark it as a further-dereferenceable pointer so a nested
+        // `.field` hop (`carrier.value.a`) resolves against it -- that nested
+        // hop is compiled through `tryClassPointerField`'s generic
+        // pointer-receiver mechanism, which only requires `isPointer`, not an
+        // actual class.
+        if (field.type.toBasetype.ty == TY.Tstruct ||
+            field.type.toBasetype.ty == TY.Tsarray)
+            return Operand(
+                structFieldAddress(field), ScalarType.ulong_, true,
+                ScalarType.void_,
+            );
+
+        // A delegate field (`int delegate(int) f`) is a 16-byte
+        // `{functionIndex, context}` pair, the same aggregate shape as a
+        // slice descriptor -- `scalarType` has no case for `Tdelegate` (it
+        // is not scalar), so the generic fallback below would throw instead
+        // of reading it.
+        if (field.type.toBasetype.ty == TY.Tdelegate) {
+            const destination =
+                allocateBytes(delegateValueSize, size_t.sizeof);
+            _code ~= Instruction(
+                Op.pointerLoad16,
+                destination,
+                structFieldAddress(field),
+                compileSizeConstant(0),
+            );
+            return Operand(destination, ScalarType.void_);
+        }
+
         const fieldScalar = scalarType(field.type);
         const elementSize = size(fieldScalar);
         const fieldPointer = structFieldAddress(field);
@@ -5500,18 +6278,33 @@ private struct Compiler {
     }
 
     // `p.field = value`: write `value` (already in a frame slot) through the
-    // struct pointer at `ptr + field.offset`.
+    // struct pointer at `ptr + field.offset`. A `Tstruct`/`Tsarray` field
+    // lives inline at that address, so it needs its own real byte width from
+    // `staticArraySize`/`staticArrayAlign` instead of the scalar-only gate,
+    // mirroring `emitStructPointerFieldRefArgument`'s identical widening. A
+    // `Tdelegate` field is the same 16-byte aggregate shape (`staticArraySize`
+    // -- DMD's own `size()` -- already reports 16 for it, same as a slice
+    // descriptor), so it is grouped with the other aggregates rather than
+    // routed through `scalarType`, which has no `Tdelegate` case.
     private void storeStructPointerField(
         StructPointerField field,
         in ushort valueSlot,
     ) {
-        const elementSize = size(scalarType(field.type));
+        import dmd.astenums: TY;
+
+        const ty = field.type.toBasetype.ty;
+        const isAggregate =
+            ty == TY.Tstruct || ty == TY.Tsarray || ty == TY.Tdelegate;
+        const elementSize = isAggregate
+            ? cast(uint) staticArraySize(field.type)
+            : size(scalarType(field.type));
         const fieldPointer = structFieldAddress(field);
         _code ~= Instruction(
             pointerStoreOp(elementSize),
             valueSlot,
             fieldPointer,
             compileSizeConstant(0),
+            cast(ushort) elementSize,
         );
     }
 
@@ -5572,6 +6365,21 @@ private struct Compiler {
                 ScalarType.void_,
             );
 
+        // A delegate field (`int delegate(int) f`), the class-field twin of
+        // `loadStructPointerField`'s identical `Tdelegate` branch: a 16-byte
+        // `{functionIndex, context}` pair `scalarType` cannot size.
+        if (field.type.toBasetype.ty == TY.Tdelegate) {
+            const destination =
+                allocateBytes(delegateValueSize, size_t.sizeof);
+            _code ~= Instruction(
+                Op.pointerLoad16,
+                destination,
+                classFieldAddress(field),
+                compileSizeConstant(0),
+            );
+            return Operand(destination, ScalarType.void_);
+        }
+
         const fieldScalar = scalarType(field.type);
         const elementSize = size(fieldScalar);
         const fieldPointer = classFieldAddress(field);
@@ -5611,18 +6419,29 @@ private struct Compiler {
     }
 
     // `box.field = value`: write `value` (already in a frame slot) through the
-    // class pointer at `ptr + field.offset`.
+    // class pointer at `ptr + field.offset`. A `Tstruct`/`Tsarray` field lives
+    // inline at that address, so it needs its own real byte width from
+    // `staticArraySize` instead of the scalar-only gate, mirroring
+    // `storeStructPointerField`'s identical widening.
     private void storeClassPointerField(
         ClassPointerField field,
         in ushort valueSlot,
     ) {
-        const elementSize = size(scalarType(field.type));
+        import dmd.astenums: TY;
+
+        const ty = field.type.toBasetype.ty;
+        const isAggregate =
+            ty == TY.Tstruct || ty == TY.Tsarray || ty == TY.Tdelegate;
+        const elementSize = isAggregate
+            ? cast(uint) staticArraySize(field.type)
+            : size(scalarType(field.type));
         const fieldPointer = classFieldAddress(field);
         _code ~= Instruction(
             pointerStoreOp(elementSize),
             valueSlot,
             fieldPointer,
             compileSizeConstant(0),
+            cast(ushort) elementSize,
         );
     }
 
@@ -5753,6 +6572,7 @@ private struct Compiler {
             registerClass(classType.sym),
             cast(ushort) classType.sym.structsize,
         );
+        compileDefaultClassFields(pointer, classType.sym);
         if (newExp.member !is null)
             runClassConstructor(pointer, newExp.member, newExp.arguments);
         else
@@ -5763,6 +6583,142 @@ private struct Compiler {
             pointer, ScalarType.ulong_, true, ScalarType.void_,
         );
         return result;
+    }
+
+    // Mirror compileDefaultStructFields for a heap-allocated class object:
+    // native codegen copies a class's `.init` template -- every own and
+    // inherited field's declared default -- into the new block before any
+    // constructor body runs. `allocClass` only zero-fills, so walk the base
+    // chain (matching classFieldNamed's own field iteration) and write each
+    // field's own initializer through storeClassField first; an explicit
+    // constructor body or the no-constructor positional-argument path
+    // (initialiseClassObject) runs afterwards and its own field writes
+    // override these defaults, matching D's default-then-constructor order.
+    private void compileDefaultClassFields(
+        in ushort pointer,
+        ClassDeclaration class_,
+    ) {
+        import dmd.astenums: TY;
+
+        for (auto current = class_; current !is null; current = current.baseClass)
+            foreach (field; current.fields) {
+                if (field.type.toBasetype.ty == TY.Tarray) {
+                    compileDefaultClassArrayField(pointer, field);
+                    continue;
+                }
+
+                auto initializer =
+                    field._init is null ? null : field._init.isExpInitializer;
+                if (initializer is null)
+                    continue;
+
+                storeClassField(
+                    pointer, field, initializerExpression(initializer.exp),
+                );
+            }
+    }
+
+    // A `Tarray` class field's own default initializer (`class C { int[]
+    // arr = [1, 2, 3]; }`) parses as an `ArrayInitializer`, not the
+    // `ExpInitializer` the loop above recognises directly -- the same DMD
+    // AST quirk `moduleDynamicArrayInitializerExpressionOrNull` already
+    // normalises for a module variable via `initializerToExpression`, so
+    // without this every `Tarray`-typed class field default was silently
+    // skipped (left zeroed by `allocClass`), not only an array-of-arrays
+    // one. A constant-scalar-element array literal (the shape
+    // `moduleDynamicArrayLiteralInitializerBytes` already supports) needs
+    // more than normalisation, though: confirmed against real `dmd` that
+    // every `new C()` which does not override the field shares one static
+    // backing array (mutating the array through one instance is visible
+    // through another) -- the same way a class's `.init` template is one
+    // static blob every allocation copies -- so a per-`new`-site runtime
+    // `compileDynamicArrayInto` build (fresh heap array per instance) would
+    // be observably wrong. `classFieldArraySharedDefaultOrNull` computes
+    // that shared `{pointer, count}` once per field, mirroring
+    // `moduleDynamicArrayVariableOrNull`'s once-at-registration
+    // `literalBlocks` mechanism, and every `new C()` site writes the same
+    // compile-time-constant descriptor. Any other `Tarray` default shape
+    // (a non-literal expression, `null`, or an array-of-arrays element,
+    // which `moduleDynamicArrayLiteralInitializerBytes` declines) falls
+    // back to the pre-existing per-instance `storeClassField` path.
+    private void compileDefaultClassArrayField(
+        in ushort pointer,
+        VarDeclaration field,
+    ) {
+        import dmd.initsem: initializerToExpression;
+
+        if (field._init is null)
+            return;
+
+        auto rawExpression = field._init.initializerToExpression;
+        if (rawExpression is null)
+            return;
+        auto normalized = initializerExpression(rawExpression);
+        if (normalized.isNullExp)
+            return;
+
+        if (auto shared_ = classFieldArraySharedDefaultOrNull(field, normalized)) {
+            const fieldPointer =
+                allocateBytes(cast(uint) size_t.sizeof, size_t.sizeof);
+            const offset = compileSizeConstant(field.offset);
+            _code ~= Instruction(Op.addInt8, fieldPointer, pointer, offset);
+
+            const destination =
+                allocateBytes(sliceDescriptorSize, size_t.sizeof);
+            const pointerSlot = compileSizeConstant(shared_.pointer);
+            const countSlot = compileSizeConstant(shared_.count);
+            _code ~= Instruction(
+                Op.copy, destination, pointerSlot, cast(ushort) size_t.sizeof,
+            );
+            _code ~= Instruction(
+                Op.copy,
+                cast(ushort) (destination + size_t.sizeof),
+                countSlot,
+                cast(ushort) size_t.sizeof,
+            );
+            _code ~= Instruction(
+                Op.pointerStore16,
+                destination,
+                fieldPointer,
+                compileSizeConstant(0),
+            );
+            return;
+        }
+
+        storeClassField(pointer, field, normalized);
+    }
+
+    // Compute (once per field, cached) the shared `{pointer, count}` a
+    // `Tarray` class field's constant-scalar-element array-literal default
+    // resolves to, or `null` when `normalized` is not that shape (an
+    // array-of-arrays element, a non-literal expression, ...), so the
+    // caller falls back to the ordinary per-instance path. Reuses
+    // `moduleDynamicArrayLiteralInitializerBytes` -- the same
+    // compile-time-bytes builder a module-level dynamic array's literal
+    // default already goes through -- so this inherits its exact supported
+    // shape (and its exact declined shapes) rather than reimplementing it.
+    private ClassFieldArrayDefault* classFieldArraySharedDefaultOrNull(
+        VarDeclaration field,
+        Expression normalized,
+    ) {
+        if (auto existing = field in _classFieldArrayDefaults)
+            return existing;
+
+        const elementType = dynamicArrayElementType(field.type);
+        const elementIsArray = arrayElementIsArray(field.type);
+
+        size_t count;
+        auto literalBytes = moduleDynamicArrayLiteralInitializerBytes(
+            normalized, elementType, elementIsArray, count,
+        );
+        if (literalBytes is null && count == 0)
+            return null;
+
+        _program.literalBlocks ~= literalBytes;
+        const blockPointer = cast(size_t) _program.literalBlocks[$ - 1].ptr;
+        _classFieldArrayDefaults[field] =
+            ClassFieldArrayDefault(blockPointer, count);
+        return field in _classFieldArrayDefaults;
     }
 
     private void initialiseClassObject(
@@ -5812,6 +6768,7 @@ private struct Compiler {
                 destination,
                 dynamicArrayElementType(field.type),
                 valueExpression,
+                arrayElementIsArray(field.type),
             );
             _code ~= Instruction(
                 Op.pointerStore16,
@@ -5855,6 +6812,7 @@ private struct Compiler {
                     fieldOffset,
                     dynamicArrayElementType(field.type),
                     (*arguments)[index],
+                    arrayElementIsArray(field.type),
                 );
                 continue;
             }
@@ -5982,7 +6940,7 @@ private struct Compiler {
         const offset = allocateBytes(sliceDescriptorSize, size_t.sizeof);
         _dynamicArrayLocals[variable] =
             DynamicArrayLocal(offset, elementType, elementIsArray);
-        _capturedOffsets[variable] = offset;
+        registerCapturedOffset(variable, offset);
 
         auto initializer =
             variable._init is null ? null : variable._init.isExpInitializer;
@@ -6083,12 +7041,15 @@ private struct Compiler {
                 expressionChars(source),
             ));
 
+        const width = assocArrayValueWidth(literal.type.toBasetype);
+        const keyMeta = assocArrayKeyMeta(literal.type.toBasetype);
         _code ~= Instruction(Op.aaNew, destination);
         foreach (index; 0 .. literal.keys.length) {
             const key = compileExpression((*literal.keys)[index]);
             const value = compileExpression((*literal.values)[index]);
             _code ~= Instruction(
                 Op.aaInsert, destination, key.offset, value.offset,
+                cast(ushort) width, keyMeta,
             );
         }
     }
@@ -6157,7 +7118,9 @@ private struct Compiler {
         // `dest = arr.dup` / `dest = arr.idup`: an independent copy of `arr` in
         // a fresh heap block, so mutating either side leaves the other intact.
         if (auto duplicate = tryArrayDuplication(source)) {
-            compileArrayDuplication(destination, elementType, duplicate);
+            compileArrayDuplication(
+                destination, elementType, duplicate, elementIsArray,
+            );
             return;
         }
 
@@ -6257,9 +7220,14 @@ private struct Compiler {
 
         const count = literal.elements is null ? 0 : literal.elements.length;
 
-        // An array-of-arrays literal (`[[..], [..]]`): each element is itself an
-        // array, stored as a 16-byte descriptor. Build each inner array into a
-        // fresh descriptor slot and store it into the outer block.
+        // An array-of-arrays literal (`[[..], [..]]`, any nesting depth):
+        // each element is itself an array, stored as a 16-byte descriptor.
+        // Build each inner array into a fresh descriptor slot and store it
+        // into the outer block. A row is itself an array-of-arrays (depth 3
+        // and beyond, e.g. `int[][][]`'s `int[][]` rows) when *its own*
+        // element is an array too -- checked fresh per recursive call
+        // rather than reusing the caller's `elementIsArray`, since that
+        // flag describes this level's rows, not the row's own elements.
         if (elementIsArray) {
             _code ~= Instruction(
                 Op.allocArray,
@@ -6268,11 +7236,14 @@ private struct Compiler {
                 cast(ushort) count,
             );
 
+            const rowElementIsArray =
+                arrayElementIsArray(source.type.toBasetype.nextOf);
             foreach (elementIndex; 0 .. count) {
                 const inner =
                     allocateBytes(sliceDescriptorSize, size_t.sizeof);
                 compileDynamicArrayInto(
                     inner, elementType, (*literal.elements)[elementIndex],
+                    rowElementIsArray,
                 );
                 const index = compileSizeConstant(elementIndex);
                 _code ~= Instruction(
@@ -6821,11 +7792,16 @@ private struct Compiler {
         in ScalarType elementType,
         CatExp cat,
     ) {
+        const elementIsArray = arrayElementIsArray(cat.type);
         const elementSize = dynamicArrayElementSize(
-            cat.type, elementType, arrayElementIsArray(cat.type),
+            cat.type, elementType, elementIsArray,
         );
-        const left = catOperandDescriptor(elementType, elementSize, cat.e1);
-        const right = catOperandDescriptor(elementType, elementSize, cat.e2);
+        const left = catOperandDescriptor(
+            elementType, elementSize, elementIsArray, cat.e1,
+        );
+        const right = catOperandDescriptor(
+            elementType, elementSize, elementIsArray, cat.e2,
+        );
         _code ~= Instruction(
             concatArraysOp(elementSize),
             destination,
@@ -6844,13 +7820,14 @@ private struct Compiler {
     private ushort catOperandDescriptor(
         in ScalarType elementType,
         in uint elementSize,
+        in bool elementIsArray,
         Expression operand,
     ) {
         import dmd.astenums: TY;
 
         if (operand.type !is null &&
             operand.type.toBasetype.ty == TY.Tarray)
-            return arrayDescriptorOffset(elementType, operand);
+            return arrayDescriptorOffset(elementType, operand, elementIsArray);
 
         const offset = allocateBytes(sliceDescriptorSize, size_t.sizeof);
         _code ~= Instruction(
@@ -6899,6 +7876,7 @@ private struct Compiler {
         in ushort destination,
         in ScalarType elementType,
         Expression source,
+        in bool elementIsArray = false,
     ) {
         // The dup argument is the source array wrapped in an
         // implicit-const cast; unwrap it so a known dynamic-array local reuses
@@ -6907,11 +7885,15 @@ private struct Compiler {
         while (auto cast_ = array.isCastExp)
             array = cast_.e1;
 
-        const sourceDescriptor = arrayDescriptorOffset(elementType, array);
+        const sourceDescriptor =
+            arrayDescriptorOffset(elementType, array, elementIsArray);
+        const elementSize =
+            dynamicArrayElementSize(array.type, elementType, elementIsArray);
         _code ~= Instruction(
-            dupArrayOp(size(elementType)),
+            dupArrayOp(elementSize),
             destination,
             sourceDescriptor,
+            cast(ushort) elementSize,
         );
     }
 
@@ -7147,8 +8129,12 @@ private struct Compiler {
     // type. `&arr[0]` produces the same address, so the two compare `is`-equal.
     private Operand compileArrayPointer(CastExp cast_) {
         const descriptor = dynamicArrayDescriptor(cast_.e1);
+        const elementByteWidth = dynamicArrayElementSize(
+            cast_.e1.type, descriptor.elementType, descriptor.elementIsArray,
+        );
         return pointerToElement(
             descriptor.offset, descriptor.elementType, compileSizeConstant(0),
+            elementByteWidth,
         );
     }
 
@@ -7223,9 +8209,13 @@ private struct Compiler {
             return result;
         }
 
+        const elementByteWidth = dynamicArrayElementSize(
+            index.e1.type, descriptor.elementType, descriptor.elementIsArray,
+        );
         auto result = new Operand;
         *result = pointerToElement(
             descriptor.offset, descriptor.elementType, indexSlot.offset,
+            elementByteWidth,
         );
         return result;
     }
@@ -7678,6 +8668,220 @@ private struct Compiler {
         Type type;
     }
 
+    // The real runtime pointer and DMD type of a static- or dynamic-array-
+    // typed field reached through an array-element pointer
+    // (`arr[i].fixedField`, or any nested-field depth, e.g.
+    // `arr[i].outer.fixedField`), or of a further index into one
+    // (`arr[i].fixedField[j]`, and so on for any dimension of a
+    // multi-dimensional field, static or dynamic, in any combination, e.g.
+    // `arr[i].matrixField[j][k]` for a `int[][]` field). Recursion peels one
+    // `IndexExp` layer at a time, advancing the field's own real pointer
+    // (`tryClassArrayFieldElementFieldPointer` /
+    // `tryStructSliceFieldElementFieldPointer`) one dimension via
+    // `advanceArrayElementFieldPointer`, instead of ever falling through to
+    // `tryStructField`'s throwaway copy of the whole `arr[i]` element (used
+    // by the module-struct and AA-value-struct branches beside it, neither of
+    // which tracks a writeback for this receiver shape). Null if `expression`
+    // does not bottom out at such a field.
+    private ArrayElementFieldPointer* arrayElementFieldPointer(
+        Expression expression,
+    ) {
+        if (auto dot = expression.isDotVarExp) {
+            ushort fieldPointer;
+            Type fieldType;
+            if (auto classField = tryClassArrayFieldElementFieldPointer(dot)) {
+                fieldPointer = classField.pointer;
+                fieldType = classField.type;
+            } else if (auto structField =
+                    tryStructSliceFieldElementFieldPointer(dot)) {
+                fieldPointer = structField.pointer;
+                fieldType = structField.type;
+            } else {
+                return null;
+            }
+            auto result = new ArrayElementFieldPointer;
+            *result = ArrayElementFieldPointer(fieldPointer, fieldType);
+            return result;
+        }
+
+        if (auto index = expression.isIndexExp) {
+            auto base = arrayElementFieldPointer(index.e1);
+            if (base is null)
+                return null;
+
+            auto elementPointer =
+                advanceArrayElementFieldPointer(base, index.e2);
+            if (elementPointer is null)
+                return null;
+            auto result = new ArrayElementFieldPointer;
+            *result = ArrayElementFieldPointer(
+                elementPointer.offset, base.type.toBasetype.nextOf,
+            );
+            return result;
+        }
+
+        return null;
+    }
+
+    // A located array-element field's real runtime pointer and DMD type,
+    // returned by `arrayElementFieldPointer`.
+    private static struct ArrayElementFieldPointer {
+        ushort pointer;
+        Type type;
+    }
+
+    // Advance `base`'s own real pointer by one indexing dimension, dispatched
+    // on `base.type`: a `Tsarray` dimension advances directly via
+    // `advanceStaticArrayPointer` (fixed compile-time length, storage inline
+    // at `base.pointer`). A `Tarray` dimension is not stored inline -- what
+    // lives at `base.pointer` is the field's own `{pointer, length}`
+    // descriptor -- so it is first materialised through the pointer
+    // (`Op.pointerLoad16`, the same dereference every other runtime-pointer
+    // slice descriptor read in this file uses), then advanced by the very
+    // same `advanceStaticArrayPointer`, fed the descriptor's own data pointer
+    // and its runtime length word (`sliceLengthSlot`) instead of a frame
+    // address and a compile-time constant -- the identical bounds-check
+    // (`Op.checkStaticArrayIndex`) and pointer arithmetic ordinary dynamic-
+    // array indexing already goes through, not a reimplementation of it.
+    // Null if `base.type` is neither.
+    private Operand* advanceArrayElementFieldPointer(
+        ArrayElementFieldPointer* base,
+        Expression indexExpression,
+    ) {
+        import dmd.astenums: TY;
+
+        if (base.type.toBasetype.ty == TY.Tsarray) {
+            const basePointerOperand = Operand(
+                base.pointer, ScalarType.ulong_, true, ScalarType.void_,
+            );
+            auto result = new Operand;
+            *result = advanceStaticArrayPointer(
+                basePointerOperand, indexExpression,
+                base.type.toBasetype.nextOf,
+                compileSizeConstant(staticArrayLength(base.type)),
+            );
+            return result;
+        }
+
+        if (base.type.toBasetype.ty == TY.Tarray) {
+            const descriptorOffset =
+                allocateBytes(sliceDescriptorSize, size_t.sizeof);
+            _code ~= Instruction(
+                Op.pointerLoad16, descriptorOffset, base.pointer,
+                compileSizeConstant(0),
+            );
+            const dataPointer =
+                allocateBytes(cast(uint) size_t.sizeof, size_t.sizeof);
+            _code ~= Instruction(
+                Op.copy, dataPointer, descriptorOffset,
+                cast(ushort) size_t.sizeof,
+            );
+            const lengthSlot = sliceLengthSlot(
+                DynamicArrayLocal(descriptorOffset, ScalarType.void_),
+            );
+
+            auto result = new Operand;
+            *result = advanceStaticArrayPointer(
+                Operand(
+                    dataPointer, ScalarType.ulong_, true, ScalarType.void_,
+                ),
+                indexExpression, base.type.toBasetype.nextOf, lengthSlot,
+            );
+            return result;
+        }
+
+        return null;
+    }
+
+    // `arr[i].fixedField[j] = rhs` (or any nested-field or nested-dimension
+    // depth, e.g. `arr[i].outer.fixedField[j] = rhs` or
+    // `arr[i].fixedField[j][k] = rhs` for a multi-dimensional static- or
+    // dynamic-array field, in any combination): an indexed write into a
+    // static- or dynamic-array-typed field reached through an array-element
+    // pointer. Null if `index.e1` does not bottom out at such a field
+    // reached through an array-element pointer.
+    private Operand* tryArrayElementFieldIndexAssign(
+        IndexExp index,
+        Expression rhs,
+    ) {
+        auto base = arrayElementFieldPointer(index.e1);
+        if (base is null)
+            return null;
+
+        auto elementPointer =
+            advanceArrayElementFieldPointer(base, index.e2);
+        if (elementPointer is null)
+            return null;
+        auto result = new Operand;
+        *result =
+            storeThroughPointer(*elementPointer, compileSizeConstant(0), rhs);
+        return result;
+    }
+
+    // `arr[i].fixedField[j] += rhs` (or any nested-field or nested-dimension
+    // depth): the compound-assignment sibling of
+    // `tryArrayElementFieldIndexAssign` above. Null if `index.e1` does not
+    // bottom out at a static- or dynamic-array field reached through an
+    // array-element pointer.
+    private Operand* tryArrayElementFieldIndexAddAssign(
+        IndexExp index,
+        Expression rhs,
+    ) {
+        import std.conv: text;
+
+        auto base = arrayElementFieldPointer(index.e1);
+        if (base is null)
+            return null;
+
+        auto elementPointerP =
+            advanceArrayElementFieldPointer(base, index.e2);
+        if (elementPointerP is null)
+            return null;
+        const elementPointer = *elementPointerP;
+
+        const zero = compileSizeConstant(0);
+        const current = loadThroughPointer(elementPointer, zero);
+        const rhsValue = compileExpression(rhs);
+        if (!isCompoundIntegerScalar(current.type) ||
+            !isCompoundIntegerScalar(rhsValue.type) ||
+            isEightByteInteger(current.type) != isEightByteInteger(rhsValue.type))
+            throw new Exception(text(
+                "Unsupported compound assignment in bytecode core: ",
+                expressionChars(index),
+            ));
+
+        const operationType = isEightByteInteger(current.type)
+            ? current.type
+            : ScalarType.int_;
+        const lhs = integerOperationOperand(current, operationType);
+        const right = integerOperationOperand(rhsValue, operationType);
+        const destination = size(current.type) == size(operationType)
+            ? current.offset
+            : allocate(operationType);
+        const addOp = isEightByteInteger(operationType)
+            ? Op.addInt8
+            : Op.addInt4;
+        _code ~= Instruction(addOp, destination, lhs.offset, right.offset);
+        if (destination != current.offset)
+            _code ~= Instruction(
+                Op.copy,
+                current.offset,
+                destination,
+                cast(ushort) size(current.type),
+            );
+
+        _code ~= Instruction(
+            pointerStoreOp(size(elementPointer.pointerElement)),
+            current.offset,
+            elementPointer.offset,
+            zero,
+        );
+
+        auto result = new Operand;
+        *result = Operand(current.offset, current.type);
+        return result;
+    }
+
     // `&local` / `&base.field`: the native address of a scalar local's frame
     // slot (or a struct field's inline slot), yielding an `int*`-style pointer
     // operand over the pointed-at element type. Null if the operand is not a
@@ -7903,7 +9107,7 @@ private struct Compiler {
                     _code ~= Instruction(
                         Op.frameIndexAddress,
                         pointer,
-                        capturedFrameIndex(*fieldOffset),
+                        capturedFrameIndex(fieldOffset.owner, fieldOffset.offset),
                     );
                     auto result = new Operand;
                     *result = Operand(
@@ -7955,7 +9159,7 @@ private struct Compiler {
         if (!_hasNestedContext || captured is null)
             return null;
 
-        const sourceIndex = capturedFrameIndex(*captured);
+        const sourceIndex = capturedFrameIndex(_capturedOwners[declaration], *captured);
         const pointer = allocateBytes(cast(uint) size_t.sizeof, size_t.sizeof);
         _code ~= Instruction(Op.frameIndexAddress, pointer, sourceIndex);
         auto result = new Operand;
@@ -7968,30 +9172,41 @@ private struct Compiler {
         return result;
     }
 
-    // A pointer operand holding `descriptor.ptr + index * elementSize`: read the
-    // descriptor's pointer word, scale the index by the element size, and add.
+    // A pointer operand holding `descriptor.ptr + index * elementByteWidth`:
+    // read the descriptor's pointer word, scale the index by the element's
+    // real byte width, and add. `elementByteWidth` is the caller's own byte
+    // stride (`dynamicArrayElementSize`, not `program.size(elementType)`):
+    // an aggregate element (struct, static array, delegate) reports
+    // `ScalarType.void_` as its opcode type, and `size(void_) == 0` would
+    // silently collapse every index to element 0 instead of throwing --
+    // opcode scalar type and native byte stride are separate facts
+    // (`ai/plans/bytecode.md`'s "Pointer metadata" section).
     private Operand pointerToElement(
         in ushort descriptorOffset,
         in ScalarType elementType,
         in ushort indexSlot,
+        in uint elementByteWidth,
     ) {
         const pointer = allocateBytes(cast(uint) size_t.sizeof, size_t.sizeof);
         _code ~= Instruction(
             Op.copy, pointer, descriptorOffset, cast(ushort) size_t.sizeof,
         );
-        return offsetPointer(pointer, elementType, indexSlot);
+        return offsetPointer(pointer, elementType, indexSlot, elementByteWidth);
     }
 
-    // Advance the `size_t` pointer at `pointerOffset` by `index * elementSize`
-    // into a fresh pointer slot, the shared scaling for `&arr[i]`, `p + n`, and
-    // `n + p`.
+    // Advance the `size_t` pointer at `pointerOffset` by `index *
+    // elementByteWidth` into a fresh pointer slot, the shared scaling for
+    // `&arr[i]` and `.ptr`. See `pointerToElement` above for why the byte
+    // stride is an explicit caller-supplied fact rather than derived from
+    // `elementType`.
     private Operand offsetPointer(
         in ushort pointerOffset,
         in ScalarType elementType,
         in ushort indexSlot,
+        in uint elementByteWidth,
     ) {
         const scaled = allocateBytes(cast(uint) size_t.sizeof, size_t.sizeof);
-        const stride = compileSizeConstant(size(elementType));
+        const stride = compileSizeConstant(elementByteWidth);
         _code ~= Instruction(Op.mulInt8, scaled, indexSlot, stride);
         const result = allocateBytes(cast(uint) size_t.sizeof, size_t.sizeof);
         _code ~= Instruction(Op.addInt8, result, pointerOffset, scaled);
@@ -8025,10 +9240,21 @@ private struct Compiler {
             if (!pointer.isPointer)
                 return null;
 
+            // `(*p)[i]` where `p`'s pointee is a static array (`int[2]* p`):
+            // `pointer.pointerElement` (from `pointerElementMetadata`) names
+            // the WHOLE `T[N]` block `*p` dereferences to, not the single
+            // element `[i]` steps through; use the one-level-deeper metadata
+            // instead so the element width/stride is `sizeof(T)`, not
+            // `sizeof(T[N])` or the aggregate `void_` marker.
+            const elementMetadata =
+                dereferencedArrayIndexElementMetadata(deref.e1.type);
+            const indexPointer = Operand(
+                pointer.offset, pointer.type, true, elementMetadata.opcodeType,
+            );
             const indexSlot = compileExpression(index.e2);
             auto result = new Operand;
             *result = asPointerValue(
-                loadThroughPointer(pointer, indexSlot.offset), index.type,
+                loadThroughPointer(indexPointer, indexSlot.offset), index.type,
             );
             return result;
         }
@@ -8324,6 +9550,21 @@ private struct Compiler {
         in string unsupportedMessage,
     ) {
         import std.conv: text;
+
+        // `p.at(0) /= rhs` / `p.at(0) %= rhs`: a ref-returning method call
+        // used as a compound-assignment lvalue, the same shape
+        // `compileLocalIntegerCompoundAssign` handles for `+=`/`-=`/`*=`/
+        // shifts/bitwise. Tried before the plain-local-declaration case
+        // below, which a `CallExp` lvalue never matches. Unwrap a possible
+        // outer `CastExp` first: DMD wraps `e1` in one whenever the
+        // operation type differs from the callee's own return type, the
+        // same reason `compoundAssignLocalDeclaration` unwraps one to find a
+        // `VarExp` lvalue.
+        if (auto call = compoundAssignCallExp(assign.e1))
+            if (auto result = tryMemberRefIndexDivOrModCompoundAssign(
+                    call, assign, isModulo, unsupportedMessage,
+                ))
+                return *result;
 
         auto declaration = compoundAssignLocalDeclaration(assign.e1);
         auto slot = compoundAssignLocalSlot(declaration);
@@ -8829,6 +10070,18 @@ private struct Compiler {
             if (auto store = tryPointerDereferenceAddAssign(deref, addAssign.e2))
                 return *store;
 
+        // `arr[i].fixedField[j] += rhs`: an indexed compound assignment into a
+        // static-array field reached through an array-element pointer.
+        // Checked before `tryStaticArrayElementAddAssign` below, which would
+        // otherwise resolve `arr[i].fixedField`'s base through
+        // `tryStaticArrayElement`'s throwaway copy of the whole element (the
+        // compound-assignment counterpart of the plain-assignment silent-
+        // corruption bug fixed by `tryArrayElementFieldIndexAssign`).
+        if (auto index = compoundAssignIndex(addAssign.e1))
+            if (auto element =
+                    tryArrayElementFieldIndexAddAssign(index, addAssign.e2))
+                return *element;
+
         // `a[0] += rhs` / `s.a[1] += rhs`: a compile-time-constant index into
         // a static-array chain (a plain local or a struct field's inline
         // block) adds directly into the element's own inline frame slot.
@@ -9050,6 +10303,15 @@ private struct Compiler {
     ) {
         import std.conv: text;
 
+        // `p.at(0) += rhs`: a ref-returning method call used as a compound-
+        // assignment lvalue. Tried before the plain-local-declaration case
+        // below, which a `CallExp` lvalue never matches.
+        if (auto call = assign.e1.isCallExp)
+            if (auto result = tryMemberRefIndexCompoundAssign(
+                    call, assign.e2, op4, op8, unsupportedMessage,
+                ))
+                return *result;
+
         auto declaration = compoundAssignLocalDeclaration(assign.e1);
         auto slot = compoundAssignLocalSlot(declaration);
         if (slot is null && _hasNestedContext && declaration !is null)
@@ -9123,6 +10385,273 @@ private struct Compiler {
             );
 
         return Operand(*slot, lvalueType);
+    }
+
+    // The compound-assignment counterpart of `tryMemberRefIndexCallAssign`:
+    // `p.at(0) += rhs` (and every other integer compound operator sharing
+    // `compileLocalIntegerCompoundAssign`) through the same `ref`-returning
+    // element-accessor shape. The callee still runs (preserving any
+    // preceding side effect, e.g. a bounds check), then the real backing
+    // element is loaded through the field's own slice descriptor, combined
+    // with `rhs`, and stored back through the same descriptor -- mirroring
+    // `tryDynamicArrayElementAddAssign`'s load/operate/store shape for an
+    // ordinary indexed compound assignment.
+    private Operand* tryMemberRefIndexCompoundAssign(
+        CallExp call,
+        Expression rhs,
+        in Op op4,
+        in Op op8,
+        in string unsupportedMessage,
+    ) {
+        import dmd.sideeffect: hasSideEffect;
+        import std.conv: text;
+
+        auto function_ = callFunction(call);
+        auto type = function_ is null ? null : function_.type.isTypeFunction;
+        if (type is null || !type.isRef ||
+            function_.vthis is null || call.e1.isDotVarExp is null)
+            return null;
+
+        ushort evaluatedReceiver;
+        Expression indexArgument;
+        auto descriptor = memberReturnArrayElementDescriptor(
+            call, function_, evaluatedReceiver, indexArgument,
+        );
+        if (descriptor is null)
+            return null;
+        // The real call below evaluates this same argument expression again
+        // to bind the callee's own parameter; a second run must not repeat a
+        // side effect, so decline rather than double it.
+        if (hasSideEffect(indexArgument))
+            return null;
+
+        const elementType = descriptor.elementType;
+        const elementSize = size(elementType);
+        const indexSlot = compileExpression(indexArgument).offset;
+
+        const receiver = new MethodReceiver(evaluatedReceiver, 0, 0);
+        compileCall(call, receiver);
+
+        const current = allocateBytes(elementSize, elementSize);
+        _code ~= Instruction(
+            indexLoadOp(elementSize), current, descriptor.offset, indexSlot,
+            cast(ushort) elementSize,
+        );
+
+        const rhsValue = compileExpression(rhs);
+        if (!isCompoundIntegerScalar(elementType) ||
+            !isCompoundIntegerScalar(rhsValue.type))
+            throw new Exception(text(unsupportedMessage, expressionChars(call)));
+
+        const eightByteShift = op8 == Op.shlInt8 ||
+            op8 == Op.shrInt8 || op8 == Op.ushrInt8;
+        const elementIsEightByte = isEightByteInteger(elementType);
+        const validRhs = elementIsEightByte
+            ? eightByteShift
+                ? size(rhsValue.type) <= int.sizeof
+                : rhsValue.type == elementType
+            : !isEightByteInteger(rhsValue.type);
+        if (!validRhs || elementIsEightByte && op8 == op4)
+            throw new Exception(text(unsupportedMessage, expressionChars(call)));
+
+        const operationType = elementIsEightByte ? elementType : ScalarType.int_;
+        const lhs = integerOperationOperand(
+            Operand(current, elementType), operationType,
+        );
+        const right = integerOperationOperand(
+            rhsValue,
+            elementIsEightByte && eightByteShift ? ScalarType.int_ : operationType,
+        );
+        const destination = elementSize == size(operationType)
+            ? current
+            : allocate(operationType);
+        _code ~= Instruction(
+            isEightByteInteger(operationType) ? op8 : op4,
+            destination, lhs.offset, right.offset,
+        );
+        if (destination != current)
+            _code ~= Instruction(
+                Op.copy, current, destination, cast(ushort) elementSize,
+            );
+
+        _code ~= Instruction(
+            indexStoreOp(elementSize), current, descriptor.offset, indexSlot,
+            cast(ushort) elementSize,
+        );
+
+        auto result = new Operand;
+        *result = Operand(current, elementType);
+        return result;
+    }
+
+    // The post-increment/decrement counterpart of `tryMemberRefIndexCallAssign`:
+    // `p.at(0)++` / `p.at(0)--` through the same `ref`-returning element-
+    // accessor shape. The callee still runs (preserving any preceding side
+    // effect, e.g. a bounds check), then the real backing element is loaded
+    // through the field's own slice descriptor, copied to the result slot
+    // (the post-increment's value, the *old* element), stepped in place, and
+    // stored back through the same descriptor -- mirroring
+    // `compilePostIncrement`'s copy/step/store shape for a plain lvalue, the
+    // way `tryMemberRefIndexCompoundAssign` mirrors
+    // `compileLocalIntegerCompoundAssign`'s load/operate/store shape.
+    private Operand* tryMemberRefIndexPostIncrement(CallExp call, PostExp post) {
+        import dmd.sideeffect: hasSideEffect;
+        import dmd.tokens: EXP;
+
+        auto function_ = callFunction(call);
+        auto type = function_ is null ? null : function_.type.isTypeFunction;
+        if (type is null || !type.isRef ||
+            function_.vthis is null || call.e1.isDotVarExp is null)
+            return null;
+
+        ushort evaluatedReceiver;
+        Expression indexArgument;
+        auto descriptor = memberReturnArrayElementDescriptor(
+            call, function_, evaluatedReceiver, indexArgument,
+        );
+        if (descriptor is null)
+            return null;
+        // The real call below evaluates this same argument expression again
+        // to bind the callee's own parameter; a second run must not repeat a
+        // side effect, so decline rather than double it.
+        if (hasSideEffect(indexArgument))
+            return null;
+
+        const elementType = descriptor.elementType;
+        // Scoped to the same integer widths `compilePostIncrement` supports
+        // for a plain lvalue (`int`/`uint`/`long`/`ulong`).
+        if (!isIntegerScalar(elementType))
+            return null;
+        const elementSize = size(elementType);
+
+        const indexSlot = compileExpression(indexArgument).offset;
+
+        const receiver = new MethodReceiver(evaluatedReceiver, 0, 0);
+        compileCall(call, receiver);
+
+        const current = allocateBytes(elementSize, elementSize);
+        _code ~= Instruction(
+            indexLoadOp(elementSize), current, descriptor.offset, indexSlot,
+            cast(ushort) elementSize,
+        );
+
+        const result = allocate(elementType);
+        _code ~= Instruction(
+            Op.copy, result, current, cast(ushort) elementSize,
+        );
+
+        // `PostExp.e2` is always the literal `1`; `post.op` (`plusPlus` vs
+        // `minusMinus`) decides whether we add or subtract it.
+        const increment = compileExpression(post.e2);
+        const eightByte = isEightByteInteger(elementType);
+        const stepOp = post.op == EXP.minusMinus
+            ? (eightByte ? Op.subInt8 : Op.subInt4)
+            : (eightByte ? Op.addInt8 : Op.addInt4);
+        _code ~= Instruction(stepOp, current, current, increment.offset);
+
+        _code ~= Instruction(
+            indexStoreOp(elementSize), current, descriptor.offset, indexSlot,
+            cast(ushort) elementSize,
+        );
+
+        auto op = new Operand;
+        *op = Operand(result, elementType);
+        return op;
+    }
+
+    // The div/mod counterpart of `tryMemberRefIndexCompoundAssign`: `p.at(0)
+    // /= rhs` / `p.at(0) %= rhs` through the same `ref`-returning element-
+    // accessor shape. Division and modulo need the operation's own
+    // signedness to pick the opcode (see `compileDivOrModCompoundAssign`'s
+    // own comment); `assign.e1.type` gives that operation type directly
+    // whether or not the unwrapped lvalue underneath is this `CallExp` or a
+    // plain local, since DMD wraps whichever one it is in the same outer
+    // `CastExp` when the operation type differs.
+    private Operand* tryMemberRefIndexDivOrModCompoundAssign(
+        CallExp call,
+        BinExp assign,
+        in bool isModulo,
+        in string unsupportedMessage,
+    ) {
+        import dmd.sideeffect: hasSideEffect;
+        import std.conv: text;
+
+        auto function_ = callFunction(call);
+        auto type = function_ is null ? null : function_.type.isTypeFunction;
+        if (type is null || !type.isRef ||
+            function_.vthis is null || call.e1.isDotVarExp is null)
+            return null;
+
+        ushort evaluatedReceiver;
+        Expression indexArgument;
+        auto descriptor = memberReturnArrayElementDescriptor(
+            call, function_, evaluatedReceiver, indexArgument,
+        );
+        if (descriptor is null)
+            return null;
+        // The real call below evaluates this same argument expression again
+        // to bind the callee's own parameter; a second run must not repeat a
+        // side effect, so decline rather than double it.
+        if (hasSideEffect(indexArgument))
+            return null;
+
+        const elementType = descriptor.elementType;
+        const elementSize = size(elementType);
+        const indexSlot = compileExpression(indexArgument).offset;
+
+        const receiver = new MethodReceiver(evaluatedReceiver, 0, 0);
+        compileCall(call, receiver);
+
+        const current = allocateBytes(elementSize, elementSize);
+        _code ~= Instruction(
+            indexLoadOp(elementSize), current, descriptor.offset, indexSlot,
+            cast(ushort) elementSize,
+        );
+
+        const rhsValue = compileExpression(assign.e2);
+        if (!isCompoundIntegerScalar(elementType) ||
+            !isCompoundIntegerScalar(rhsValue.type))
+            throw new Exception(text(unsupportedMessage, expressionChars(call)));
+
+        if (isEightByteInteger(elementType) != isEightByteInteger(rhsValue.type) ||
+            (isEightByteInteger(elementType) && rhsValue.type != elementType))
+            throw new Exception(text(unsupportedMessage, expressionChars(call)));
+
+        const operationType = scalarType(assign.e1.type);
+        if (!isIntegerScalar(operationType))
+            throw new Exception(text(unsupportedMessage, expressionChars(call)));
+
+        Op op;
+        if (operationType == ScalarType.ulong_)
+            op = isModulo ? Op.modUnsignedInt8 : Op.divUnsignedInt8;
+        else if (operationType == ScalarType.long_)
+            op = isModulo ? Op.modInt8 : Op.divInt8;
+        else if (operationType == ScalarType.uint_)
+            op = isModulo ? Op.modUnsignedInt4 : Op.divUnsignedInt4;
+        else
+            op = isModulo ? Op.modInt4 : Op.divInt4;
+
+        const lhs = integerOperationOperand(
+            Operand(current, elementType), operationType,
+        );
+        const rhsOperand = integerOperationOperand(rhsValue, operationType);
+        const destination = elementSize == size(operationType)
+            ? current
+            : allocate(operationType);
+        _code ~= Instruction(op, destination, lhs.offset, rhsOperand.offset);
+        if (destination != current)
+            _code ~= Instruction(
+                Op.copy, current, destination, cast(ushort) elementSize,
+            );
+
+        _code ~= Instruction(
+            indexStoreOp(elementSize), current, descriptor.offset, indexSlot,
+            cast(ushort) elementSize,
+        );
+
+        auto result = new Operand;
+        *result = Operand(current, elementType);
+        return result;
     }
 
     private ushort* compoundAssignLocalSlot(VarDeclaration declaration) {
@@ -9213,6 +10742,13 @@ private struct Compiler {
         return lvalue.isIndexExp;
     }
 
+    private CallExp compoundAssignCallExp(Expression lvalue) {
+        if (auto cast_ = lvalue.isCastExp)
+            return compoundAssignCallExp(cast_.e1);
+
+        return lvalue.isCallExp;
+    }
+
     private Operand integerOperationOperand(
         in Operand operand,
         in ScalarType operationType,
@@ -9277,6 +10813,29 @@ private struct Compiler {
         // `*p = rhs` through a pointer.
         if (auto deref = assign.e1.isPtrExp)
             if (auto store = tryPointerDereferenceAssign(deref, assign.e2))
+                return *store;
+
+        // `arr[i].fixedField[j] = rhs`: an indexed write into a static-array
+        // field reached through an array-element pointer. Checked before
+        // `tryStaticArrayElement` below, which would otherwise resolve
+        // `arr[i].fixedField`'s base offset through `tryStructField`'s
+        // dynamic-array-of-structs branch -- a throwaway copy of the element
+        // with no writeback wiring at all (unlike the AA-value-struct and
+        // module-struct branches beside it), silently discarding the store
+        // instead of throwing.
+        if (auto index = assign.e1.isIndexExp)
+            if (auto store = tryArrayElementFieldIndexAssign(index, assign.e2))
+                return *store;
+
+        // `arr[i] = rhs` for a static-array element captured from an
+        // enclosing function: write through the captured-variable frame ops
+        // instead of the plain in-frame path below, which only recognises a
+        // base tracked in *this* function's own `_staticArrayLocals`.
+        // Checked first since `tryStaticArrayElement` declines a captured
+        // base outright (`indexesStaticArray` only probes
+        // `_staticArrayLocals`) and would otherwise fall through it silently.
+        if (auto index = assign.e1.isIndexExp)
+            if (auto store = tryCapturedStaticArrayElementAssign(index, assign.e2))
                 return *store;
 
         // `arr[i] = rhs` for a static-array element: write the scalar rhs into
@@ -9379,6 +10938,7 @@ private struct Compiler {
                         destination,
                         dynamicArrayElementType(field.type),
                         assign.e2,
+                        arrayElementIsArray(field.type),
                     );
                     _code ~= Instruction(
                         Op.pointerStore16,
@@ -9389,14 +10949,53 @@ private struct Compiler {
                     return Operand(destination, ScalarType.void_);
                 }
 
+                // A delegate field (`int delegate(int) f`) through a struct
+                // pointer (`p.f = &add`): its rhs is never a plain scalar
+                // `compileExpression` can size (`scalarType` has no
+                // `Tdelegate` case), so resolve it the same way a delegate
+                // local's own declaration/assignment does.
+                if (field.type.toBasetype.ty == TY.Tdelegate) {
+                    const source = delegateOperandOffset(assign.e2);
+                    storeStructPointerField(*field, source);
+                    return Operand(source, ScalarType.void_);
+                }
+
+                const isAggregate = field.type.toBasetype.ty == TY.Tstruct ||
+                    field.type.toBasetype.ty == TY.Tsarray;
+                // A struct/static-array rhs (e.g. a bare struct-local
+                // `VarExp`) has no scalar operand at all --
+                // `compileExpression`'s generic `VarExp` path never
+                // resolves a struct-typed local, since structs are only
+                // ever addressed through `_structLocals`. Resolve it the
+                // same way the whole-local `_structLocals` assignment
+                // branch below does, then block-copy through
+                // `storeStructPointerField`'s existing width instead of
+                // storing a scalar operand offset.
+                if (isAggregate) {
+                    bool resolved;
+                    const source =
+                        structBaseOffsetOrMaterialise(assign.e2, resolved);
+                    if (resolved) {
+                        storeStructPointerField(*field, source);
+                        return Operand(source, ScalarType.void_);
+                    }
+                }
+
                 const value = compileExpression(assign.e2);
                 storeStructPointerField(*field, value.offset);
-                return Operand(value.offset, scalarType(field.type));
+                return Operand(
+                    value.offset,
+                    isAggregate ? ScalarType.void_ : scalarType(field.type),
+                );
             }
 
         // `box.field = rhs` through a class reference: a dynamic-array field
-        // (a `string` included) writes the full 16-byte descriptor; anything
-        // else writes the scalar rhs at `class pointer + field.offset`.
+        // (a `string` included) writes the full 16-byte descriptor; a
+        // `Tstruct`/`Tsarray` field (e.g. `c.arr = [1, 2, 3];`) writes the
+        // whole aggregate inline through the widened `storeClassPointerField`
+        // (the class-receiver sibling of `storeStructPointerField`'s
+        // identical widening); anything else writes the scalar rhs at
+        // `class pointer + field.offset`.
         if (auto dot = assign.e1.isDotVarExp)
             if (auto field = tryClassPointerField(dot)) {
                 import dmd.astenums: TY;
@@ -9408,6 +11007,7 @@ private struct Compiler {
                         destination,
                         dynamicArrayElementType(field.type),
                         assign.e2,
+                        arrayElementIsArray(field.type),
                     );
                     _code ~= Instruction(
                         Op.pointerStore16,
@@ -9418,21 +11018,46 @@ private struct Compiler {
                     return Operand(destination, ScalarType.void_);
                 }
 
+                // A delegate field (`int delegate(int) f`) through a class
+                // reference (`c.f = &add`), the class-field twin of
+                // `tryStructPointerField`'s identical `Tdelegate` branch
+                // above: its rhs is never a plain scalar `compileExpression`
+                // can size (`scalarType` has no `Tdelegate` case).
+                if (field.type.toBasetype.ty == TY.Tdelegate) {
+                    const source = delegateOperandOffset(assign.e2);
+                    storeClassPointerField(*field, source);
+                    return Operand(source, ScalarType.void_);
+                }
+
+                const isAggregate = field.type.toBasetype.ty == TY.Tstruct ||
+                    field.type.toBasetype.ty == TY.Tsarray;
+                // Same bare struct-local rhs case `tryStructPointerField`'s
+                // sibling branch above resolves: `compileExpression` never
+                // returns a bare struct-typed local.
+                if (isAggregate) {
+                    bool resolved;
+                    const source =
+                        structBaseOffsetOrMaterialise(assign.e2, resolved);
+                    if (resolved) {
+                        storeClassPointerField(*field, source);
+                        return Operand(source, ScalarType.void_);
+                    }
+                }
+
                 const value = compileExpression(assign.e2);
-                const fieldScalar = scalarType(field.type);
-                if (value.type != fieldScalar)
-                    throw new Exception(text(
-                        "Unsupported assignment in bytecode core: ",
-                        expressionChars(assign),
-                    ));
-                const fieldPointer = classFieldAddress(*field);
-                _code ~= Instruction(
-                    pointerStoreOp(size(fieldScalar)),
+                if (!isAggregate) {
+                    const fieldScalar = scalarType(field.type);
+                    if (value.type != fieldScalar)
+                        throw new Exception(text(
+                            "Unsupported assignment in bytecode core: ",
+                            expressionChars(assign),
+                        ));
+                }
+                storeClassPointerField(*field, value.offset);
+                return Operand(
                     value.offset,
-                    fieldPointer,
-                    compileSizeConstant(0),
+                    isAggregate ? ScalarType.void_ : scalarType(field.type),
                 );
-                return Operand(value.offset, fieldScalar);
             }
 
         // A `string` local reassignment (`s = rhs;`) is a dynamic-array
@@ -9452,6 +11077,36 @@ private struct Compiler {
                 writeBackDynamicArrayDescriptor(*descriptor);
                 return Operand(descriptor.offset, ScalarType.void_);
             }
+
+        // `this = rhs;` inside a struct method -- e.g. the compiler-
+        // synthesized `opAssign` a postblit-typed struct's whole-local
+        // reassignment lowers through (`this = p; return this;`), or plain
+        // user code such as `void reset() { this = S.init; }` -- assigns
+        // the method's whole receiver block, the value-type block copy the
+        // `_structLocals` branch below performs for a plain local, targeting
+        // `_thisLocal.offset` instead of a `_structLocals` entry.
+        if (_hasThis && assign.e1.isThisExp !is null) {
+            if (auto integer = assign.e2.isIntegerExp)
+                if (integer.toInteger == 0) {
+                    zeroFrameBlock(
+                        _thisLocal.offset,
+                        cast(uint) staticArraySize(assign.e1.type),
+                    );
+                    return Operand(_thisLocal.offset, ScalarType.void_);
+                }
+
+            bool resolved;
+            const source = structBaseOffsetOrMaterialise(assign.e2, resolved);
+            if (resolved) {
+                _code ~= Instruction(
+                    Op.copy,
+                    _thisLocal.offset,
+                    source,
+                    cast(ushort) staticArraySize(assign.e1.type),
+                );
+                return Operand(_thisLocal.offset, ScalarType.void_);
+            }
+        }
 
         auto variable = assign.e1.isVarExp;
         auto declaration =
@@ -9555,6 +11210,9 @@ private struct Compiler {
         if (auto result = tryMemberRefCallAssign(call, function_, rhs))
             return result;
 
+        if (auto result = tryMemberRefIndexCallAssign(call, function_, rhs))
+            return result;
+
         if (call.arguments is null)
             return null;
 
@@ -9651,6 +11309,131 @@ private struct Compiler {
         );
         auto result = new Operand;
         *result = Operand(value.offset, scalar);
+        return result;
+    }
+
+    // `p.at(0) = 42;` through a struct method whose entire body is `return
+    // <arrayField>[<param>];` (a bounds-checked element accessor like `ref
+    // int at(in int index) return { return data[index]; }`): the returned
+    // value is an alias into the array field's own backing store, not a
+    // copy, so the callee still runs (any preceding statement -- a bounds
+    // check -- keeps its side effect), but the assignment writes through
+    // the field's own slice descriptor at the real element index instead of
+    // the throwaway returned copy. The compound-assignment counterpart is
+    // `tryMemberRefIndexCompoundAssign`.
+    private Operand* tryMemberRefIndexCallAssign(
+        CallExp call,
+        FuncDeclaration function_,
+        Expression rhs,
+    ) {
+        import dmd.sideeffect: hasSideEffect;
+        import std.conv: text;
+
+        if (function_.vthis is null || call.e1.isDotVarExp is null)
+            return null;
+
+        ushort evaluatedReceiver;
+        Expression indexArgument;
+        auto descriptor = memberReturnArrayElementDescriptor(
+            call, function_, evaluatedReceiver, indexArgument,
+        );
+        if (descriptor is null)
+            return null;
+        // The real call below evaluates this same argument expression again
+        // to bind the callee's own parameter; a second run must not repeat a
+        // side effect (`p.at(i++) = 1;`), so decline rather than double it.
+        if (hasSideEffect(indexArgument))
+            return null;
+
+        const indexSlot = compileExpression(indexArgument);
+        const receiver = new MethodReceiver(evaluatedReceiver, 0, 0);
+        compileCall(call, receiver);
+
+        const value = compileExpression(rhs);
+        if (value.type != descriptor.elementType)
+            throw new Exception(text(
+                "Unsupported assignment in bytecode core: ",
+                expressionChars(call),
+            ));
+
+        const elementSize = size(descriptor.elementType);
+        _code ~= Instruction(
+            indexStoreOp(elementSize),
+            value.offset,
+            descriptor.offset,
+            indexSlot.offset,
+            cast(ushort) elementSize,
+        );
+
+        auto result = new Operand;
+        *result = Operand(value.offset, descriptor.elementType);
+        return result;
+    }
+
+    // The shared shape resolver behind `tryMemberRefIndexCallAssign` and
+    // `tryMemberRefIndexCompoundAssign`: `function_`'s body must be exactly
+    // `return <this-or-super field>[<parameter>];`, where the field is a
+    // dynamic array. Its slice descriptor is inline in the receiver's own
+    // frame block at `receiverOffset + field.offset`, the same shape
+    // `tryStructField`'s dynamic-array branch resolves for an ordinary
+    // `base.field[i]` read/write, so no extra load is needed to reach it.
+    // `indexArgument` is the call's own index-argument expression (not yet
+    // compiled), returned so both callers can guard it against being
+    // evaluated twice before compiling it.
+    private DynamicArrayLocal* memberReturnArrayElementDescriptor(
+        CallExp call,
+        FuncDeclaration function_,
+        out ushort evaluatedReceiver,
+        out Expression indexArgument,
+    ) {
+        import dmd.astenums: TY;
+
+        auto returned = provenFinalReturnExpression(function_.fbody);
+        auto index = returned is null ? null : returned.isIndexExp;
+        if (index is null)
+            return null;
+
+        auto dot = index.e1.isDotVarExp;
+        if (dot is null ||
+            (dot.e1.isThisExp is null && dot.e1.isSuperExp is null))
+            return null;
+
+        auto field = dot.var.isVarDeclaration;
+        if (field is null || !field.isField ||
+            field.type.toBasetype.ty != TY.Tarray)
+            return null;
+
+        // Scoped to a scalar element (matching `function_`'s own `ref
+        // <scalar>` return type): an aggregate element's `ScalarType` tag is
+        // `void_` with `program.size` reporting 0, the same zero-stride trap
+        // `pointerToElement`/`offsetPointer` guard against for `&arr[i]`.
+        // `indexStoreOp`/`indexLoadOp` below size themselves from
+        // `descriptor.elementType` alone, so an aggregate element here would
+        // silently corrupt with a 0-byte store instead of throwing.
+        auto elementBaseType = field.type.toBasetype.nextOf.toBasetype;
+        if (elementBaseType.ty == TY.Tstruct || elementBaseType.ty == TY.Tsarray ||
+            elementBaseType.ty == TY.Tarray || elementBaseType.ty == TY.Tdelegate)
+            return null;
+
+        auto indexOperand = index.e2;
+        while (auto cast_ = indexOperand.isCastExp)
+            indexOperand = cast_.e1;
+        auto variable = indexOperand.isVarExp;
+        auto parameter = variable is null ? null : variable.var.isVarDeclaration;
+        auto argumentIndex = parameter is null
+            ? null
+            : parameterIndex(function_, parameter);
+        if (argumentIndex is null || *argumentIndex >= call.arguments.length)
+            return null;
+
+        indexArgument = (*call.arguments)[*argumentIndex];
+
+        evaluatedReceiver = methodReceiverOffset(call);
+        auto result = new DynamicArrayLocal;
+        *result = DynamicArrayLocal(
+            cast(ushort) (evaluatedReceiver + field.offset),
+            dynamicArrayElementType(field.type),
+        );
         return result;
     }
 
@@ -9949,11 +11732,35 @@ private struct Compiler {
         in ushort capturedOffset,
         AssignExp assign,
     ) {
+        import dmd.astenums: TY;
         import std.conv: text;
 
-        const type = scalarType(declaration.type);
+        const ty = declaration.type.toBasetype.ty;
+
+        // A static-array rhs (an array literal in particular) is compiled
+        // generically as a dynamic-array descriptor by `compileExpression`,
+        // not the `staticArraySize(declaration.type)` bytes of element
+        // storage a captured `T[N]` needs; route it through the same
+        // literal/copy recognition `compileStaticArrayValueInto` already
+        // gives a plain local's whole-array reassignment (line ~9368 above).
+        if (ty == TY.Tsarray) {
+            const destination = allocateStructBlock(declaration.type);
+            if (!compileStaticArrayValueInto(
+                    destination, declaration.type, assign.e2))
+                throw new Exception(text(
+                    "Unsupported assignment in bytecode core: ",
+                    expressionChars(assign),
+                ));
+            storeCapturedLocal(
+                declaration, capturedOffset,
+                Operand(destination, ScalarType.void_),
+            );
+            return loadCapturedLocal(declaration, capturedOffset);
+        }
+
+        const isAggregate = ty == TY.Tstruct;
         const rhs = compileExpression(assign.e2);
-        if (rhs.type != type)
+        if (!isAggregate && rhs.type != scalarType(declaration.type))
             throw new Exception(text(
                 "Unsupported assignment in bytecode core: ",
                 expressionChars(assign),
@@ -10011,9 +11818,28 @@ private struct Compiler {
 
     // A module-level dynamic array (`byte[] a;`) reserves a plain 16-byte
     // native-order slice descriptor slot, the array counterpart of the
-    // scalar allocation above; only the default (null) initializer is
-    // supported so far, matching `moduleVariableHasDefaultInitializer`'s
-    // class-reference use.
+    // scalar allocation above. The default (null) initializer leaves the
+    // descriptor's bytes zeroed (a null slice); a non-null initializer that
+    // is an array literal of constant scalar elements
+    // (`int[] arr = [1, 2, 3];`) compiles its bytes into a fresh
+    // `_program.literalBlocks` entry -- a GC-rooted block that never moves,
+    // the same stable-address mechanism `appendStringLiteral` already uses
+    // -- and writes {blockPointer, count} directly into the descriptor's
+    // moduleData bytes right now, at registration time, exactly as
+    // `moduleScalarInitializerBytes` writes a scalar's bytes directly: no
+    // bytecode instruction is needed, since the compiler and the machine
+    // share one process/address space, so a pointer resolved during
+    // compilation stays valid for the whole run. An array-of-arrays element,
+    // a struct/static-array element, or any non-constant element (e.g. a
+    // function call) is not yet handled and still declines registration.
+    //
+    // A plain array literal (`[1, 2, 3]`) parses as an `ArrayInitializer`,
+    // not an `ExpInitializer` the way a scalar's `int x = 5;` does, so this
+    // does not reuse `moduleVariableHasDefaultInitializer` (which only
+    // recognises `ExpInitializer` and, for anything else, wrongly reports
+    // "default initializer" -- the actual root cause of the bug this
+    // function fixes): `moduleDynamicArrayInitializerExpressionOrNull` below
+    // normalises every `Initializer` subclass via `initializerToExpression`.
     private ModuleDynamicArrayVariable* moduleDynamicArrayVariableOrNull(
         VarDeclaration declaration,
     ) {
@@ -10031,18 +11857,159 @@ private struct Compiler {
         if (auto existing = declaration in _moduleDynamicArrayVariables)
             return existing;
 
-        if (!moduleVariableHasDefaultInitializer(declaration))
-            return null;
-
         const elementType = dynamicArrayElementType(declaration.type);
         const elementIsArray = arrayElementIsArray(declaration.type);
+
+        auto initializerExpr =
+            moduleDynamicArrayInitializerExpressionOrNull(declaration);
+        const hasDefaultInitializer =
+            initializerExpr is null || initializerExpr.isNullExp !is null;
+
+        size_t literalCount;
+        ubyte[] literalBytes;
+        if (!hasDefaultInitializer) {
+            literalBytes = moduleDynamicArrayLiteralInitializerBytes(
+                initializerExpr, elementType, elementIsArray, literalCount,
+            );
+            if (literalBytes is null && literalCount == 0)
+                return null;
+        }
+
         const offset = allocateModuleBytes(sliceDescriptorSize, size_t.sizeof);
         _moduleDynamicArrayVariables[declaration] = ModuleDynamicArrayVariable(
             offset,
             elementType,
             elementIsArray,
         );
+        if (!hasDefaultInitializer) {
+            import std.bitmanip: nativeToLittleEndian;
+
+            _program.literalBlocks ~= literalBytes;
+            const pointer = cast(size_t) _program.literalBlocks[$ - 1].ptr;
+            _program.moduleData[offset .. offset + size_t.sizeof] =
+                nativeToLittleEndian(pointer);
+            _program.moduleData[
+                offset + size_t.sizeof .. offset + sliceDescriptorSize
+            ] = nativeToLittleEndian(cast(size_t) literalCount);
+        }
         return declaration in _moduleDynamicArrayVariables;
+    }
+
+    // Resolve a module-level dynamic array's initializer to a plain
+    // `Expression`, regardless of which `Initializer` subclass DMD parsed it
+    // into (`ExpInitializer` for `int x = 5;`, but `ArrayInitializer` for a
+    // literal like `[1, 2, 3]`): see `initializerToExpression`.
+    private Expression moduleDynamicArrayInitializerExpressionOrNull(
+        VarDeclaration declaration,
+    ) {
+        import dmd.initsem: initializerToExpression;
+
+        resolveNonRootInitializer(declaration);
+        if (declaration._init is null)
+            return null;
+
+        auto expression = declaration._init.initializerToExpression;
+        return expression is null ? null : initializerExpression(expression);
+    }
+
+    // Compile-time bytes for a module-level dynamic array's non-null,
+    // non-default initializer, when it is a non-empty array literal of
+    // constant scalar elements, or (`elementIsArray`) a non-empty array
+    // literal of constant-scalar-element array-literal elements (exactly one
+    // level of nesting, `int[][] m = [[1, 2], [3, 4]];`) -- each inner array
+    // is built into its own stable `literalBlocks` entry first, the same way
+    // `compileDynamicArrayInto`'s own array-of-arrays literal branch builds
+    // each row into its own heap block at runtime, so the outer bytes hold
+    // one 16-byte `{pointer, count}` descriptor per row rather than raw
+    // scalar bytes. A row that is not itself a constant-scalar-element array
+    // literal (deeper nesting, a non-literal expression, or an empty `[]`
+    // row) declines the whole array, matching the plain-scalar decline
+    // below. Returns `null` (with `count` left at 0) when the initializer is
+    // not one of these shapes, so the caller can tell "empty literal bytes"
+    // (`count == 0` from a genuinely empty `[]` initializer, not yet given
+    // real storage either) apart from "declined".
+    private ubyte[] moduleDynamicArrayLiteralInitializerBytes(
+        Expression initializerExpr,
+        in ScalarType elementType,
+        in bool elementIsArray,
+        out size_t count,
+    ) {
+        import std.bitmanip: nativeToLittleEndian;
+
+        if (elementType == ScalarType.void_)
+            return null;
+
+        if (elementIsArray) {
+            auto outer = initializerExpr.isArrayLiteralExp;
+            if (outer is null || outer.elements is null ||
+                outer.elements.length == 0)
+            {
+                return null;
+            }
+
+            count = outer.elements.length;
+            ubyte[] bytes;
+            bytes.length = count * sliceDescriptorSize;
+            foreach (elementIndex; 0 .. count) {
+                size_t rowCount;
+                auto rowBytes = moduleDynamicArrayLiteralInitializerBytes(
+                    (*outer.elements)[elementIndex], elementType, false,
+                    rowCount,
+                );
+                if (rowBytes is null && rowCount == 0) {
+                    count = 0;
+                    return null;
+                }
+
+                _program.literalBlocks ~= rowBytes;
+                const rowPointer =
+                    cast(size_t) _program.literalBlocks[$ - 1].ptr;
+                const rowOffset = elementIndex * sliceDescriptorSize;
+                bytes[rowOffset .. rowOffset + size_t.sizeof] =
+                    nativeToLittleEndian(rowPointer);
+                bytes[rowOffset + size_t.sizeof .. rowOffset + sliceDescriptorSize] =
+                    nativeToLittleEndian(cast(size_t) rowCount);
+            }
+            return bytes;
+        }
+
+        auto literal = initializerExpr.isArrayLiteralExp;
+        if (literal is null || literal.elements is null ||
+            literal.elements.length == 0)
+        {
+            return null;
+        }
+
+        count = literal.elements.length;
+        const elementSize = size(elementType);
+        ubyte[] bytes;
+        bytes.length = count * elementSize;
+        foreach (elementIndex; 0 .. count) {
+            auto element = (*literal.elements)[elementIndex];
+            if (auto integer = element.isIntegerExp) {
+                const raw = nativeToLittleEndian(cast(ulong) integer.toInteger);
+                bytes[elementIndex * elementSize .. (elementIndex + 1) * elementSize] =
+                    raw[0 .. elementSize];
+                continue;
+            }
+            if (auto real_ = element.isRealExp) {
+                if (elementType == ScalarType.real_) {
+                    bytes[
+                        elementIndex * elementSize .. (elementIndex + 1) * elementSize
+                    ] = realBytes(real_)[];
+                } else {
+                    const raw = nativeToLittleEndian(floatBits(real_, elementType));
+                    bytes[
+                        elementIndex * elementSize .. (elementIndex + 1) * elementSize
+                    ] = raw[0 .. elementSize];
+                }
+                continue;
+            }
+
+            count = 0;
+            return null;
+        }
+        return bytes;
     }
 
     // A module-level struct (`Point p;`) reserves `Type.size()` bytes at
@@ -10070,14 +12037,25 @@ private struct Compiler {
         if (auto existing = declaration in _moduleStructVariables)
             return existing;
 
-        if (!moduleVariableHasDefaultInitializer(declaration))
-            return null;
-
         const size = cast(ushort) staticArraySize(declaration.type);
+        const hasDefaultInitializer =
+            moduleVariableHasDefaultInitializer(declaration);
+
+        ubyte[] literalBytes;
+        if (!hasDefaultInitializer) {
+            literalBytes = moduleStructLiteralInitializerBytes(
+                declaration, size,
+            );
+            if (literalBytes is null)
+                return null;
+        }
+
         const offset =
             allocateModuleBytes(size, staticArrayAlign(declaration.type));
         _moduleStructVariables[declaration] =
             ModuleStructVariable(offset, size);
+        if (!hasDefaultInitializer)
+            _program.moduleData[offset .. offset + size] = literalBytes[];
         return declaration in _moduleStructVariables;
     }
 
@@ -10090,6 +12068,82 @@ private struct Compiler {
             : declaration._init.isExpInitializer;
         return initializer is null ||
             initializerExpression(initializer.exp).isNullExp !is null;
+    }
+
+    // Compile-time bytes for a module-level struct's non-null, non-default
+    // initializer (`Point p = Point(1, 2);`), when it is a struct literal
+    // with every field given as a constant scalar expression: DMD's
+    // `initializerSemantic` already rewrites a `StructInitializer`
+    // (`Point p = {1, 2};`) into an `ExpInitializer` wrapping a
+    // `StructLiteralExp`, so `moduleVariableHasDefaultInitializer` (which
+    // only recognises `ExpInitializer`) already classifies both spellings
+    // correctly and needs no `Initializer`-subclass normalisation the way
+    // the module-array case did. Returns `null` (declining registration,
+    // same as the default-initializer path) when a field is omitted from
+    // the literal (defaulting to its own init value), is itself a
+    // struct/static-array/dynamic-array/delegate, or is not a constant
+    // scalar expression.
+    private ubyte[] moduleStructLiteralInitializerBytes(
+        VarDeclaration declaration,
+        in ushort structSize,
+    ) {
+        import std.bitmanip: nativeToLittleEndian;
+        import dmd.astenums: TY;
+
+        resolveNonRootInitializer(declaration);
+        auto initializer = declaration._init is null
+            ? null
+            : declaration._init.isExpInitializer;
+        if (initializer is null)
+            return null;
+
+        auto literal =
+            initializerExpression(initializer.exp).isStructLiteralExp;
+        if (literal is null || literal.elements is null ||
+            literal.elements.length != literal.sd.fields.length)
+        {
+            return null;
+        }
+
+        ubyte[] bytes;
+        bytes.length = structSize;
+        foreach (fieldIndex, field; literal.sd.fields) {
+            auto element = (*literal.elements)[fieldIndex];
+            if (element is null)
+                return null;
+
+            switch (field.type.toBasetype.ty) with (TY) {
+                case Tstruct, Tsarray, Tarray, Tdelegate:
+                    return null;
+                default:
+                    break;
+            }
+
+            const fieldType = scalarType(field.type);
+            const fieldSize = size(fieldType);
+            const fieldOffset = cast(size_t) field.offset;
+
+            if (auto integer = element.isIntegerExp) {
+                const raw = nativeToLittleEndian(cast(ulong) integer.toInteger);
+                bytes[fieldOffset .. fieldOffset + fieldSize] =
+                    raw[0 .. fieldSize];
+                continue;
+            }
+            if (auto real_ = element.isRealExp) {
+                if (fieldType == ScalarType.real_) {
+                    bytes[fieldOffset .. fieldOffset + fieldSize] =
+                        realBytes(real_)[];
+                } else {
+                    const raw = nativeToLittleEndian(floatBits(real_, fieldType));
+                    bytes[fieldOffset .. fieldOffset + fieldSize] =
+                        raw[0 .. fieldSize];
+                }
+                continue;
+            }
+
+            return null;
+        }
+        return bytes;
     }
 
     private ubyte[] moduleScalarInitializerBytes(
@@ -10168,8 +12222,14 @@ private struct Compiler {
     // `tryClassArrayFieldElementFieldPointer` and
     // `tryStructSliceFieldElementFieldPointer`'s assignment use: a dynamic-
     // array field takes the rhs slice descriptor, matching
-    // `tryClassPointerField`'s own assignment branch; anything else is a
-    // scalar byte store at the pointer.
+    // `tryClassPointerField`'s own assignment branch; a struct-typed field
+    // is a whole-block copy through `structOperandOffset`, mirroring
+    // `storeThroughPointer`'s own struct branch (the rhs may be a literal/
+    // constructor-call rvalue or an existing struct lvalue, neither of which
+    // `compileExpression` alone resolves); a static-array field is likewise a
+    // whole-block copy, via `compileStaticArrayValueInto` (an array literal
+    // or an existing array lvalue); anything else is a scalar byte store at
+    // the pointer.
     private Operand storeArrayElementFieldPointer(
         in ushort pointer,
         Type fieldType,
@@ -10182,11 +12242,47 @@ private struct Compiler {
                 allocateBytes(sliceDescriptorSize, size_t.sizeof);
             compileDynamicArrayInto(
                 destination, dynamicArrayElementType(fieldType), rhs,
+                arrayElementIsArray(fieldType),
             );
             _code ~= Instruction(
                 Op.pointerStore16, destination, pointer, compileSizeConstant(0),
             );
             return Operand(destination, ScalarType.void_);
+        }
+
+        if (fieldType.toBasetype.ty == TY.Tstruct) {
+            const valueOffset = structOperandOffset(rhs);
+            const elementSize = cast(uint) staticArraySize(fieldType);
+            _code ~= Instruction(
+                pointerStoreOp(elementSize), valueOffset, pointer,
+                compileSizeConstant(0), cast(ushort) elementSize,
+            );
+            return Operand(valueOffset, ScalarType.void_);
+        }
+
+        // A static-array field `T[N] a` reached through an array-element
+        // pointer (`arr[i].fixedField = [x, y, z]` or `= existingArrayVar`):
+        // materialise the rhs into a fresh inline slot the same way a
+        // static-array local's own declaration/assignment does
+        // (`compileStaticArrayValueInto` already resolves both an array
+        // literal and an existing array lvalue), then block-store the whole
+        // value through the pointer, mirroring the `Tstruct` case above.
+        if (fieldType.toBasetype.ty == TY.Tsarray) {
+            import std.conv: text;
+
+            const elementSize = cast(uint) staticArraySize(fieldType);
+            const valueOffset =
+                allocateBytes(elementSize, staticArrayAlign(fieldType));
+            if (!compileStaticArrayValueInto(valueOffset, fieldType, rhs))
+                throw new Exception(text(
+                    "Unsupported static array field assignment in bytecode ",
+                    "core: ", expressionChars(rhs),
+                ));
+            _code ~= Instruction(
+                pointerStoreOp(elementSize), valueOffset, pointer,
+                compileSizeConstant(0), cast(ushort) elementSize,
+            );
+            return Operand(valueOffset, ScalarType.void_);
         }
 
         const value = compileExpression(rhs);
@@ -10212,6 +12308,7 @@ private struct Compiler {
         if (field.type.toBasetype.ty == TY.Tarray) {
             compileDynamicArrayInto(
                 field.offset, dynamicArrayElementType(field.type), rhs,
+                arrayElementIsArray(field.type),
             );
             writeBackStructField(*field);
             auto descriptorResult = new Operand;
@@ -10451,10 +12548,13 @@ private struct Compiler {
         // real module storage first, mirroring `compileAppendElement`'s
         // identical fix for the single-element case.
         if (isModuleDynamicArrayVariable(concatenate.e1)) {
-            const elementType = moduleDynamicArrayVariableOrNull(
+            const moduleVariable = *moduleDynamicArrayVariableOrNull(
                 concatenate.e1.isVarExp.var.isVarDeclaration,
-            ).elementType;
-            const right = arrayDescriptorOffset(elementType, concatenate.e2);
+            );
+            const right = arrayDescriptorOffset(
+                moduleVariable.elementType, concatenate.e2,
+                moduleVariable.elementIsArray,
+            );
             const descriptor = dynamicArrayDescriptor(concatenate.e1);
             const elementSize = dynamicArrayElementSize(
                 concatenate.e1.type, descriptor.elementType,
@@ -10473,7 +12573,7 @@ private struct Compiler {
 
         const descriptor = dynamicArrayDescriptor(concatenate.e1);
         const right = arrayDescriptorOffset(
-            descriptor.elementType, concatenate.e2,
+            descriptor.elementType, concatenate.e2, descriptor.elementIsArray,
         );
         const elementSize = dynamicArrayElementSize(
             concatenate.e1.type, descriptor.elementType,
@@ -10574,10 +12674,13 @@ private struct Compiler {
             return null;
 
         const handle = (declaration in _locals);
+        const width = assocArrayValueWidth(index.e1.type.toBasetype);
+        const keyMeta = assocArrayKeyMeta(index.e1.type.toBasetype);
         const key = compileExpression(index.e2);
         const value = compileExpression(rhs);
         _code ~= Instruction(
             Op.aaInsert, *handle, key.offset, value.offset,
+            cast(ushort) width, keyMeta,
         );
 
         auto result = new Operand;
@@ -10591,6 +12694,30 @@ private struct Compiler {
         IndexExp index,
         Expression rhs,
     ) {
+        // `(*p)[i] = rhs` where `p`'s pointee is itself a static array
+        // (`int[2]* p`): the write-side sibling of `tryPointerIndex`'s
+        // identically shaped read branch. `index.e1.type` here is the WHOLE
+        // `T[N]` block `*p` dereferences to (`Tsarray`, not `Tpointer`), so
+        // the plain `isPointerType` guard below never fires for this shape;
+        // resolve the array's own element stride via
+        // `dereferencedArrayIndexElementMetadata` instead of the aggregate
+        // `void_` marker `pointer.pointerElement` would otherwise carry.
+        if (auto deref = index.e1.isPtrExp) {
+            const pointer = compileExpression(deref.e1);
+            if (!pointer.isPointer)
+                return null;
+
+            const elementMetadata =
+                dereferencedArrayIndexElementMetadata(deref.e1.type);
+            const indexPointer = Operand(
+                pointer.offset, pointer.type, true, elementMetadata.opcodeType,
+            );
+            const indexSlot = compileExpression(index.e2);
+            auto derefResult = new Operand;
+            *derefResult = storeThroughPointer(indexPointer, indexSlot.offset, rhs);
+            return derefResult;
+        }
+
         if (!isPointerType(index.e1.type))
             return null;
 
@@ -10732,18 +12859,33 @@ private struct Compiler {
         in ushort indexSlot,
         Expression rhs,
     ) {
-        const value = compileExpression(rhs);
+        import dmd.astenums: TY;
+
+        // A struct-typed rhs that is itself an existing lvalue (a local, a
+        // field, or another struct value reached through a pointer/AA-value
+        // -- as opposed to a literal or constructor-call rvalue, which
+        // `compileExpression` already materialises directly) has no scalar
+        // Operand of its own; it lives at its own inline frame block, the
+        // same storage `structOperandOffset` resolves for every other
+        // struct-value read. This is the write-side counterpart of that:
+        // `m[k] = existingStruct;` (DMD's `_d_aaGetY` slot-pointer lowering
+        // for an associative-array value UPDATE, as opposed to an initial
+        // insert) reaches here with exactly this rhs shape.
+        const valueOffset = rhs.type !is null &&
+                rhs.type.toBasetype.ty == TY.Tstruct
+            ? structOperandOffset(rhs)
+            : compileExpression(rhs).offset;
         const elementSize = pointer.pointerElement == ScalarType.void_
             ? cast(uint) staticArraySize(rhs.type)
             : size(pointer.pointerElement);
         _code ~= Instruction(
             pointerStoreOp(elementSize),
-            value.offset,
+            valueOffset,
             pointer.offset,
             indexSlot,
             cast(ushort) elementSize,
         );
-        return Operand(value.offset, pointer.pointerElement);
+        return Operand(valueOffset, pointer.pointerElement);
     }
 
     // `arr[i] = rhs` for a dynamic-array element: store the scalar rhs into the
@@ -10799,7 +12941,18 @@ private struct Compiler {
             return rowResult;
         }
 
-        const value = compileExpression(rhs);
+        // A struct-typed rhs that is itself an existing lvalue (a local, a
+        // field, ...) has no scalar Operand of its own; it lives at its own
+        // inline frame block, the same storage `structOperandOffset`
+        // resolves for every other struct-value read. `compileExpression`
+        // only materialises a struct rvalue (literal/constructor call)
+        // directly, so a bare lvalue (`arr[i] = existingVar;`) must route
+        // through `structOperandOffset` instead, the same fix
+        // `storeThroughPointer` applies for the AA-value slot-pointer shape.
+        const valueOffset = rhs.type !is null &&
+                rhs.type.toBasetype.ty == TY.Tstruct
+            ? structOperandOffset(rhs)
+            : compileExpression(rhs).offset;
         const savedDollarLength = _activeDollarLength;
         _activeDollarLength = sliceLengthSlot(*descriptor);
         const indexSlot = compileExpression(index.e2);
@@ -10808,14 +12961,14 @@ private struct Compiler {
             dynamicArrayElementSize(index.e1.type, descriptor.elementType);
         _code ~= Instruction(
             indexStoreOp(elementSize),
-            value.offset,
+            valueOffset,
             descriptor.offset,
             indexSlot.offset,
             cast(ushort) elementSize,
         );
 
         auto result = new Operand;
-        *result = Operand(value.offset, descriptor.elementType);
+        *result = Operand(valueOffset, descriptor.elementType);
         return result;
     }
 
@@ -10933,6 +13086,11 @@ private struct Compiler {
                 destination,
                 cast(ushort) size(lvalueType),
             );
+        // Same throwaway-copy writeback as `compileStaticArrayElementAssign`
+        // above (`s.arr[1] += 1;` through a captured/module/AA-pointer
+        // struct receiver).
+        if (element.writeback !is null)
+            writeBackStructField(*element.writeback);
 
         auto result = new Operand;
         *result = Operand(element.offset, lvalueType);
@@ -10943,6 +13101,17 @@ private struct Compiler {
     private static struct StaticArrayElement {
         ushort offset;
         ScalarType type;
+        // Set when the element's base ultimately resolved through
+        // `tryStructField`'s captured-struct-receiver (or module/pointer)
+        // branch: `element.offset` then lands in a throwaway materialised
+        // copy of the struct, not its real storage, so a write through it
+        // must also call `writeBackStructField` -- the same "throwaway
+        // copy, no writeback" bug class `arrayElementFieldPointer` and the
+        // dynamic-array field case (`DynamicArrayLocal.writeBackStructThroughFrame`)
+        // already fixed for other receiver shapes. Null when the base is a
+        // plain (uncaptured) static-array local, whose frame slot already
+        // is the real storage.
+        StructField* writeback;
     }
 
     // Resolve a static-array element access with compile-time-constant indices
@@ -10955,7 +13124,8 @@ private struct Compiler {
         import dmd.astenums: TY;
         import std.conv: text;
 
-        const baseOffset = staticArrayBaseOffset(index.e1);
+        StructField* writeback;
+        const baseOffset = staticArrayBaseOffset(index.e1, writeback);
         auto indexInteger = index.e2.isIntegerExp;
         if (indexInteger is null)
             throw new Exception(text(
@@ -10966,19 +13136,31 @@ private struct Compiler {
         const elementSize = cast(uint) staticArraySize(index.type);
         const offset = cast(ushort)
             (baseOffset + indexInteger.toInteger * elementSize);
-        // A sub-array or struct element has no scalar type; callers that handle
-        // those use only the offset (a static-array index chain, a struct base).
+        // A sub-array, struct, or delegate element has no scalar type;
+        // callers that handle those use only the offset (a static-array
+        // index chain, a struct base, a delegate's own 16-byte pair).
         const elementType = index.type.toBasetype.ty == TY.Tarray ||
             index.type.toBasetype.ty == TY.Tsarray ||
-            index.type.toBasetype.ty == TY.Tstruct
+            index.type.toBasetype.ty == TY.Tstruct ||
+            index.type.toBasetype.ty == TY.Tdelegate
                 ? ScalarType.void_
                 : scalarType(index.type);
-        return StaticArrayElement(offset, elementType);
+        return StaticArrayElement(offset, elementType, writeback);
     }
 
     // The inline frame base offset of a static-array sub-expression: either a
-    // static-array local (a VarExp) or a further static-array index.
+    // static-array local (a VarExp) or a further static-array index. Callers
+    // that only ever read through the offset (e.g. `&arr[i]`) can ignore
+    // `writeback`; a caller writing through the returned offset must check
+    // it -- see `StaticArrayElement.writeback`.
     private ushort staticArrayBaseOffset(Expression expression) {
+        StructField* writeback;
+        return staticArrayBaseOffset(expression, writeback);
+    }
+
+    private ushort staticArrayBaseOffset(
+        Expression expression, out StructField* writeback,
+    ) {
         import std.conv: text;
 
         if (auto variable = expression.isVarExp)
@@ -10986,14 +13168,25 @@ private struct Compiler {
                 if (auto existing = declaration in _staticArrayLocals)
                     return *existing;
 
-        if (auto index = expression.isIndexExp)
-            return locateStaticArrayElement(index).offset;
+        if (auto index = expression.isIndexExp) {
+            auto located = locateStaticArrayElement(index);
+            writeback = located.writeback;
+            return located.offset;
+        }
 
-        // `base.field` where the field is a static array: its inline block lives
-        // at `base + field.offset`.
+        // `base.field` where the field is a static array: its inline block
+        // lives at `base + field.offset`. When `field` resolved through a
+        // materialised copy (a captured struct receiver, a module struct, or
+        // an AA-value-read pointer), `field` itself carries the writeback
+        // info a write through this offset must use instead of silently
+        // landing in the throwaway copy -- the same bug class already fixed
+        // for the dynamic-array field case (`DynamicArrayLocal
+        // .writeBackStructThroughFrame`, set from this same `field`).
         if (auto dot = expression.isDotVarExp)
-            if (auto field = tryStructField(dot))
+            if (auto field = tryStructField(dot)) {
+                writeback = field;
                 return field.offset;
+            }
 
         throw new Exception(text(
             "Unsupported static array access in bytecode core: ",
@@ -11045,9 +13238,31 @@ private struct Compiler {
         in StaticArrayElement element,
         Expression rhs,
     ) {
+        import dmd.astenums: TY;
         import std.conv: text;
 
-        const value = compileExpression(rhs);
+        // A struct-typed rhs that is itself an existing lvalue (a local, a
+        // field, another array element, ...) has no scalar Operand of its
+        // own; it lives at its own inline frame block, the same storage
+        // `structOperandOffset` resolves for every other struct-value read.
+        // `compileExpression` only materialises a struct rvalue
+        // (literal/constructor call) directly, so a bare lvalue
+        // (`arr[1] = existingVar;`) must route through `structOperandOffset`
+        // instead, the same fix `tryDynamicArrayElementAssign` applies for
+        // the dynamic-array-element shape.
+        //
+        // A delegate-typed rhs (`dgs[0] = () => 1;`) is similarly routed
+        // through `delegateOperandOffset` rather than the generic expression
+        // compiler: `compileExpression`'s own `FuncExp` case tags a fresh
+        // delegate value `ulong_` (a placeholder scalar tag, not the real
+        // 16-byte width), which would never match `element.type`'s `void_`
+        // below for a delegate array element.
+        const value = rhs.type !is null &&
+                rhs.type.toBasetype.ty == TY.Tstruct
+            ? Operand(structOperandOffset(rhs), ScalarType.void_)
+            : rhs.type !is null && rhs.type.toBasetype.ty == TY.Tdelegate
+            ? Operand(delegateOperandOffset(rhs), ScalarType.void_)
+            : compileExpression(rhs);
         if (value.type != element.type)
             throw new Exception(text(
                 "Unsupported static array element assignment in bytecode core: ",
@@ -11068,7 +13283,189 @@ private struct Compiler {
             value.offset,
             cast(ushort) elementSize,
         );
+        // `element.offset` may be inside a throwaway materialised copy of a
+        // struct field's base (a captured struct receiver, a module struct,
+        // or an AA-value-read pointer, e.g. `s.arr[1] = 55;`), not real
+        // storage -- write the change back through the same mechanism
+        // `writeBackStructField` already uses for a plain (non-indexed)
+        // field write.
+        if (element.writeback !is null)
+            writeBackStructField(*element.writeback);
         return Operand(element.offset, element.type);
+    }
+
+    // A static-array element resolved to a captured base -- the declaration
+    // and owner a `capturedFrameIndex` lookup needs, plus the element's byte
+    // offset relative to that base's own frame slot (not an absolute frame
+    // offset: the base is captured from an ancestor frame, so `capturedFrameIndex`
+    // must add this to the base's own `_capturedOffsets` entry itself).
+    private static struct CapturedStaticArrayElement {
+        VarDeclaration declaration;
+        ushort relativeOffset;
+        ScalarType type;
+    }
+
+    // The captured counterpart of `staticArrayBaseOffset`: the relative byte
+    // offset (from the captured base's own frame slot) of a static-array
+    // sub-expression rooted at a static-array local captured from an
+    // enclosing function, or `false` if `expression` does not bottom out at
+    // one. A base tracked in *this* function's own `_staticArrayLocals`
+    // declines here (even if also present in `_capturedOffsets` as another
+    // function's capture of it) so the plain in-frame path in
+    // `indexesStaticArray`/`locateStaticArrayElement` is tried instead.
+    private bool capturedStaticArrayBaseOffset(
+        Expression expression,
+        out VarDeclaration declaration,
+        out ushort relativeOffset,
+    ) {
+        import dmd.astenums: TY;
+
+        if (auto variable = expression.isVarExp)
+            if (auto decl = variable.var.isVarDeclaration)
+                if (decl.type.toBasetype.ty == TY.Tsarray)
+                    if (decl !in _staticArrayLocals)
+                        if (auto captured = decl in _capturedOffsets) {
+                            declaration = decl;
+                            relativeOffset = 0;
+                            return true;
+                        }
+
+        if (auto index = expression.isIndexExp)
+            if (auto element = tryCapturedStaticArrayElement(index)) {
+                declaration = element.declaration;
+                relativeOffset = element.relativeOffset;
+                return true;
+            }
+
+        return false;
+    }
+
+    // Resolve a static-array element access rooted at a captured base to its
+    // relative offset, mirroring `locateStaticArrayElement`'s compile-time
+    // walk. Null if `index.e1` does not bottom out at a captured static-array
+    // local, or the index itself is not a compile-time constant.
+    private CapturedStaticArrayElement* tryCapturedStaticArrayElement(
+        IndexExp index,
+    ) {
+        import dmd.astenums: TY;
+
+        auto indexInteger = index.e2.isIntegerExp;
+        if (indexInteger is null)
+            return null;
+
+        VarDeclaration declaration;
+        ushort baseOffset;
+        if (!capturedStaticArrayBaseOffset(index.e1, declaration, baseOffset))
+            return null;
+
+        const elementSize = cast(uint) staticArraySize(index.type);
+        const relativeOffset = cast(ushort)
+            (baseOffset + indexInteger.toInteger * elementSize);
+        // A sub-array, struct, or delegate element has no scalar type,
+        // matching `locateStaticArrayElement`'s identical carve-out.
+        const elementType = index.type.toBasetype.ty == TY.Tarray ||
+            index.type.toBasetype.ty == TY.Tsarray ||
+            index.type.toBasetype.ty == TY.Tstruct ||
+            index.type.toBasetype.ty == TY.Tdelegate
+                ? ScalarType.void_
+                : scalarType(index.type);
+
+        auto result = new CapturedStaticArrayElement;
+        *result = CapturedStaticArrayElement(declaration, relativeOffset, elementType);
+        return result;
+    }
+
+    // `arr[i] = rhs` for a static-array element captured from an enclosing
+    // function (`int[3] arr; void mutate() { arr[1] = 55; }`): `arr`'s slot
+    // lives in the enclosing frame, not this function's own
+    // `_staticArrayLocals`, so the write must go through
+    // `capturedFrameIndex`/`Op.frameStore` (the same captured-variable
+    // machinery `compileCapturedPostIncrement` already uses for a captured
+    // *scalar*) instead of `compileStaticArrayElementAssign`'s direct
+    // in-frame `Op.copy`.
+    private Operand* tryCapturedStaticArrayElementAssign(
+        IndexExp index,
+        Expression rhs,
+    ) {
+        import dmd.astenums: TY;
+        import std.conv: text;
+
+        if (!_hasNestedContext)
+            return null;
+
+        auto element = tryCapturedStaticArrayElement(index);
+        if (element is null)
+            return null;
+
+        const captured = element.declaration in _capturedOffsets;
+        const absoluteOffset = cast(ushort) (*captured + element.relativeOffset);
+
+        // Same rhs-materialisation rules as `compileStaticArrayElementAssign`:
+        // a struct or delegate rhs has no scalar `Operand` of its own.
+        const value = rhs.type !is null &&
+                rhs.type.toBasetype.ty == TY.Tstruct
+            ? Operand(structOperandOffset(rhs), ScalarType.void_)
+            : rhs.type !is null && rhs.type.toBasetype.ty == TY.Tdelegate
+            ? Operand(delegateOperandOffset(rhs), ScalarType.void_)
+            : compileExpression(rhs);
+        if (value.type != element.type)
+            throw new Exception(text(
+                "Unsupported static array element assignment in bytecode core: ",
+                expressionChars(rhs),
+            ));
+
+        const elementSize = element.type == ScalarType.void_
+            ? cast(uint) staticArraySize(rhs.type)
+            : size(element.type);
+        _code ~= Instruction(
+            Op.frameStore,
+            value.offset,
+            capturedFrameIndex(_capturedOwners[element.declaration], absoluteOffset),
+            cast(ushort) elementSize,
+        );
+
+        auto result = new Operand;
+        *result = Operand(value.offset, element.type);
+        return result;
+    }
+
+    // `arr[i]` for a static-array element captured from an enclosing function
+    // (`int[3] arr; int readIt() { return arr[1]; }`): the read counterpart of
+    // `tryCapturedStaticArrayElementAssign` above, sharing the same
+    // `tryCapturedStaticArrayElement` offset resolution. `arr`'s slot lives in
+    // the enclosing frame, not this function's own `_staticArrayLocals`, so
+    // `compileStaticArrayIndex`'s direct in-frame offset read cannot reach it;
+    // the element is materialised into a fresh local slot via
+    // `capturedFrameIndex`/`Op.frameLoad`, the same captured-variable
+    // machinery `loadCapturedLocal` already uses to read a whole captured
+    // local (not just one element of it).
+    private Operand* tryCapturedStaticArrayElementRead(IndexExp index) {
+        if (!_hasNestedContext)
+            return null;
+
+        auto element = tryCapturedStaticArrayElement(index);
+        if (element is null)
+            return null;
+
+        const captured = element.declaration in _capturedOffsets;
+        const absoluteOffset = cast(ushort) (*captured + element.relativeOffset);
+
+        const elementSize = element.type == ScalarType.void_
+            ? cast(uint) staticArraySize(index.type)
+            : size(element.type);
+        const destination = element.type == ScalarType.void_
+            ? allocateStructBlock(index.type)
+            : allocateBytes(elementSize, elementSize);
+        _code ~= Instruction(
+            Op.frameLoad,
+            destination,
+            capturedFrameIndex(_capturedOwners[element.declaration], absoluteOffset),
+            cast(ushort) elementSize,
+        );
+
+        auto result = new Operand;
+        *result = Operand(destination, element.type);
+        return result;
     }
 
     // `matrix[] = [elem, elem+1]` or `buf[] = fillValue`: the whole-array
@@ -11220,11 +13617,12 @@ private struct Compiler {
         const elementType = dynamicArrayElementType(slice.e1.type);
         const elementSize = dynamicArrayElementSize(slice.e1.type, elementType);
 
-        if (sliceFillSupported(elementSize) &&
-            rhs.type !is null &&
-            rhs.type.toBasetype.isTypeBasic !is null) {
+        if (isBroadcastFillSource(rhs)) {
             const value = compileExpression(rhs);
-            _code ~= Instruction(sliceFillOp(elementSize), *destination, value.offset);
+            _code ~= Instruction(
+                sliceFillOp(elementSize), *destination, value.offset,
+                cast(ushort) elementSize,
+            );
 
             auto result = new Operand;
             *result = Operand.init;
@@ -11242,6 +13640,27 @@ private struct Compiler {
         auto result = new Operand;
         *result = Operand.init;
         return result;
+    }
+
+    // True when `rhs` is a single value broadcast into every element of a
+    // slice-assignment range (`arr[0 .. 2] = value;`), as opposed to an
+    // array-shaped source `compileSourceSlice` copies element-by-element (a
+    // sub-slice, an array literal, a string literal, or another dynamic
+    // array). Does not by itself account for a destination element that is
+    // its own heap-allocated row descriptor (`elementIsArray` at the call
+    // site) -- callers guard that shape separately.
+    private bool isBroadcastFillSource(Expression rhs) {
+        import dmd.astenums: TY;
+
+        if (rhs.type is null)
+            return false;
+        if (rhs.isSliceExp !is null)
+            return false;
+        if (rhs.isArrayLiteralExp !is null)
+            return false;
+        if (stringLiteralOf(rhs) !is null)
+            return false;
+        return rhs.type.toBasetype.ty != TY.Tarray;
     }
 
     // `arr[lo .. hi] = rhs` or `p[lo .. hi] = rhs`: form the destination
@@ -11271,11 +13690,19 @@ private struct Compiler {
         const elementSize =
             dynamicArrayElementSize(slice.e1.type, elementType, elementIsArray);
 
-        if (sliceFillSupported(elementSize) &&
-            rhs.type !is null &&
-            rhs.type.toBasetype.isTypeBasic !is null) {
+        // `elementIsArray` means each destination element is its own
+        // separately heap-allocated row descriptor (the `T[N][]`/`T[][]`
+        // representation), not `elementSize` raw bytes shared by every row;
+        // broadcasting one rhs value into every row would need a fresh row
+        // allocation per destination element rather than a byte-for-byte
+        // fill, so this shape still declines below rather than silently
+        // aliasing every row to one block or misreading the rhs's width.
+        if (!elementIsArray && isBroadcastFillSource(rhs)) {
             const value = compileExpression(rhs);
-            _code ~= Instruction(sliceFillOp(elementSize), destination, value.offset);
+            _code ~= Instruction(
+                sliceFillOp(elementSize), destination, value.offset,
+                cast(ushort) elementSize,
+            );
 
             auto result = new Operand;
             *result = Operand.init;
@@ -11547,26 +13974,55 @@ private struct Compiler {
         return staticArrayOffsetOf(expression);
     }
 
+    // Whether `expression` is a class reference, or a struct-field access
+    // chain (any depth, e.g. `c.inner`, `c.inner.deeper`) ultimately rooted
+    // at one -- i.e. an expression `tryClassPointerField` can safely
+    // `compileExpression` for a real runtime pointer, as opposed to a plain
+    // (non-class-backed) struct value addressed through `_structLocals`, a
+    // captured struct receiver, a module struct, or an AA-value-read
+    // pointer, none of which `compileExpression` accepts directly. Walks
+    // down the `DotVarExp.e1` chain rather than compiling anything, so it is
+    // safe to call before deciding whether probing further is even valid.
+    private bool structFieldReachedThroughClass(Expression expression) {
+        import dmd.astenums: TY;
+
+        if (expression.type is null)
+            return false;
+        if (expression.type.toBasetype.ty == TY.Tclass)
+            return true;
+        if (auto dot = expression.isDotVarExp)
+            return structFieldReachedThroughClass(dot.e1);
+        return false;
+    }
+
     // The class-field counterpart of `staticArrayOffsetOf`: a static-array
-    // field reached through a class pointer, or null if `expression` is not
+    // field reached through a class pointer -- either directly (`c.arr`) or
+    // through an intermediate struct-field chain rooted at a class (`c.inner
+    // .arr`, `c.inner.deeper.arr`, ...) -- or null if `expression` is not
     // one. Unlike a struct's static-array field (an inline frame offset
     // `staticArrayOffsetOf` folds at compile time), the field's storage
     // lives in the class's own heap block, so callers address it through
-    // `classFieldAddress` (a real runtime pointer) instead.
+    // `classFieldAddress` (a real runtime pointer) instead; an intermediate
+    // struct-field hop resolves through that same real-pointer plumbing
+    // (`tryClassPointerField`'s generic pointer-receiver mechanism, per
+    // `loadClassPointerField`'s `Tstruct` branch), so no materialised copy
+    // or writeback is ever needed for the struct hop itself.
     private ClassPointerField* classStaticArrayFieldOf(Expression expression) {
         import dmd.astenums: TY;
 
         if (auto cast_ = expression.isCastExp)
             return classStaticArrayFieldOf(cast_.e1);
 
-        // The receiver's static type must already be a class before probing
+        // The receiver must resolve to a class reference (directly or
+        // through a struct-field chain rooted at one) before probing
         // further: `tryClassPointerField` unconditionally compiles `dot.e1`
         // to check whether it yields a pointer, which throws for a plain
-        // struct local (structs are addressed through `_structLocals`, never
-        // `compileExpression`) rather than simply failing to match.
+        // (non-class-backed) struct local (structs are addressed through
+        // `_structLocals`, never `compileExpression`) rather than simply
+        // failing to match.
         if (auto dot = expression.isDotVarExp)
             if (dot.e1.type !is null &&
-                dot.e1.type.toBasetype.ty == TY.Tclass)
+                structFieldReachedThroughClass(dot.e1))
                 if (auto field = tryClassPointerField(dot))
                     if (field.type.toBasetype.ty == TY.Tsarray)
                         return field;
@@ -11598,10 +14054,14 @@ private struct Compiler {
         // the VM-owned maps. DMD keeps the EqualExp (with an unused lowering to
         // `_d_aaEqual`), so match the operand type here.
         if (equal.e1.type.toBasetype.ty == TY.Taarray) {
+            const width = assocArrayValueWidth(equal.e1.type.toBasetype);
+            const keyMeta = assocArrayKeyMeta(equal.e1.type.toBasetype);
             const left = assocArrayHandleOffset(equal.e1);
             const right = assocArrayHandleOffset(equal.e2);
             const offset = allocate(ScalarType.bool_);
-            _code ~= Instruction(Op.aaEqual, offset, left, right);
+            _code ~= Instruction(
+                Op.aaEqual, offset, left, right, cast(ushort) width, keyMeta,
+            );
             if (equal.op == EXP.notEqual)
                 _code ~= Instruction(Op.notBool, offset, offset);
             return Operand(offset, ScalarType.bool_);
@@ -11616,25 +14076,50 @@ private struct Compiler {
                 equal.op == EXP.notEqual,
             );
 
+        // `dg1 == dg2` / `dg1 != dg2`, including a `null` operand: a delegate
+        // is a builtin type with no `opEquals` to lower through, so DMD keeps
+        // this as a plain `EqualExp` over the 16-byte `{functionIndex,
+        // context}` pair. `compileExpression` below has no generic VarExp
+        // case for a delegate-typed local (delegate locals live in their own
+        // `_delegateLocals` table, resolved through `delegateOperandOffset`
+        // instead), so this needs its own branch the same way the aggregate
+        // cases above do.
+        if (equal.e1.type.toBasetype.ty == TY.Tdelegate)
+            return compileDelegateEquality(
+                delegateOperandOffset(equal.e1),
+                delegateOperandOffset(equal.e2),
+                equal.op == EXP.notEqual,
+            );
+
         const bothDynamicArrays = equal.e1.type.toBasetype.ty == TY.Tarray &&
             equal.e2.type.toBasetype.ty == TY.Tarray &&
             dynamicArrayElementType(equal.e1.type) ==
                 dynamicArrayElementType(equal.e2.type);
         if (bothDynamicArrays) {
             const elementType = dynamicArrayElementType(equal.e1.type);
-            const left =
-                arrayDescriptorOffset(elementType, equal.e1);
-            const right =
-                arrayDescriptorOffset(elementType, equal.e2);
-            const offset = allocate(ScalarType.bool_);
-            _code ~= Instruction(
-                sliceEqualOp(
-                    dynamicArrayElementSize(equal.e1.type, elementType),
-                ),
-                offset,
-                left,
-                right,
-            );
+            // `int[][] == int[][]` (any nesting depth, `int[][][]` and
+            // deeper included): each element is itself a heap-allocated
+            // row descriptor, so a flat `sliceEqualOp` below would compare
+            // the rows' `.ptr` values instead of their content -- two
+            // separately-constructed but content-equal rows would compare
+            // unequal. Structural comparison needs the dedicated nested
+            // opcode instead.
+            const nested = arrayElementIsArray(equal.e1.type) &&
+                arrayElementIsArray(equal.e2.type);
+            const left = arrayDescriptorOffset(elementType, equal.e1, nested);
+            const right = arrayDescriptorOffset(elementType, equal.e2, nested);
+            const offset = nested
+                ? emitNestedArrayEqual(left, right, equal.e1.type)
+                : allocate(ScalarType.bool_);
+            if (!nested)
+                _code ~= Instruction(
+                    sliceEqualOp(
+                        dynamicArrayElementSize(equal.e1.type, elementType),
+                    ),
+                    offset,
+                    left,
+                    right,
+                );
             if (equal.op == EXP.notEqual)
                 _code ~= Instruction(Op.notBool, offset, offset);
             return Operand(offset, ScalarType.bool_);
@@ -11666,8 +14151,60 @@ private struct Compiler {
         return Operand(offset, ScalarType.bool_);
     }
 
+    // `dg1 == dg2` / `dg1 is dg2` (and the negated forms): compare the two
+    // 8-byte halves of the 16-byte `{functionIndex, context}` pair -- there
+    // is no 16-byte equality opcode -- and combine them with the same
+    // short-circuiting `&&` shape `compileStructIdentity` above uses for a
+    // multi-field struct, specialised to exactly two fixed-offset fields.
+    private Operand compileDelegateEquality(
+        in ushort left,
+        in ushort right,
+        in bool invert,
+    ) {
+        const result = allocate(ScalarType.bool_);
+        _code ~= Instruction(Op.loadConstant, result, constantIndex(1), 1);
+
+        const functionEqual = allocate(ScalarType.bool_);
+        _code ~= Instruction(Op.equal8, functionEqual, left, right);
+        const functionFalseJump =
+            emitJumpIfFalse(Operand(functionEqual, ScalarType.bool_));
+
+        const contextEqual = allocate(ScalarType.bool_);
+        _code ~= Instruction(
+            Op.equal8,
+            contextEqual,
+            cast(ushort) (left + size_t.sizeof),
+            cast(ushort) (right + size_t.sizeof),
+        );
+        const contextFalseJump =
+            emitJumpIfFalse(Operand(contextEqual, ScalarType.bool_));
+
+        const endJump = emitJump;
+        patchJump(functionFalseJump);
+        patchJump(contextFalseJump);
+        _code ~= Instruction(Op.loadConstant, result, constantIndex(0), 1);
+        patchJump(endJump);
+
+        if (invert)
+            _code ~= Instruction(Op.notBool, result, result);
+        return Operand(result, ScalarType.bool_);
+    }
+
     private Operand compileIdentityExpression(IdentityExp identity) {
+        import dmd.astenums: TY;
         import dmd.tokens: EXP;
+
+        // `dg1 is dg2` / `dg1 !is dg2`: a delegate has no `opEquals`, so `is`
+        // is the same bitwise comparison `==` already needs
+        // (`compileEqualExpression`'s `Tdelegate` branch above); route
+        // through the same two-halves helper instead of the generic
+        // `compileExpression`, which has no delegate-typed `VarExp` case.
+        if (identity.e1.type.toBasetype.ty == TY.Tdelegate)
+            return compileDelegateEquality(
+                delegateOperandOffset(identity.e1),
+                delegateOperandOffset(identity.e2),
+                identity.op == EXP.notIdentity,
+            );
 
         const lhs = compileExpression(identity.e1);
         const rhs = compileExpression(identity.e2);
@@ -11885,6 +14422,16 @@ private struct Compiler {
         // capture of its own.
         if (function_ is null)
             if (auto offset = capturedDelegateOffsetOf(call))
+                return compileDynamicDelegateCall(*offset, call);
+
+        // `dgs[0]()` through an INDEX into a delegate-typed array, no
+        // intermediate delegate-typed local: the same run-time-typed
+        // dispatch as a delegate-typed parameter/field, with the indexed
+        // element's own descriptor offset (`delegateOperandOffset` already
+        // materialises it, in place for a static array element or a fresh
+        // copy for a dynamic array element).
+        if (function_ is null)
+            if (auto offset = indexedDelegateOffsetOf(call))
                 return compileDynamicDelegateCall(*offset, call);
 
         // `fp()` through a function-pointer value: the callee is not a named
@@ -12114,6 +14661,7 @@ private struct Compiler {
         const destination =
             (!returnType.isArray &&
                 !returnType.isStruct &&
+                !returnType.isDelegate &&
                 returnType.scalar == ScalarType.void_)
                 ? cast(ushort) 0
                 : allocateBytes(size(returnType), 8);
@@ -12197,6 +14745,22 @@ private struct Compiler {
                 structReceiver.offset,
                 structReceiver.writeBackFrameIndex,
                 structReceiver.writeBackSize,
+            );
+        if (hasStructReceiver && structReceiver.writeBackPointerSize != 0)
+            _code ~= Instruction(
+                pointerStoreOp(structReceiver.writeBackPointerSize),
+                structReceiver.offset,
+                structReceiver.writeBackPointerAddress,
+                structReceiver.writeBackPointerIndexSlot,
+                structReceiver.writeBackPointerSize,
+            );
+        if (hasStructReceiver && structReceiver.writeBackElementSize != 0)
+            _code ~= Instruction(
+                indexStoreOp(structReceiver.writeBackElementSize),
+                structReceiver.offset,
+                structReceiver.writeBackDescriptorOffset,
+                structReceiver.writeBackIndexOffset,
+                structReceiver.writeBackElementSize,
             );
         if (isPointerType(call.type))
             return Operand(
@@ -12665,7 +15229,8 @@ private struct Compiler {
 
         const offset = allocateBytes(delegateValueSize, size_t.sizeof);
         _code ~= Instruction(
-            Op.frameLoad, offset, capturedFrameIndex(*capturedOffset),
+            Op.frameLoad, offset,
+            capturedFrameIndex(_capturedOwners[declaration], *capturedOffset),
             cast(ushort) delegateValueSize,
         );
         auto result = new ushort;
@@ -12686,23 +15251,35 @@ private struct Compiler {
         return declaration in _delegateParameterLocals;
     }
 
-    // The frame offset of the delegate-typed struct FIELD invoked by
-    // `s.f(...)`, or null if `call` is not a call through one. The callee's
-    // target is a run-time value with no statically known `FuncDeclaration`,
-    // the same shape a delegate-typed parameter reaches.
+    // The frame offset of the delegate-typed struct/class/struct-pointer
+    // FIELD invoked by `s.f(...)`/`c.f(...)`/`p.f(...)`, or null if `call`
+    // is not a call through one. The callee's target is a run-time value
+    // with no statically known `FuncDeclaration`, the same shape a
+    // delegate-typed parameter reaches.
     private ushort* structFieldDelegateOffsetOf(CallExp call) {
-        import dmd.astenums: TY;
-
         auto dot = call.e1 is null ? null : call.e1.isDotVarExp;
         if (dot is null || dot.var.isFuncDeclaration !is null)
             return null;
 
-        auto field = tryStructField(dot);
-        if (field is null || field.type.toBasetype.ty != TY.Tdelegate)
+        return delegateFieldOffsetOf(dot);
+    }
+
+    // The frame offset of the delegate value read out of an INDEX into a
+    // delegate-typed array (`dgs[0]()`), or null if `call` is not a call
+    // through one. Unlike `delegateLocalOf`, there is no known
+    // `FuncDeclaration` behind this slot; `delegateOperandOffset` already
+    // knows how to materialise an indexed delegate element's own
+    // `{functionIndex, context}` pair for the argument/initializer case, so
+    // reuse it here.
+    private ushort* indexedDelegateOffsetOf(CallExp call) {
+        import dmd.astenums: TY;
+
+        auto index = call.e1 is null ? null : call.e1.isIndexExp;
+        if (index is null || index.type.toBasetype.ty != TY.Tdelegate)
             return null;
 
         auto offset = new ushort;
-        *offset = field.offset;
+        *offset = delegateOperandOffset(index);
         return offset;
     }
 
@@ -12721,7 +15298,9 @@ private struct Compiler {
         if (declaration !in _lazyDelegateDeclarations)
             return null;
         if (auto captured = declaration in _capturedOffsets)
-            return new LazyDelegateSource(*captured, true);
+            return new LazyDelegateSource(
+                *captured, true, _capturedOwners[declaration],
+            );
         return null;
     }
 
@@ -12744,7 +15323,7 @@ private struct Compiler {
             _code ~= Instruction(
                 Op.frameLoad,
                 delegateOffset,
-                capturedFrameIndex(source.offset),
+                capturedFrameIndex(source.owner, source.offset),
                 cast(ushort) delegateValueSize,
             );
 
@@ -12762,6 +15341,7 @@ private struct Compiler {
         const destination =
             (!returnType.isArray &&
                 !returnType.isStruct &&
+                !returnType.isDelegate &&
                 returnType.scalar == ScalarType.void_)
                 ? cast(ushort) 0
                 : allocateBytes(size(returnType), 8);
@@ -12790,7 +15370,9 @@ private struct Compiler {
                     if (auto source = declaration in _capturedOffsets) {
                         _code ~= Instruction(
                             Op.frameLoad, destination,
-                            capturedFrameIndex(*source),
+                            capturedFrameIndex(
+                                _capturedOwners[declaration], *source,
+                            ),
                             cast(ushort) delegateValueSize,
                         );
                         return;
@@ -12866,6 +15448,7 @@ private struct Compiler {
         const destination =
             (!returnType.isArray &&
                 !returnType.isStruct &&
+                !returnType.isDelegate &&
                 returnType.scalar == ScalarType.void_)
                 ? cast(ushort) 0
                 : allocateBytes(size(returnType), 8);
@@ -12929,6 +15512,7 @@ private struct Compiler {
         const destination =
             (!returnType.isArray &&
                 !returnType.isStruct &&
+                !returnType.isDelegate &&
                 returnType.scalar == ScalarType.void_)
                 ? cast(ushort) 0
                 : allocateBytes(size(returnType), 8);
@@ -13030,12 +15614,25 @@ private struct Compiler {
         const destination =
             (!returnType.isArray &&
                 !returnType.isStruct &&
+                !returnType.isDelegate &&
                 returnType.scalar == ScalarType.void_)
                 ? cast(ushort) 0
                 : allocateBytes(size(returnType), 8);
         _code ~= Instruction(
             Op.callIndirect, pointer.offset, argumentArea, destination,
         );
+        // A pointer-returning callee (raw `T*` or another function pointer,
+        // e.g. `auto make = () => () => 42;`'s `make()` call, whose result
+        // is itself a function pointer another declaration assigns from)
+        // needs the same `isPointer` tagging `compileCall`'s named-function
+        // path already gives a direct call's pointer result -- a plain
+        // scalar-typed operand is not accepted by a pointer-typed local's
+        // declaration.
+        if (isPointerType(functionType.next))
+            return Operand(
+                destination, ScalarType.ulong_, true,
+                pointerElementScalar(functionType.next),
+            );
         return Operand(destination, returnType.scalar);
     }
 
@@ -13357,6 +15954,7 @@ private struct Compiler {
 
             const descriptor = arrayDescriptorOffset(
                 dynamicArrayElementType(argument.type), argument,
+                arrayElementIsArray(argument.type),
             );
             _code ~= Instruction(
                 Op.copy,
@@ -14121,43 +16719,65 @@ private struct Compiler {
             }
 
             case getRvalue: {
+                // `const` fails: `Type` is DMD's mutable AST ref.
+                auto aaType = assocArrayType((*call.arguments)[0]);
+                const valueType = assocArrayValueScalarType(aaType);
+                const width = assocArrayValueWidth(aaType);
+                const keyMeta = assocArrayKeyMeta(aaType);
                 const key = compileExpression((*call.arguments)[1]);
                 const offset = allocateBytes(
                     cast(uint) size_t.sizeof, size_t.sizeof,
                 );
                 _code ~= Instruction(
                     Op.aaGetRvalue, offset, handle, key.offset,
+                    cast(ushort) width, keyMeta,
                 );
-                return Operand(
-                    offset, ScalarType.ulong_, true, ScalarType.int_,
-                );
+                return Operand(offset, ScalarType.ulong_, true, valueType);
             }
 
             case getLvalue:
                 return compileAssocArrayGetLvalue(call, handle);
 
             case in_: {
+                // `const` fails: `Type` is DMD's mutable AST ref.
+                auto aaType = assocArrayType((*call.arguments)[0]);
+                const valueType = assocArrayValueScalarType(aaType);
+                const width = assocArrayValueWidth(aaType);
+                const keyMeta = assocArrayKeyMeta(aaType);
                 const key = compileExpression((*call.arguments)[1]);
                 const offset = allocateBytes(
                     cast(uint) size_t.sizeof, size_t.sizeof,
                 );
-                _code ~= Instruction(Op.aaIn, offset, handle, key.offset);
-                return Operand(
-                    offset, ScalarType.ulong_, true, ScalarType.int_,
+                _code ~= Instruction(
+                    Op.aaIn, offset, handle, key.offset, cast(ushort) width,
+                    keyMeta,
                 );
+                return Operand(offset, ScalarType.ulong_, true, valueType);
             }
 
             case remove: {
+                auto aaType = assocArrayType((*call.arguments)[0]);
+                const width = assocArrayValueWidth(aaType);
+                const keyMeta = assocArrayKeyMeta(aaType);
                 const key = compileExpression((*call.arguments)[1]);
                 const offset = allocate(ScalarType.bool_);
-                _code ~= Instruction(Op.aaRemove, offset, handle, key.offset);
+                _code ~= Instruction(
+                    Op.aaRemove, offset, handle, key.offset,
+                    cast(ushort) width, keyMeta,
+                );
                 return Operand(offset, ScalarType.bool_);
             }
 
             case equal: {
+                auto aaType = assocArrayType((*call.arguments)[0]);
+                const width = assocArrayValueWidth(aaType);
+                const keyMeta = assocArrayKeyMeta(aaType);
                 const right = assocArrayHandleOffset((*call.arguments)[1]);
                 const offset = allocate(ScalarType.bool_);
-                _code ~= Instruction(Op.aaEqual, offset, handle, right);
+                _code ~= Instruction(
+                    Op.aaEqual, offset, handle, right, cast(ushort) width,
+                    keyMeta,
+                );
                 return Operand(offset, ScalarType.bool_);
             }
 
@@ -14169,17 +16789,19 @@ private struct Compiler {
                 return Operand(offset, ScalarType.ulong_);
             }
 
-            case keys:
-                return compileAssocArraySlice(Op.aaKeys, handle, int.sizeof);
-
-            case values:
+            case keys: {
+                auto aaType = assocArrayType((*call.arguments)[0]);
                 return compileAssocArraySlice(
-                    Op.aaValues,
-                    handle,
-                    dynamicArrayElementSize(
-                        call.type, dynamicArrayElementType(call.type),
-                    ),
+                    Op.aaKeys, handle, assocArrayKeyWidth(aaType),
                 );
+            }
+
+            case values: {
+                auto aaType = assocArrayType((*call.arguments)[0]);
+                return compileAssocArraySlice(
+                    Op.aaValues, handle, assocArrayValueWidth(aaType),
+                );
+            }
 
             case apply2:
                 return compileAssocArrayApply2(call, handle);
@@ -14230,13 +16852,35 @@ private struct Compiler {
             ? cast(uint) staticArraySize(valueParameter.type)
             : size(scalarType(valueParameter.type));
 
-        const keys = compileAssocArraySlice(Op.aaKeys, handle, int.sizeof);
+        // `AssocArray.keys` (machine.d) packs each key at its real width --
+        // a scalar's own size, or a `string`'s 16-byte slice descriptor
+        // (`assocArrayKeyWidth`, the same stride the direct lookup/insert
+        // opcodes already key off via `assocArrayKeyMeta`). Reading it back
+        // at that same width (rather than a hardcoded 4-byte `int`) is the
+        // general fix; `assocArrayKeyIsArray`/`assocArrayKeyWidth` still
+        // throw explicitly for a key type direct lookup itself refuses
+        // (`wstring`/`dstring`, a struct key), so no separate check is
+        // needed here.
+        auto aaType = assocArrayType((*call.arguments)[0]);
+        const keyIsArray = assocArrayKeyIsArray(aaType);
+        const keyElementSize = assocArrayKeyWidth(aaType);
+
+        const keys = compileAssocArraySlice(Op.aaKeys, handle, keyElementSize);
         const values = compileAssocArraySlice(
             Op.aaValues, handle, valueElementSize,
         );
 
-        const keySlot = allocate(ScalarType.int_);
-        _locals[keyParameter] = keySlot;
+        const keySlot = keyIsArray
+            ? allocateBytes(keyElementSize, size_t.sizeof)
+            : allocate(scalarType(keyParameter.type));
+        if (keyIsArray)
+            _dynamicArrayLocals[keyParameter] = DynamicArrayLocal(
+                keySlot,
+                dynamicArrayElementType(keyParameter.type),
+                arrayElementIsArray(keyParameter.type),
+            );
+        else
+            _locals[keyParameter] = keySlot;
 
         const valueSlot = allocateBytes(
             valueElementSize,
@@ -14262,7 +16906,10 @@ private struct Compiler {
         );
         const exitJump = emitJumpIfFalse(Operand(condition, ScalarType.bool_));
 
-        _code ~= Instruction(Op.indexLoad4, keySlot, keys.offset, index);
+        _code ~= Instruction(
+            indexLoadOp(keyElementSize), keySlot, keys.offset, index,
+            cast(ushort) keyElementSize,
+        );
         _code ~= Instruction(
             indexLoadOp(valueElementSize), valueSlot, values.offset, index,
             cast(ushort) valueElementSize,
@@ -14297,14 +16944,139 @@ private struct Compiler {
         CallExp call,
         in ushort handle,
     ) {
+        // `const` fails: `Type` is DMD's mutable AST ref.
+        auto aaType = assocArrayType((*call.arguments)[0]);
+        const valueType = assocArrayValueScalarType(aaType);
+        const width = assocArrayValueWidth(aaType);
+        const keyMeta = assocArrayKeyMeta(aaType);
+
         const key = compileExpression((*call.arguments)[1]);
+        // A fresh, appropriately-sized placeholder: its bytes are immediately
+        // overwritten by the surrounding assignment through the returned
+        // pointer, so its initial content never matters, but it must be
+        // exactly `width` bytes so a wider-than-`key`-sized value (e.g. a
+        // nested AA handle) never reads past `key`'s own slot.
+        const placeholder = allocateBytes(width, width);
         const offset =
             allocateBytes(cast(uint) size_t.sizeof, size_t.sizeof);
-        _code ~= Instruction(Op.aaInsert, handle, key.offset, key.offset);
-        _code ~= Instruction(Op.aaIn, offset, handle, key.offset);
-        return Operand(
-            offset, ScalarType.ulong_, true, ScalarType.int_,
+        _code ~= Instruction(
+            Op.aaInsert, handle, key.offset, placeholder, cast(ushort) width,
+            keyMeta,
         );
+        _code ~= Instruction(
+            Op.aaIn, offset, handle, key.offset, cast(ushort) width, keyMeta,
+        );
+        return Operand(offset, ScalarType.ulong_, true, valueType);
+    }
+
+    // The static `V[K]` type of an associative-array operand (after
+    // unwrapping `&aa`/`*aa`, the same shapes the hook lowering wraps the AA
+    // argument in), for deriving its value type `V`.
+    private Type assocArrayType(Expression expression) {
+        auto inner = expression;
+        if (auto address = inner.isAddrExp)
+            inner = address.e1;
+        if (auto deref = inner.isPtrExp)
+            inner = deref.e1;
+        return inner.type.toBasetype;
+    }
+
+    // The pointee scalar for an associative array's value type, matching
+    // `dynamicArrayElementType`'s convention (`void_` marks an opaque
+    // aggregate block rather than a plain machine scalar). `scalarType`
+    // itself never classifies `Tdelegate` (a static-registry AA such as
+    // `void delegate(...)[string]`, `staticDelegateAssocArrayDeclaration`,
+    // still gives its value slot real -- if never runtime-read -- storage);
+    // a delegate value is the same opaque 16-byte `{context, funcptr}` pair
+    // `emitDelegateValue` lays out for every other delegate-typed slot.
+    private ScalarType assocArrayValueScalarType(Type aaType) {
+        import dmd.astenums: TY;
+
+        if (aaType.toBasetype.nextOf.toBasetype.ty == TY.Tdelegate)
+            return ScalarType.void_;
+        if (arrayElementIsArray(aaType))
+            return ScalarType.void_;
+        return dynamicArrayElementType(aaType);
+    }
+
+    // The byte width of an associative array's value type, the same way
+    // `dynamicArrayElementSize` sizes a dynamic array's element: a struct or
+    // static-array value is its own block size, any other value is its scalar
+    // width. `AssocArray.values` (`machine.d`) stores entries packed at this
+    // stride, mirroring how a dynamic array carries its own element size.
+    // `arrayElementIsArray(aaType)` reuses the same "is the (`nextOf`)
+    // element itself an array" test a dynamic array's own element sizing
+    // uses -- an AA value plays the same role there as a dynamic array's
+    // element -- so a `T[]`/`T[N]`-typed value (`int[][int]`) is sized as
+    // its own 16-byte slice descriptor, not (mis)read as
+    // `dynamicArrayElementType` drilling one level further into `T`'s own
+    // element type.
+    private uint assocArrayValueWidth(Type aaType) {
+        import dmd.astenums: TY;
+
+        if (aaType.toBasetype.nextOf.toBasetype.ty == TY.Tdelegate)
+            return delegateValueSize;
+        return dynamicArrayElementSize(
+            aaType,
+            dynamicArrayElementType(aaType),
+            arrayElementIsArray(aaType),
+        );
+    }
+
+    // The associative array's own key type (`TypeAArray.index`), the
+    // key-side counterpart to `assocArrayValueWidth`'s value type.
+    private Type assocArrayKeyType(Type aaType) {
+        return aaType.isTypeAArray.index;
+    }
+
+    // True when the associative array's key is compared by the content its
+    // {ptr, length} descriptor points at (`keysEqual`'s `keyIsArray`,
+    // machine.d), rather than by the descriptor's own bytes --
+    // two separately-constructed but content-equal `string`s have different
+    // backing pointers, so a raw descriptor compare would wrongly treat them
+    // as distinct keys. Only a plain `string` (immutable `char[]`) is
+    // supported this way; `wstring`/`dstring` throw rather than silently
+    // miscompare by the wrong element width. A struct-typed key never
+    // reaches here: `compileAssocArrayHook`'s generic key-expression compile
+    // (`compileExpression`) throws first for DMD's synthesized `__aakeyN`
+    // struct-typed temporary.
+    private bool assocArrayKeyIsArray(Type aaType) {
+        import std.conv: text;
+
+        auto keyType = assocArrayKeyType(aaType);
+        if (!isStringType(keyType))
+            return false;
+        if (!isCharStringType(keyType))
+            throw new Exception(text(
+                "Unsupported associative array key type in bytecode core: ",
+                typeChars(keyType),
+            ));
+        return true;
+    }
+
+    // The byte width `AssocArray.keys` (`machine.d`) packs each key entry
+    // at, mirroring `assocArrayValueWidth`'s value-side stride: a `string`
+    // key is its own 16-byte slice descriptor; any other supported key is
+    // its scalar width.
+    private uint assocArrayKeyWidth(Type aaType) {
+        return assocArrayKeyIsArray(aaType)
+            ? sliceDescriptorSize
+            : size(scalarType(assocArrayKeyType(aaType)));
+    }
+
+    // Packs an AA key's width and comparison mode into `Instruction.e`
+    // (`assocArrayKeyIsArrayFlag`): every AA opcode that reads or writes a
+    // key needs both, and there is no operand to spare for a second field.
+    private ushort assocArrayKeyMeta(Type aaType) {
+        import quickbite.backends.bytecode.core.program:
+            assocArrayKeyIsArrayFlag;
+
+        const isArray = assocArrayKeyIsArray(aaType);
+        const width = isArray
+            ? sliceDescriptorSize
+            : size(scalarType(assocArrayKeyType(aaType)));
+        assert(width < assocArrayKeyIsArrayFlag);
+        return cast(ushort) (width | (isArray ? assocArrayKeyIsArrayFlag : 0));
     }
 
     // The frame offset of an associative-array handle for `expression`: an AA
@@ -14339,6 +17111,26 @@ private struct Compiler {
             _code ~= Instruction(Op.aaNew, offset);
             return offset;
         }
+
+        // A nested associative-array read used as an operand of an outer AA
+        // hook (`a[1][2]`'s outer `_d_aaGetRvalueX(a[1], 2)` takes the raw,
+        // unresolved `a[1]` as its first argument): DMD represents the
+        // rvalue read of an AA-typed sub-expression as an ordinary `IndexExp`
+        // whose `e1` is the bounds-checked pointer-yielding hook glue and
+        // whose `e2` is the constant `0` (the same `*p` == `p[0]` idiom DMD
+        // uses generally), rather than lowering it to a further nested
+        // `CallExp`. `tryPointerIndex` already compiles this exact shape
+        // correctly for a plain `int x = a[1];`, loading through the pointer
+        // at the value's own scalar width; reuse it here so the loaded
+        // AA-handle value (or ordinary scalar) lands in a real frame slot,
+        // and use that slot as the resolved handle.
+        if (auto index = inner.isIndexExp)
+            if (auto zero = index.e2.isIntegerExp)
+                if (zero.toInteger == 0 &&
+                    isPointerType(index.e1.type)) {
+                    const value = compileExpression(inner);
+                    return value.offset;
+                }
 
         throw new Exception(text(
             "Unsupported associative array operand in bytecode core: ",
@@ -14977,6 +17769,18 @@ private struct Compiler {
             (*call.arguments)[2].type.toBasetype.ty == TY.Tstruct)
             return compileBoolConditionAssert(assert_.e1, op);
 
+        // A delegate comparison (`==`, `!=`, `is`, `!is`; a delegate has no
+        // relational operators): a delegate has no `opEquals` either, so
+        // `assert_.e1` is already the authoritative `EqualExp`/`IdentityExp`
+        // `compileBoolValue` (via `compileEqualExpression`/
+        // `compileIdentityExpression`) now handles directly. Compile that
+        // condition and assert it the same fixed-message way the struct case
+        // above does, instead of destructuring the rendered
+        // `_d_assert_fail` operands.
+        if ((*call.arguments)[1].type.toBasetype.ty == TY.Tdelegate ||
+            (*call.arguments)[2].type.toBasetype.ty == TY.Tdelegate)
+            return compileBoolConditionAssert(assert_.e1, op);
+
         // Pointer relations `p < q`, `p == q`, `p is q` (and negations) compare
         // raw `size_t` pointer values; `is`/`!is` arrive only over pointers.
         if (isPointerType((*call.arguments)[1].type) ||
@@ -15190,11 +17994,19 @@ private struct Compiler {
 
     // Compile an expression to a one-byte boolean. A struct identity `a is b`
     // (DMD's lowering of a POD struct `==`) compares the two inline blocks
-    // byte-wise; everything else is an ordinary boolean expression (an
-    // `opEquals` call, an `opCmp` relation, a `&&` chain).
+    // byte-wise; a delegate identity (`dg1 is dg2`, no such lowering since a
+    // delegate has no `opEquals`) routes through the same two-halves
+    // comparison `compileEqualExpression`'s `Tdelegate` branch uses;
+    // everything else is an ordinary boolean expression (an `opEquals` call,
+    // an `opCmp` relation, a `&&` chain).
     private Operand compileBoolValue(Expression expression) {
-        if (auto identity = expression.isIdentityExp)
+        import dmd.astenums: TY;
+
+        if (auto identity = expression.isIdentityExp) {
+            if (identity.e1.type.toBasetype.ty == TY.Tdelegate)
+                return compileIdentityExpression(identity);
             return compileStructIdentity(identity);
+        }
         return compileExpression(expression);
     }
 
@@ -15385,16 +18197,30 @@ private struct Compiler {
             return false;
 
         const elementType = dynamicArrayElementType(lhs.type);
-        const lhsOffset = arrayDescriptorOffset(elementType, lhs);
-        const rhsOffset = arrayDescriptorOffset(elementType, rhs);
+        // `int[][] == int[][]` (any nesting depth): both operands are
+        // genuine dynamic arrays whose own element is itself an array (the
+        // mixed Tsarray/Tarray nested case above already declined; a
+        // Tsarray on both sides never reaches this function at all). Each
+        // row is a separately heap-allocated slice descriptor, so the flat
+        // `sliceEqualOp` byte compare below would compare row `.ptr` values
+        // instead of content -- structural comparison needs the dedicated
+        // nested opcode instead.
+        const nested = lhsTy == TY.Tarray && rhsTy == TY.Tarray &&
+            arrayElementIsArray(lhs.type) &&
+            arrayElementIsArray(rhs.type);
+        const lhsOffset = arrayDescriptorOffset(elementType, lhs, nested);
+        const rhsOffset = arrayDescriptorOffset(elementType, rhs, nested);
 
-        const equal = allocateBytes(1, 1);
-        _code ~= Instruction(
-            sliceEqualOp(dynamicArrayElementSize(lhs.type, elementType)),
-            equal,
-            lhsOffset,
-            rhsOffset,
-        );
+        const equal = nested
+            ? emitNestedArrayEqual(lhsOffset, rhsOffset, lhs.type)
+            : allocateBytes(1, 1);
+        if (!nested)
+            _code ~= Instruction(
+                sliceEqualOp(dynamicArrayElementSize(lhs.type, elementType)),
+                equal,
+                lhsOffset,
+                rhsOffset,
+            );
 
         // `==` holds when the slices are equal; `!=` holds when negated.
         ushort condition = equal;
@@ -15405,7 +18231,10 @@ private struct Compiler {
 
         const diagnostic = _program.assertDiagnostics.length;
         _program.assertDiagnostics ~=
-            AssertDiagnostic(op, lhsOffset, rhsOffset, elementType, true);
+            AssertDiagnostic(
+                op, lhsOffset, rhsOffset, elementType, true,
+                elementNestingDepth: nested ? arrayNestingDepth(lhs.type) - 1 : 0,
+            );
         _code ~= Instruction(
             Op.assertTrue,
             condition,
@@ -15586,10 +18415,14 @@ private struct Compiler {
             rhs.type.toBasetype.ty != TY.Taarray)
             return false;
 
+        const width = assocArrayValueWidth(lhs.type.toBasetype);
+        const keyMeta = assocArrayKeyMeta(lhs.type.toBasetype);
         const left = assocArrayHandleOffset(lhs);
         const right = assocArrayHandleOffset(rhs);
         const equal = allocateBytes(1, 1);
-        _code ~= Instruction(Op.aaEqual, equal, left, right);
+        _code ~= Instruction(
+            Op.aaEqual, equal, left, right, cast(ushort) width, keyMeta,
+        );
 
         // `==` holds when the maps are equal; `!=` holds when negated.
         ushort condition = equal;
@@ -16070,6 +18903,20 @@ private struct Compiler {
             return result;
         }
 
+        // A delegate result is a real 16-byte `{functionIndex, context}`
+        // pair the caller must receive, not just an REPL-undisplayable
+        // value with no bytes -- distinct from the generic
+        // `isUndisplayableType` branch below, which only marks display
+        // scaffolding.
+        if (type.toBasetype.ty == TY.Tdelegate) {
+            auto result = ResultType(
+                ScalarType.void_, false, ScalarType.void_,
+                false, false, 0, true,
+            );
+            result.isDelegate = true;
+            return result;
+        }
+
         if (isUndisplayableType(type))
             return ResultType(
                 ScalarType.void_, false, ScalarType.void_,
@@ -16207,20 +19054,24 @@ private struct Compiler {
     }
 
     // The element scalar type of a dynamic array `T[]`. For an array-of-arrays
-    // (`int[][]`) the element is itself a `T[]`; return its inner element scalar
-    // (`int`), the type used to size and index the innermost elements.
+    // at any nesting depth (`int[][]`, `int[][][]`, ...) the element is
+    // itself a `T[]`; recurse through however many array layers until an
+    // element that is not itself an array turns up, and return its scalar
+    // type (`int`) -- the type used to size and index the innermost
+    // elements.
     private ScalarType dynamicArrayElementType(Type type) {
         import dmd.astenums: TY;
 
         auto element = type.toBasetype.nextOf;
         if (element.toBasetype.ty == TY.Tarray)
-            return scalarType(element.toBasetype.nextOf);
+            return dynamicArrayElementType(element);
         if (element.toBasetype.ty == TY.Tsarray)
             return dynamicArrayElementType(element);
         if (element.toBasetype.ty == TY.Tpointer)
             return ScalarType.ulong_;
         if (element.toBasetype.ty == TY.Tstruct ||
-            element.toBasetype.ty == TY.Tsarray)
+            element.toBasetype.ty == TY.Tsarray ||
+            element.toBasetype.ty == TY.Tdelegate)
             return ScalarType.void_;
         return scalarType(element);
     }
@@ -16261,7 +19112,8 @@ private struct Compiler {
         if (element.toBasetype.ty == TY.Tvoid)
             return 1;
         if (element.toBasetype.ty == TY.Tstruct ||
-            element.toBasetype.ty == TY.Tsarray)
+            element.toBasetype.ty == TY.Tsarray ||
+            element.toBasetype.ty == TY.Tdelegate)
             return cast(uint) staticArraySize(element);
         return size(elementType);
     }
@@ -16277,6 +19129,87 @@ private struct Compiler {
 
     private bool arrayElementIsString(Type type) {
         return isStringType(type.toBasetype.nextOf);
+    }
+
+    // The nesting depth of an array-of-arrays type gated by
+    // `arrayElementIsArray` (`T[]` whose element is itself an array): 2 for
+    // `int[][]` (one row level below the outer array), 3 for `int[][][]`,
+    // and so on. Walks the chain of `Tarray` elements one level at a time,
+    // the same way `arrayElementIsArray` and `innermostArrayElementSize`
+    // do, stopping as soon as a level's element is not itself a `Tarray` --
+    // a `Tsarray` element (e.g. `int[2][]`) still counts as one nested
+    // level (matching this function's own one-level gate for that case) but
+    // does not extend the walk further: `compileAppendElement` heap-boxes a
+    // `Tsarray` row behind its own 16-byte slice descriptor just like a
+    // `Tarray` row (this VM's rows are never a raw inline block), so
+    // `Op.sliceEqualNested`'s row-descriptor recursion can unwrap that one
+    // boxed level, but not recurse further into the static array's own
+    // fixed-size interior (see the Tsarray/Tarray decline block in
+    // `tryArrayComparisonAssert`).
+    private uint arrayNestingDepth(Type type) {
+        import dmd.astenums: TY;
+
+        uint depth = 1;
+        auto current = type.toBasetype;
+        while (arrayElementIsArray(current)) {
+            ++depth;
+            auto nextBase = current.nextOf.toBasetype;
+            if (nextBase.ty != TY.Tarray)
+                break;
+            current = nextBase;
+        }
+        return depth;
+    }
+
+    // The byte width of the innermost (leaf) row's own elements for an
+    // array-of-arrays type gated by `arrayElementIsArray`, e.g. 4 for both
+    // `int[][]`'s and `int[][][]`'s `int` leaves, and also 4 for `int[2][]`'s
+    // `int` leaves (a `Tsarray` row is heap-boxed behind its own 16-byte
+    // slice descriptor just like a `Tarray` row -- see `arrayNestingDepth`
+    // -- so once that one boxed level is unwrapped, its own elements, not
+    // the row's full byte size, are what a flat byte-compare needs). Walks
+    // the same `Tarray` chain
+    // as `arrayNestingDepth`, always advancing `current` to the row it just
+    // looked at (even the terminating one, whether that row is another
+    // `Tarray` level or the leaf `Tsarray`), then reuses
+    // `dynamicArrayElementSize`'s existing scalar/struct/static-array sizing
+    // for that row's own elements.
+    private uint innermostArrayElementSize(Type type) {
+        import dmd.astenums: TY;
+
+        auto current = type.toBasetype;
+        while (arrayElementIsArray(current)) {
+            auto nextBase = current.nextOf.toBasetype;
+            current = nextBase;
+            if (nextBase.ty != TY.Tarray)
+                break;
+        }
+        auto rowElementType = current.toBasetype.nextOf;
+        return dynamicArrayElementSize(current, scalarType(rowElementType));
+    }
+
+    // Emit `Op.sliceEqualNested`, comparing two array-of-arrays descriptors
+    // structurally rather than as raw descriptor bytes: DMD's real
+    // `__equals` lowering recurses into each element, so two separately
+    // heap-allocated but content-equal rows must compare equal, unlike a
+    // byte compare of the outer descriptor (which would compare the rows'
+    // `.ptr` values). Handles any nesting depth (`int[][]`, `int[][][]`,
+    // ...); caller gates this with `arrayElementIsArray`.
+    private ushort emitNestedArrayEqual(
+        in ushort left,
+        in ushort right,
+        Type outerType,
+    ) {
+        const result = allocateBytes(1, 1);
+        _code ~= Instruction(
+            Op.sliceEqualNested,
+            result,
+            left,
+            right,
+            cast(ushort) arrayNestingDepth(outerType),
+            cast(ushort) innermostArrayElementSize(outerType),
+        );
+        return result;
     }
 
     // Materialise a compile-time-constant `size_t` index into a frame slot, for
@@ -16360,8 +19293,18 @@ private struct Compiler {
         const byteStride = element.toBasetype.ty == TY.Tfunction
             ? 0
             : cast(uint) staticArraySize(element);
+        // A static-array pointee (`int[3]*`, `S[3]*`) is always an aggregate
+        // regardless of its own element type: `int[3]*` must resolve the same
+        // way `S[3]*` does (`void_` opcode type, DMD's full array byte width
+        // as `byteStride`), not unwrap one level and mistake a plain-scalar
+        // static array for a pointer to its bare element type. Unwrapping
+        // here previously made `int[3]*` fall through to `scalarType(int)`,
+        // so `storeThroughPointer`/`loadThroughPointer` and the ref-argument
+        // dereference path (`emitPointerDereferenceRefArgument`) read or wrote
+        // only the first 4 bytes of a 12-byte static array through such a
+        // pointer instead of the whole object.
         if (element.toBasetype.ty == TY.Tsarray)
-            element = element.toBasetype.nextOf;
+            return PointerElementMetadata(ScalarType.void_, byteStride);
         if (element.toBasetype.ty == TY.Tstruct)
             return PointerElementMetadata(ScalarType.void_, byteStride);
         if (element.toBasetype.ty == TY.Tarray)
@@ -16369,6 +19312,33 @@ private struct Compiler {
         if (element.toBasetype.ty == TY.Tdelegate)
             return PointerElementMetadata(ScalarType.void_, byteStride);
         if (element.toBasetype.ty == TY.Tfunction)
+            return PointerElementMetadata(ScalarType.void_, byteStride);
+        return PointerElementMetadata(scalarType(element), byteStride);
+    }
+
+    // `(*p)[i]` where `p`'s pointee is itself a static array (`T[N]*`, e.g.
+    // `int[2]* p; (*p)[i]`): indexing steps through the array's own element
+    // `T` at `p + i * sizeof(T)`, not through the whole `T[N]` block
+    // `pointerElementMetadata` reports for a plain dereference or
+    // whole-object assignment/ref-argument mirror. Falls back to
+    // `pointerElementMetadata` itself when `p`'s pointee is not a static
+    // array (an ordinary `p[i]`/`(*pp)[i]` shape, unaffected by the
+    // one-level unwrap this static-array case needs).
+    private PointerElementMetadata dereferencedArrayIndexElementMetadata(
+        Type pointerType,
+    ) {
+        import dmd.astenums: TY;
+
+        auto pointee = pointerType.toBasetype.nextOf;
+        if (pointee is null || pointee.toBasetype.ty != TY.Tsarray)
+            return pointerElementMetadata(pointerType);
+
+        auto element = pointee.toBasetype.nextOf;
+        const byteStride = cast(uint) staticArraySize(element);
+        if (element.toBasetype.ty == TY.Tstruct ||
+            element.toBasetype.ty == TY.Tsarray ||
+            element.toBasetype.ty == TY.Tarray ||
+            element.toBasetype.ty == TY.Tdelegate)
             return PointerElementMetadata(ScalarType.void_, byteStride);
         return PointerElementMetadata(scalarType(element), byteStride);
     }
@@ -16460,6 +19430,8 @@ private struct DelegateLocal {
 private struct LazyDelegateSource {
     ushort offset;
     bool isCaptured;
+    // The function owning `offset`'s frame; only meaningful when `isCaptured`.
+    imported!"dmd.func".FuncDeclaration owner;
 }
 
 private struct DelegateInitializer {
@@ -16530,6 +19502,15 @@ private struct ModuleDynamicArrayVariable {
     ushort offset;
     imported!"quickbite.backends.bytecode.core.program".ScalarType elementType;
     bool elementIsArray;
+}
+
+// A `Tarray` class field's array-literal default, shared by every `new C()`
+// site that does not override the field: `pointer` addresses its own
+// `literalBlocks` entry (a GC-rooted block that never moves), `count` is its
+// element count. See `classFieldArraySharedDefaultOrNull`.
+private struct ClassFieldArrayDefault {
+    size_t pointer;
+    size_t count;
 }
 
 // A module-level (`__gshared`/`static`) struct variable's own inline block
@@ -16653,11 +19634,6 @@ private imported!"quickbite.backends.bytecode.core.program".Op sliceCopyOp(
     return elementSize == 16 ? Op.sliceCopy16 : Op.sliceCopyN;
 }
 
-private bool sliceFillSupported(in uint elementSize) @safe @nogc nothrow pure {
-    return elementSize == 1 || elementSize == ushort.sizeof ||
-        elementSize == uint.sizeof || elementSize == ulong.sizeof;
-}
-
 private imported!"quickbite.backends.bytecode.core.program".Op sliceFillOp(
     in uint elementSize,
 ) @safe @nogc nothrow pure {
@@ -16666,7 +19642,9 @@ private imported!"quickbite.backends.bytecode.core.program".Op sliceFillOp(
         return Op.sliceFill1;
     if (elementSize == ushort.sizeof)
         return Op.sliceFill2;
-    return elementSize == uint.sizeof ? Op.sliceFill4 : Op.sliceFill8;
+    if (elementSize == uint.sizeof)
+        return Op.sliceFill4;
+    return elementSize == ulong.sizeof ? Op.sliceFill8 : Op.sliceFillN;
 }
 
 private imported!"quickbite.backends.bytecode.core.program".Op sliceEqualOp(
@@ -16720,9 +19698,15 @@ private imported!"quickbite.backends.bytecode.core.program".Op dupArrayOp(
     in uint elementSize,
 ) @safe @nogc nothrow pure {
     import quickbite.backends.bytecode.core.program: Op;
-    if (elementSize == 1)
-        return Op.dupArray1;
-    return elementSize == 2 ? Op.dupArray2 : Op.dupArray4;
+
+    switch (elementSize) {
+        case 1: return Op.dupArray1;
+        case 2: return Op.dupArray2;
+        case 4: return Op.dupArray4;
+        case 8: return Op.dupArray8;
+        case 16: return Op.dupArray16;
+        default: return Op.dupArrayN;
+    }
 }
 
 private bool isDeclarationNamed(

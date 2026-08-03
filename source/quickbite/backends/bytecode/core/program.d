@@ -83,6 +83,11 @@ package(quickbite.backends.bytecode) struct ResultType {
     uint elementStructSize;
     string elementStructName;
     StructDisplayField[] elementStructFields;
+    // A delegate result is a 16-byte `{functionIndex, context}` pair, real
+    // data the caller must receive -- unlike `isUndisplayable`, which only
+    // means the REPL cannot render it. `size()` below must check this before
+    // `isUndisplayable`.
+    bool isDelegate;
 
     static ResultType scalarResult(
         in ScalarType scalar,
@@ -132,6 +137,8 @@ package(quickbite.backends.bytecode) uint size(in ResultType type)
 {
     if (type.isStruct)
         return type.structSize;
+    if (type.isDelegate)
+        return sliceDescriptorSize; // {functionIndex, context}, same width
     if (type.isUndisplayable)
         return 0;
     if (type.isStaticArray)
@@ -297,6 +304,12 @@ package(quickbite.backends.bytecode) enum Op: ubyte {
     sliceFill2,
     sliceFill4,
     sliceFill8,
+    // Same as `sliceFill1`/etc, for an element width not covered by a fixed
+    // opcode (e.g. a struct/static-array element broadcast across the
+    // range): the byte width is operand c instead of being implied by the
+    // opcode, and the source at frame offset b is that many bytes wide
+    // rather than a narrow scalar.
+    sliceFillN,
     // Compare the two slice descriptors at frame offsets b and c, writing one
     // boolean byte to frame offset a: true iff their lengths and all element
     // bytes are equal. The element size is fixed by the opcode (1, 2, 4, or 8
@@ -305,6 +318,18 @@ package(quickbite.backends.bytecode) enum Op: ubyte {
     sliceEqual2, // 2-byte element (wchar/short): backs `wstring == wstring`
     sliceEqual4,
     sliceEqual8, // 8-byte element (long/double/pointer arrays)
+    // Structural comparison for an array-of-arrays, any nesting depth
+    // (`int[][] == int[][]`, `int[][][] == int[][][]`, ...): the descriptors
+    // at frame offsets b and c hold rows that are themselves 16-byte slice
+    // descriptors (and, below that, rows of rows, down to `depth` levels), so
+    // a raw `sliceEqual*` over the outer descriptor would compare each row's
+    // `.ptr` rather than its content. Compare outer lengths, then compare
+    // every row's own length, recursing one level deeper per row until
+    // `depth` levels of descriptors have been unwrapped, then compare the
+    // innermost row's element bytes. Operand d is the nesting depth (2 for
+    // `int[][]`, 3 for `int[][][]`, ...); operand e is the innermost (leaf)
+    // element byte width (not 16).
+    sliceEqualNested,
     // Append the element at frame offset b to the dynamic-array slice descriptor
     // at frame offset a: allocate a fresh heap block of (length + 1) elements,
     // copy the existing elements, write the new element, root the block, and
@@ -345,10 +370,19 @@ package(quickbite.backends.bytecode) enum Op: ubyte {
     // holding an independent copy of all its elements, then write the
     // descriptor {newPtr, length} to frame offset a. The block is rooted in
     // `heap`. Mutating either array leaves the other intact (`arr.dup` /
-    // `arr.idup`). The element size is fixed by the opcode (1 or 4 bytes).
+    // `arr.idup`). The element size is fixed by the opcode (1, 2, 4, 8, or 16
+    // bytes), matching the indexLoad/indexStore split; 16 bytes is a whole
+    // slice-descriptor element, e.g. a `T[][]` row (`.dup` is shallow, so
+    // copying the outer descriptors as opaque 16-byte blocks is correct).
     dupArray1,
     dupArray2, // 2-byte element (wchar): backs `wstring s = wcharArray.idup`
     dupArray4,
+    dupArray8, // 8-byte element: long/double/pointer arrays
+    dupArray16,
+    // Same as `dupArray1`/etc, for an element width not covered by a fixed
+    // opcode (e.g. a struct element wider than 16 bytes): the byte width is
+    // operand c instead of being implied by the opcode.
+    dupArrayN,
     // Element-wise `dest[] = left[] + right[]` over three slice descriptors at
     // frame offsets a (dest), b (left), c (right): add each pair of 4-byte
     // integer elements and write the sum through the destination's backing
@@ -674,12 +708,25 @@ package(quickbite.backends.bytecode) enum TranscodeMode: ushort {
 // is at most 8, so bit 8 is free for the flag.
 package(quickbite.backends.bytecode) enum unsignedConvertFlag = 0x100;
 
+// OR'd into an AA opcode's key-width operand (`Instruction.e`) to mark the key
+// as compared by the content its {ptr, length} descriptor points at (a plain
+// `string` key), rather than by the descriptor's own bytes. The width packed
+// alongside it (`keyMeta & (assocArrayKeyIsArrayFlag - 1)`) is then always
+// `sliceDescriptorSize`; every other supported key packs its own scalar width
+// (at most 8), so bit 15 is free for the flag.
+package(quickbite.backends.bytecode) enum assocArrayKeyIsArrayFlag = 0x8000;
+
 package(quickbite.backends.bytecode) struct Instruction {
     Op op;
     ushort a;
     ushort b;
     ushort c;
     ushort d;
+    // AA key metadata (`assocArrayKeyIsArrayFlag`-tagged width) for AA
+    // opcodes, and the innermost row's own element byte width
+    // (`innermostArrayElementSize`) for `Op.sliceEqualNested`; unused by
+    // every other opcode.
+    ushort e;
 }
 
 // A pass-by-reference parameter: its slot in the callee frame holds the
@@ -735,6 +782,17 @@ package(quickbite.backends.bytecode) struct AssertDiagnostic {
     bool isString;
     bool lhsIsNull;
     bool rhsIsNull;
+    // When `isArray` is set and this is nonzero, each element is itself an
+    // array of `operandType` (array-of-arrays nesting, any depth): 1 for
+    // `int[][]`, 2 for `int[][][]`, and so on -- one less than the operand's
+    // own `arrayNestingDepth`, since the outermost level is already
+    // unwrapped by `isArray` itself. Zero means plain `operandType` scalar
+    // elements. Appended last (not inserted between existing fields) so
+    // every pre-existing positional `AssertDiagnostic(...)` construction
+    // site keeps its field mapping; several sites pass isString/lhsIsNull/
+    // rhsIsNull positionally and would silently shift onto the wrong field
+    // otherwise.
+    uint elementNestingDepth;
 }
 
 package(quickbite.backends.bytecode) struct VirtualFunction {

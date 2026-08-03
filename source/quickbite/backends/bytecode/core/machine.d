@@ -24,8 +24,9 @@ package(quickbite.backends.bytecode) RunResult run(
 ) {
     import core.exception: RangeError;
     import quickbite.backends.bytecode.core.program:
-        CatchClause, ClassInfo, Op, noCatchObjectField, noExceptionClass,
-        noOutParameterOffset, size, sliceDescriptorSize;
+        assocArrayKeyIsArrayFlag, CatchClause, ClassInfo, Op,
+        noCatchObjectField, noExceptionClass, noOutParameterOffset, size,
+        sliceDescriptorSize;
 
     // Reserve a generous fixed capacity so growing `stack` for callee frames
     // never reallocates: a raw `&local` pointer (`int* p = &x`) stored in a
@@ -337,12 +338,31 @@ package(quickbite.backends.bytecode) RunResult run(
                 ++ip;
                 break;
 
+            case sliceFillN:
+                fillSliceN(
+                    stack, base + instruction.a, base + instruction.b,
+                    instruction.c,
+                );
+                ++ip;
+                break;
+
             case sliceEqual1, sliceEqual2, sliceEqual4, sliceEqual8:
                 stack[base + instruction.a] = slicesEqual(
                     stack,
                     base + instruction.b,
                     base + instruction.c,
                     sliceCopyElementSize(instruction.op),
+                ) ? 1 : 0;
+                ++ip;
+                break;
+
+            case sliceEqualNested:
+                stack[base + instruction.a] = nestedSlicesEqual(
+                    stack,
+                    base + instruction.b,
+                    base + instruction.c,
+                    instruction.d,
+                    instruction.e,
                 ) ? 1 : 0;
                 ++ip;
                 break;
@@ -376,12 +396,15 @@ package(quickbite.backends.bytecode) RunResult run(
                 ++ip;
                 break;
 
-            case dupArray1, dupArray2, dupArray4:
+            case dupArray1, dupArray2, dupArray4, dupArray8, dupArray16,
+                dupArrayN:
                 heap ~= dupArray(
                     stack,
                     base + instruction.a,
                     base + instruction.b,
-                    dupArrayElementSize(instruction.op),
+                    instruction.op == dupArrayN
+                        ? instruction.c
+                        : dupArrayElementSize(instruction.op),
                 );
                 ++ip;
                 break;
@@ -1747,7 +1770,7 @@ package(quickbite.backends.bytecode) RunResult run(
 
             case aaLength: {
                 const handle = scalarValue!size_t(stack, base + instruction.b);
-                const count = handle == 0 ? 0 : maps[handle - 1].keys.length;
+                const count = handle == 0 ? 0 : maps[handle - 1].count;
                 writeScalar!size_t(stack, base + instruction.a, count);
                 ++ip;
                 break;
@@ -1760,9 +1783,18 @@ package(quickbite.backends.bytecode) RunResult run(
                     handle = maps.length;
                     writeScalar!size_t(stack, base + instruction.a, handle);
                 }
+                const width = instruction.d;
+                const keyIsArray =
+                    (instruction.e & assocArrayKeyIsArrayFlag) != 0;
+                const keyWidth =
+                    instruction.e & (assocArrayKeyIsArrayFlag - 1);
                 maps[handle - 1].insert(
-                    scalarValue!int(stack, base + instruction.b),
-                    scalarValue!int(stack, base + instruction.c),
+                    stack[
+                        base + instruction.b .. base + instruction.b + keyWidth
+                    ],
+                    keyIsArray,
+                    keyWidth,
+                    stack[base + instruction.c .. base + instruction.c + width],
                 );
                 ++ip;
                 break;
@@ -1770,8 +1802,17 @@ package(quickbite.backends.bytecode) RunResult run(
 
             case aaGetRvalue, aaIn: {
                 const handle = scalarValue!size_t(stack, base + instruction.b);
-                const key = scalarValue!int(stack, base + instruction.c);
-                auto slot = handle == 0 ? null : maps[handle - 1].find(key);
+                const width = instruction.d;
+                const keyIsArray =
+                    (instruction.e & assocArrayKeyIsArrayFlag) != 0;
+                const keyWidth =
+                    instruction.e & (assocArrayKeyIsArrayFlag - 1);
+                const key = stack[
+                    base + instruction.c .. base + instruction.c + keyWidth
+                ];
+                auto slot = handle == 0
+                    ? null
+                    : maps[handle - 1].find(key, keyIsArray, keyWidth, width);
                 writeScalar!size_t(
                     stack, base + instruction.a, cast(size_t) slot,
                 );
@@ -1781,8 +1822,16 @@ package(quickbite.backends.bytecode) RunResult run(
 
             case aaRemove: {
                 const handle = scalarValue!size_t(stack, base + instruction.b);
-                const key = scalarValue!int(stack, base + instruction.c);
-                const removed = handle != 0 && maps[handle - 1].remove(key);
+                const width = instruction.d;
+                const keyIsArray =
+                    (instruction.e & assocArrayKeyIsArrayFlag) != 0;
+                const keyWidth =
+                    instruction.e & (assocArrayKeyIsArrayFlag - 1);
+                const key = stack[
+                    base + instruction.c .. base + instruction.c + keyWidth
+                ];
+                const removed = handle != 0 &&
+                    maps[handle - 1].remove(key, keyIsArray, keyWidth, width);
                 writeScalar!bool(stack, base + instruction.a, removed);
                 ++ip;
                 break;
@@ -1791,9 +1840,21 @@ package(quickbite.backends.bytecode) RunResult run(
             case aaEqual: {
                 const left = scalarValue!size_t(stack, base + instruction.b);
                 const right = scalarValue!size_t(stack, base + instruction.c);
+                const width = instruction.d;
+                const keyIsArray =
+                    (instruction.e & assocArrayKeyIsArrayFlag) != 0;
+                const keyWidth =
+                    instruction.e & (assocArrayKeyIsArrayFlag - 1);
+                // Bound to named locals rather than passed as ternary
+                // expressions directly: the ternary-argument shape crashes
+                // this DMD version's code generator once `AssocArray` grew a
+                // third field (`count`) -- reproduced in isolation; unrelated
+                // to any of this function's own logic.
+                const leftMap = left == 0 ? AssocArray.init : maps[left - 1];
+                const rightMap =
+                    right == 0 ? AssocArray.init : maps[right - 1];
                 const equal = assocArrayEqual(
-                    left == 0 ? AssocArray.init : maps[left - 1],
-                    right == 0 ? AssocArray.init : maps[right - 1],
+                    leftMap, rightMap, keyIsArray, keyWidth, width,
                 );
                 writeScalar!bool(stack, base + instruction.a, equal);
                 ++ip;
@@ -1815,20 +1876,17 @@ package(quickbite.backends.bytecode) RunResult run(
                     instruction.c == 0 ? int.sizeof : instruction.c;
                 const length = handle == 0
                     ? 0
-                    : maps[handle - 1].keys.length;
+                    : maps[handle - 1].count;
                 auto block = new ubyte[](length * outputElementSize);
-                if (handle != 0) {
-                    if (instruction.op == aaKeys)
-                        foreach (index, element; maps[handle - 1].keys)
-                            writeScalar!int(
-                                block, index * outputElementSize, element,
-                            );
-                    else
-                        foreach (index, element; maps[handle - 1].values)
-                            writeScalar!int(
-                                block, index * outputElementSize, element,
-                            );
-                }
+                if (handle != 0)
+                    // The map's own keys/values are already packed at this
+                    // exact stride (the compiler emits the same static
+                    // key/value type width at every access site for a given
+                    // map), so copy them verbatim rather than re-widening a
+                    // narrower scalar.
+                    block[] = instruction.op == aaKeys
+                        ? maps[handle - 1].keys[]
+                        : maps[handle - 1].values[];
                 heap ~= block;
                 writeSliceDescriptor(
                     stack, base + instruction.a, block, length,
@@ -2464,7 +2522,11 @@ private uint dupArrayElementSize(
     import quickbite.backends.bytecode.core.program: Op;
     if (op == Op.dupArray1)
         return 1;
-    return op == Op.dupArray2 ? 2 : 4;
+    if (op == Op.dupArray2)
+        return 2;
+    if (op == Op.dupArray8)
+        return 8;
+    return op == Op.dupArray16 ? 16 : 4;
 }
 
 // Duplicate the slice descriptor at `sourceOffset` into a fresh heap block
@@ -2669,6 +2731,82 @@ private bool slicesEqual(
         (cast(const(ubyte)*) rightPointer)[0 .. byteCount];
 }
 
+// True iff two array-of-arrays descriptors are structurally equal, at any
+// nesting `depth` (2 for `int[][]`, 3 for `int[][][]`, ...): same outer
+// length, and every row (itself a 16-byte `{ptr, length}` slice descriptor,
+// separately heap-allocated on each side) recursively equal one level
+// deeper, down to the innermost row's element bytes (`innerElementSize`
+// each). Unlike `slicesEqual`, this never compares a row's raw descriptor
+// bytes -- two separately-constructed but content-equal rows have different
+// `.ptr` values, so that would compare identity, not content. `depth == 2`
+// (the original, one-level-only shape) reduces to a single row iteration
+// with an immediate byte compare, unchanged from before.
+private bool nestedSlicesEqual(
+    in ubyte[] stack,
+    in size_t leftOffset,
+    in size_t rightOffset,
+    in uint depth,
+    in uint innerElementSize,
+) @trusted {
+    const leftLength = scalarValue!size_t(stack, leftOffset + size_t.sizeof);
+    const rightLength = scalarValue!size_t(stack, rightOffset + size_t.sizeof);
+    if (leftLength != rightLength)
+        return false;
+
+    const leftPointer = scalarValue!size_t(stack, leftOffset);
+    const rightPointer = scalarValue!size_t(stack, rightOffset);
+    return nestedRowsEqual(
+        leftPointer, rightPointer, leftLength, depth - 1, innerElementSize,
+    );
+}
+
+// Compares `length` paired left/right elements starting at the two raw
+// pointers, `stepsRemaining` row-descriptor levels above the innermost
+// element bytes. At `stepsRemaining == 0` the pointers already address
+// plain element bytes (a scalar/string row, or a struct/static-array row --
+// whatever `innerElementSize` measures) and this is a flat byte compare:
+// the base case, identical to `nestedSlicesEqual`'s original one-level
+// body. Otherwise each of the `length` elements is itself a 16-byte
+// `{ptr, length}` row descriptor -- independently lengthed, since arrays
+// can be ragged at every level -- so each row's own length is checked
+// before recursing one level deeper into it.
+private bool nestedRowsEqual(
+    in size_t leftPointer,
+    in size_t rightPointer,
+    in size_t length,
+    in uint stepsRemaining,
+    in uint innerElementSize,
+) @trusted {
+    import quickbite.backends.bytecode.core.program: sliceDescriptorSize;
+
+    if (stepsRemaining == 0) {
+        const byteCount = length * innerElementSize;
+        return (cast(const(ubyte)*) leftPointer)[0 .. byteCount] ==
+            (cast(const(ubyte)*) rightPointer)[0 .. byteCount];
+    }
+
+    foreach (index; 0 .. length) {
+        const leftRow = leftPointer + index * sliceDescriptorSize;
+        const rightRow = rightPointer + index * sliceDescriptorSize;
+
+        const leftRowLength =
+            *cast(const(size_t)*) (leftRow + size_t.sizeof);
+        const rightRowLength =
+            *cast(const(size_t)*) (rightRow + size_t.sizeof);
+        if (leftRowLength != rightRowLength)
+            return false;
+
+        const leftRowPointer = *cast(const(size_t)*) leftRow;
+        const rightRowPointer = *cast(const(size_t)*) rightRow;
+        if (!nestedRowsEqual(
+            leftRowPointer, rightRowPointer, leftRowLength,
+            stepsRemaining - 1, innerElementSize,
+        ))
+            return false;
+    }
+    return true;
+}
+
 // Copy the source slice's elements into the destination slice's backing
 // memory, write-through. The lengths must match; overlapping ranges abort with
 // druntime's plain "Range violation" message.
@@ -2766,6 +2904,27 @@ private void fillSlice8(
         scalarValue!size_t(stack, destinationOffset + size_t.sizeof);
     auto destination = (cast(ulong*) destinationPointer)[0 .. destinationLength];
     destination[] = scalarValue!ulong(stack, valueOffset);
+}
+
+// Same as `fillSlice1`/etc, for an element width not covered by a fixed
+// opcode (a struct or static-array element): broadcast the source's own
+// `elementSize` bytes into each destination element, byte for byte, the way
+// compiled D's array-fill lowering does for a non-scalar element.
+private void fillSliceN(
+    ref ubyte[] stack,
+    in size_t destinationOffset,
+    in size_t valueOffset,
+    in uint elementSize,
+) @trusted {
+    const destinationPointer =
+        scalarValue!size_t(stack, destinationOffset);
+    const destinationLength =
+        scalarValue!size_t(stack, destinationOffset + size_t.sizeof);
+    auto destination =
+        (cast(ubyte*) destinationPointer)[0 .. destinationLength * elementSize];
+    const source = stack[valueOffset .. valueOffset + elementSize];
+    foreach (i; 0 .. destinationLength)
+        destination[i * elementSize .. (i + 1) * elementSize] = source;
 }
 
 // Element-wise `dest[] = left[] + right[]` over 4-byte integer elements,
@@ -2996,11 +3155,17 @@ private string assertMessage(
 
     if (diagnostic.isArray)
         return text(
-            arrayOperandText(frame, diagnostic.lhs, diagnostic.operandType),
+            arrayOperandText(
+                frame, diagnostic.lhs, diagnostic.operandType,
+                diagnostic.elementNestingDepth,
+            ),
             " ",
             invertedOperator(diagnostic.operator),
             " ",
-            arrayOperandText(frame, diagnostic.rhs, diagnostic.operandType),
+            arrayOperandText(
+                frame, diagnostic.rhs, diagnostic.operandType,
+                diagnostic.elementNestingDepth,
+            ),
         );
 
     if (diagnostic.isString)
@@ -3038,28 +3203,38 @@ private string stringOperandText(
 
 // Render a dynamic-array operand as `[e0, e1, ...]`, reading the slice
 // descriptor at `offset` and formatting each element by its scalar type.
+// When `elementNestingDepth` is nonzero (an array-of-arrays operand), each
+// element is itself a 16-byte slice descriptor, rendered by a recursive
+// call one nesting level shallower, until depth reaches zero and the
+// elements are plain `elementType` scalars -- matching DMD's own
+// `[[e0, e1], ...]` rendering at any nesting depth, not just one level.
 private string arrayOperandText(
     in ubyte[] frame,
     in size_t offset,
     in imported!"quickbite.backends.bytecode.core.program".ScalarType
         elementType,
+    in uint elementNestingDepth = 0,
 ) @trusted {
-    import quickbite.backends.bytecode.core.program: size;
+    import quickbite.backends.bytecode.core.program: size, sliceDescriptorSize;
     import std.array: appender;
     import std.conv: text;
 
+    const elementIsArray = elementNestingDepth > 0;
     const pointer = scalarValue!size_t(frame, offset);
     const length = scalarValue!size_t(frame, offset + size_t.sizeof);
-    const elementSize = size(elementType);
+    const elementSize = elementIsArray ? sliceDescriptorSize : size(elementType);
     const elements = (cast(const(ubyte)*) pointer)[0 .. length * elementSize];
 
     auto result = appender("[");
     foreach (index; 0 .. length) {
         if (index != 0)
             result ~= ", ";
-        result ~= operandText(
-            elements, index * elementSize, elementType,
-        );
+        result ~= elementIsArray
+            ? arrayOperandText(
+                elements, index * elementSize, elementType,
+                elementNestingDepth - 1,
+            )
+            : operandText(elements, index * elementSize, elementType);
     }
     result ~= "]";
     return result[];
@@ -3201,48 +3376,111 @@ private void writeScalar(T)(
     }
 }
 
-// A VM-owned `int[int]` map, stored as parallel insertion-ordered keys and
-// values. Insertion order does not match druntime's hash order, but the tests
-// only sum keys/values and compare entry sets, so order is immaterial.
+// A VM-owned `V[K]` map, stored as parallel insertion-ordered keys and
+// values. Insertion order does not match druntime's hash order, but the
+// tests only sum keys/values and compare entry sets, so order is immaterial.
+// `keys` and `values` each pack their entries as fixed-width raw byte blocks,
+// the same way a dynamic array carries its own element size: neither width
+// is stored on `AssocArray` itself, only passed in by the caller (the
+// compiler emits the same static key/value type width at every access site
+// for a given map, so a single map's entries are always consistently
+// strided). `count` tracks the entry count directly rather than deriving it
+// from `keys.length`/`values.length` divided by a width, since `aaLength`
+// reads it back with no width operand at all.
 private struct AssocArray {
-    int[] keys;
-    int[] values;
+    ubyte[] keys;
+    ubyte[] values;
+    size_t count;
 
-    // The address of the value stored for `key`, or null when absent. Held
-    // pointers stay valid until the next insert reallocates `values`.
-    int* find(in int key) @trusted @nogc nothrow pure {
-        foreach (index, existing; keys)
-            if (existing == key)
-                return &values[index];
-        return null;
+    // The address of the `valueWidth`-byte value block stored for `key`, or
+    // null when absent. Held pointers stay valid until the next insert
+    // reallocates `values`.
+    ubyte* find(
+        in ubyte[] key,
+        in bool keyIsArray,
+        in size_t keyWidth,
+        in size_t valueWidth,
+    ) @trusted nothrow pure {
+        const index = findIndex(key, keyIsArray, keyWidth);
+        return index == size_t.max ? null : &values[index * valueWidth];
     }
 
-    void insert(in int key, in int value) @safe nothrow pure {
-        const index = findIndex(key);
+    // `value.length` is the entry width; the same width is passed to every
+    // other access for this map.
+    void insert(
+        in ubyte[] key,
+        in bool keyIsArray,
+        in size_t keyWidth,
+        in const(ubyte)[] value,
+    ) @safe nothrow pure {
+        const index = findIndex(key, keyIsArray, keyWidth);
         if (index != size_t.max) {
-            values[index] = value;
+            values[index * value.length .. (index + 1) * value.length] =
+                value[];
             return;
         }
         keys ~= key;
         values ~= value;
+        ++count;
     }
 
-    bool remove(in int key) @safe nothrow pure {
-        foreach (index, existing; keys)
-            if (existing == key) {
-                keys = keys[0 .. index] ~ keys[index + 1 .. $];
-                values = values[0 .. index] ~ values[index + 1 .. $];
-                return true;
-            }
-        return false;
+    bool remove(
+        in ubyte[] key,
+        in bool keyIsArray,
+        in size_t keyWidth,
+        in size_t valueWidth,
+    ) @safe nothrow pure {
+        const index = findIndex(key, keyIsArray, keyWidth);
+        if (index == size_t.max)
+            return false;
+        keys = keys[0 .. index * keyWidth] ~ keys[(index + 1) * keyWidth .. $];
+        values = values[0 .. index * valueWidth] ~
+            values[(index + 1) * valueWidth .. $];
+        --count;
+        return true;
     }
 
-    private size_t findIndex(in int key) @safe @nogc nothrow pure const {
-        foreach (index, existing; keys)
-            if (existing == key)
+    private size_t findIndex(
+        in ubyte[] key,
+        in bool keyIsArray,
+        in size_t keyWidth,
+    ) @safe nothrow pure const {
+        foreach (index; 0 .. count)
+            if (keysEqual(
+                keys[index * keyWidth .. (index + 1) * keyWidth],
+                key,
+                keyIsArray,
+            ))
                 return index;
         return size_t.max;
     }
+}
+
+// True iff two same-length key blocks represent the same associative-array
+// key. A scalar key (bool/int/long/double/...) compares its raw bytes
+// directly -- exactly how a plain `int` key always compared. A `string` key
+// (`keyIsArray`, set only by `assocArrayKeyIsArray` in compiler.d) instead
+// compares the bytes its {ptr, length} descriptor points at: two
+// separately-constructed but content-equal strings have different backing
+// pointers, so a raw descriptor-byte compare would wrongly treat them as
+// distinct keys, silently miscomparing.
+private bool keysEqual(
+    in ubyte[] left,
+    in ubyte[] right,
+    in bool keyIsArray,
+) @trusted @nogc nothrow pure {
+    if (!keyIsArray)
+        return left == right;
+
+    const leftLength = scalarValue!size_t(left, size_t.sizeof);
+    const rightLength = scalarValue!size_t(right, size_t.sizeof);
+    if (leftLength != rightLength)
+        return false;
+
+    const leftPointer = scalarValue!size_t(left, 0);
+    const rightPointer = scalarValue!size_t(right, 0);
+    return (cast(const(ubyte)*) leftPointer)[0 .. leftLength] ==
+        (cast(const(ubyte)*) rightPointer)[0 .. leftLength];
 }
 
 private final class BytecodeNativeMarshaller:
@@ -3499,19 +3737,26 @@ private final class BytecodeNativeMarshaller:
 }
 
 private AssocArray copyAssocArray(AssocArray source) @safe nothrow pure {
-    return AssocArray(source.keys.dup, source.values.dup);
+    return AssocArray(source.keys.dup, source.values.dup, source.count);
 }
 
-// Entry-set equality: equal counts and, for every key in `left`, an equal value
-// in `right`. Order-independent, matching `int[int]` `==`.
-private bool assocArrayEqual(in AssocArray left, in AssocArray right)
-    @trusted @nogc nothrow pure
-{
-    if (left.keys.length != right.keys.length)
+// Entry-set equality: equal counts and, for every key in `left`, an equal
+// `valueWidth`-byte value in `right`. Order-independent, matching `V[K]` `==`.
+private bool assocArrayEqual(
+    in AssocArray left,
+    in AssocArray right,
+    in bool keyIsArray,
+    in size_t keyWidth,
+    in size_t valueWidth,
+) @trusted nothrow pure {
+    if (left.count != right.count)
         return false;
-    foreach (index, key; left.keys) {
-        auto slot = (cast() right).find(key);
-        if (slot is null || *slot != left.values[index])
+    foreach (index; 0 .. left.count) {
+        const key = left.keys[index * keyWidth .. (index + 1) * keyWidth];
+        auto slot = (cast() right).find(key, keyIsArray, keyWidth, valueWidth);
+        const entry =
+            left.values[index * valueWidth .. (index + 1) * valueWidth];
+        if (slot is null || slot[0 .. valueWidth] != entry)
             return false;
     }
     return true;

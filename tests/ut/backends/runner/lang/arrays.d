@@ -404,6 +404,274 @@ static foreach (backend; Matrix!(
     }
 }
 
+// A module-level dynamic array with a non-null array-literal initializer
+// (`int[] arr = [1, 2, 3];`): `moduleDynamicArrayVariableOrNull` used to
+// treat this the same as no initializer at all (a plain array literal
+// parses as an `ArrayInitializer`, not the `ExpInitializer`
+// `moduleVariableHasDefaultInitializer` recognised), so `arr` read back a
+// zero-length null slice instead of its declared contents. `Ctfe` cannot
+// read dataseg storage at all; `Interpreter` and `LLVMJit` have the same
+// gap, unconfirmed/unfixed here.
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.inexpressible,
+        "CTFE cannot read dataseg (__gshared/static) storage"),
+    Omit!(Interpreter, Because.unconfirmed),
+    Omit!(LLVMJit, Because.unconfirmed),
+)) {
+    @("dynamicArray.moduleArrayLiteralInitializer." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            int[] arr = [1, 2, 3];
+
+            int sum() {
+                return arr[0] + arr[1] + arr[2];
+            }
+
+            unittest {
+                // First touch is from a lazily-compiled callee, not the
+                // entry itself; it must still see the initialised contents.
+                assert(sum() == 6);
+
+                assert(arr.length == 3);
+                assert(arr[0] == 1);
+                assert(arr[1] == 2);
+                assert(arr[2] == 3);
+
+                arr[0] = 99;
+                assert(arr[0] == 99);
+                arr ~= 4;
+                assert(arr.length == 4);
+                assert(arr[3] == 4);
+            }
+        });
+    }
+}
+
+// The array-of-arrays-element sibling of the fixture above
+// (`int[][] arr = [[1, 2], [3, 4]];`): `moduleDynamicArrayLiteralInitializerBytes`
+// declined any `elementIsArray` shape outright, so `arr` fell all the way
+// through `moduleDynamicArrayVariableOrNull` to "declined" and the variable
+// was never registered as dataseg storage at all.
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.inexpressible,
+        "CTFE cannot read dataseg (__gshared/static) storage"),
+    Omit!(Interpreter, Because.unconfirmed),
+    Omit!(LLVMJit, Because.unconfirmed),
+)) {
+    @("dynamicArray.moduleArrayOfArraysLiteralInitializer." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            int[][] arr = [[1, 2], [3, 4]];
+
+            int sum() {
+                return arr[0][0] + arr[0][1] + arr[1][0] + arr[1][1];
+            }
+
+            unittest {
+                assert(sum() == 10);
+
+                assert(arr.length == 2);
+                assert(arr[0][0] == 1);
+                assert(arr[0][1] == 2);
+                assert(arr[1][0] == 3);
+                assert(arr[1][1] == 4);
+
+                auto row = arr[0];
+                row[0] = 99;
+                assert(arr[0][0] == 99);
+            }
+        });
+    }
+}
+
+// Array-of-arrays structural equality (`int[][] == int[][]`): DMD's real
+// `__equals` lowering recurses into each row's content, so two separately
+// heap-allocated but content-equal arrays-of-arrays must compare equal --
+// a raw byte compare of the outer descriptor would instead compare each
+// row's `.ptr`, which differs across the two separate literal allocations
+// below.
+static foreach (backend; Matrix!()) {
+    @("dynamicArray.arrayOfArraysEqualityIsStructural." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            unittest {
+                int[][] a = [[1, 2], [3, 4]];
+                int[][] b = [[1, 2], [3, 4]];
+                assert(a == b);
+                assert(!(a != b));
+            }
+        });
+    }
+}
+
+static foreach (backend; Matrix!()) {
+    @("assertDiagnostic.arrayOfArraysSameLengthDifferentContent." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            unittest {
+                int[][] a = [[1, 2], [3, 4]];
+                int[][] b = [[1, 2], [3, 99]];
+                assert(a == b);
+            }
+        }).shouldThrowWithMessage("[[1, 2], [3, 4]] != [[1, 2], [3, 99]]");
+    }
+}
+
+static foreach (backend; Matrix!()) {
+    @("assertDiagnostic.arrayOfArraysDifferentInnerLength." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            unittest {
+                int[][] a = [[1, 2], [3, 4]];
+                int[][] b = [[1, 2], [3]];
+                assert(a == b);
+            }
+        }).shouldThrowWithMessage("[[1, 2], [3, 4]] != [[1, 2], [3]]");
+    }
+}
+
+// Same structural-equality requirement as `arrayOfArraysEqualityIsStructural`
+// above, but two levels of nesting deep (`int[][][]`): DMD's real `__equals`
+// recurses all the way down regardless of depth, so `Op.sliceEqualNested`
+// must too. `b` is built entirely through separate `~=` appends at every
+// level (outer, middle, and row) rather than a literal, so every row and
+// sub-row it holds is a distinct heap allocation from `a`'s -- a bug that
+// compared by identity/descriptor-bytes at any level (not just the
+// outermost) would wrongly report these unequal.
+static foreach (backend; Matrix!()) {
+    @("dynamicArray.arrayOfArraysOfArraysEqualityIsStructural." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            unittest {
+                int[][][] a = [[[1, 2], [3, 4]], [[5, 6], [7, 8]]];
+
+                int[][] row0;
+                row0 ~= [1, 2];
+                row0 ~= [3, 4];
+                int[][] row1;
+                row1 ~= [5, 6];
+                row1 ~= [7, 8];
+                int[][][] b;
+                b ~= row0;
+                b ~= row1;
+
+                assert(a == b);
+                assert(!(a != b));
+            }
+        });
+    }
+}
+
+// The assert-diagnostic rendering sibling of the test above, at the same
+// three-level depth: a difference at the innermost row (not the outermost
+// or middle level) must still be detected and rendered -- a bug that
+// generalised the depth check but not the recursion itself (e.g. stopping
+// one level too shallow) would either wrongly pass or mis-render this.
+static foreach (backend; Matrix!()) {
+    @("assertDiagnostic.arrayOfArraysOfArraysSameLengthDifferentInnerContent." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            unittest {
+                int[][][] a = [[[1, 2], [3, 4]]];
+                int[][][] b = [[[1, 2], [3, 99]]];
+                assert(a == b);
+            }
+        }).shouldThrowWithMessage("[[[1, 2], [3, 4]]] != [[[1, 2], [3, 99]]]");
+    }
+}
+
+// Same structural-equality requirement as `arrayOfArraysEqualityIsStructural`
+// above, but the row itself is a static array (`int[2][]`, a dynamic array
+// whose element is `Tsarray`, not `Tarray`): this VM heap-boxes such a row
+// behind its own 16-byte slice descriptor the same way it boxes an `int[]`
+// row, but the leaf-element sizing still needs to terminate the walk at
+// the `Tsarray` and size its own elements, not the `Tsarray`'s full byte
+// size -- a fix generalizing only the `Tarray`-row walk could still get
+// this wrong (e.g. by trying to size or recurse into the `Tsarray` row
+// itself instead of terminating there).
+// `b` is built entirely through separate `~=` appends, so its rows are a
+// distinct heap allocation from `a`'s.
+static foreach (backend; Matrix!()) {
+    @("dynamicArray.arrayOfStaticArraysEqualityIsStructural." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            unittest {
+                int[2][] a;
+                a ~= [1, 2];
+                a ~= [3, 4];
+
+                int[2][] b;
+                b ~= [1, 2];
+                b ~= [3, 4];
+
+                assert(a == b);
+                assert(!(a != b));
+            }
+        });
+    }
+}
+
+// The not-equal sibling of the test above, guarding against a fix that
+// makes `int[2][] == int[2][]` vacuously true instead of comparing content.
+static foreach (backend; Matrix!()) {
+    @("dynamicArray.arrayOfStaticArraysInequalityIsStructural." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            unittest {
+                int[2][] a;
+                a ~= [1, 2];
+                a ~= [3, 4];
+
+                int[2][] b;
+                b ~= [1, 2];
+                b ~= [3, 99];
+
+                assert(!(a == b));
+                assert(a != b);
+            }
+        });
+    }
+}
+
+// The assert-diagnostic rendering sibling of the two tests above: exercises
+// `tryArrayComparisonAssert`'s shared `emitNestedArrayEqual` path (the same
+// helpers backing the plain `==` operator) for the `Tsarray`-row shape.
+static foreach (backend; Matrix!()) {
+    @("assertDiagnostic.arrayOfStaticArraysSameLengthDifferentContent." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            unittest {
+                int[2][] a;
+                a ~= [1, 2];
+                a ~= [3, 4];
+
+                int[2][] b;
+                b ~= [1, 2];
+                b ~= [3, 99];
+
+                assert(a == b);
+            }
+        }).shouldThrowWithMessage("[[1, 2], [3, 4]] != [[1, 2], [3, 99]]");
+    }
+}
+
 static foreach (backend; Matrix!()) {
     @("assertDiagnostic.characterEquality." ~ backend.stringof)
     @Tags(backend.stringof)
@@ -1272,6 +1540,61 @@ static foreach (backend; Matrix!()) {
     }
 }
 
+// A non-basic-type (struct) element wider than 8 bytes: broadcasting a single
+// value across a range must copy its full width into every destination
+// element, the same way the byte/short/long scalar broadcasts above do.
+static foreach (backend; Matrix!()) {
+    @("dynamicArray.partialSliceAssignmentBroadcastsStructElementWiderThan8Bytes." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct S {
+                long a;
+                long b;
+                long c;
+            }
+
+            int seed(int value) {
+                return value;
+            }
+
+            unittest {
+                S[] values = [
+                    S(seed(1), seed(2), seed(3)),
+                    S(seed(4), seed(5), seed(6)),
+                    S(seed(7), seed(8), seed(9)),
+                    S(seed(10), seed(11), seed(12)),
+                ];
+
+                values[1 .. 3] = S(seed(20), seed(21), seed(22));
+
+                assert(values[0].a == 1);
+                assert(values[0].b == 2);
+                assert(values[0].c == 3);
+                assert(values[1].a == 20);
+                assert(values[1].b == 21);
+                assert(values[1].c == 22);
+                assert(values[2].a == 20);
+                assert(values[2].b == 21);
+                assert(values[2].c == 22);
+                assert(values[3].a == 10);
+                assert(values[3].b == 11);
+                assert(values[3].c == 12);
+
+                // The broadcast source is also a plain lvalue read out of the
+                // same array (not a fresh literal), non-overlapping with the
+                // destination range.
+                values[0 .. 1] = values[3];
+
+                assert(values[0].a == 10);
+                assert(values[0].b == 11);
+                assert(values[0].c == 12);
+            }
+        });
+    }
+}
+
 // Slice assignment writes existing storage in place, so a slice taken before
 // the assignment observes the changed element.
 static foreach (backend; Matrix!()) {
@@ -1839,6 +2162,60 @@ static foreach (backend; Matrix!()) {
                 assert(wide[1] == 7);
                 assert(wide[2] == 7);
                 assert(wide[3] == 0);
+            }
+        });
+    }
+}
+
+// A non-basic-type (struct) element wider than 8 bytes: broadcasting a single
+// value across a range must copy its full width into every destination
+// element, the same way the byte/short/long scalar broadcasts above do.
+static foreach (backend; Matrix!()) {
+    @("staticArray.partialSliceAssignmentBroadcastsStructElementWiderThan8Bytes." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct S {
+                long a;
+                long b;
+                long c;
+            }
+
+            int seed(int value) {
+                return value;
+            }
+
+            unittest {
+                S[4] values;
+                values[0] = S(seed(1), seed(2), seed(3));
+                values[1] = S(seed(4), seed(5), seed(6));
+                values[2] = S(seed(7), seed(8), seed(9));
+                values[3] = S(seed(10), seed(11), seed(12));
+
+                values[1 .. 3] = S(seed(20), seed(21), seed(22));
+
+                assert(values[0].a == 1);
+                assert(values[0].b == 2);
+                assert(values[0].c == 3);
+                assert(values[1].a == 20);
+                assert(values[1].b == 21);
+                assert(values[1].c == 22);
+                assert(values[2].a == 20);
+                assert(values[2].b == 21);
+                assert(values[2].c == 22);
+                assert(values[3].a == 10);
+                assert(values[3].b == 11);
+                assert(values[3].c == 12);
+
+                // The broadcast source is also a plain lvalue read out of the
+                // same array (not a fresh literal), non-overlapping with the
+                // destination range.
+                values[0 .. 1] = values[3];
+
+                assert(values[0].a == 10);
+                assert(values[0].b == 11);
+                assert(values[0].c == 12);
             }
         });
     }
@@ -2444,12 +2821,175 @@ static foreach (backend; Matrix!()) {
     }
 }
 
+// A key wider than 4 bytes (`long`) must compare its full width, not just
+// its low 32 bits.
+static foreach (backend; Matrix!()) {
+    @("assocArray.longKeyLookupUsesFullWidth." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            long key(long value) {
+                return value;
+            }
+
+            unittest {
+                // Both keys have low 32 bits == 0 (only bits 40/41 set), so a
+                // 4-byte-truncated comparison would wrongly collapse them
+                // into a single entry.
+                long lo = key(1L << 40);
+                long hi = key(1L << 41);
+                int[long] table;
+                table[lo] = 7;
+                table[hi] = 9;
+
+                assert((lo in table) !is null);
+                assert((hi in table) !is null);
+                assert(table[lo] == 7);
+                assert(table[hi] == 9);
+                assert(table.length == 2);
+            }
+        });
+    }
+}
+
+// A `double` key's bytes are its IEEE-754 bit pattern, not a 4-byte `int`
+// truncation of them.
+static foreach (backend; Matrix!()) {
+    @("assocArray.doubleKeyLookupUsesFullWidth." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            double key(double value) {
+                return value;
+            }
+
+            unittest {
+                // 1.0 and 2.0 have IEEE-754 bit patterns 0x3ff0000000000000
+                // and 0x4000000000000000: both have low 32 bits == 0, so a
+                // 4-byte-truncated comparison would wrongly collapse them
+                // into a single entry, even though the high 32 bits (and so
+                // the full 64-bit patterns) differ.
+                double lo = key(1.0);
+                double hi = key(2.0);
+                int[double] table;
+                table[lo] = 9;
+                table[hi] = 11;
+
+                assert((lo in table) !is null);
+                assert((hi in table) !is null);
+                assert(table[lo] == 9);
+                assert(table[hi] == 11);
+                assert(table.length == 2);
+            }
+        });
+    }
+}
+
+// A `string` key compares the content its slice descriptor points at, not
+// the descriptor's own bytes: two separately-materialised but content-equal
+// strings are the same key.
+static foreach (backend; Matrix!()) {
+    @("assocArray.stringKeyComparesByContentNotIdentity." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            unittest {
+                int[string] table;
+                table["a"] = 42;
+
+                assert(("a" in table) !is null);
+                assert(table["a"] == 42);
+                assert(table.length == 1);
+            }
+        });
+    }
+}
+
+// `foreach (k, v; aa)` must read each key back at its own real width, not a
+// hardcoded 4-byte `int` truncation of it.
+static foreach (backend; Matrix!()) {
+    @("assocArray.foreachLongKeyReadsFullWidth." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            long key(long value) {
+                return value;
+            }
+
+            unittest {
+                int[long] table;
+                table[key(1L << 40)] = 7;
+                table[key(1L << 41)] = 9;
+
+                int count;
+                foreach (k, v; table) {
+                    assert(table[k] == v);
+                    count += v;
+                }
+                assert(count == 16);
+            }
+        });
+    }
+}
+
+static foreach (backend; Matrix!()) {
+    @("assocArray.foreachDoubleKeyReadsFullWidth." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            double key(double value) {
+                return value;
+            }
+
+            unittest {
+                int[double] table;
+                table[key(3.14159)] = 9;
+                table[key(2.71828)] = 11;
+
+                int count;
+                foreach (k, v; table) {
+                    assert(table[k] == v);
+                    count += v;
+                }
+                assert(count == 20);
+            }
+        });
+    }
+}
+
+static foreach (backend; Matrix!()) {
+    @("assocArray.foreachStringKeyReadsFullWidth." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            unittest {
+                int[string] table;
+                table["a"] = 42;
+                table["bb"] = 5;
+
+                int count;
+                int lengthSum;
+                foreach (k, v; table) {
+                    assert(table[k] == v);
+                    count += v;
+                    lengthSum += cast(int) k.length;
+                }
+                assert(count == 47);
+                assert(lengthSum == 3);
+            }
+        });
+    }
+}
+
 // Struct AA keys compare dynamic-array members by their elements, not by the
-// identity of their slice backing storage. Bytecode refuses DMD's synthesized
-// associative-array key variable before it can execute this fixture.
+// identity of their slice backing storage. Bytecode now refuses earlier than
+// before (`compileAssocArrayGetLvalue` computes `assocArrayKeyMeta` -- which
+// has no `Tstruct` case -- ahead of compiling the key expression itself, so
+// the diagnostic is `scalarType`'s generic one, not the previous
+// `__aakeyN`-variable refusal).
 static foreach (backend; Matrix!(
     Omit!(Bytecode, Because.refusal,
-        "Unsupported variable in bytecode core: __aakey3"),
+        "Unsupported type in bytecode core: Name"),
 )) {
     @("assocArray.structKeyWithStringMemberComparesStructurally." ~
         backend.stringof)
@@ -2473,9 +3013,7 @@ static foreach (backend; Matrix!(
     }
 }
 
-static foreach (backend; Matrix!(
-    Omit!(Bytecode, Because.inexpressible, "nested associative-array operand"),
-)) {
+static foreach (backend; Matrix!()) {
     @("assocArray.nestedLookupDereferencesAssociativeArrayPointee." ~
         backend.stringof)
     @Tags(backend.stringof)
@@ -2485,6 +3023,185 @@ static foreach (backend; Matrix!(
                 int[int][int] a = [1: [2: 3]];
 
                 assert(a[1][2] == 3);
+            }
+        });
+    }
+}
+
+// A dynamic-array-typed value (`int[][int]`): the value slot is a 16-byte
+// slice descriptor, not an inline scalar. Interpreter reads back the wrong
+// element (`0 != 20`) for this shape -- a separate, unconfirmed backend gap.
+static foreach (backend; Matrix!(
+    Omit!(Interpreter, Because.unconfirmed,
+        "int[][int] element reads back 0 instead of the inserted value"),
+)) {
+    @("assocArray.dynamicArrayValueInsertsReadsAndMutates." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            unittest {
+                int[][int] a;
+                a[1] = [10, 20, 30];
+
+                assert(a.length == 1);
+                assert(a[1].length == 3);
+                assert(a[1][1] == 20);
+
+                a[1][2] = 99;
+                assert(a[1][2] == 99);
+
+                int[] fetched = a[1];
+                assert(fetched == [10, 20, 99]);
+            }
+        });
+    }
+}
+
+// `int[][int].values` packs each entry at its own 16-byte slice-descriptor
+// stride (`assocArrayValueWidth`), not a hardcoded 4-byte `int`. Reading
+// values back at the wrong (scalar) stride would misalign every entry after
+// the first -- summing every element of every entry is order-independent
+// (AA iteration order is unspecified) but still catches a misaligned read.
+static foreach (backend; Matrix!()) {
+    @("assocArray.valuesOnArrayValuedAAReadsFullWidth." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            int[] pair(int a, int b) {
+                return [a, b];
+            }
+
+            unittest {
+                int[][int] a;
+                a[1] = pair(10, 20);
+                a[2] = pair(30, 40);
+
+                int[][] vs = a.values;
+                assert(vs.length == 2);
+                assert(vs[0].length == 2);
+                assert(vs[1].length == 2);
+
+                int total;
+                foreach (entry; vs)
+                    foreach (x; entry)
+                        total += x;
+                assert(total == 100);
+            }
+        });
+    }
+}
+
+// A struct-typed value (`Point[int]`): the same `p[0]` `_d_aaGetRvalueX`
+// rvalue-read shape as `dynamicArrayValueInsertsReadsAndMutates` above, but
+// for a struct rather than a dynamic array. Interpreter refuses the field
+// write -- a separate, unconfirmed backend gap.
+static foreach (backend; Matrix!(
+    Omit!(Interpreter, Because.unconfirmed,
+        "Unsupported interpreter assignment target"),
+)) {
+    @("assocArray.structValueFieldReadWrite." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct Point { int x; int y; }
+            unittest {
+                Point[int] a;
+                a[1] = Point(10, 20);
+                assert(a[1].x == 10);
+                a[1].x = 5;
+                assert(a[1].x == 5);
+                assert(a[1].y == 20);
+            }
+        });
+    }
+}
+
+// A direct consequence of the fix above: calling a mutating method through
+// an AA-value struct receiver (`a[1].bump()`) is the same
+// `IndexExp`-over-pointer-to-`Tstruct` receiver shape as the plain field
+// write above, but reached through `methodReceiver` rather than
+// `tryStructField`. Interpreter segfaults on the same shape -- a separate,
+// unconfirmed backend gap.
+static foreach (backend; Matrix!(
+    Omit!(Interpreter, Because.unconfirmed,
+        "segfaults calling a mutating method through an AA-value struct "
+            ~ "receiver"),
+)) {
+    @("assocArray.structValueMethodCallMutatesEntry." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct Point {
+                int x;
+                int y;
+                int bump() { return x += 1; }
+            }
+            unittest {
+                Point[int] a;
+                a[1] = Point(10, 20);
+                a[1].bump();
+                assert(a[1].x == 11);
+                assert(a[1].y == 20);
+            }
+        });
+    }
+}
+
+// A struct value with a user-defined `opAssign` (`Setting`, as opposed to
+// the plain `Point` above): DMD represents `a[1] = Setting(2)` as a
+// ConstructExp (blitting the fresh rvalue directly into the newly obtained
+// AA slot -- `opAssign` is never invoked for this initial-insert shape) with
+// an `IndexExp` `e1`, a lvalue shape `compileExpression`'s ConstructExp
+// dispatch previously only recognised over a `DotVarExp`/`VarExp`/
+// `SliceExp`/`ThisExp` lvalue, not an AA-element `IndexExp`.
+static foreach (backend; Matrix!()) {
+    @("assocArray.structValueWithOpAssignInsertsFromLiteral." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct Setting {
+                int value;
+
+                void opAssign(Setting rhs) {
+                    value = rhs.value;
+                }
+            }
+            unittest {
+                Setting[int] a;
+                a[1] = Setting(2);
+                assert(a[1].value == 2);
+            }
+        });
+    }
+}
+
+// Overwriting an existing AA entry from another struct value (as opposed to
+// the fresh-insert case above) lowers through the `_d_aaGetY` slot-pointer
+// write shape (`p[i] = rhs`, `tryPointerElementAssign`/`storeThroughPointer`)
+// regardless of whether the value type defines `opAssign` -- an AA element
+// overwrite blits the value's raw bytes rather than dispatching through
+// `opAssign`. `storeThroughPointer` previously only materialised the rhs
+// through `compileExpression`, which handles a struct rvalue (a literal or
+// constructor call) but not a struct lvalue (an existing local, reached the
+// same way `structOperandOffset` resolves every other struct-value read).
+static foreach (backend; Matrix!()) {
+    @("assocArray.structValueOverwriteFromVariable." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct Point { int x; int y; }
+            unittest {
+                Point pt;
+                pt.x = 3;
+                pt.y = 4;
+
+                Point[int] a;
+                a[1] = Point(10, 20);
+                a[1] = pt;
+                assert(a[1].x == 3);
+                assert(a[1].y == 4);
             }
         });
     }
@@ -2955,6 +3672,52 @@ static foreach (backend; Matrix!()) {
     }
 }
 
+// `dupArrayOp`/`dupArrayElementSize` used to only distinguish 1-, 2-, or
+// "other" (silently treated as 4-)-byte elements, so `.dup`/`.idup` mis-sized
+// any 8-byte-or-wider element (`long`/`double`/pointer): the heap block was
+// under-allocated and under-copied, corrupting the tail element(s).
+static foreach (backend; Matrix!()) {
+    @("dynamicArray.dupIdupPreserveEightByteElements." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            long longValue(long seed) {
+                return seed;
+            }
+
+            double doubleValue(double seed) {
+                return seed;
+            }
+
+            unittest {
+                long first = longValue(1_000_000_000_000L);
+                long[] longs =
+                    [first, first + 1, first + 2, first + 3];
+
+                long[] longCopy = longs.dup;
+                longCopy[0] = longValue(-1);
+
+                assert(longCopy.length == 4);
+                assert(longCopy[0] == -1);
+                assert(longs[0] == 1_000_000_000_000L);
+                assert(longCopy[1] == longs[1]);
+                assert(longCopy[2] == longs[2]);
+                assert(longCopy[3] == longs[3]);
+
+                double firstDouble = doubleValue(1.5);
+                double[] doubles = [firstDouble, firstDouble + 1.5];
+
+                immutable(double)[] frozenDoubles = doubles.idup;
+                doubles[0] = doubleValue(-2.5);
+
+                assert(frozenDoubles[0] == 1.5);
+                assert(frozenDoubles[1] == 3.0);
+                assert(doubles[0] == -2.5);
+            }
+        });
+    }
+}
+
 // Bytecode ("Unsupported cast target: Tpointer") and IR (unsupported array
 // literal expression) cannot run this .ptr fixture.
 static foreach (backend; Matrix!()) {
@@ -3004,6 +3767,53 @@ static foreach (backend; Matrix!(
                 buffer.put(1, 'x');
 
                 assert(storage[1] == 'x');
+            }
+        });
+    }
+}
+
+// A whole-object assignment through a pointer to a static array
+// (`int[3]*`) must write all of the pointee's bytes, not just the width of
+// its own element type.
+static foreach (backend; Matrix!()) {
+    @("pointer.wholeStaticArrayAssignmentWritesRealStorage." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            unittest {
+                int[3] arr = [1, 2, 3];
+                int[3]* p = &arr;
+                *p = [4, 5, 6];
+
+                assert(arr[0] == 4);
+                assert(arr[1] == 5);
+                assert(arr[2] == 6);
+            }
+        });
+    }
+}
+
+// A `ref` parameter bound to a static array reached by dereferencing a
+// pointer to it (`bump(*p)` where `p: int[3]*`) must mirror and write back
+// the whole array, the same width question as the whole-object assignment
+// above but through the ref-argument mirror/writeback path instead.
+static foreach (backend; Matrix!()) {
+    @("pointer.refArgumentThroughStaticArrayDereferenceWritesRealStorage." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            void bump(ref int[3] a) {
+                a[0] = 99;
+            }
+
+            unittest {
+                int[3] arr = [1, 2, 3];
+                int[3]* p = &arr;
+                bump(*p);
+
+                assert(arr[0] == 99);
             }
         });
     }
@@ -4321,6 +5131,665 @@ static foreach (backend; Matrix!()) {
 
                 assert(a == b);
                 assert(a != c);
+            }
+        });
+    }
+}
+
+// Calling a mutating method through a receiver that is an element of a
+// dynamic array of structs (`arr[0].bump()`, `Plain[] arr`): `methodReceiver`
+// had no case for a `DotVarExp` callee receiver whose own base is a dynamic
+// array index, so it fell through to the generic
+// `structOperandOffset` -> `structBaseOffsetOrMaterialise` path, which
+// materialises the element via `loadDynamicArrayElement`'s plain
+// `indexLoadOp` copy into a throwaway frame block with no write-back
+// registered -- the mutation was silently dropped. `methodReceiver` now
+// resolves this shape the same way `emitDynamicArrayElementRefArgument`
+// already does for the identical shape reached as a `ref` argument, and
+// writes the (possibly mutated) copy back through `indexStoreOp` afterward.
+// Two `bump()` calls before the read check the writeback actually lands (a
+// no-writeback bug would silently discard both mutations rather than crash).
+static foreach (backend; Matrix!()) {
+    @("dynamicArray.methodCallThroughElementReceiverMutatesElement." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct Plain {
+                int x;
+                int get() const { return x; }
+                void bump() { x++; }
+            }
+
+            unittest {
+                Plain[] arr = [Plain(1), Plain(2)];
+                arr[0].bump();
+                arr[0].bump();
+                assert(arr[0].get() == 3);
+                assert(arr[1].get() == 2);
+            }
+        });
+    }
+}
+
+// The dynamic-array-element counterpart of
+// `assocArray.structValueOverwriteFromVariable` above:
+// `tryDynamicArrayElementAssign`'s main branch only materialised its rhs
+// through `compileExpression`, which handles a struct rvalue (a literal or
+// constructor call) but not a struct lvalue (an existing local, reached the
+// same way `structOperandOffset` resolves every other struct-value read).
+static foreach (backend; Matrix!()) {
+    @("dynamicArray.structElementOverwriteFromVariable." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct Point { int x; int y; }
+            unittest {
+                Point[] arr = [Point(1, 2)];
+                Point p = Point(9, 9);
+                arr[0] = p;
+                assert(arr[0].x == 9);
+                assert(arr[0].y == 9);
+            }
+        });
+    }
+}
+
+// The static-array-element counterpart, resolved to a compile-time-constant
+// inline frame offset rather than a runtime descriptor:
+// `compileStaticArrayElementAssign` had the identical
+// compileExpression-only-handles-a-struct-rvalue gap.
+static foreach (backend; Matrix!()) {
+    @("staticArray.structElementOverwriteFromVariable." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct Point { int x; int y; }
+            unittest {
+                Point[2] arr = [Point(1, 2), Point(3, 4)];
+                Point p = Point(9, 9);
+                arr[1] = p;
+                assert(arr[1].x == 9);
+                assert(arr[1].y == 9);
+            }
+        });
+    }
+}
+
+// `arr[i].structField = rhs` for a dynamic array of structs, where the
+// written field is itself struct-typed and the rhs is an rvalue (a
+// constructor call): the resolved element-field pointer's write side,
+// `storeArrayElementFieldPointer`, special-cased a `Tarray` field but fell
+// through to a generic scalar path for everything else, which threw
+// resolving a struct field's scalar type. It now routes a `Tstruct` field
+// through `structOperandOffset`, the same way `storeThroughPointer` already
+// does for a struct-typed pointer write.
+static foreach (backend; Matrix!()) {
+    @("dynamicArray.structFieldOfStructElementWrittenFromConstructorCall." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct Inner { int v; }
+            struct Outer { Inner inner; int tag; }
+            unittest {
+                Outer[] arr = [Outer(Inner(1), 10)];
+                arr[0].inner = Inner(55);
+                assert(arr[0].inner.v == 55);
+                assert(arr[0].tag == 10);
+            }
+        });
+    }
+}
+
+// The same shape, but the rhs is an existing struct lvalue rather than a
+// constructor-call rvalue: `compileExpression` alone cannot materialise an
+// existing struct variable, the same gap `storeThroughPointer` already
+// works around via `structOperandOffset`.
+static foreach (backend; Matrix!()) {
+    @("dynamicArray.structFieldOfStructElementWrittenFromVariable." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct Inner { int v; }
+            struct Outer { Inner inner; int tag; }
+            unittest {
+                Outer[] arr = [Outer(Inner(1), 10)];
+                Inner existing = Inner(77);
+                arr[0].inner = existing;
+                assert(arr[0].inner.v == 77);
+            }
+        });
+    }
+}
+
+// The class-array-field sibling of the case above (`c.arr[i].field = rhs`):
+// `storeArrayElementFieldPointer` also serves
+// `tryClassArrayFieldElementFieldPointer`'s resolved pointer, so the same
+// `Tstruct` branch closes this shape too. `Interpreter` throws "Expected
+// class object." on this receiver shape even for a plain scalar field
+// (confirmed via bin/ut with `c.arr[0].tag = 99;`), a pre-existing gap
+// unrelated to the struct-field fix here.
+static foreach (backend; Matrix!(
+    Omit!(Interpreter, Because.unconfirmed,
+        "class array-of-structs element field write throws " ~
+        "\"Expected class object.\" even for a scalar field"),
+)) {
+    @("classField.structFieldOfArrayOfStructsElementWrittenFromConstructorCall." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct Inner { int v; }
+            struct Item { Inner inner; int tag; }
+            class C { Item[] arr; }
+            unittest {
+                auto c = new C();
+                c.arr = [Item(Inner(1), 10)];
+                c.arr[0].inner = Inner(55);
+                assert(c.arr[0].inner.v == 55);
+                assert(c.arr[0].tag == 10);
+            }
+        });
+    }
+}
+
+// The `Tsarray` sibling of the struct-field case above: `arr[i].fixedField =
+// [x, y, z]` for a dynamic-array-of-structs element whose field is itself a
+// static array. `storeArrayElementFieldPointer` had no `Tsarray` branch at
+// all and threw "Unsupported type in bytecode core: int[3]"; it now routes
+// the field through `compileStaticArrayValueInto`, the same whole-value
+// helper a static-array local's own declaration/assignment uses.
+static foreach (backend; Matrix!()) {
+    @("dynamicArray.staticArrayFieldOfStructElementWrittenFromLiteral." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct Outer { int[3] vals; int tag; }
+            unittest {
+                Outer[] arr = [Outer([1, 2, 3], 10)];
+                arr[0].vals = [7, 8, 9];
+                assert(arr[0].vals == [7, 8, 9]);
+                assert(arr[0].tag == 10);
+            }
+        });
+    }
+}
+
+// The same shape, but the rhs is an existing static-array lvalue rather than
+// a literal: `compileStaticArrayValueInto` resolves both forms already, so
+// this needs no further change beyond the literal case above.
+static foreach (backend; Matrix!()) {
+    @("dynamicArray.staticArrayFieldOfStructElementWrittenFromVariable." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct Outer { int[3] vals; int tag; }
+            unittest {
+                Outer[] arr = [Outer([1, 2, 3], 10)];
+                int[3] existing = [4, 5, 6];
+                arr[0].vals = existing;
+                assert(arr[0].vals == [4, 5, 6]);
+                assert(arr[0].tag == 10);
+            }
+        });
+    }
+}
+
+// An *indexed* write into that same static-array field (`arr[i].fixedField[j]
+// = value`): `staticArrayBaseOffset` resolved `arr[0].vals`'s base offset
+// through `tryStructField`, which for a dynamic-array-of-structs element
+// (`structBaseOffsetOrMaterialise`'s `dynamicArrayDescriptorOrNull` branch)
+// returns a throwaway copy of the element with no writeback wiring at all --
+// silently discarding the store instead of throwing. `arr[0].vals` (the whole
+// field) previously used the same throwaway base for its own reads, but the
+// whole-value *write* case above bypasses it via
+// `tryStructSliceFieldElementFieldPointer`'s real pointer; this indexed case
+// had no such bypass. Fixed by resolving the field's real runtime pointer the
+// same way and advancing it by the index, mirroring
+// `tryStaticArrayRuntimeAddress`'s pointer-advance for a plain static-array
+// local.
+static foreach (backend; Matrix!()) {
+    @("dynamicArray.staticArrayFieldElementOfStructElementWritten." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct Outer { int[3] vals; int tag; }
+            unittest {
+                Outer[] arr = [Outer([1, 2, 3], 10)];
+                arr[0].vals[1] = 99;
+                assert(arr[0].vals[1] == 99);
+                assert(arr[0].vals[0] == 1);
+                assert(arr[0].vals[2] == 3);
+                assert(arr[0].tag == 10);
+            }
+        });
+    }
+}
+
+// The compound-assignment sibling of the indexed write above
+// (`arr[i].fixedField[j] += value`): the identical silent-corruption shape.
+// `compileAddAssignExpression`'s `IndexExp` handling
+// (`tryStaticArrayElementAddAssign`) is a separate dispatch from
+// `compileAssignExpression` and still resolved the field's base through the
+// same throwaway `tryStructField` copy the plain-assignment case used to,
+// silently discarding the increment instead of throwing. Fixed the same way:
+// `tryArrayElementFieldIndexAddAssign` resolves the field's real runtime
+// pointer and advances it by the index, then reads, adds, and stores back
+// through that real address.
+static foreach (backend; Matrix!()) {
+    @("dynamicArray.staticArrayFieldElementOfStructElementAddAssigned." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct Outer { int[3] vals; int tag; }
+            unittest {
+                Outer[] arr = [Outer([1, 2, 3], 10)];
+                arr[0].vals[1] += 5;
+                assert(arr[0].vals[1] == 7);
+                assert(arr[0].vals[0] == 1);
+                assert(arr[0].vals[2] == 3);
+                assert(arr[0].tag == 10);
+            }
+        });
+    }
+}
+
+// A *doubly*-indexed write into a multi-dimensional static-array field
+// (`arr[i].fixedField[j][k] = value`, e.g. `struct Outer { int[2][3] vals;
+// int tag; }`): the same silent-corruption shape as the singly-indexed case
+// above, one dimension deeper. `arr[0].vals[1]`'s own `IndexExp` is not a
+// `DotVarExp`, so it fell through the singly-indexed fix's pattern match
+// straight to `tryStaticArrayElement`'s `locateStaticArrayElement`, which
+// resolves `arr[0].vals`'s base through `tryStructField`'s throwaway copy of
+// the whole `arr[0]` element -- silently discarding the store instead of
+// throwing. Fixed by generalising the singly-indexed fix into
+// `arrayElementFieldPointer` (`compiler.d`), which recurses through any
+// number of `IndexExp` layers, advancing the field's own real runtime
+// pointer one dimension at a time via `advanceStaticArrayPointer` instead of
+// ever falling through to the throwaway copy. Interpreter throws
+// "Unsupported interpreter assignment target." on this doubly-indexed shape
+// even though the singly-indexed sibling above already passes -- a separate,
+// unconfirmed backend gap, not this fix's scope.
+static foreach (backend; Matrix!(
+    Omit!(Interpreter, Because.unconfirmed,
+        "Unsupported interpreter assignment target."),
+)) {
+    @("dynamicArray.nestedStaticArrayFieldElementOfStructElementWritten." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct Outer { int[2][3] vals; int tag; }
+            unittest {
+                Outer[] arr = [Outer([[1, 2], [3, 4], [5, 6]], 10)];
+                arr[0].vals[1][0] = 99;
+                assert(arr[0].vals[1][0] == 99);
+                assert(arr[0].vals[0][0] == 1);
+                assert(arr[0].vals[0][1] == 2);
+                assert(arr[0].vals[1][1] == 4);
+                assert(arr[0].vals[2][0] == 5);
+                assert(arr[0].vals[2][1] == 6);
+                assert(arr[0].tag == 10);
+            }
+        });
+    }
+}
+
+// The compound-assignment sibling of the doubly-indexed write above
+// (`arr[i].fixedField[j][k] += value`): the identical silent-corruption
+// shape one dimension deeper than the singly-indexed compound-assignment
+// fix. Fixed the same way, through the shared `arrayElementFieldPointer`.
+// Interpreter throws the same "Unsupported interpreter assignment target."
+// gap as the plain-assignment sibling above.
+static foreach (backend; Matrix!(
+    Omit!(Interpreter, Because.unconfirmed,
+        "Unsupported interpreter assignment target."),
+)) {
+    @("dynamicArray.nestedStaticArrayFieldElementOfStructElementAddAssigned." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct Outer { int[2][3] vals; int tag; }
+            unittest {
+                Outer[] arr = [Outer([[1, 2], [3, 4], [5, 6]], 10)];
+                arr[0].vals[1][0] += 5;
+                assert(arr[0].vals[1][0] == 8);
+                assert(arr[0].vals[0][0] == 1);
+                assert(arr[0].vals[2][1] == 6);
+                assert(arr[0].tag == 10);
+            }
+        });
+    }
+}
+
+// The `Tarray` sibling of the doubly-indexed static-array-field write above
+// (`arr[i].matrixField[j][k] = value`, e.g. `int[][] matrixField`, a
+// dynamic-array-of-dynamic-arrays field): `arrayElementFieldPointer` only
+// resolved a `Tsarray` dimension, so this shape threw "Unsupported
+// assignment in bytecode core" rather than corrupting anything, but it was
+// still unsupported. Fixed by extending `arrayElementFieldPointer` (via
+// `advanceArrayElementFieldPointer`) to also resolve a `Tarray` dimension:
+// the field's own real pointer is dereferenced to load its `{pointer,
+// length}` descriptor, and the same `advanceStaticArrayPointer` bounds-check
+// and pointer arithmetic ordinary dynamic-array indexing already uses is fed
+// that descriptor's runtime pointer and length instead of a frame address
+// and a compile-time-constant length. Interpreter throws "Unsupported
+// interpreter assignment target." on this shape, the same pre-existing gap
+// as the `Tsarray` sibling above.
+//
+// The fixture builds `matrixField` from an intermediate `rows` local rather
+// than an inline array-of-arrays literal passed directly as the constructor
+// argument, exercising the plain descriptor-copy path
+// (`dynamicArrayDescriptorOrNull`) rather than literal construction; the
+// sibling block below exercises the literal directly.
+static foreach (backend; Matrix!(
+    Omit!(Interpreter, Because.unconfirmed,
+        "Unsupported interpreter assignment target."),
+)) {
+    @("dynamicArray.nestedDynamicArrayFieldElementOfStructElementWritten." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct Outer { int[][] matrixField; int tag; }
+            unittest {
+                int[][] rows = [[1, 2], [3, 4, 5], [6, 7]];
+                Outer[] arr = [Outer(rows, 10)];
+                arr[0].matrixField[1][2] = 99;
+                assert(arr[0].matrixField[1][2] == 99);
+                assert(arr[0].matrixField[0][0] == 1);
+                assert(arr[0].matrixField[0][1] == 2);
+                assert(arr[0].matrixField[1][0] == 3);
+                assert(arr[0].matrixField[1][1] == 4);
+                assert(arr[0].matrixField[2][0] == 6);
+                assert(arr[0].matrixField[2][1] == 7);
+                assert(arr[0].tag == 10);
+            }
+        });
+    }
+}
+
+// An out-of-bounds index into the `Tarray` dimension throws, rather than
+// corrupting memory: `advanceArrayElementFieldPointer`'s `Tarray` branch
+// bounds-checks against the descriptor's own runtime length word
+// (`Op.checkStaticArrayIndex`, the same check ordinary dynamic-array
+// indexing raises), so this is druntime's ordinary `ArrayIndexError` text,
+// byte for byte matching `SystemLinker`. `Ctfe`'s own bounds check uses the
+// divergent backtick-range wording pinned below.
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.diverges, "see sibling pin below (Ctfe)"),
+    Omit!(Interpreter, Because.unconfirmed,
+        "Unsupported interpreter assignment target."),
+)) {
+    @("dynamicArray.nestedDynamicArrayFieldElementOutOfBoundsIndexThrows." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct Outer { int[][] matrixField; int tag; }
+            unittest {
+                int[][] rows = [[1, 2], [3, 4, 5]];
+                Outer[] arr = [Outer(rows, 10)];
+                arr[0].matrixField[1][5] = 99;
+            }
+        }).shouldThrowWithMessage(
+            "index [5] is out of bounds for array of length 3",
+        );
+    }
+}
+
+static foreach (backend; AliasSeq!(Ctfe)) {
+    @("dynamicArray.nestedDynamicArrayFieldElementOutOfBoundsIndexThrows." ~
+        backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct Outer { int[][] matrixField; int tag; }
+            unittest {
+                int[][] rows = [[1, 2], [3, 4, 5]];
+                Outer[] arr = [Outer(rows, 10)];
+                arr[0].matrixField[1][5] = 99;
+            }
+        }).shouldThrowWithMessage("array index 5 is out of bounds `[0..3]`");
+    }
+}
+
+// The construction-side sibling of the descriptor-copy fixture above: an
+// array-of-arrays *literal* landing directly in a `Tarray` field slot
+// (rather than through an existing dynamic-array local's descriptor copy).
+// Five call sites built a field's descriptor via `compileDynamicArrayInto`
+// without passing `arrayElementIsArray(fieldType)`, defaulting to `false`
+// and mis-sizing the element width to the scalar (4-byte) width instead of
+// the 16-byte slice-descriptor width a nested array element actually needs.
+// Every heap write through the resulting descriptor then landed at the
+// wrong address -- confirmed to SIGSEGV, not merely produce a wrong result.
+// `compileStructLiteralInto` covers a struct literal built inline; the
+// other four are its `compileAssignExpression`-reachable siblings.
+static foreach (backend; Matrix!()) {
+    @("dynamicArray.structLiteralArrayOfArraysFieldConstructedInline." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct Outer { int[][] matrixField; int tag; }
+            unittest {
+                Outer o = Outer([[1, 2], [3, 4, 5]], 10);
+                assert(o.matrixField[1][2] == 5);
+                assert(o.matrixField[0][1] == 2);
+                assert(o.tag == 10);
+            }
+        });
+    }
+
+    @("dynamicArray.directFieldAssignmentOfArrayOfArraysLiteral." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct Outer { int[][] matrixField; int tag; }
+            unittest {
+                Outer o;
+                o.matrixField = [[1, 2], [3, 4, 5]];
+                assert(o.matrixField[1][2] == 5);
+                assert(o.matrixField[0][1] == 2);
+            }
+        });
+    }
+
+    @("dynamicArray.arrayElementFieldAssignmentOfArrayOfArraysLiteral." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct Outer { int[][] matrixField; int tag; }
+            unittest {
+                Outer[] arr = [Outer(null, 0)];
+                arr[0].matrixField = [[1, 2], [3, 4, 5]];
+                assert(arr[0].matrixField[1][2] == 5);
+                assert(arr[0].matrixField[0][1] == 2);
+            }
+        });
+    }
+
+    @("dynamicArray.structPointerFieldAssignmentOfArrayOfArraysLiteral." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct Holder { int[][] matrixField; int tag; }
+            unittest {
+                Holder holder;
+                Holder* carrier = &holder;
+                carrier.matrixField = [[1, 2], [3, 4, 5]];
+                assert(carrier.matrixField[1][2] == 5);
+                assert(holder.matrixField[1][2] == 5);
+            }
+        });
+    }
+
+    @("dynamicArray.classPointerFieldAssignmentOfArrayOfArraysLiteral." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            class C { int[][] matrixField; }
+            unittest {
+                C c = new C();
+                c.matrixField = [[1, 2], [3, 4, 5]];
+                assert(c.matrixField[1][2] == 5);
+                assert(c.matrixField[0][1] == 2);
+            }
+        });
+    }
+}
+
+// A sibling of the five-call-site fix above, in a field-construction path
+// distinct from all five: a constructor-less struct's positional
+// `new S(args)` construction (`initialiseStructFields`), which also called
+// `compileDynamicArrayInto` for a `Tarray` field without
+// `arrayElementIsArray(field.type)`, defaulting to `false` and mis-sizing
+// an array-of-arrays field's element width -- confirmed via real `bin/ut`
+// to SIGSEGV. Fixed by passing `arrayElementIsArray(field.type)`.
+static foreach (backend; Matrix!()) {
+    @("dynamicArray.structPositionalConstructionOfArrayOfArraysLiteral." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct Outer { int[][] matrixField; int tag; }
+            unittest {
+                auto o = new Outer([[1, 2], [3, 4, 5]], 10);
+                assert(o.matrixField[1][2] == 5);
+                assert(o.matrixField[0][1] == 2);
+                assert(o.tag == 10);
+            }
+        });
+    }
+}
+
+// A broader-surface sibling of the same shape: `emitCallArgument`'s
+// by-value `Tarray`-parameter branch resolves an argument's descriptor via
+// `arrayDescriptorOffset` without passing `arrayElementIsArray(argument.
+// type)` either, so an inline array-of-arrays literal passed directly as a
+// function-call argument mis-sizes the same way -- confirmed via real
+// `bin/ut` to SIGSEGV. Fixed by passing `arrayElementIsArray(argument.
+// type)`.
+static foreach (backend; Matrix!()) {
+    @("dynamicArray.functionCallArgumentArrayOfArraysLiteral." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            int sumInner(int[][] m, int idx) {
+                return m[idx][2];
+            }
+            unittest {
+                assert(sumInner([[1, 2], [3, 4, 5]], 1) == 5);
+            }
+        });
+    }
+}
+
+// Two more siblings of the identical shape, both in `compileConcatenationAssign`
+// (`arr ~= other`): the local-variable branch and the module-variable branch
+// each resolve the right-hand side's descriptor via `arrayDescriptorOffset`
+// without passing `elementIsArray`, mis-sizing an array-of-arrays right-hand
+// side that is not already a known local (a literal, here) -- confirmed via
+// real `bin/ut` to SIGSEGV in both branches. Fixed by threading
+// `elementIsArray` (the LHS descriptor's own, in each branch) through.
+static foreach (backend; Matrix!()) {
+    @("dynamicArray.catAssignArrayOfArraysLiteralIntoLocal." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            unittest {
+                int[][] arr = [[1, 2]];
+                arr ~= [[9, 9], [8, 8]];
+                assert(arr.length == 3);
+                assert(arr[1][0] == 9);
+                assert(arr[2][1] == 8);
+            }
+        });
+    }
+}
+
+// The module-variable branch needs its own `Matrix`: `Ctfe` cannot read a
+// mutable static variable at compile time at all (a genuine D CTFE
+// restriction, confirmed with real `dmd`: "static variable `arr` cannot be
+// read at compile time"), independent of this fix.
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.inexpressible,
+        "CTFE cannot read a mutable static/module variable"),
+)) {
+    @("dynamicArray.catAssignArrayOfArraysLiteralIntoModuleVariable." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            int[][] arr;
+            unittest {
+                arr ~= [[9, 9], [8, 8]];
+                assert(arr.length == 2);
+                assert(arr[0][0] == 9);
+                assert(arr[1][1] == 8);
+            }
+        });
+    }
+}
+
+// A concatenation sibling of the same shape: `catOperandDescriptor` (via
+// `compileCatInto`, for `a ~ b`) also resolved a `Tarray` operand's
+// descriptor via `arrayDescriptorOffset` without passing `elementIsArray`,
+// mis-sizing an array-of-arrays literal operand not already a known local
+// -- confirmed via real `bin/ut` to SIGSEGV. Fixed by threading the
+// concatenation's own `elementIsArray` through `catOperandDescriptor`.
+static foreach (backend; Matrix!()) {
+    @("dynamicArray.catArrayOfArraysLiteralOperand." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            unittest {
+                int[][] a = [[1, 2]];
+                auto c = a ~ [[3, 4], [5, 6]];
+                assert(c.length == 3);
+                assert(c[2][1] == 6);
+                assert(c[1][0] == 3);
+            }
+        });
+    }
+}
+
+// A read-side sibling: `dynamicArrayDescriptorOrNull`'s array-returning-call
+// branch (an array-returning call indexed directly, e.g. `f()[i]`, or as the
+// inner operand of a further index, e.g. `f()[i][j]`) also built its
+// `DynamicArrayLocal`/materialised its descriptor via `compileDynamicArrayInto`
+// without `arrayElementIsArray(expression.type)`, mis-sizing a call that
+// returns an array-of-arrays -- confirmed via real `bin/ut` to throw a wrong
+// "index out of bounds" (the outer descriptor's length read as 0). Fixed by
+// passing `arrayElementIsArray(expression.type)` both to
+// `compileDynamicArrayInto` and into the resulting `DynamicArrayLocal`.
+static foreach (backend; Matrix!(
+    Omit!(Interpreter, Because.unconfirmed,
+        "wrong result indexing an array-of-arrays-returning call's result"),
+)) {
+    @("dynamicArray.arrayOfArraysReturningCallResultIndexing." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            int[][] matrixMaker() {
+                return [[1, 2], [3, 4, 5]];
+            }
+            unittest {
+                assert(matrixMaker()[1][2] == 5);
+                assert(matrixMaker()[0][1] == 2);
             }
         });
     }
