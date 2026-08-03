@@ -1775,12 +1775,17 @@ static foreach (backend; Matrix!()) {
 // the returning function's own frame. Real compiled D (SystemLinker,
 // LLVMJit) promotes `total` to a GC-heap closure so the returned delegate
 // keeps working after `makeCounterGetter` returns. Ctfe's own dmd.dinterpret
-// engine refuses this outright, the Interpreter silently hands back a
-// delegate reading a stale frame slot, and the bytecode core has no heap
-// closure environment yet (`ai/plans/bytecode.md`'s Closures section) so it
-// refuses the return with a clear diagnostic rather than handing back a
-// dangling one -- three separate, pre-existing promotion-backlog gaps, not
-// a Bytecode-only characterization.
+// engine refuses this outright and the Interpreter silently hands back a
+// delegate reading a stale frame slot -- two separate, pre-existing
+// promotion-backlog gaps, not a Bytecode-only characterization. Bytecode
+// itself now promotes this one narrow shape (a single scalar captured by
+// exactly one escaping lambda, one nesting level, no `this` combination) to
+// a real GC-heap closure environment (`heapClosureContextOrNull`,
+// `compiler.d`): `Op.allocStruct` snapshots `total`'s current frame value
+// into a heap block once, at the point the lambda escapes via `return`, and
+// the lambda's own body (`_heapClosureVars`-gated `loadCapturedLocal`/
+// `storeCapturedLocal`) dereferences that same block through the received
+// context pointer instead of resolving a (by-then-popped) enclosing frame.
 static foreach (backend; Matrix!(
     Omit!(Ctfe, Because.inexpressible,
         "Ctfe wraps dmd.dinterpret, whose CTFE engine refuses the "
@@ -1792,14 +1797,6 @@ static foreach (backend; Matrix!(
             "call whose delegate reads a stale/reused frame slot " ~
             "instead of the closed-over value (observed returning 1 " ~
             "instead of 4) -- not yet promoted"),
-    Omit!(Bytecode, Because.unconfirmed,
-        "the bytecode core has no heap closure environment yet; a "
-            ~ "delegate that captures its own function's locals and "
-            ~ "escapes via `return` is refused with \"Unsupported "
-            ~ "delegate return in bytecode core: returning a closure "
-            ~ "over this function's own locals outlives its frame: "
-            ~ "<name>\" rather than handing back a dangling frame "
-            ~ "reference -- not yet promoted"),
 )) {
     @("delegate.functionReturningCapturingDelegateIsCallable." ~
         backend.stringof)
@@ -1815,6 +1812,43 @@ static foreach (backend; Matrix!(
             unittest {
                 auto getter = makeCounterGetter(3);
                 assert(getter() == 4);
+            }
+        });
+    }
+}
+
+// A sibling of the fixture above that also WRITES the escaped capture, and
+// calls the returned delegate more than once: each call must mutate and read
+// back the same heap-resident `count`, not a fresh snapshot per call, which
+// `functionReturningCapturingDelegateIsCallable` (a single read-only call)
+// does not itself exercise. This is `ai/plans/bytecode.md`'s own Closures-
+// section escaping-delegate example.
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.inexpressible,
+        "Ctfe wraps dmd.dinterpret, whose CTFE engine refuses the "
+            ~ "returned closure outright with \"closures are not yet "
+            ~ "supported in CTFE\""),
+    Omit!(Interpreter, Because.unconfirmed,
+        "the Interpreter does not yet promote a frame-escaping " ~
+            "captured local to a heap closure either -- not yet promoted"),
+)) {
+    @("delegate.functionReturningMutatingCapturingDelegateIsCallable." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            int delegate() makeCounter() {
+                int count = 0;
+                return () => ++count;
+            }
+
+            unittest {
+                auto c = makeCounter();
+                assert(c() == 1);
+                assert(c() == 2);
+                auto c2 = makeCounter();
+                assert(c2() == 1);
+                assert(c() == 3);
             }
         });
     }

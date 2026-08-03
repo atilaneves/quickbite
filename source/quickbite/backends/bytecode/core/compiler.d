@@ -196,6 +196,15 @@ private struct Compiler {
     // it; `capturedFrameIndex` walks the enclosing-function chain from the
     // current function to this owner, one received-context hop per level.
     private FuncDeclaration[VarDeclaration] _capturedOwners;
+    // Captured locals that a frame-escaping delegate return
+    // (`heapClosureContextOrNull`) has moved out of their owning frame into a
+    // dedicated GC-heap block: `loadCapturedLocal`/`storeCapturedLocal`
+    // dereference the received context word as that block's raw pointer
+    // (offset 0) instead of resolving a live enclosing frame through
+    // `capturedFrameIndex`. Scoped to the one narrow shape
+    // `heapClosureContextOrNull` recognises -- a single scalar captured by
+    // exactly one escaping lambda, one nesting level, no `this` combination.
+    private bool[VarDeclaration] _heapClosureVars;
     // The function whose body is currently being compiled; `_capturedOwners`
     // entries recorded while compiling it are attributed to it.
     private FuncDeclaration _currentFunction;
@@ -1148,8 +1157,7 @@ private struct Compiler {
                 result = structOperandOffset(return_.exp);
             hasResult = true;
         } else if (_currentReturnType.isDelegate) {
-            refuseFrameEscapingDelegateReturn(return_.exp);
-            result = delegateOperandOffset(return_.exp);
+            result = compileDelegateReturn(return_.exp);
             hasResult = true;
         } else if (return_.exp !is null &&
             !_currentReturnType.isUndisplayable &&
@@ -4260,45 +4268,122 @@ private struct Compiler {
         ));
     }
 
-    // Refuses `return dg;` when `dg` is a lambda literal or nested-function
-    // delegate that actually reads a variable from an enclosing frame
-    // (`outerVars`, DMD's own record of the reverse of `closureVars` --
-    // `ai/plans/bytecode.md`'s Closures section: "DMD semantic analysis has
-    // already determined `needsClosure()` and `closureVars`"): the current call's
-    // frame is gone by the time the caller invokes the returned delegate, so
-    // that captured-local read would land on whatever later reused the
-    // stack region. Real compiled D promotes such a capture to a GC-heap
-    // closure; this core has no heap closure environment yet (see
-    // `ai/plans/bytecode.md`'s Closures section), so decline loudly instead
-    // of returning a value that reads as garbage once the frame is reused.
-    // A delegate literal that captures nothing (`outerVars.length == 0`,
-    // e.g. `() => 5`) is unaffected: its context word is never
-    // dereferenced, so a stale frame index in it is harmless. A delegate
-    // value read back from a parameter, field, or another call (no
-    // statically known callee here) is also unaffected: its own origin
-    // already resolved this question, either by never depending on this
-    // function's frame or by having already thrown when it was first
-    // declared.
-    private void refuseFrameEscapingDelegateReturn(Expression source) {
-        import std.conv: text;
-
+    // The `FuncDeclaration` a `return dg;` returns, resolved the same way for
+    // both a directly-known lambda literal/nested-function delegate (a
+    // `_delegateLocals` entry) and any other statically-known callee shape
+    // `delegateInitializer` recognises (`FuncExp`, `&freeFunction`,
+    // `&receiver.method`) -- or null if `source` is not one of those (e.g. a
+    // delegate read back from a parameter or another call, which has no
+    // statically known callee here).
+    private FuncDeclaration returnedDelegateFunctionOrNull(Expression source) {
         while (auto cast_ = source.isCastExp)
             source = cast_.e1;
 
-        FuncDeclaration function_;
         if (auto variable = source.isVarExp)
             if (auto declaration = variable.var.isVarDeclaration)
                 if (auto existing = declaration in _delegateLocals)
-                    function_ = existing.function_;
-        if (function_ is null)
-            function_ = delegateInitializer(source).function_;
+                    return existing.function_;
 
-        if (function_ !is null && function_.outerVars.length != 0)
+        return delegateInitializer(source).function_;
+    }
+
+    // Compiles `return dg;`. A delegate literal that captures nothing
+    // (`outerVars.length == 0`, e.g. `() => 5`) or a delegate value read back
+    // from a parameter, field, or another call (no statically known callee
+    // here) is unaffected either way: its context word is either never
+    // dereferenced or its own origin already resolved this question, so the
+    // ordinary `delegateOperandOffset` path handles it.
+    //
+    // A delegate literal or nested-function delegate that actually reads a
+    // variable from an enclosing frame (`outerVars`, DMD's own record of the
+    // reverse of `closureVars` -- `ai/plans/bytecode.md`'s Closures section:
+    // "DMD semantic analysis has already determined `needsClosure()` and
+    // `closureVars`") is different: the current call's frame is gone by the
+    // time the caller invokes the returned delegate, so that captured-local
+    // read would land on whatever later reused the stack region. Real
+    // compiled D promotes such a capture to a GC-heap closure.
+    // `heapClosureContextOrNull` recognises the one narrow shape this core
+    // heap-allocates (a single scalar captured by exactly this one escaping
+    // lambda, one nesting level, no `this` combination) and, when it
+    // matches, builds that heap environment instead. Any wider shape still
+    // has no heap closure environment (see `ai/plans/bytecode.md`'s Closures
+    // section), so decline loudly instead of returning a value that reads as
+    // garbage once the frame is reused.
+    private ushort compileDelegateReturn(Expression source) {
+        import std.conv: text;
+
+        auto function_ = returnedDelegateFunctionOrNull(source);
+        if (function_ !is null && function_.outerVars.length != 0) {
+            if (auto heapContext = heapClosureContextOrNull(function_)) {
+                const offset = allocateBytes(delegateValueSize, size_t.sizeof);
+                emitDelegateValue(offset, function_, *heapContext);
+                return offset;
+            }
             throw new Exception(text(
                 "Unsupported delegate return in bytecode core: returning ",
                 "a closure over this function's own locals outlives its ",
                 "frame: ", expressionChars(source),
             ));
+        }
+
+        return delegateOperandOffset(source);
+    }
+
+    // A freshly heap-allocated closure environment's raw pointer, in a fresh
+    // frame slot, for `function_`'s escaping capture -- or null if
+    // `function_`'s capture doesn't match the one narrow shape this core
+    // heap-allocates: exactly one captured local, of scalar type, captured
+    // one level up from a plain (non-`this`-receiving) enclosing function
+    // directly into the frame currently being compiled. Any wider shape
+    // (more than one captured local, a non-scalar capture, a multi-level
+    // capture, or a capture combined with `this`) still declines via
+    // `compileDelegateReturn`'s existing diagnostic instead of risking an
+    // unsound heap layout.
+    //
+    // The heap block holds exactly the one captured scalar, at offset 0, so
+    // both the returned delegate's own body (`loadCapturedLocal`/
+    // `storeCapturedLocal`, gated on `_heapClosureVars`) and this snapshot
+    // read the identical bytes: `Op.allocStruct` copies the variable's
+    // current frame value in once, at the point it escapes, the same way
+    // `new S` copies a struct's initialised frame block onto the heap.
+    // Nothing in the enclosing function reads or writes the variable again
+    // after this point -- a `return` statement is necessarily the end of its
+    // execution -- so the frame slot and the heap block never diverge.
+    private ushort* heapClosureContextOrNull(FuncDeclaration function_) {
+        import dmd.astenums: TY;
+
+        if (function_.outerVars.length != 1)
+            return null;
+        if (thisStructDeclaration(function_) !is null)
+            return null;
+        if (auto enclosing = enclosingMethodOf(function_))
+            if (enclosing.isThis() !is null)
+                return null;
+
+        auto captured = function_.outerVars[0];
+        auto owner = captured in _capturedOwners;
+        if (owner is null || *owner !is _currentFunction)
+            return null;
+        auto capturedOffset = captured in _capturedOffsets;
+        if (capturedOffset is null)
+            return null;
+
+        const ty = captured.type.toBasetype.ty;
+        if (ty == TY.Tstruct || ty == TY.Tsarray || ty == TY.Tarray ||
+            ty == TY.Taarray || ty == TY.Tclass || ty == TY.Tdelegate)
+            return null;
+
+        const valueSize = cast(ushort) size(scalarType(captured.type));
+        const heapPointer =
+            allocateBytes(cast(uint) size_t.sizeof, size_t.sizeof);
+        _code ~= Instruction(
+            Op.allocStruct, heapPointer, *capturedOffset, valueSize,
+        );
+        _heapClosureVars[captured] = true;
+
+        auto result = new ushort;
+        *result = heapPointer;
+        return result;
     }
 
     private ushort delegateContextOffset(
@@ -6164,12 +6249,18 @@ private struct Compiler {
         const type = scalarType(declaration.type);
         const valueSize = size(type);
         const destination = allocateBytes(valueSize, valueSize);
-        _code ~= Instruction(
-            Op.frameLoad,
-            destination,
-            capturedFrameIndex(_capturedOwners[declaration], capturedOffset),
-            cast(ushort) valueSize,
-        );
+        if (declaration in _heapClosureVars)
+            emitPointerLoad(
+                destination, _nestedContextOffset, compileSizeConstant(0),
+                valueSize,
+            );
+        else
+            _code ~= Instruction(
+                Op.frameLoad,
+                destination,
+                capturedFrameIndex(_capturedOwners[declaration], capturedOffset),
+                cast(ushort) valueSize,
+            );
         if (declaredTy == TY.Tclass)
             return Operand(
                 destination, ScalarType.ulong_, true, ScalarType.void_,
@@ -6189,12 +6280,18 @@ private struct Compiler {
         const valueSize = isAggregate
             ? cast(uint) staticArraySize(declaration.type)
             : size(scalarType(declaration.type));
-        _code ~= Instruction(
-            Op.frameStore,
-            value.offset,
-            capturedFrameIndex(_capturedOwners[declaration], capturedOffset),
-            cast(ushort) valueSize,
-        );
+        if (declaration in _heapClosureVars)
+            emitPointerStore(
+                value.offset, _nestedContextOffset, compileSizeConstant(0),
+                valueSize,
+            );
+        else
+            _code ~= Instruction(
+                Op.frameStore,
+                value.offset,
+                capturedFrameIndex(_capturedOwners[declaration], capturedOffset),
+                cast(ushort) valueSize,
+            );
     }
 
     // Records `variable`'s frame offset alongside the function currently

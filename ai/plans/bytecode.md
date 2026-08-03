@@ -1265,16 +1265,48 @@ lifetime as the dependency bytecode cache.
   such a capture correctly for a still-live enclosing frame, whether the
   capture is the function's only context (no enclosing struct method
   involved at all) or combined with `this` under one (the bullet below).
-  The only remaining gap is a captured local outliving its declaring frame:
-  a delegate that captures its own function's locals and escapes via
-  `return` rather than being called while that frame is still live still
-  needs a real GC-heap-backed environment, since the current mechanism
-  addresses the caller's own stack frame, not a heap allocation
-  (`refuseFrameEscapingDelegateReturn` declines that shape explicitly). An
-  immediately-invoked void lambda whose body is a single expression
-  statement can avoid needing that environment by inlining the statement
-  into the caller the same way a single-`return`-expression IIFE already
-  inlines.
+  The remaining gap is a captured local outliving its declaring frame: a
+  delegate that captures its own function's locals and escapes via `return`
+  rather than being called while that frame is still live needs a real
+  GC-heap-backed environment, since the frame-relative mechanism above
+  addresses the caller's own stack frame, not a heap allocation.
+  `heapClosureContextOrNull` (`compiler.d`, called from
+  `compileDelegateReturn`) now covers the one narrow shape a single
+  `Op.allocStruct` block can hold soundly: exactly one captured local, of
+  scalar type, captured one nesting level up from a plain (non-`this`-
+  receiving) enclosing function, by exactly one escaping lambda. At the
+  `return` statement, it copies the variable's current frame value into a
+  fresh heap block once (the same `Op.allocStruct` shape `new S` already
+  uses) and hands the delegate that block's raw pointer as its context
+  instead of a frame-base index; the returned lambda's own body
+  (`_heapClosureVars`-gated `loadCapturedLocal`/`storeCapturedLocal`)
+  dereferences that same block through the received context pointer via
+  `emitPointerLoad`/`emitPointerStore` instead of resolving a (by-then-
+  popped) enclosing frame through `capturedFrameIndex`. This is sound
+  precisely because a `return` statement is the last thing its enclosing
+  function ever executes: nothing in that function reads or writes the
+  variable again afterward, so the frame slot and the heap snapshot never
+  diverge. It does not generalise past that one shape: more than one
+  escaping capture, a non-scalar capture (struct/array/AA/class/delegate),
+  a multi-level capture (an escaping lambda nested two or more functions
+  deep), and a capture combined with `this` are all still declined with the
+  same diagnostic `refuseFrameEscapingDelegateReturn` used to raise
+  unconditionally (`compileDelegateReturn` still throws whenever
+  `heapClosureContextOrNull` returns null for a function with non-empty
+  `outerVars`). Generalising this to DMD's own per-function `needsClosure()`/
+  `closureVars` decision -- moving every closure-needing variable to its heap
+  block from declaration onward, regardless of whether it is actually
+  returned -- remains future work; the eventual right design point, since
+  `needsClosure()` is typically true for any lambda literal whose address is
+  taken at all (including the still-live-frame case
+  `lambda.capturesReassignedLocalInSameFrame` exercises), but adopting it
+  generally would require moving every one of the many `capturedFrameIndex`
+  call sites (struct/array captures, multi-level ancestor chains, `this`-
+  combined captures) onto heap-pointer addressing together, not just the one
+  scalar/one-level/return-only slice here. An immediately-invoked void lambda
+  whose body is a single expression statement can avoid needing any
+  environment at all by inlining the statement into the caller the same way
+  a single-`return`-expression IIFE already inlines.
 - The captured-parent materialisation is only for such nested functions. A
   nested struct method's own `this` remains its current receiver, even when
   that receiver also carries a context pointer.
