@@ -1929,6 +1929,89 @@ static foreach (backend; Matrix!(
     }
 }
 
+// A sibling of `functionReturningCapturingDelegateIsCallable` that captures
+// TWO plain scalar locals instead of one: `heapClosureContextOrNull`
+// (`compiler.d`) widened from exactly one captured local to one *or two*,
+// each landing in its own fixed `size_t.sizeof`-wide slot of the same
+// `Op.allocStruct` heap block (`_heapClosureOffsets` records each variable's
+// own slot, `0` and `size_t.sizeof` here), rather than declining with
+// "Unsupported delegate return in bytecode core" as it did before this
+// widening (the previous gate rejected any `outerVars.length != 1`
+// outright). Both `a` and `b` are read once the enclosing frame is gone.
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.inexpressible,
+        "Ctfe wraps dmd.dinterpret, whose CTFE engine refuses the "
+            ~ "returned closure outright with \"closures are not yet "
+            ~ "supported in CTFE\""),
+    Omit!(Interpreter, Because.unconfirmed,
+        "the Interpreter does not yet promote a frame-escaping " ~
+            "captured local to a heap closure either; it returns a " ~
+            "call whose delegate reads a stale/reused frame slot " ~
+            "instead of the closed-over values -- not yet promoted"),
+)) {
+    @("delegate.functionReturningCapturingDelegateOverTwoLocalsIsCallable." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            int delegate() makeAdder() {
+                int a = 1;
+                int b = 10;
+                return () => a + b;
+            }
+
+            unittest {
+                auto f = makeAdder();
+                assert(f() == 11);
+            }
+        });
+    }
+}
+
+// A mutating sibling of `functionReturningCapturingDelegateOverTwoLocalsIsCallable`,
+// writing through BOTH heap-resident captures on every call and calling the
+// returned delegate more than once (mirroring
+// `functionReturningMutatingCapturingDelegateIsCallable`'s single-capture
+// mutation coverage, but exercising two independent
+// `storeCapturedLocal`/`loadCapturedLocal` slots in the same heap block
+// instead of one): each call must read back and mutate the same pair of
+// heap-resident values, not a fresh snapshot per call.
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.inexpressible,
+        "Ctfe wraps dmd.dinterpret, whose CTFE engine refuses the "
+            ~ "returned closure outright with \"closures are not yet "
+            ~ "supported in CTFE\""),
+    Omit!(Interpreter, Because.unconfirmed,
+        "the Interpreter does not yet promote a frame-escaping " ~
+            "captured local to a heap closure either -- not yet promoted"),
+)) {
+    @("delegate.functionReturningMutatingCapturingDelegateOverTwoLocalsIsCallable." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            int delegate() makeAccumulator() {
+                int a = 0;
+                int b = 0;
+                return () {
+                    a += 1;
+                    b += 2;
+                    return a + b;
+                };
+            }
+
+            unittest {
+                auto acc = makeAccumulator();
+                assert(acc() == 3);
+                assert(acc() == 6);
+                auto acc2 = makeAccumulator();
+                assert(acc2() == 3);
+                assert(acc() == 9);
+            }
+        });
+    }
+}
+
 // A lambda that captures nothing, itself returning another non-capturing
 // lambda: DMD's "no context needed" default types both `make` and `getter`
 // as plain function pointers (`int function() function()` and `int

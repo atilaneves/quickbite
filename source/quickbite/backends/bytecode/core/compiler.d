@@ -200,12 +200,21 @@ private struct Compiler {
     // (`heapClosureContextOrNull`) has moved out of their owning frame into a
     // dedicated GC-heap block: `loadCapturedLocal`/`storeCapturedLocal`
     // dereference the received context word as that block's raw pointer
-    // (offset 0) instead of resolving a live enclosing frame through
-    // `capturedFrameIndex`. Scoped to the one narrow shape
-    // `heapClosureContextOrNull` recognises -- a single scalar or pointer
-    // value captured by exactly one escaping lambda, one nesting level, no
+    // instead of resolving a live enclosing frame through
+    // `capturedFrameIndex`. Scoped to the narrow shape
+    // `heapClosureContextOrNull` recognises -- one or two scalar or pointer
+    // values captured by exactly one escaping lambda, one nesting level, no
     // `this` combination.
     private bool[VarDeclaration] _heapClosureVars;
+    // Each `_heapClosureVars` entry's own byte offset within its heap block,
+    // set alongside it by `heapClosureContextOrNull`: a single captured local
+    // sits at offset 0, and a second one sits at the next fixed
+    // `size_t.sizeof`-wide slot (`heapClosureContextOrNull`'s own comment
+    // explains why every slot is a full machine word wide regardless of the
+    // captured value's own narrower width). `loadCapturedLocal`/
+    // `storeCapturedLocal` divide this by the value's own natural width to
+    // get the `pointerLoad*`/`pointerStore*` element index those ops expect.
+    private ushort[VarDeclaration] _heapClosureOffsets;
     // The function whose body is currently being compiled; `_capturedOwners`
     // entries recorded while compiling it are attributed to it.
     private FuncDeclaration _currentFunction;
@@ -4303,11 +4312,11 @@ private struct Compiler {
     // time the caller invokes the returned delegate, so that captured-local
     // read would land on whatever later reused the stack region. Real
     // compiled D promotes such a capture to a GC-heap closure.
-    // `heapClosureContextOrNull` recognises the one narrow shape this core
-    // heap-allocates (a single scalar or pointer value captured by exactly
-    // this one escaping lambda, one nesting level, no `this` combination)
-    // and, when it matches, builds that heap environment instead. Any wider
-    // shape still has no heap closure environment (see
+    // `heapClosureContextOrNull` recognises the narrow shape this core
+    // heap-allocates (one or two scalar or pointer values captured by
+    // exactly this one escaping lambda, one nesting level, no `this`
+    // combination) and, when it matches, builds that heap environment
+    // instead. Any wider shape still has no heap closure environment (see
     // `ai/plans/bytecode.md`'s Closures section), so decline loudly instead
     // of returning a value that reads as garbage once the frame is reused.
     private ushort compileDelegateReturn(Expression source) {
@@ -4332,28 +4341,50 @@ private struct Compiler {
 
     // A freshly heap-allocated closure environment's raw pointer, in a fresh
     // frame slot, for `function_`'s escaping capture -- or null if
-    // `function_`'s capture doesn't match the one narrow shape this core
-    // heap-allocates: exactly one captured local, of scalar or pointer type,
-    // captured one level up from a plain (non-`this`-receiving) enclosing
-    // function directly into the frame currently being compiled. Any wider
-    // shape (more than one captured local, a non-scalar/non-pointer capture,
-    // a multi-level capture, or a capture combined with `this`) still
-    // declines via `compileDelegateReturn`'s existing diagnostic instead of
-    // risking an unsound heap layout.
+    // `function_`'s capture doesn't match the shape this core heap-allocates:
+    // one or two captured locals, each of scalar or pointer type, captured
+    // one level up from a plain (non-`this`-receiving) enclosing function
+    // directly into the frame currently being compiled. Any wider shape
+    // (more than two captured locals, a non-scalar/non-pointer capture, a
+    // multi-level capture, or a capture combined with `this`) still declines
+    // via `compileDelegateReturn`'s existing diagnostic instead of risking an
+    // unsound heap layout.
     //
-    // The heap block holds exactly the one captured scalar or pointer, at
-    // offset 0, so both the returned delegate's own body (`loadCapturedLocal`/
-    // `storeCapturedLocal`, gated on `_heapClosureVars`) and this snapshot
-    // read the identical bytes: `Op.allocStruct` copies the variable's
-    // current frame value in once, at the point it escapes, the same way
-    // `new S` copies a struct's initialised frame block onto the heap.
-    // Nothing in the enclosing function reads or writes the variable again
-    // after this point -- a `return` statement is necessarily the end of its
-    // execution -- so the frame slot and the heap block never diverge.
+    // The heap block holds one fixed `size_t.sizeof`-wide slot per captured
+    // local, in `outerVars` order (so a single capture still sits at offset
+    // 0, unchanged from before this function grew a second slot): every slot
+    // is a full machine word wide regardless of the captured value's own
+    // narrower width (e.g. a captured `int` still gets a full 8-byte slot),
+    // deliberately not packed tightly by each value's own width. This keeps
+    // the arithmetic trivial and always exact: `pointerLoad*`/`pointerStore*`
+    // address as `pointer + index * width`, so a slot's byte offset
+    // (`i * size_t.sizeof`) divided by that slot's own value width is always
+    // a whole number for every width this core's scalar captures ever use (1,
+    // 2, 4, or 8 -- all divisors of 8), regardless of which widths precede
+    // it. A tightly-packed layout (offsets summing each preceding value's own
+    // narrower width) would not have that guarantee in general: an `int`
+    // (width 4) directly followed by a captured pointer (width 8) would land
+    // the pointer at byte offset 4, and 4 is not a whole multiple of 8.
+    // `loadCapturedLocal`/`storeCapturedLocal` divide `_heapClosureOffsets`
+    // back down by each variable's own width to get the element index those
+    // ops expect.
+    //
+    // `Op.allocStruct`'s initial byte-copy (sized to the *whole* block, i.e.
+    // `outerVars.length * size_t.sizeof`, copied from the first captured
+    // local's own frame slot onward) is immediately overwritten in full by
+    // the per-variable `emitPointerStore`s below, for every slot including
+    // the first: nothing here depends on that initial copy landing on the
+    // right bytes, only on the block existing and being rooted, the same way
+    // `new S` copies a struct's initialised frame block onto the heap before
+    // the fields making up the struct literal below it in the frame are
+    // written in individually. Nothing in the enclosing function reads or
+    // writes any of these variables again after this point -- a `return`
+    // statement is necessarily the end of its execution -- so the frame
+    // slots and the heap block never diverge.
     private ushort* heapClosureContextOrNull(FuncDeclaration function_) {
         import dmd.astenums: TY;
 
-        if (function_.outerVars.length != 1)
+        if (function_.outerVars.length == 0 || function_.outerVars.length > 2)
             return null;
         if (thisStructDeclaration(function_) !is null)
             return null;
@@ -4361,45 +4392,63 @@ private struct Compiler {
             if (enclosing.isThis() !is null)
                 return null;
 
-        auto captured = function_.outerVars[0];
-        auto owner = captured in _capturedOwners;
-        if (owner is null || *owner !is _currentFunction)
-            return null;
-        auto capturedOffset = captured in _capturedOffsets;
-        if (capturedOffset is null)
-            return null;
+        const count = function_.outerVars.length;
+        VarDeclaration[2] vars;
+        ushort[2] capturedOffsets;
+        ushort[2] widths;
+        foreach (i; 0 .. count) {
+            auto captured = function_.outerVars[i];
+            auto owner = captured in _capturedOwners;
+            if (owner is null || *owner !is _currentFunction)
+                return null;
+            auto capturedOffset = captured in _capturedOffsets;
+            if (capturedOffset is null)
+                return null;
 
-        // `Tpointer` is deliberately not excluded here: `scalarType` already
-        // maps it to the same 8-byte `ScalarType.ulong_` as any other
-        // captured scalar, so the `Op.allocStruct` snapshot below already
-        // copies a captured pointer's bytes soundly regardless. The one
-        // thing that needed fixing for this to actually work end to end was
-        // `loadCapturedLocal` tagging the read-back value `isPointer` (its
-        // `TY.Tclass` branch, immediately below this function, already did
-        // the analogous thing for a captured class reference) -- otherwise
-        // a dereference of the captured pointer (`*p`) threw "Unsupported
-        // pointer dereference in bytecode core" even once the raw bytes
-        // were already in the right place. `Taarray`/`Tclass` remain
-        // excluded even though `scalarType` maps them to `ScalarType.ulong_`
-        // too: unlike a pointer or class reference, they still lack the
-        // `loadCapturedLocal` tagging fix pointer got here (`Tclass` already
-        // has ITS own tagging via the `isClassReference` branch, but a
-        // captured class reference or AA handle has not itself been
-        // exercised through this heap-closure escape path yet -- left as
-        // future work, not attempted here to keep this widening to the one
-        // narrow shape actually verified).
-        const ty = captured.type.toBasetype.ty;
-        if (ty == TY.Tstruct || ty == TY.Tsarray || ty == TY.Tarray ||
-            ty == TY.Taarray || ty == TY.Tclass || ty == TY.Tdelegate)
-            return null;
+            // `Tpointer` is deliberately not excluded here: `scalarType`
+            // already maps it to the same 8-byte `ScalarType.ulong_` as any
+            // other captured scalar, so the `Op.allocStruct`/
+            // `emitPointerStore` snapshot below already copies a captured
+            // pointer's bytes soundly regardless. The one thing that needed
+            // fixing for this to actually work end to end was
+            // `loadCapturedLocal` tagging the read-back value `isPointer`
+            // (its `TY.Tclass` branch, immediately below this function,
+            // already did the analogous thing for a captured class
+            // reference) -- otherwise a dereference of the captured pointer
+            // (`*p`) threw "Unsupported pointer dereference in bytecode
+            // core" even once the raw bytes were already in the right
+            // place. `Taarray`/`Tclass` remain excluded even though
+            // `scalarType` maps them to `ScalarType.ulong_` too: unlike a
+            // pointer or class reference, they still lack the
+            // `loadCapturedLocal` tagging fix pointer got here (`Tclass`
+            // already has ITS own tagging via the `isClassReference`
+            // branch, but a captured class reference or AA handle has not
+            // itself been exercised through this heap-closure escape path
+            // yet -- left as future work, not attempted here to keep this
+            // widening to the shape actually verified).
+            const ty = captured.type.toBasetype.ty;
+            if (ty == TY.Tstruct || ty == TY.Tsarray || ty == TY.Tarray ||
+                ty == TY.Taarray || ty == TY.Tclass || ty == TY.Tdelegate)
+                return null;
 
-        const valueSize = cast(ushort) size(scalarType(captured.type));
+            vars[i] = captured;
+            capturedOffsets[i] = *capturedOffset;
+            widths[i] = cast(ushort) size(scalarType(captured.type));
+        }
+
+        const totalSize = cast(ushort) (count * size_t.sizeof);
         const heapPointer =
             allocateBytes(cast(uint) size_t.sizeof, size_t.sizeof);
         _code ~= Instruction(
-            Op.allocStruct, heapPointer, *capturedOffset, valueSize,
+            Op.allocStruct, heapPointer, capturedOffsets[0], totalSize,
         );
-        _heapClosureVars[captured] = true;
+        foreach (i; 0 .. count) {
+            const slotOffset = cast(ushort) (i * size_t.sizeof);
+            const index = compileSizeConstant(slotOffset / widths[i]);
+            emitPointerStore(capturedOffsets[i], heapPointer, index, widths[i]);
+            _heapClosureVars[vars[i]] = true;
+            _heapClosureOffsets[vars[i]] = slotOffset;
+        }
 
         auto result = new ushort;
         *result = heapPointer;
@@ -6271,7 +6320,8 @@ private struct Compiler {
         const destination = allocateBytes(valueSize, valueSize);
         if (declaration in _heapClosureVars)
             emitPointerLoad(
-                destination, _nestedContextOffset, compileSizeConstant(0),
+                destination, _nestedContextOffset,
+                compileSizeConstant(_heapClosureOffsets[declaration] / valueSize),
                 valueSize,
             );
         else
@@ -6318,7 +6368,8 @@ private struct Compiler {
             : size(scalarType(declaration.type));
         if (declaration in _heapClosureVars)
             emitPointerStore(
-                value.offset, _nestedContextOffset, compileSizeConstant(0),
+                value.offset, _nestedContextOffset,
+                compileSizeConstant(_heapClosureOffsets[declaration] / valueSize),
                 valueSize,
             );
         else

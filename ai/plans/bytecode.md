@@ -1271,44 +1271,56 @@ lifetime as the dependency bytecode cache.
   GC-heap-backed environment, since the frame-relative mechanism above
   addresses the caller's own stack frame, not a heap allocation.
   `heapClosureContextOrNull` (`compiler.d`, called from
-  `compileDelegateReturn`) now covers the one narrow shape a single
-  `Op.allocStruct` block can hold soundly: exactly one captured local, of
-  scalar type, captured one nesting level up from a plain (non-`this`-
-  receiving) enclosing function, by exactly one escaping lambda. At the
-  `return` statement, it copies the variable's current frame value into a
-  fresh heap block once (the same `Op.allocStruct` shape `new S` already
-  uses) and hands the delegate that block's raw pointer as its context
-  instead of a frame-base index; the returned lambda's own body
+  `compileDelegateReturn`) now covers one *or two* captured locals, each of
+  scalar or pointer type, captured one nesting level up from a plain
+  (non-`this`-receiving) enclosing function, by exactly one escaping lambda.
+  At the `return` statement, it allocates a single `Op.allocStruct` heap
+  block sized to one fixed `size_t.sizeof`-wide slot per captured local (so
+  a single capture still sits at offset 0, unchanged from the original
+  one-capture shape, and a second capture sits at the next 8-byte slot),
+  copies each variable's current frame value into its own slot via
+  `emitPointerStore`, and hands the delegate that block's raw pointer as its
+  context instead of a frame-base index; the returned lambda's own body
   (`_heapClosureVars`-gated `loadCapturedLocal`/`storeCapturedLocal`)
   dereferences that same block through the received context pointer via
   `emitPointerLoad`/`emitPointerStore` instead of resolving a (by-then-
-  popped) enclosing frame through `capturedFrameIndex`. This is sound
-  precisely because a `return` statement is the last thing its enclosing
-  function ever executes: nothing in that function reads or writes the
-  variable again afterward, so the frame slot and the heap snapshot never
-  diverge. `heapClosureContextOrNull`'s own type gate never actually
-  excluded a captured POINTER local (`Tpointer`, only `Tstruct`/`Tsarray`/
-  `Tarray`/`Taarray`/`Tclass`/`Tdelegate` are excluded, since `scalarType`
-  already maps `Tpointer` to the same 8-byte `ScalarType.ulong_` as any
-  other captured scalar and `Op.allocStruct`'s byte-copy snapshot does not
-  care that the value happens to be a pointer) -- but a captured pointer
-  local's `loadCapturedLocal` read was never tagged `isPointer`/
-  `pointerElement` the way a plain (non-captured) pointer local's own
-  `VarExp` read already is (`_pointerLocals`), so dereferencing it
-  (`*p`) threw "Unsupported pointer dereference in bytecode core" even
-  though the underlying 8-byte value was already moved correctly, for
-  a captured pointer local in a still-live enclosing frame just as much as
-  one heap-escaped via `return`. Now fixed (`loadCapturedLocal`'s
-  `TY.Tpointer` branch, mirroring its existing `TY.Tclass` branch), so a
-  captured pointer local is supported both ways: read/written through a
-  nested function while its enclosing frame is still live, and
-  heap-escaped via `return` through the same one-scalar/one-level shape
-  above. It does not generalise past that scalar-or-pointer, one-capture,
-  one-level, return-only shape: more than one escaping capture, a
-  non-scalar/non-pointer capture (struct/array/AA/class/delegate), a
-  multi-level capture (an escaping lambda nested two or more functions
-  deep), and a capture combined with `this` are all still declined with the
-  same diagnostic `refuseFrameEscapingDelegateReturn` used to raise
+  popped) enclosing frame through `capturedFrameIndex`. `_heapClosureOffsets`
+  records each captured variable's own byte offset within the block, divided
+  back down by that variable's own natural width to get the element index
+  `pointerLoad*`/`pointerStore*` address with (`pointer + index * width`):
+  every slot is a full machine word wide regardless of the captured value's
+  own narrower width (e.g. a captured `int` still gets a full 8-byte slot)
+  specifically so that division is always exact for every width this core's
+  scalar captures use (1, 2, 4, or 8, all divisors of 8) -- a tightly-packed
+  layout summing each preceding value's own narrower width would not have
+  that guarantee in general (an `int` immediately followed by a captured
+  pointer would land the pointer at byte offset 4, not a whole multiple of
+  its own 8-byte width). This is sound precisely because a `return`
+  statement is the last thing its enclosing function ever executes: nothing
+  in that function reads or writes either variable again afterward, so the
+  frame slots and the heap snapshot never diverge. `heapClosureContextOrNull`'s
+  own type gate never actually excluded a captured POINTER local (`Tpointer`,
+  only `Tstruct`/`Tsarray`/`Tarray`/`Taarray`/`Tclass`/`Tdelegate` are
+  excluded, since `scalarType` already maps `Tpointer` to the same 8-byte
+  `ScalarType.ulong_` as any other captured scalar and the byte-copy
+  snapshot does not care that the value happens to be a pointer) -- but a
+  captured pointer local's `loadCapturedLocal` read was never tagged
+  `isPointer`/`pointerElement` the way a plain (non-captured) pointer
+  local's own `VarExp` read already is (`_pointerLocals`), so dereferencing
+  it (`*p`) threw "Unsupported pointer dereference in bytecode core" even
+  though the underlying 8-byte value was already moved correctly, for a
+  captured pointer local in a still-live enclosing frame just as much as one
+  heap-escaped via `return`. Now fixed (`loadCapturedLocal`'s `TY.Tpointer`
+  branch, mirroring its existing `TY.Tclass` branch), so a captured pointer
+  local is supported both ways: read/written through a nested function
+  while its enclosing frame is still live, and heap-escaped via `return`
+  through the same one-or-two-capture/one-level shape above. It does not
+  generalise past that scalar-or-pointer, one-or-two-capture, one-level,
+  return-only shape: three or more escaping captures, a non-scalar/
+  non-pointer capture (struct/array/AA/class/delegate), a multi-level
+  capture (an escaping lambda nested two or more functions deep), and a
+  capture combined with `this` are all still declined with the same
+  diagnostic `refuseFrameEscapingDelegateReturn` used to raise
   unconditionally (`compileDelegateReturn` still throws whenever
   `heapClosureContextOrNull` returns null for a function with non-empty
   `outerVars`). Generalising this to DMD's own per-function `needsClosure()`/
@@ -1320,11 +1332,11 @@ lifetime as the dependency bytecode cache.
   `lambda.capturesReassignedLocalInSameFrame` exercises), but adopting it
   generally would require moving every one of the many `capturedFrameIndex`
   call sites (struct/array captures, multi-level ancestor chains, `this`-
-  combined captures) onto heap-pointer addressing together, not just the one
-  scalar/one-level/return-only slice here. An immediately-invoked void lambda
-  whose body is a single expression statement can avoid needing any
-  environment at all by inlining the statement into the caller the same way
-  a single-`return`-expression IIFE already inlines.
+  combined captures) onto heap-pointer addressing together, not just the
+  one-or-two-scalar/one-level/return-only slice here. An immediately-invoked
+  void lambda whose body is a single expression statement can avoid needing
+  any environment at all by inlining the statement into the caller the same
+  way a single-`return`-expression IIFE already inlines.
 - The captured-parent materialisation is only for such nested functions. A
   nested struct method's own `this` remains its current receiver, even when
   that receiver also carries a context pointer.
