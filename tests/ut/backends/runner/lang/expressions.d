@@ -2702,6 +2702,59 @@ static foreach (backend; Matrix!(
     }
 }
 
+// A delegate-typed local (`_delegateLocals`'s statically-known-callee
+// storage) passed by `ref`: `referenceOffsetOrNull` had no case at all for a
+// delegate-typed local, so this call threw "Unsupported ref argument in
+// bytecode core" before the callee's own body ever ran, regardless of what
+// the callee does with the parameter. The callee here only reads/calls the
+// `ref` parameter (never reassigns it): whole-value assignment to a plain
+// (non-module, non-field) delegate local/parameter is a separate,
+// pre-existing gap (see `ai/plans/bytecode.md`'s Closures section) that a
+// `ref`/`out` delegate argument test exercising reassignment would also hit,
+// so this fixture is scoped to the binding itself.
+static foreach (backend; Matrix!()) {
+    @("delegate.refParameterBoundToStaticallyKnownLocalIsCallable." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            int callThroughRef(ref int delegate() dg) {
+                return dg();
+            }
+
+            unittest {
+                int delegate() a = () => 42;
+                assert(callThroughRef(a) == 42);
+            }
+        });
+    }
+}
+
+// The `_delegateParameterLocals` twin of the fixture above: a delegate local
+// whose callee is a run-time value (copied from another delegate, rather
+// than a directly-known lambda/nested-function/method literal) lives in a
+// different storage map (`_delegateParameterLocals`, a plain
+// `ushort[VarDeclaration]`) that `referenceOffsetOrNull` also had no case
+// for.
+static foreach (backend; Matrix!()) {
+    @("delegate.refParameterBoundToCopiedLocalIsCallable." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            int callThroughRef(ref int delegate() dg) {
+                return dg();
+            }
+
+            unittest {
+                int delegate() a = () => 42;
+                int delegate() c = a;
+                assert(callThroughRef(c) == 42);
+            }
+        });
+    }
+}
+
 /++
     Casts involving slices, pointers, arrays, and bool.
 +/

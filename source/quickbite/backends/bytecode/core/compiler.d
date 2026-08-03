@@ -18050,6 +18050,27 @@ private struct Compiler {
                     return &existing.offset;
                 if (auto existing = declaration in _staticArrayLocals)
                     return existing;
+                // A delegate-typed local's own 16-byte `{functionIndex,
+                // context}` slot: the same aliased-frame-slot binding as a
+                // scalar/dynamic-array/static-array local above, just wider.
+                // `appendParameterLayoutEntry`'s `Tdelegate` branch already
+                // reserves a `RefParameter(offset, delegateValueSize)` sized
+                // writeback on the callee side for a `ref`/`out` delegate
+                // parameter; this was the only missing piece, on the caller
+                // side, to find a delegate local's own frame offset at all.
+                // Both delegate-local storage kinds need a case: a
+                // statically-known callee (a lambda/nested-function/method
+                // literal initializer) lives in `_delegateLocals`, while any
+                // other delegate-typed local whose callee is a run-time
+                // value (copied from another delegate, a parameter, or a
+                // call result) lives in `_delegateParameterLocals` instead
+                // (see its own declaration comment) -- both hold the same
+                // 16-byte value at their own frame offset, so both bind the
+                // same way.
+                if (auto existing = declaration in _delegateLocals)
+                    return &existing.offset;
+                if (auto existing = declaration in _delegateParameterLocals)
+                    return existing;
             }
 
         if (auto structOffset = structBaseOffsetOrNull(argument))

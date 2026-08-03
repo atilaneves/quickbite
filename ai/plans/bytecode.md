@@ -1352,14 +1352,49 @@ lifetime as the dependency bytecode cache.
   `structLiteralReturnOffset`'s `Tdelegate` branch does the same for a
   directly-returned literal's own top-level field). An `out`-parameter
   assignment shape (`void makeCounter(out int delegate() dg) { int count =
-  0; dg = () => ++count; }`) was investigated as a third escape site but is
-  blocked by an unrelated, separate gap: `referenceOffsetOrNull` (the `ref`/
-  `out` call-argument resolver) has no case for a delegate-typed local at
-  all, so the call site itself (`makeCounter(c)`, `c` a delegate-typed
-  local) throws "Unsupported ref argument in bytecode core: c" before the
-  closure mechanism is ever reached -- ref/out-argument plumbing for a
-  delegate-typed local, not a closures-escape-mechanism question, and left
-  as future work rather than folded into this widening. Generalising this to
+  0; dg = () => ++count; }`) was investigated as a third escape site;
+  `referenceOffsetOrNull` (the `ref`/`out` call-argument resolver) having no
+  case at all for a delegate-typed local -- so the call site itself
+  (`makeCounter(c)`, `c` a delegate-typed local) threw "Unsupported ref
+  argument in bytecode core: c" before the closure mechanism was ever
+  reached -- is now FIXED: it gained a case for both delegate-local storage
+  kinds (`_delegateLocals`, a statically-known-callee lambda/nested-
+  function/method-literal initializer, and `_delegateParameterLocals`, any
+  other delegate-typed local whose callee is a run-time value), mirroring
+  the existing scalar/dynamic-array/static-array cases right above it --
+  aliasing the local's own frame slot, which `appendParameterLayoutEntry`'s
+  pre-existing `Tdelegate` branch already sizes a `RefParameter` writeback
+  for (`delegateValueSize`, 16 bytes). Verified with a `ref` (not `out`)
+  delegate parameter whose callee body only READS/calls the parameter
+  (`delegate.refParameterBoundToStaticallyKnownLocalIsCallable`/
+  `refParameterBoundToCopiedLocalIsCallable`, `expressions.d`, covering both
+  storage kinds, all backends). That binding fix alone does not reach either
+  originally-suggested test (the `out`-parameter escape above, or even a
+  plain non-escaping `ref`-rebinding case, `void rebind(ref int delegate()
+  dg, int delegate() newValue) { dg = newValue; }`): both need the callee to
+  REASSIGN the `ref`/`out` delegate parameter's whole value, and whole-value
+  assignment to a plain (non-module, non-field) delegate local or parameter
+  -- `dg = rhs;` where `dg` is any `_delegateLocals`/`_delegateParameterLocals`
+  entry -- is a separate, larger, entirely-unimplemented gap in
+  `compileAssignExpression`: no branch resolves it at all (only the module-
+  variable case from the `Tdelegate` module-variable work does), so it falls
+  through to the generic scalar assignment path, which resolves `dg = rhs`'s
+  right-hand side via the general expression compiler instead of
+  `delegateOperandOffset` and throws "Unsupported variable in bytecode
+  core: <rhs>" -- confirmed to reproduce with NO `ref`/`out` involved at all
+  (`int delegate() dg = () => 1; dg = () => 2;` throws the same way). Fixing
+  it properly is more than a mechanical addition: unlike the module case, a
+  `_delegateLocals` entry's `function_` is read elsewhere as the CURRENT
+  statically-known callee for static dispatch (`returnedDelegateFunctionOrNull`,
+  the call-through-a-delegate-local path); reassigning a non-statically-known
+  value into it would need to migrate the declaration out of `_delegateLocals`
+  into dynamic (`_delegateParameterLocals`-style) tracking, or every static-
+  dispatch call site would keep calling the STALE original callee after a
+  reassignment -- a real correctness hazard, not just a missing case, so it
+  needs its own careful design pass rather than a quick follow-on here. Left
+  as future work, ordered ahead of the `out`-parameter-escape combination
+  above (both the escape combination and even the plain non-escaping
+  `ref`-rebind case are blocked on it). Generalising the escape mechanism to
   DMD's own per-function `needsClosure()`/
   `closureVars` decision -- moving every closure-needing variable to its heap
   block from declaration onward, regardless of whether it is actually
