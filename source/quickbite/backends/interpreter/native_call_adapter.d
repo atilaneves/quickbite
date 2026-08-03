@@ -471,6 +471,12 @@ private final class InterpreterNativeMarshaller: NativeMarshaller {
         import quickbite.backends.interpreter.place_value:
             isPlaceComposable, readValue;
 
+        if (_receiverOperand.address !is null)
+            return readValue(Place(
+                _receiverOperand.address,
+                _receiverOperand.type,
+            ));
+
         return isPlaceComposable(_receiverType) &&
                 _receiverType.toBasetype.isTypeClass is null
             ? readValue(Place(_receiverBuffer.ptr, _receiverType))
