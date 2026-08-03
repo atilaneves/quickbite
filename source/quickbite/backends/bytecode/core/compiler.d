@@ -19139,10 +19139,13 @@ private struct Compiler {
     // do, stopping as soon as a level's element is not itself a `Tarray` --
     // a `Tsarray` element (e.g. `int[2][]`) still counts as one nested
     // level (matching this function's own one-level gate for that case) but
-    // does not extend the walk further: a `Tsarray` row is a raw inline
-    // block, not a 16-byte slice descriptor, so `Op.sliceEqualNested`'s
-    // row-descriptor recursion cannot reach inside it (see the
-    // Tsarray/Tarray decline block in `tryArrayComparisonAssert`).
+    // does not extend the walk further: `compileAppendElement` heap-boxes a
+    // `Tsarray` row behind its own 16-byte slice descriptor just like a
+    // `Tarray` row (this VM's rows are never a raw inline block), so
+    // `Op.sliceEqualNested`'s row-descriptor recursion can unwrap that one
+    // boxed level, but not recurse further into the static array's own
+    // fixed-size interior (see the Tsarray/Tarray decline block in
+    // `tryArrayComparisonAssert`).
     private uint arrayNestingDepth(Type type) {
         import dmd.astenums: TY;
 
@@ -19161,9 +19164,11 @@ private struct Compiler {
     // The byte width of the innermost (leaf) row's own elements for an
     // array-of-arrays type gated by `arrayElementIsArray`, e.g. 4 for both
     // `int[][]`'s and `int[][][]`'s `int` leaves, and also 4 for `int[2][]`'s
-    // `int` leaves (a `Tsarray` row is a flat inline block, not a 16-byte
-    // slice descriptor, so its own elements -- not the row's full byte size
-    // -- are what a flat byte-compare needs). Walks the same `Tarray` chain
+    // `int` leaves (a `Tsarray` row is heap-boxed behind its own 16-byte
+    // slice descriptor just like a `Tarray` row -- see `arrayNestingDepth`
+    // -- so once that one boxed level is unwrapped, its own elements, not
+    // the row's full byte size, are what a flat byte-compare needs). Walks
+    // the same `Tarray` chain
     // as `arrayNestingDepth`, always advancing `current` to the row it just
     // looked at (even the terminating one, whether that row is another
     // `Tarray` level or the leaf `Tsarray`), then reuses

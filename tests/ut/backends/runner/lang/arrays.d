@@ -593,11 +593,13 @@ static foreach (backend; Matrix!()) {
 
 // Same structural-equality requirement as `arrayOfArraysEqualityIsStructural`
 // above, but the row itself is a static array (`int[2][]`, a dynamic array
-// whose element is `Tsarray`, not `Tarray`): each row is a flat inline block
-// rather than its own heap-allocated slice descriptor, a structurally
-// different shape from the `int[][]` case that a fix generalizing only the
-// `Tarray`-row walk could still get wrong (e.g. by trying to size or
-// recurse into the `Tsarray` row itself instead of terminating there).
+// whose element is `Tsarray`, not `Tarray`): this VM heap-boxes such a row
+// behind its own 16-byte slice descriptor the same way it boxes an `int[]`
+// row, but the leaf-element sizing still needs to terminate the walk at
+// the `Tsarray` and size its own elements, not the `Tsarray`'s full byte
+// size -- a fix generalizing only the `Tarray`-row walk could still get
+// this wrong (e.g. by trying to size or recurse into the `Tsarray` row
+// itself instead of terminating there).
 // `b` is built entirely through separate `~=` appends, so its rows are a
 // distinct heap allocation from `a`'s.
 static foreach (backend; Matrix!()) {
