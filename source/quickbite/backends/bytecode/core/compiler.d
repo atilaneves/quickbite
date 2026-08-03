@@ -7101,10 +7101,12 @@ private struct Compiler {
         const keyMeta = assocArrayKeyMeta(literal.type.toBasetype);
         _code ~= Instruction(Op.aaNew, destination);
         foreach (index; 0 .. literal.keys.length) {
-            const key = compileExpression((*literal.keys)[index]);
+            const keyOffset = assocArrayKeyOffset(
+                (*literal.keys)[index], literal.type.toBasetype,
+            );
             const value = compileExpression((*literal.values)[index]);
             _code ~= Instruction(
-                Op.aaInsert, destination, key.offset, value.offset,
+                Op.aaInsert, destination, keyOffset, value.offset,
                 cast(ushort) width, keyMeta,
             );
         }
@@ -12732,10 +12734,11 @@ private struct Compiler {
         const handle = (declaration in _locals);
         const width = assocArrayValueWidth(index.e1.type.toBasetype);
         const keyMeta = assocArrayKeyMeta(index.e1.type.toBasetype);
-        const key = compileExpression(index.e2);
+        const keyOffset =
+            assocArrayKeyOffset(index.e2, index.e1.type.toBasetype);
         const value = compileExpression(rhs);
         _code ~= Instruction(
-            Op.aaInsert, *handle, key.offset, value.offset,
+            Op.aaInsert, *handle, keyOffset, value.offset,
             cast(ushort) width, keyMeta,
         );
 
@@ -16781,12 +16784,13 @@ private struct Compiler {
                 const valueType = assocArrayValueScalarType(aaType);
                 const width = assocArrayValueWidth(aaType);
                 const keyMeta = assocArrayKeyMeta(aaType);
-                const key = compileExpression((*call.arguments)[1]);
+                const keyOffset =
+                    assocArrayKeyOffset((*call.arguments)[1], aaType);
                 const offset = allocateBytes(
                     cast(uint) size_t.sizeof, size_t.sizeof,
                 );
                 _code ~= Instruction(
-                    Op.aaGetRvalue, offset, handle, key.offset,
+                    Op.aaGetRvalue, offset, handle, keyOffset,
                     cast(ushort) width, keyMeta,
                 );
                 return Operand(offset, ScalarType.ulong_, true, valueType);
@@ -16801,12 +16805,13 @@ private struct Compiler {
                 const valueType = assocArrayValueScalarType(aaType);
                 const width = assocArrayValueWidth(aaType);
                 const keyMeta = assocArrayKeyMeta(aaType);
-                const key = compileExpression((*call.arguments)[1]);
+                const keyOffset =
+                    assocArrayKeyOffset((*call.arguments)[1], aaType);
                 const offset = allocateBytes(
                     cast(uint) size_t.sizeof, size_t.sizeof,
                 );
                 _code ~= Instruction(
-                    Op.aaIn, offset, handle, key.offset, cast(ushort) width,
+                    Op.aaIn, offset, handle, keyOffset, cast(ushort) width,
                     keyMeta,
                 );
                 return Operand(offset, ScalarType.ulong_, true, valueType);
@@ -16816,10 +16821,11 @@ private struct Compiler {
                 auto aaType = assocArrayType((*call.arguments)[0]);
                 const width = assocArrayValueWidth(aaType);
                 const keyMeta = assocArrayKeyMeta(aaType);
-                const key = compileExpression((*call.arguments)[1]);
+                const keyOffset =
+                    assocArrayKeyOffset((*call.arguments)[1], aaType);
                 const offset = allocate(ScalarType.bool_);
                 _code ~= Instruction(
-                    Op.aaRemove, offset, handle, key.offset,
+                    Op.aaRemove, offset, handle, keyOffset,
                     cast(ushort) width, keyMeta,
                 );
                 return Operand(offset, ScalarType.bool_);
@@ -16910,14 +16916,14 @@ private struct Compiler {
             : size(scalarType(valueParameter.type));
 
         // `AssocArray.keys` (machine.d) packs each key at its real width --
-        // a scalar's own size, or a `string`'s 16-byte slice descriptor
-        // (`assocArrayKeyWidth`, the same stride the direct lookup/insert
-        // opcodes already key off via `assocArrayKeyMeta`). Reading it back
-        // at that same width (rather than a hardcoded 4-byte `int`) is the
-        // general fix; `assocArrayKeyIsArray`/`assocArrayKeyWidth` still
-        // throw explicitly for a key type direct lookup itself refuses
-        // (`wstring`/`dstring`, a struct key), so no separate check is
-        // needed here.
+        // a scalar's own size, a struct's own whole-block size, or a
+        // `string`'s 16-byte slice descriptor (`assocArrayKeyWidth`, the
+        // same stride the direct lookup/insert opcodes already key off via
+        // `assocArrayKeyMeta`). Reading it back at that same width (rather
+        // than a hardcoded 4-byte `int`) is the general fix;
+        // `assocArrayKeyIsArray`/`assocArrayKeyWidth` still throw explicitly
+        // for a key type direct lookup itself refuses (`wstring`/`dstring`),
+        // so no separate check is needed here.
         auto aaType = assocArrayType((*call.arguments)[0]);
         const keyIsArray = assocArrayKeyIsArray(aaType);
         const keyElementSize = assocArrayKeyWidth(aaType);
@@ -16927,14 +16933,23 @@ private struct Compiler {
             Op.aaValues, handle, valueElementSize,
         );
 
+        const keyIsStruct = keyParameter.type.toBasetype.ty == TY.Tstruct;
         const keySlot = keyIsArray
             ? allocateBytes(keyElementSize, size_t.sizeof)
-            : allocate(scalarType(keyParameter.type));
+            : keyIsStruct
+                ? allocateBytes(
+                    keyElementSize, staticArrayAlign(keyParameter.type),
+                )
+                : allocate(scalarType(keyParameter.type));
         if (keyIsArray)
             _dynamicArrayLocals[keyParameter] = DynamicArrayLocal(
                 keySlot,
                 dynamicArrayElementType(keyParameter.type),
                 arrayElementIsArray(keyParameter.type),
+            );
+        else if (keyIsStruct)
+            _structLocals[keyParameter] = StructLocal(
+                keySlot, structDeclarationOf(keyParameter.type),
             );
         else
             _locals[keyParameter] = keySlot;
@@ -17007,7 +17022,7 @@ private struct Compiler {
         const width = assocArrayValueWidth(aaType);
         const keyMeta = assocArrayKeyMeta(aaType);
 
-        const key = compileExpression((*call.arguments)[1]);
+        const keyOffset = assocArrayKeyOffset((*call.arguments)[1], aaType);
         // A fresh, appropriately-sized placeholder: its bytes are immediately
         // overwritten by the surrounding assignment through the returned
         // pointer, so its initial content never matters, but it must be
@@ -17017,11 +17032,11 @@ private struct Compiler {
         const offset =
             allocateBytes(cast(uint) size_t.sizeof, size_t.sizeof);
         _code ~= Instruction(
-            Op.aaInsert, handle, key.offset, placeholder, cast(ushort) width,
+            Op.aaInsert, handle, keyOffset, placeholder, cast(ushort) width,
             keyMeta,
         );
         _code ~= Instruction(
-            Op.aaIn, offset, handle, key.offset, cast(ushort) width, keyMeta,
+            Op.aaIn, offset, handle, keyOffset, cast(ushort) width, keyMeta,
         );
         return Operand(offset, ScalarType.ulong_, true, valueType);
     }
@@ -17093,10 +17108,9 @@ private struct Compiler {
     // backing pointers, so a raw descriptor compare would wrongly treat them
     // as distinct keys. Only a plain `string` (immutable `char[]`) is
     // supported this way; `wstring`/`dstring` throw rather than silently
-    // miscompare by the wrong element width. A struct-typed key never
-    // reaches here: `compileAssocArrayHook`'s generic key-expression compile
-    // (`compileExpression`) throws first for DMD's synthesized `__aakeyN`
-    // struct-typed temporary.
+    // miscompare by the wrong element width. A struct-typed key is never an
+    // array key: it is compared and stored as its own raw bytes, the same
+    // whole-block-width treatment `assocArrayKeyNonArrayWidth` gives it.
     private bool assocArrayKeyIsArray(Type aaType) {
         import std.conv: text;
 
@@ -17111,14 +17125,30 @@ private struct Compiler {
         return true;
     }
 
+    // The byte width of a non-array AA key: a struct key is its own whole
+    // block size (mirroring `dynamicArrayElementSize`'s Tstruct branch on the
+    // value side), any other supported key is its scalar width. Only a
+    // struct with no string/dynamic-array member is sound here -- storage is
+    // raw bytes and `keysEqual` compares those bytes directly, which would
+    // wrongly compare backing pointers instead of string content for a
+    // string member (still unsupported, tracked separately).
+    private uint assocArrayKeyNonArrayWidth(Type aaType) {
+        import dmd.astenums: TY;
+
+        auto keyType = assocArrayKeyType(aaType);
+        if (keyType.toBasetype.ty == TY.Tstruct)
+            return cast(uint) staticArraySize(keyType);
+        return size(scalarType(keyType));
+    }
+
     // The byte width `AssocArray.keys` (`machine.d`) packs each key entry
     // at, mirroring `assocArrayValueWidth`'s value-side stride: a `string`
     // key is its own 16-byte slice descriptor; any other supported key is
-    // its scalar width.
+    // its scalar or struct width.
     private uint assocArrayKeyWidth(Type aaType) {
         return assocArrayKeyIsArray(aaType)
             ? sliceDescriptorSize
-            : size(scalarType(assocArrayKeyType(aaType)));
+            : assocArrayKeyNonArrayWidth(aaType);
     }
 
     // Packs an AA key's width and comparison mode into `Instruction.e`
@@ -17131,9 +17161,25 @@ private struct Compiler {
         const isArray = assocArrayKeyIsArray(aaType);
         const width = isArray
             ? sliceDescriptorSize
-            : size(scalarType(assocArrayKeyType(aaType)));
+            : assocArrayKeyNonArrayWidth(aaType);
         assert(width < assocArrayKeyIsArrayFlag);
         return cast(ushort) (width | (isArray ? assocArrayKeyIsArrayFlag : 0));
+    }
+
+    // The frame offset of a compiled AA key's raw bytes, `assocArrayKeyMeta`'s
+    // expression-compiling counterpart: a struct-typed key (a local or a
+    // literal) is not itself a frame-resident scalar the generic
+    // `compileExpression` `VarExp` path recognises (unlike
+    // `structBaseOffsetOrMaterialise`, it never consults `_structLocals`), so
+    // route it through `structOperandOffset` instead; any other supported key
+    // (scalar or `string`) already compiles correctly through the generic
+    // path.
+    private ushort assocArrayKeyOffset(Expression keyExpression, Type aaType) {
+        import dmd.astenums: TY;
+
+        if (assocArrayKeyType(aaType).toBasetype.ty == TY.Tstruct)
+            return structOperandOffset(keyExpression);
+        return compileExpression(keyExpression).offset;
     }
 
     // The frame offset of an associative-array handle for `expression`: an AA

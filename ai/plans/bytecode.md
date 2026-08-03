@@ -369,33 +369,30 @@ oracle.
 `AssocArray` storage now supports arbitrary key/value width instead of a
 hardcoded 4-byte `int`: the value side is sized from the AA's real value
 type (mirroring how a dynamic array carries its own element size), the key
-side likewise. A scalar key compares its raw bytes; a plain `string` key
-compares the content its `{ptr, length}` descriptor points at, since two
-separately-constructed but content-equal strings have different backing
-pointers -- `wstring`/`dstring` throw explicitly rather than silently
-reading the wrong element width. `foreach (k, v; aa)` reads each key back
-at its real width instead of a hardcoded 4-byte `int`: `long`/`double`/other
-scalar keys and `string` keys all iterate correctly; `wstring`/`dstring`
-and struct keys still refuse.
+side likewise, including a struct key with no string/dynamic-array member
+(`assocArrayKeyNonArrayWidth`/`assocArrayKeyOffset`, sized and compared as
+its own raw bytes, the same treatment a scalar key already gets --
+`int[Point] counts` construct, `[]`/`in` lookup, and `foreach` all work, via
+a literal or a local `__aakeyN`-style temporary). A scalar key compares its
+raw bytes; a plain `string` key compares the content its `{ptr, length}`
+descriptor points at, since two separately-constructed but content-equal
+strings have different backing pointers -- `wstring`/`dstring` throw
+explicitly rather than silently reading the wrong element width. `foreach
+(k, v; aa)` reads each key back at its real width instead of a hardcoded
+4-byte `int`: `long`/`double`/other scalar keys, `string` keys, and now
+raw-byte-comparable struct keys all iterate correctly; `wstring`/`dstring`
+still refuse.
 
-The next candidate is `assocArray.structKeyWithStringMemberComparesStructurally`
-(`tests/ut/backends/runner/lang/arrays.d`): DMD's `InExp`/index lowering
-hoists a non-trivial key expression into a synthesized temporary
-(`extractSideEffect`, `__aakeyN`, an ordinary struct-typed local, not a
-hash/compare function) and passes it to the already-recognised
-`_d_aaIn`/`_d_aaGetY` hooks. Confirmed still not bounded for one commit: the
-current refusal ("Unsupported type in bytecode core: Name") now comes from
-`compileAssocArrayGetLvalue` computing `assocArrayKeyMeta` (no `Tstruct`
-case) before it ever compiles the key expression, one step earlier than the
-previous `__aakeyN`-variable refusal from `compileExpression`'s `VarExp`
-handling (which still never consults `_structLocals`, unlike
-`structBaseOffsetOrMaterialise`). Fixing the ordering alone would only trade
-one refusal for another: even with a struct case, a whole-struct raw-byte
-comparison would still be wrong for a string member specifically, needing
+The remaining candidate is `assocArray.structKeyWithStringMemberComparesStructurally`
+(`tests/ut/backends/runner/lang/arrays.d`): struct-typed key storage itself
+is solved (above), so a struct key with a string member now compiles past
+key storage -- Bytecode's refusal for this row has moved to
+`assert(Name(ab()) in ages)`'s synthesized boolean temporary
+(`Unsupported assignment in bytecode core: __assertOp61 = Name(ab()) in
+ages`). Reaching that point does not fix the underlying gap: a whole-struct
+raw-byte comparison is still wrong for a string member specifically, needing
 the same structural, not raw-byte, comparison `keysEqual` already gives a
-bare `string` key. Both pieces -- struct-typed key storage and structural
-member comparison -- are needed together, a genuinely separate, harder
-problem than the scalar/string key work above.
+bare `string` key.
 
 An AA value's storage width also accounts for a dynamic-array-typed value
 (`int[][int]`, sized as its own 16-byte slice descriptor) and a

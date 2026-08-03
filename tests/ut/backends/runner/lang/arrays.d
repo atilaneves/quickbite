@@ -2981,15 +2981,59 @@ static foreach (backend; Matrix!()) {
     }
 }
 
+// A struct key with no string/dynamic-array member (`Point`, two `int`
+// fields) is compared and stored as its own raw bytes, the same treatment
+// `assocArrayValueWidth` already gives a struct-typed AA *value*. Covers
+// construction from a literal (`counts[Point(1, 2)] = v`, the synthesized
+// `__aakeyN` temporary DMD's index lowering hoists a non-trivial key
+// expression into) and from a plain struct local (`counts[p] = v`), lookup
+// through both `[]` and `in`, and `foreach (k, v; counts)` reading the key
+// back at its own struct width.
+static foreach (backend; Matrix!()) {
+    @("assocArray.structKeyRawBytesConstructLookupAndIterate." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct Point { int x; int y; }
+
+            unittest {
+                int[Point] counts;
+                counts[Point(1, 2)] = 10;
+
+                Point p = Point(3, 4);
+                counts[p] = 20;
+
+                assert((Point(1, 2) in counts) !is null);
+                assert(counts[Point(1, 2)] == 10);
+                assert(counts[p] == 20);
+                assert(counts.length == 2);
+
+                int sum;
+                foreach (k, v; counts)
+                    sum += k.x + k.y + v;
+                assert(sum == 1 + 2 + 10 + 3 + 4 + 20);
+            }
+        });
+    }
+}
+
 // Struct AA keys compare dynamic-array members by their elements, not by the
-// identity of their slice backing storage. Bytecode now refuses earlier than
-// before (`compileAssocArrayGetLvalue` computes `assocArrayKeyMeta` -- which
-// has no `Tstruct` case -- ahead of compiling the key expression itself, so
-// the diagnostic is `scalarType`'s generic one, not the previous
-// `__aakeyN`-variable refusal).
+// identity of their slice backing storage. Struct-typed key storage itself
+// (`assocArrayKeyMeta`/`assocArrayKeyOffset`, raw-byte comparison, no string
+// member) is now supported (`structKeyRawBytesConstructLookupAndIterate`
+// above), so this row's refusal has moved past key compilation to
+// `assert(Name(ab()) in ages)`'s synthesized boolean temporary
+// (`__assertOpN = <InExp>`), a separate, so-far-unsupported assignment
+// shape. Reaching that point does not mean the underlying gap (whole-struct
+// raw-byte compare is wrong for a string member: two separately-constructed
+// but content-equal strings have different backing pointers) is fixed --
+// `keysEqual` still needs the same structural, not raw-byte, comparison it
+// already gives a bare `string` key.
 static foreach (backend; Matrix!(
     Omit!(Bytecode, Because.refusal,
-        "Unsupported type in bytecode core: Name"),
+        "Unsupported assignment in bytecode core: __assertOp61 = "
+            ~ "Name(ab()) in ages"),
 )) {
     @("assocArray.structKeyWithStringMemberComparesStructurally." ~
         backend.stringof)
