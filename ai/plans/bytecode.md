@@ -1368,34 +1368,65 @@ lifetime as the dependency bytecode cache.
   delegate parameter whose callee body only READS/calls the parameter
   (`delegate.refParameterBoundToStaticallyKnownLocalIsCallable`/
   `refParameterBoundToCopiedLocalIsCallable`, `expressions.d`, covering both
-  storage kinds, all backends). That binding fix alone does not reach either
+  storage kinds, all backends). That binding fix alone did not reach either
   originally-suggested test (the `out`-parameter escape above, or even a
   plain non-escaping `ref`-rebinding case, `void rebind(ref int delegate()
   dg, int delegate() newValue) { dg = newValue; }`): both need the callee to
   REASSIGN the `ref`/`out` delegate parameter's whole value, and whole-value
   assignment to a plain (non-module, non-field) delegate local or parameter
   -- `dg = rhs;` where `dg` is any `_delegateLocals`/`_delegateParameterLocals`
-  entry -- is a separate, larger, entirely-unimplemented gap in
-  `compileAssignExpression`: no branch resolves it at all (only the module-
-  variable case from the `Tdelegate` module-variable work does), so it falls
-  through to the generic scalar assignment path, which resolves `dg = rhs`'s
-  right-hand side via the general expression compiler instead of
-  `delegateOperandOffset` and throws "Unsupported variable in bytecode
-  core: <rhs>" -- confirmed to reproduce with NO `ref`/`out` involved at all
-  (`int delegate() dg = () => 1; dg = () => 2;` throws the same way). Fixing
-  it properly is more than a mechanical addition: unlike the module case, a
+  entry -- had no branch in `compileAssignExpression` resolving it at all
+  (only the module-variable case from the `Tdelegate` module-variable work
+  did), so it fell through to the generic scalar assignment path, which
+  resolved `dg = rhs`'s right-hand side via the general expression compiler
+  instead of `delegateOperandOffset` and threw "Unsupported assignment in
+  bytecode core: dg = <rhs>" -- reproduced with NO `ref`/`out` involved at
+  all (`int delegate() dg = () => 1; dg = () => 2;` threw the same way).
+  This is now FIXED (`compileAssignExpression`'s new plain-delegate-local
+  branch, right after the module-delegate-variable branch): a
   `_delegateLocals` entry's `function_` is read elsewhere as the CURRENT
-  statically-known callee for static dispatch (`returnedDelegateFunctionOrNull`,
-  the call-through-a-delegate-local path); reassigning a non-statically-known
-  value into it would need to migrate the declaration out of `_delegateLocals`
-  into dynamic (`_delegateParameterLocals`-style) tracking, or every static-
-  dispatch call site would keep calling the STALE original callee after a
-  reassignment -- a real correctness hazard, not just a missing case, so it
-  needs its own careful design pass rather than a quick follow-on here. Left
-  as future work, ordered ahead of the `out`-parameter-escape combination
-  above (both the escape combination and even the plain non-escaping
-  `ref`-rebind case are blocked on it). Generalising the escape mechanism to
-  DMD's own per-function `needsClosure()`/
+  statically-known callee for static dispatch
+  (`returnedDelegateFunctionOrNull`, the call-through-a-delegate-local
+  path), so reassigning a new value demotes the declaration out of
+  `_delegateLocals` into `_delegateParameterLocals`'s dynamic-dispatch
+  bookkeeping at the point of assignment, matching every other call/read
+  site's existing fallback once a declaration is no longer found in
+  `_delegateLocals` -- no other site needed to change. This gives up the
+  static-callee call-site optimization for such a local from that point
+  forward (its calls now go through `compileDynamicDelegateCall` instead of
+  `compileDelegateCall`), which -- like every other `_delegateParameterLocals`
+  entry already -- does not model a struct-method receiver context, so
+  reassigning a struct-method-bound delegate into a previously-static local
+  remains an unsupported shape, same as passing one through a parameter or
+  field already was; not hit by any test so far. When the assignment target
+  is a `ref`/`out` parameter (`declaration.isReference && declaration.
+  isParameter`), its frame slot is written back to the caller's own storage
+  when the function returns, so a capturing rhs lambda/nested-function
+  delegate needs the same escape-safety `compileDelegateReturn` already
+  gives a directly returned delegate: the fix resolves such an rhs through
+  `compileDelegateReturn` instead of the plain `delegateOperandOffset`, so a
+  capture that would outlive this function's own frame either gets the
+  existing one-or-two-scalar/one-level heap-closure treatment
+  (`heapClosureContextOrNull`) or the loud "Unsupported delegate return"
+  diagnostic, instead of a frame-relative context that would silently read
+  as garbage once the frame is reused. A plain (non-escaping) local/
+  parameter never needs this: `compileDelegateReturn` degrades to plain
+  `delegateOperandOffset` whenever the rhs has no statically-known callee
+  or captures nothing, the same path a naive fix would have taken. This
+  unblocks the ORIGINAL motivating example two commits ago
+  (`void makeCounter(out int delegate() dg) { int count = 0; dg = () =>
+  ++count; }`, `delegate.outParameterEscapingCaptureIsCallable`,
+  `expressions.d`, including two independent `makeCounter` calls proving
+  each escaping capture gets its own heap block) and the plain non-escaping
+  `ref`-rebind case (`delegate.plainRefRebindAssignsNewValue`) and the
+  simplest whole-value-reassignment case
+  (`delegate.wholeValueReassignmentOfPlainLocalIsCallable`), all on
+  Bytecode/SystemLinker/LLVMJit; Ctfe declines the `out`-parameter case
+  (DMD's CTFE engine cannot read `count` back through the escaped delegate
+  at all) and Interpreter declines all three (no whole-value-reassignment
+  support for a plain delegate local at all yet) -- both pre-existing,
+  unrelated backend gaps, not reached by this fix. Generalising the escape
+  mechanism to DMD's own per-function `needsClosure()`/
   `closureVars` decision -- moving every closure-needing variable to its heap
   block from declaration onward, regardless of whether it is actually
   returned -- remains future work; the eventual right design point, since

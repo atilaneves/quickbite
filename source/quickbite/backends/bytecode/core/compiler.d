@@ -11196,6 +11196,77 @@ private struct Compiler {
                     return Operand(source, ScalarType.void_);
                 }
 
+        // `dg = rhs;` for a whole plain (non-module, non-field) delegate-typed
+        // LOCAL or `ref`/`out` PARAMETER (`int delegate() dg = () => 1; dg =
+        // () => 2;`): the plain-local/parameter counterpart of the module
+        // delegate whole-value assignment above. Resolve the rhs's own
+        // 16-byte `{functionIndex, context}` pair and copy it into the
+        // local's own frame slot -- writing THROUGH the existing slot rather
+        // than rebinding it, the same way the static-array whole-value
+        // assignment above does, so a `ref`/`out` alias of this same slot
+        // (`referenceOffsetOrNull`'s delegate-local case) observes the new
+        // value too.
+        //
+        // A `_delegateLocals` entry's `function_` is read elsewhere as the
+        // CURRENT statically-known callee for direct call-site dispatch
+        // (`returnedDelegateFunctionOrNull`, `delegateLocalOf`); reassigning
+        // a new value makes that recorded callee stale, so this demotes the
+        // local out of `_delegateLocals` into `_delegateParameterLocals`'s
+        // dynamic-dispatch bookkeeping at the point of assignment onward --
+        // every read/call site already falls back correctly to dynamic
+        // dispatch once a declaration is no longer found in `_delegateLocals`
+        // (`delegateOperandOffset`, `returnedDelegateFunctionOrNull`,
+        // `delegateLocalOf`/`delegateParameterOffsetOf`), so no other site
+        // needs to change. This does give up the static-callee optimization
+        // for such a local from here on (its calls now dispatch through
+        // `compileDynamicDelegateCall` instead of `compileDelegateCall`),
+        // which -- like every other `_delegateParameterLocals` entry -- does
+        // not model a struct-method receiver context; a local reassigned to
+        // a struct-method-bound delegate remains an unsupported shape, same
+        // as passing one through a parameter or field already is.
+        //
+        // When the target is a `ref`/`out` PARAMETER, its frame slot is
+        // written back to the CALLER's own storage when this function
+        // returns (`appendParameterLayoutEntry`'s `RefParameter` writeback),
+        // so a capturing rhs lambda/nested-function delegate needs the same
+        // escape-safety `compileDelegateReturn` already gives a directly
+        // returned delegate: resolve such an rhs through `compileDelegateReturn`
+        // instead of the plain `delegateOperandOffset`, so a capture that
+        // would outlive this function's own frame either gets the
+        // heap-closure treatment or the loud "Unsupported delegate return"
+        // diagnostic, instead of a frame-relative context that silently
+        // reads as garbage once this function returns and its frame is
+        // reused. A plain (non-escaping) local/parameter never needs this:
+        // its own frame lives exactly as long as any capture resolved
+        // against it could still be read back through it, so
+        // `compileDelegateReturn` degrades to plain `delegateOperandOffset`
+        // for it anyway (`returnedDelegateFunctionOrNull` only recognises a
+        // statically-known callee at all; any other rhs shape -- a
+        // parameter/field/call-result copy -- has no captures to protect and
+        // takes the same plain path regardless).
+        if (assign.e1.isVarExp !is null)
+            if (auto declaration = assign.e1.isVarExp.var.isVarDeclaration) {
+                auto delegateLocal = declaration in _delegateLocals;
+                auto delegateParameter = declaration in _delegateParameterLocals;
+                if (delegateLocal !is null || delegateParameter !is null) {
+                    const offset = delegateLocal !is null
+                        ? delegateLocal.offset : *delegateParameter;
+                    const escapes =
+                        declaration.isReference && declaration.isParameter;
+                    const source = escapes
+                        ? compileDelegateReturn(assign.e2)
+                        : delegateOperandOffset(assign.e2);
+                    _code ~= Instruction(
+                        Op.copy, offset, source, cast(ushort) delegateValueSize,
+                    );
+                    if (delegateLocal !is null) {
+                        _delegateLocals.remove(declaration);
+                        _delegateParameterLocals[declaration] = offset;
+                    }
+                    return Operand(offset, ScalarType.void_);
+                }
+            }
+
         // `c = rhs;` for a whole module-level `cdouble` variable (`cdouble
         // c; c = 1.0 + 2.0i;`): the complex counterpart of the module
         // delegate whole-value assignment above -- resolve the rhs's own

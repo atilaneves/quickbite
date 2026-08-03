@@ -2707,11 +2707,8 @@ static foreach (backend; Matrix!(
 // delegate-typed local, so this call threw "Unsupported ref argument in
 // bytecode core" before the callee's own body ever ran, regardless of what
 // the callee does with the parameter. The callee here only reads/calls the
-// `ref` parameter (never reassigns it): whole-value assignment to a plain
-// (non-module, non-field) delegate local/parameter is a separate,
-// pre-existing gap (see `ai/plans/bytecode.md`'s Closures section) that a
-// `ref`/`out` delegate argument test exercising reassignment would also hit,
-// so this fixture is scoped to the binding itself.
+// `ref` parameter (never reassigns it) -- the whole-value-reassignment
+// fixtures below exercise that separately.
 static foreach (backend; Matrix!()) {
     @("delegate.refParameterBoundToStaticallyKnownLocalIsCallable." ~
         backend.stringof)
@@ -2750,6 +2747,124 @@ static foreach (backend; Matrix!()) {
                 int delegate() a = () => 42;
                 int delegate() c = a;
                 assert(callThroughRef(c) == 42);
+            }
+        });
+    }
+}
+
+// Whole-value reassignment of a plain (non-module, non-field) delegate
+// local -- `dg = rhs;` where `dg` is a `_delegateLocals` entry (a directly-
+// known lambda/nested-function/method-literal initializer) -- had no case
+// at all in `compileAssignExpression`: it fell through to the generic
+// scalar-assignment path and threw "Unsupported assignment in bytecode
+// core". `dg`'s `_delegateLocals` entry records its ORIGINAL callee for
+// direct call-site dispatch (`returnedDelegateFunctionOrNull`,
+// `delegateLocalOf`); this fixture's second assert would silently call the
+// STALE original callee instead of the reassigned one if that entry were
+// left in place unchanged, so the fix demotes the local into
+// `_delegateParameterLocals`'s dynamic-dispatch bookkeeping at the point of
+// assignment -- giving up the static-callee call-site optimization for this
+// local from here on, same as any other delegate value with no statically
+// known origin.
+static foreach (backend; Matrix!(
+    Omit!(Interpreter, Because.unconfirmed,
+        "the Interpreter has no case for whole-value reassignment of a " ~
+            "plain delegate local either (\"Unsupported eval call.\") -- " ~
+            "not yet promoted"),
+)) {
+    @("delegate.wholeValueReassignmentOfPlainLocalIsCallable." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            unittest {
+                int delegate() dg = () => 1;
+                assert(dg() == 1);
+                dg = () => 2;
+                assert(dg() == 2);
+            }
+        });
+    }
+}
+
+// A sibling of `wholeValueReassignmentOfPlainLocalIsCallable` that reassigns
+// through a `ref` PARAMETER rather than a plain local -- `ai/plans/
+// bytecode.md`'s own originally-suggested "plain non-escaping ref-rebinding
+// case". `dg`'s own frame slot is a `_delegateParameterLocals` entry from
+// function entry already (every delegate-typed parameter is, regardless of
+// `ref`/`out`), so this exercises the same whole-value-assignment fix as the
+// plain-local fixture above without the `_delegateLocals` demotion step --
+// `referenceOffsetOrNull`'s pre-existing delegate-local `ref`-argument
+// binding aliases the caller's `dg`'s own frame slot, so the callee's write
+// is visible back in the caller through that same slot.
+static foreach (backend; Matrix!(
+    Omit!(Interpreter, Because.unconfirmed,
+        "the Interpreter throws \"quickbite.backends.interpreter." ~
+            "place_value.writeValue: unsupported at place\" for this " ~
+            "reassignment shape -- not yet promoted"),
+)) {
+    @("delegate.plainRefRebindAssignsNewValue." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            void rebind(ref int delegate() dg, int delegate() newValue) {
+                dg = newValue;
+            }
+
+            unittest {
+                int delegate() dg = () => 1;
+                rebind(dg, () => 2);
+                assert(dg() == 2);
+            }
+        });
+    }
+}
+
+// The originally-motivating shape from `ai/plans/bytecode.md`'s Closures
+// section: an `out` delegate PARAMETER reassigned to a lambda that captures
+// a local from the REASSIGNING function's own frame (`count`), which then
+// escapes back to the caller through the `out` writeback -- once
+// `makeCounter` returns, `count`'s frame is gone, so a naive frame-relative
+// context would read as garbage, exactly the hazard
+// `heapClosureContextOrNull` already exists to avoid for a directly returned
+// capturing delegate (`functionReturningMutatingCapturingDelegateIsCallable`
+// above). The whole-value-assignment fix reuses that same escape-safety
+// (`compileDelegateReturn`) for any assignment TARGET that is a `ref`/`out`
+// parameter, so this capture gets heap-allocated at the point of assignment
+// instead of the plain frame-relative context a non-escaping reassignment
+// gets. Two independent `makeCounter` calls confirm each escaping capture
+// gets its own heap block rather than colliding, the same independence
+// `functionReturningMutatingCapturingDelegateIsCallable` already checks for
+// the `return`-escape shape.
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.inexpressible,
+        "Ctfe wraps dmd.dinterpret, whose CTFE engine cannot read " ~
+            "`count` back through the escaped delegate at all " ~
+            "(\"variable `count` cannot be read at compile time\")"),
+    Omit!(Interpreter, Because.unconfirmed,
+        "the Interpreter throws \"quickbite.backends.interpreter." ~
+            "place_value.writeValue: unsupported at place\" for this " ~
+            "reassignment shape -- not yet promoted"),
+)) {
+    @("delegate.outParameterEscapingCaptureIsCallable." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            void makeCounter(out int delegate() dg) {
+                int count = 0;
+                dg = () => ++count;
+            }
+
+            unittest {
+                int delegate() c;
+                makeCounter(c);
+                assert(c() == 1);
+                assert(c() == 2);
+
+                int delegate() c2;
+                makeCounter(c2);
+                assert(c2() == 1);
+                assert(c() == 3);
             }
         });
     }
