@@ -368,10 +368,14 @@ private struct Walker {
     // A native class reference carries only its body address; retain the
     // dynamic class Type by that address for Object-typed aliases.
     private imported!"dmd.mtype".Type[void*] nativeClassTypes;
-    // A class reference copied through a native field exposes its body
-    // address. Keep the allocation handle by that address so a later local
-    // or downcast retains the reference slot that owns the body.
-    private Value[void*] nativeClassObjects;
+    // A VM-allocated class reference exposes only its body address. Keep its
+    // allocation handle by that address so later aliases retain the storage
+    // that owns the body.
+    private Value[void*] nativeClassOwners;
+    // A borrowed native Throwable reference carries only its object address.
+    // Keep its boxed field description separate from ordinary class ownership
+    // so hydrating a catch's static view cannot replace an allocation root.
+    private Value[void*] nativeExceptionMetadata;
     // Interpreted delegates have no guest ABI function pointer. Native
     // delegate slots retain their callable Value out-of-band while their
     // ordinary `{context, function}` guest bytes remain ABI-shaped.
@@ -1161,7 +1165,7 @@ private struct Walker {
                 hydrated,
                 nativeExceptionObjectPointerField,
             ).pointerAddress;
-            nativeClassObjects[cast(void*) pointer] = hydrated;
+            nativeExceptionMetadata[cast(void*) pointer] = hydrated;
             bindingPlace(catch_.var).storeReference(cast(void*) pointer);
             mirrorEstablished[catch_.var] = true;
         } else {
@@ -1260,7 +1264,7 @@ private struct Walker {
                 object,
                 nativeExceptionObjectPointerField,
             ).pointerAddress;
-            nativeClassObjects[cast(void*) pointer] = object;
+            nativeExceptionMetadata[cast(void*) pointer] = object;
         }
 
         return object;
@@ -2894,7 +2898,8 @@ private struct Walker {
         child.nextFunctionPointerId = nextFunctionPointerId;
         child.delegates = delegates.dup;
         child.nativeClassTypes = nativeClassTypes.dup;
-        child.nativeClassObjects = nativeClassObjects.dup;
+        child.nativeClassOwners = nativeClassOwners.dup;
+        child.nativeExceptionMetadata = nativeExceptionMetadata.dup;
         child.nativeDelegateSlots = nativeDelegateSlots.dup;
         child.lazyArgumentExpressions = lazyArgumentExpressions.dup;
         child.lazyArgumentLocals = lazyArgumentLocals.dup;
@@ -4052,6 +4057,9 @@ private struct Walker {
                 Value result;
                 Value[] writebacks;
                 try {
+                    // Mutable because the native-call interfaces accept Type[].
+                    auto argumentTypes =
+                        nativeArgumentTypes(argumentExpressions);
                     if (durableInboundSession is null)
                         durableInboundSession = new InterpreterInboundTrampolineSession(
                             &invokeNativeCallback,
@@ -4061,12 +4069,12 @@ private struct Walker {
                         tryCallNative(
                             call.f,
                             arguments,
-                            nativeArgumentTypes(argumentExpressions),
+                            argumentTypes,
                             nativeAddressOfLocalArguments(argumentExpressions),
                             nativeOutParameterInputValues(argumentExpressions),
                             nativeDirectAddressOperands(
                                 argumentExpressions,
-                                nativeArgumentTypes(argumentExpressions),
+                                argumentTypes,
                                 arguments,
                             ),
                             &invokeNativeCallback,
@@ -5199,7 +5207,7 @@ private struct Walker {
         if (declarationName(function_) == "next") {
             const(Value)* throwable = &memberReceiver;
             if (memberReceiver.isPointer)
-                if (auto object = memberReceiver.pointerAddress in nativeClassObjects)
+                if (auto object = memberReceiver.pointerAddress in nativeExceptionMetadata)
                     throwable = object;
             if (
                 AggregateValue.isClass(*throwable) &&
@@ -5344,7 +5352,8 @@ private struct Walker {
         functionPointerIds = child.functionPointerIds;
         delegates = child.delegates;
         nativeClassTypes = child.nativeClassTypes;
-        nativeClassObjects = child.nativeClassObjects;
+        nativeClassOwners = child.nativeClassOwners;
+        nativeExceptionMetadata = child.nativeExceptionMetadata;
         nativeDelegateSlots = child.nativeDelegateSlots;
         nativeFunctionPointerSlots = child.nativeFunctionPointerSlots;
         lazyArgumentExpressions = child.lazyArgumentExpressions;
@@ -5367,7 +5376,8 @@ private struct Walker {
         functionPointerIds = child.functionPointerIds;
         delegates = child.delegates;
         nativeClassTypes = child.nativeClassTypes;
-        nativeClassObjects = child.nativeClassObjects;
+        nativeClassOwners = child.nativeClassOwners;
+        nativeExceptionMetadata = child.nativeExceptionMetadata;
         nativeDelegateSlots = child.nativeDelegateSlots;
         nativeFunctionPointerSlots = child.nativeFunctionPointerSlots;
         lazyArgumentExpressions = child.lazyArgumentExpressions;
@@ -6513,7 +6523,7 @@ private struct Walker {
                     auto address = fieldPlace.deref.address;
                     if (address is null)
                         return Value.null_;
-                    if (auto object = address in nativeClassObjects)
+                    if (auto object = address in nativeClassOwners)
                         return *object;
                     return Value.pointerValue(address);
                 }
@@ -8507,9 +8517,15 @@ private struct Walker {
                     *dynamicType,
                     value.pointerAddress,
                 );
-        if (value.isPointer)
-            if (auto object = value.pointerAddress in nativeClassObjects)
-                value = *object;
+        if (value.isPointer) {
+            if (auto owner = value.pointerAddress in nativeClassOwners) {
+                value = *owner;
+            } else if (
+                auto metadata = value.pointerAddress in nativeExceptionMetadata
+            ) {
+                value = *metadata;
+            }
+        }
         if (value == Value.null_)
             return value;
 
@@ -9686,7 +9702,8 @@ private struct Walker {
         mergeNativePointerRoots(child);
         nextClassObjectId = child.nextClassObjectId;
         nativeClassTypes = child.nativeClassTypes;
-        nativeClassObjects = child.nativeClassObjects;
+        nativeClassOwners = child.nativeClassOwners;
+        nativeExceptionMetadata = child.nativeExceptionMetadata;
     }
 
     // `new T(args)` where T's constructor is a body-less native leaf: construct
@@ -9750,7 +9767,7 @@ private struct Walker {
 
         auto object = AggregateValue.allocateClass(allocationType);
         nativeClassTypes[AggregateValue.nativeClassBodyAddress(object)] = allocationType;
-        nativeClassObjects[AggregateValue.nativeClassBodyAddress(object)] = object;
+        nativeClassOwners[AggregateValue.nativeClassBodyAddress(object)] = object;
         initializeNativeClassBody(allocationType, object);
         if (new_.member is null)
             return object;
@@ -9797,7 +9814,8 @@ private struct Walker {
         functionPointerIds = child.functionPointerIds;
         delegates = child.delegates;
         nativeClassTypes = child.nativeClassTypes;
-        nativeClassObjects = child.nativeClassObjects;
+        nativeClassOwners = child.nativeClassOwners;
+        nativeExceptionMetadata = child.nativeExceptionMetadata;
         nativeDelegateSlots = child.nativeDelegateSlots;
         nativeFunctionPointerSlots = child.nativeFunctionPointerSlots;
         lazyArgumentExpressions = child.lazyArgumentExpressions;

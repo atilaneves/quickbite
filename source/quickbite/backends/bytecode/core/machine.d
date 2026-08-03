@@ -3486,10 +3486,6 @@ private final class BytecodeNativeMarshaller:
         );
     }
 
-    public const(void)* receiverAddress(Type type) {
-        return null;
-    }
-
     public void invokeClosure(in size_t argumentIndex, Type returnType,
         Type[] parameterTypes, void*[] argumentBuffers, ubyte[] resultBuffer)
     { unsupportedNativeCall; }

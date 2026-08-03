@@ -7,7 +7,7 @@ module quickbite.backends.interpreter.native_call_adapter;
 
 private:
 
-import quickbite.ffi: NativeMarshaller;
+import quickbite.ffi: NativeMarshaller, NativeReceiverAddressMarshaller;
 
 // Re-exported so the interpreter call sites keep a single import for the native
 // call path and its exception type.
@@ -361,7 +361,10 @@ private bool isNativeAggregateType(
         base.isTypeDArray !is null;
 }
 
-private final class InterpreterNativeMarshaller: NativeMarshaller {
+private final class InterpreterNativeMarshaller:
+    NativeMarshaller,
+    NativeReceiverAddressMarshaller
+{
     import quickbite.backends.interpreter.runtime_value: Value;
     import dmd.mtype: Type;
 
@@ -471,11 +474,10 @@ private final class InterpreterNativeMarshaller: NativeMarshaller {
         import quickbite.backends.interpreter.place_value:
             isPlaceComposable, readValue;
 
+        // The call already mutated the caller's authoritative place. A
+        // writeback is only meaningful for a temporary receiver buffer.
         if (_receiverOperand.address !is null)
-            return readValue(Place(
-                _receiverOperand.address,
-                _receiverOperand.type,
-            ));
+            return Value.void_;
 
         return isPlaceComposable(_receiverType) &&
                 _receiverType.toBasetype.isTypeClass is null
@@ -665,7 +667,7 @@ private final class InterpreterNativeMarshaller: NativeMarshaller {
         );
     }
 
-    public override const(void)* receiverAddress(Type type) {
+    public override void* receiverAddress(Type type) {
         return _receiverOperand.address !is null && _receiverOperand.type is type
             ? _receiverOperand.address
             : null;

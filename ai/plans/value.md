@@ -432,8 +432,10 @@ checked fact; do not relearn them.
   views over one block may grow. One narrower operation exists: when
   druntime's real `gc_expandArrayUsed` accepts that exact view, the runtime
   has proved it is the current tail owner and the borrowed view may widen
-  without reallocating. Failure leaves the view unchanged; ordinary growth
-  still allocates an owned array and rebinds at the call site.
+  without reallocating. The current slice header, not a retained lifetime
+  handle, supplies that view; retention never proves allocation identity or
+  append capacity. Failure leaves the view unchanged; ordinary growth still
+  allocates an owned array and rebinds at the call site.
 - Pointer casts, slices, and `void[]` reinterprets preserve the source address
   and express length in the destination element type.
 - `setLength`'s grow path zeroes every newly exposed byte
@@ -468,6 +470,11 @@ checked fact; do not relearn them.
   address-taking, indexing, and field access compose from that place.
 - Each activation owns a fresh frame block. Captures and calls borrow addresses;
   they do not copy storage authority into a child or reconcile it on return.
+- Native class references carry only their body address. VM-owned allocations
+  retain their storage in an ownership table; borrowed native exceptions keep
+  their hydrated `Throwable` metadata in a separate table keyed by object
+  address. A catch's static view may replace exception metadata, but never an
+  ordinary class allocation root.
 - A field slice borrows bytes composed from its receiver place; an aggregate
   expression snapshot is never the backing storage for an lvalue-derived view.
 - `RuntimeValue.NativeAggregate` owns or borrows DMD-layout bytes for a
@@ -646,12 +653,13 @@ calls recognize scalar `&local`/`SymOffExp` operands and hand libffi a typed
 scratch slot containing the authoritative pointee address, bypassing the
 out-cell/writeback fallback. Direct local/ref `VarExp` struct receivers and
 their direct `DotVarExp` struct fields likewise offer their typed authoritative
-address through the optional `NativeMarshaller.receiverAddress` FFI seam,
-bypassing receiver-buffer materialization and post-call receiver writeback.
-Other receiver shapes (temporaries, globals, classes, constructors, and slices)
-retain the fallback until their ordinary typed places are supplied. The adapter's
-public entry points still accept `RuntimeValue` arguments and return
-reconstructed values and writeback arrays. Consequently it retains
+address through the optional mutable `NativeReceiverAddressMarshaller` FFI
+capability, bypassing receiver-buffer materialization and returning no
+post-call receiver writeback. Other receiver shapes (temporaries, globals,
+classes, constructors, and slices) retain the fallback until their ordinary
+typed places are supplied. The adapter's public entry points still accept
+`RuntimeValue` arguments and return reconstructed values and writeback arrays.
+Consequently it retains
 `marshalArgument`, `unmarshalValue`, receiver buffers, mutable-slice
 copy/writeback storage, and the remaining `out`-cell reification.
 

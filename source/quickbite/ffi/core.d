@@ -78,6 +78,11 @@ public class NativeCallException: Exception {
     }
 }
 
+// Optional zero-copy struct receiver capability for native-layout backends.
+public interface NativeReceiverAddressMarshaller {
+    void* receiverAddress(imported!"dmd.mtype".Type type);
+}
+
 // The seam (ffi.md §5): the backend injects ABI-byte conversion so the core
 // never names a backend value type. `fill*` write argument/receiver bytes into
 // a buffer sized to the matching ffi_type; `readResult`/`writeOutParameter`
@@ -130,11 +135,6 @@ public interface NativeMarshaller {
         ref const(char)*[] keepAlive,
         ref ubyte[][] keepAliveBuffers,
     );
-
-    // Optional zero-copy struct receiver seam: a native-layout backend can
-    // expose its authoritative `this` storage directly. Null preserves the
-    // existing receiver buffer and post-call writeback path.
-    const(void)* receiverAddress(imported!"dmd.mtype".Type type);
 
     void readResult(imported!"dmd.mtype".Type type, in ubyte[] buffer);
 
@@ -703,6 +703,18 @@ private bool callViaLibffi(
     ubyte[] receiverBuffer;
     ubyte[] receiverPointerBuffer;
     if (receiver.enabled) {
+        void fillReceiverPointer() {
+            receiverBuffer = new ubyte[](cast(size_t) size(receiver.type));
+            marshaller.fillReceiver(
+                receiverBuffer,
+                receiver.type,
+                hasOutPointer,
+                keepAlive,
+                keepAliveBuffers,
+            );
+            *cast(void**) receiverPointerBuffer.ptr = receiverBuffer.ptr;
+        }
+
         receiverPointerBuffer = new ubyte[](ffi_type_pointer.size);
         if (receiver.isRawContext) {
             // A native delegate's context pointer crosses raw as the hidden
@@ -715,18 +727,15 @@ private bool callViaLibffi(
             // (ffi.md §34.12).
             *cast(const(void)**) receiverPointerBuffer.ptr =
                 marshaller.receiverObjectPointer;
-        } else if (auto address = marshaller.receiverAddress(receiver.type)) {
-            *cast(const(void)**) receiverPointerBuffer.ptr = address;
+        } else if (auto addressMarshaller =
+            cast(NativeReceiverAddressMarshaller) marshaller)
+        {
+            if (auto address = addressMarshaller.receiverAddress(receiver.type))
+                *cast(void**) receiverPointerBuffer.ptr = address;
+            else
+                fillReceiverPointer;
         } else {
-            receiverBuffer = new ubyte[](cast(size_t) size(receiver.type));
-            marshaller.fillReceiver(
-                receiverBuffer,
-                receiver.type,
-                hasOutPointer,
-                keepAlive,
-                keepAliveBuffers,
-            );
-            *cast(void**) receiverPointerBuffer.ptr = receiverBuffer.ptr;
+            fillReceiverPointer;
         }
     }
 
