@@ -895,12 +895,16 @@ accessors must precede the descriptor-order flip (§ Memory model).
    it. `appendElement*` now shares the same pattern via `program.d`'s
    `appendElementOpWidths` (one opcode per width, since appending one element
    is a single operation): compiler.d's `appendElementOp` and machine.d's
-   `appendElementWidth` both walk it. Every other width-suffixed family still
-   has its own independent pair (a compiler-side width→Op switch,
-   `sliceCopyOp`/`sliceFillOp`/`sliceEqualOp`/`concatArraysOp`/`dupArrayOp`,
-   plus a machine-side Op→width counterpart, `sliceCopyElementSize`/
-   `dupArrayElementSize`) not yet converted; the bijectivity gap the item
-   names is now closed for four families and open for the rest.
+   `appendElementWidth` both walk it. `dupArray*` now shares the same pattern
+   via `program.d`'s `dupArrayOpWidths` (one opcode per width, since
+   duplicating an array's elements into a fresh heap block is a single
+   operation): compiler.d's `dupArrayOp` and machine.d's `dupArrayWidth` both
+   walk it. Every other width-suffixed family still has its own independent
+   pair (a compiler-side width→Op switch,
+   `sliceCopyOp`/`sliceFillOp`/`sliceEqualOp`/`concatArraysOp`, plus a
+   machine-side Op→width counterpart, `sliceCopyElementSize`) not yet
+   converted; the bijectivity gap the item names is now closed for five
+   families and open for the rest.
 
 Reviewed and declined (2026-08): a bytecode-core disassembler with
 instruction-level emission pins — not worth tackling; do not re-propose.

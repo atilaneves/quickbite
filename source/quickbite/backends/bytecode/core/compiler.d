@@ -36,7 +36,8 @@ private struct Compiler {
         AssertDiagnostic, CatchClause, ClassInfo, CompiledFunction,
         Instruction, NativeCall, Op, Program,
         RefParameter, ResultType, ScalarType, StructDisplayField,
-        VirtualFunction, appendElementOp, indexLoadOp, indexStoreOp, isSigned,
+        VirtualFunction, appendElementOp, dupArrayOp, indexLoadOp,
+        indexStoreOp, isSigned,
         nativeArgumentSlotSize, noCatchObjectField, noExceptionClass,
         noOutParameterOffset, pointerLoadOp, pointerSliceOp, pointerStoreOp,
         size, sliceDescriptorLengthOffset, sliceDescriptorSize, subSliceOp;
@@ -19698,21 +19699,6 @@ private imported!"quickbite.backends.bytecode.core.program".Op concatArraysOp(
         case 4: return Op.concatArrays4;
         case 16: return Op.concatArrays16;
         default: return Op.concatArraysN;
-    }
-}
-
-private imported!"quickbite.backends.bytecode.core.program".Op dupArrayOp(
-    in uint elementSize,
-) @safe @nogc nothrow pure {
-    import quickbite.backends.bytecode.core.program: Op;
-
-    switch (elementSize) {
-        case 1: return Op.dupArray1;
-        case 2: return Op.dupArray2;
-        case 4: return Op.dupArray4;
-        case 8: return Op.dupArray8;
-        case 16: return Op.dupArray16;
-        default: return Op.dupArrayN;
     }
 }
 

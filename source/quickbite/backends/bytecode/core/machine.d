@@ -25,9 +25,9 @@ package(quickbite.backends.bytecode) RunResult run(
     import core.exception: RangeError;
     import quickbite.backends.bytecode.core.program:
         assocArrayKeyIsArrayFlag, appendElementWidth, CatchClause, ClassInfo,
-        indexElementWidth, Op, noCatchObjectField, noExceptionClass,
-        noOutParameterOffset, pointerElementWidth, size, sliceDescriptorSize,
-        subSliceElementWidth;
+        dupArrayWidth, indexElementWidth, Op, noCatchObjectField,
+        noExceptionClass, noOutParameterOffset, pointerElementWidth, size,
+        sliceDescriptorSize, subSliceElementWidth;
 
     // Reserve a generous fixed capacity so growing `stack` for callee frames
     // never reallocates: a raw `&local` pointer (`int* p = &x`) stored in a
@@ -405,7 +405,7 @@ package(quickbite.backends.bytecode) RunResult run(
                     base + instruction.b,
                     instruction.op == dupArrayN
                         ? instruction.c
-                        : dupArrayElementSize(instruction.op),
+                        : dupArrayWidth(instruction.op),
                 );
                 ++ip;
                 break;
@@ -2467,19 +2467,6 @@ private uint concatElementSize(
     if (op == Op.concatArrays1)
         return 1;
     return op == Op.concatArrays16 ? 16 : 4;
-}
-
-private uint dupArrayElementSize(
-    in imported!"quickbite.backends.bytecode.core.program".Op op,
-) @safe @nogc nothrow pure {
-    import quickbite.backends.bytecode.core.program: Op;
-    if (op == Op.dupArray1)
-        return 1;
-    if (op == Op.dupArray2)
-        return 2;
-    if (op == Op.dupArray8)
-        return 8;
-    return op == Op.dupArray16 ? 16 : 4;
 }
 
 // Duplicate the slice descriptor at `sourceOffset` into a fresh heap block
