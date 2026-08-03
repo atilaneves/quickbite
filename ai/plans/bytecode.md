@@ -856,8 +856,22 @@ place second.
    `pointerDereferenceRefWriteBacks`, etc.); it was harmless today only
    because `emitRefLocalPointerArgument`'s 1/2/4/8 gate never produces the
    `pointerStoreN` opcode that reads that operand, but the fix removes the
-   landmine for if/when that gate is loosened. The width-authority
-   generalisation and the per-family emit helpers remain open.
+   landmine for if/when that gate is loosened. Per-family emit helpers are
+   started: `indexLoad*`/`indexStore*` (the family with a shared op<->width
+   table since the structural consolidation queue's item 3) now emit only
+   through `compiler.d`'s `emitIndexLoad`/`emitIndexStore`, which take width
+   as a required parameter and build the `Instruction` themselves, so an
+   `indexLoadN`/`indexStoreN` can no longer see a silently-defaulted-to-zero
+   width operand; no call site in `compiler.d` constructs an `indexLoad*`/
+   `indexStore*` `Instruction` directly any more. This is a proof of concept,
+   not the general fix: it does not touch how each call site computes its
+   width in the first place (still hand-derived per site, `elementSize`/
+   `staticArraySize`/etc.), so the width-authority generalisation
+   (`dynamicArrayElementSize`/`pointerElementMetadata` merging into one
+   authority) is still fully open. Also still open: the same per-family
+   helper treatment for `pointerLoad*`/`pointerStore*`/`pointerSlice*`,
+   `subSlice*`, `appendElement*`, `dupArray*`, `concatArrays*`, and
+   `sliceCopy*`/`sliceFill*`/`sliceEqual*`.
 
 2. **One place resolver.** Lvalue addressing is enumerated per shape: the
    `emit*RefArgument` chain with its comment-encoded decline order,

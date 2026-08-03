@@ -2943,13 +2943,7 @@ private struct Compiler {
             ? size_t.sizeof
             : elementSize;
         const offset = allocateBytes(elementSize, alignment);
-        _code ~= Instruction(
-            indexLoadOp(elementSize),
-            offset,
-            descriptorOffset,
-            indexSlot.offset,
-            cast(ushort) elementSize,
-        );
+        emitIndexLoad(offset, descriptorOffset, indexSlot.offset, elementSize);
 
         auto result = new Operand;
         *result = isAggregateElement || elementIsArray
@@ -3360,12 +3354,7 @@ private struct Compiler {
 
         const indexSlot = compileExpression(index.e2);
         const offset = allocateBytes(sliceDescriptorSize, size_t.sizeof);
-        _code ~= Instruction(
-            Op.indexLoad16,
-            offset,
-            outer.offset,
-            indexSlot.offset,
-        );
+        emitIndexLoad(offset, outer.offset, indexSlot.offset, sliceDescriptorSize);
         auto result = new DynamicArrayLocal;
         *result = DynamicArrayLocal(offset, outer.elementType);
         return result;
@@ -5261,11 +5250,8 @@ private struct Compiler {
                         const offset = allocateBytes(
                             elementSize, staticArrayAlign(dot.e1.type),
                         );
-                        _code ~= Instruction(
-                            indexLoadOp(elementSize),
-                            offset,
-                            descriptor.offset,
-                            indexOffset,
+                        emitIndexLoad(
+                            offset, descriptor.offset, indexOffset,
                             elementSize,
                         );
                         return MethodReceiver(
@@ -7307,12 +7293,7 @@ private struct Compiler {
                     rowElementIsArray,
                 );
                 const index = compileSizeConstant(elementIndex);
-                _code ~= Instruction(
-                    Op.indexStore16,
-                    inner,
-                    destination,
-                    index,
-                );
+                emitIndexStore(inner, destination, index, sliceDescriptorSize);
             }
             return;
         }
@@ -7332,13 +7313,7 @@ private struct Compiler {
                 ? Operand(structOperandOffset(element), ScalarType.void_)
                 : compileExpression(element);
             const index = compileSizeConstant(elementIndex);
-            _code ~= Instruction(
-                indexStoreOp(elementSize),
-                value.offset,
-                destination,
-                index,
-                cast(ushort) elementSize,
-            );
+            emitIndexStore(value.offset, destination, index, elementSize);
         }
     }
 
@@ -7442,11 +7417,9 @@ private struct Compiler {
                 compileDynamicArrayInto(
                     inner, elementType, (*literal.elements)[elementIndex],
                 );
-                _code ~= Instruction(
-                    Op.indexStore16,
-                    inner,
-                    destination,
-                    compileSizeConstant(elementIndex),
+                emitIndexStore(
+                    inner, destination, compileSizeConstant(elementIndex),
+                    sliceDescriptorSize,
                 );
             }
             return true;
@@ -7464,12 +7437,9 @@ private struct Compiler {
             auto value = compileExpression((*literal.elements)[elementIndex]);
             if (size(value.type) < elementSize)
                 value = extend(value, elementType);
-            _code ~= Instruction(
-                indexStoreOp(elementSize),
-                value.offset,
-                destination,
-                compileSizeConstant(elementIndex),
-                cast(ushort) elementSize,
+            emitIndexStore(
+                value.offset, destination, compileSizeConstant(elementIndex),
+                elementSize,
             );
         }
         return true;
@@ -7518,12 +7488,9 @@ private struct Compiler {
 
         foreach (elementIndex; 0 .. count) {
             const index = compileSizeConstant(elementIndex);
-            _code ~= Instruction(
-                indexStoreOp(elementSize),
+            emitIndexStore(
                 cast(ushort) (*sourceOffset + elementIndex * sourceElementSize),
-                destination,
-                index,
-                cast(ushort) elementSize,
+                destination, index, elementSize,
             );
         }
     }
@@ -7574,10 +7541,7 @@ private struct Compiler {
                 cast(ushort) elementSize,
             );
             const index = compileSizeConstant(elementIndex);
-            _code ~= Instruction(
-                indexStoreOp(elementSize), loaded, destination, index,
-                cast(ushort) elementSize,
-            );
+            emitIndexStore(loaded, destination, index, elementSize);
         }
     }
 
@@ -7614,12 +7578,9 @@ private struct Compiler {
                     constantIndex(string_.getIndex(elementIndex)),
                     cast(ushort) elementSize,
                 );
-                _code ~= Instruction(
-                    indexStoreOp(elementSize),
-                    slot,
-                    destination,
-                    compileSizeConstant(elementIndex),
-                    cast(ushort) elementSize,
+                emitIndexStore(
+                    slot, destination, compileSizeConstant(elementIndex),
+                    elementSize,
                 );
             }
             return;
@@ -7653,12 +7614,9 @@ private struct Compiler {
                 constantIndex(value),
                 cast(ushort) elementSize,
             );
-            _code ~= Instruction(
-                indexStoreOp(elementSize),
-                slot,
-                destination,
-                compileSizeConstant(elementIndex),
-                cast(ushort) elementSize,
+            emitIndexStore(
+                slot, destination, compileSizeConstant(elementIndex),
+                elementSize,
             );
         }
     }
@@ -7896,10 +7854,7 @@ private struct Compiler {
         );
         const value = compileExpression(operand);
         const index = compileSizeConstant(0);
-        _code ~= Instruction(
-            indexStoreOp(elementSize), value.offset, offset, index,
-            cast(ushort) elementSize,
-        );
+        emitIndexStore(value.offset, offset, index, elementSize);
         return offset;
     }
 
@@ -8292,9 +8247,7 @@ private struct Compiler {
         in ushort indexSlot,
     ) {
         const inner = allocateBytes(sliceDescriptorSize, size_t.sizeof);
-        _code ~= Instruction(
-            Op.indexLoad16, inner, descriptor.offset, indexSlot,
-        );
+        emitIndexLoad(inner, descriptor.offset, indexSlot, sliceDescriptorSize);
         const pointer =
             allocateBytes(cast(uint) size_t.sizeof, size_t.sizeof);
         _code ~= Instruction(
@@ -10494,10 +10447,7 @@ private struct Compiler {
         compileCall(call, receiver);
 
         const current = allocateBytes(elementSize, elementSize);
-        _code ~= Instruction(
-            indexLoadOp(elementSize), current, descriptor.offset, indexSlot,
-            cast(ushort) elementSize,
-        );
+        emitIndexLoad(current, descriptor.offset, indexSlot, elementSize);
 
         const rhsValue = compileExpression(rhs);
         if (!isCompoundIntegerScalar(elementType) ||
@@ -10535,10 +10485,7 @@ private struct Compiler {
                 Op.copy, current, destination, cast(ushort) elementSize,
             );
 
-        _code ~= Instruction(
-            indexStoreOp(elementSize), current, descriptor.offset, indexSlot,
-            cast(ushort) elementSize,
-        );
+        emitIndexStore(current, descriptor.offset, indexSlot, elementSize);
 
         auto result = new Operand;
         *result = Operand(current, elementType);
@@ -10591,10 +10538,7 @@ private struct Compiler {
         compileCall(call, receiver);
 
         const current = allocateBytes(elementSize, elementSize);
-        _code ~= Instruction(
-            indexLoadOp(elementSize), current, descriptor.offset, indexSlot,
-            cast(ushort) elementSize,
-        );
+        emitIndexLoad(current, descriptor.offset, indexSlot, elementSize);
 
         const result = allocate(elementType);
         _code ~= Instruction(
@@ -10610,10 +10554,7 @@ private struct Compiler {
             : (eightByte ? Op.addInt8 : Op.addInt4);
         _code ~= Instruction(stepOp, current, current, increment.offset);
 
-        _code ~= Instruction(
-            indexStoreOp(elementSize), current, descriptor.offset, indexSlot,
-            cast(ushort) elementSize,
-        );
+        emitIndexStore(current, descriptor.offset, indexSlot, elementSize);
 
         auto op = new Operand;
         *op = Operand(result, elementType);
@@ -10664,10 +10605,7 @@ private struct Compiler {
         compileCall(call, receiver);
 
         const current = allocateBytes(elementSize, elementSize);
-        _code ~= Instruction(
-            indexLoadOp(elementSize), current, descriptor.offset, indexSlot,
-            cast(ushort) elementSize,
-        );
+        emitIndexLoad(current, descriptor.offset, indexSlot, elementSize);
 
         const rhsValue = compileExpression(assign.e2);
         if (!isCompoundIntegerScalar(elementType) ||
@@ -10705,10 +10643,7 @@ private struct Compiler {
                 Op.copy, current, destination, cast(ushort) elementSize,
             );
 
-        _code ~= Instruction(
-            indexStoreOp(elementSize), current, descriptor.offset, indexSlot,
-            cast(ushort) elementSize,
-        );
+        emitIndexStore(current, descriptor.offset, indexSlot, elementSize);
 
         auto result = new Operand;
         *result = Operand(current, elementType);
@@ -11418,12 +11353,8 @@ private struct Compiler {
             ));
 
         const elementSize = size(descriptor.elementType);
-        _code ~= Instruction(
-            indexStoreOp(elementSize),
-            value.offset,
-            descriptor.offset,
-            indexSlot.offset,
-            cast(ushort) elementSize,
+        emitIndexStore(
+            value.offset, descriptor.offset, indexSlot.offset, elementSize,
         );
 
         auto result = new Operand;
@@ -12527,11 +12458,9 @@ private struct Compiler {
                 value.offset,
                 cast(ushort) elementSize,
             );
-            _code ~= Instruction(
-                Op.indexStore16,
-                outerElement.inner.offset,
-                outerElement.outerOffset,
-                outerElement.indexSlot,
+            emitIndexStore(
+                outerElement.inner.offset, outerElement.outerOffset,
+                outerElement.indexSlot, sliceDescriptorSize,
             );
             return Operand(
                 outerElement.inner.offset, outerElement.inner.elementType,
@@ -12711,9 +12640,7 @@ private struct Compiler {
 
         const indexSlot = compileExpression(index.e2);
         const inner = allocateBytes(sliceDescriptorSize, size_t.sizeof);
-        _code ~= Instruction(
-            Op.indexLoad16, inner, outer.offset, indexSlot.offset,
-        );
+        emitIndexLoad(inner, outer.offset, indexSlot.offset, sliceDescriptorSize);
 
         auto result = new OuterArrayElement;
         *result = OuterArrayElement(
@@ -13023,12 +12950,8 @@ private struct Compiler {
         _activeDollarLength = savedDollarLength;
         const elementSize =
             dynamicArrayElementSize(index.e1.type, descriptor.elementType);
-        _code ~= Instruction(
-            indexStoreOp(elementSize),
-            valueOffset,
-            descriptor.offset,
-            indexSlot.offset,
-            cast(ushort) elementSize,
+        emitIndexStore(
+            valueOffset, descriptor.offset, indexSlot.offset, elementSize,
         );
 
         auto result = new Operand;
@@ -13055,10 +12978,7 @@ private struct Compiler {
         const indexSlot = compileExpression(index.e2).offset;
 
         const current = allocateBytes(elementSize, elementSize);
-        _code ~= Instruction(
-            indexLoadOp(elementSize), current, descriptor.offset, indexSlot,
-            cast(ushort) elementSize,
-        );
+        emitIndexLoad(current, descriptor.offset, indexSlot, elementSize);
 
         const rhsValue = compileExpression(rhs);
         if (!isCompoundIntegerScalar(elementType) ||
@@ -13094,10 +13014,7 @@ private struct Compiler {
                 cast(ushort) elementSize,
             );
 
-        _code ~= Instruction(
-            indexStoreOp(elementSize), current, descriptor.offset, indexSlot,
-            cast(ushort) elementSize,
-        );
+        emitIndexStore(current, descriptor.offset, indexSlot, elementSize);
 
         auto result = new Operand;
         *result = Operand(current, elementType);
@@ -13865,13 +13782,7 @@ private struct Compiler {
                 cast(ushort) elementSize,
             );
             const index = compileSizeConstant(elementIndex);
-            _code ~= Instruction(
-                indexStoreOp(elementSize),
-                value,
-                offset,
-                index,
-                cast(ushort) elementSize,
-            );
+            emitIndexStore(value, offset, index, elementSize);
         }
     }
 
@@ -14743,12 +14654,9 @@ private struct Compiler {
         } else
             _code ~= Instruction(Op.call, index, argumentArea, destination);
         foreach (writeBack; dynamicArrayRefWriteBacks)
-            _code ~= Instruction(
-                indexStoreOp(writeBack.elementSize),
-                writeBack.valueOffset,
-                writeBack.descriptorOffset,
-                writeBack.indexOffset,
-                writeBack.elementSize,
+            emitIndexStore(
+                writeBack.valueOffset, writeBack.descriptorOffset,
+                writeBack.indexOffset, writeBack.elementSize,
             );
         foreach (writeBack; structPointerRefWriteBacks)
             _code ~= writeBack.isPointerValue
@@ -14820,10 +14728,8 @@ private struct Compiler {
                 structReceiver.writeBackPointerSize,
             );
         if (hasStructReceiver && structReceiver.writeBackElementSize != 0)
-            _code ~= Instruction(
-                indexStoreOp(structReceiver.writeBackElementSize),
-                structReceiver.offset,
-                structReceiver.writeBackDescriptorOffset,
+            emitIndexStore(
+                structReceiver.offset, structReceiver.writeBackDescriptorOffset,
                 structReceiver.writeBackIndexOffset,
                 structReceiver.writeBackElementSize,
             );
@@ -15229,10 +15135,7 @@ private struct Compiler {
         );
         const exitJump = emitJumpIfFalse(Operand(condition, ScalarType.bool_));
 
-        _code ~= Instruction(
-            indexLoadOp(elementSize), variableSlot, elements, index,
-            cast(ushort) elementSize,
-        );
+        emitIndexLoad(variableSlot, elements, index, elementSize);
 
         size_t[] bodyExits;
         auto previousExits = _applyBodyExits;
@@ -15763,12 +15666,8 @@ private struct Compiler {
                 cast(ushort) elementSize,
             );
             const indexSlot = compileExpression(index.e2);
-            _code ~= Instruction(
-                indexStoreOp(elementSize),
-                value,
-                descriptor.offset,
-                indexSlot.offset,
-                cast(ushort) elementSize,
+            emitIndexStore(
+                value, descriptor.offset, indexSlot.offset, elementSize,
             );
 
             auto result = new Operand;
@@ -15808,12 +15707,8 @@ private struct Compiler {
                     runStructMethod(value, postblit);
 
                 const indexSlot = compileExpression(index.e2);
-                _code ~= Instruction(
-                    indexStoreOp(elementSize),
-                    value,
-                    descriptor.offset,
-                    indexSlot.offset,
-                    cast(ushort) elementSize,
+                emitIndexStore(
+                    value, descriptor.offset, indexSlot.offset, elementSize,
                 );
 
                 auto result = new Operand;
@@ -15839,12 +15734,8 @@ private struct Compiler {
             );
 
             const indexSlot = compileExpression(index.e2);
-            _code ~= Instruction(
-                indexStoreOp(elementSize),
-                value,
-                descriptor.offset,
-                indexSlot.offset,
-                cast(ushort) elementSize,
+            emitIndexStore(
+                value, descriptor.offset, indexSlot.offset, elementSize,
             );
 
             auto result = new Operand;
@@ -16127,13 +16018,7 @@ private struct Compiler {
 
         const indexOffset = compileExpression(index).offset;
         const valueOffset = allocateBytes(elementSize, elementSize);
-        _code ~= Instruction(
-            indexLoadOp(elementSize),
-            valueOffset,
-            descriptor.offset,
-            indexOffset,
-            cast(ushort) elementSize,
-        );
+        emitIndexLoad(valueOffset, descriptor.offset, indexOffset, elementSize);
         _code ~= Instruction(
             Op.loadConstant,
             slot,
@@ -16983,14 +16868,8 @@ private struct Compiler {
         );
         const exitJump = emitJumpIfFalse(Operand(condition, ScalarType.bool_));
 
-        _code ~= Instruction(
-            indexLoadOp(keyElementSize), keySlot, keys.offset, index,
-            cast(ushort) keyElementSize,
-        );
-        _code ~= Instruction(
-            indexLoadOp(valueElementSize), valueSlot, values.offset, index,
-            cast(ushort) valueElementSize,
-        );
+        emitIndexLoad(keySlot, keys.offset, index, keyElementSize);
+        emitIndexLoad(valueSlot, values.offset, index, valueElementSize);
 
         size_t[] bodyExits;
         auto previousExits = _applyBodyExits;
@@ -18473,9 +18352,7 @@ private struct Compiler {
 
             const indexSlot = compileSizeConstant(rowIndex);
             const otherRow = allocateBytes(sliceDescriptorSize, size_t.sizeof);
-            _code ~= Instruction(
-                Op.indexLoad16, otherRow, otherDescriptor, indexSlot,
-            );
+            emitIndexLoad(otherRow, otherDescriptor, indexSlot, sliceDescriptorSize);
 
             const rowEqual = allocateBytes(1, 1);
             _code ~= Instruction(
@@ -18628,6 +18505,32 @@ private struct Compiler {
         if (_frameOffset > _peakFrameOffset)
             _peakFrameOffset = _frameOffset;
         return cast(ushort) offset;
+    }
+
+    // The `indexLoad*`/`indexStore*` family's emit helpers: `width` is a
+    // required parameter, not a hint, so a call site cannot build one of
+    // these instructions without stating its element width (structural
+    // consolidation queue item 1, `ai/plans/bytecode.md`). Both the opcode
+    // (via `indexLoadOp`/`indexStoreOp`) and the instruction's own width
+    // operand are derived from the same `width` value, so `indexLoadN`/
+    // `indexStoreN` -- the only forms that actually read that operand at run
+    // time -- can never see it silently defaulted to zero.
+    private void emitIndexLoad(
+        in ushort destination, in ushort arrayBase, in ushort index,
+        in uint width,
+    ) @safe pure {
+        _code ~= Instruction(
+            indexLoadOp(width), destination, arrayBase, index,
+            cast(ushort) width,
+        );
+    }
+
+    private void emitIndexStore(
+        in ushort value, in ushort arrayBase, in ushort index, in uint width,
+    ) @safe pure {
+        _code ~= Instruction(
+            indexStoreOp(width), value, arrayBase, index, cast(ushort) width,
+        );
     }
 
     private ushort constantIndex(in ulong bits) @safe pure {
