@@ -876,12 +876,13 @@ accessors must precede the descriptor-order flip (§ Memory model).
    with nothing enforcing bijectivity; `ResultType` is constructed
    positionally — both still open. Slice-descriptor field-offset accessors
    (`sliceDescriptorPtrOffset`/`sliceDescriptorLengthOffset`) landed in
-   program.d and are consumed by reify.d (both descriptor reads) and
-   machine.d's `writeSliceDescriptor`/`writeSliceDescriptorPointer`;
-   compiler.d's own inline `+ size_t.sizeof` field arithmetic is
-   unconverted, left for a follow-up. The descriptor-order flip (§ Memory
-   model) now needs program.d's accessors plus compiler.d's remaining
-   inline arithmetic updated together.
+   program.d and now back every genuine `{ptr, length}` descriptor site in
+   reify.d, machine.d, and compiler.d; compiler.d's remaining inline
+   `+ size_t.sizeof` sites are unrelated two-word shapes (delegate
+   `{functionIndex, context}` pairs, slice/2D-array `{lo, hi}`/`{rows, cols}`
+   bound pairs), not descriptors, so nothing there is left to convert. The
+   descriptor-order flip (§ Memory model) can now proceed on program.d's
+   accessors alone.
 
 Reviewed and declined (2026-08): a bytecode-core disassembler with
 instruction-level emission pins — not worth tackling; do not re-propose.

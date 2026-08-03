@@ -38,7 +38,8 @@ private struct Compiler {
         RefParameter, ResultType, ScalarType, StructDisplayField,
         VirtualFunction, isSigned,
         nativeArgumentSlotSize, noCatchObjectField, noExceptionClass,
-        noOutParameterOffset, size, sliceDescriptorSize;
+        noOutParameterOffset, size, sliceDescriptorLengthOffset,
+        sliceDescriptorSize;
     import dmd.declaration: VarDeclaration;
     import dmd.expression:
         AddAssignExp, AddrExp, ArrayLengthExp, ArrayLiteralExp,
@@ -6728,7 +6729,7 @@ private struct Compiler {
             );
             _code ~= Instruction(
                 Op.copy,
-                cast(ushort) (destination + size_t.sizeof),
+                cast(ushort) sliceDescriptorLengthOffset(destination),
                 countSlot,
                 cast(ushort) size_t.sizeof,
             );
@@ -7372,7 +7373,7 @@ private struct Compiler {
         if (sourceElementSize == destinationElementSize)
             return;
 
-        const lengthOffset = cast(ushort) (destination + size_t.sizeof);
+        const lengthOffset = cast(ushort) sliceDescriptorLengthOffset(destination);
         const numerator = compileSizeConstant(sourceElementSize);
         const denominator = compileSizeConstant(destinationElementSize);
         _code ~= Instruction(
@@ -11944,10 +11945,10 @@ private struct Compiler {
 
             _program.literalBlocks ~= literalBytes;
             const pointer = cast(size_t) _program.literalBlocks[$ - 1].ptr;
-            _program.moduleData[offset .. offset + size_t.sizeof] =
+            _program.moduleData[offset .. sliceDescriptorLengthOffset(offset)] =
                 nativeToLittleEndian(pointer);
             _program.moduleData[
-                offset + size_t.sizeof .. offset + sliceDescriptorSize
+                sliceDescriptorLengthOffset(offset) .. offset + sliceDescriptorSize
             ] = nativeToLittleEndian(cast(size_t) literalCount);
         }
         return declaration in _moduleDynamicArrayVariables;
@@ -12023,10 +12024,12 @@ private struct Compiler {
                 const rowPointer =
                     cast(size_t) _program.literalBlocks[$ - 1].ptr;
                 const rowOffset = elementIndex * sliceDescriptorSize;
-                bytes[rowOffset .. rowOffset + size_t.sizeof] =
+                bytes[rowOffset .. sliceDescriptorLengthOffset(rowOffset)] =
                     nativeToLittleEndian(rowPointer);
-                bytes[rowOffset + size_t.sizeof .. rowOffset + sliceDescriptorSize] =
-                    nativeToLittleEndian(cast(size_t) rowCount);
+                bytes[
+                    sliceDescriptorLengthOffset(rowOffset)
+                        .. rowOffset + sliceDescriptorSize
+                ] = nativeToLittleEndian(cast(size_t) rowCount);
             }
             return bytes;
         }
@@ -13645,7 +13648,7 @@ private struct Compiler {
         );
         _code ~= Instruction(
             Op.copy,
-            cast(ushort) (sourceDescriptor + size_t.sizeof),
+            cast(ushort) sliceDescriptorLengthOffset(sourceDescriptor),
             compileSizeConstant(length),
             cast(ushort) size_t.sizeof,
         );
@@ -16005,7 +16008,7 @@ private struct Compiler {
                 _code ~= Instruction(Op.frameAddress, slot, *source);
                 _code ~= Instruction(
                     Op.loadConstant,
-                    cast(ushort) (slot + size_t.sizeof),
+                    cast(ushort) sliceDescriptorLengthOffset(slot),
                     constantIndex(count),
                     cast(ushort) size_t.sizeof,
                 );
@@ -18461,7 +18464,7 @@ private struct Compiler {
             _code ~= Instruction(Op.frameAddress, view, rowOffset);
             _code ~= Instruction(
                 Op.loadConstant,
-                cast(ushort) (view + size_t.sizeof),
+                cast(ushort) sliceDescriptorLengthOffset(view),
                 constantIndex(rowLength),
                 cast(ushort) size_t.sizeof,
             );
