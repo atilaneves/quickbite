@@ -644,9 +644,50 @@ row reaches them:
   arithmetic) rather than reusing the whole-block copy `tryStructField`
   materialises for plain field access. A non-default struct initializer still
   falls through to "Unsupported variable in bytecode core". Module-level
-  `Tsarray`/`Taarray`/`Tdelegate` variables and complex-double dataseg
-  variables remain entirely unsupported (`moduleScalarVariableOrNull` still
-  declines them). A module-level pointer (`int* p;`) is now supported: it is
+  `Taarray`/`Tdelegate` variables and complex-double dataseg variables remain
+  entirely unsupported (`moduleScalarVariableOrNull` still declines them). A
+  module-level fixed-size static array (`int[3] arr;`) is now supported for a
+  scalar-element array (`moduleStaticArrayVariableOrNull`, the Tsarray
+  counterpart of `ModuleStructVariable`): its `N * elementSize` bytes live
+  inline in `moduleData`, default-initialized to zero (matching D's default)
+  or, for a constant array-literal initializer (`int[3] arr = [1, 2, 3];`),
+  each element's own bytes (`moduleStaticArrayLiteralInitializerBytes`,
+  normalising the `ArrayInitializer`-vs-`ExpInitializer` AST quirk the same
+  way `moduleDynamicArrayVariableOrNull` already does, by reusing its
+  `moduleDynamicArrayInitializerExpressionOrNull` directly). A
+  compile-time-constant-index element read or write
+  (`staticArrayBaseOffset`'s new `VarExp` branch) materialises the whole
+  block into a fresh frame slot (`Op.loadModule`) and writes the whole block
+  back after any write (`Op.storeModule`) -- there is no narrower "field" to
+  isolate the way there is for a module struct's own field, since the
+  touched element IS (a byte range of) the whole variable. A *runtime*-index
+  element read or write (`tryStaticArrayRuntimeAddress`'s new `VarExp`
+  branch) instead resolves the element's real dataseg address directly via
+  `Op.moduleAddress` (`moduleAddressOperand`, the module counterpart of
+  `frameAddressOperand`) and reads/writes through it, needing no whole-block
+  copy or writeback at all. A whole-array assignment (`arr = [1, 2, 3];`) or
+  whole-array read (`int[3] copy = arr;`, or `arr` as the right-hand side of
+  another module variable's assignment) goes through the same
+  materialise/(for assignment)writeback pattern, scoped narrowly to its own
+  call sites (`compileAssignment`'s new dedicated branch,
+  `compileStaticArrayValueInto`'s new `VarExp` branch) rather than taught to
+  the shared `staticArrayOffsetOf` helper itself, which many other callers
+  (`ref` local binding among them) treat as real aliasable storage rather
+  than a throwaway read -- aliasing a `ref` local, taking `&arr[i]`, or
+  viewing `arr` as a dynamic-array slice still fall through to their
+  pre-existing "Unsupported" diagnostics rather than silently reading or
+  writing a throwaway copy, an intentionally scoped-out gap for a later PR,
+  not attempted here. `.length` was already a compile-time constant
+  regardless of storage and needed no new support. A struct-element,
+  static-array-element (`int[3][3]`), dynamic-array-element (`int[3][]`), or
+  delegate-element static array -- and complex-double, matching
+  `moduleScalarVariableOrNull`'s own decline list -- still declines
+  registration, scoped out of this fix. `Interpreter` declines a
+  module-level static-array element assignment outright ("Unsupported
+  interpreter assignment target"), a separate backend from the bytecode core
+  this fix targets, never previously exercised for this shape
+  (`dataseg.moduleStaticArrayElementReadWriteAndWholeArrayCopy`, `expressions.d`).
+  A module-level pointer (`int* p;`) is now supported: it is
   just a `size_t`-width value, so `moduleScalarVariableOrNull` registers it
   through the same generic scalar path as `int`/`float`/etc (`scalarType`
   already mapped `Tpointer` to `ScalarType.ulong_`); the struct gained an

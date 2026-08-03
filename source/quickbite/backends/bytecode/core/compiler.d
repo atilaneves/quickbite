@@ -177,6 +177,7 @@ private struct Compiler {
     private ModuleDynamicArrayVariable[VarDeclaration]
         _moduleDynamicArrayVariables;
     private ModuleStructVariable[VarDeclaration] _moduleStructVariables;
+    private ModuleStaticArrayVariable[VarDeclaration] _moduleStaticArrayVariables;
     // A `Tarray` class field's shared array-literal default, computed once
     // per field and reused at every `new C()` site: see
     // `classFieldArraySharedDefaultOrNull`.
@@ -4449,6 +4450,26 @@ private struct Compiler {
             return true;
         }
 
+        // `T[N] dest = arr;` where `arr` is a module-level static-array
+        // variable: materialise its whole block and copy it in, the module
+        // counterpart of the frame-to-frame copy above. Scoped narrowly to
+        // this one call site (rather than taught to `staticArrayOffsetOf`
+        // itself, which many other callers -- `ref` binding among them --
+        // treat as real aliasable storage, not a throwaway read) since this
+        // materialised copy is never written back.
+        if (auto variable = source.isVarExp)
+            if (auto declaration = variable.var.isVarDeclaration)
+                if (auto moduleVariable =
+                        moduleStaticArrayVariableOrNull(declaration)) {
+                    const materialized = materializeModuleStaticArray(
+                        declaration.type, *moduleVariable,
+                    );
+                    _code ~= Instruction(
+                        Op.copy, offset, materialized, cast(ushort) totalSize,
+                    );
+                    return true;
+                }
+
         // `T[N] dest = c.arr`: the class-field counterpart of the frame-to-
         // frame copy above -- `arr`'s storage lives in the class's own heap
         // block, addressed through a real runtime pointer
@@ -8317,6 +8338,19 @@ private struct Compiler {
                 if (auto offset = declaration in _staticArrayLocals)
                     return frameAddressOperand(*offset);
 
+        // A module-level static-array variable: unlike the whole-block
+        // materialise/writeback `staticArrayBaseOffset` uses for a
+        // compile-time-constant index, a *runtime* index needs a real
+        // address to read or write through directly -- `Op.moduleAddress`
+        // already gives one (the same opcode `tryAddressOfSymbol`/
+        // `tryAddressOfLocal` use for `&moduleScalar`), so this needs no
+        // separate writeback bookkeeping at all.
+        if (auto variable = expression.isVarExp)
+            if (auto declaration = variable.var.isVarDeclaration)
+                if (auto moduleVariable =
+                        moduleStaticArrayVariableOrNull(declaration))
+                    return moduleAddressOperand(moduleVariable.offset);
+
         if (auto dot = expression.isDotVarExp)
             if (auto field = tryStructField(dot))
                 return frameAddressOperand(field.offset);
@@ -8343,6 +8377,18 @@ private struct Compiler {
     private Operand* frameAddressOperand(in ushort offset) {
         const pointer = allocateBytes(cast(uint) size_t.sizeof, size_t.sizeof);
         _code ~= Instruction(Op.frameAddress, pointer, offset);
+        auto result = new Operand;
+        *result =
+            Operand(pointer, ScalarType.ulong_, true, ScalarType.void_);
+        return result;
+    }
+
+    // The real runtime address of a module-level static array's own
+    // dataseg storage, the module counterpart of `frameAddressOperand`
+    // above (`Op.moduleAddress` instead of `Op.frameAddress`).
+    private Operand* moduleAddressOperand(in ushort offset) {
+        const pointer = allocateBytes(cast(uint) size_t.sizeof, size_t.sizeof);
+        _code ~= Instruction(Op.moduleAddress, pointer, offset);
         auto result = new Operand;
         *result =
             Operand(pointer, ScalarType.ulong_, true, ScalarType.void_);
@@ -10824,6 +10870,29 @@ private struct Compiler {
                     tryClassStaticArrayFieldElementAssign(index, assign.e2))
                 return *store;
 
+        // `arr = rhs;` for a whole module-level static-array variable
+        // (`int[3] arr; arr = [1, 2, 3];`): block-copy the new value into a
+        // fresh frame slot the same way the plain-local branch below does,
+        // then copy the whole materialised block back to `arr`'s own
+        // dataseg storage via `Op.storeModule`. Checked first (and ahead of
+        // `staticArrayOffsetOf`, which does not resolve a module variable at
+        // all): a plain local's own frame slot already *is* its real
+        // storage, so only the module case needs this extra writeback.
+        if (assign.e1.isVarExp !is null)
+            if (auto declaration = assign.e1.isVarExp.var.isVarDeclaration)
+                if (auto moduleVariable =
+                        moduleStaticArrayVariableOrNull(declaration)) {
+                    const offset = allocateStructBlock(assign.e1.type);
+                    if (compileStaticArrayValueInto(
+                            offset, assign.e1.type, assign.e2)) {
+                        _code ~= Instruction(
+                            Op.storeModule, offset, moduleVariable.offset,
+                            moduleVariable.size,
+                        );
+                        return Operand(offset, ScalarType.void_);
+                    }
+                }
+
         // `arr = rhs;` for a whole static-array-typed local -- including a
         // ref local aliased to one (`staticArrayOffsetOf` resolves both the
         // same way, per `_staticArrayLocals`): block-copy the new value into
@@ -12138,6 +12207,159 @@ private struct Compiler {
         return declaration in _moduleStructVariables;
     }
 
+    // A module-level fixed-size static array (`int[3] arr;`) reserves
+    // `Type.size()` bytes at `Type.alignsize()` in `_program.moduleData`,
+    // the Tsarray counterpart of `ModuleStructVariable` above. Unlike
+    // `ModuleDynamicArrayVariable` (a 16-byte descriptor pointing at heap
+    // storage), the array's own `N * elementSize` bytes live inline in
+    // `moduleData`, exactly like a local static array's frame slot: element
+    // access materialises the whole block into a fresh frame slot
+    // (`Op.loadModule`, see `materializeModuleStaticArray`) and writes it
+    // back in full (`Op.storeModule`) after any write, the same whole-block
+    // pattern `tryStructField`'s module branch already uses for a struct
+    // field -- there is no narrower "field" to isolate here, since the
+    // array element written IS (a byte range of) the whole variable.
+    // Scoped to a scalar element type for now (`int[3]`, not `S[3]`,
+    // `int[3][3]`, `int[3][]`, or a delegate/`Taarray` element): those
+    // shapes decline registration, falling through to the pre-existing
+    // "Unsupported variable in bytecode core" error, matching
+    // `moduleScalarVariableOrNull`'s own decline list for complex-double.
+    private ModuleStaticArrayVariable* moduleStaticArrayVariableOrNull(
+        VarDeclaration declaration,
+    ) {
+        if (declaration is null || !declaration.isDataseg ||
+            declaration.isImmutable)
+        {
+            return null;
+        }
+
+        import dmd.astenums: TY;
+
+        if (declaration.type.toBasetype.ty != TY.Tsarray)
+            return null;
+
+        auto elementType = declaration.type.toBasetype.nextOf;
+        switch (elementType.toBasetype.ty) with (TY) {
+            case Tstruct, Tsarray, Tarray, Taarray, Tdelegate:
+                return null;
+            default:
+                break;
+        }
+        if (isComplexDoubleType(elementType))
+            return null;
+
+        if (auto existing = declaration in _moduleStaticArrayVariables)
+            return existing;
+
+        const size = cast(ushort) staticArraySize(declaration.type);
+        // A plain array literal (`[1, 2, 3]`) parses as an
+        // `ArrayInitializer`, not an `ExpInitializer`, so this reuses
+        // `moduleDynamicArrayInitializerExpressionOrNull`'s
+        // `initializerToExpression` normalisation (its logic is entirely
+        // generic over the declaration's type, despite the array-specific
+        // name) rather than `moduleVariableHasDefaultInitializer`, which
+        // would misclassify a literal as "no initializer" and silently drop
+        // its values -- the same AST-quirk bug `moduleDynamicArrayVariableOrNull`
+        // documents fixing for the dynamic-array case.
+        auto initializerExpr =
+            moduleDynamicArrayInitializerExpressionOrNull(declaration);
+        const hasDefaultInitializer = initializerExpr is null ||
+            initializerExpr.isNullExp !is null;
+
+        ubyte[] literalBytes;
+        if (!hasDefaultInitializer) {
+            literalBytes = moduleStaticArrayLiteralInitializerBytes(
+                initializerExpr.isArrayLiteralExp, elementType, size,
+            );
+            if (literalBytes is null)
+                return null;
+        }
+
+        const offset =
+            allocateModuleBytes(size, staticArrayAlign(declaration.type));
+        _moduleStaticArrayVariables[declaration] =
+            ModuleStaticArrayVariable(offset, size);
+        if (!hasDefaultInitializer)
+            _program.moduleData[offset .. offset + size] = literalBytes[];
+        return declaration in _moduleStaticArrayVariables;
+    }
+
+    // Compile-time bytes for a module-level static array's non-null,
+    // non-default initializer (`int[3] arr = [1, 2, 3];`), when it is an
+    // array literal whose every element is a constant scalar expression --
+    // the static-array counterpart of `writeStructLiteralFieldBytes`'s
+    // per-field layout, laid out at each element's own `index * elementSize`
+    // offset instead of a field's DMD-computed offset. Returns `null`
+    // (declining registration, same as the default-initializer path) when
+    // the element count does not exactly fill the array, an element is
+    // missing, or any element is not a constant scalar expression.
+    private ubyte[] moduleStaticArrayLiteralInitializerBytes(
+        ArrayLiteralExp literal,
+        Type elementType,
+        in ushort totalSize,
+    ) {
+        import std.bitmanip: nativeToLittleEndian;
+
+        if (literal is null || literal.elements is null)
+            return null;
+
+        const elementSize = cast(uint) staticArraySize(elementType);
+        if (elementSize == 0 ||
+            literal.elements.length * elementSize != totalSize)
+        {
+            return null;
+        }
+
+        const elementScalarType = scalarType(elementType);
+
+        ubyte[] bytes;
+        bytes.length = totalSize;
+        foreach (index, element; *literal.elements) {
+            if (element is null)
+                return null;
+
+            const elementOffset = index * elementSize;
+            if (auto integer = element.isIntegerExp) {
+                const raw = nativeToLittleEndian(cast(ulong) integer.toInteger);
+                bytes[elementOffset .. elementOffset + elementSize] =
+                    raw[0 .. elementSize];
+                continue;
+            }
+            if (auto real_ = element.isRealExp) {
+                if (elementScalarType == ScalarType.real_) {
+                    bytes[elementOffset .. elementOffset + elementSize] =
+                        realBytes(real_)[];
+                } else {
+                    const raw =
+                        nativeToLittleEndian(floatBits(real_, elementScalarType));
+                    bytes[elementOffset .. elementOffset + elementSize] =
+                        raw[0 .. elementSize];
+                }
+                continue;
+            }
+
+            return null;
+        }
+        return bytes;
+    }
+
+    // Materialise a module-level static-array variable's whole inline block
+    // from `_program.moduleData` into a fresh frame slot, returning the
+    // frame offset -- shared by `staticArrayBaseOffset` (element access,
+    // which also tracks a writeback record for a subsequent write) and
+    // `compileStaticArrayValueInto` (a whole-value read, which never writes
+    // through the returned offset).
+    private ushort materializeModuleStaticArray(
+        Type type, in ModuleStaticArrayVariable moduleVariable,
+    ) {
+        const structOffset = allocateStructBlock(type);
+        _code ~= Instruction(
+            Op.loadModule, structOffset, moduleVariable.offset,
+            moduleVariable.size,
+        );
+        return structOffset;
+    }
+
     private bool moduleVariableHasDefaultInitializer(
         VarDeclaration declaration,
     ) {
@@ -13224,6 +13446,37 @@ private struct Compiler {
                 if (auto existing = declaration in _staticArrayLocals)
                     return *existing;
 
+        // A module-level (`__gshared`/`static`) static-array variable
+        // (`int[3] arr;`): materialise the whole inline block into a fresh
+        // frame slot, the Tsarray counterpart of `tryStructField`'s
+        // module-struct branch below. A write through the returned offset
+        // writes the *whole* block back through `Op.storeModule`
+        // (`writeBackStructField`'s `writeBackThroughModule` branch) --
+        // unlike a struct field, there is no narrower sub-range to isolate,
+        // since the touched element IS (a byte range of) the whole
+        // variable.
+        if (auto variable = expression.isVarExp)
+            if (auto declaration = variable.var.isVarDeclaration)
+                if (auto moduleVariable =
+                        moduleStaticArrayVariableOrNull(declaration)) {
+                    const structOffset = materializeModuleStaticArray(
+                        declaration.type, *moduleVariable,
+                    );
+                    auto result = new StructField;
+                    *result = StructField(
+                        structOffset,
+                        declaration.type,
+                        false,
+                        structOffset,
+                        0,
+                        moduleVariable.size,
+                        true,
+                        moduleVariable.offset,
+                    );
+                    writeback = result;
+                    return structOffset;
+                }
+
         if (auto index = expression.isIndexExp) {
             auto located = locateStaticArrayElement(index);
             writeback = located.writeback;
@@ -13277,7 +13530,8 @@ private struct Compiler {
 
         if (auto variable = expression.isVarExp)
             if (auto declaration = variable.var.isVarDeclaration)
-                return (declaration in _staticArrayLocals) !is null;
+                return (declaration in _staticArrayLocals) !is null ||
+                    moduleStaticArrayVariableOrNull(declaration) !is null;
 
         if (auto index = expression.isIndexExp)
             return indexesStaticArray(index.e1);
@@ -19696,6 +19950,14 @@ private struct ClassFieldArrayDefault {
 // storage in `_program.moduleData`, the struct counterpart of
 // `ModuleScalarVariable`.
 private struct ModuleStructVariable {
+    ushort offset;
+    ushort size;
+}
+
+// A module-level (`__gshared`/`static`) fixed-size static-array variable's
+// own inline block storage in `_program.moduleData`, the Tsarray
+// counterpart of `ModuleStructVariable`. See `moduleStaticArrayVariableOrNull`.
+private struct ModuleStaticArrayVariable {
     ushort offset;
     ushort size;
 }

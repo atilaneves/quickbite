@@ -3272,6 +3272,89 @@ static foreach (backend; Matrix!(
     }
 }
 
+// A module-level fixed-size static array (`int[3] arr;`) fell through
+// `moduleScalarVariableOrNull`'s decline list outright ("Tsarray/Taarray/
+// Tdelegate ... variables remain entirely unsupported"). Scoped to a
+// scalar-element static array: constant-index element read/write
+// materialises the whole inline block into a fresh frame slot
+// (`Op.loadModule`) and writes back the whole block after any element
+// write (`Op.storeModule`) -- there is no narrower "field" to isolate the
+// way there is for a module struct's own field, since the touched element
+// IS (a byte range of) the whole variable -- and a whole-array assignment
+// or copy (into/out of a local, or between two module variables) goes
+// through the same materialise/writeback machinery. `.length` is already a
+// compile-time constant regardless of storage, so it needs no new support.
+// `Ctfe` cannot read or write dataseg storage at all. `Interpreter` declines
+// this shape outright ("Unsupported interpreter assignment target") -- a
+// separate backend from the bytecode core this fix targets, never
+// previously exercised for a module-level static array.
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.inexpressible,
+        "CTFE cannot read or write dataseg (__gshared/static) storage"),
+    Omit!(Interpreter, Because.unconfirmed),
+)) {
+    @("dataseg.moduleStaticArrayElementReadWriteAndWholeArrayCopy." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            __gshared int[3] quickbiteDatasegArray;
+            __gshared int[3] quickbiteDatasegArrayLiteral = [10, 20, 30];
+
+            void writeElement(int index, int value) {
+                quickbiteDatasegArray[index] = value;
+            }
+
+            unittest {
+                // Default-initialized to zero, matching D's default.
+                assert(quickbiteDatasegArray[0] == 0);
+                assert(quickbiteDatasegArray[1] == 0);
+                assert(quickbiteDatasegArray[2] == 0);
+                assert(quickbiteDatasegArray.length == 3);
+
+                quickbiteDatasegArray[0] = 5;
+                assert(quickbiteDatasegArray[0] == 5);
+                assert(quickbiteDatasegArray[1] == 0);
+
+                // A write from inside a function call mirrors back to the
+                // module's own authoritative storage, not a throwaway copy.
+                writeElement(1, 7);
+                assert(quickbiteDatasegArray[1] == 7);
+                assert(quickbiteDatasegArray[0] == 5);
+
+                // A constant literal initializer.
+                assert(quickbiteDatasegArrayLiteral[0] == 10);
+                assert(quickbiteDatasegArrayLiteral[1] == 20);
+                assert(quickbiteDatasegArrayLiteral[2] == 30);
+
+                // Whole-array copy into a fresh local.
+                int[3] copy = quickbiteDatasegArray;
+                assert(copy[0] == 5);
+                assert(copy[1] == 7);
+                assert(copy[2] == 0);
+
+                // Mutating the local copy must not affect the module's own
+                // storage (a real block copy, not an alias).
+                copy[0] = 999;
+                assert(quickbiteDatasegArray[0] == 5);
+
+                // Whole-array assignment writes back to the module's own
+                // storage.
+                quickbiteDatasegArray = [1, 2, 3];
+                assert(quickbiteDatasegArray[0] == 1);
+                assert(quickbiteDatasegArray[1] == 2);
+                assert(quickbiteDatasegArray[2] == 3);
+
+                // Whole-array assignment from another module variable.
+                quickbiteDatasegArray = quickbiteDatasegArrayLiteral;
+                assert(quickbiteDatasegArray[0] == 10);
+                assert(quickbiteDatasegArray[1] == 20);
+                assert(quickbiteDatasegArray[2] == 30);
+            }
+        });
+    }
+}
+
 // A module-level struct's own field that is itself a struct
 // (`quickbiteDatasegOuter.inner.x`): the generic base resolver that walks an
 // `outer.inner` chain back to its base had no case for a bare module-struct
