@@ -459,25 +459,15 @@ case still declines two or more levels of nesting (`int[][][]`), a
 struct/static-array element, an empty literal (`[]`), or any non-constant
 element.
 
-Take `a.m[0][0] = 99` next: a class field of type `int[][]`, indexed twice,
-no intervening struct/field dot, throws "Unsupported assignment in bytecode
-core" -- distinct from the already-fixed field-of-an-array-element shapes
-above (`arr[i].fixedField[j] = value`); not yet root-caused to a specific
-dispatch function.
-
-A prior attempt at this exact row implemented a doubly-indexed write path
-that passed its own new tests in isolation but reproducibly `SIGSEGV`s
-(confirmed via `git stash`/rebuild against the unmodified parent commit:
-clean; with the change: exit 139) partway through an unrelated later test
-in a full `arrays.d`+`structs.d` sweep -- heap/frame-state corruption from
-the new codegen, not a logic bug caught by its own fixture. That attempt
-was reverted uncommitted rather than landed broken. Next attempt: reproduce
-with `bin/ut -s ut.backends.runner.lang.arrays
-ut.backends.runner.lang.structs` and get a real `gdb` backtrace
-(`gdb --args bin/ut -s ...`, `run`, `bt` on crash) before writing new
-codegen -- suspect an out-of-bounds write from an incorrect
-stride/offset when resolving the second index level, or a raw pointer to
-the outer/inner descriptor held across an intervening allocation.
+`a.m[0][0] = 99` (a class field of type `int[][]`, indexed twice, no
+intervening struct/field dot) is fixed: `innerArrayDescriptor` gained a
+narrow, explicitly-`Tarray`-gated branch (`dynamicArrayFieldDescriptorOrNull`,
+shared with `dynamicArrayDescriptorOrNull`'s own `DotVarExp` dispatch) for a
+class/struct-field base, gated on the field's own declared type rather than
+a blanket recursive call into `dynamicArrayDescriptorOrNull` (which would
+also reach that function's ungated `staticArrayOffsetOf` branch for
+unrelated shapes). Confirmed clean via the full `bin/ut -s
+ut.backends.runner.lang.arrays ut.backends.runner.lang.structs` sweep.
 
 Every `Omit!(Bytecode, ...)` row left in `tests/ut/backends/runner/**` is one
 of the already-documented not-bounded rows above (`file.d:14`,

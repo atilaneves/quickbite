@@ -5649,6 +5649,48 @@ static foreach (backend; Matrix!()) {
     }
 }
 
+// A doubly-indexed *element* write into a class field of array-of-arrays
+// type (`a.m[0][0] = 99`), with no intervening struct/field dot or
+// array-of-structs element unlike every `matrixField` shape above --
+// distinct from the whole-field-literal-assignment shape just above (which
+// never indexes at all) and from the `arr[i].matrixField[j][k]` shapes
+// further up (whose outer base is an array element, not a bare class-typed
+// local). Previously threw "Unsupported assignment in bytecode core":
+// `innerArrayDescriptor`'s outer-array resolution only recognised a plain
+// `VarExp` local, rejecting `a.m`'s `DotVarExp` base outright. Fixed by
+// giving `innerArrayDescriptor` a narrow, explicitly-`Tarray`-gated branch
+// (`dynamicArrayFieldDescriptorOrNull`, shared with
+// `dynamicArrayDescriptorOrNull`'s own `DotVarExp` dispatch) for a
+// class/struct-field base, rather than a blanket recursive call into
+// `dynamicArrayDescriptorOrNull` -- the latter also makes that function's
+// later, ungated `staticArrayOffsetOf` branch reachable for unrelated
+// static-array-of-structs shapes, corrupting
+// `nestedStaticArrayFieldElementOfStructElementAddAssigned`'s stride.
+// Interpreter throws "Unsupported interpreter assignment target." on this
+// shape, the same pre-existing gap as the doubly-indexed siblings above.
+static foreach (backend; Matrix!(
+    Omit!(Interpreter, Because.unconfirmed,
+        "Unsupported interpreter assignment target."),
+)) {
+    @("dynamicArray.classFieldDoublyIndexedElementWritten." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            class C { int[][] m; }
+            unittest {
+                C a = new C();
+                a.m = [[1, 2], [3, 4, 5]];
+                a.m[0][0] = 99;
+                assert(a.m[0][0] == 99);
+                assert(a.m[0][1] == 2);
+                assert(a.m[1][0] == 3);
+                assert(a.m[1][2] == 5);
+            }
+        });
+    }
+}
+
 // A sibling of the five-call-site fix above, in a field-construction path
 // distinct from all five: a constructor-less struct's positional
 // `new S(args)` construction (`initialiseStructFields`), which also called

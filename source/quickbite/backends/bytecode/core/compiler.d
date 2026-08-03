@@ -2974,6 +2974,121 @@ private struct Compiler {
         return *descriptor;
     }
 
+    // `base.field` where `field` resolves to a genuine `Tarray`-typed struct
+    // field, struct-pointer field, or class field: the slice descriptor's
+    // resolution shared by `dynamicArrayDescriptorOrNull`'s own `DotVarExp`
+    // dispatch and `innerArrayDescriptor`'s class/struct-field-base case
+    // (`a.m[0][0] = 99`, where `a.m` is a `DotVarExp` rather than the plain
+    // `VarExp` that case originally required). Deliberately narrower than a
+    // recursive call into `dynamicArrayDescriptorOrNull` itself: it never
+    // reaches that function's later, ungated `staticArrayOffsetOf` branch,
+    // whose `isStaticArrayView` result is only valid for a genuine `Tarray`
+    // element (16-byte descriptor stride), not an inline `Tsarray` one. A
+    // prior attempt generalised via that recursive call and corrupted
+    // `nestedStaticArrayFieldElementOfStructElementAddAssigned` (wrong
+    // stride, `Op.indexLoad16` on a static-array view) -- see the removed
+    // "prior attempt" paragraph in `ai/plans/bytecode.md`'s git history.
+    private DynamicArrayLocal* dynamicArrayFieldDescriptorOrNull(
+        DotVarExp dot,
+    ) {
+        import dmd.astenums: TY;
+
+        // Reject anything but a genuine `Tarray`-typed field via the field
+        // declaration's own static type, before invoking any of the three
+        // resolvers below -- each has a real fallback for a base that
+        // doesn't match its own particular shape, and `tryClassPointerField`
+        // in particular unconditionally `compileExpression(dot.e1)`s as a
+        // last resort, which throws outright for a bare struct/union-typed
+        // base rather than declining cleanly. Reached with a `Tsarray` field
+        // (`int[1][1] bits` in a union) when called from
+        // `innerArrayDescriptor`'s class/struct-field-base branch:
+        // `dynamicArrayDescriptorOrNull`'s own top-level dispatch never hits
+        // this function for a `Tsarray` field because its earlier, ungated
+        // `staticArrayOffsetOf` branch already claims it first, but
+        // `innerArrayDescriptor` calls straight in here, bypassing that
+        // branch entirely (deliberately, per this function's own doc
+        // comment) -- so the same guard `staticArrayOffsetOf`'s ordering
+        // used to provide has to be reinstated explicitly here instead.
+        auto declaredField = dot.var.isVarDeclaration;
+        if (declaredField is null ||
+            declaredField.type.toBasetype.ty != TY.Tarray)
+            return null;
+
+        if (auto field = tryStructField(dot))
+            if (field.type.toBasetype.ty == TY.Tarray) {
+                auto result = new DynamicArrayLocal;
+                *result = DynamicArrayLocal(
+                    field.offset, dynamicArrayElementType(field.type),
+                    arrayElementIsArray(field.type),
+                );
+                result.writeBackStructThroughFrame =
+                    field.writeBackThroughFrame;
+                result.structOffset = field.structOffset;
+                result.structFrameIndexOffset = field.frameIndexOffset;
+                result.structSize = field.structSize;
+                // A module-struct field: `field.moduleOffset` is the
+                // whole struct's own dataseg base (`writeBackStructField`
+                // adds back the field's offset within the struct); mirror
+                // that same arithmetic here so the array's own writeback
+                // lands at the field's own module slot, not the struct's.
+                result.writeBackThroughModule = field.writeBackThroughModule;
+                result.moduleOffset = cast(ushort) (
+                    field.moduleOffset + (field.offset - field.structOffset)
+                );
+                return result;
+            }
+
+        if (auto field = tryStructPointerField(dot))
+            if (field.type.toBasetype.ty == TY.Tarray) {
+                const pointer = structFieldAddress(*field);
+                const offset =
+                    allocateBytes(sliceDescriptorSize, size_t.sizeof);
+                _code ~= Instruction(
+                    Op.pointerLoad16,
+                    offset,
+                    pointer,
+                    compileSizeConstant(0),
+                );
+                auto result = new DynamicArrayLocal;
+                *result = DynamicArrayLocal(
+                    offset,
+                    dynamicArrayElementType(field.type),
+                    arrayElementIsArray(field.type),
+                    true,
+                    pointer,
+                );
+                return result;
+            }
+
+        // `box.field` where the field is a dynamic array (a `string`
+        // included): its slice descriptor lives at `classPointer +
+        // field.offset`, read through the same `Op.pointerLoad16` path as a
+        // struct-pointer field.
+        if (auto field = tryClassPointerField(dot))
+            if (field.type.toBasetype.ty == TY.Tarray) {
+                const pointer = classFieldAddress(*field);
+                const offset =
+                    allocateBytes(sliceDescriptorSize, size_t.sizeof);
+                _code ~= Instruction(
+                    Op.pointerLoad16,
+                    offset,
+                    pointer,
+                    compileSizeConstant(0),
+                );
+                auto result = new DynamicArrayLocal;
+                *result = DynamicArrayLocal(
+                    offset,
+                    dynamicArrayElementType(field.type),
+                    arrayElementIsArray(field.type),
+                    true,
+                    pointer,
+                );
+                return result;
+            }
+
+        return null;
+    }
+
     private DynamicArrayLocal* dynamicArrayDescriptorOrNull(
         Expression expression,
     ) {
@@ -3176,79 +3291,8 @@ private struct Compiler {
         // lives at `base + field.offset`, so indexing, `.length`, element-assign
         // and append reuse the existing dynamic-array machinery on that slot.
         if (auto dot = expression.isDotVarExp)
-            if (auto field = tryStructField(dot))
-                if (field.type.toBasetype.ty == TY.Tarray) {
-                    auto result = new DynamicArrayLocal;
-                    *result = DynamicArrayLocal(
-                        field.offset, dynamicArrayElementType(field.type),
-                        arrayElementIsArray(field.type),
-                    );
-                    result.writeBackStructThroughFrame =
-                        field.writeBackThroughFrame;
-                    result.structOffset = field.structOffset;
-                    result.structFrameIndexOffset = field.frameIndexOffset;
-                    result.structSize = field.structSize;
-                    // A module-struct field: `field.moduleOffset` is the
-                    // whole struct's own dataseg base (`writeBackStructField`
-                    // adds back the field's offset within the struct); mirror
-                    // that same arithmetic here so the array's own writeback
-                    // lands at the field's own module slot, not the struct's.
-                    result.writeBackThroughModule = field.writeBackThroughModule;
-                    result.moduleOffset = cast(ushort) (
-                        field.moduleOffset + (field.offset - field.structOffset)
-                    );
-                    return result;
-                }
-
-        if (auto dot = expression.isDotVarExp)
-            if (auto field = tryStructPointerField(dot))
-                if (field.type.toBasetype.ty == TY.Tarray) {
-                    const pointer = structFieldAddress(*field);
-                    const offset =
-                        allocateBytes(sliceDescriptorSize, size_t.sizeof);
-                    _code ~= Instruction(
-                        Op.pointerLoad16,
-                        offset,
-                        pointer,
-                        compileSizeConstant(0),
-                    );
-                    auto result = new DynamicArrayLocal;
-                    *result = DynamicArrayLocal(
-                        offset,
-                        dynamicArrayElementType(field.type),
-                        arrayElementIsArray(field.type),
-                        true,
-                        pointer,
-                    );
-                    return result;
-                }
-
-        // `box.field` where the field is a dynamic array (a `string`
-        // included): its slice descriptor lives at `classPointer +
-        // field.offset`, read through the same `Op.pointerLoad16` path as a
-        // struct-pointer field.
-        if (auto dot = expression.isDotVarExp)
-            if (auto field = tryClassPointerField(dot))
-                if (field.type.toBasetype.ty == TY.Tarray) {
-                    const pointer = classFieldAddress(*field);
-                    const offset =
-                        allocateBytes(sliceDescriptorSize, size_t.sizeof);
-                    _code ~= Instruction(
-                        Op.pointerLoad16,
-                        offset,
-                        pointer,
-                        compileSizeConstant(0),
-                    );
-                    auto result = new DynamicArrayLocal;
-                    *result = DynamicArrayLocal(
-                        offset,
-                        dynamicArrayElementType(field.type),
-                        arrayElementIsArray(field.type),
-                        true,
-                        pointer,
-                    );
-                    return result;
-                }
+            if (auto result = dynamicArrayFieldDescriptorOrNull(dot))
+                return result;
 
         // `outer[i]` where `outer` is an array-of-arrays (`int[][]`): indexing
         // yields an inner array. Materialise the inner descriptor into a fresh
@@ -3290,26 +3334,38 @@ private struct Compiler {
     // at index `i` into a fresh slot and return a DynamicArrayLocal over it; null
     // if `outer` is not an array-of-arrays local.
     private DynamicArrayLocal* innerArrayDescriptor(IndexExp index) {
+        DynamicArrayLocal* outer;
+
         if (auto variable = index.e1.isVarExp)
             if (auto declaration = variable.var.isVarDeclaration)
-                if (auto outer = declaration in _dynamicArrayLocals)
-                    if (outer.elementIsArray) {
-                        const indexSlot = compileExpression(index.e2);
-                        const offset = allocateBytes(
-                            sliceDescriptorSize, size_t.sizeof,
-                        );
-                        _code ~= Instruction(
-                            Op.indexLoad16,
-                            offset,
-                            outer.offset,
-                            indexSlot.offset,
-                        );
-                        auto result = new DynamicArrayLocal;
-                        *result = DynamicArrayLocal(offset, outer.elementType);
-                        return result;
-                    }
+                if (auto local = declaration in _dynamicArrayLocals)
+                    outer = local;
 
-        return null;
+        // `a.m[i]` where `m` is itself a `Tarray`-typed class/struct field of
+        // array-of-arrays element type (`int[][] m;`): resolve the field's
+        // own descriptor through the same Tarray-gated helper a plain field
+        // read uses, rather than a blanket recursive call into
+        // `dynamicArrayDescriptorOrNull` -- see
+        // `dynamicArrayFieldDescriptorOrNull`'s own comment for why that
+        // would corrupt an unrelated static-array-of-structs stride.
+        if (outer is null)
+            if (auto dot = index.e1.isDotVarExp)
+                outer = dynamicArrayFieldDescriptorOrNull(dot);
+
+        if (outer is null || !outer.elementIsArray)
+            return null;
+
+        const indexSlot = compileExpression(index.e2);
+        const offset = allocateBytes(sliceDescriptorSize, size_t.sizeof);
+        _code ~= Instruction(
+            Op.indexLoad16,
+            offset,
+            outer.offset,
+            indexSlot.offset,
+        );
+        auto result = new DynamicArrayLocal;
+        *result = DynamicArrayLocal(offset, outer.elementType);
+        return result;
     }
 
     // Compile a string literal directly into an expanded native {ptr, length}
