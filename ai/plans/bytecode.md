@@ -877,14 +877,18 @@ place second.
    ...)`/`Instruction(appendElementOp(...), ...)` call sites in `compiler.d`
    now go through `emitSubSlice`/`emitAppendElement`, which take width as a
    required parameter and build the `Instruction` themselves; no call site
-   omitted or hardcoded a width operand before conversion. This is still a
-   proof of concept, not the general fix: it does not touch how each call
-   site computes its width in the first place (still hand-derived per site,
+   omitted or hardcoded a width operand before conversion. The `dupArray*`
+   and `concatArrays*` families (one opcode per width, no load/store split)
+   got the same treatment: their four raw `Instruction(dupArrayOp(...), ...)`/
+   `Instruction(concatArraysOp(...), ...)` call sites in `compiler.d` now go
+   through `emitDupArray`/`emitConcatArrays`, which take width as a required
+   parameter and build the `Instruction` themselves. This is still a proof of
+   concept, not the general fix: it does not touch how each call site
+   computes its width in the first place (still hand-derived per site,
    `elementSize`/`staticArraySize`/etc.), so the width-authority
    generalisation (`dynamicArrayElementSize`/`pointerElementMetadata` merging
    into one authority) is still fully open. Also still open: the same
-   per-family helper treatment for `dupArray*`, `concatArrays*`, and
-   `sliceCopy*`/`sliceFill*`/`sliceEqual*`.
+   per-family helper treatment for `sliceCopy*`/`sliceFill*`/`sliceEqual*`.
 
 2. **One place resolver.** Lvalue addressing is enumerated per shape: the
    `emit*RefArgument` chain with its comment-encoded decline order,

@@ -7746,13 +7746,7 @@ private struct Compiler {
         const right = catOperandDescriptor(
             elementType, elementSize, elementIsArray, cat.e2,
         );
-        _code ~= Instruction(
-            concatArraysOp(elementSize),
-            destination,
-            left,
-            right,
-            cast(ushort) elementSize,
-        );
+        emitConcatArrays(destination, left, right, elementSize);
     }
 
     // A 16-byte slice descriptor for one side of a concatenation: an array
@@ -7830,12 +7824,7 @@ private struct Compiler {
             arrayDescriptorOffset(elementType, array, elementIsArray);
         const elementSize =
             dynamicArrayElementSize(array.type, elementType, elementIsArray);
-        _code ~= Instruction(
-            dupArrayOp(elementSize),
-            destination,
-            sourceDescriptor,
-            cast(ushort) elementSize,
-        );
+        emitDupArray(destination, sourceDescriptor, elementSize);
     }
 
     // Read the length word of a dynamic-array descriptor into a fresh size_t
@@ -12451,12 +12440,8 @@ private struct Compiler {
                 concatenate.e1.type, descriptor.elementType,
                 descriptor.elementIsArray,
             );
-            _code ~= Instruction(
-                concatArraysOp(elementSize),
-                descriptor.offset,
-                descriptor.offset,
-                right,
-                cast(ushort) elementSize,
+            emitConcatArrays(
+                descriptor.offset, descriptor.offset, right, elementSize,
             );
             writeBackDynamicArrayDescriptor(descriptor);
             return Operand(descriptor.offset, descriptor.elementType);
@@ -12470,12 +12455,8 @@ private struct Compiler {
             concatenate.e1.type, descriptor.elementType,
             descriptor.elementIsArray,
         );
-        _code ~= Instruction(
-            concatArraysOp(elementSize),
-            descriptor.offset,
-            descriptor.offset,
-            right,
-            cast(ushort) elementSize,
+        emitConcatArrays(
+            descriptor.offset, descriptor.offset, right, elementSize,
         );
         writeBackDynamicArrayDescriptor(descriptor);
         return Operand(descriptor.offset, descriptor.elementType);
@@ -18437,6 +18418,30 @@ private struct Compiler {
     ) @safe pure {
         _code ~= Instruction(
             appendElementOp(width), array, element, cast(ushort) width,
+        );
+    }
+
+    // The `dupArray*` family's emit helper, the same required-`width`
+    // treatment as `emitAppendElement` above: one opcode per width, and
+    // `width` cannot be omitted or silently defaulted to zero.
+    private void emitDupArray(
+        in ushort destination, in ushort source, in uint width,
+    ) @safe pure {
+        _code ~= Instruction(
+            dupArrayOp(width), destination, source, cast(ushort) width,
+        );
+    }
+
+    // The `concatArrays*` family's emit helper, the same required-`width`
+    // treatment as `emitDupArray` above: one opcode per width, and `width`
+    // cannot be omitted or silently defaulted to zero.
+    private void emitConcatArrays(
+        in ushort destination, in ushort left, in ushort right,
+        in uint width,
+    ) @safe pure {
+        _code ~= Instruction(
+            concatArraysOp(width), destination, left, right,
+            cast(ushort) width,
         );
     }
 
