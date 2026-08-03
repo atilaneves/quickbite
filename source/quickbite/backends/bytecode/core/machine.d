@@ -24,8 +24,8 @@ package(quickbite.backends.bytecode) RunResult run(
 ) {
     import core.exception: RangeError;
     import quickbite.backends.bytecode.core.program:
-        assocArrayKeyIsArrayFlag, CatchClause, ClassInfo, Op,
-        noCatchObjectField, noExceptionClass, noOutParameterOffset, size,
+        assocArrayKeyIsArrayFlag, CatchClause, ClassInfo, indexElementWidth,
+        Op, noCatchObjectField, noExceptionClass, noOutParameterOffset, size,
         sliceDescriptorSize;
 
     // Reserve a generous fixed capacity so growing `stack` for callee frames
@@ -236,7 +236,7 @@ package(quickbite.backends.bytecode) RunResult run(
                 indexLoadN:
                 const loadSize = instruction.op == indexLoadN
                     ? instruction.d
-                    : elementSize(instruction.op);
+                    : indexElementWidth(instruction.op);
                 const loadElement = elementAddress(
                     stack, base + instruction.b,
                     scalarValue!size_t(stack, base + instruction.c),
@@ -255,7 +255,7 @@ package(quickbite.backends.bytecode) RunResult run(
                 indexStore16, indexStoreN:
                 const storeSize = instruction.op == indexStoreN
                     ? instruction.d
-                    : elementSize(instruction.op);
+                    : indexElementWidth(instruction.op);
                 // Non-const: the heap element is written through this pointer.
                 auto storeElement = elementAddress(
                     stack, base + instruction.b,
@@ -2417,19 +2417,6 @@ private void writeSliceDescriptorPointer(
     stack[ptrOffset .. ptrOffset + size_t.sizeof] = nativeToLittleEndian(pointer);
     stack[lengthOffset .. lengthOffset + size_t.sizeof] =
         nativeToLittleEndian(length);
-}
-
-private uint elementSize(
-    in imported!"quickbite.backends.bytecode.core.program".Op op,
-) @safe @nogc nothrow pure {
-    import quickbite.backends.bytecode.core.program: Op, sliceDescriptorSize;
-    if (op == Op.indexLoad16 || op == Op.indexStore16)
-        return sliceDescriptorSize;
-    if (op == Op.indexLoad8 || op == Op.indexStore8)
-        return 8;
-    if (op == Op.indexLoad4 || op == Op.indexStore4)
-        return 4;
-    return op == Op.indexLoad2 || op == Op.indexStore2 ? 2 : 1;
 }
 
 private uint pointerElementSize(

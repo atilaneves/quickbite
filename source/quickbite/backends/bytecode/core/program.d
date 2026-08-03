@@ -738,6 +738,64 @@ package(quickbite.backends.bytecode) enum unsignedConvertFlag = 0x100;
 // (at most 8), so bit 15 is free for the flag.
 package(quickbite.backends.bytecode) enum assocArrayKeyIsArrayFlag = 0x8000;
 
+// The `indexLoad`/`indexStore` family's one op<->width table: each fixed
+// width the pair supports, alongside the load and store opcode for that
+// width, declared once. compiler.d's `indexLoadOp`/`indexStoreOp`
+// width->opcode selectors and machine.d's element-width Op->width derivation
+// both walk this same table (`indexLoadOp`/`indexStoreOp`/`indexElementWidth`
+// below), so the two directions cannot independently drift out of sync the
+// way two hand-written switches could. `indexLoad16`/`indexStore16`'s width
+// is `sliceDescriptorSize`, not a bare `16` literal, since that is what they
+// actually move (an inner array-of-arrays element).
+private struct IndexOpWidth {
+    uint width;
+    Op loadOp;
+    Op storeOp;
+}
+
+private immutable IndexOpWidth[] indexOpWidths = [
+    IndexOpWidth(1, Op.indexLoad1, Op.indexStore1),
+    IndexOpWidth(2, Op.indexLoad2, Op.indexStore2),
+    IndexOpWidth(4, Op.indexLoad4, Op.indexStore4),
+    IndexOpWidth(8, Op.indexLoad8, Op.indexStore8),
+    IndexOpWidth(sliceDescriptorSize, Op.indexLoad16, Op.indexStore16),
+];
+
+// The `indexLoadN`-family width->opcode selector: `width` bytes uses the
+// fixed-width opcode for that width if the table above has one, else the
+// `N` variant (which carries the width in its own `d` operand instead).
+package(quickbite.backends.bytecode) Op indexLoadOp(in uint width)
+    @safe @nogc nothrow pure
+{
+    foreach (entry; indexOpWidths)
+        if (entry.width == width)
+            return entry.loadOp;
+    return Op.indexLoadN;
+}
+
+// See `indexLoadOp`; the store-side counterpart sharing the same table.
+package(quickbite.backends.bytecode) Op indexStoreOp(in uint width)
+    @safe @nogc nothrow pure
+{
+    foreach (entry; indexOpWidths)
+        if (entry.width == width)
+            return entry.storeOp;
+    return Op.indexStoreN;
+}
+
+// The reverse direction: the fixed byte width a fixed-width `indexLoad*`/
+// `indexStore*` opcode operates on. Not valid for `indexLoadN`/`indexStoreN`,
+// whose width is a runtime operand rather than implied by the opcode.
+package(quickbite.backends.bytecode) uint indexElementWidth(in Op op)
+    @safe @nogc nothrow pure
+in (op != Op.indexLoadN && op != Op.indexStoreN)
+{
+    foreach (entry; indexOpWidths)
+        if (entry.loadOp == op || entry.storeOp == op)
+            return entry.width;
+    assert(0, "Not a fixed-width indexLoad/indexStore opcode.");
+}
+
 package(quickbite.backends.bytecode) struct Instruction {
     Op op;
     ushort a;

@@ -871,10 +871,8 @@ accessors must precede the descriptor-order flip (§ Memory model).
    consumed by emit sites and a single flush path. A new language-surface
    shape extends the resolver, never adds a sibling emitter.
 
-3. **Shared facts move into program.d.** The op↔width mapping exists twice
-   (size→Op selectors in the compiler, Op→size derivations in the machine)
-   with nothing enforcing bijectivity; `ResultType` is constructed
-   positionally — both still open. Slice-descriptor field-offset accessors
+3. **Shared facts move into program.d.** `ResultType` is still constructed
+   positionally — open. Slice-descriptor field-offset accessors
    (`sliceDescriptorPtrOffset`/`sliceDescriptorLengthOffset`) landed in
    program.d and now back every genuine `{ptr, length}` descriptor site in
    reify.d, machine.d, and compiler.d; compiler.d's remaining inline
@@ -882,7 +880,19 @@ accessors must precede the descriptor-order flip (§ Memory model).
    `{functionIndex, context}` pairs, slice/2D-array `{lo, hi}`/`{rows, cols}`
    bound pairs), not descriptors, so nothing there is left to convert. The
    descriptor-order flip (§ Memory model) can now proceed on program.d's
-   accessors alone.
+   accessors alone. The op↔width mapping's `indexLoad*`/`indexStore*` family
+   now goes through one table, `program.d`'s `indexOpWidths`: compiler.d's
+   `indexLoadOp`/`indexStoreOp` width→Op selectors and machine.d's
+   `indexElementWidth` Op→width derivation both walk it, so the two
+   directions cannot independently drift. Every other width-suffixed family
+   still has its own independent pair (a compiler-side width→Op switch,
+   `pointerLoadOp`/`pointerStoreOp`/`pointerSliceOp`/`subSliceOp`/
+   `sliceCopyOp`/`sliceFillOp`/`sliceEqualOp`/`appendElementOp`/
+   `concatArraysOp`/`dupArrayOp`, plus a machine-side Op→width counterpart,
+   `pointerElementSize`/`subSliceElementSize`/`sliceCopyElementSize`/
+   `appendElementSize`/`dupArrayElementSize`) not yet converted; the
+   bijectivity gap the item names is now closed for one family and open for
+   the rest.
 
 Reviewed and declined (2026-08): a bytecode-core disassembler with
 instruction-level emission pins — not worth tackling; do not re-propose.

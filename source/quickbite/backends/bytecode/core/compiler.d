@@ -36,7 +36,7 @@ private struct Compiler {
         AssertDiagnostic, CatchClause, ClassInfo, CompiledFunction,
         Instruction, NativeCall, Op, Program,
         RefParameter, ResultType, ScalarType, StructDisplayField,
-        VirtualFunction, isSigned,
+        VirtualFunction, indexLoadOp, indexStoreOp, isSigned,
         nativeArgumentSlotSize, noCatchObjectField, noExceptionClass,
         noOutParameterOffset, size, sliceDescriptorLengthOffset,
         sliceDescriptorSize;
@@ -19641,20 +19641,6 @@ private struct OuterArrayElement {
     DynamicArrayLocal inner;
 }
 
-private imported!"quickbite.backends.bytecode.core.program".Op indexLoadOp(
-    in uint elementSize,
-) @safe @nogc nothrow pure {
-    import quickbite.backends.bytecode.core.program: Op;
-    switch (elementSize) {
-        case 1: return Op.indexLoad1;
-        case 2: return Op.indexLoad2;
-        case 4: return Op.indexLoad4;
-        case 8: return Op.indexLoad8;
-        case 16: return Op.indexLoad16;
-        default: return Op.indexLoadN;
-    }
-}
-
 private imported!"quickbite.backends.bytecode.core.program".Op pointerLoadOp(
     in uint elementSize,
 ) @safe @nogc nothrow pure {
@@ -19694,20 +19680,6 @@ private imported!"quickbite.backends.bytecode.core.program".Op pointerSliceOp(
         case 8: return Op.pointerSlice8;
         case 16: return Op.pointerSlice16;
         default: return Op.pointerSliceN;
-    }
-}
-
-private imported!"quickbite.backends.bytecode.core.program".Op indexStoreOp(
-    in uint elementSize,
-) @safe @nogc nothrow pure {
-    import quickbite.backends.bytecode.core.program: Op;
-    switch (elementSize) {
-        case 1: return Op.indexStore1;
-        case 2: return Op.indexStore2;
-        case 4: return Op.indexStore4;
-        case 8: return Op.indexStore8;
-        case 16: return Op.indexStore16;
-        default: return Op.indexStoreN;
     }
 }
 
