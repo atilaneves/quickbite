@@ -798,10 +798,7 @@ Next candidate: `refArgument.templateRefSharedParameterMutatesAndPreservesAddres
 setShared(T)(ref shared(T) value, shared(T)* expected) { assert(&value ==
 expected); ... }` fails its first assertion, so a template `ref shared(T)`
 parameter does not alias the caller's real storage on `Bytecode` -- not yet
-root-caused. The sibling row below it, `delegate.captureIsNotParameterReference`,
-already passes on `Bytecode` (checked the same way) -- its
-`Omit!(Bytecode, Because.unconfirmed)` is stale and worth deleting as a free
-promotion.
+root-caused.
 
 ### TDD and handoff discipline
 

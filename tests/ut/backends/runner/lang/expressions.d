@@ -9527,7 +9527,6 @@ static foreach (backend; Matrix!(
 
 
 static foreach (backend; Matrix!(
-    Omit!(Bytecode, Because.unconfirmed),
     Omit!(Ctfe, Because.unconfirmed),
     Omit!(LLVMJit, Because.unconfirmed),
 )) {
