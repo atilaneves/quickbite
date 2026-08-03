@@ -26,7 +26,7 @@ package(quickbite.backends.bytecode) RunResult run(
     import quickbite.backends.bytecode.core.program:
         assocArrayKeyIsArrayFlag, CatchClause, ClassInfo, indexElementWidth,
         Op, noCatchObjectField, noExceptionClass, noOutParameterOffset,
-        pointerElementWidth, size, sliceDescriptorSize;
+        pointerElementWidth, size, sliceDescriptorSize, subSliceElementWidth;
 
     // Reserve a generous fixed capacity so growing `stack` for callee frames
     // never reallocates: a raw `&local` pointer (`int* p = &x`) stored in a
@@ -283,7 +283,7 @@ package(quickbite.backends.bytecode) RunResult run(
                 subSliceN:
                 const subElementSize = instruction.op == subSliceN
                     ? instruction.d
-                    : subSliceElementSize(instruction.op);
+                    : subSliceElementWidth(instruction.op);
                 const lo = scalarValue!size_t(stack, base + instruction.c);
                 const hi = scalarValue!size_t(
                     stack, base + instruction.c + size_t.sizeof,
@@ -2417,19 +2417,6 @@ private void writeSliceDescriptorPointer(
     stack[ptrOffset .. ptrOffset + size_t.sizeof] = nativeToLittleEndian(pointer);
     stack[lengthOffset .. lengthOffset + size_t.sizeof] =
         nativeToLittleEndian(length);
-}
-
-private uint subSliceElementSize(
-    in imported!"quickbite.backends.bytecode.core.program".Op op,
-) @safe @nogc nothrow pure {
-    import quickbite.backends.bytecode.core.program: Op;
-    if (op == Op.subSlice16)
-        return 16;
-    if (op == Op.subSlice8)
-        return 8;
-    if (op == Op.subSlice4)
-        return 4;
-    return op == Op.subSlice2 ? 2 : 1;
 }
 
 private void validateSubSlice(

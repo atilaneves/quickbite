@@ -888,14 +888,17 @@ accessors must precede the descriptor-order flip (§ Memory model).
    `pointerSlice*` now shares the same pattern via `program.d`'s
    `pointerOpWidths` (three opcodes per width instead of two — load, store,
    and slice): compiler.d's `pointerLoadOp`/`pointerStoreOp`/`pointerSliceOp`
-   and machine.d's `pointerElementWidth` all walk it. Every other
-   width-suffixed family still has its own independent pair (a compiler-side
-   width→Op switch, `subSliceOp`/`sliceCopyOp`/`sliceFillOp`/`sliceEqualOp`/
-   `appendElementOp`/`concatArraysOp`/`dupArrayOp`, plus a machine-side
-   Op→width counterpart, `subSliceElementSize`/`sliceCopyElementSize`/
+   and machine.d's `pointerElementWidth` all walk it. `subSlice*` now
+   shares the same pattern via `program.d`'s `subSliceOpWidths` (one opcode
+   per width, since forming a sub-slice descriptor is a single operation):
+   compiler.d's `subSliceOp` and machine.d's `subSliceElementWidth` both walk
+   it. Every other width-suffixed family still has its own independent pair
+   (a compiler-side width→Op switch, `sliceCopyOp`/`sliceFillOp`/
+   `sliceEqualOp`/`appendElementOp`/`concatArraysOp`/`dupArrayOp`, plus a
+   machine-side Op→width counterpart, `sliceCopyElementSize`/
    `appendElementSize`/`dupArrayElementSize`) not yet converted; the
-   bijectivity gap the item names is now closed for two families and open for
-   the rest.
+   bijectivity gap the item names is now closed for three families and open
+   for the rest.
 
 Reviewed and declined (2026-08): a bytecode-core disassembler with
 instruction-level emission pins — not worth tackling; do not re-propose.

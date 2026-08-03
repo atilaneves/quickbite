@@ -39,7 +39,7 @@ private struct Compiler {
         VirtualFunction, indexLoadOp, indexStoreOp, isSigned,
         nativeArgumentSlotSize, noCatchObjectField, noExceptionClass,
         noOutParameterOffset, pointerLoadOp, pointerSliceOp, pointerStoreOp,
-        size, sliceDescriptorLengthOffset, sliceDescriptorSize;
+        size, sliceDescriptorLengthOffset, sliceDescriptorSize, subSliceOp;
     import dmd.declaration: VarDeclaration;
     import dmd.expression:
         AddAssignExp, AddrExp, ArrayLengthExp, ArrayLiteralExp,
@@ -19639,20 +19639,6 @@ private struct OuterArrayElement {
     ushort outerOffset;
     ushort indexSlot;
     DynamicArrayLocal inner;
-}
-
-private imported!"quickbite.backends.bytecode.core.program".Op subSliceOp(
-    in uint elementSize,
-) @safe @nogc nothrow pure {
-    import quickbite.backends.bytecode.core.program: Op;
-    switch (elementSize) {
-        case 1: return Op.subSlice1;
-        case 2: return Op.subSlice2;
-        case 4: return Op.subSlice4;
-        case 8: return Op.subSlice8;
-        case 16: return Op.subSlice16;
-        default: return Op.subSliceN;
-    }
 }
 
 private imported!"quickbite.backends.bytecode.core.program".Op sliceCopyOp(

@@ -864,6 +864,51 @@ in (op != Op.pointerLoadN && op != Op.pointerStoreN && op != Op.pointerSliceN)
     assert(0, "Not a fixed-width pointerLoad/pointerStore/pointerSlice opcode.");
 }
 
+// The `subSlice` family's one op<->width table, the same pattern as
+// `indexOpWidths`/`pointerOpWidths` above but with a single opcode per width
+// (forming a sub-slice descriptor is one operation, not a load/store/slice
+// split). compiler.d's `subSliceOp` width->opcode selector and machine.d's
+// element-size Op->width derivation (`subSliceElementWidth` below) both walk
+// this same table, so the two directions cannot independently drift out of
+// sync.
+private struct SubSliceOpWidth {
+    uint width;
+    Op op;
+}
+
+private immutable SubSliceOpWidth[] subSliceOpWidths = [
+    SubSliceOpWidth(1, Op.subSlice1),
+    SubSliceOpWidth(2, Op.subSlice2),
+    SubSliceOpWidth(4, Op.subSlice4),
+    SubSliceOpWidth(8, Op.subSlice8),
+    SubSliceOpWidth(16, Op.subSlice16),
+];
+
+// The `subSlice`-family width->opcode selector: `width` bytes uses the
+// fixed-width opcode for that width if the table above has one, else the `N`
+// variant (which carries the width in its own `d` operand instead).
+package(quickbite.backends.bytecode) Op subSliceOp(in uint width)
+    @safe @nogc nothrow pure
+{
+    foreach (entry; subSliceOpWidths)
+        if (entry.width == width)
+            return entry.op;
+    return Op.subSliceN;
+}
+
+// The reverse direction: the fixed byte width a fixed-width `subSlice*`
+// opcode operates on. Not valid for `subSliceN`, whose width is a runtime
+// operand rather than implied by the opcode.
+package(quickbite.backends.bytecode) uint subSliceElementWidth(in Op op)
+    @safe @nogc nothrow pure
+in (op != Op.subSliceN)
+{
+    foreach (entry; subSliceOpWidths)
+        if (entry.op == op)
+            return entry.width;
+    assert(0, "Not a fixed-width subSlice opcode.");
+}
+
 package(quickbite.backends.bytecode) struct Instruction {
     Op op;
     ushort a;
