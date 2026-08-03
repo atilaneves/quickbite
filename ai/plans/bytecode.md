@@ -903,11 +903,30 @@ accessors must precede the descriptor-order flip (§ Memory model).
    `concatArraysOpWidths` (one opcode per width, since concatenating two
    arrays is a single operation; only 1, 4, and 16 bytes get a fixed-width
    opcode): compiler.d's `concatArraysOp` and machine.d's `concatArraysWidth`
-   both walk it. Every other width-suffixed family still has its own
-   independent pair (a compiler-side width→Op switch,
-   `sliceCopyOp`/`sliceFillOp`/`sliceEqualOp`, plus a machine-side Op→width
-   counterpart, `sliceCopyElementSize`) not yet converted; the bijectivity gap
-   the item names is now closed for six families and open for the rest.
+   both walk it. `sliceCopy*`/`sliceFill*`/`sliceEqual*` now share the same
+   pattern too, via three independent single-opcode-per-width tables in
+   program.d — `sliceCopyOpWidths`, `sliceFillOpWidths`, and
+   `sliceEqualOpWidths` — rather than one combined table like
+   `pointerOpWidths`, since the three ops are not parallel across widths:
+   `sliceCopy` covers all five fixed widths (1/2/4/8/16, matching
+   indexLoad/indexStore), `sliceFill` covers only 1/2/4/8 (the broadcast
+   source is never a 16-byte descriptor element), and `sliceEqual` covers
+   only 1/2/4/8 with no `N` variant at all (a 16-byte element compares
+   structurally via `Op.sliceEqualNested`, not flat bytes, and every other
+   width the front end can produce is one of the four). Previously
+   machine.d's `sliceCopy1`/`sliceEqual1` etc. Op→width derivation was a
+   single hand-merged function, `sliceCopyElementSize`, exploiting the
+   coincidence that `sliceCopy`'s and `sliceEqual`'s widths lined up 1:1 for
+   1/2/4/8 and falling through to a bare `4` as its default case; that
+   function is gone, replaced by `sliceCopyWidth`/`sliceEqualWidth`, each
+   walking its own table. compiler.d's `sliceCopyOp`/`sliceFillOp`/
+   `sliceEqualOp` width→Op selectors now walk program.d's tables the same
+   way. This closes the op↔width mapping duplication named by this item for
+   every width-suffixed family: `indexLoad*`/`indexStore*`,
+   `pointerLoad*`/`pointerStore*`/`pointerSlice*`, `subSlice*`,
+   `appendElement*`, `dupArray*`, `concatArrays*`, and now
+   `sliceCopy*`/`sliceFill*`/`sliceEqual*`. Item 3's remaining open piece is
+   `ResultType`'s positional construction.
 
 Reviewed and declined (2026-08): a bytecode-core disassembler with
 instruction-level emission pins — not worth tackling; do not re-propose.

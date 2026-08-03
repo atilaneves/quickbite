@@ -27,7 +27,8 @@ package(quickbite.backends.bytecode) RunResult run(
         assocArrayKeyIsArrayFlag, appendElementWidth, CatchClause, ClassInfo,
         concatArraysWidth, dupArrayWidth, indexElementWidth, Op,
         noCatchObjectField, noExceptionClass, noOutParameterOffset,
-        pointerElementWidth, size, sliceDescriptorSize, subSliceElementWidth;
+        pointerElementWidth, size, sliceCopyWidth, sliceDescriptorSize,
+        sliceEqualWidth, subSliceElementWidth;
 
     // Reserve a generous fixed capacity so growing `stack` for callee frames
     // never reallocates: a raw `&local` pointer (`int* p = &x`) stored in a
@@ -314,7 +315,7 @@ package(quickbite.backends.bytecode) RunResult run(
                     base + instruction.b,
                     instruction.op == sliceCopyN
                         ? instruction.c
-                        : sliceCopyElementSize(instruction.op),
+                        : sliceCopyWidth(instruction.op),
                 );
                 ++ip;
                 break;
@@ -352,7 +353,7 @@ package(quickbite.backends.bytecode) RunResult run(
                     stack,
                     base + instruction.b,
                     base + instruction.c,
-                    sliceCopyElementSize(instruction.op),
+                    sliceEqualWidth(instruction.op),
                 ) ? 1 : 0;
                 ++ip;
                 break;
@@ -2443,21 +2444,6 @@ private void validateSubSlice(
             "slice [", lo, " .. ", hi,
             "] extends past source array of length ", length,
         ));
-}
-
-private uint sliceCopyElementSize(
-    in imported!"quickbite.backends.bytecode.core.program".Op op,
-) @safe @nogc nothrow pure {
-    import quickbite.backends.bytecode.core.program: Op;
-    if (op == Op.sliceCopy1 || op == Op.sliceEqual1)
-        return 1;
-    if (op == Op.sliceCopy2 || op == Op.sliceEqual2)
-        return 2;
-    if (op == Op.sliceEqual8 || op == Op.sliceCopy8)
-        return 8;
-    if (op == Op.sliceCopy16)
-        return 16;
-    return 4;
 }
 
 // Duplicate the slice descriptor at `sourceOffset` into a fresh heap block

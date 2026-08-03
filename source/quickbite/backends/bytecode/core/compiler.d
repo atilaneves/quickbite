@@ -40,7 +40,8 @@ private struct Compiler {
         indexLoadOp, indexStoreOp, isSigned,
         nativeArgumentSlotSize, noCatchObjectField, noExceptionClass,
         noOutParameterOffset, pointerLoadOp, pointerSliceOp, pointerStoreOp,
-        size, sliceDescriptorLengthOffset, sliceDescriptorSize, subSliceOp;
+        size, sliceCopyOp, sliceDescriptorLengthOffset, sliceDescriptorSize,
+        sliceEqualOp, sliceFillOp, subSliceOp;
     import dmd.declaration: VarDeclaration;
     import dmd.expression:
         AddAssignExp, AddrExp, ArrayLengthExp, ArrayLiteralExp,
@@ -19640,53 +19641,6 @@ private struct OuterArrayElement {
     ushort outerOffset;
     ushort indexSlot;
     DynamicArrayLocal inner;
-}
-
-private imported!"quickbite.backends.bytecode.core.program".Op sliceCopyOp(
-    in uint elementSize,
-) @safe @nogc nothrow pure {
-    import quickbite.backends.bytecode.core.program: Op;
-    if (elementSize == 1)
-        return Op.sliceCopy1;
-    if (elementSize == 2)
-        return Op.sliceCopy2;
-    if (elementSize == 4)
-        return Op.sliceCopy4;
-    if (elementSize == 8)
-        return Op.sliceCopy8;
-    return elementSize == 16 ? Op.sliceCopy16 : Op.sliceCopyN;
-}
-
-private imported!"quickbite.backends.bytecode.core.program".Op sliceFillOp(
-    in uint elementSize,
-) @safe @nogc nothrow pure {
-    import quickbite.backends.bytecode.core.program: Op;
-    if (elementSize == 1)
-        return Op.sliceFill1;
-    if (elementSize == ushort.sizeof)
-        return Op.sliceFill2;
-    if (elementSize == uint.sizeof)
-        return Op.sliceFill4;
-    return elementSize == ulong.sizeof ? Op.sliceFill8 : Op.sliceFillN;
-}
-
-private imported!"quickbite.backends.bytecode.core.program".Op sliceEqualOp(
-    in uint elementSize,
-) @safe pure {
-    import quickbite.backends.bytecode.core.program: Op;
-    import std.conv: text;
-
-    switch (elementSize) {
-        case 1: return Op.sliceEqual1;
-        case 2: return Op.sliceEqual2;
-        case 4: return Op.sliceEqual4;
-        case 8: return Op.sliceEqual8;
-        default:
-            throw new Exception(text(
-                "Unsupported array element size in bytecode core: ",
-                elementSize,
-            ));
-    }
 }
 
 private bool isDeclarationNamed(
