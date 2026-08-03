@@ -863,10 +863,15 @@ accessors must precede the descriptor-order flip (§ Memory model).
    authority consumed by every emit site, and replace raw `Instruction(...)`
    construction for the width-suffixed opcode families with per-family emit
    helpers whose interface requires the width, so an `*N` instruction cannot
-   be built without its width operand. Known concrete divergence to fix
-   first: the `refLocalPointerRefWriteBacks` flush loop omits the width
-   operand its sibling loops pass, masked today by
-   `emitRefLocalPointerArgument`'s 1/2/4/8 gate.
+   be built without its width operand. The documented concrete divergence is
+   fixed: the `refLocalPointerRefWriteBacks` flush loop now passes
+   `writeBack.valueSize` as its `Instruction`'s width operand, matching its
+   sibling loops (`structPointerFieldRefWriteBacks`,
+   `pointerDereferenceRefWriteBacks`, etc.); it was harmless today only
+   because `emitRefLocalPointerArgument`'s 1/2/4/8 gate never produces the
+   `pointerStoreN` opcode that reads that operand, but the fix removes the
+   landmine for if/when that gate is loosened. The width-authority
+   generalisation and the per-family emit helpers remain open.
 
 2. **One place resolver.** Lvalue addressing is enumerated per shape: the
    `emit*RefArgument` chain with its comment-encoded decline order,

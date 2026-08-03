@@ -14723,6 +14723,7 @@ private struct Compiler {
                 writeBack.valueOffset,
                 writeBack.addressOffset,
                 compileSizeConstant(0),
+                writeBack.valueSize,
             );
         foreach (writeBack; pointerDereferenceRefWriteBacks)
             _code ~= Instruction(
