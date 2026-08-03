@@ -2012,6 +2012,167 @@ static foreach (backend; Matrix!(
     }
 }
 
+// The heap-closure escape mechanism widened from "is this a `return`
+// statement whose expression is directly the capturing delegate" to "is this
+// compiling a capturing-lambda expression that is itself a top-level field of
+// a struct literal that is itself the direct `return` expression"
+// (`compileReturnStatement`'s struct branch, `structLiteralReturnOffset`,
+// `compiler.d`): `return Counter(() => ++count);` embeds the same escaping
+// capture `functionReturningCapturingDelegateIsCallable` returns bare, just
+// one field-access away. Before this widening, `compileStructLiteralInto`'s
+// `Tdelegate` branch always resolved a delegate field through the plain
+// frame-relative `delegateOperandOffset` (the same path a *non-escaping*
+// struct-literal delegate field, e.g. `struct.literalDelegateFieldFromFreshLambdaIsCallable`'s
+// `Handler(() => 42)` assigned to a local, still correctly uses) -- so this
+// exact fixture previously ran to completion with the WRONG answer (`0 !=
+// 1`) instead of throwing: the delegate's context word pointed at
+// `makeCounter`'s own popped/reused frame slot, read back as whatever
+// happened to occupy that memory next, not a thrown diagnostic. Ctfe wraps
+// `dmd.dinterpret`, which evaluates `count` from the struct literal's own
+// enclosing scope rather than through this core at all, and refuses reading
+// it outright ("variable `count` cannot be read at compile time") -- a
+// different message from the bare-return sibling's ("closures are not yet
+// supported in CTFE") but the same underlying gap. Interpreter's
+// `place_value.writeValue` has no case for a delegate value written through
+// a struct-literal initializer place at all (`struct.literalDelegateFieldFromFreshLambdaIsCallable`'s
+// own Omit reason), independent of whether the capture escapes.
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.inexpressible,
+        "dmd.dinterpret evaluates the struct literal's delegate field " ~
+            "against its own enclosing-scope locals directly and refuses " ~
+            "reading `count` from CTFE outright: \"variable `count` " ~
+            "cannot be read at compile time\""),
+    Omit!(Interpreter, Because.unconfirmed,
+        "place_value.writeValue has no case for a delegate value written " ~
+            "through a struct-literal initializer place at all, escaping " ~
+            "or not -- not yet promoted"),
+)) {
+    @("delegate.functionReturningStructWithCapturingDelegateFieldIsCallable." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct Counter { int delegate() next; }
+            auto makeCounter() {
+                int count = 0;
+                return Counter(() => ++count);
+            }
+
+            unittest {
+                auto c = makeCounter();
+                assert(c.next() == 1);
+            }
+        });
+    }
+}
+
+// A mutating sibling of `functionReturningStructWithCapturingDelegateFieldIsCallable`,
+// calling the returned struct's delegate field more than once and across two
+// independently escaped instances -- the struct-field counterpart of
+// `functionReturningMutatingCapturingDelegateIsCallable`'s bare-return
+// mutation coverage.
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.inexpressible,
+        "dmd.dinterpret evaluates the struct literal's delegate field " ~
+            "against its own enclosing-scope locals directly and refuses " ~
+            "reading `count` from CTFE outright: \"variable `count` " ~
+            "cannot be read at compile time\""),
+    Omit!(Interpreter, Because.unconfirmed,
+        "place_value.writeValue has no case for a delegate value written " ~
+            "through a struct-literal initializer place at all, escaping " ~
+            "or not -- not yet promoted"),
+)) {
+    @("delegate.functionReturningMutatingStructWithCapturingDelegateFieldIsCallable." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct Counter { int delegate() next; }
+            auto makeCounter() {
+                int count = 0;
+                return Counter(() => ++count);
+            }
+
+            unittest {
+                auto c = makeCounter();
+                assert(c.next() == 1);
+                assert(c.next() == 2);
+                auto c2 = makeCounter();
+                assert(c2.next() == 1);
+                assert(c.next() == 3);
+            }
+        });
+    }
+}
+
+// A sibling of `functionReturningStructWithCapturingDelegateFieldIsCallable`
+// that captures TWO plain scalar locals instead of one, the struct-field
+// counterpart of `functionReturningCapturingDelegateOverTwoLocalsIsCallable`:
+// `structLiteralReturnOffset` reuses `heapClosureContextOrNull` unchanged, so
+// the same one-or-two-capture widening already proven for a bare returned
+// delegate carries over with no further change.
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.inexpressible,
+        "dmd.dinterpret evaluates the struct literal's delegate field " ~
+            "against its own enclosing-scope locals directly and refuses " ~
+            "reading `a`/`b` from CTFE outright"),
+    Omit!(Interpreter, Because.unconfirmed,
+        "place_value.writeValue has no case for a delegate value written " ~
+            "through a struct-literal initializer place at all, escaping " ~
+            "or not -- not yet promoted"),
+)) {
+    @("delegate.functionReturningStructWithCapturingDelegateFieldOverTwoLocalsIsCallable." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct Adder { int delegate() sum; }
+            auto makeAdder() {
+                int a = 1;
+                int b = 10;
+                return Adder(() => a + b);
+            }
+
+            unittest {
+                auto x = makeAdder();
+                assert(x.sum() == 11);
+            }
+        });
+    }
+}
+
+// THREE captures still declines, the same way a bare returned delegate over
+// three locals still declines (`heapClosureContextOrNull`'s own
+// `outerVars.length > 2` gate): `structLiteralReturnOffset`'s `Tdelegate`
+// branch raises the shared `throwFrameEscapingDelegateDiagnostic` instead of
+// falling back to the plain frame-relative `delegateOperandOffset` a
+// non-escaping struct-literal delegate field still uses -- proving the
+// widening did not also widen what heap-escapes soundly. Bytecode-only:
+// the diagnostic itself, and the heap-closure machinery it guards, are a
+// Bytecode-specific mechanism (`compiler.d`), not a language restriction
+// other backends share.
+static foreach (backend; AliasSeq!(Bytecode)) {
+    @("delegate.functionReturningStructWithCapturingDelegateFieldOverThreeLocalsDeclines." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct Adder { int delegate() sum; }
+            auto makeAdder() {
+                int a = 1;
+                int b = 10;
+                int c = 100;
+                return Adder(() => a + b + c);
+            }
+
+            unittest {
+                auto x = makeAdder();
+                assert(x.sum() == 111);
+            }
+        }).shouldThrow();
+    }
+}
+
 // A lambda that captures nothing, itself returning another non-capturing
 // lambda: DMD's "no context needed" default types both `make` and `getter`
 // as plain function pointers (`int function() function()` and `int

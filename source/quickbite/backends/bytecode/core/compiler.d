@@ -1160,6 +1160,12 @@ private struct Compiler {
         } else if (_currentReturnType.isStruct) {
             if (auto staticArray = staticArrayOffsetOf(return_.exp))
                 result = *staticArray;
+            else if (auto literal = return_.exp.isStructLiteralExp)
+                // `return S(() => ...);`: a top-level `Tdelegate` field of
+                // the directly-returned literal gets the same heap-escape
+                // treatment `compileDelegateReturn` gives a bare returned
+                // delegate -- see `structLiteralReturnOffset`.
+                result = structLiteralReturnOffset(literal);
             else
                 // `return structValue;`: the result block lives at the struct
                 // operand's inline base; `ret` copies its `structSize` bytes
@@ -2743,6 +2749,28 @@ private struct Compiler {
         return Operand(offset, ScalarType.void_);
     }
 
+    // The inline frame offset of a struct literal that is itself the direct
+    // `return` expression (`return Counter(() => ++count);`,
+    // `compileReturnStatement`'s struct branch): identical to
+    // `compileStructLiteralOperand` above except it passes
+    // `isReturnEscaping: true` down to `compileStructLiteralInto`, so a
+    // top-level `Tdelegate` field that is a capturing lambda/nested-function
+    // reference gets the same heap-escape treatment
+    // `compileDelegateReturn` gives a bare returned delegate: a `return`
+    // statement is the last thing its enclosing function executes, so
+    // heap-snapshotting the capture here is exactly as sound as it is for a
+    // directly-returned delegate. A struct-literal rvalue anywhere else
+    // (a plain local's own initializer, a call argument, a field nested one
+    // level deeper inside this same returned literal, ...) keeps the
+    // ordinary frame-relative path, since its own frame is not (necessarily)
+    // going away.
+    private ushort structLiteralReturnOffset(StructLiteralExp literal) {
+        const offset = allocateStructBlock(literal.type);
+        zeroFrameBlock(offset, cast(uint) staticArraySize(literal.type));
+        compileStructLiteralInto(offset, literal, true);
+        return offset;
+    }
+
     // Read an element of a static array at a compile-time-constant index. The
     // element lives at `slot + index * elementSize` inside the inline block;
     // a scalar element is returned directly, a sub-array element yields a
@@ -4320,8 +4348,6 @@ private struct Compiler {
     // `ai/plans/bytecode.md`'s Closures section), so decline loudly instead
     // of returning a value that reads as garbage once the frame is reused.
     private ushort compileDelegateReturn(Expression source) {
-        import std.conv: text;
-
         auto function_ = returnedDelegateFunctionOrNull(source);
         if (function_ !is null && function_.outerVars.length != 0) {
             if (auto heapContext = heapClosureContextOrNull(function_)) {
@@ -4329,14 +4355,29 @@ private struct Compiler {
                 emitDelegateValue(offset, function_, *heapContext);
                 return offset;
             }
-            throw new Exception(text(
-                "Unsupported delegate return in bytecode core: returning ",
-                "a closure over this function's own locals outlives its ",
-                "frame: ", expressionChars(source),
-            ));
+            throwFrameEscapingDelegateDiagnostic(source);
         }
 
         return delegateOperandOffset(source);
+    }
+
+    // Shared diagnostic for a capturing delegate/lambda whose declaring
+    // function's frame the escape site (a `return` of the delegate itself,
+    // or a `return` of a struct literal with the delegate as one of its own
+    // top-level fields -- `structLiteralReturnOffset`'s `Tdelegate` branch)
+    // could plausibly outlive, but whose capture shape
+    // `heapClosureContextOrNull` does not (yet) recognise: three or more
+    // captures, a non-scalar/non-pointer capture, a multi-level capture, or a
+    // capture combined with `this`. Raised instead of silently building a
+    // frame-relative context that reads as garbage once the frame is reused.
+    private void throwFrameEscapingDelegateDiagnostic(Expression source) {
+        import std.conv: text;
+
+        throw new Exception(text(
+            "Unsupported delegate return in bytecode core: returning ",
+            "a closure over this function's own locals outlives its ",
+            "frame: ", expressionChars(source),
+        ));
     }
 
     // A freshly heap-allocated closure environment's raw pointer, in a fresh
@@ -5075,6 +5116,7 @@ private struct Compiler {
     private void compileStructLiteralInto(
         in ushort base,
         StructLiteralExp literal,
+        bool isReturnEscaping = false,
     ) {
         import dmd.astenums: TY;
 
@@ -5117,6 +5159,30 @@ private struct Compiler {
             if (fieldType.toBasetype.ty == TY.Tdelegate) {
                 if (isNullLiteral(element))
                     continue;
+
+                // Only a TOP-LEVEL field of a literal that is itself the
+                // direct `return` expression (`isReturnEscaping`, set by
+                // `structLiteralReturnOffset`) is heap-escape-aware here:
+                // the same capturing delegate embedded anywhere else (a
+                // plain local's own struct literal, or a field nested one
+                // level deeper inside the returned literal, e.g. `return
+                // Outer(Counter(() => ...))`) still resolves through the
+                // ordinary frame-relative `delegateOperandOffset` below,
+                // matching `heapClosureContextOrNull`'s existing
+                // one-nesting-level scope.
+                if (isReturnEscaping) {
+                    auto function_ = returnedDelegateFunctionOrNull(element);
+                    if (function_ !is null && function_.outerVars.length != 0) {
+                        if (auto heapContext =
+                                heapClosureContextOrNull(function_)) {
+                            emitDelegateValue(
+                                fieldOffset, function_, *heapContext,
+                            );
+                            continue;
+                        }
+                        throwFrameEscapingDelegateDiagnostic(element);
+                    }
+                }
 
                 const source = delegateOperandOffset(element);
                 _code ~= Instruction(

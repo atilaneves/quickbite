@@ -1314,16 +1314,53 @@ lifetime as the dependency bytecode cache.
   branch, mirroring its existing `TY.Tclass` branch), so a captured pointer
   local is supported both ways: read/written through a nested function
   while its enclosing frame is still live, and heap-escaped via `return`
-  through the same one-or-two-capture/one-level shape above. It does not
+  through the same one-or-two-capture/one-level shape above.
+  `heapClosureContextOrNull` itself is escape-site-agnostic -- it only
+  inspects the capturing `FuncDeclaration`'s own `outerVars`/owners, not how
+  the caller reached it -- so it is shared by two escape sites rather than
+  one: `compileDelegateReturn` (a capturing delegate/lambda that is itself
+  the direct `return` expression, `return dg;`) and
+  `structLiteralReturnOffset` (the same capturing delegate/lambda as a
+  TOP-LEVEL field of a struct literal that is itself the direct `return`
+  expression, `return Counter(() => ++count);`, `compileReturnStatement`'s
+  struct branch). The struct-literal site reuses `returnedDelegateFunctionOrNull`
+  unchanged to resolve the field's own callee and gates on the exact same
+  `isReturnEscaping` flag `compileStructLiteralInto` takes (default `false`,
+  so a non-escaping struct literal's own delegate field -- a plain local's
+  initializer, a call argument, or a field nested one level deeper inside
+  the returned literal itself, e.g. `return Outer(Counter(() => ...))` --
+  keeps resolving through the ordinary frame-relative `delegateOperandOffset`
+  unaffected): only a directly-returned literal's own top-level field is
+  heap-escape-aware, matching the one-nesting-level scope everywhere else in
+  this mechanism. Before this widening, that struct-literal shape had no
+  escape handling at all and silently produced the WRONG runtime value (the
+  delegate's context word pointed at the popped/reused frame slot) instead
+  of throwing -- worse than the loud diagnostic a bare `return dg;` already
+  gave for a declined shape, since nothing signalled the bug. It does not
   generalise past that scalar-or-pointer, one-or-two-capture, one-level,
-  return-only shape: three or more escaping captures, a non-scalar/
-  non-pointer capture (struct/array/AA/class/delegate), a multi-level
-  capture (an escaping lambda nested two or more functions deep), and a
-  capture combined with `this` are all still declined with the same
-  diagnostic `refuseFrameEscapingDelegateReturn` used to raise
-  unconditionally (`compileDelegateReturn` still throws whenever
-  `heapClosureContextOrNull` returns null for a function with non-empty
-  `outerVars`). Generalising this to DMD's own per-function `needsClosure()`/
+  return-expression-or-directly-returned-struct-literal-field shape: three or
+  more escaping captures, a non-scalar/non-pointer capture (struct/array/AA/
+  class/delegate), a multi-level capture (an escaping lambda nested two or
+  more functions deep), a capture combined with `this`, and a capturing
+  delegate reached through any other escape shape (an `out`/`ref` argument
+  assignment, a class field, an array element, a field nested more than one
+  level inside a returned struct literal, ...) are all still declined with
+  the same diagnostic (the shared `throwFrameEscapingDelegateDiagnostic`
+  helper both escape sites call) used to raise unconditionally
+  (`compileDelegateReturn` still throws whenever `heapClosureContextOrNull`
+  returns null for a function with non-empty `outerVars`, and
+  `structLiteralReturnOffset`'s `Tdelegate` branch does the same for a
+  directly-returned literal's own top-level field). An `out`-parameter
+  assignment shape (`void makeCounter(out int delegate() dg) { int count =
+  0; dg = () => ++count; }`) was investigated as a third escape site but is
+  blocked by an unrelated, separate gap: `referenceOffsetOrNull` (the `ref`/
+  `out` call-argument resolver) has no case for a delegate-typed local at
+  all, so the call site itself (`makeCounter(c)`, `c` a delegate-typed
+  local) throws "Unsupported ref argument in bytecode core: c" before the
+  closure mechanism is ever reached -- ref/out-argument plumbing for a
+  delegate-typed local, not a closures-escape-mechanism question, and left
+  as future work rather than folded into this widening. Generalising this to
+  DMD's own per-function `needsClosure()`/
   `closureVars` decision -- moving every closure-needing variable to its heap
   block from declaration onward, regardless of whether it is actually
   returned -- remains future work; the eventual right design point, since
@@ -1333,7 +1370,7 @@ lifetime as the dependency bytecode cache.
   generally would require moving every one of the many `capturedFrameIndex`
   call sites (struct/array captures, multi-level ancestor chains, `this`-
   combined captures) onto heap-pointer addressing together, not just the
-  one-or-two-scalar/one-level/return-only slice here. An immediately-invoked
+  one-or-two-scalar/one-level/two-escape-site slice here. An immediately-invoked
   void lambda whose body is a single expression statement can avoid needing
   any environment at all by inlining the statement into the caller the same
   way a single-`return`-expression IIFE already inlines.
