@@ -486,6 +486,39 @@ static foreach (backend; Matrix!(
     }
 }
 
+// A module-level dynamic array with an *empty* array-literal initializer
+// (`int[] arr = [];`): `moduleDynamicArrayLiteralInitializerBytes` used to
+// treat a zero-length `elements` array the same as any other shape it
+// can't inspect an element from, declining registration entirely (the
+// variable fell through `moduleDynamicArrayVariableOrNull` to
+// "declined", same as a genuinely unsupported initializer). An empty
+// literal is semantically just the default-initialized null/zero-length
+// slice, so `moduleDynamicArrayVariableOrNull` now treats it the same as
+// no initializer at all: real (empty) storage is registered, and `arr`
+// behaves exactly like `int[] arr;` would.
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.inexpressible,
+        "CTFE cannot read dataseg (__gshared/static) storage"),
+    Omit!(Interpreter, Because.unconfirmed),
+    Omit!(LLVMJit, Because.unconfirmed),
+)) {
+    @("dynamicArray.moduleEmptyArrayLiteralInitializer." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            int[] arr = [];
+
+            unittest {
+                assert(arr.length == 0);
+                assert(arr is null || arr.length == 0);
+                arr ~= 1;
+                assert(arr.length == 1);
+                assert(arr[0] == 1);
+            }
+        });
+    }
+}
+
 // Array-of-arrays structural equality (`int[][] == int[][]`): DMD's real
 // `__equals` lowering recurses into each row's content, so two separately
 // heap-allocated but content-equal arrays-of-arrays must compare equal --

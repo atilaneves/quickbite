@@ -573,10 +573,12 @@ row reaches them:
   initializer now has real storage when the initializer is a non-empty array
   literal of constant scalar elements (`int[] arr = [1, 2, 3];`) or, one
   level deep, of constant-scalar-element array-literal elements
-  (`int[][] m = [[1, 2], [3, 4]];`); still declines registration (same as
-  the default-initializer case) for two levels of nesting (`int[][][]`), a
-  struct/static-array element, an empty literal (`[]`), or any non-constant
-  element (e.g. a function call). A module-level
+  (`int[][] m = [[1, 2], [3, 4]];`). An empty literal (`int[] arr = [];`)
+  is registered too, identically to the no-initializer case (both are a
+  null/zero-length slice, so there is no element to inspect or store).
+  Registration is still declined for two levels of nesting (`int[][][]`), a
+  struct/static-array element, or any non-constant element (e.g. a function
+  call). A module-level
   struct variable (`ModuleStructVariable`) is supported for the
   default-initialized case: field access materialises the whole block
   via `Op.loadModule` but writes back only the touched field's own bytes via

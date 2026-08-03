@@ -11757,8 +11757,20 @@ private struct Compiler {
 
         auto initializerExpr =
             moduleDynamicArrayInitializerExpressionOrNull(declaration);
+        // An empty array literal (`int[] arr = [];`) is semantically the
+        // same as no initializer at all -- both are a null/zero-length
+        // slice -- so treat it identically rather than falling into
+        // `moduleDynamicArrayLiteralInitializerBytes`'s non-empty-literal
+        // element inspection, which declines (returns `null`, `count == 0`)
+        // on an empty `elements` array for lack of any element to inspect.
+        auto emptyLiteralExpr = initializerExpr is null
+            ? null : initializerExpr.isArrayLiteralExp;
+        const isEmptyLiteral = emptyLiteralExpr !is null &&
+            (emptyLiteralExpr.elements is null ||
+                emptyLiteralExpr.elements.length == 0);
         const hasDefaultInitializer =
-            initializerExpr is null || initializerExpr.isNullExp !is null;
+            initializerExpr is null || initializerExpr.isNullExp !is null ||
+            isEmptyLiteral;
 
         size_t literalCount;
         ubyte[] literalBytes;
