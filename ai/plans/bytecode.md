@@ -453,9 +453,11 @@ default now also support one level of array-of-arrays nesting (`int[][] m =
 `assert(arr1 == arr2)`) now compares structurally instead of by raw
 descriptor bytes, matching `dmd`'s recursive `__equals` lowering (including
 in the assert-diagnostic renderer). Both confirmed via `bin/ut` matching
-real `dmd`. Both still decline two or more levels of nesting (`int[][][]`),
-and the literal-default case also still declines a struct/static-array
-element, an empty literal (`[]`), or any non-constant element.
+real `dmd`. Equality has since been generalized to arbitrary nesting depth
+(`int[][][]` and beyond, including an `int[N][]` row); the literal-default
+case still declines two or more levels of nesting (`int[][][]`), a
+struct/static-array element, an empty literal (`[]`), or any non-constant
+element.
 
 Take `a.m[0][0] = 99` next: a class field of type `int[][]`, indexed twice,
 no intervening struct/field dot, throws "Unsupported assignment in bytecode

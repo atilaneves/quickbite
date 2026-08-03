@@ -19160,20 +19160,24 @@ private struct Compiler {
 
     // The byte width of the innermost (leaf) row's own elements for an
     // array-of-arrays type gated by `arrayElementIsArray`, e.g. 4 for both
-    // `int[][]`'s and `int[][][]`'s `int` leaves. Walks the same `Tarray`
-    // chain as `arrayNestingDepth`, landing on the deepest array level
-    // (one above the leaf), then reuses `dynamicArrayElementSize`'s
-    // existing scalar/struct/static-array sizing for that level's own
-    // elements.
+    // `int[][]`'s and `int[][][]`'s `int` leaves, and also 4 for `int[2][]`'s
+    // `int` leaves (a `Tsarray` row is a flat inline block, not a 16-byte
+    // slice descriptor, so its own elements -- not the row's full byte size
+    // -- are what a flat byte-compare needs). Walks the same `Tarray` chain
+    // as `arrayNestingDepth`, always advancing `current` to the row it just
+    // looked at (even the terminating one, whether that row is another
+    // `Tarray` level or the leaf `Tsarray`), then reuses
+    // `dynamicArrayElementSize`'s existing scalar/struct/static-array sizing
+    // for that row's own elements.
     private uint innermostArrayElementSize(Type type) {
         import dmd.astenums: TY;
 
         auto current = type.toBasetype;
         while (arrayElementIsArray(current)) {
             auto nextBase = current.nextOf.toBasetype;
+            current = nextBase;
             if (nextBase.ty != TY.Tarray)
                 break;
-            current = nextBase;
         }
         auto rowElementType = current.toBasetype.nextOf;
         return dynamicArrayElementSize(current, scalarType(rowElementType));

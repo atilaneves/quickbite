@@ -722,7 +722,9 @@ package(quickbite.backends.bytecode) struct Instruction {
     ushort b;
     ushort c;
     ushort d;
-    // AA key metadata (`assocArrayKeyIsArrayFlag`-tagged width): unused by
+    // AA key metadata (`assocArrayKeyIsArrayFlag`-tagged width) for AA
+    // opcodes, and the innermost row's own element byte width
+    // (`innermostArrayElementSize`) for `Op.sliceEqualNested`; unused by
     // every other opcode.
     ushort e;
 }

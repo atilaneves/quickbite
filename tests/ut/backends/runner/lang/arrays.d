@@ -591,6 +591,85 @@ static foreach (backend; Matrix!()) {
     }
 }
 
+// Same structural-equality requirement as `arrayOfArraysEqualityIsStructural`
+// above, but the row itself is a static array (`int[2][]`, a dynamic array
+// whose element is `Tsarray`, not `Tarray`): each row is a flat inline block
+// rather than its own heap-allocated slice descriptor, a structurally
+// different shape from the `int[][]` case that a fix generalizing only the
+// `Tarray`-row walk could still get wrong (e.g. by trying to size or
+// recurse into the `Tsarray` row itself instead of terminating there).
+// `b` is built entirely through separate `~=` appends, so its rows are a
+// distinct heap allocation from `a`'s.
+static foreach (backend; Matrix!()) {
+    @("dynamicArray.arrayOfStaticArraysEqualityIsStructural." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            unittest {
+                int[2][] a;
+                a ~= [1, 2];
+                a ~= [3, 4];
+
+                int[2][] b;
+                b ~= [1, 2];
+                b ~= [3, 4];
+
+                assert(a == b);
+                assert(!(a != b));
+            }
+        });
+    }
+}
+
+// The not-equal sibling of the test above, guarding against a fix that
+// makes `int[2][] == int[2][]` vacuously true instead of comparing content.
+static foreach (backend; Matrix!()) {
+    @("dynamicArray.arrayOfStaticArraysInequalityIsStructural." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            unittest {
+                int[2][] a;
+                a ~= [1, 2];
+                a ~= [3, 4];
+
+                int[2][] b;
+                b ~= [1, 2];
+                b ~= [3, 99];
+
+                assert(!(a == b));
+                assert(a != b);
+            }
+        });
+    }
+}
+
+// The assert-diagnostic rendering sibling of the two tests above: exercises
+// `tryArrayComparisonAssert`'s shared `emitNestedArrayEqual` path (the same
+// helpers backing the plain `==` operator) for the `Tsarray`-row shape.
+static foreach (backend; Matrix!()) {
+    @("assertDiagnostic.arrayOfStaticArraysSameLengthDifferentContent." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            unittest {
+                int[2][] a;
+                a ~= [1, 2];
+                a ~= [3, 4];
+
+                int[2][] b;
+                b ~= [1, 2];
+                b ~= [3, 99];
+
+                assert(a == b);
+            }
+        }).shouldThrowWithMessage("[[1, 2], [3, 4]] != [[1, 2], [3, 99]]");
+    }
+}
+
 static foreach (backend; Matrix!()) {
     @("assertDiagnostic.characterEquality." ~ backend.stringof)
     @Tags(backend.stringof)
