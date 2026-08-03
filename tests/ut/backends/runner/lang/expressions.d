@@ -3355,6 +3355,82 @@ static foreach (backend; Matrix!(
     }
 }
 
+// A module-level associative-array variable
+// (`__gshared int[string] quickbiteDatasegCounts;`) -- `moduleScalarVariableOrNull`
+// used to decline every `Taarray` dataseg declaration outright ("Taarray/
+// Tdelegate ... variables remain entirely unsupported"), even though
+// `scalarType` already maps `Taarray` to `ScalarType.ulong_` (its opaque
+// VM-map handle) the same way it does `Tpointer`/`Tclass`, so it needed no
+// AA-specific storage, only registration. The one AA-specific wrinkle: every
+// hook (`length`/`[]`/`in`/`foreach`) resolves the handle by materialising
+// the module's own `moduleData` bytes into a fresh frame slot
+// (`assocArrayHandleOffset`'s own `Op.loadModule`), and an insert
+// (`counts[k] = v`) may autovivify a still-null handle *inside that frame
+// slot* (`aaInsert`, `machine.d`) -- `compileAssocArrayGetLvalue`'s own new
+// `Op.storeModule` writes the (possibly new) handle straight back to
+// `moduleData` right after, so a later, separately-materialised read still
+// sees it. `Ctfe` cannot read or write dataseg storage at all (compile-time
+// execution has no such storage to access). `Interpreter` declines a write
+// through the module variable from inside a called function outright
+// ("Expected associative array.") -- the same pre-existing "does not mirror
+// back to the module variable's own authoritative storage" gap documented on
+// `dataseg.modulePointerVariableReadWriteAndRefArgument` above, a separate
+// backend from the bytecode core this fix targets, never previously
+// exercised for a module-level associative array.
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.inexpressible,
+        "CTFE cannot read or write dataseg (__gshared/static) storage"),
+    Omit!(Interpreter, Because.unconfirmed),
+)) {
+    @("dataseg.moduleAssocArrayInsertLookupInLengthAndForeach." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            __gshared int[string] quickbiteDatasegCounts;
+
+            void insert(string key, int value) {
+                quickbiteDatasegCounts[key] = value;
+            }
+
+            unittest {
+                // Default-initialized to a null (empty) AA.
+                assert(quickbiteDatasegCounts.length == 0);
+                assert(("a" in quickbiteDatasegCounts) is null);
+
+                // Assignment autovivifies the module's own storage, not a
+                // throwaway copy: a later, separately-compiled read sees it.
+                quickbiteDatasegCounts["a"] = 1;
+                assert(quickbiteDatasegCounts.length == 1);
+                assert(quickbiteDatasegCounts["a"] == 1);
+                assert(("a" in quickbiteDatasegCounts) !is null);
+
+                // A write from inside a function call mirrors back to the
+                // module's own authoritative storage.
+                insert("b", 2);
+                assert(quickbiteDatasegCounts.length == 2);
+                assert(quickbiteDatasegCounts["b"] == 2);
+                assert(quickbiteDatasegCounts["a"] == 1);
+
+                // Overwriting an existing key.
+                quickbiteDatasegCounts["a"] = 5;
+                assert(quickbiteDatasegCounts["a"] == 5);
+                assert(quickbiteDatasegCounts.length == 2);
+
+                int sum;
+                int count;
+                foreach (k, v; quickbiteDatasegCounts) {
+                    assert(quickbiteDatasegCounts[k] == v);
+                    sum += v;
+                    ++count;
+                }
+                assert(count == 2);
+                assert(sum == 7);
+            }
+        });
+    }
+}
+
 // A module-level struct's own field that is itself a struct
 // (`quickbiteDatasegOuter.inner.x`): the generic base resolver that walks an
 // `outer.inner` chain back to its base had no case for a bare module-struct

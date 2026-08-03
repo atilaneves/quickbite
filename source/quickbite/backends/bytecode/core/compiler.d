@@ -11803,7 +11803,6 @@ private struct Compiler {
 
         if (declaration.type.toBasetype.ty == TY.Tarray ||
             declaration.type.toBasetype.ty == TY.Tsarray ||
-            declaration.type.toBasetype.ty == TY.Taarray ||
             declaration.type.toBasetype.ty == TY.Tstruct ||
             declaration.type.toBasetype.ty == TY.Tdelegate ||
             isComplexDoubleType(declaration.type))
@@ -11820,6 +11819,21 @@ private struct Compiler {
         // time`), so the only initializer this ever sees in practice is
         // the implicit default (null); `moduleScalarInitializerBytes`
         // handles that as well as an explicit `= null` initializer.
+        //
+        // A module-level associative array (`int[string] counts;`) is the
+        // same shape: `scalarType` already maps `Taarray` to
+        // `ScalarType.ulong_` (its opaque VM-map handle, an index rather
+        // than a real address -- unlike a pointer or class reference it is
+        // never dereferenced directly, only ever passed to the AA runtime
+        // hooks), so it too falls straight through the generic scalar path
+        // with no AA-specific storage needed here. Only the implicit
+        // default (null) initializer is handled -- a non-null AA literal
+        // initializer (`= ["a": 1]`) falls through to
+        // `moduleScalarInitializerBytes`'s "Unsupported module scalar
+        // initializer" throw, same as any other unhandled constant shape.
+        // `assocArrayHandleOffset` (the AA hooks' own handle resolver)
+        // reads and, for an insert that autovivifies a still-null handle,
+        // writes back this storage; see its own comment.
         if (auto existing = declaration in _moduleScalarVariables)
             return existing;
 
@@ -17187,6 +17201,23 @@ private struct Compiler {
             Op.aaInsert, handle, keyOffset, placeholder, cast(ushort) width,
             keyMeta,
         );
+
+        // `aaInsert` (`machine.d`) may have just autovivified a still-null
+        // handle in place inside the `handle` frame slot (allocating a
+        // fresh map and writing its new handle there). For a module-level
+        // AA, that frame slot is only a materialised copy
+        // (`assocArrayHandleOffset`'s own `Op.loadModule`); write the
+        // (possibly new) handle back to the module's own `moduleData`
+        // storage now, so a later read of the same module variable sees the
+        // freshly-created map rather than the stale null it started from.
+        if (auto declaration =
+                moduleAssocArrayDeclarationOrNull((*call.arguments)[0]))
+            if (auto moduleVariable = moduleScalarVariableOrNull(declaration))
+                _code ~= Instruction(
+                    Op.storeModule, handle, moduleVariable.offset,
+                    cast(ushort) size_t.sizeof,
+                );
+
         _code ~= Instruction(
             Op.aaIn, offset, handle, keyOffset, cast(ushort) width, keyMeta,
         );
@@ -17352,6 +17383,25 @@ private struct Compiler {
                     if (auto slot = declaration in _locals)
                         return *slot;
 
+        // A module-level (`__gshared`/`static`) associative-array variable's
+        // handle lives in `moduleData`, not a frame local: materialise its
+        // current value into a fresh frame slot the same way a module
+        // pointer/class-reference read does (`Op.loadModule`). An insert
+        // (`compileAssocArrayGetLvalue`) may autovivify a still-null handle
+        // in place inside that frame slot -- its own writeback copies the
+        // (possibly new) handle back to `moduleData` right after, so this
+        // materialised copy going stale the moment the frame slot changes
+        // is never observed by a later read.
+        if (auto declaration = moduleAssocArrayDeclarationOrNull(expression))
+            if (auto moduleVariable = moduleScalarVariableOrNull(declaration)) {
+                const offset = allocate(ScalarType.ulong_);
+                _code ~= Instruction(
+                    Op.loadModule, offset, moduleVariable.offset,
+                    cast(ushort) size(ScalarType.ulong_),
+                );
+                return offset;
+            }
+
         if (auto dot = inner.isDotVarExp)
             if (auto field = tryStructField(dot)) {
                 import dmd.astenums: TY;
@@ -17391,6 +17441,34 @@ private struct Compiler {
             "Unsupported associative array operand in bytecode core: ",
             expressionChars(expression),
         ));
+    }
+
+    // The module-level (`__gshared`/`static`) associative-array variable
+    // `expression` refers to (after unwrapping `&aa`/`*aa`, the same shapes
+    // `assocArrayHandleOffset` itself unwraps), or `null` if `expression`
+    // does not (directly) refer to one. Shared by `assocArrayHandleOffset`
+    // (reading the handle) and `compileAssocArrayGetLvalue` (writing an
+    // autovivified handle back) so both resolve the same declaration the
+    // same way.
+    private VarDeclaration moduleAssocArrayDeclarationOrNull(
+        Expression expression,
+    ) {
+        import dmd.astenums: TY;
+
+        auto inner = expression;
+        if (auto address = inner.isAddrExp)
+            inner = address.e1;
+        if (auto deref = inner.isPtrExp)
+            inner = deref.e1;
+
+        auto variable = inner.isVarExp;
+        auto declaration =
+            variable is null ? null : variable.var.isVarDeclaration;
+        if (declaration is null ||
+            declaration.type.toBasetype.ty != TY.Taarray)
+            return null;
+
+        return declaration;
     }
 
     private VarDeclaration staticDelegateAssocArrayDeclaration(

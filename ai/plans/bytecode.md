@@ -644,8 +644,8 @@ row reaches them:
   arithmetic) rather than reusing the whole-block copy `tryStructField`
   materialises for plain field access. A non-default struct initializer still
   falls through to "Unsupported variable in bytecode core". Module-level
-  `Taarray`/`Tdelegate` variables and complex-double dataseg variables remain
-  entirely unsupported (`moduleScalarVariableOrNull` still declines them). A
+  `Tdelegate` variables and complex-double dataseg variables remain entirely
+  unsupported (`moduleScalarVariableOrNull` still declines them). A
   module-level fixed-size static array (`int[3] arr;`) is now supported for a
   scalar-element array (`moduleStaticArrayVariableOrNull`, the Tsarray
   counterpart of `ModuleStructVariable`): its `N * elementSize` bytes live
@@ -701,7 +701,25 @@ row reaches them:
   pre-existing, separate gap here (see
   `pointer.refArgumentThroughCallReturnedShortPointerCallsExpressionOnce`):
   writing through a pointer that addresses dataseg storage does not mirror
-  back to the module variable's own authoritative storage. Correction to the
+  back to the module variable's own authoritative storage. A module-level
+  associative array (`int[string] counts;`) is now supported: it too is just
+  a `size_t`-width opaque VM-map handle (`scalarType` already mapped
+  `Taarray` to `ScalarType.ulong_`), so `moduleScalarVariableOrNull`
+  registers it through the same generic scalar path, default-initialized to
+  null (an empty map) -- an explicit non-null AA-literal initializer still
+  falls through to "Unsupported module scalar initializer", scoped out. The
+  one AA-specific wrinkle: every hook (`length`/`[]`/`in`/`foreach`/`.dup`/
+  etc.) resolves the handle through `assocArrayHandleOffset`, which now
+  materialises the module's own storage into a fresh frame slot
+  (`Op.loadModule`) the same way a module pointer read does; an insert
+  (`counts[k] = v`) may autovivify a still-null handle *inside that frame
+  slot* (`aaInsert`, `machine.d`), so `compileAssocArrayGetLvalue` writes the
+  (possibly new) handle back to `moduleData` (`Op.storeModule`) right after,
+  keeping a later, separately-materialised read in sync. `Ctfe` cannot read
+  or write dataseg storage at all; `Interpreter` has the same pre-existing
+  "does not mirror a dataseg write back through a called function" gap noted
+  for the pointer case above (`dataseg.moduleAssocArrayInsertLookupInLengthAndForeach`,
+  `expressions.d`). Correction to the
   paragraph above's own "Registration is
   still declined for a static-array element" claim: `int[3][] arr = [[1, 2,
   3], [4, 5, 6]];` actually already registers successfully, both at module
