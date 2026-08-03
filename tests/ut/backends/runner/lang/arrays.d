@@ -486,6 +486,55 @@ static foreach (backend; Matrix!(
     }
 }
 
+// The two-levels-of-nesting sibling of the fixture above
+// (`int[][][] m = [[[1, 2], [3, 4]], [[5, 6]]];`):
+// `moduleDynamicArrayLiteralInitializerBytes` used to hardcode its
+// recursive call's `elementIsArray` to `false`, so it only ever unwrapped
+// exactly one level of array-of-arrays nesting before falling into the
+// plain-scalar branch -- a middle-level row here (itself an `int[][]`, not
+// a leaf of scalars) failed that branch's `isIntegerExp`/`isRealExp` checks
+// and declined the whole array, so `m` fell all the way through
+// `moduleDynamicArrayVariableOrNull` to "declined" and the variable was
+// never registered as dataseg storage at all. It now re-derives
+// `elementIsArray` from each row's own `Expression.type`, so this keeps
+// recursing at any nesting depth.
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.inexpressible,
+        "CTFE cannot read dataseg (__gshared/static) storage"),
+    Omit!(Interpreter, Because.unconfirmed),
+    Omit!(LLVMJit, Because.unconfirmed),
+)) {
+    @("dynamicArray.moduleArrayOfArraysOfArraysLiteralInitializer." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            int[][][] m = [[[1, 2], [3, 4]], [[5, 6]]];
+
+            int sum() {
+                return m[0][0][0] + m[0][0][1] + m[0][1][0] + m[0][1][1] +
+                    m[1][0][0] + m[1][0][1];
+            }
+
+            unittest {
+                assert(sum() == 21);
+
+                assert(m.length == 2);
+                assert(m[0][0][0] == 1);
+                assert(m[0][0][1] == 2);
+                assert(m[0][1][0] == 3);
+                assert(m[0][1][1] == 4);
+                assert(m[1][0][0] == 5);
+                assert(m[1][0][1] == 6);
+
+                auto row = m[0][1];
+                row[0] = 99;
+                assert(m[0][1][0] == 99);
+            }
+        });
+    }
+}
+
 // A module-level dynamic array with an *empty* array-literal initializer
 // (`int[] arr = [];`): `moduleDynamicArrayLiteralInitializerBytes` used to
 // treat a zero-length `elements` array the same as any other shape it

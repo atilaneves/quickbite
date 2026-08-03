@@ -11724,9 +11724,11 @@ private struct Compiler {
     // `moduleScalarInitializerBytes` writes a scalar's bytes directly: no
     // bytecode instruction is needed, since the compiler and the machine
     // share one process/address space, so a pointer resolved during
-    // compilation stays valid for the whole run. An array-of-arrays element,
-    // a struct/static-array element, or any non-constant element (e.g. a
-    // function call) is not yet handled and still declines registration.
+    // compilation stays valid for the whole run. An array-of-arrays element
+    // is handled at any nesting depth (`int[][]`, `int[][][]`, and so on --
+    // see `moduleDynamicArrayLiteralInitializerBytes`); a struct/static-array
+    // element, or any non-constant element (e.g. a function call), is not
+    // yet handled and still declines registration.
     //
     // A plain array literal (`[1, 2, 3]`) parses as an `ArrayInitializer`,
     // not an `ExpInitializer` the way a scalar's `int x = 5;` does, so this
@@ -11822,19 +11824,29 @@ private struct Compiler {
     // Compile-time bytes for a module-level dynamic array's non-null,
     // non-default initializer, when it is a non-empty array literal of
     // constant scalar elements, or (`elementIsArray`) a non-empty array
-    // literal of constant-scalar-element array-literal elements (exactly one
-    // level of nesting, `int[][] m = [[1, 2], [3, 4]];`) -- each inner array
-    // is built into its own stable `literalBlocks` entry first, the same way
-    // `compileDynamicArrayInto`'s own array-of-arrays literal branch builds
-    // each row into its own heap block at runtime, so the outer bytes hold
-    // one 16-byte `{pointer, count}` descriptor per row rather than raw
-    // scalar bytes. A row that is not itself a constant-scalar-element array
-    // literal (deeper nesting, a non-literal expression, or an empty `[]`
-    // row) declines the whole array, matching the plain-scalar decline
-    // below. Returns `null` (with `count` left at 0) when the initializer is
-    // not one of these shapes, so the caller can tell "empty literal bytes"
-    // (`count == 0` from a genuinely empty `[]` initializer, not yet given
-    // real storage either) apart from "declined".
+    // literal of array-literal elements, at any nesting depth (`int[][] m =
+    // [[1, 2], [3, 4]];`, `int[][][] m = [[[1, 2], [3, 4]], [[5, 6]]];`, and
+    // so on) -- each inner array is built into its own stable
+    // `literalBlocks` entry first, the same way `compileDynamicArrayInto`'s
+    // own array-of-arrays literal branch builds each row into its own heap
+    // block at runtime, so the outer bytes hold one 16-byte `{pointer,
+    // count}` descriptor per row rather than raw scalar bytes. The
+    // recursive call below re-derives `elementIsArray` from each row's own
+    // `Expression.type` (`arrayElementIsArray`) rather than being told a
+    // fixed depth by its caller, so a row that is itself another
+    // `elementIsArray` shape keeps recursing through the array branch
+    // instead of stopping after exactly one level; a row's leaf scalar
+    // `elementType` was already resolved once up front by
+    // `dynamicArrayElementType`, which itself walks arbitrarily deep
+    // through the `Tarray`/`Tsarray` chain, so it stays correct at every
+    // recursion depth unchanged. A row that is not itself a
+    // constant-scalar-element (or further-nested-array) array literal (a
+    // non-literal expression, or an empty `[]` row) declines the whole
+    // array, matching the plain-scalar decline below. Returns `null` (with
+    // `count` left at 0) when the initializer is not one of these shapes,
+    // so the caller can tell "empty literal bytes" (`count == 0` from a
+    // genuinely empty `[]` initializer, not yet given real storage either)
+    // apart from "declined".
     private ubyte[] moduleDynamicArrayLiteralInitializerBytes(
         Expression initializerExpr,
         in ScalarType elementType,
@@ -11858,9 +11870,20 @@ private struct Compiler {
             ubyte[] bytes;
             bytes.length = count * sliceDescriptorSize;
             foreach (elementIndex; 0 .. count) {
+                auto element = (*outer.elements)[elementIndex];
+                // Re-derive from the row's own type, rather than always
+                // recursing with `false`, so a row that is itself another
+                // `elementIsArray` shape (e.g. `int[][][]`'s middle-level
+                // row, itself an `int[][]` whose own elements are `int[]`)
+                // keeps recursing through the array branch instead of
+                // stopping after exactly one level -- this is what
+                // generalises this function from one fixed level of nesting
+                // to arbitrary depth.
+                const rowElementIsArray = element !is null &&
+                    element.type !is null && arrayElementIsArray(element.type);
                 size_t rowCount;
                 auto rowBytes = moduleDynamicArrayLiteralInitializerBytes(
-                    (*outer.elements)[elementIndex], elementType, false,
+                    element, elementType, rowElementIsArray,
                     rowCount,
                 );
                 if (rowBytes is null && rowCount == 0) {

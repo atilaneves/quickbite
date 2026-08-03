@@ -445,14 +445,18 @@ corrupting, and a struct-pointer/class-reference field's own `+=` already
 wrote back correctly.
 
 A `Tarray` class field's and a module-level dynamic array's own literal
-default now also support one level of array-of-arrays nesting (`int[][] m =
-[[1, 2], [3, 4]];`), and array-of-arrays equality (`arr1 == arr2`,
-`assert(arr1 == arr2)`) now compares structurally instead of by raw
-descriptor bytes, matching `dmd`'s recursive `__equals` lowering (including
-in the assert-diagnostic renderer). Both confirmed via `bin/ut` matching
-real `dmd`. Equality has since been generalized to arbitrary nesting depth
-(`int[][][]` and beyond, including an `int[N][]` row); the literal-default
-case still declines two or more levels of nesting (`int[][][]`), a
+default now support array-of-arrays nesting at any depth (`int[][] m =
+[[1, 2], [3, 4]];`, `int[][][] m = [[[1, 2], [3, 4]], [[5, 6]]];`, and so
+on) -- both consumers share the one byte-builder
+(`moduleDynamicArrayLiteralInitializerBytes`, `classFieldArraySharedDefaultOrNull`
+reuses it verbatim "so this inherits its exact supported shape"), and
+array-of-arrays equality (`arr1 == arr2`, `assert(arr1 == arr2)`) now
+compares structurally instead of by raw descriptor bytes, matching `dmd`'s
+recursive `__equals` lowering (including in the assert-diagnostic
+renderer). Confirmed via `bin/ut` matching real `dmd` for the module-level
+variable case at both one and two levels of nesting; equality was likewise
+generalized to arbitrary nesting depth earlier (`int[][][]` and beyond,
+including an `int[N][]` row). The literal-default case still declines a
 struct/static-array element, an empty literal (`[]`), or any non-constant
 element.
 
@@ -571,16 +575,25 @@ row reaches them:
 - A `__gshared`/`static` module-level dynamic-array variable
   (`moduleDynamicArrayVariableOrNull`, `compiler.d`) with a non-null
   initializer now has real storage when the initializer is a non-empty array
-  literal of constant scalar elements (`int[] arr = [1, 2, 3];`) or, one
-  level deep, of constant-scalar-element array-literal elements
-  (`int[][] m = [[1, 2], [3, 4]];`). An empty literal (`int[] arr = [];`)
-  is registered too, identically to the no-initializer case (both are a
-  null/zero-length slice, so there is no element to inspect or store).
-  Registration is still declined for two levels of nesting (`int[][][]`) or a
-  struct/static-array element. "Any non-constant element (e.g. a function
-  call)" turns out not to be a real gap: DMD's frontend requires every
-  dataseg (module-level, non-`immutable`) initializer to reduce to a
-  genuine compile-time constant, full stop -- there is no implicit
+  literal of constant scalar elements (`int[] arr = [1, 2, 3];`) or, at any
+  nesting depth, of array-literal elements (`int[][] m = [[1, 2], [3, 4]];`,
+  `int[][][] m = [[[1, 2], [3, 4]], [[5, 6]]];`, and so on).
+  `moduleDynamicArrayLiteralInitializerBytes` recurses per row, re-deriving
+  `elementIsArray` from each row's own `Expression.type`
+  (`arrayElementIsArray`) rather than being told a fixed depth by its
+  caller, so a row that is itself another `elementIsArray` shape keeps
+  recursing through the array branch instead of stopping after exactly one
+  level; this mirrors how array-of-arrays *equality* was earlier generalized
+  from one level to arbitrary nesting depth (`arrayNestingDepth`,
+  `Op.sliceEqualNested`), though the literal-bytes builder gets there with a
+  smaller change since a plain recursive call with no depth counter is
+  enough. An empty literal (`int[] arr = [];`) is registered too,
+  identically to the no-initializer case (both are a null/zero-length
+  slice, so there is no element to inspect or store). Registration is still
+  declined for a struct/static-array element. "Any non-constant element
+  (e.g. a function call)" turns out not to be a real gap: DMD's frontend
+  requires every dataseg (module-level, non-`immutable`) initializer to
+  reduce to a genuine compile-time constant, full stop -- there is no implicit
   `static this()` lowering for a plain module variable the way there is
   for, say, `immutable` globals with a non-manifest initializer. A
   CTFEable call (`int f() { return 42; } int[] arr = [1, f(), 3];`) is
