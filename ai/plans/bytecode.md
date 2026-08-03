@@ -839,8 +839,7 @@ enabled matrix and a forward-looking next-row update.
 Approved deepening work, distinct from the row-driven queue: each item lands
 as bounded, behaviour-preserving ride-along commits on the serial bytecode
 track, with the enabled matrix green after each commit. Order: width first,
-place second; the program.d item is independent except that its descriptor
-accessors must precede the descriptor-order flip (§ Memory model).
+place second.
 
 1. **One width authority.** Element/operand byte width is hand-derived at
    dozens of emit sites, and `ScalarType.void_` (size 0) doubles as the
@@ -870,63 +869,6 @@ accessors must precede the descriptor-order flip (§ Memory model).
    (base, hop chain, width, writeback rule) returned by one resolver,
    consumed by emit sites and a single flush path. A new language-surface
    shape extends the resolver, never adds a sibling emitter.
-
-3. **Shared facts move into program.d.** `ResultType` is still constructed
-   positionally — open. Slice-descriptor field-offset accessors
-   (`sliceDescriptorPtrOffset`/`sliceDescriptorLengthOffset`) landed in
-   program.d and now back every genuine `{ptr, length}` descriptor site in
-   reify.d, machine.d, and compiler.d; compiler.d's remaining inline
-   `+ size_t.sizeof` sites are unrelated two-word shapes (delegate
-   `{functionIndex, context}` pairs, slice/2D-array `{lo, hi}`/`{rows, cols}`
-   bound pairs), not descriptors, so nothing there is left to convert. The
-   descriptor-order flip (§ Memory model) can now proceed on program.d's
-   accessors alone. The op↔width mapping's `indexLoad*`/`indexStore*` family
-   now goes through one table, `program.d`'s `indexOpWidths`: compiler.d's
-   `indexLoadOp`/`indexStoreOp` width→Op selectors and machine.d's
-   `indexElementWidth` Op→width derivation both walk it, so the two
-   directions cannot independently drift. `pointerLoad*`/`pointerStore*`/
-   `pointerSlice*` now shares the same pattern via `program.d`'s
-   `pointerOpWidths` (three opcodes per width instead of two — load, store,
-   and slice): compiler.d's `pointerLoadOp`/`pointerStoreOp`/`pointerSliceOp`
-   and machine.d's `pointerElementWidth` all walk it. `subSlice*` now
-   shares the same pattern via `program.d`'s `subSliceOpWidths` (one opcode
-   per width, since forming a sub-slice descriptor is a single operation):
-   compiler.d's `subSliceOp` and machine.d's `subSliceElementWidth` both walk
-   it. `appendElement*` now shares the same pattern via `program.d`'s
-   `appendElementOpWidths` (one opcode per width, since appending one element
-   is a single operation): compiler.d's `appendElementOp` and machine.d's
-   `appendElementWidth` both walk it. `dupArray*` now shares the same pattern
-   via `program.d`'s `dupArrayOpWidths` (one opcode per width, since
-   duplicating an array's elements into a fresh heap block is a single
-   operation): compiler.d's `dupArrayOp` and machine.d's `dupArrayWidth` both
-   walk it. `concatArrays*` now shares the same pattern via `program.d`'s
-   `concatArraysOpWidths` (one opcode per width, since concatenating two
-   arrays is a single operation; only 1, 4, and 16 bytes get a fixed-width
-   opcode): compiler.d's `concatArraysOp` and machine.d's `concatArraysWidth`
-   both walk it. `sliceCopy*`/`sliceFill*`/`sliceEqual*` now share the same
-   pattern too, via three independent single-opcode-per-width tables in
-   program.d — `sliceCopyOpWidths`, `sliceFillOpWidths`, and
-   `sliceEqualOpWidths` — rather than one combined table like
-   `pointerOpWidths`, since the three ops are not parallel across widths:
-   `sliceCopy` covers all five fixed widths (1/2/4/8/16, matching
-   indexLoad/indexStore), `sliceFill` covers only 1/2/4/8 (the broadcast
-   source is never a 16-byte descriptor element), and `sliceEqual` covers
-   only 1/2/4/8 with no `N` variant at all (a 16-byte element compares
-   structurally via `Op.sliceEqualNested`, not flat bytes, and every other
-   width the front end can produce is one of the four). Previously
-   machine.d's `sliceCopy1`/`sliceEqual1` etc. Op→width derivation was a
-   single hand-merged function, `sliceCopyElementSize`, exploiting the
-   coincidence that `sliceCopy`'s and `sliceEqual`'s widths lined up 1:1 for
-   1/2/4/8 and falling through to a bare `4` as its default case; that
-   function is gone, replaced by `sliceCopyWidth`/`sliceEqualWidth`, each
-   walking its own table. compiler.d's `sliceCopyOp`/`sliceFillOp`/
-   `sliceEqualOp` width→Op selectors now walk program.d's tables the same
-   way. This closes the op↔width mapping duplication named by this item for
-   every width-suffixed family: `indexLoad*`/`indexStore*`,
-   `pointerLoad*`/`pointerStore*`/`pointerSlice*`, `subSlice*`,
-   `appendElement*`, `dupArray*`, `concatArrays*`, and now
-   `sliceCopy*`/`sliceFill*`/`sliceEqual*`. Item 3's remaining open piece is
-   `ResultType`'s positional construction.
 
 Reviewed and declined (2026-08): a bytecode-core disassembler with
 instruction-level emission pins — not worth tackling; do not re-propose.

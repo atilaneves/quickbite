@@ -18969,18 +18969,18 @@ private struct Compiler {
         // the element size for indexing the returned descriptor.
         if (type.toBasetype.ty == TY.Tarray) {
             auto result = ResultType(
-                ScalarType.void_,
-                true,
-                dynamicArrayElementType(type),
-                arrayElementIsArray(type),
-                false,
-                0,
-                false,
-                false,
-                0,
-                false,
-                null,
-                enumMembersByValue(type.toBasetype.nextOf),
+                scalar: ScalarType.void_,
+                isArray: true,
+                elementType: dynamicArrayElementType(type),
+                arrayElementsAreArrays: arrayElementIsArray(type),
+                isStruct: false,
+                structSize: 0,
+                isUndisplayable: false,
+                isStaticArray: false,
+                arrayLength: 0,
+                arrayElementsAreStrings: false,
+                enumMembers: null,
+                elementEnumMembers: enumMembersByValue(type.toBasetype.nextOf),
             );
             populateArrayElementStructDisplay(result, type);
             return result;
@@ -18988,15 +18988,26 @@ private struct Compiler {
 
         if (type.toBasetype.ty == TY.Tsarray && arrayElementIsString(type))
             return ResultType(
-                ScalarType.void_, true, dynamicArrayElementType(type),
-                arrayElementIsArray(type), false, cast(uint) staticArraySize(type),
-                false, true, staticArrayLength(type), arrayElementIsString(type),
+                scalar: ScalarType.void_,
+                isArray: true,
+                elementType: dynamicArrayElementType(type),
+                arrayElementsAreArrays: arrayElementIsArray(type),
+                isStruct: false,
+                structSize: cast(uint) staticArraySize(type),
+                isUndisplayable: false,
+                isStaticArray: true,
+                arrayLength: staticArrayLength(type),
+                arrayElementsAreStrings: arrayElementIsString(type),
             );
 
         if (type.toBasetype.ty == TY.Tsarray)
             return ResultType(
-                ScalarType.void_, false, ScalarType.void_,
-                false, true, cast(uint) staticArraySize(type),
+                scalar: ScalarType.void_,
+                isArray: false,
+                elementType: ScalarType.void_,
+                arrayElementsAreArrays: false,
+                isStruct: true,
+                structSize: cast(uint) staticArraySize(type),
             );
 
         // A by-value struct result is an inline block of `Type.size()` bytes,
@@ -19004,8 +19015,12 @@ private struct Compiler {
         // block; field access then resolves against that destination's base.
         if (type.toBasetype.ty == TY.Tstruct) {
             auto result = ResultType(
-                ScalarType.void_, false, ScalarType.void_,
-                false, true, cast(uint) staticArraySize(type),
+                scalar: ScalarType.void_,
+                isArray: false,
+                elementType: ScalarType.void_,
+                arrayElementsAreArrays: false,
+                isStruct: true,
+                structSize: cast(uint) staticArraySize(type),
             );
             populateStructDisplay(result, type);
             return result;
@@ -19018,8 +19033,13 @@ private struct Compiler {
         // scaffolding.
         if (type.toBasetype.ty == TY.Tdelegate) {
             auto result = ResultType(
-                ScalarType.void_, false, ScalarType.void_,
-                false, false, 0, true,
+                scalar: ScalarType.void_,
+                isArray: false,
+                elementType: ScalarType.void_,
+                arrayElementsAreArrays: false,
+                isStruct: false,
+                structSize: 0,
+                isUndisplayable: true,
             );
             result.isDelegate = true;
             return result;
@@ -19027,12 +19047,17 @@ private struct Compiler {
 
         if (isUndisplayableType(type))
             return ResultType(
-                ScalarType.void_, false, ScalarType.void_,
-                false, false, 0, true,
+                scalar: ScalarType.void_,
+                isArray: false,
+                elementType: ScalarType.void_,
+                arrayElementsAreArrays: false,
+                isStruct: false,
+                structSize: 0,
+                isUndisplayable: true,
             );
 
         if (isPointerType(type))
-            return ResultType(ScalarType.ulong_);
+            return ResultType.scalarResult(ScalarType.ulong_);
 
         return ResultType.scalarResult(
             scalarType(type),
@@ -19071,8 +19096,12 @@ private struct Compiler {
             return;
 
         auto elementResult = ResultType(
-            ScalarType.void_, false, ScalarType.void_,
-            false, true, cast(uint) staticArraySize(element),
+            scalar: ScalarType.void_,
+            isArray: false,
+            elementType: ScalarType.void_,
+            arrayElementsAreArrays: false,
+            isStruct: true,
+            structSize: cast(uint) staticArraySize(element),
         );
         populateStructDisplay(elementResult, element);
         if (elementResult.structName is null)
@@ -19157,7 +19186,7 @@ private struct Compiler {
     // returns void; every other function uses its declared return type.
     private ResultType functionResultType(FuncDeclaration function_) {
         if (function_.isCtorDeclaration !is null)
-            return ResultType(ScalarType.void_);
+            return ResultType.scalarResult(ScalarType.void_);
         return resultType(returnType(function_));
     }
 
