@@ -1444,6 +1444,58 @@ static foreach (backend; Matrix!()) {
     }
 }
 
+// Class twin of `nestedFunctionMutatesTwoLevelCapturedStructStaticArrayField`
+// above: the captured receiver (`c`) is a class *reference*, not a struct
+// value, so `capturedStructReceiver` (which only matches a `Tstruct`-typed
+// captured local) never matches `c.inner`, and `c.inner.arr[1] = 55` used to
+// throw "Unsupported static array access in bytecode core" instead of
+// falling through to any writeback machinery at all. A class field's
+// storage is real heap memory addressed through a runtime pointer
+// (`classFieldAddress`), not a captured frame block copy needing writeback,
+// so the fix is in `classStaticArrayFieldOf` (the class-field counterpart of
+// `staticArrayOffsetOf`): it now recognises a static-array field reached
+// through an intervening struct-field hop (`inner`) rooted at a class
+// reference (`structFieldReachedThroughClass`), not just a *direct* class
+// receiver (`c.arr`), and resolves it through the same
+// `tryClassPointerField`/`classFieldAddress` real-pointer plumbing a direct
+// class field already uses -- whether `c` itself is captured or not.
+// Reading back every element (not just the mutated one) catches a fix that
+// only gets the mutated index right by resolving to the wrong base offset.
+static foreach (backend; Matrix!()) {
+    @("function.nestedFunctionMutatesCapturedClassStructStaticArrayField." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct Inner {
+                int[3] arr;
+            }
+
+            class COuter {
+                Inner inner;
+            }
+
+            int run() {
+                COuter c = new COuter();
+                c.inner.arr[0] = 1;
+                c.inner.arr[1] = 2;
+                c.inner.arr[2] = 3;
+
+                void mutate() {
+                    c.inner.arr[1] = 55;
+                }
+                mutate();
+
+                return c.inner.arr[0] * 100 + c.inner.arr[1] * 10 + c.inner.arr[2];
+            }
+
+            unittest {
+                assert(run() == 653);
+            }
+        });
+    }
+}
+
 // `middle` is both a relay (for `innerA`, which reaches `run`'s `a`) AND an
 // owner (for `innerB`, which reaches `middle`'s own `b`) -- the same caller
 // in both roles for different callees. `innerB` itself reads captures at two

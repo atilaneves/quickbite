@@ -13966,26 +13966,55 @@ private struct Compiler {
         return staticArrayOffsetOf(expression);
     }
 
+    // Whether `expression` is a class reference, or a struct-field access
+    // chain (any depth, e.g. `c.inner`, `c.inner.deeper`) ultimately rooted
+    // at one -- i.e. an expression `tryClassPointerField` can safely
+    // `compileExpression` for a real runtime pointer, as opposed to a plain
+    // (non-class-backed) struct value addressed through `_structLocals`, a
+    // captured struct receiver, a module struct, or an AA-value-read
+    // pointer, none of which `compileExpression` accepts directly. Walks
+    // down the `DotVarExp.e1` chain rather than compiling anything, so it is
+    // safe to call before deciding whether probing further is even valid.
+    private bool structFieldReachedThroughClass(Expression expression) {
+        import dmd.astenums: TY;
+
+        if (expression.type is null)
+            return false;
+        if (expression.type.toBasetype.ty == TY.Tclass)
+            return true;
+        if (auto dot = expression.isDotVarExp)
+            return structFieldReachedThroughClass(dot.e1);
+        return false;
+    }
+
     // The class-field counterpart of `staticArrayOffsetOf`: a static-array
-    // field reached through a class pointer, or null if `expression` is not
+    // field reached through a class pointer -- either directly (`c.arr`) or
+    // through an intermediate struct-field chain rooted at a class (`c.inner
+    // .arr`, `c.inner.deeper.arr`, ...) -- or null if `expression` is not
     // one. Unlike a struct's static-array field (an inline frame offset
     // `staticArrayOffsetOf` folds at compile time), the field's storage
     // lives in the class's own heap block, so callers address it through
-    // `classFieldAddress` (a real runtime pointer) instead.
+    // `classFieldAddress` (a real runtime pointer) instead; an intermediate
+    // struct-field hop resolves through that same real-pointer plumbing
+    // (`tryClassPointerField`'s generic pointer-receiver mechanism, per
+    // `loadClassPointerField`'s `Tstruct` branch), so no materialised copy
+    // or writeback is ever needed for the struct hop itself.
     private ClassPointerField* classStaticArrayFieldOf(Expression expression) {
         import dmd.astenums: TY;
 
         if (auto cast_ = expression.isCastExp)
             return classStaticArrayFieldOf(cast_.e1);
 
-        // The receiver's static type must already be a class before probing
+        // The receiver must resolve to a class reference (directly or
+        // through a struct-field chain rooted at one) before probing
         // further: `tryClassPointerField` unconditionally compiles `dot.e1`
         // to check whether it yields a pointer, which throws for a plain
-        // struct local (structs are addressed through `_structLocals`, never
-        // `compileExpression`) rather than simply failing to match.
+        // (non-class-backed) struct local (structs are addressed through
+        // `_structLocals`, never `compileExpression`) rather than simply
+        // failing to match.
         if (auto dot = expression.isDotVarExp)
             if (dot.e1.type !is null &&
-                dot.e1.type.toBasetype.ty == TY.Tclass)
+                structFieldReachedThroughClass(dot.e1))
                 if (auto field = tryClassPointerField(dot))
                     if (field.type.toBasetype.ty == TY.Tsarray)
                         return field;

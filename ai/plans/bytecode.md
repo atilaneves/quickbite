@@ -1077,21 +1077,29 @@ element into a fresh local slot via the same `capturedFrameIndex`/
 captured local, reusing `tryCapturedStaticArrayElement`'s offset resolution
 from the write-side commit rather than re-deriving it.
 
-Next candidate: a captured **class**-typed local reached through a nested
-struct-field chain into a static array (`struct Inner { int[3] arr; } class
-COuter { Inner inner; } COuter c; void mutate() { c.inner.arr[1] = 55; }`)
-throws "Unsupported static array access in bytecode core: c.inner.arr" on
-`Bytecode` (confirmed via `bin/ut`; `Ctfe`, `Interpreter`, `LLVMJit`, and
-`SystemLinker` all handle it) -- a thrown refusal, not a silent wrong result.
-`capturedStructReceiver` only matches a `Tstruct`-typed captured local, so a
-captured class reference never enters the struct-materialisation machinery at
-all; a class field write already goes through `tryClassPointerField`/
-`tryClassArrayFieldElementFieldPointer`'s real-pointer plumbing instead of a
-materialised copy, so this is presumably a narrower "recognise a captured
-class receiver" gap, not yet root-caused to a specific dispatch function. A
-read-only two-level captured struct-field chain (`return o.inner.arr[1];`
-from inside a nested function, no assignment) is not a bug: checked via
-`bin/ut`, a read always freshly reloads the materialised block.
+A captured **class**-typed local reached through a nested struct-field chain
+into a static array (`struct Inner { int[3] arr; } class COuter { Inner
+inner; } COuter c; void mutate() { c.inner.arr[1] = 55; }`) now compiles:
+`classStaticArrayFieldOf` required its `DotVarExp`'s own `dot.e1` to be
+`Tclass`-typed directly (`c.arr`), so `c.inner.arr` (receiver `c.inner` is
+`Tstruct`) never matched. It now also matches a struct-field chain of any
+depth ultimately rooted at a class reference (`structFieldReachedThroughClass`,
+a pure-type walk, never compiling anything), then resolves through the same
+`tryClassPointerField`/`classFieldAddress` real-pointer plumbing a direct
+class field already uses -- no materialised copy or writeback needed for the
+struct hop, since it addresses real heap memory (`classPointer +
+field.offset`), unlike the captured-struct-receiver case.
+
+Next candidate: `refArgument.templateRefSharedParameterMutatesAndPreservesAddress`
+(`expressions.d`) -- confirmed red via `bin/ut` by temporarily lifting its
+`Omit!(Bytecode, Because.unconfirmed)` (restored, not committed): `void
+setShared(T)(ref shared(T) value, shared(T)* expected) { assert(&value ==
+expected); ... }` fails its first assertion, so a template `ref shared(T)`
+parameter does not alias the caller's real storage on `Bytecode` -- not yet
+root-caused. The sibling row below it, `delegate.captureIsNotParameterReference`,
+already passes on `Bytecode` (checked the same way) -- its
+`Omit!(Bytecode, Because.unconfirmed)` is stale and worth deleting as a free
+promotion.
 
 ### TDD and handoff discipline
 
