@@ -460,6 +460,20 @@ including an `int[N][]` row). The literal-default case still declines a
 struct/static-array element, an empty literal (`[]`), or any non-constant
 element.
 
+`arr[0].length` on a module-level `int[][]` is fixed: `compileArrayLength`
+called `dynamicArrayDescriptor` directly, whose `IndexExp` resolution
+(`innerArrayDescriptor`) only recognised a local (`_dynamicArrayLocals`) or
+a struct/class-field `DotVarExp` base, never a bare module `VarExp` (module
+arrays are never inserted into `_dynamicArrayLocals`) -- so it threw
+"Unsupported dynamic array access in bytecode core" even though the
+sibling shape `arr[0][0]` already worked via `tryDynamicArrayIndex`'s own
+fallback to `indexedArrayDescriptor`. Fixed by giving `compileArrayLength`
+that same fallback, scoped to this one call site (not the other nine
+`dynamicArrayDescriptor` call sites) so it never touches
+`innerArrayDescriptor` itself. Confirmed via the same `arrays`/`expressions`/
+`structs` cross-module sweep at both two and three levels of nesting, plus
+the already-working local-variable form.
+
 `a.m[0][0] = 99` (a class field of type `int[][]`, indexed twice, no
 intervening struct/field dot) is fixed: `innerArrayDescriptor` gained a
 narrow, explicitly-`Tarray`-gated branch (`dynamicArrayFieldDescriptorOrNull`,

@@ -486,6 +486,82 @@ static foreach (backend; Matrix!(
     }
 }
 
+// `arr[0].length` where `arr` is a module-level `int[][]`:
+// `compileArrayLength` used to call `dynamicArrayDescriptor` ->
+// `dynamicArrayDescriptorOrNull` directly, whose `IndexExp` branch
+// (`innerArrayDescriptor`) only resolves an array-of-arrays base that is
+// either a known local (`_dynamicArrayLocals`) or a struct/class-field
+// `DotVarExp` -- never a bare module-level `VarExp`, since a module
+// dynamic array is never inserted into `_dynamicArrayLocals`. This threw
+// "Unsupported dynamic array access in bytecode core: arr[0]" even though
+// the sibling shape `arr[0][0]` (a further index, not `.length`) already
+// worked, via `tryDynamicArrayIndex`'s own fallback to
+// `indexedArrayDescriptor`, which materialises *any* array-typed
+// expression generically through `compileDynamicArrayInto`. Fixed by
+// giving `compileArrayLength` that same fallback, scoped to this one call
+// site rather than `dynamicArrayDescriptor` itself (nine other call
+// sites) to avoid touching `innerArrayDescriptor`'s own resolution at all.
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.inexpressible,
+        "CTFE cannot read dataseg (__gshared/static) storage"),
+    Omit!(Interpreter, Because.unconfirmed),
+    Omit!(LLVMJit, Because.unconfirmed),
+)) {
+    @("dynamicArray.moduleArrayOfArraysElementLength." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            int[][] arr = [[1, 2], [3, 4]];
+
+            unittest {
+                assert(arr[0].length == 2);
+            }
+        });
+    }
+}
+
+// The three-levels-deep sibling (`m[0][0].length`): confirms the fix
+// generalises through a second index rather than only unwrapping one
+// level, without needing any change to `innerArrayDescriptor` itself.
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.inexpressible,
+        "CTFE cannot read dataseg (__gshared/static) storage"),
+    Omit!(Interpreter, Because.unconfirmed),
+    Omit!(LLVMJit, Because.unconfirmed),
+)) {
+    @("dynamicArray.moduleArrayOfArraysOfArraysElementLength." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            int[][][] m = [[[1, 2], [3, 4]], [[5, 6]]];
+
+            unittest {
+                assert(m[0][0].length == 2);
+                assert(m[1][0].length == 2);
+            }
+        });
+    }
+}
+
+// The local-variable counterpart: this shape already worked before the
+// fix above, since a local's array-of-arrays base is tracked in
+// `_dynamicArrayLocals` and `innerArrayDescriptor` already resolved it
+// directly; kept here as an explicit regression guard alongside the
+// module-level fix.
+static foreach (backend; Matrix!()) {
+    @("dynamicArray.localArrayOfArraysElementLength." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            unittest {
+                int[][] arr = [[1, 2], [3, 4]];
+                assert(arr[0].length == 2);
+            }
+        });
+    }
+}
+
 // The two-levels-of-nesting sibling of the fixture above
 // (`int[][][] m = [[[1, 2], [3, 4]], [[5, 6]]];`):
 // `moduleDynamicArrayLiteralInitializerBytes` used to hardcode its

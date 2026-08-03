@@ -2851,9 +2851,32 @@ private struct Compiler {
     }
 
     // `arr.length` reads the descriptor's length word (a `size_t`) into a fresh
-    // slot.
+    // slot. `length.e1` is usually a known descriptor shape
+    // (`dynamicArrayDescriptorOrNull`); when it isn't -- e.g. `arr[0].length`
+    // where `arr` is a module-level `int[][]`, an `IndexExp` whose own base
+    // is a bare module `VarExp` that `innerArrayDescriptor` doesn't resolve
+    // (it only chases a local-frame `_dynamicArrayLocals` entry or a
+    // struct/class-field `DotVarExp` base, not a plain module variable) --
+    // fall back to `indexedArrayDescriptor`'s general expression
+    // materialisation, the same fallback `tryDynamicArrayIndex` already uses
+    // for the sibling shape `arr[0][0]`. Scoped to this one call site rather
+    // than folded into `dynamicArrayDescriptor` itself (used by nine other
+    // call sites -- `compileSliceInto`, append, concatenate, and others) to
+    // avoid rippling into an unrelated consumer's assumptions, the same
+    // landmine `dynamicArrayFieldDescriptorOrNull`'s own doc comment warns
+    // about for a blanket recursive-call generalisation.
     private Operand compileArrayLength(ArrayLengthExp length) {
-        const descriptor = dynamicArrayDescriptor(length.e1);
+        import std.conv: text;
+
+        auto descriptor = dynamicArrayDescriptorOrNull(length.e1);
+        if (descriptor is null)
+            descriptor = indexedArrayDescriptor(length.e1);
+        if (descriptor is null)
+            throw new Exception(text(
+                "Unsupported dynamic array access in bytecode core: ",
+                expressionChars(length.e1),
+            ));
+
         const offset = allocate(ScalarType.ulong_);
         _code ~= Instruction(Op.sliceLength, offset, descriptor.offset);
         return Operand(offset, ScalarType.ulong_);
