@@ -1077,18 +1077,11 @@ element into a fresh local slot via the same `capturedFrameIndex`/
 captured local, reusing `tryCapturedStaticArrayElement`'s offset resolution
 from the write-side commit rather than re-deriving it.
 
-A captured **class**-typed local reached through a nested struct-field chain
-into a static array (`struct Inner { int[3] arr; } class COuter { Inner
-inner; } COuter c; void mutate() { c.inner.arr[1] = 55; }`) now compiles:
-`classStaticArrayFieldOf` required its `DotVarExp`'s own `dot.e1` to be
-`Tclass`-typed directly (`c.arr`), so `c.inner.arr` (receiver `c.inner` is
-`Tstruct`) never matched. It now also matches a struct-field chain of any
-depth ultimately rooted at a class reference (`structFieldReachedThroughClass`,
-a pure-type walk, never compiling anything), then resolves through the same
-`tryClassPointerField`/`classFieldAddress` real-pointer plumbing a direct
-class field already uses -- no materialised copy or writeback needed for the
-struct hop, since it addresses real heap memory (`classPointer +
-field.offset`), unlike the captured-struct-receiver case.
+A static-array field reached through a struct-field chain of any depth
+rooted at a class reference (`struct Inner { int[3] arr; } class COuter {
+Inner inner; } COuter c; void mutate() { c.inner.arr[1] = 55; }`) now
+compiles, resolving through the same real-pointer field plumbing a direct
+class field already uses -- confirmed via `bin/ut`.
 
 Next candidate: `refArgument.templateRefSharedParameterMutatesAndPreservesAddress`
 (`expressions.d`) -- confirmed red via `bin/ut` by temporarily lifting its

@@ -1496,6 +1496,52 @@ static foreach (backend; Matrix!()) {
     }
 }
 
+// Three-level twin of `nestedFunctionMutatesCapturedClassStructStaticArrayField`
+// above: two struct-field hops (`inner`, `deepest`) separate the class
+// receiver from the static-array field, pinning that `classStaticArrayFieldOf`
+// / `structFieldReachedThroughClass` compose through an arbitrary number of
+// hops rather than just the one hop the depth-2 test above exercises.
+static foreach (backend; Matrix!()) {
+    @("function.nestedFunctionMutatesCapturedClassStructStaticArrayFieldThreeLevelsDeep." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct Deepest {
+                int[3] arr;
+            }
+
+            struct Inner {
+                Deepest deepest;
+            }
+
+            class COuter {
+                Inner inner;
+            }
+
+            int run() {
+                COuter c = new COuter();
+                c.inner.deepest.arr[0] = 1;
+                c.inner.deepest.arr[1] = 2;
+                c.inner.deepest.arr[2] = 3;
+
+                void mutate() {
+                    c.inner.deepest.arr[1] = 55;
+                }
+                mutate();
+
+                return c.inner.deepest.arr[0] * 100
+                    + c.inner.deepest.arr[1] * 10
+                    + c.inner.deepest.arr[2];
+            }
+
+            unittest {
+                assert(run() == 653);
+            }
+        });
+    }
+}
+
 // `middle` is both a relay (for `innerA`, which reaches `run`'s `a`) AND an
 // owner (for `innerB`, which reaches `middle`'s own `b`) -- the same caller
 // in both roles for different callees. `innerB` itself reads captures at two
