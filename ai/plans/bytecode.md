@@ -525,8 +525,14 @@ row reaches them:
   `tryStructPointerField` -- now handle a `Tstruct`/`Tsarray` field the same
   way the ref-argument path above does.
 - Dynamic-array and string sub-slices reject an upper bound beyond the source
-  length and a lower bound greater than the upper bound; pointer-slice bounds
-  remain unchecked.
+  length and a lower bound greater than the upper bound
+  (`Op.subSlice*`/`validateSubSlice`, `machine.d`). A raw pointer slice
+  (`Op.pointerSlice*`) performs no bounds check at all -- confirmed correct,
+  not a gap: compiled D's own `p[lo .. hi]` on a bare `T*` has no runtime
+  bounds check either (verified against `dmd`, including
+  `-boundscheck=on`/`-release`; a raw pointer carries no length metadata to
+  check against), so Bytecode already matches the oracle here. Do not add a
+  check that would make Bytecode diverge from compiled D.
 - Captured array support does not yet cover every read, write, slice, append,
   view-preservation, and closure combination.
 - `Interpreter` declines an indexed write through a dereferenced
