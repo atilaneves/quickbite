@@ -644,8 +644,9 @@ row reaches them:
   arithmetic) rather than reusing the whole-block copy `tryStructField`
   materialises for plain field access. A non-default struct initializer still
   falls through to "Unsupported variable in bytecode core". Module-level
-  `Tdelegate` variables and complex-double dataseg variables remain entirely
-  unsupported (`moduleScalarVariableOrNull` still declines them). A
+  complex-double dataseg variables remain entirely unsupported
+  (`moduleScalarVariableOrNull` still declines them; see the `Tdelegate` case
+  below, which is now supported). A
   module-level fixed-size static array (`int[3] arr;`) is now supported for a
   scalar-element array (`moduleStaticArrayVariableOrNull`, the Tsarray
   counterpart of `ModuleStructVariable`): its `N * elementSize` bytes live
@@ -719,7 +720,42 @@ row reaches them:
   or write dataseg storage at all; `Interpreter` has the same pre-existing
   "does not mirror a dataseg write back through a called function" gap noted
   for the pointer case above (`dataseg.moduleAssocArrayInsertLookupInLengthAndForeach`,
-  `expressions.d`). Correction to the
+  `expressions.d`). A module-level delegate variable (`int delegate() dg;`)
+  is now supported too, but unlike the pointer/AA case it does not reuse
+  `moduleScalarVariableOrNull`'s generic scalar path: a delegate is a
+  16-byte `{functionIndex, context}` pair with no `ScalarType` of its own
+  (the same reason a delegate local/field/array-element already carries its
+  own dedicated tracking rather than going through the scalar machinery),
+  so it gets its own dedicated storage record, `ModuleDelegateVariable`,
+  the delegate counterpart of `ModuleDynamicArrayVariable`
+  (`moduleDelegateVariableOrNull`). Default-initialized to null (an
+  all-zero pair, matching D's default -- `allocateModuleBytes` already
+  zero-fills fresh `moduleData` growth, so no initializer bytes need
+  writing); a non-null initializer still falls through to "Unsupported
+  variable in bytecode core", scoped out like every other module-variable
+  kind's decline. A *read* (`delegateOperandOffset`'s new module branch),
+  a whole-value *write* (`dg = someDelegate;`, `compileAssignExpression`'s
+  new module branch), and a *call* through it (`dg()`,
+  `moduleDelegateOffsetOf` dispatching through the same
+  `compileDynamicDelegateCall` a delegate-typed parameter uses) each
+  materialise the current value into a fresh frame slot via
+  `Op.loadModule`/write it back via `Op.storeModule`, the same pattern
+  already used for a module pointer/AA/struct/static-array variable. Since
+  a module delegate's callee is never statically known at the call site,
+  calling through it after it holds a struct-receiver method value
+  (`&receiver.method`) hits the same pre-existing, already-documented
+  `Op.callIndirectDynamic` `hasThis` rejection a delegate-typed parameter
+  has (`delegate.structReceiverPassedAsParameterIsRejected`) -- not
+  attempted here; assignment from such a value is still exercised (and
+  still mirrors back to the module's own authoritative storage from
+  inside a called function, verified via `!is null` rather than a call).
+  `Ctfe` cannot read or write dataseg storage at all; `Interpreter` has the
+  same pre-existing "does not mirror a dataseg write back through a called
+  function" gap noted for the pointer/AA cases above
+  (`dataseg.moduleDelegateVariableAssignmentAndCallThrough`, `expressions.d`).
+  This closes out module-scalar-variable-kind support started with the
+  pointer case above: every `Tdelegate`/`Tpointer`/`Taarray` dataseg
+  variable is now supported, leaving only complex-double open. Correction to the
   paragraph above's own "Registration is
   still declined for a static-array element" claim: `int[3][] arr = [[1, 2,
   3], [4, 5, 6]];` actually already registers successfully, both at module

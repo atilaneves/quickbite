@@ -3431,6 +3431,73 @@ static foreach (backend; Matrix!(
     }
 }
 
+// A module-level delegate variable
+// (`__gshared int delegate() quickbiteDatasegDelegate;`) --
+// `moduleScalarVariableOrNull` used to decline every `Tdelegate` dataseg
+// declaration outright ("Taarray/Tdelegate ... variables remain entirely
+// unsupported"). Unlike a module pointer/associative-array (an 8-byte value
+// routed through `moduleScalarVariableOrNull`'s generic scalar path), a
+// delegate is a 16-byte `{functionIndex, context}` pair with no `ScalarType`
+// of its own -- the same shape a delegate-typed struct/class field or array
+// element already has its own dedicated `Tdelegate` branch for -- so it
+// gets its own dedicated storage record (`ModuleDelegateVariable`) rather
+// than routing through the generic scalar path. Default-initialized to null
+// (an all-zero pair, matching D's default); read, whole-value assignment
+// (from a non-capturing lambda, with a call through the result), and
+// whole-value assignment from a method delegate `&receiver.method` assigned
+// from inside a called function, mirroring back to the module's own
+// authoritative storage rather than a throwaway copy (verified via `!is
+// null`, since the module value is read again from a separately-compiled
+// context after the call returns). Calling through a struct-receiver
+// method delegate reached via this dynamic (no-statically-known-callee)
+// dispatch path is a separate, already-documented, pre-existing limitation
+// (`delegate.structReceiverPassedAsParameterIsRejected`,
+// `Op.callIndirectDynamic`'s `hasThis` rejection) shared by a delegate-typed
+// PARAMETER, not attempted here. `Ctfe` cannot read or write dataseg
+// storage at all (compile-time execution has no such storage to access).
+// `Interpreter` declines this shape outright, the same pre-existing "does
+// not mirror a dataseg write back through a called function" gap already
+// documented on the sibling pointer/AA tests above, never previously
+// exercised for a module-level delegate.
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.inexpressible,
+        "CTFE cannot read or write dataseg (__gshared/static) storage"),
+    Omit!(Interpreter, Because.unconfirmed),
+)) {
+    @("dataseg.moduleDelegateVariableAssignmentAndCallThrough." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct Greeter {
+                int base;
+                int greet() { return base + 1; }
+            }
+
+            __gshared int delegate() quickbiteDatasegDelegate;
+
+            void assignFromMethod(ref Greeter g) {
+                quickbiteDatasegDelegate = &g.greet;
+            }
+
+            unittest {
+                assert(quickbiteDatasegDelegate is null);
+
+                quickbiteDatasegDelegate = () => 42;
+                assert(quickbiteDatasegDelegate !is null);
+                assert(quickbiteDatasegDelegate() == 42);
+
+                Greeter g;
+                g.base = 9;
+                // A write from inside a function call mirrors back to the
+                // module's own authoritative storage, not a throwaway copy.
+                assignFromMethod(g);
+                assert(quickbiteDatasegDelegate !is null);
+            }
+        });
+    }
+}
+
 // A module-level struct's own field that is itself a struct
 // (`quickbiteDatasegOuter.inner.x`): the generic base resolver that walks an
 // `outer.inner` chain back to its base had no case for a bare module-struct

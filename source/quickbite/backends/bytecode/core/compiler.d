@@ -178,6 +178,7 @@ private struct Compiler {
         _moduleDynamicArrayVariables;
     private ModuleStructVariable[VarDeclaration] _moduleStructVariables;
     private ModuleStaticArrayVariable[VarDeclaration] _moduleStaticArrayVariables;
+    private ModuleDelegateVariable[VarDeclaration] _moduleDelegateVariables;
     // A `Tarray` class field's shared array-literal default, computed once
     // per field and reused at every `new C()` site: see
     // `classFieldArraySharedDefaultOrNull`.
@@ -4187,6 +4188,21 @@ private struct Compiler {
                     return existing.offset;
                 if (auto existing = declaration in _delegateParameterLocals)
                     return *existing;
+
+                // A module-level (`__gshared`/`static`) delegate variable:
+                // materialise its 16-byte `{functionIndex, context}` pair
+                // out of `moduleData` into a fresh frame slot, the same way
+                // a module pointer/AA read does (`Op.loadModule`).
+                if (auto moduleVariable =
+                        moduleDelegateVariableOrNull(declaration)) {
+                    const offset =
+                        allocateBytes(delegateValueSize, size_t.sizeof);
+                    _code ~= Instruction(
+                        Op.loadModule, offset, moduleVariable.offset,
+                        cast(ushort) delegateValueSize,
+                    );
+                    return offset;
+                }
             }
 
         if (auto dot = argument.isDotVarExp)
@@ -10893,6 +10909,25 @@ private struct Compiler {
                     }
                 }
 
+        // `dg = rhs;` for a whole module-level delegate variable (`int
+        // delegate() dg; dg = () => 42;`): the delegate counterpart of the
+        // module static-array whole-value assignment above -- resolve the
+        // rhs's own 16-byte `{functionIndex, context}` pair the same way
+        // any other delegate assignment does (`delegateOperandOffset`),
+        // then copy the whole block back to `dg`'s own dataseg storage via
+        // `Op.storeModule`.
+        if (assign.e1.isVarExp !is null)
+            if (auto declaration = assign.e1.isVarExp.var.isVarDeclaration)
+                if (auto moduleVariable =
+                        moduleDelegateVariableOrNull(declaration)) {
+                    const source = delegateOperandOffset(assign.e2);
+                    _code ~= Instruction(
+                        Op.storeModule, source, moduleVariable.offset,
+                        cast(ushort) delegateValueSize,
+                    );
+                    return Operand(source, ScalarType.void_);
+                }
+
         // `arr = rhs;` for a whole static-array-typed local -- including a
         // ref local aliased to one (`staticArrayOffsetOf` resolves both the
         // same way, per `_staticArrayLocals`): block-copy the new value into
@@ -12296,6 +12331,57 @@ private struct Compiler {
         if (!hasDefaultInitializer)
             _program.moduleData[offset .. offset + size] = literalBytes[];
         return declaration in _moduleStaticArrayVariables;
+    }
+
+    // A module-level delegate variable (`int delegate() dg;`) reserves a
+    // plain 16-byte native-order `{functionIndex, context}` slot in
+    // `_program.moduleData`, the delegate counterpart of
+    // `ModuleDynamicArrayVariable`/`ModuleScalarVariable` -- unlike a module
+    // pointer or associative array (an 8-byte value routed through
+    // `moduleScalarVariableOrNull`'s generic scalar path, since `scalarType`
+    // already maps both `Tpointer` and `Taarray` to `ScalarType.ulong_`), a
+    // delegate is a 16-byte pair with no `ScalarType` of its own, so it
+    // needs this dedicated storage record instead. `allocateModuleBytes`
+    // grows `_program.moduleData` with freshly zero-filled bytes, which is
+    // already the correct all-zero `{functionIndex, context}` pair a
+    // defaulted delegate holds (`compileDelegateDeclaration`'s own
+    // all-zero fallback, `emitDelegateValue`'s layout) -- no initializer
+    // bytes to write here, unlike a scalar module variable's
+    // `moduleScalarInitializerBytes`. Only the implicit default (null)
+    // initializer is handled; any other initializer declines registration,
+    // falling through to the pre-existing "Unsupported variable in
+    // bytecode core" error, matching every other module-variable-kind
+    // decline elsewhere in this file. Read (`delegateOperandOffset`),
+    // whole-value write (`compileAssignExpression`), and call-through
+    // (`moduleDelegateOffsetOf`) each materialise the current 16-byte value
+    // into a fresh frame slot via `Op.loadModule`/write it back via
+    // `Op.storeModule`, the same pattern already used for a module
+    // pointer/AA/struct/static-array variable.
+    private ModuleDelegateVariable* moduleDelegateVariableOrNull(
+        VarDeclaration declaration,
+    ) {
+        if (declaration is null || !declaration.isDataseg ||
+            declaration.isImmutable)
+        {
+            return null;
+        }
+
+        import dmd.astenums: TY;
+
+        if (declaration.type.toBasetype.ty != TY.Tdelegate)
+            return null;
+
+        if (auto existing = declaration in _moduleDelegateVariables)
+            return existing;
+
+        if (!moduleVariableHasDefaultInitializer(declaration))
+            return null;
+
+        const offset =
+            allocateModuleBytes(delegateValueSize, size_t.sizeof);
+        _moduleDelegateVariables[declaration] =
+            ModuleDelegateVariable(offset);
+        return declaration in _moduleDelegateVariables;
     }
 
     // Compile-time bytes for a module-level static array's non-null,
@@ -14698,6 +14784,14 @@ private struct Compiler {
             if (auto offset = delegateParameterOffsetOf(call))
                 return compileDynamicDelegateCall(*offset, call);
 
+        // `dg()` through a module-level (`__gshared`/`static`) delegate
+        // variable: the same run-time-typed dispatch as a delegate-typed
+        // parameter, with the variable's own materialised dataseg value as
+        // the descriptor instead of a parameter slot.
+        if (function_ is null)
+            if (auto offset = moduleDelegateOffsetOf(call))
+                return compileDynamicDelegateCall(*offset, call);
+
         // `s.f()` through a delegate-typed struct FIELD: the same run-time-
         // typed dispatch as a delegate-typed parameter, with the field's own
         // frame offset as the descriptor instead of a parameter slot.
@@ -15521,6 +15615,32 @@ private struct Compiler {
         if (declaration is null)
             return null;
         return declaration in _delegateParameterLocals;
+    }
+
+    // The frame offset of a module-level (`__gshared`/`static`) delegate
+    // variable invoked by `dg()`, or null if `call` is not a call through
+    // one. There is no statically known `FuncDeclaration` behind this
+    // slot, the same shape a delegate-typed parameter reaches; materialise
+    // the variable's current `{functionIndex, context}` pair out of
+    // `moduleData` into a fresh frame slot (`Op.loadModule`), the same way
+    // `delegateOperandOffset` does for a plain read.
+    private ushort* moduleDelegateOffsetOf(CallExp call) {
+        auto variable = call.e1 is null ? null : call.e1.isVarExp;
+        if (variable is null)
+            return null;
+        auto declaration = variable.var.isVarDeclaration;
+        auto moduleVariable = moduleDelegateVariableOrNull(declaration);
+        if (moduleVariable is null)
+            return null;
+
+        const offset = allocateBytes(delegateValueSize, size_t.sizeof);
+        _code ~= Instruction(
+            Op.loadModule, offset, moduleVariable.offset,
+            cast(ushort) delegateValueSize,
+        );
+        auto result = new ushort;
+        *result = offset;
+        return result;
     }
 
     // The frame offset of the delegate-typed struct/class/struct-pointer
@@ -20013,6 +20133,19 @@ private struct ModuleDynamicArrayVariable {
     ushort offset;
     imported!"quickbite.backends.bytecode.core.program".ScalarType elementType;
     bool elementIsArray;
+}
+
+// A module-level (`__gshared`/`static`) delegate variable's own 16-byte
+// native-order `{functionIndex, context}` pair storage in
+// `_program.moduleData`. Unlike `ModuleScalarVariable` (an 8-byte value with
+// a real `ScalarType`, the shape a module pointer/associative-array
+// variable reuses), a delegate has no `ScalarType` of its own -- the same
+// reason a delegate local/field/array-element carries its own dedicated
+// tracking rather than going through the generic scalar machinery -- so it
+// gets its own record here, the delegate counterpart of
+// `ModuleDynamicArrayVariable`. See `moduleDelegateVariableOrNull`.
+private struct ModuleDelegateVariable {
+    ushort offset;
 }
 
 // A `Tarray` class field's array-literal default, shared by every `new C()`
