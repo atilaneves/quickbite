@@ -1077,21 +1077,21 @@ element into a fresh local slot via the same `capturedFrameIndex`/
 captured local, reusing `tryCapturedStaticArrayElement`'s offset resolution
 from the write-side commit rather than re-deriving it.
 
-Next candidate: `o.inner.arr[1] = 55` -- a *two-level* captured struct-field
-chain (`struct Inner { int[3] arr; } struct Outer { Inner inner; } Outer o;
-void mutate() { o.inner.arr[1] = 55; }`) is still a silent wrong-result bug
-on `Bytecode`: confirmed via a real `bin/ut` fixture, it returns the
-original unmutated element instead of the write, while `Ctfe`, `Interpreter`,
-`LLVMJit`, and `SystemLinker` all return the mutated value. `tryStructField`'s
-captured-struct-receiver branch only recognises a *direct* captured receiver
-(`capturedStructReceiver(dot.e1)` requires `dot.e1` itself be a `VarExp`/
-`ThisExp`), so for `o.inner.arr[1]` the outer `DotVarExp`'s `e1` is `o.inner`
-(itself a `DotVarExp`), which falls through to the general
-`structBaseOffsetOrMaterialise` path instead -- investigate whether that path
-already resolves nested captured chains for a plain field write
-(`o.inner.x = 55`, which the plan implies already works) but not for the
-static-array-element case, or whether the captured-receiver branch itself
-needs to recurse for a `DotVarExp` base.
+Next candidate: a captured **class**-typed local reached through a nested
+struct-field chain into a static array (`struct Inner { int[3] arr; } class
+COuter { Inner inner; } COuter c; void mutate() { c.inner.arr[1] = 55; }`)
+throws "Unsupported static array access in bytecode core: c.inner.arr" on
+`Bytecode` (confirmed via `bin/ut`; `Ctfe`, `Interpreter`, `LLVMJit`, and
+`SystemLinker` all handle it) -- a thrown refusal, not a silent wrong result.
+`capturedStructReceiver` only matches a `Tstruct`-typed captured local, so a
+captured class reference never enters the struct-materialisation machinery at
+all; a class field write already goes through `tryClassPointerField`/
+`tryClassArrayFieldElementFieldPointer`'s real-pointer plumbing instead of a
+materialised copy, so this is presumably a narrower "recognise a captured
+class receiver" gap, not yet root-caused to a specific dispatch function. A
+read-only two-level captured struct-field chain (`return o.inner.arr[1];`
+from inside a nested function, no assignment) is not a bug: checked via
+`bin/ut`, a read always freshly reloads the materialised block.
 
 ### TDD and handoff discipline
 

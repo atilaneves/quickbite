@@ -1403,6 +1403,47 @@ static foreach (backend; Matrix!()) {
     }
 }
 
+// Two-level twin of `nestedFunctionMutatesCapturedStructStaticArrayField`
+// above: the captured receiver (`o`) is reached through an intervening
+// struct field (`o.inner`) before the static-array field (`arr`), so
+// `tryStructField`'s captured-struct-receiver branch (which only recognises
+// a *direct* `VarExp`/`ThisExp` receiver) cannot match `o.inner.arr[1]`
+// directly and must fall through to `structBaseOffsetOrMaterialise`'s
+// generic recursion instead, which has to propagate the captured-frame
+// writeback through the intervening `inner` field the same way it already
+// does for a module-struct or AA-pointer receiver.
+static foreach (backend; Matrix!()) {
+    @("function.nestedFunctionMutatesTwoLevelCapturedStructStaticArrayField." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct Inner {
+                int[3] arr;
+            }
+
+            struct Outer {
+                Inner inner;
+            }
+
+            int run() {
+                Outer o = Outer(Inner([1, 2, 3]));
+
+                void mutate() {
+                    o.inner.arr[1] = 55;
+                }
+                mutate();
+
+                return o.inner.arr[1];
+            }
+
+            unittest {
+                assert(run() == 55);
+            }
+        });
+    }
+}
+
 // `middle` is both a relay (for `innerA`, which reaches `run`'s `a`) AND an
 // owner (for `innerB`, which reaches `middle`'s own `b`) -- the same caller
 // in both roles for different callees. `innerB` itself reads captures at two

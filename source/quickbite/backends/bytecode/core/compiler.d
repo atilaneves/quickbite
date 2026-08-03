@@ -5241,10 +5241,16 @@ private struct Compiler {
                     ushort pointerBaseSlot;
                     ushort pointerIndexSlot;
                     ushort pointerStructSize;
+                    bool viaFrame;
+                    ushort frameBaseOffset;
+                    ushort frameIndexOffset;
+                    ushort frameStructSize;
                     const base = structBaseOffsetOrMaterialise(
                         dot.e1, resolved, viaModule, moduleFrameOffset,
                         moduleOffset, viaPointer, pointerFrameOffset,
                         pointerBaseSlot, pointerIndexSlot, pointerStructSize,
+                        viaFrame, frameBaseOffset, frameIndexOffset,
+                        frameStructSize,
                     );
                     if (resolved && viaPointer)
                         return MethodReceiver(
@@ -5565,10 +5571,15 @@ private struct Compiler {
         ushort pointerBaseSlot;
         ushort pointerIndexSlot;
         ushort pointerStructSize;
+        bool viaFrame;
+        ushort frameBaseOffset;
+        ushort frameIndexOffset;
+        ushort frameStructSize;
         const base = structBaseOffsetOrMaterialise(
             dot.e1, resolved, viaModule, moduleFrameOffset, moduleOffset,
             viaPointer, pointerFrameOffset, pointerBaseSlot, pointerIndexSlot,
-            pointerStructSize,
+            pointerStructSize, viaFrame, frameBaseOffset, frameIndexOffset,
+            frameStructSize,
         );
         if (!resolved)
             return null;
@@ -5608,6 +5619,21 @@ private struct Compiler {
             result.structSize = pointerStructSize;
             result.pointerBaseSlot = pointerBaseSlot;
             result.pointerIndexSlot = pointerIndexSlot;
+        }
+        // `dot.e1` resolved through a materialised copy of an *indirectly*
+        // captured struct receiver (e.g. `o.inner` inside `o.inner.arr[1]`,
+        // where `o` itself -- not `o.inner` -- is the captured outer local):
+        // this function's own bespoke branch above only matches a *direct*
+        // captured receiver (`dot.e1` itself a `VarExp`/`ThisExp`), so a
+        // chain reaches here instead. The writeback is the same whole-block
+        // `Op.frameStore` the direct case already uses, just with the base
+        // offset/frame index/size threaded up from the recursive resolution
+        // of `dot.e1` rather than computed locally.
+        if (viaFrame) {
+            result.writeBackThroughFrame = true;
+            result.structOffset = frameBaseOffset;
+            result.frameIndexOffset = frameIndexOffset;
+            result.structSize = frameStructSize;
         }
         return result;
     }
@@ -5733,10 +5759,15 @@ private struct Compiler {
         ushort pointerBaseSlot;
         ushort pointerIndexSlot;
         ushort pointerStructSize;
+        bool viaFrame;
+        ushort frameBaseOffset;
+        ushort frameIndexOffset;
+        ushort frameStructSize;
         return structBaseOffsetOrMaterialise(
             expression, resolved, viaModule, moduleFrameOffset, moduleOffset,
             viaPointer, pointerFrameOffset, pointerBaseSlot, pointerIndexSlot,
-            pointerStructSize,
+            pointerStructSize, viaFrame, frameBaseOffset, frameIndexOffset,
+            frameStructSize,
         );
     }
 
@@ -5756,6 +5787,15 @@ private struct Compiler {
     // `pointerIndexSlot` are the runtime AA-value pointer and index the block
     // was read from -- all four constant across however many field levels a
     // caller adds on top of the returned base, the same as the module trio.
+    // `viaFrame` and its three companions report the struct counterpart for
+    // an indirectly captured struct receiver (`o` captured, reached through
+    // a field chain like `o.inner`): `frameBaseOffset`/`frameStructSize` are
+    // the whole materialised struct block's frame offset and byte width (the
+    // `moduleFrameOffset` counterpart), and `frameIndexOffset` is the
+    // captured enclosing-frame index the block was loaded from (`Op
+    // .frameLoad`'s own second operand) -- both constant across however many
+    // field levels a caller adds on top of the returned base, the same as
+    // the module pair.
     private ushort structBaseOffsetOrMaterialise(
         Expression expression,
         out bool resolved,
@@ -5767,6 +5807,10 @@ private struct Compiler {
         out ushort pointerBaseSlot,
         out ushort pointerIndexSlot,
         out ushort pointerStructSize,
+        out bool viaFrame,
+        out ushort frameBaseOffset,
+        out ushort frameIndexOffset,
+        out ushort frameStructSize,
     ) {
         import dmd.astenums: TY;
 
@@ -5780,11 +5824,25 @@ private struct Compiler {
                 if (auto declaration = variable.var.isVarDeclaration)
                     if (declaration.type.toBasetype.ty == TY.Tstruct)
                         if (auto captured = declaration in _capturedOffsets) {
+                            const structOffset =
+                                allocateStructBlock(declaration.type);
+                            const frameIndex = capturedFrameIndex(
+                                _capturedOwners[declaration], *captured,
+                            );
+                            const structSize = cast(ushort)
+                                staticArraySize(declaration.type);
+                            _code ~= Instruction(
+                                Op.frameLoad,
+                                structOffset,
+                                frameIndex,
+                                structSize,
+                            );
                             resolved = true;
-                            return loadCapturedLocal(
-                                declaration,
-                                *captured,
-                            ).offset;
+                            viaFrame = true;
+                            frameBaseOffset = structOffset;
+                            frameIndexOffset = frameIndex;
+                            frameStructSize = structSize;
+                            return structOffset;
                         }
 
         // A bare module-level (`__gshared`/`static`) struct variable
@@ -5826,6 +5884,10 @@ private struct Compiler {
                     ushort outerPointerBaseSlot;
                     ushort outerPointerIndexSlot;
                     ushort outerPointerStructSize;
+                    bool outerViaFrame;
+                    ushort outerFrameBaseOffset;
+                    ushort outerFrameIndexOffset;
+                    ushort outerFrameStructSize;
                     const outerBase = structBaseOffsetOrMaterialise(
                         dot.e1,
                         outerResolved,
@@ -5837,6 +5899,10 @@ private struct Compiler {
                         outerPointerBaseSlot,
                         outerPointerIndexSlot,
                         outerPointerStructSize,
+                        outerViaFrame,
+                        outerFrameBaseOffset,
+                        outerFrameIndexOffset,
+                        outerFrameStructSize,
                     );
                     if (outerResolved) {
                         resolved = true;
@@ -5848,6 +5914,10 @@ private struct Compiler {
                         pointerBaseSlot = outerPointerBaseSlot;
                         pointerIndexSlot = outerPointerIndexSlot;
                         pointerStructSize = outerPointerStructSize;
+                        viaFrame = outerViaFrame;
+                        frameBaseOffset = outerFrameBaseOffset;
+                        frameIndexOffset = outerFrameIndexOffset;
+                        frameStructSize = outerFrameStructSize;
                         return cast(ushort) (outerBase + field.offset);
                     }
                 }
