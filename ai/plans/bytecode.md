@@ -576,9 +576,24 @@ row reaches them:
   (`int[][] m = [[1, 2], [3, 4]];`). An empty literal (`int[] arr = [];`)
   is registered too, identically to the no-initializer case (both are a
   null/zero-length slice, so there is no element to inspect or store).
-  Registration is still declined for two levels of nesting (`int[][][]`), a
-  struct/static-array element, or any non-constant element (e.g. a function
-  call). A module-level
+  Registration is still declined for two levels of nesting (`int[][][]`) or a
+  struct/static-array element. "Any non-constant element (e.g. a function
+  call)" turns out not to be a real gap: DMD's frontend requires every
+  dataseg (module-level, non-`immutable`) initializer to reduce to a
+  genuine compile-time constant, full stop -- there is no implicit
+  `static this()` lowering for a plain module variable the way there is
+  for, say, `immutable` globals with a non-manifest initializer. A
+  CTFEable call (`int f() { return 42; } int[] arr = [1, f(), 3];`) is
+  folded by the frontend into a plain `IntegerExp` before the array
+  literal ever reaches `moduleDynamicArrayLiteralInitializerBytes`, so the
+  existing constant-element handling already covers it; a genuinely
+  non-CTFEable call (e.g. one that hits `core.stdc.time.time`, which has
+  no source for the frontend to interpret) is a hard compile-time error
+  from the shared frontend, identical on every backend, and never reaches
+  this function at all (confirmed:
+  `dynamicArray.moduleArrayLiteralCtfeableCallElement` and
+  `dynamicArray.moduleArrayLiteralNonCtfeableCallElementIsFrontendError`,
+  `arrays.d`). A module-level
   struct variable (`ModuleStructVariable`) is supported for the
   default-initialized case: field access materialises the whole block
   via `Op.loadModule` but writes back only the touched field's own bytes via

@@ -519,6 +519,65 @@ static foreach (backend; Matrix!(
     }
 }
 
+// The "any non-constant element (e.g. a function call)" case the plan text
+// above lists as declined: a `pure`, side-effect-free call like `f()` here
+// is trivially CTFEable, and DMD's own frontend semantic pass requires
+// every dataseg (module-level, non-`immutable`) initializer to reduce to a
+// genuine compile-time constant -- it folds the whole `ArrayLiteralExp`
+// element-by-element via CTFE, so by the time our compiler ever inspects
+// the initializer, this element is already a plain `IntegerExp(42)`, not a
+// `CallExp`. `moduleDynamicArrayLiteralInitializerBytes`'s existing
+// `isIntegerExp`/`isRealExp` checks already handle it: no separate
+// "non-constant element" support is needed for this shape.
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.inexpressible,
+        "CTFE cannot read dataseg (__gshared/static) storage"),
+    Omit!(Interpreter, Because.unconfirmed),
+    Omit!(LLVMJit, Because.unconfirmed),
+)) {
+    @("dynamicArray.moduleArrayLiteralCtfeableCallElement." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            int f() { return 42; }
+            int[] arr = [1, f(), 3];
+
+            unittest {
+                assert(arr.length == 3);
+                assert(arr[0] == 1);
+                assert(arr[1] == 42);
+                assert(arr[2] == 3);
+            }
+        });
+    }
+}
+
+// The other half of the same finding: a genuinely non-CTFEable call
+// (`time` has no available source for the frontend to interpret) is a
+// hard compile-time error from the *shared* DMD frontend
+// (`quickbite.frontend.compiler`), identical on every backend -- it never
+// reaches `moduleDynamicArrayLiteralInitializerBytes` at all, so this is
+// not a backend-specific gap either. No `Omit`: the same error fires for
+// every backend in the matrix.
+static foreach (backend; Matrix!()) {
+    @("dynamicArray.moduleArrayLiteralNonCtfeableCallElementIsFrontendError." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            import core.stdc.time: time;
+            int f() { return cast(int)(time(null) % 1000000000); }
+            int[] arr = [1, f(), 3];
+
+            unittest {
+                assert(arr.length == 3);
+            }
+        }).shouldThrowWithMessage(
+            "`time` cannot be interpreted at compile time, because it has " ~
+            "no available source code");
+    }
+}
+
 // Array-of-arrays structural equality (`int[][] == int[][]`): DMD's real
 // `__equals` lowering recurses into each row's content, so two separately
 // heap-allocated but content-equal arrays-of-arrays must compare equal --
