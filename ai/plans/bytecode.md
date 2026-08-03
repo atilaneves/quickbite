@@ -1286,9 +1286,27 @@ lifetime as the dependency bytecode cache.
   precisely because a `return` statement is the last thing its enclosing
   function ever executes: nothing in that function reads or writes the
   variable again afterward, so the frame slot and the heap snapshot never
-  diverge. It does not generalise past that one shape: more than one
-  escaping capture, a non-scalar capture (struct/array/AA/class/delegate),
-  a multi-level capture (an escaping lambda nested two or more functions
+  diverge. `heapClosureContextOrNull`'s own type gate never actually
+  excluded a captured POINTER local (`Tpointer`, only `Tstruct`/`Tsarray`/
+  `Tarray`/`Taarray`/`Tclass`/`Tdelegate` are excluded, since `scalarType`
+  already maps `Tpointer` to the same 8-byte `ScalarType.ulong_` as any
+  other captured scalar and `Op.allocStruct`'s byte-copy snapshot does not
+  care that the value happens to be a pointer) -- but a captured pointer
+  local's `loadCapturedLocal` read was never tagged `isPointer`/
+  `pointerElement` the way a plain (non-captured) pointer local's own
+  `VarExp` read already is (`_pointerLocals`), so dereferencing it
+  (`*p`) threw "Unsupported pointer dereference in bytecode core" even
+  though the underlying 8-byte value was already moved correctly, for
+  a captured pointer local in a still-live enclosing frame just as much as
+  one heap-escaped via `return`. Now fixed (`loadCapturedLocal`'s
+  `TY.Tpointer` branch, mirroring its existing `TY.Tclass` branch), so a
+  captured pointer local is supported both ways: read/written through a
+  nested function while its enclosing frame is still live, and
+  heap-escaped via `return` through the same one-scalar/one-level shape
+  above. It does not generalise past that scalar-or-pointer, one-capture,
+  one-level, return-only shape: more than one escaping capture, a
+  non-scalar/non-pointer capture (struct/array/AA/class/delegate), a
+  multi-level capture (an escaping lambda nested two or more functions
   deep), and a capture combined with `this` are all still declined with the
   same diagnostic `refuseFrameEscapingDelegateReturn` used to raise
   unconditionally (`compileDelegateReturn` still throws whenever

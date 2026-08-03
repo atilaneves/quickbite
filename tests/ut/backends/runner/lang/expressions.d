@@ -1854,6 +1854,81 @@ static foreach (backend; Matrix!(
     }
 }
 
+// A nested function reading a captured POINTER local (`int* p; void
+// nested() { ... *p ... }`), the enclosing frame still live (no `return`,
+// no escape): `loadCapturedLocal` already resolved a captured pointer's
+// bytes correctly (the same generic scalar-width `Op.frameLoad`/
+// `emitPointerLoad` path any other captured scalar uses, since `scalarType`
+// already maps `Tpointer` to `ScalarType.ulong_`), but the `Operand` it
+// returned was never tagged `isPointer`/`pointerElement` the way a plain
+// (non-captured) pointer local's own `VarExp` read already is
+// (`_pointerLocals`) -- so a dereference of the captured value (`*p`)
+// threw "Unsupported pointer dereference in bytecode core: *p" even though
+// nothing about the *value* itself was wrong, the same shape of gap
+// `moduleScalarVariableOrNull`'s pointer support (commit 402d885e) fixed
+// for a module-level pointer's own read. All backends already handled
+// this correctly except Bytecode.
+static foreach (backend; Matrix!()) {
+    @("delegate.nestedFunctionReadsCapturedPointerLocal." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            unittest {
+                auto p = new int;
+                *p = 42;
+                void nested() { assert(*p == 42); }
+                nested();
+            }
+        });
+    }
+}
+
+// A sibling of `functionReturningCapturingDelegateIsCallable` that captures
+// a POINTER local instead of a plain scalar: `heapClosureContextOrNull`
+// (`compiler.d`) already handled this shape mechanically before this fix,
+// since it never excluded `TY.Tpointer` from the one narrow shape it
+// heap-allocates (only `Tstruct`/`Tsarray`/`Tarray`/`Taarray`/`Tclass`/
+// `Tdelegate` are excluded) -- `scalarType` maps `Tpointer` to the same
+// 8-byte `ScalarType.ulong_` as any other captured scalar, so
+// `Op.allocStruct`'s byte-copy snapshot does not care that the value
+// happens to be a pointer. The only missing piece was the same
+// `loadCapturedLocal` pointer-tagging fix the still-live-frame fixture
+// above exercises; this fixture is the escaping-return shape that fixture
+// does not itself cover. `p` points at heap (`new int`), not a stack local,
+// so the pointee itself already outlives the returned delegate regardless
+// of the closure mechanism -- the delegate return is what needed fixing,
+// not the pointee's own lifetime.
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.inexpressible,
+        "Ctfe wraps dmd.dinterpret, whose CTFE engine refuses the "
+            ~ "returned closure outright with \"closures are not yet "
+            ~ "supported in CTFE\""),
+    Omit!(Interpreter, Because.unconfirmed,
+        "the Interpreter throws a generic \"Unsupported eval call.\" " ~
+            "for a lambda that captures a pointer local and escapes via " ~
+            "`return`, the same pre-existing frame-escaping-capture gap " ~
+            "already documented on the scalar sibling fixture -- not yet " ~
+            "promoted"),
+)) {
+    @("delegate.functionReturningCapturingDelegateOverPointerIsCallable." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            int delegate() makeGetter() {
+                auto p = new int;
+                *p = 42;
+                return () => *p;
+            }
+
+            unittest {
+                auto g = makeGetter();
+                assert(g() == 42);
+            }
+        });
+    }
+}
+
 // A lambda that captures nothing, itself returning another non-capturing
 // lambda: DMD's "no context needed" default types both `make` and `getter`
 // as plain function pointers (`int function() function()` and `int

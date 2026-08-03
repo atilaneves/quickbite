@@ -202,8 +202,9 @@ private struct Compiler {
     // dereference the received context word as that block's raw pointer
     // (offset 0) instead of resolving a live enclosing frame through
     // `capturedFrameIndex`. Scoped to the one narrow shape
-    // `heapClosureContextOrNull` recognises -- a single scalar captured by
-    // exactly one escaping lambda, one nesting level, no `this` combination.
+    // `heapClosureContextOrNull` recognises -- a single scalar or pointer
+    // value captured by exactly one escaping lambda, one nesting level, no
+    // `this` combination.
     private bool[VarDeclaration] _heapClosureVars;
     // The function whose body is currently being compiled; `_capturedOwners`
     // entries recorded while compiling it are attributed to it.
@@ -4303,12 +4304,12 @@ private struct Compiler {
     // read would land on whatever later reused the stack region. Real
     // compiled D promotes such a capture to a GC-heap closure.
     // `heapClosureContextOrNull` recognises the one narrow shape this core
-    // heap-allocates (a single scalar captured by exactly this one escaping
-    // lambda, one nesting level, no `this` combination) and, when it
-    // matches, builds that heap environment instead. Any wider shape still
-    // has no heap closure environment (see `ai/plans/bytecode.md`'s Closures
-    // section), so decline loudly instead of returning a value that reads as
-    // garbage once the frame is reused.
+    // heap-allocates (a single scalar or pointer value captured by exactly
+    // this one escaping lambda, one nesting level, no `this` combination)
+    // and, when it matches, builds that heap environment instead. Any wider
+    // shape still has no heap closure environment (see
+    // `ai/plans/bytecode.md`'s Closures section), so decline loudly instead
+    // of returning a value that reads as garbage once the frame is reused.
     private ushort compileDelegateReturn(Expression source) {
         import std.conv: text;
 
@@ -4332,16 +4333,16 @@ private struct Compiler {
     // A freshly heap-allocated closure environment's raw pointer, in a fresh
     // frame slot, for `function_`'s escaping capture -- or null if
     // `function_`'s capture doesn't match the one narrow shape this core
-    // heap-allocates: exactly one captured local, of scalar type, captured
-    // one level up from a plain (non-`this`-receiving) enclosing function
-    // directly into the frame currently being compiled. Any wider shape
-    // (more than one captured local, a non-scalar capture, a multi-level
-    // capture, or a capture combined with `this`) still declines via
-    // `compileDelegateReturn`'s existing diagnostic instead of risking an
-    // unsound heap layout.
+    // heap-allocates: exactly one captured local, of scalar or pointer type,
+    // captured one level up from a plain (non-`this`-receiving) enclosing
+    // function directly into the frame currently being compiled. Any wider
+    // shape (more than one captured local, a non-scalar/non-pointer capture,
+    // a multi-level capture, or a capture combined with `this`) still
+    // declines via `compileDelegateReturn`'s existing diagnostic instead of
+    // risking an unsound heap layout.
     //
-    // The heap block holds exactly the one captured scalar, at offset 0, so
-    // both the returned delegate's own body (`loadCapturedLocal`/
+    // The heap block holds exactly the one captured scalar or pointer, at
+    // offset 0, so both the returned delegate's own body (`loadCapturedLocal`/
     // `storeCapturedLocal`, gated on `_heapClosureVars`) and this snapshot
     // read the identical bytes: `Op.allocStruct` copies the variable's
     // current frame value in once, at the point it escapes, the same way
@@ -4368,6 +4369,25 @@ private struct Compiler {
         if (capturedOffset is null)
             return null;
 
+        // `Tpointer` is deliberately not excluded here: `scalarType` already
+        // maps it to the same 8-byte `ScalarType.ulong_` as any other
+        // captured scalar, so the `Op.allocStruct` snapshot below already
+        // copies a captured pointer's bytes soundly regardless. The one
+        // thing that needed fixing for this to actually work end to end was
+        // `loadCapturedLocal` tagging the read-back value `isPointer` (its
+        // `TY.Tclass` branch, immediately below this function, already did
+        // the analogous thing for a captured class reference) -- otherwise
+        // a dereference of the captured pointer (`*p`) threw "Unsupported
+        // pointer dereference in bytecode core" even once the raw bytes
+        // were already in the right place. `Taarray`/`Tclass` remain
+        // excluded even though `scalarType` maps them to `ScalarType.ulong_`
+        // too: unlike a pointer or class reference, they still lack the
+        // `loadCapturedLocal` tagging fix pointer got here (`Tclass` already
+        // has ITS own tagging via the `isClassReference` branch, but a
+        // captured class reference or AA handle has not itself been
+        // exercised through this heap-closure escape path yet -- left as
+        // future work, not attempted here to keep this widening to the one
+        // narrow shape actually verified).
         const ty = captured.type.toBasetype.ty;
         if (ty == TY.Tstruct || ty == TY.Tsarray || ty == TY.Tarray ||
             ty == TY.Taarray || ty == TY.Tclass || ty == TY.Tdelegate)
@@ -6264,6 +6284,22 @@ private struct Compiler {
         if (declaredTy == TY.Tclass)
             return Operand(
                 destination, ScalarType.ulong_, true, ScalarType.void_,
+            );
+        // A captured pointer local (`int* p; void nested() { return *p; }`):
+        // the load above already moves the right 8-byte value (`scalarType`
+        // maps `Tpointer` to `ScalarType.ulong_` same as any other captured
+        // scalar), but the resulting `Operand` also needs `isPointer`/
+        // `pointerElement` set, exactly as a plain (non-captured) pointer
+        // local's own `VarExp` read already tags it (`_pointerLocals`
+        // above) -- otherwise a dereference of the captured value
+        // (`*p`/`p[i]`) throws "Unsupported pointer dereference in
+        // bytecode core", the same gap `moduleScalarVariableOrNull`'s
+        // pointer support (commit 402d885e) fixed for a module-level
+        // pointer's own `VarExp` read.
+        if (declaredTy == TY.Tpointer)
+            return Operand(
+                destination, ScalarType.ulong_, true,
+                pointerElementScalar(declaration.type),
             );
         return Operand(destination, type);
     }
