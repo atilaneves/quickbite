@@ -118,6 +118,28 @@ package(quickbite.backends.bytecode) struct ResultType {
 package(quickbite.backends.bytecode) enum sliceDescriptorSize =
     2 * size_t.sizeof;
 
+// Byte offset of a slice descriptor's `ptr` field relative to the
+// descriptor's own base offset `base` (a frame slot, module-data offset, or
+// a descriptor-sized buffer's start) — the one place the `{ptr, length}`
+// layout `sliceDescriptorSize` documents is expressed as field offsets, so
+// compiler.d, machine.d, and reify.d compute them the same way instead of
+// re-deriving `base` / `base + size_t.sizeof` inline. Pairs with
+// `sliceDescriptorLengthOffset`; flipping the descriptor to `{length, ptr}`
+// becomes a one-module edit to these two functions.
+package(quickbite.backends.bytecode) size_t sliceDescriptorPtrOffset(
+    in size_t base,
+) @safe @nogc nothrow pure {
+    return base;
+}
+
+// Byte offset of a slice descriptor's `length` field relative to the
+// descriptor's base offset `base`. See `sliceDescriptorPtrOffset`.
+package(quickbite.backends.bytecode) size_t sliceDescriptorLengthOffset(
+    in size_t base,
+) @safe @nogc nothrow pure {
+    return base + size_t.sizeof;
+}
+
 // A native (libc) call's argument area is N contiguous slots of this
 // stride, one per argument, laid out at
 // `argumentArea + index * nativeArgumentSlotSize` regardless of each

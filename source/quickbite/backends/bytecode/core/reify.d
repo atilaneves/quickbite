@@ -53,12 +53,13 @@ private imported!"quickbite.lang".Value reifyArray(
     in ubyte[][] heap,
     in ubyte[][] literalBlocks,
 ) @safe pure {
-    import quickbite.backends.bytecode.core.program: size, sliceDescriptorSize;
+    import quickbite.backends.bytecode.core.program:
+        size, sliceDescriptorLengthOffset, sliceDescriptorSize;
     import quickbite.lang: Value;
 
     const length = type.isStaticArray
         ? type.arrayLength
-        : scalar!size_t(bytes[size_t.sizeof .. $]);
+        : scalar!size_t(bytes[sliceDescriptorLengthOffset(0) .. $]);
     auto block = type.isStaticArray
         ? bytes
         : resolveBlock(scalar!size_t(bytes), heap, data, literalBlocks);
@@ -205,10 +206,11 @@ private imported!"quickbite.lang".Value reifyStringDescriptor(
     in ubyte[][] heap,
     in ubyte[][] literalBlocks,
 ) @safe pure {
-    import quickbite.backends.bytecode.core.program: size;
+    import quickbite.backends.bytecode.core.program:
+        size, sliceDescriptorLengthOffset, sliceDescriptorPtrOffset;
 
-    const pointer = scalar!size_t(bytes);
-    const length = scalar!size_t(bytes[size_t.sizeof .. $]);
+    const pointer = scalar!size_t(bytes[sliceDescriptorPtrOffset(0) .. $]);
+    const length = scalar!size_t(bytes[sliceDescriptorLengthOffset(0) .. $]);
     const block = resolveBlock(pointer, heap, data, literalBlocks);
     const byteLength = length * size(type);
     return reifyString(block[0 .. byteLength], type);

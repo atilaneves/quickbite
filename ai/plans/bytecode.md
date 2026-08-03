@@ -873,12 +873,15 @@ accessors must precede the descriptor-order flip (§ Memory model).
 
 3. **Shared facts move into program.d.** The op↔width mapping exists twice
    (size→Op selectors in the compiler, Op→size derivations in the machine)
-   with nothing enforcing bijectivity; slice-descriptor field arithmetic is
-   re-encoded in compiler, machine, and reify; `ResultType` is constructed
-   positionally. Give program.d the facts as code all three consume: one
-   op↔width table, descriptor accessor functions, named `ResultType`
-   construction. The descriptor accessors land before the descriptor-order
-   flip so the flip becomes a one-module edit.
+   with nothing enforcing bijectivity; `ResultType` is constructed
+   positionally — both still open. Slice-descriptor field-offset accessors
+   (`sliceDescriptorPtrOffset`/`sliceDescriptorLengthOffset`) landed in
+   program.d and are consumed by reify.d (both descriptor reads) and
+   machine.d's `writeSliceDescriptor`/`writeSliceDescriptorPointer`;
+   compiler.d's own inline `+ size_t.sizeof` field arithmetic is
+   unconverted, left for a follow-up. The descriptor-order flip (§ Memory
+   model) now needs program.d's accessors plus compiler.d's remaining
+   inline arithmetic updated together.
 
 Reviewed and declined (2026-08): a bytecode-core disassembler with
 instruction-level emission pins — not worth tackling; do not re-propose.

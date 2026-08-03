@@ -2349,10 +2349,14 @@ private void writeSliceDescriptor(
     in size_t length,
 ) @trusted {
     import std.bitmanip: nativeToLittleEndian;
+    import quickbite.backends.bytecode.core.program:
+        sliceDescriptorLengthOffset, sliceDescriptorPtrOffset;
 
-    stack[offset .. offset + size_t.sizeof] =
+    const ptrOffset = sliceDescriptorPtrOffset(offset);
+    const lengthOffset = sliceDescriptorLengthOffset(offset);
+    stack[ptrOffset .. ptrOffset + size_t.sizeof] =
         nativeToLittleEndian(cast(size_t) block.ptr);
-    stack[offset + size_t.sizeof .. offset + 2 * size_t.sizeof] =
+    stack[lengthOffset .. lengthOffset + size_t.sizeof] =
         nativeToLittleEndian(length);
 }
 
@@ -2405,9 +2409,13 @@ private void writeSliceDescriptorPointer(
     in size_t length,
 ) @safe {
     import std.bitmanip: nativeToLittleEndian;
+    import quickbite.backends.bytecode.core.program:
+        sliceDescriptorLengthOffset, sliceDescriptorPtrOffset;
 
-    stack[offset .. offset + size_t.sizeof] = nativeToLittleEndian(pointer);
-    stack[offset + size_t.sizeof .. offset + 2 * size_t.sizeof] =
+    const ptrOffset = sliceDescriptorPtrOffset(offset);
+    const lengthOffset = sliceDescriptorLengthOffset(offset);
+    stack[ptrOffset .. ptrOffset + size_t.sizeof] = nativeToLittleEndian(pointer);
+    stack[lengthOffset .. lengthOffset + size_t.sizeof] =
         nativeToLittleEndian(length);
 }
 
