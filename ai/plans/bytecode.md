@@ -1259,12 +1259,22 @@ lifetime as the dependency bytecode cache.
   plain `VarExp` callee shape, alongside the `DotVarExp`/`FuncExp` shapes.
   This is a `this`-receiver question, not the captured-locals-environment
   work above, and does not by itself require a closure environment. A lambda
-  that captures a plain
-  enclosing *local* (not `this`) remains unmodelled and does need the
-  captured-locals environment described above; an immediately-invoked void
-  lambda whose body is a single expression statement can avoid needing that
-  environment by inlining the statement into the caller the same way a
-  single-`return`-expression IIFE already inlines.
+  that captures a plain enclosing *local* (not `this`) needs the
+  captured-locals environment described above (`needsNestedFrameContext`),
+  not the `this`-receiver shape -- and that environment already resolves
+  such a capture correctly for a still-live enclosing frame, whether the
+  capture is the function's only context (no enclosing struct method
+  involved at all) or combined with `this` under one (the bullet below).
+  The only remaining gap is a captured local outliving its declaring frame:
+  a delegate that captures its own function's locals and escapes via
+  `return` rather than being called while that frame is still live still
+  needs a real GC-heap-backed environment, since the current mechanism
+  addresses the caller's own stack frame, not a heap allocation
+  (`refuseFrameEscapingDelegateReturn` declines that shape explicitly). An
+  immediately-invoked void lambda whose body is a single expression
+  statement can avoid needing that environment by inlining the statement
+  into the caller the same way a single-`return`-expression IIFE already
+  inlines.
 - The captured-parent materialisation is only for such nested functions. A
   nested struct method's own `this` remains its current receiver, even when
   that receiver also carries a context pointer.
@@ -1287,7 +1297,8 @@ assert(f() == 2);
 ```
 
 Any copy or snapshot representation of the captured local fails this
-behaviour.
+behaviour. `lambda.capturesReassignedLocalInSameFrame` pins exactly this
+example; it already passes on every backend, including Bytecode.
 
 ## Assumptions and Explicit Deferrals
 

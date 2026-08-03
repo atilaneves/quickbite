@@ -2027,6 +2027,37 @@ static foreach (backend; AliasSeq!(Bytecode)) {
     }
 }
 
+// `ai/plans/bytecode.md`'s Closures section's own exposing example: a bare
+// lambda literal (not a nested named function, not under a struct method)
+// captures a single plain enclosing local and is called directly, in the
+// same still-live frame, both before and after the local is reassigned.
+// This is the simplest possible captured-local shape and was previously
+// undocumented by any fixture -- the closest existing coverage either goes
+// through a nested named helper function
+// (`lambda.passedToNestedFunctionSeesCapturedContext`) or combines the
+// capture with an enclosing struct method's `this`
+// (`struct.nestedFunctionReadsCapturedLocalAndThisField`). It already passes
+// on every backend via the existing `needsNestedFrameContext`/
+// `capturedFrameIndex` captured-locals environment: no production change
+// was needed.
+static foreach (backend; Matrix!()) {
+    @("lambda.capturesReassignedLocalInSameFrame." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            unittest {
+                int local = 1;
+                auto f = () => local;
+                assert(f() == 1);
+                local = 2;
+                assert(f() == 2);
+                local = 99;
+                assert(f() == 99);
+            }
+        });
+    }
+}
+
 // `int[]` is not `place_value.isPlaceComposable` (its elements live behind
 // a stored pointer, not inline), so a nested function capturing one gets no
 // verified reference-slot shadow for it -- `bindCapturedReferenceSlots`
