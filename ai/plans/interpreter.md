@@ -3130,3 +3130,25 @@ to `ffi.md`), and
 captured/`scope`/`lazy` delegates (where a first-class delegate `Value` kind
 meets `value.md`). Each gets its own rung under this plan when a real package
 forces it — same loop: measure, distil, approve, red → green.
+
+## 12. Structural maintenance queue
+
+Behaviour-preserving items; each is a ride-along for a nearby rung PR, not a
+rung of its own.
+
+- Single walk-entry owner. `Interpreter.eval`, `executeUnitTest`, and
+  `evalFormattedDisplay` (`impl.d`) each repeat the same setup ritual: clear
+  the frame-layout cache, fresh `ObjectTable`/`ModuleTable`, allocate the
+  activation frame, close the durable inbound session on exit, catch
+  `Exception` into a diagnostic. Fold the ritual into one private entry point
+  taking `inUnitTest` explicitly. That owner's comment is where the walk
+  preconditions belong — notably that every walk starts from a cleared
+  thread-local frame-layout cache because AST arena replacement can reuse
+  `FuncDeclaration` addresses across compiler lifetimes (the
+  `clearFrameLayoutCache` comment is the authority).
+- Cross-backend diagnostic wording moves out of
+  `backends/interpreter/messages.d` one function at a time, into a
+  `backends/`-level wording module, at the moment a second backend needs the
+  function. The one function already shared is `uninitializedVariableMessage`
+  (imported by `backends/ir/compiler.d`); it seeds the module. No new
+  cross-package imports of `interpreter.messages`.

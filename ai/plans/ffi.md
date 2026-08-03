@@ -229,6 +229,10 @@ new dependency images
 `RTLD_GLOBAL` images and druntime registration are process-lifetime state, so
 dependency-image fixtures must use collision-free symbols.
 
+Image loading has one entry point: `quickbite.ffi.loadDependencyImages`.
+`backends/native/llvm_jit.d` carries a verbatim private copy; fold it into
+the shared entry point.
+
 ### 21.1 Shared resolver
 
 The resolver is backend-neutral. It derives the mangled name, linkage,

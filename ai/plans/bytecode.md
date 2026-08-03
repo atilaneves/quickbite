@@ -850,6 +850,50 @@ These are implementation areas, not reasons to postpone a promoted row. A
 broad row may require several prerequisite commits, each ending with a green
 enabled matrix and a forward-looking next-row update.
 
+### Structural consolidation queue
+
+Approved deepening work, distinct from the row-driven queue: each item lands
+as bounded, behaviour-preserving ride-along commits on the serial bytecode
+track, with the enabled matrix green after each commit. Order: width first,
+place second; the program.d item is independent except that its descriptor
+accessors must precede the descriptor-order flip (§ Memory model).
+
+1. **One width authority.** Element/operand byte width is hand-derived at
+   dozens of emit sites, and `ScalarType.void_` (size 0) doubles as the
+   aggregate sentinel, so an omitted width becomes a silent zero-byte copy
+   instead of a compile error. Generalise
+   `dynamicArrayElementSize`/`pointerElementMetadata` into the single width
+   authority consumed by every emit site, and replace raw `Instruction(...)`
+   construction for the width-suffixed opcode families with per-family emit
+   helpers whose interface requires the width, so an `*N` instruction cannot
+   be built without its width operand. Known concrete divergence to fix
+   first: the `refLocalPointerRefWriteBacks` flush loop omits the width
+   operand its sibling loops pass, masked today by
+   `emitRefLocalPointerArgument`'s 1/2/4/8 gate.
+
+2. **One place resolver.** Lvalue addressing is enumerated per shape: the
+   `emit*RefArgument` chain with its comment-encoded decline order,
+   `referenceOffsetOrNull`, the `*Offset`/`*Address` helpers, and three
+   writeback-mirror mechanisms (module, frame, pointer) with per-shape flush
+   loops. Consolidate on the compose-per-hop model that
+   `structBaseOffsetOrMaterialise`, `capturedFrameIndex`, and the
+   class/struct static-array chain plumbing already use: one place value
+   (base, hop chain, width, writeback rule) returned by one resolver,
+   consumed by emit sites and a single flush path. A new language-surface
+   shape extends the resolver, never adds a sibling emitter.
+
+3. **Shared facts move into program.d.** The op↔width mapping exists twice
+   (size→Op selectors in the compiler, Op→size derivations in the machine)
+   with nothing enforcing bijectivity; slice-descriptor field arithmetic is
+   re-encoded in compiler, machine, and reify; `ResultType` is constructed
+   positionally. Give program.d the facts as code all three consume: one
+   op↔width table, descriptor accessor functions, named `ResultType`
+   construction. The descriptor accessors land before the descriptor-order
+   flip so the flip becomes a one-module edit.
+
+Reviewed and declined (2026-08): a bytecode-core disassembler with
+instruction-level emission pins — not worth tackling; do not re-propose.
+
 ### REPL and formatter ownership
 
 `tests/ut/bin/repl.d` is parity work against the existing interactive backend

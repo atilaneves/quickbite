@@ -717,6 +717,12 @@ native-layout deduplication and any shared-substrate extraction are out
 of scope (decision 16): later, if ever, and subordinate to finishing the
 bytecode VM.
 
+Restructuring the Walker's mirror/writeback machinery behind an internal
+seam (for example, funnelling all mirror access through the binding
+helpers) is likewise out of scope until the mirrored `Value` storage is
+gone: a clean, tested interface would entrench machinery scheduled for
+deletion.
+
 ## Guardrails
 
 - The display format spec above is the contract: no formatter or
