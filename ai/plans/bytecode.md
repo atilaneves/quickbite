@@ -863,15 +863,23 @@ place second.
    as a required parameter and build the `Instruction` themselves, so an
    `indexLoadN`/`indexStoreN` can no longer see a silently-defaulted-to-zero
    width operand; no call site in `compiler.d` constructs an `indexLoad*`/
-   `indexStore*` `Instruction` directly any more. This is a proof of concept,
-   not the general fix: it does not touch how each call site computes its
-   width in the first place (still hand-derived per site, `elementSize`/
-   `staticArraySize`/etc.), so the width-authority generalisation
-   (`dynamicArrayElementSize`/`pointerElementMetadata` merging into one
-   authority) is still fully open. Also still open: the same per-family
-   helper treatment for `pointerLoad*`/`pointerStore*`/`pointerSlice*`,
-   `subSlice*`, `appendElement*`, `dupArray*`, `concatArrays*`, and
-   `sliceCopy*`/`sliceFill*`/`sliceEqual*`.
+   `indexStore*` `Instruction` directly any more. The `pointerLoad*`/
+   `pointerStore*`/`pointerSlice*` family got the same treatment: every raw
+   `Instruction(Op.pointerLoad16, ...)`/`pointerStoreOp(...)`/etc. call site
+   in `compiler.d` (over fifty, including several more
+   silently-defaulted-to-zero-width landmines beyond the one already fixed,
+   e.g. `emitRefLocalPointerArgument`'s mirror-in load and
+   `loadThroughPointer`) now goes through `emitPointerLoad`/
+   `emitPointerStore`/`emitPointerSlice`, which take width as a required
+   parameter and build the `Instruction` themselves. This is still a proof of
+   concept, not the general fix: it does not touch how each call site
+   computes its width in the first place (still hand-derived per site,
+   `elementSize`/`staticArraySize`/etc.), so the width-authority
+   generalisation (`dynamicArrayElementSize`/`pointerElementMetadata` merging
+   into one authority) is still fully open. Also still open: the same
+   per-family helper treatment for `subSlice*`, `appendElement*`,
+   `dupArray*`, `concatArrays*`, and `sliceCopy*`/`sliceFill*`/
+   `sliceEqual*`.
 
 2. **One place resolver.** Lvalue addressing is enumerated per shape: the
    `emit*RefArgument` chain with its comment-encoded decline order,

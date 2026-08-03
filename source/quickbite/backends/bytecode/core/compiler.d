@@ -820,7 +820,7 @@ private struct Compiler {
             source.offset,
             zero,
         );
-        _code ~= Instruction(Op.pointerStore8, loaded, result.offset, zero);
+        emitPointerStore(loaded, result.offset, zero, ulong.sizeof);
         return true;
     }
 
@@ -2745,11 +2745,9 @@ private struct Compiler {
                 _code ~= Instruction(
                     stepOp, lvalue.offset, lvalue.offset, increment.offset,
                 );
-                _code ~= Instruction(
-                    pointerStoreOp(size(pointer.pointerElement)),
-                    lvalue.offset,
-                    pointer.offset,
-                    zero,
+                emitPointerStore(
+                    lvalue.offset, pointer.offset, zero,
+                    size(pointer.pointerElement),
                 );
                 return Operand(result, lvalue.type);
             }
@@ -3040,11 +3038,9 @@ private struct Compiler {
                 const pointer = structFieldAddress(*field);
                 const offset =
                     allocateBytes(sliceDescriptorSize, size_t.sizeof);
-                _code ~= Instruction(
-                    Op.pointerLoad16,
-                    offset,
-                    pointer,
-                    compileSizeConstant(0),
+                emitPointerLoad(
+                    offset, pointer, compileSizeConstant(0),
+                    sliceDescriptorSize,
                 );
                 auto result = new DynamicArrayLocal;
                 *result = DynamicArrayLocal(
@@ -3066,11 +3062,9 @@ private struct Compiler {
                 const pointer = classFieldAddress(*field);
                 const offset =
                     allocateBytes(sliceDescriptorSize, size_t.sizeof);
-                _code ~= Instruction(
-                    Op.pointerLoad16,
-                    offset,
-                    pointer,
-                    compileSizeConstant(0),
+                emitPointerLoad(
+                    offset, pointer, compileSizeConstant(0),
+                    sliceDescriptorSize,
                 );
                 auto result = new DynamicArrayLocal;
                 *result = DynamicArrayLocal(
@@ -3173,11 +3167,9 @@ private struct Compiler {
 
                 const offset =
                     allocateBytes(sliceDescriptorSize, size_t.sizeof);
-                _code ~= Instruction(
-                    Op.pointerLoad16,
-                    offset,
-                    pointer.offset,
-                    compileSizeConstant(0),
+                emitPointerLoad(
+                    offset, pointer.offset, compileSizeConstant(0),
+                    sliceDescriptorSize,
                 );
                 auto result = new DynamicArrayLocal;
                 *result = DynamicArrayLocal(
@@ -3206,11 +3198,9 @@ private struct Compiler {
                     const indexSlot = compileExpression(index.e2);
                     const offset =
                         allocateBytes(sliceDescriptorSize, size_t.sizeof);
-                    _code ~= Instruction(
-                        Op.pointerLoad16,
-                        offset,
-                        pointer.offset,
-                        indexSlot.offset,
+                    emitPointerLoad(
+                        offset, pointer.offset, indexSlot.offset,
+                        sliceDescriptorSize,
                     );
                     auto result = new DynamicArrayLocal;
                     *result = DynamicArrayLocal(
@@ -4118,11 +4108,9 @@ private struct Compiler {
                 return null;
             const destination =
                 allocateBytes(delegateValueSize, size_t.sizeof);
-            _code ~= Instruction(
-                Op.pointerLoad16,
-                destination,
-                classFieldAddress(*classField),
-                compileSizeConstant(0),
+            emitPointerLoad(
+                destination, classFieldAddress(*classField),
+                compileSizeConstant(0), delegateValueSize,
             );
             auto offset = new ushort;
             *offset = destination;
@@ -4136,11 +4124,9 @@ private struct Compiler {
                 return null;
             const destination =
                 allocateBytes(delegateValueSize, size_t.sizeof);
-            _code ~= Instruction(
-                Op.pointerLoad16,
-                destination,
-                structFieldAddress(*pointerField),
-                compileSizeConstant(0),
+            emitPointerLoad(
+                destination, structFieldAddress(*pointerField),
+                compileSizeConstant(0), delegateValueSize,
             );
             auto offset = new ushort;
             *offset = destination;
@@ -4447,11 +4433,9 @@ private struct Compiler {
             if (totalSize == 1 || totalSize == 2 || totalSize == 4 ||
                 totalSize == 8 || totalSize == 16)
             {
-                _code ~= Instruction(
-                    pointerLoadOp(totalSize),
-                    offset,
-                    classFieldAddress(*classField),
-                    compileSizeConstant(0),
+                emitPointerLoad(
+                    offset, classFieldAddress(*classField),
+                    compileSizeConstant(0), totalSize,
                 );
                 return true;
             }
@@ -5170,11 +5154,8 @@ private struct Compiler {
                     const offset = allocateBytes(
                         structSize, staticArrayAlign(dot.e1.type),
                     );
-                    _code ~= Instruction(
-                        pointerLoadOp(structSize),
-                        offset,
-                        pointer.offset,
-                        compileSizeConstant(0),
+                    emitPointerLoad(
+                        offset, pointer.offset, compileSizeConstant(0),
                         structSize,
                     );
                     return MethodReceiver(
@@ -5213,11 +5194,8 @@ private struct Compiler {
                             const offset = allocateBytes(
                                 structSize, staticArrayAlign(field.type),
                             );
-                            _code ~= Instruction(
-                                pointerLoadOp(structSize),
-                                offset,
-                                address,
-                                compileSizeConstant(0),
+                            emitPointerLoad(
+                                offset, address, compileSizeConstant(0),
                                 structSize,
                             );
                             return MethodReceiver(
@@ -5502,13 +5480,7 @@ private struct Compiler {
     ) {
         const structSize = cast(uint) staticArraySize(structType);
         const offset = allocateBytes(structSize, staticArrayAlign(structType));
-        _code ~= Instruction(
-            pointerLoadOp(structSize),
-            offset,
-            pointer,
-            indexSlot,
-            cast(ushort) structSize,
-        );
+        emitPointerLoad(offset, pointer, indexSlot, structSize);
         return offset;
     }
 
@@ -5778,12 +5750,9 @@ private struct Compiler {
         }
 
         if (field.writeBackThroughPointer) {
-            _code ~= Instruction(
-                pointerStoreOp(field.structSize),
-                field.structOffset,
-                field.pointerBaseSlot,
-                field.pointerIndexSlot,
-                field.structSize,
+            emitPointerStore(
+                field.structOffset, field.pointerBaseSlot,
+                field.pointerIndexSlot, field.structSize,
             );
         }
     }
@@ -6266,11 +6235,9 @@ private struct Compiler {
         if (field.type.toBasetype.ty == TY.Tarray) {
             const destination =
                 allocateBytes(sliceDescriptorSize, size_t.sizeof);
-            _code ~= Instruction(
-                Op.pointerLoad16,
-                destination,
-                structFieldAddress(field),
-                compileSizeConstant(0),
+            emitPointerLoad(
+                destination, structFieldAddress(field), compileSizeConstant(0),
+                sliceDescriptorSize,
             );
             return Operand(destination, ScalarType.void_);
         }
@@ -6298,11 +6265,9 @@ private struct Compiler {
         if (field.type.toBasetype.ty == TY.Tdelegate) {
             const destination =
                 allocateBytes(delegateValueSize, size_t.sizeof);
-            _code ~= Instruction(
-                Op.pointerLoad16,
-                destination,
-                structFieldAddress(field),
-                compileSizeConstant(0),
+            emitPointerLoad(
+                destination, structFieldAddress(field), compileSizeConstant(0),
+                delegateValueSize,
             );
             return Operand(destination, ScalarType.void_);
         }
@@ -6311,11 +6276,8 @@ private struct Compiler {
         const elementSize = size(fieldScalar);
         const fieldPointer = structFieldAddress(field);
         const destination = allocateBytes(elementSize, elementSize);
-        _code ~= Instruction(
-            pointerLoadOp(elementSize),
-            destination,
-            fieldPointer,
-            compileSizeConstant(0),
+        emitPointerLoad(
+            destination, fieldPointer, compileSizeConstant(0), elementSize,
         );
         if (field.type.toBasetype.ty == TY.Tclass)
             return Operand(destination, fieldScalar, true, ScalarType.void_);
@@ -6344,12 +6306,8 @@ private struct Compiler {
             ? cast(uint) staticArraySize(field.type)
             : size(scalarType(field.type));
         const fieldPointer = structFieldAddress(field);
-        _code ~= Instruction(
-            pointerStoreOp(elementSize),
-            valueSlot,
-            fieldPointer,
-            compileSizeConstant(0),
-            cast(ushort) elementSize,
+        emitPointerStore(
+            valueSlot, fieldPointer, compileSizeConstant(0), elementSize,
         );
     }
 
@@ -6390,11 +6348,9 @@ private struct Compiler {
         if (field.type.toBasetype.ty == TY.Tarray) {
             const destination =
                 allocateBytes(sliceDescriptorSize, size_t.sizeof);
-            _code ~= Instruction(
-                Op.pointerLoad16,
-                destination,
-                classFieldAddress(field),
-                compileSizeConstant(0),
+            emitPointerLoad(
+                destination, classFieldAddress(field), compileSizeConstant(0),
+                sliceDescriptorSize,
             );
             return Operand(destination, ScalarType.void_);
         }
@@ -6416,11 +6372,9 @@ private struct Compiler {
         if (field.type.toBasetype.ty == TY.Tdelegate) {
             const destination =
                 allocateBytes(delegateValueSize, size_t.sizeof);
-            _code ~= Instruction(
-                Op.pointerLoad16,
-                destination,
-                classFieldAddress(field),
-                compileSizeConstant(0),
+            emitPointerLoad(
+                destination, classFieldAddress(field), compileSizeConstant(0),
+                delegateValueSize,
             );
             return Operand(destination, ScalarType.void_);
         }
@@ -6429,11 +6383,8 @@ private struct Compiler {
         const elementSize = size(fieldScalar);
         const fieldPointer = classFieldAddress(field);
         const destination = allocateBytes(elementSize, elementSize);
-        _code ~= Instruction(
-            pointerLoadOp(elementSize),
-            destination,
-            fieldPointer,
-            compileSizeConstant(0),
+        emitPointerLoad(
+            destination, fieldPointer, compileSizeConstant(0), elementSize,
         );
         if (isPointerType(field.type))
             return Operand(
@@ -6481,12 +6432,8 @@ private struct Compiler {
             ? cast(uint) staticArraySize(field.type)
             : size(scalarType(field.type));
         const fieldPointer = classFieldAddress(field);
-        _code ~= Instruction(
-            pointerStoreOp(elementSize),
-            valueSlot,
-            fieldPointer,
-            compileSizeConstant(0),
-            cast(ushort) elementSize,
+        emitPointerStore(
+            valueSlot, fieldPointer, compileSizeConstant(0), elementSize,
         );
     }
 
@@ -6721,11 +6668,9 @@ private struct Compiler {
                 countSlot,
                 cast(ushort) size_t.sizeof,
             );
-            _code ~= Instruction(
-                Op.pointerStore16,
-                destination,
-                fieldPointer,
-                compileSizeConstant(0),
+            emitPointerStore(
+                destination, fieldPointer, compileSizeConstant(0),
+                sliceDescriptorSize,
             );
             return;
         }
@@ -6815,21 +6760,17 @@ private struct Compiler {
                 valueExpression,
                 arrayElementIsArray(field.type),
             );
-            _code ~= Instruction(
-                Op.pointerStore16,
-                destination,
-                fieldPointer,
-                compileSizeConstant(0),
+            emitPointerStore(
+                destination, fieldPointer, compileSizeConstant(0),
+                sliceDescriptorSize,
             );
             return;
         }
 
         const value = compileExpression(valueExpression);
-        _code ~= Instruction(
-            pointerStoreOp(size(scalarType(field.type))),
-            value.offset,
-            fieldPointer,
-            compileSizeConstant(0),
+        emitPointerStore(
+            value.offset, fieldPointer, compileSizeConstant(0),
+            size(scalarType(field.type)),
         );
     }
 
@@ -7533,12 +7474,8 @@ private struct Compiler {
                 compileSizeConstant(elementIndex * sourceElementSize),
             );
             const loaded = allocateBytes(elementSize, elementSize);
-            _code ~= Instruction(
-                pointerLoadOp(elementSize),
-                loaded,
-                elementPointer,
-                compileSizeConstant(0),
-                cast(ushort) elementSize,
+            emitPointerLoad(
+                loaded, elementPointer, compileSizeConstant(0), elementSize,
             );
             const index = compileSizeConstant(elementIndex);
             emitIndexStore(loaded, destination, index, elementSize);
@@ -7793,13 +7730,7 @@ private struct Compiler {
         );
 
         const byteStride = pointerElementMetadata(slice.e1.type).byteStride;
-        _code ~= Instruction(
-            pointerSliceOp(byteStride),
-            destination,
-            pointer.offset,
-            bounds,
-            cast(ushort) byteStride,
-        );
+        emitPointerSlice(destination, pointer.offset, bounds, byteStride);
     }
 
     // `dest = a ~ b` (concatenation): materialise each operand into a slice
@@ -8535,9 +8466,9 @@ private struct Compiler {
             return null;
 
         const descriptor = allocateBytes(sliceDescriptorSize, size_t.sizeof);
-        _code ~= Instruction(
-            Op.pointerLoad16, descriptor, classFieldAddress(*field),
-            compileSizeConstant(0),
+        emitPointerLoad(
+            descriptor, classFieldAddress(*field), compileSizeConstant(0),
+            sliceDescriptorSize,
         );
         const basePointer =
             allocateBytes(cast(uint) size_t.sizeof, size_t.sizeof);
@@ -8780,9 +8711,9 @@ private struct Compiler {
         if (base.type.toBasetype.ty == TY.Tarray) {
             const descriptorOffset =
                 allocateBytes(sliceDescriptorSize, size_t.sizeof);
-            _code ~= Instruction(
-                Op.pointerLoad16, descriptorOffset, base.pointer,
-                compileSizeConstant(0),
+            emitPointerLoad(
+                descriptorOffset, base.pointer, compileSizeConstant(0),
+                sliceDescriptorSize,
             );
             const dataPointer =
                 allocateBytes(cast(uint) size_t.sizeof, size_t.sizeof);
@@ -8884,11 +8815,9 @@ private struct Compiler {
                 cast(ushort) size(current.type),
             );
 
-        _code ~= Instruction(
-            pointerStoreOp(size(elementPointer.pointerElement)),
-            current.offset,
-            elementPointer.offset,
-            zero,
+        emitPointerStore(
+            current.offset, elementPointer.offset, zero,
+            size(elementPointer.pointerElement),
         );
 
         auto result = new Operand;
@@ -9293,9 +9222,7 @@ private struct Compiler {
     ) {
         const elementSize = size(pointer.pointerElement);
         const offset = allocateBytes(elementSize, elementSize);
-        _code ~= Instruction(
-            pointerLoadOp(elementSize), offset, pointer.offset, indexSlot,
-        );
+        emitPointerLoad(offset, pointer.offset, indexSlot, elementSize);
         return Operand(offset, pointer.pointerElement);
     }
 
@@ -10936,11 +10863,9 @@ private struct Compiler {
                         assign.e2,
                         arrayElementIsArray(field.type),
                     );
-                    _code ~= Instruction(
-                        Op.pointerStore16,
-                        destination,
-                        structFieldAddress(*field),
-                        compileSizeConstant(0),
+                    emitPointerStore(
+                        destination, structFieldAddress(*field),
+                        compileSizeConstant(0), sliceDescriptorSize,
                     );
                     return Operand(destination, ScalarType.void_);
                 }
@@ -11005,11 +10930,9 @@ private struct Compiler {
                         assign.e2,
                         arrayElementIsArray(field.type),
                     );
-                    _code ~= Instruction(
-                        Op.pointerStore16,
-                        destination,
-                        classFieldAddress(*field),
-                        compileSizeConstant(0),
+                    emitPointerStore(
+                        destination, classFieldAddress(*field),
+                        compileSizeConstant(0), sliceDescriptorSize,
                     );
                     return Operand(destination, ScalarType.void_);
                 }
@@ -12238,8 +12161,9 @@ private struct Compiler {
                 destination, dynamicArrayElementType(fieldType), rhs,
                 arrayElementIsArray(fieldType),
             );
-            _code ~= Instruction(
-                Op.pointerStore16, destination, pointer, compileSizeConstant(0),
+            emitPointerStore(
+                destination, pointer, compileSizeConstant(0),
+                sliceDescriptorSize,
             );
             return Operand(destination, ScalarType.void_);
         }
@@ -12247,9 +12171,8 @@ private struct Compiler {
         if (fieldType.toBasetype.ty == TY.Tstruct) {
             const valueOffset = structOperandOffset(rhs);
             const elementSize = cast(uint) staticArraySize(fieldType);
-            _code ~= Instruction(
-                pointerStoreOp(elementSize), valueOffset, pointer,
-                compileSizeConstant(0), cast(ushort) elementSize,
+            emitPointerStore(
+                valueOffset, pointer, compileSizeConstant(0), elementSize,
             );
             return Operand(valueOffset, ScalarType.void_);
         }
@@ -12272,18 +12195,16 @@ private struct Compiler {
                     "Unsupported static array field assignment in bytecode ",
                     "core: ", expressionChars(rhs),
                 ));
-            _code ~= Instruction(
-                pointerStoreOp(elementSize), valueOffset, pointer,
-                compileSizeConstant(0), cast(ushort) elementSize,
+            emitPointerStore(
+                valueOffset, pointer, compileSizeConstant(0), elementSize,
             );
             return Operand(valueOffset, ScalarType.void_);
         }
 
         const value = compileExpression(rhs);
         const fieldScalar = scalarType(fieldType);
-        _code ~= Instruction(
-            pointerStoreOp(size(fieldScalar)), value.offset, pointer,
-            compileSizeConstant(0),
+        emitPointerStore(
+            value.offset, pointer, compileSizeConstant(0), size(fieldScalar),
         );
         return Operand(value.offset, fieldScalar);
     }
@@ -12612,11 +12533,9 @@ private struct Compiler {
         if (!descriptor.writeBackThroughPointer)
             return;
 
-        _code ~= Instruction(
-            Op.pointerStore16,
-            descriptor.offset,
-            descriptor.pointerOffset,
-            compileSizeConstant(0),
+        emitPointerStore(
+            descriptor.offset, descriptor.pointerOffset,
+            compileSizeConstant(0), sliceDescriptorSize,
         );
     }
 
@@ -12765,11 +12684,9 @@ private struct Compiler {
         _code ~= Instruction(
             addOp, current.offset, current.offset, rhsValue.offset,
         );
-        _code ~= Instruction(
-            pointerStoreOp(size(pointer.pointerElement)),
-            current.offset,
-            pointer.offset,
-            zero,
+        emitPointerStore(
+            current.offset, pointer.offset, zero,
+            size(pointer.pointerElement),
         );
         auto result = new Operand;
         *result = Operand(current.offset, current.type);
@@ -12828,11 +12745,9 @@ private struct Compiler {
                 destination,
                 cast(ushort) size(current.type),
             );
-        _code ~= Instruction(
-            pointerStoreOp(size(pointer.pointerElement)),
-            current.offset,
-            pointer.offset,
-            zero,
+        emitPointerStore(
+            current.offset, pointer.offset, zero,
+            size(pointer.pointerElement),
         );
         auto result = new Operand;
         *result = Operand(current.offset, current.type);
@@ -12869,13 +12784,7 @@ private struct Compiler {
         const elementSize = pointer.pointerElement == ScalarType.void_
             ? cast(uint) staticArraySize(rhs.type)
             : size(pointer.pointerElement);
-        _code ~= Instruction(
-            pointerStoreOp(elementSize),
-            valueOffset,
-            pointer.offset,
-            indexSlot,
-            cast(ushort) elementSize,
-        );
+        emitPointerStore(valueOffset, pointer.offset, indexSlot, elementSize);
         return Operand(valueOffset, pointer.pointerElement);
     }
 
@@ -14659,51 +14568,37 @@ private struct Compiler {
                 writeBack.indexOffset, writeBack.elementSize,
             );
         foreach (writeBack; structPointerRefWriteBacks)
-            _code ~= writeBack.isPointerValue
-                ? Instruction(
+            if (writeBack.isPointerValue)
+                _code ~= Instruction(
                     Op.copy,
                     writeBack.pointerOffset,
                     writeBack.valueOffset,
                     writeBack.valueSize,
-                )
-                : Instruction(
-                    pointerStoreOp(writeBack.valueSize),
-                    writeBack.valueOffset,
-                    writeBack.pointerOffset,
-                    compileSizeConstant(0),
-                    writeBack.valueSize,
+                );
+            else
+                emitPointerStore(
+                    writeBack.valueOffset, writeBack.pointerOffset,
+                    compileSizeConstant(0), writeBack.valueSize,
                 );
         foreach (writeBack; classFieldRefWriteBacks)
-            _code ~= Instruction(
-                pointerStoreOp(writeBack.valueSize),
-                writeBack.valueOffset,
-                writeBack.addressOffset,
-                compileSizeConstant(0),
-                writeBack.valueSize,
+            emitPointerStore(
+                writeBack.valueOffset, writeBack.addressOffset,
+                compileSizeConstant(0), writeBack.valueSize,
             );
         foreach (writeBack; structPointerFieldRefWriteBacks)
-            _code ~= Instruction(
-                pointerStoreOp(writeBack.valueSize),
-                writeBack.valueOffset,
-                writeBack.addressOffset,
-                compileSizeConstant(0),
-                writeBack.valueSize,
+            emitPointerStore(
+                writeBack.valueOffset, writeBack.addressOffset,
+                compileSizeConstant(0), writeBack.valueSize,
             );
         foreach (writeBack; refLocalPointerRefWriteBacks)
-            _code ~= Instruction(
-                pointerStoreOp(writeBack.valueSize),
-                writeBack.valueOffset,
-                writeBack.addressOffset,
-                compileSizeConstant(0),
-                writeBack.valueSize,
+            emitPointerStore(
+                writeBack.valueOffset, writeBack.addressOffset,
+                compileSizeConstant(0), writeBack.valueSize,
             );
         foreach (writeBack; pointerDereferenceRefWriteBacks)
-            _code ~= Instruction(
-                pointerStoreOp(writeBack.valueSize),
-                writeBack.valueOffset,
-                writeBack.addressOffset,
-                compileSizeConstant(0),
-                writeBack.valueSize,
+            emitPointerStore(
+                writeBack.valueOffset, writeBack.addressOffset,
+                compileSizeConstant(0), writeBack.valueSize,
             );
         foreach (writeBack; moduleScalarRefWriteBacks)
             _code ~= Instruction(
@@ -14720,10 +14615,8 @@ private struct Compiler {
                 structReceiver.writeBackSize,
             );
         if (hasStructReceiver && structReceiver.writeBackPointerSize != 0)
-            _code ~= Instruction(
-                pointerStoreOp(structReceiver.writeBackPointerSize),
-                structReceiver.offset,
-                structReceiver.writeBackPointerAddress,
+            emitPointerStore(
+                structReceiver.offset, structReceiver.writeBackPointerAddress,
                 structReceiver.writeBackPointerIndexSlot,
                 structReceiver.writeBackPointerSize,
             );
@@ -15620,12 +15513,9 @@ private struct Compiler {
         const elementSize = destination.pointerElement == ScalarType.void_
             ? cast(uint) staticArraySize((*call.arguments)[1].type)
             : size(destination.pointerElement);
-        _code ~= Instruction(
-            pointerStoreOp(elementSize),
-            value.offset,
-            destination.offset,
-            compileSizeConstant(0),
-            cast(ushort) elementSize,
+        emitPointerStore(
+            value.offset, destination.offset, compileSizeConstant(0),
+            elementSize,
         );
 
         auto result = new Operand;
@@ -16082,12 +15972,8 @@ private struct Compiler {
         if (isPointerValue)
             _code ~= Instruction(Op.copy, valueOffset, pointerOffset, valueSize);
         else
-            _code ~= Instruction(
-                pointerLoadOp(valueSize),
-                valueOffset,
-                pointerOffset,
-                compileSizeConstant(0),
-                valueSize,
+            emitPointerLoad(
+                valueOffset, pointerOffset, compileSizeConstant(0), valueSize,
             );
         _code ~= Instruction(
             Op.loadConstant,
@@ -16366,12 +16252,8 @@ private struct Compiler {
 
         const valueOffset = allocateBytes(valueSize, valueAlign);
         const addressOffset = classFieldAddress(*field);
-        _code ~= Instruction(
-            pointerLoadOp(valueSize),
-            valueOffset,
-            addressOffset,
-            compileSizeConstant(0),
-            valueSize,
+        emitPointerLoad(
+            valueOffset, addressOffset, compileSizeConstant(0), valueSize,
         );
         _code ~= Instruction(
             Op.loadConstant,
@@ -16459,12 +16341,8 @@ private struct Compiler {
 
         const valueOffset = allocateBytes(valueSize, valueAlign);
         const addressOffset = structFieldAddress(*field);
-        _code ~= Instruction(
-            pointerLoadOp(valueSize),
-            valueOffset,
-            addressOffset,
-            compileSizeConstant(0),
-            valueSize,
+        emitPointerLoad(
+            valueOffset, addressOffset, compileSizeConstant(0), valueSize,
         );
         _code ~= Instruction(
             Op.loadConstant,
@@ -16534,11 +16412,8 @@ private struct Compiler {
             }
 
         const valueOffset = allocateBytes(valueSize, valueSize);
-        _code ~= Instruction(
-            pointerLoadOp(valueSize),
-            valueOffset,
-            addressOffset,
-            compileSizeConstant(0),
+        emitPointerLoad(
+            valueOffset, addressOffset, compileSizeConstant(0), valueSize,
         );
         _code ~= Instruction(
             Op.loadConstant,
@@ -16613,12 +16488,8 @@ private struct Compiler {
             }
 
         const valueOffset = allocateBytes(valueSize, valueAlign);
-        _code ~= Instruction(
-            pointerLoadOp(valueSize),
-            valueOffset,
-            addressOffset,
-            compileSizeConstant(0),
-            valueSize,
+        emitPointerLoad(
+            valueOffset, addressOffset, compileSizeConstant(0), valueSize,
         );
         _code ~= Instruction(
             Op.loadConstant,
@@ -18530,6 +18401,41 @@ private struct Compiler {
     ) @safe pure {
         _code ~= Instruction(
             indexStoreOp(width), value, arrayBase, index, cast(ushort) width,
+        );
+    }
+
+    // The `pointerLoad*`/`pointerStore*`/`pointerSlice*` family's emit
+    // helpers, the pointer-family counterpart of `emitIndexLoad`/
+    // `emitIndexStore` above: `width` is a required parameter here too, so a
+    // call site cannot build one of these instructions without stating the
+    // pointee's byte width. `index`/`bounds` is a frame offset -- either a
+    // zero constant (`*p`) or a real runtime index/bounds slot (`p[i]`,
+    // `p[lo .. hi]`) -- never a hand-built `Instruction`.
+    private void emitPointerLoad(
+        in ushort destination, in ushort pointer, in ushort index,
+        in uint width,
+    ) @safe pure {
+        _code ~= Instruction(
+            pointerLoadOp(width), destination, pointer, index,
+            cast(ushort) width,
+        );
+    }
+
+    private void emitPointerStore(
+        in ushort value, in ushort pointer, in ushort index, in uint width,
+    ) @safe pure {
+        _code ~= Instruction(
+            pointerStoreOp(width), value, pointer, index, cast(ushort) width,
+        );
+    }
+
+    private void emitPointerSlice(
+        in ushort destination, in ushort pointer, in ushort bounds,
+        in uint width,
+    ) @safe pure {
+        _code ~= Instruction(
+            pointerSliceOp(width), destination, pointer, bounds,
+            cast(ushort) width,
         );
     }
 
