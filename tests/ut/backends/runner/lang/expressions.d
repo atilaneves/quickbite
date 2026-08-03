@@ -3215,6 +3215,63 @@ static foreach (backend; Matrix!(
     }
 }
 
+// A module-level pointer variable (`__gshared int* quickbiteDatasegPointer;`)
+// -- `moduleScalarVariableOrNull` used to decline every `Tpointer` dataseg
+// declaration outright ("pointer ... dataseg variables remain entirely
+// unsupported"), even though `scalarType` already maps `Tpointer` to
+// `ScalarType.ulong_` for locals and every other module-scalar call site
+// (`loadModule`/`storeModule`/`moduleAddress`/the `ref`-argument writeback)
+// is generic over the registered `ScalarType`. The frontend itself refuses a
+// non-null initializer for a dataseg pointer (`cannot take address of
+// thread-local variable ... at compile time`), so the default (null) is the
+// only initializer this variable ever has; it is assigned, dereferenced for
+// both read and write, and rebound through a `ref` argument, all after
+// registration. `Ctfe` cannot read or write dataseg storage at all
+// (compile-time execution has no such storage to access); `Interpreter` has
+// the same pre-existing gap documented on
+// `pointer.refArgumentThroughCallReturnedShortPointerCallsExpressionOnce`
+// elsewhere in this file -- writing through a pointer that addresses
+// dataseg storage does not mirror back to the module variable's own
+// authoritative storage.
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.inexpressible,
+        "CTFE cannot read or write dataseg (__gshared/static) storage"),
+    Omit!(Interpreter, Because.unconfirmed),
+)) {
+    @("dataseg.modulePointerVariableReadWriteAndRefArgument." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            __gshared int quickbiteDatasegPointerTarget = 5;
+            __gshared int* quickbiteDatasegPointer;
+
+            void bumpThroughPointer() {
+                quickbiteDatasegPointer = &quickbiteDatasegPointerTarget;
+                *quickbiteDatasegPointer = *quickbiteDatasegPointer + 1;
+            }
+
+            void reassign(ref int* q, int* target) {
+                q = target;
+            }
+
+            unittest {
+                assert(quickbiteDatasegPointer is null);
+
+                bumpThroughPointer();
+                assert(quickbiteDatasegPointerTarget == 6);
+                assert(quickbiteDatasegPointer !is null);
+                assert(*quickbiteDatasegPointer == 6);
+
+                int other = 100;
+                reassign(quickbiteDatasegPointer, &other);
+                assert(*quickbiteDatasegPointer == 100);
+                assert(quickbiteDatasegPointerTarget == 6);
+            }
+        });
+    }
+}
+
 // A module-level struct's own field that is itself a struct
 // (`quickbiteDatasegOuter.inner.x`): the generic base resolver that walks an
 // `outer.inner` chain back to its base had no case for a bare module-struct

@@ -2178,6 +2178,13 @@ private struct Compiler {
                             true,
                             ScalarType.void_,
                         );
+                    if (moduleVariable.isPointer)
+                        return Operand(
+                            offset,
+                            ScalarType.ulong_,
+                            true,
+                            moduleVariable.pointerElement,
+                        );
                     return Operand(offset, moduleVariable.type);
                 }
 
@@ -11730,12 +11737,20 @@ private struct Compiler {
             declaration.type.toBasetype.ty == TY.Taarray ||
             declaration.type.toBasetype.ty == TY.Tstruct ||
             declaration.type.toBasetype.ty == TY.Tdelegate ||
-            isPointerType(declaration.type) ||
             isComplexDoubleType(declaration.type))
         {
             return null;
         }
 
+        // A module-level pointer (`int* p;`) is just a size_t-width value:
+        // `scalarType` already maps `Tpointer` to `ScalarType.ulong_` for
+        // locals, so it falls straight through the generic scalar path
+        // below with no pointer-specific storage needed. The frontend
+        // itself refuses a non-null initializer for a dataseg pointer
+        // (`cannot take address of thread-local variable ... at compile
+        // time`), so the only initializer this ever sees in practice is
+        // the implicit default (null); `moduleScalarInitializerBytes`
+        // handles that as well as an explicit `= null` initializer.
         if (auto existing = declaration in _moduleScalarVariables)
             return existing;
 
@@ -11744,6 +11759,7 @@ private struct Compiler {
             !moduleVariableHasDefaultInitializer(declaration))
             return null;
 
+        const isPointer = isPointerType(declaration.type);
         const type = isClassReference
             ? ScalarType.ulong_
             : scalarType(declaration.type);
@@ -11755,6 +11771,8 @@ private struct Compiler {
             offset,
             type,
             isClassReference,
+            isPointer,
+            isPointer ? pointerElementScalar(declaration.type) : ScalarType.void_,
         );
         _program.moduleData[offset .. offset + initializer.length] = initializer[];
         return declaration in _moduleScalarVariables;
@@ -12247,6 +12265,9 @@ private struct Compiler {
             return null;
 
         auto expression = initializerExpression(initializer.exp);
+        if (isNullLiteral(expression))
+            return new ubyte[size(type)];
+
         if (auto integer = expression.isIntegerExp) {
             const bytes = nativeToLittleEndian(cast(ulong) integer.toInteger);
             return bytes[0 .. size(type)].dup;
@@ -19644,6 +19665,13 @@ private struct ModuleScalarVariable {
     ushort offset;
     imported!"quickbite.backends.bytecode.core.program".ScalarType type;
     bool isClassReference;
+    // Set for a `Tpointer`-typed module variable: `type` is always
+    // `ScalarType.ulong_` (the pointer's own native-word storage), but a
+    // read still needs to carry the pointed-at element's scalar type so
+    // `*p`/`p[i]` recognise the loaded value as a pointer at all --
+    // mirroring `_pointerLocals`' role for a local/parameter pointer.
+    bool isPointer;
+    imported!"quickbite.backends.bytecode.core.program".ScalarType pointerElement;
 }
 
 // A module-level (`__gshared`/`static`) dynamic-array variable's own 16-byte

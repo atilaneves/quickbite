@@ -644,9 +644,24 @@ row reaches them:
   arithmetic) rather than reusing the whole-block copy `tryStructField`
   materialises for plain field access. A non-default struct initializer still
   falls through to "Unsupported variable in bytecode core". Module-level
-  `Tsarray`/`Taarray`/`Tdelegate` variables and pointer/complex-double dataseg
+  `Tsarray`/`Taarray`/`Tdelegate` variables and complex-double dataseg
   variables remain entirely unsupported (`moduleScalarVariableOrNull` still
-  declines them). Correction to the paragraph above's own "Registration is
+  declines them). A module-level pointer (`int* p;`) is now supported: it is
+  just a `size_t`-width value, so `moduleScalarVariableOrNull` registers it
+  through the same generic scalar path as `int`/`float`/etc (`scalarType`
+  already mapped `Tpointer` to `ScalarType.ulong_`); the struct gained an
+  `isPointer`/`pointerElement` pair (mirroring `_pointerLocals`' role for a
+  local pointer) so a *read* of the module variable is tagged as a pointer
+  operand too, which `*p`/`p[i]`/`&p` and a `ref` argument all key off of.
+  The frontend itself refuses a non-null initializer for a dataseg pointer
+  (`cannot take address of thread-local variable ... at compile time`), so
+  the only initializer ever seen in practice is the implicit default (null);
+  an explicit `= null` initializer is handled too. `Interpreter` has a
+  pre-existing, separate gap here (see
+  `pointer.refArgumentThroughCallReturnedShortPointerCallsExpressionOnce`):
+  writing through a pointer that addresses dataseg storage does not mirror
+  back to the module variable's own authoritative storage. Correction to the
+  paragraph above's own "Registration is
   still declined for a static-array element" claim: `int[3][] arr = [[1, 2,
   3], [4, 5, 6]];` actually already registers successfully, both at module
   scope and as a local. `dynamicArrayElementType` walks through a `Tsarray`
