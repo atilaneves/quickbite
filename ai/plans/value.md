@@ -432,8 +432,10 @@ checked fact; do not relearn them.
   views over one block may grow. One narrower operation exists: when
   druntime's real `gc_expandArrayUsed` accepts that exact view, the runtime
   has proved it is the current tail owner and the borrowed view may widen
-  without reallocating. Failure leaves the view unchanged; ordinary growth
-  still allocates an owned array and rebinds at the call site.
+  without reallocating. The current slice header, not a retained lifetime
+  handle, supplies that view; retention never proves allocation identity or
+  append capacity. Failure leaves the view unchanged; ordinary growth still
+  allocates an owned array and rebinds at the call site.
 - Pointer casts, slices, and `void[]` reinterprets preserve the source address
   and express length in the destination element type.
 - `setLength`'s grow path zeroes every newly exposed byte
@@ -468,14 +470,20 @@ checked fact; do not relearn them.
   address-taking, indexing, and field access compose from that place.
 - Each activation owns a fresh frame block. Captures and calls borrow addresses;
   they do not copy storage authority into a child or reconcile it on return.
+- Native class references carry only their body address. VM-owned allocations
+  retain their storage in an ownership table; borrowed native exceptions keep
+  their hydrated `Throwable` metadata in a separate table keyed by object
+  address. A catch's static view may replace exception metadata, but never an
+  ordinary class allocation root.
 - A field slice borrows bytes composed from its receiver place; an aggregate
   expression snapshot is never the backing storage for an lvalue-derived view.
 - `RuntimeValue.NativeAggregate` owns or borrows DMD-layout bytes for a
   transient aggregate result. Once stored, the destination place is
   authoritative.
 - `RuntimeValue.Pointer` contains only a host address. Pointer arithmetic and
-  subtraction operate on that address; no allocation identity, declaration
-  identity, or pointer-kind predicate participates in execution.
+  subtraction, equality, and relational comparison operate on that address; no
+  allocation identity, declaration identity, or pointer-kind predicate
+  participates in execution.
 - Class identity is the object-body address. All aliases, fields, casts, member
   calls, and exception paths retain that address and observe the same body.
 - Native class type membership includes implemented and inherited interfaces;
@@ -627,24 +635,33 @@ Native storage and calls remain the ordinary execution path; do not restore
 marshalling, cell families, alias maps, or name-based representation shims.
 `interpreter.md` §8 triage remains the partition.
 
-Eliminate the boxed native-exception catch-local compatibility path. A catch
-binding must contain the retained native object's class reference in its typed
-native place, preserving object-address identity through aliases, casts, and
-member calls. Interpreter-only data needed to expose the captured message,
-dynamic type, or exception chain belongs in sidecar metadata keyed by that
-object-body address, never in a `RuntimeValue` stored as binding authority. The
-work is complete when catch-variable reads use the ordinary native-place path
-and no exception-specific branch can leave `mirrorEstablished` false for a
-data binding.
+Pointer-slice formation past an allocation remains unchecked when its result is
+not dereferenced: this is compiled D's contract and the Interpreter's
+native-pointer path matches it. The allocated-block diagnostic is a CTFE-only
+characterization, so the Interpreter belongs in the compiled-behaviour matrix;
+do not restore a boxed-storage bounds diagnostic for this operation.
+
+The temporary `std.conv.text` character-array path reads the authoritative
+native slice header, including its retained backing address, rather than a
+transient aggregate handle. This is slice execution, not a formatter-specific
+storage shim; the interceptor remains temporary per item 1.
 
 ### Item 5 — Delete Interpreter FFI marshalling fallbacks
 
-Finish decision 18 after the language-surface critical path. The current
-`backends/interpreter/native_call_adapter.d` has landed `argumentAddress` and
-`resultAddress`, but its public entry points still accept `RuntimeValue`
-arguments and return reconstructed values and writeback arrays. Consequently
-it retains `marshalArgument`, `unmarshalValue`, receiver buffers, mutable-slice
-copy/writeback storage, and `out`-cell reification.
+Finish decision 18 after the language-surface critical path. Normal outbound
+calls recognize scalar `&local`/`SymOffExp` operands and hand libffi a typed
+scratch slot containing the authoritative pointee address, bypassing the
+out-cell/writeback fallback. Direct local/ref `VarExp` struct receivers and
+their direct `DotVarExp` struct fields likewise offer their typed authoritative
+address through the optional mutable `NativeReceiverAddressMarshaller` FFI
+capability, bypassing receiver-buffer materialization and returning no
+post-call receiver writeback. Other receiver shapes (temporaries, globals,
+classes, constructors, and slices) retain the fallback until their ordinary
+typed places are supplied. The adapter's public entry points still accept
+`RuntimeValue` arguments and return reconstructed values and writeback arrays.
+Consequently it retains
+`marshalArgument`, `unmarshalValue`, receiver buffers, mutable-slice
+copy/writeback storage, and the remaining `out`-cell reification.
 
 Make each ordinary native call consume typed argument, receiver, `ref`, and
 `out` places, using a fixed-width native scratch cell only for an rvalue that
@@ -746,12 +763,3 @@ deletion.
 - DMD-derived layout facts stay the source of truth, cached on the
   handle; the interpreter must not grow a second set of D layout rules
   (see Contracts).
-
-### Verification blocker
-
-The full randomized gate is blocked by a deterministic plain-order Interpreter
-null dereference on an existing test. The previously recorded LLVMJit
-`SIGPIPE` transport failure is no longer the current gate blocker. Resume
-full-gate verification after the Interpreter crash is diagnosed; focused
-Interpreter and typed native-authority tests remain the safe migration
-feedback path meanwhile.

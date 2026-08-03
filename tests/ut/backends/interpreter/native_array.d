@@ -10,6 +10,40 @@ import dmd.mtype: Type;
 
 private:
 
+@("AggregateValue.appendUsesCurrentSliceHeaderProvenance")
+unittest {
+    import dmd.mtype: Type, TypeDArray;
+    import quickbite.backends.interpreter.aggregate_value: AggregateValue;
+    import quickbite.backends.interpreter.native_aggregate: NativeAggregate;
+    import quickbite.backends.interpreter.runtime_value: Value;
+
+    int[] storage;
+    storage.reserve(2);
+    storage ~= 1;
+    auto array = NativeArray.borrow(Type.tint32, storage.ptr, storage.length);
+    auto header = NativeBlock.allocate(
+        NativeArray.sliceHeaderByteLength,
+        NativeBlock.Scan.conservative,
+    );
+    array.writeSliceHeader(header, 0);
+    const originalAddress = array.block.address;
+    auto unrelatedRetention = NativeBlock.allocate(
+        int.sizeof,
+        NativeBlock.Scan.no,
+    );
+    const value = Value.nativeAggregateValue(NativeAggregate(
+        new TypeDArray(Type.tint32),
+        header,
+        unrelatedRetention,
+    ));
+
+    const appended = AggregateValue.withAppendedArrayElement(value, Value(2));
+
+    AggregateValue.nativeArrayAddress(appended).should == originalAddress;
+    AggregateValue.elementAt(appended, 0).should == Value(1);
+    AggregateValue.elementAt(appended, 1).should == Value(2);
+}
+
 
 @("NativeArray.allocate.strideFollowsElementTypeInt32")
 unittest {

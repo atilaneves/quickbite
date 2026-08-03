@@ -337,8 +337,11 @@ private imported!"dmd.declaration".VarDeclaration[] bodyLocals(
     if (auto tryCatch = statement.isTryCatchStatement) {
         locals = bodyLocals(tryCatch._body);
         if (tryCatch.catches !is null)
-            foreach (catch_; *tryCatch.catches)
+            foreach (catch_; *tryCatch.catches) {
+                if (catch_.var !is null)
+                    locals ~= catch_.var;
                 locals ~= bodyLocals(catch_.handler);
+            }
         return locals;
     }
 

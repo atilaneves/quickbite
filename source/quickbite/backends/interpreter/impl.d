@@ -368,10 +368,14 @@ private struct Walker {
     // A native class reference carries only its body address; retain the
     // dynamic class Type by that address for Object-typed aliases.
     private imported!"dmd.mtype".Type[void*] nativeClassTypes;
-    // A class reference copied through a native field exposes its body
-    // address. Keep the allocation handle by that address so a later local
-    // or downcast retains the reference slot that owns the body.
-    private Value[void*] nativeClassObjects;
+    // A VM-allocated class reference exposes only its body address. Keep its
+    // allocation handle by that address so later aliases retain the storage
+    // that owns the body.
+    private Value[void*] nativeClassOwners;
+    // A borrowed native Throwable reference carries only its object address.
+    // Keep its boxed field description separate from ordinary class ownership
+    // so hydrating a catch's static view cannot replace an allocation root.
+    private Value[void*] nativeExceptionMetadata;
     // Interpreted delegates have no guest ABI function pointer. Native
     // delegate slots retain their callable Value out-of-band while their
     // ordinary `{context, function}` guest bytes remain ABI-shaped.
@@ -821,20 +825,6 @@ private struct Walker {
             variable.type.toBasetype.isTypeClass !is null &&
             !value.isNativeAggregate &&
             !value.isPointer &&
-            AggregateValue.isClass(value) &&
-            AggregateValue.hasClassFieldNamed(
-                value,
-                nativeExceptionObjectPointerField,
-            )
-        ) {
-            mirrorEstablished[variable] = false;
-            return;
-        }
-
-        if (
-            variable.type.toBasetype.isTypeClass !is null &&
-            !value.isNativeAggregate &&
-            !value.isPointer &&
             value != Value.null_
         ) {
             // Boxed class construction remains only at the allocation seam
@@ -1169,7 +1159,18 @@ private struct Walker {
         if (catch_.var is null)
             return;
 
-        setLocal(catch_.var, nativeExceptionCatchObject(catch_, object));
+        if (AggregateValue.hasClassFieldNamed(object, nativeExceptionObjectPointerField)) {
+            const hydrated = nativeExceptionCatchObject(catch_, object);
+            const pointer = AggregateValue.classFieldNamed(
+                hydrated,
+                nativeExceptionObjectPointerField,
+            ).pointerAddress;
+            nativeExceptionMetadata[cast(void*) pointer] = hydrated;
+            bindingPlace(catch_.var).storeReference(cast(void*) pointer);
+            mirrorEstablished[catch_.var] = true;
+        } else {
+            setLocal(catch_.var, object);
+        }
         uninitializedLocals.remove(catch_.var);
     }
 
@@ -1250,6 +1251,20 @@ private struct Walker {
                         )
                         : next,
                 );
+        }
+
+        if (AggregateValue.hasClassFieldNamed(
+            object,
+            nativeExceptionObjectPointerField,
+        )) {
+            // Throwable.next exposes another native reference before its
+            // interpreted cast runs, so every captured link needs the same
+            // host-only metadata lookup as the outer catch binding.
+            const pointer = AggregateValue.classFieldNamed(
+                object,
+                nativeExceptionObjectPointerField,
+            ).pointerAddress;
+            nativeExceptionMetadata[cast(void*) pointer] = object;
         }
 
         return object;
@@ -2883,7 +2898,8 @@ private struct Walker {
         child.nextFunctionPointerId = nextFunctionPointerId;
         child.delegates = delegates.dup;
         child.nativeClassTypes = nativeClassTypes.dup;
-        child.nativeClassObjects = nativeClassObjects.dup;
+        child.nativeClassOwners = nativeClassOwners.dup;
+        child.nativeExceptionMetadata = nativeExceptionMetadata.dup;
         child.nativeDelegateSlots = nativeDelegateSlots.dup;
         child.lazyArgumentExpressions = lazyArgumentExpressions.dup;
         child.lazyArgumentLocals = lazyArgumentLocals.dup;
@@ -3955,6 +3971,7 @@ private struct Walker {
                                     function_,
                                     structType,
                                     receiver,
+                                    nativeStructReceiverOperand(dot.e1),
                                     arguments,
                                     nativeArgumentTypes(argumentExpressions),
                                     nativeAddressOfLocalArguments(argumentExpressions),
@@ -3993,6 +4010,7 @@ private struct Walker {
                             function_,
                             receiverStructType(dot.e1),
                             receiver,
+                            nativeStructReceiverOperand(dot.e1),
                             arguments,
                             nativeArgumentTypes(argumentExpressions),
                             nativeAddressOfLocalArguments(argumentExpressions),
@@ -4039,6 +4057,9 @@ private struct Walker {
                 Value result;
                 Value[] writebacks;
                 try {
+                    // Mutable because the native-call interfaces accept Type[].
+                    auto argumentTypes =
+                        nativeArgumentTypes(argumentExpressions);
                     if (durableInboundSession is null)
                         durableInboundSession = new InterpreterInboundTrampolineSession(
                             &invokeNativeCallback,
@@ -4048,9 +4069,14 @@ private struct Walker {
                         tryCallNative(
                             call.f,
                             arguments,
-                            nativeArgumentTypes(argumentExpressions),
+                            argumentTypes,
                             nativeAddressOfLocalArguments(argumentExpressions),
                             nativeOutParameterInputValues(argumentExpressions),
+                            nativeDirectAddressOperands(
+                                argumentExpressions,
+                                argumentTypes,
+                                arguments,
+                            ),
                             &invokeNativeCallback,
                             durableInboundSession,
                             result,
@@ -5178,21 +5204,29 @@ private struct Walker {
     ) {
         const memberReceiver = nativeMemberReceiver(function_, receiver);
 
-        if (
-            declarationName(function_) == "next" &&
-            AggregateValue.isClass(memberReceiver) &&
-            AggregateValue.hasClassType(memberReceiver, "Throwable")
-        ) {
-            if (AggregateValue.hasClassFieldNamed(memberReceiver, "_nextInChainPtr"))
-                return AggregateValue.classFieldNamed(memberReceiver, "_nextInChainPtr");
+        if (declarationName(function_) == "next") {
+            const(Value)* throwable = &memberReceiver;
+            if (memberReceiver.isPointer)
+                if (auto object = memberReceiver.pointerAddress in nativeExceptionMetadata)
+                    throwable = object;
+            if (
+                AggregateValue.isClass(*throwable) &&
+                AggregateValue.hasClassType(*throwable, "Throwable")
+            ) {
+                auto body = memberReceiver.isNativeAggregate
+                    ? AggregateValue.nativeClassBodyAddress(memberReceiver)
+                    : memberReceiver.isPointer
+                    ? memberReceiver.pointerAddress
+                    : null;
+                if (auto next = body in nativeThrowableNext)
+                    return *next;
 
-            auto body = memberReceiver.isNativeAggregate
-                ? AggregateValue.nativeClassBodyAddress(memberReceiver)
-                : memberReceiver.isPointer
-                ? memberReceiver.pointerAddress
-                : null;
-            if (auto next = body in nativeThrowableNext)
-                return *next;
+                if (AggregateValue.hasClassFieldNamed(*throwable, "_nextInChainPtr"))
+                    return AggregateValue.classFieldNamed(
+                        *throwable,
+                        "_nextInChainPtr",
+                    );
+            }
         }
 
         Walker child;
@@ -5318,7 +5352,8 @@ private struct Walker {
         functionPointerIds = child.functionPointerIds;
         delegates = child.delegates;
         nativeClassTypes = child.nativeClassTypes;
-        nativeClassObjects = child.nativeClassObjects;
+        nativeClassOwners = child.nativeClassOwners;
+        nativeExceptionMetadata = child.nativeExceptionMetadata;
         nativeDelegateSlots = child.nativeDelegateSlots;
         nativeFunctionPointerSlots = child.nativeFunctionPointerSlots;
         lazyArgumentExpressions = child.lazyArgumentExpressions;
@@ -5341,7 +5376,8 @@ private struct Walker {
         functionPointerIds = child.functionPointerIds;
         delegates = child.delegates;
         nativeClassTypes = child.nativeClassTypes;
-        nativeClassObjects = child.nativeClassObjects;
+        nativeClassOwners = child.nativeClassOwners;
+        nativeExceptionMetadata = child.nativeExceptionMetadata;
         nativeDelegateSlots = child.nativeDelegateSlots;
         nativeFunctionPointerSlots = child.nativeFunctionPointerSlots;
         lazyArgumentExpressions = child.lazyArgumentExpressions;
@@ -6487,7 +6523,7 @@ private struct Walker {
                     auto address = fieldPlace.deref.address;
                     if (address is null)
                         return Value.null_;
-                    if (auto object = address in nativeClassObjects)
+                    if (auto object = address in nativeClassOwners)
                         return *object;
                     return Value.pointerValue(address);
                 }
@@ -8481,9 +8517,15 @@ private struct Walker {
                     *dynamicType,
                     value.pointerAddress,
                 );
-        if (value.isPointer)
-            if (auto object = value.pointerAddress in nativeClassObjects)
-                value = *object;
+        if (value.isPointer) {
+            if (auto owner = value.pointerAddress in nativeClassOwners) {
+                value = *owner;
+            } else if (
+                auto metadata = value.pointerAddress in nativeExceptionMetadata
+            ) {
+                value = *metadata;
+            }
+        }
         if (value == Value.null_)
             return value;
 
@@ -8538,6 +8580,23 @@ private struct Walker {
             // be regrown through that pointer.  Read the typed header from
             // the evaluated native slice directly; `arrayPointer` remains
             // the checked address-of route for real `array[index]` places.
+            if (auto var = cast_.e1.isVarExp)
+                if (auto variable = var.var.isVarDeclaration) {
+                    import quickbite.backends.interpreter.place: Place;
+
+                    if (auto address = variable in nativeRefLocalAddresses)
+                        return Value.pointerValue(
+                            Place(*address, variable.type).sliceDataPointer,
+                        );
+                    if (
+                        hasMirrorSlot(variable) &&
+                        mirrorEstablished.get(variable, false)
+                    )
+                        return Value.pointerValue(
+                            bindingPlace(variable).sliceDataPointer,
+                        );
+                }
+
             const value = runExpression(cast_.e1);
             if (value.isNativeAggregate) {
                 import quickbite.backends.interpreter.aggregate_value: AggregateValue;
@@ -9113,6 +9172,62 @@ private struct Walker {
         uninitializedLocals.remove(variable);
     }
 
+    // A plain local/ref struct receiver already has one authoritative typed
+    // frame place. Let the native call use it directly; globals, expression
+    // temporaries, fields, constructors, and all other lvalue shapes retain
+    // the transitional receiver-buffer/writeback path.
+    private imported!"quickbite.backends.interpreter.native_call_adapter".NativeOperand nativeStructReceiverOperand(
+        imported!"dmd.expression".Expression receiver,
+    ) {
+        import dmd.tokens: EXP;
+        import quickbite.backends.interpreter.native_call_adapter: NativeOperand;
+        import quickbite.backends.interpreter.layout: declaredType;
+
+        if (auto variableExpression = receiver.isVarExp) {
+            auto variable = variableExpression.var.isVarDeclaration;
+            if (variable is null || variable.isDataseg)
+                return NativeOperand.init;
+
+            if (
+                !_activationFrame.hasOwningSlot(variable) &&
+                !_activationFrame.hasReferenceSlot(variable)
+            )
+                return NativeOperand.init;
+
+            auto address = addressableBindingBase(variable);
+            if (address is null)
+                return NativeOperand.init;
+
+            return NativeOperand(declaredType(variable), address);
+        }
+
+        auto field = receiver.isDotVarExp;
+        if (
+            field is null ||
+            receiver.type is null ||
+            receiver.type.toBasetype.isTypeStruct is null
+        )
+            return NativeOperand.init;
+
+        auto fieldReceiver = field.e1.isVarExp;
+        if (fieldReceiver is null)
+            return NativeOperand.init;
+
+        auto variable = fieldReceiver.var.isVarDeclaration;
+        if (
+            variable is null ||
+            variable.isDataseg ||
+            (!_activationFrame.hasOwningSlot(variable) &&
+                !_activationFrame.hasReferenceSlot(variable))
+        )
+            return NativeOperand.init;
+
+        const address = addressOfExpression(receiver, EXP.address);
+        return address.isPointer
+            ? NativeOperand(receiver.type, address.pointerAddress)
+            : NativeOperand.init;
+    }
+
     // Flag each argument that is `&local`, so the FFI core can treat a
     // single-level pointer-to-scalar at that slot as an out parameter rather
     // than an in-pointer (ffi.md §34.8).
@@ -9186,6 +9301,54 @@ private struct Walker {
                 values[index] = *current;
         }
         return values;
+    }
+
+    // The frontend preserves `&local` as an AddrExp or SymOffExp. For scalar
+    // pointees its evaluated pointer already names the binding's authoritative
+    // native place. Hand libffi a typed ABI slot containing that pointer rather
+    // than asking the core to allocate an out cell and later write it back.
+    private imported!"quickbite.backends.interpreter.native_call_adapter".NativeOperand[]
+    nativeDirectAddressOperands(
+        imported!"dmd.expression".Expression[] argumentExpressions,
+        imported!"dmd.mtype".Type[] argumentTypes,
+        in Value[] arguments,
+    ) {
+        import quickbite.backends.interpreter.native_block: NativeBlock;
+        import quickbite.backends.interpreter.native_call_adapter: NativeOperand;
+        import quickbite.backends.interpreter.native_scalar: isNativeScalarType;
+        import quickbite.backends.interpreter.place: Place;
+        import quickbite.backends.interpreter.place_value: writeValue;
+
+        NativeOperand[] operands;
+        operands.length = argumentExpressions.length;
+        foreach (index, expression; argumentExpressions) {
+            if (
+                !isNativeAddressOfLocal(expression) ||
+                index >= argumentTypes.length ||
+                index >= arguments.length ||
+                !arguments[index].isPointer
+            )
+                continue;
+
+            auto pointer = argumentTypes[index].toBasetype.isTypePointer;
+            if (pointer is null || !isNativeScalarType(pointer.next))
+                continue;
+
+            auto scratch = NativeBlock.allocate(
+                (void*).sizeof,
+                NativeBlock.Scan.conservative,
+            );
+            writeValue(
+                Place(scratch.address, argumentTypes[index]),
+                arguments[index],
+            );
+            operands[index] = NativeOperand(
+                argumentTypes[index],
+                scratch.address,
+                scratch,
+            );
+        }
+        return operands;
     }
 
     private Value runIndexExpression(
@@ -9263,6 +9426,14 @@ private struct Walker {
                     return readValue(Place(*address, variable.type).index(
                         arrayIndex,
                     ));
+                }
+                if (
+                    hasMirrorSlot(variable) &&
+                    mirrorEstablished.get(variable, false)
+                ) {
+                    import quickbite.backends.interpreter.place_value: readValue;
+
+                    return readValue(bindingPlace(variable).index(arrayIndex));
                 }
                 if (auto current = variable in locals)
                     if ((*current).isNativeAggregate)
@@ -9531,7 +9702,8 @@ private struct Walker {
         mergeNativePointerRoots(child);
         nextClassObjectId = child.nextClassObjectId;
         nativeClassTypes = child.nativeClassTypes;
-        nativeClassObjects = child.nativeClassObjects;
+        nativeClassOwners = child.nativeClassOwners;
+        nativeExceptionMetadata = child.nativeExceptionMetadata;
     }
 
     // `new T(args)` where T's constructor is a body-less native leaf: construct
@@ -9595,7 +9767,7 @@ private struct Walker {
 
         auto object = AggregateValue.allocateClass(allocationType);
         nativeClassTypes[AggregateValue.nativeClassBodyAddress(object)] = allocationType;
-        nativeClassObjects[AggregateValue.nativeClassBodyAddress(object)] = object;
+        nativeClassOwners[AggregateValue.nativeClassBodyAddress(object)] = object;
         initializeNativeClassBody(allocationType, object);
         if (new_.member is null)
             return object;
@@ -9642,7 +9814,8 @@ private struct Walker {
         functionPointerIds = child.functionPointerIds;
         delegates = child.delegates;
         nativeClassTypes = child.nativeClassTypes;
-        nativeClassObjects = child.nativeClassObjects;
+        nativeClassOwners = child.nativeClassOwners;
+        nativeExceptionMetadata = child.nativeExceptionMetadata;
         nativeDelegateSlots = child.nativeDelegateSlots;
         nativeFunctionPointerSlots = child.nativeFunctionPointerSlots;
         lazyArgumentExpressions = child.lazyArgumentExpressions;

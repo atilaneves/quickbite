@@ -109,6 +109,22 @@ public struct Place {
         return Place(placeAdd(_address, i * typeByteSize(array.next)), array.next);
     }
 
+    // The data pointer stored in a slice header. Unlike `index`, this is
+    // defined for an empty slice: `array.ptr` observes its retained backing
+    // address without dereferencing an element.
+    public void* sliceDataPointer() @safe {
+        import quickbite.backends.interpreter.native_array: NativeArray, readSliceHeaderBytes;
+
+        if (_type.isTypeDArray is null)
+            throw new Exception(
+                "quickbite.backends.interpreter.place.Place.sliceDataPointer: "
+                ~ "only a slice place has a data pointer",
+            );
+        return readSliceHeaderBytes(
+            placeBytes(_address, NativeArray.sliceHeaderByteLength),
+        ).ptr;
+    }
+
     // A `Place` at the location this place's own stored pointer/reference
     // points to -- two cases, matching how each type stores that reference:
     //

@@ -7,7 +7,7 @@ module quickbite.backends.interpreter.native_call_adapter;
 
 private:
 
-import quickbite.ffi: NativeMarshaller;
+import quickbite.ffi: NativeMarshaller, NativeReceiverAddressMarshaller;
 
 // Re-exported so the interpreter call sites keep a single import for the native
 // call path and its exception type.
@@ -124,6 +124,7 @@ public bool tryCallNative(
     imported!"dmd.mtype".Type[] argumentTypes,
     in bool[] addressOfLocalArguments,
     in imported!"quickbite.backends.interpreter.runtime_value".Value[] outParameterInputs,
+    NativeOperand[] directAddressOperands,
     DelegateInvoker invokeDelegate,
     InterpreterInboundTrampolineSession* durableSession,
     out imported!"quickbite.backends.interpreter.runtime_value".Value result,
@@ -134,6 +135,7 @@ public bool tryCallNative(
     auto marshaller = new InterpreterNativeMarshaller(
         arguments,
         outParameterInputs,
+        directAddressOperands,
         invokeDelegate, durableSession,
     );
     if (!callNative(function_, marshaller, argumentTypes, addressOfLocalArguments,
@@ -187,6 +189,7 @@ public bool tryCallNativeMember(
     imported!"dmd.func".FuncDeclaration function_,
     imported!"dmd.mtype".TypeStruct receiverType,
     in imported!"quickbite.backends.interpreter.runtime_value".Value receiver,
+    NativeOperand receiverOperand,
     in imported!"quickbite.backends.interpreter.runtime_value".Value[] arguments,
     imported!"dmd.mtype".Type[] argumentTypes,
     in bool[] addressOfLocalArguments,
@@ -201,7 +204,11 @@ public bool tryCallNativeMember(
     if (receiverType is null || !AggregateValue.isStruct(receiver))
         return false;
 
-    auto marshaller = new InterpreterNativeMarshaller(arguments, receiver);
+    auto marshaller = new InterpreterNativeMarshaller(
+        arguments,
+        receiver,
+        receiverOperand,
+    );
     if (!callNativeMember(
         function_,
         receiverType,
@@ -354,7 +361,10 @@ private bool isNativeAggregateType(
         base.isTypeDArray !is null;
 }
 
-private final class InterpreterNativeMarshaller: NativeMarshaller {
+private final class InterpreterNativeMarshaller:
+    NativeMarshaller,
+    NativeReceiverAddressMarshaller
+{
     import quickbite.backends.interpreter.runtime_value: Value;
     import dmd.mtype: Type;
 
@@ -364,6 +374,7 @@ private final class InterpreterNativeMarshaller: NativeMarshaller {
     // read the caller's value rather than zeroes (ffi.md §35.6).
     private const(Value)[] _outParameterInputs;
     private Value _receiver;
+    private NativeOperand _receiverOperand;
     private Value _refResultValue;
     private Value _result;
     private NativeOperand[] _argumentOperands;
@@ -392,6 +403,20 @@ private final class InterpreterNativeMarshaller: NativeMarshaller {
     public this(
         in Value[] arguments,
         in Value[] outParameterInputs,
+        NativeOperand[] directAddressOperands,
+        DelegateInvoker invokeDelegate = null,
+        InterpreterInboundTrampolineSession* durableSession = null,
+    ) {
+        _arguments = arguments.dup;
+        _outParameterInputs = outParameterInputs;
+        _argumentOperands = directAddressOperands;
+        _invokeDelegate = invokeDelegate;
+        _durableSession = durableSession;
+    }
+
+    public this(
+        in Value[] arguments,
+        in Value[] outParameterInputs,
         DelegateInvoker invokeDelegate = null,
         InterpreterInboundTrampolineSession* durableSession = null,
     ) {
@@ -401,9 +426,14 @@ private final class InterpreterNativeMarshaller: NativeMarshaller {
         _durableSession = durableSession;
     }
 
-    public this(in Value[] arguments, in Value receiver) {
+    public this(
+        in Value[] arguments,
+        in Value receiver,
+        NativeOperand receiverOperand = NativeOperand.init,
+    ) {
         _arguments = arguments.dup;
         _receiver = receiver;
+        _receiverOperand = receiverOperand;
         _refResultValue = receiver;
     }
 
@@ -443,6 +473,11 @@ private final class InterpreterNativeMarshaller: NativeMarshaller {
         import quickbite.backends.interpreter.place: Place;
         import quickbite.backends.interpreter.place_value:
             isPlaceComposable, readValue;
+
+        // The call already mutated the caller's authoritative place. A
+        // writeback is only meaningful for a temporary receiver buffer.
+        if (_receiverOperand.address !is null)
+            return Value.void_;
 
         return isPlaceComposable(_receiverType) &&
                 _receiverType.toBasetype.isTypeClass is null
@@ -525,6 +560,17 @@ private final class InterpreterNativeMarshaller: NativeMarshaller {
         import quickbite.backends.interpreter.place: Place;
         import quickbite.backends.interpreter.place_value:
             valueMatchesPlace, writeValue;
+
+        // `&local`/`SymOffExp` scalar operands already have their one
+        // authoritative native place. The walker gives us a pointer-sized ABI
+        // scratch slot containing that address, so the core passes it directly
+        // instead of allocating an out cell and reconstructing a writeback.
+        if (
+            index < _argumentOperands.length &&
+            _argumentOperands[index].address !is null &&
+            _argumentOperands[index].type is type
+        )
+            return _argumentOperands[index].address;
 
         if (
             type.toBasetype.ty == TY.Tpointer &&
@@ -619,6 +665,12 @@ private final class InterpreterNativeMarshaller: NativeMarshaller {
             keepAlive,
             keepAliveBuffers,
         );
+    }
+
+    public override void* receiverAddress(Type type) {
+        return _receiverOperand.address !is null && _receiverOperand.type is type
+            ? _receiverOperand.address
+            : null;
     }
 
     public override void readResult(Type type, in ubyte[] buffer) {
