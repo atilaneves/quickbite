@@ -999,6 +999,50 @@ in (op != Op.dupArrayN)
     assert(0, "Not a fixed-width dupArray opcode.");
 }
 
+// The `concatArrays` family's one op<->width table, the same pattern as
+// `dupArrayOpWidths` above (a single opcode per width, since concatenating
+// two arrays is a single operation). Unlike the other families, only 1, 4,
+// and 16 bytes get a fixed-width opcode (matching indexLoad/indexStore's own
+// omission of 2 and 8 for this family). compiler.d's `concatArraysOp`
+// width->opcode selector and machine.d's element-size Op->width derivation
+// (`concatArraysWidth` below) both walk this same table, so the two
+// directions cannot independently drift out of sync.
+private struct ConcatArraysOpWidth {
+    uint width;
+    Op op;
+}
+
+private immutable ConcatArraysOpWidth[] concatArraysOpWidths = [
+    ConcatArraysOpWidth(1, Op.concatArrays1),
+    ConcatArraysOpWidth(4, Op.concatArrays4),
+    ConcatArraysOpWidth(16, Op.concatArrays16),
+];
+
+// The `concatArrays`-family width->opcode selector: `width` bytes uses the
+// fixed-width opcode for that width if the table above has one, else the `N`
+// variant (which carries the width in its own `d` operand instead).
+package(quickbite.backends.bytecode) Op concatArraysOp(in uint width)
+    @safe @nogc nothrow pure
+{
+    foreach (entry; concatArraysOpWidths)
+        if (entry.width == width)
+            return entry.op;
+    return Op.concatArraysN;
+}
+
+// The reverse direction: the fixed byte width a fixed-width `concatArrays*`
+// opcode operates on. Not valid for `concatArraysN`, whose width is a
+// runtime operand rather than implied by the opcode.
+package(quickbite.backends.bytecode) uint concatArraysWidth(in Op op)
+    @safe @nogc nothrow pure
+in (op != Op.concatArraysN)
+{
+    foreach (entry; concatArraysOpWidths)
+        if (entry.op == op)
+            return entry.width;
+    assert(0, "Not a fixed-width concatArrays opcode.");
+}
+
 package(quickbite.backends.bytecode) struct Instruction {
     Op op;
     ushort a;
