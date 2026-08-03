@@ -7698,13 +7698,7 @@ private struct Compiler {
             elementType,
             descriptor.elementIsArray,
         );
-        _code ~= Instruction(
-            subSliceOp(elementSize),
-            destination,
-            descriptor.offset,
-            bounds,
-            cast(ushort) elementSize,
-        );
+        emitSubSlice(destination, descriptor.offset, bounds, elementSize);
     }
 
     // `p[lo .. hi]` over a pointer: write a slice descriptor
@@ -12373,11 +12367,8 @@ private struct Compiler {
         if (auto outerElement = outerArrayElement(append.e1)) {
             const value = compileExpression(append.e2);
             const elementSize = size(outerElement.inner.elementType);
-            _code ~= Instruction(
-                appendElementOp(elementSize),
-                outerElement.inner.offset,
-                value.offset,
-                cast(ushort) elementSize,
+            emitAppendElement(
+                outerElement.inner.offset, value.offset, elementSize,
             );
             emitIndexStore(
                 outerElement.inner.offset, outerElement.outerOffset,
@@ -12400,12 +12391,7 @@ private struct Compiler {
             const descriptor = dynamicArrayDescriptor(append.e1);
             const elementSize =
                 dynamicArrayElementSize(append.e1.type, descriptor.elementType);
-            _code ~= Instruction(
-                appendElementOp(elementSize),
-                descriptor.offset,
-                value.offset,
-                cast(ushort) elementSize,
-            );
+            emitAppendElement(descriptor.offset, value.offset, elementSize);
             writeBackDynamicArrayDescriptor(descriptor);
             return Operand(descriptor.offset, descriptor.elementType);
         }
@@ -12422,10 +12408,7 @@ private struct Compiler {
         if (descriptor.elementIsArray) {
             const inner = allocateBytes(sliceDescriptorSize, size_t.sizeof);
             compileDynamicArrayInto(inner, descriptor.elementType, append.e2);
-            _code ~= Instruction(
-                appendElementOp(sliceDescriptorSize), descriptor.offset, inner,
-                cast(ushort) sliceDescriptorSize,
-            );
+            emitAppendElement(descriptor.offset, inner, sliceDescriptorSize);
             writeBackDynamicArrayDescriptor(descriptor);
             return Operand(descriptor.offset, descriptor.elementType);
         }
@@ -12433,12 +12416,7 @@ private struct Compiler {
         const value = compileExpression(append.e2);
         const elementSize =
             dynamicArrayElementSize(append.e1.type, descriptor.elementType);
-        _code ~= Instruction(
-            appendElementOp(elementSize),
-            descriptor.offset,
-            value.offset,
-            cast(ushort) elementSize,
-        );
+        emitAppendElement(descriptor.offset, value.offset, elementSize);
         writeBackDynamicArrayDescriptor(descriptor);
         return Operand(descriptor.offset, descriptor.elementType);
     }
@@ -13482,10 +13460,7 @@ private struct Compiler {
         );
 
         const destination = allocateBytes(sliceDescriptorSize, size_t.sizeof);
-        _code ~= Instruction(
-            subSliceOp(elementSize), destination, sourceDescriptor, bounds,
-            cast(ushort) elementSize,
-        );
+        emitSubSlice(destination, sourceDescriptor, bounds, elementSize);
 
         auto result = new ushort;
         *result = destination;
@@ -18436,6 +18411,32 @@ private struct Compiler {
         _code ~= Instruction(
             pointerSliceOp(width), destination, pointer, bounds,
             cast(ushort) width,
+        );
+    }
+
+    // The `subSlice*` family's emit helper: a single opcode per width (not a
+    // load/store/slice split, since forming a sub-slice descriptor is one
+    // operation), but the same required-`width` treatment as
+    // `emitIndexLoad`/`emitPointerLoad` above. `bounds` is a frame offset for
+    // a `{lo, hi}` size_t pair already materialised by the caller, never a
+    // hand-built `Instruction`.
+    private void emitSubSlice(
+        in ushort destination, in ushort source, in ushort bounds,
+        in uint width,
+    ) @safe pure {
+        _code ~= Instruction(
+            subSliceOp(width), destination, source, bounds, cast(ushort) width,
+        );
+    }
+
+    // The `appendElement*` family's emit helper, the same required-`width`
+    // treatment as `emitSubSlice` above: one opcode per width, and `width`
+    // cannot be omitted or silently defaulted to zero.
+    private void emitAppendElement(
+        in ushort array, in ushort element, in uint width,
+    ) @safe pure {
+        _code ~= Instruction(
+            appendElementOp(width), array, element, cast(ushort) width,
         );
     }
 
