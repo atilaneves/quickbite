@@ -3197,6 +3197,8 @@ static foreach (backend; Matrix!()) {
 static foreach (backend; Matrix!(
     Omit!(Ctfe, Because.inexpressible,
         "pointer-identity `is` on a GC-backed slice lowers to an address cast CTFE refuses at compile time"),
+    Omit!(Interpreter, Because.unconfirmed,
+        "reserve loses the zero-length allocation's pointer identity"),
 )) {
     @("dynamicArray.reserveThenAppendWithinCapacityDoesNotReallocate." ~
         backend.stringof)

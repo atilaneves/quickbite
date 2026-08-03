@@ -641,7 +641,6 @@ public struct AggregateValue {
             auto aggregate = native(value);
             auto slice = baseTypeOf(aggregate.type).isTypeDArray;
             if (slice !is null) {
-                import core.memory: GC;
                 import quickbite.backends.interpreter.layout: typeByteSize;
 
                 const length = elementCount(value);
@@ -650,9 +649,28 @@ public struct AggregateValue {
                     aggregate.type,
                 ).sliceDataPointer;
                 const stride = typeByteSize(slice.next);
-                const capacity = address is null || stride == 0
+                const retainedAddress = aggregate.retained.address;
+                const offset = address is null || retainedAddress is null
                     ? 0
-                    : GC.sizeOf(address) / stride;
+                    : cast(size_t) (cast(ubyte*) address -
+                        cast(ubyte*) retainedAddress);
+                size_t capacity;
+                // A retained block records the slice's actual allocation
+                // extent; GC bin slack is not D append capacity. A reserve
+                // returned through druntime currently loses that handle, so
+                // only that handle-less descriptor falls back to GC metadata.
+                if (address !is null && stride != 0 && retainedAddress is null) {
+                    import core.memory: GC;
+
+                    capacity = GC.sizeOf(address) / stride;
+                } else if (
+                    address is null || retainedAddress is null || stride == 0 ||
+                    offset > aggregate.retained.byteLength
+                ) {
+                    capacity = 0;
+                } else {
+                    capacity = (aggregate.retained.byteLength - offset) / stride;
+                }
                 if (length < capacity) {
                     auto array = NativeArray.borrow(slice.next, address, length + 1);
                     writeValue(Place(array.element(length).ptr, slice.next), element);

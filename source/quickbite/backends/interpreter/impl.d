@@ -1156,10 +1156,12 @@ private struct Walker {
             return;
 
         if (AggregateValue.hasClassFieldNamed(object, nativeExceptionObjectPointerField)) {
+            const hydrated = nativeExceptionCatchObject(catch_, object);
             const pointer = AggregateValue.classFieldNamed(
-                object,
+                hydrated,
                 nativeExceptionObjectPointerField,
             ).pointerAddress;
+            nativeClassObjects[cast(void*) pointer] = hydrated;
             bindingPlace(catch_.var).storeReference(cast(void*) pointer);
             mirrorEstablished[catch_.var] = true;
         } else {
@@ -1245,6 +1247,20 @@ private struct Walker {
                         )
                         : next,
                 );
+        }
+
+        if (AggregateValue.hasClassFieldNamed(
+            object,
+            nativeExceptionObjectPointerField,
+        )) {
+            // Throwable.next exposes another native reference before its
+            // interpreted cast runs, so every captured link needs the same
+            // host-only metadata lookup as the outer catch binding.
+            const pointer = AggregateValue.classFieldNamed(
+                object,
+                nativeExceptionObjectPointerField,
+            ).pointerAddress;
+            nativeClassObjects[cast(void*) pointer] = object;
         }
 
         return object;
@@ -5180,21 +5196,29 @@ private struct Walker {
     ) {
         const memberReceiver = nativeMemberReceiver(function_, receiver);
 
-        if (
-            declarationName(function_) == "next" &&
-            AggregateValue.isClass(memberReceiver) &&
-            AggregateValue.hasClassType(memberReceiver, "Throwable")
-        ) {
-            if (AggregateValue.hasClassFieldNamed(memberReceiver, "_nextInChainPtr"))
-                return AggregateValue.classFieldNamed(memberReceiver, "_nextInChainPtr");
+        if (declarationName(function_) == "next") {
+            const(Value)* throwable = &memberReceiver;
+            if (memberReceiver.isPointer)
+                if (auto object = memberReceiver.pointerAddress in nativeClassObjects)
+                    throwable = object;
+            if (
+                AggregateValue.isClass(*throwable) &&
+                AggregateValue.hasClassType(*throwable, "Throwable")
+            ) {
+                auto body = memberReceiver.isNativeAggregate
+                    ? AggregateValue.nativeClassBodyAddress(memberReceiver)
+                    : memberReceiver.isPointer
+                    ? memberReceiver.pointerAddress
+                    : null;
+                if (auto next = body in nativeThrowableNext)
+                    return *next;
 
-            auto body = memberReceiver.isNativeAggregate
-                ? AggregateValue.nativeClassBodyAddress(memberReceiver)
-                : memberReceiver.isPointer
-                ? memberReceiver.pointerAddress
-                : null;
-            if (auto next = body in nativeThrowableNext)
-                return *next;
+                if (AggregateValue.hasClassFieldNamed(*throwable, "_nextInChainPtr"))
+                    return AggregateValue.classFieldNamed(
+                        *throwable,
+                        "_nextInChainPtr",
+                    );
+            }
         }
 
         Walker child;
