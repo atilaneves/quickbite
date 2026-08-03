@@ -1807,9 +1807,8 @@ private struct Compiler {
         auto instance = stringSwitchSelector(call);
         auto selectorExpression = (*call.arguments)[0];
         const elementType = dynamicArrayElementType(selectorExpression.type);
-        const compareOp = sliceEqualOp(
-            dynamicArrayElementSize(selectorExpression.type, elementType),
-        );
+        const compareWidth =
+            dynamicArrayElementSize(selectorExpression.type, elementType);
 
         const result = allocate(ScalarType.int_);
         _code ~= Instruction(
@@ -1832,9 +1831,7 @@ private struct Compiler {
 
             const matches = allocate(ScalarType.bool_);
             const literalOffset = compileStringLiteralPointer(caseString);
-            _code ~= Instruction(
-                compareOp, matches, selector.offset, literalOffset,
-            );
+            emitSliceEqual(matches, selector.offset, literalOffset, compareWidth);
             const skip = emitJumpIfFalse(Operand(matches, ScalarType.bool_));
             _code ~= Instruction(
                 Op.loadConstant, result, constantIndex(cast(ulong) index), 4,
@@ -13465,10 +13462,7 @@ private struct Compiler {
 
         if (isBroadcastFillSource(rhs)) {
             const value = compileExpression(rhs);
-            _code ~= Instruction(
-                sliceFillOp(elementSize), *destination, value.offset,
-                cast(ushort) elementSize,
-            );
+            emitSliceFill(*destination, value.offset, elementSize);
 
             auto result = new Operand;
             *result = Operand.init;
@@ -13476,12 +13470,7 @@ private struct Compiler {
         }
 
         const source = compileSourceSlice(elementType, rhs);
-        _code ~= Instruction(
-            sliceCopyOp(elementSize),
-            *destination,
-            source,
-            cast(ushort) elementSize,
-        );
+        emitSliceCopy(*destination, source, elementSize);
 
         auto result = new Operand;
         *result = Operand.init;
@@ -13545,10 +13534,7 @@ private struct Compiler {
         // aliasing every row to one block or misreading the rhs's width.
         if (!elementIsArray && isBroadcastFillSource(rhs)) {
             const value = compileExpression(rhs);
-            _code ~= Instruction(
-                sliceFillOp(elementSize), destination, value.offset,
-                cast(ushort) elementSize,
-            );
+            emitSliceFill(destination, value.offset, elementSize);
 
             auto result = new Operand;
             *result = Operand.init;
@@ -13556,12 +13542,7 @@ private struct Compiler {
         }
 
         const source = compileSourceSlice(elementType, rhs);
-        _code ~= Instruction(
-            sliceCopyOp(elementSize),
-            destination,
-            source,
-            cast(ushort) elementSize,
-        );
+        emitSliceCopy(destination, source, elementSize);
 
         auto result = new Operand;
         *result = Operand.init;
@@ -13952,13 +13933,9 @@ private struct Compiler {
                 ? emitNestedArrayEqual(left, right, equal.e1.type)
                 : allocate(ScalarType.bool_);
             if (!nested)
-                _code ~= Instruction(
-                    sliceEqualOp(
-                        dynamicArrayElementSize(equal.e1.type, elementType),
-                    ),
-                    offset,
-                    left,
-                    right,
+                emitSliceEqual(
+                    offset, left, right,
+                    dynamicArrayElementSize(equal.e1.type, elementType),
                 );
             if (equal.op == EXP.notEqual)
                 _code ~= Instruction(Op.notBool, offset, offset);
@@ -17755,7 +17732,7 @@ private struct Compiler {
         const lhs = arrayDescriptorOffset(ScalarType.char_, lhsExpression);
         const rhs = arrayDescriptorOffset(ScalarType.char_, rhsExpression);
         const condition = allocate(ScalarType.bool_);
-        _code ~= Instruction(sliceEqualOp(1), condition, lhs, rhs);
+        emitSliceEqual(condition, lhs, rhs, 1);
         if (op == "!=")
             _code ~= Instruction(Op.notBool, condition, condition);
 
@@ -17861,13 +17838,11 @@ private struct Compiler {
             auto fieldType = cast(Type) field.type;
             if (fieldType.toBasetype.ty == TY.Tarray) {
                 const elementType = dynamicArrayElementType(fieldType);
-                _code ~= Instruction(
-                    sliceEqualOp(
-                        dynamicArrayElementSize(fieldType, elementType),
-                    ),
+                emitSliceEqual(
                     fieldEqual,
                     cast(ushort) (left + field.offset),
                     cast(ushort) (right + field.offset),
+                    dynamicArrayElementSize(fieldType, elementType),
                 );
                 falseJumps ~=
                     emitJumpIfFalse(Operand(fieldEqual, ScalarType.bool_));
@@ -18029,11 +18004,9 @@ private struct Compiler {
             ? emitNestedArrayEqual(lhsOffset, rhsOffset, lhs.type)
             : allocateBytes(1, 1);
         if (!nested)
-            _code ~= Instruction(
-                sliceEqualOp(dynamicArrayElementSize(lhs.type, elementType)),
-                equal,
-                lhsOffset,
-                rhsOffset,
+            emitSliceEqual(
+                equal, lhsOffset, rhsOffset,
+                dynamicArrayElementSize(lhs.type, elementType),
             );
 
         // `==` holds when the slices are equal; `!=` holds when negated.
@@ -18076,11 +18049,9 @@ private struct Compiler {
         compileStaticArrayAsDynamicInto(rhsOffset, elementScalar, rhs);
 
         const equal = allocateBytes(1, 1);
-        _code ~= Instruction(
-            sliceEqualOp(cast(uint) staticArraySize(elementType)),
-            equal,
-            lhsOffset,
-            rhsOffset,
+        emitSliceEqual(
+            equal, lhsOffset, rhsOffset,
+            cast(uint) staticArraySize(elementType),
         );
 
         ushort condition = equal;
@@ -18182,9 +18153,7 @@ private struct Compiler {
             emitIndexLoad(otherRow, otherDescriptor, indexSlot, sliceDescriptorSize);
 
             const rowEqual = allocateBytes(1, 1);
-            _code ~= Instruction(
-                sliceEqualOp(size(rowElementScalar)), rowEqual, view, otherRow,
-            );
+            emitSliceEqual(rowEqual, view, otherRow, size(rowElementScalar));
             toFalse ~= emitJumpIfFalse(Operand(rowEqual, ScalarType.bool_));
         }
 
@@ -18443,6 +18412,47 @@ private struct Compiler {
             concatArraysOp(width), destination, left, right,
             cast(ushort) width,
         );
+    }
+
+    // The `sliceCopy*` family's emit helper, the same required-`width`
+    // treatment as `emitConcatArrays` above: one opcode per width (1/2/4/8/16,
+    // plus the `N` fallback), and `width` cannot be omitted or silently
+    // defaulted to zero.
+    private void emitSliceCopy(
+        in ushort destination, in ushort source, in uint width,
+    ) @safe pure {
+        _code ~= Instruction(
+            sliceCopyOp(width), destination, source, cast(ushort) width,
+        );
+    }
+
+    // The `sliceFill*` family's emit helper, the same required-`width`
+    // treatment as `emitSliceCopy` above, but over `sliceFill`'s own narrower
+    // op<->width table (1/2/4/8, plus the `N` fallback; no `sliceFill16` --
+    // see `sliceFillOpWidths` in program.d).
+    private void emitSliceFill(
+        in ushort destination, in ushort value, in uint width,
+    ) @safe pure {
+        _code ~= Instruction(
+            sliceFillOp(width), destination, value, cast(ushort) width,
+        );
+    }
+
+    // The `sliceEqual*` family's emit helper. Unlike every other
+    // width-suffixed family here, `sliceEqualOp` has no `N` fallback (throws
+    // if `width` is not one of the four fixed widths -- see
+    // `sliceEqualOpWidths` in program.d) and the fixed-width opcode carries
+    // no width operand of its own (`width` only selects which opcode to
+    // build; the instruction's `a`/`b`/`c` are destination/lhs/rhs). Still
+    // the same required-`width` treatment: `width` cannot be omitted or
+    // silently defaulted to zero. `Op.sliceEqualNested` (structural
+    // array-of-arrays comparison, a genuinely different opcode with its own
+    // depth/element-width operands) is not this family and keeps its own
+    // `emitNestedArrayEqual` construction site unchanged.
+    private void emitSliceEqual(
+        in ushort destination, in ushort lhs, in ushort rhs, in uint width,
+    ) @safe pure {
+        _code ~= Instruction(sliceEqualOp(width), destination, lhs, rhs);
     }
 
     private ushort constantIndex(in ulong bits) @safe pure {

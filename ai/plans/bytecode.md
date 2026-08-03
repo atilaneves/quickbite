@@ -882,13 +882,37 @@ place second.
    got the same treatment: their four raw `Instruction(dupArrayOp(...), ...)`/
    `Instruction(concatArraysOp(...), ...)` call sites in `compiler.d` now go
    through `emitDupArray`/`emitConcatArrays`, which take width as a required
-   parameter and build the `Instruction` themselves. This is still a proof of
-   concept, not the general fix: it does not touch how each call site
-   computes its width in the first place (still hand-derived per site,
-   `elementSize`/`staticArraySize`/etc.), so the width-authority
-   generalisation (`dynamicArrayElementSize`/`pointerElementMetadata` merging
-   into one authority) is still fully open. Also still open: the same
-   per-family helper treatment for `sliceCopy*`/`sliceFill*`/`sliceEqual*`.
+   parameter and build the `Instruction` themselves. The `sliceCopy*`/
+   `sliceFill*`/`sliceEqual*` families got the same treatment last, closing
+   out the per-family sub-piece: despite looking parallel, the three are not
+   structurally identical (`sliceCopy` has widths 1/2/4/8/16 plus `N`;
+   `sliceFill` has 1/2/4/8 plus `N`, no 16, since its broadcast source is a
+   scalar, not a slice-descriptor element; `sliceEqual` has only 1/2/4/8 with
+   no `N` variant at all -- the front end never produces a flat byte-compare
+   width `sliceEqualOp` doesn't cover, so it throws instead of falling back),
+   so each got its own emit helper rather than a shared one. All eleven raw
+   `Instruction(sliceCopyOp(...), ...)`/`Instruction(sliceFillOp(...), ...)`/
+   `Instruction(sliceEqualOp(...), ...)` call sites in `compiler.d` now go
+   through `emitSliceCopy`/`emitSliceFill`/`emitSliceEqual`, which take width
+   as a required parameter (for `emitSliceEqual`, only to select the opcode --
+   the fixed-width `sliceEqual*` instruction carries no width operand of its
+   own) and build the `Instruction` themselves. `Op.sliceEqualNested`
+   (structural array-of-arrays comparison, a genuinely different opcode with
+   its own depth/element-width operands rather than a width-suffixed sibling)
+   was left alone: it already had its own construction site,
+   `emitNestedArrayEqual`, and does not naturally fold into `emitSliceEqual`.
+   With this, every width-suffixed opcode family's raw `Instruction(...)`
+   construction has been replaced by a required-width emit helper in
+   `compiler.d`; the per-family emit-helper sub-piece of this item is done.
+   The other sub-piece is still open and distinct: none of this work touched
+   how each call site computes its width value in the first place (still
+   hand-derived per site via `dynamicArrayElementSize`/`staticArraySize`/
+   `size(scalarType)`/etc., unchanged by any of the helper conversions above),
+   so the width-authority generalisation (`dynamicArrayElementSize`/
+   `pointerElementMetadata` merging into one authority every emit site's width
+   computation goes through) remains fully open -- the helpers make an
+   omitted width a compile error, but do not yet make width computation
+   itself single-sourced.
 
 2. **One place resolver.** Lvalue addressing is enumerated per shape: the
    `emit*RefArgument` chain with its comment-encoded decline order,
