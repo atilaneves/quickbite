@@ -38,8 +38,8 @@ private struct Compiler {
         RefParameter, ResultType, ScalarType, StructDisplayField,
         VirtualFunction, indexLoadOp, indexStoreOp, isSigned,
         nativeArgumentSlotSize, noCatchObjectField, noExceptionClass,
-        noOutParameterOffset, size, sliceDescriptorLengthOffset,
-        sliceDescriptorSize;
+        noOutParameterOffset, pointerLoadOp, pointerSliceOp, pointerStoreOp,
+        size, sliceDescriptorLengthOffset, sliceDescriptorSize;
     import dmd.declaration: VarDeclaration;
     import dmd.expression:
         AddAssignExp, AddrExp, ArrayLengthExp, ArrayLiteralExp,
@@ -19639,48 +19639,6 @@ private struct OuterArrayElement {
     ushort outerOffset;
     ushort indexSlot;
     DynamicArrayLocal inner;
-}
-
-private imported!"quickbite.backends.bytecode.core.program".Op pointerLoadOp(
-    in uint elementSize,
-) @safe @nogc nothrow pure {
-    import quickbite.backends.bytecode.core.program: Op;
-    switch (elementSize) {
-        case 1: return Op.pointerLoad1;
-        case 2: return Op.pointerLoad2;
-        case 4: return Op.pointerLoad4;
-        case 8: return Op.pointerLoad8;
-        case 16: return Op.pointerLoad16;
-        default: return Op.pointerLoadN;
-    }
-}
-
-private imported!"quickbite.backends.bytecode.core.program".Op pointerStoreOp(
-    in uint elementSize,
-) @safe @nogc nothrow pure {
-    import quickbite.backends.bytecode.core.program: Op;
-    switch (elementSize) {
-        case 1: return Op.pointerStore1;
-        case 2: return Op.pointerStore2;
-        case 4: return Op.pointerStore4;
-        case 8: return Op.pointerStore8;
-        case 16: return Op.pointerStore16;
-        default: return Op.pointerStoreN;
-    }
-}
-
-private imported!"quickbite.backends.bytecode.core.program".Op pointerSliceOp(
-    in uint elementSize,
-) @safe @nogc nothrow pure {
-    import quickbite.backends.bytecode.core.program: Op;
-    switch (elementSize) {
-        case 1: return Op.pointerSlice1;
-        case 2: return Op.pointerSlice2;
-        case 4: return Op.pointerSlice4;
-        case 8: return Op.pointerSlice8;
-        case 16: return Op.pointerSlice16;
-        default: return Op.pointerSliceN;
-    }
 }
 
 private imported!"quickbite.backends.bytecode.core.program".Op subSliceOp(

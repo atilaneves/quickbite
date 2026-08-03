@@ -25,8 +25,8 @@ package(quickbite.backends.bytecode) RunResult run(
     import core.exception: RangeError;
     import quickbite.backends.bytecode.core.program:
         assocArrayKeyIsArrayFlag, CatchClause, ClassInfo, indexElementWidth,
-        Op, noCatchObjectField, noExceptionClass, noOutParameterOffset, size,
-        sliceDescriptorSize;
+        Op, noCatchObjectField, noExceptionClass, noOutParameterOffset,
+        pointerElementWidth, size, sliceDescriptorSize;
 
     // Reserve a generous fixed capacity so growing `stack` for callee frames
     // never reallocates: a raw `&local` pointer (`int* p = &x`) stored in a
@@ -423,7 +423,7 @@ package(quickbite.backends.bytecode) RunResult run(
                 pointerLoad16, pointerLoadN:
                 const pointerLoadSize = instruction.op == pointerLoadN
                     ? instruction.d
-                    : pointerElementSize(instruction.op);
+                    : pointerElementWidth(instruction.op);
                 const pointerLoadAddress =
                     scalarValue!size_t(stack, base + instruction.b) +
                     scalarValue!size_t(stack, base + instruction.c) *
@@ -457,7 +457,7 @@ package(quickbite.backends.bytecode) RunResult run(
                 pointerStore16, pointerStoreN:
                 const pointerStoreSize = instruction.op == pointerStoreN
                     ? instruction.d
-                    : pointerElementSize(instruction.op);
+                    : pointerElementWidth(instruction.op);
                 const pointerStoreAddress =
                     scalarValue!size_t(stack, base + instruction.b) +
                     scalarValue!size_t(stack, base + instruction.c) *
@@ -476,7 +476,7 @@ package(quickbite.backends.bytecode) RunResult run(
                 pointerSlice16, pointerSliceN:
                 const pointerSliceSize = instruction.op == pointerSliceN
                     ? instruction.d
-                    : pointerElementSize(instruction.op);
+                    : pointerElementWidth(instruction.op);
                 const sliceLo = scalarValue!size_t(stack, base + instruction.c);
                 const sliceHi = scalarValue!size_t(
                     stack, base + instruction.c + size_t.sizeof,
@@ -2417,23 +2417,6 @@ private void writeSliceDescriptorPointer(
     stack[ptrOffset .. ptrOffset + size_t.sizeof] = nativeToLittleEndian(pointer);
     stack[lengthOffset .. lengthOffset + size_t.sizeof] =
         nativeToLittleEndian(length);
-}
-
-private uint pointerElementSize(
-    in imported!"quickbite.backends.bytecode.core.program".Op op,
-) @safe @nogc nothrow pure {
-    import quickbite.backends.bytecode.core.program: Op;
-    if (op == Op.pointerLoad16 || op == Op.pointerStore16 ||
-        op == Op.pointerSlice16)
-        return 16;
-    if (op == Op.pointerLoad8 || op == Op.pointerStore8 ||
-        op == Op.pointerSlice8)
-        return 8;
-    if (op == Op.pointerLoad4 || op == Op.pointerStore4 ||
-        op == Op.pointerSlice4)
-        return 4;
-    return op == Op.pointerLoad2 || op == Op.pointerStore2 ||
-        op == Op.pointerSlice2 ? 2 : 1;
 }
 
 private uint subSliceElementSize(

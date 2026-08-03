@@ -884,14 +884,17 @@ accessors must precede the descriptor-order flip (§ Memory model).
    now goes through one table, `program.d`'s `indexOpWidths`: compiler.d's
    `indexLoadOp`/`indexStoreOp` width→Op selectors and machine.d's
    `indexElementWidth` Op→width derivation both walk it, so the two
-   directions cannot independently drift. Every other width-suffixed family
-   still has its own independent pair (a compiler-side width→Op switch,
-   `pointerLoadOp`/`pointerStoreOp`/`pointerSliceOp`/`subSliceOp`/
-   `sliceCopyOp`/`sliceFillOp`/`sliceEqualOp`/`appendElementOp`/
-   `concatArraysOp`/`dupArrayOp`, plus a machine-side Op→width counterpart,
-   `pointerElementSize`/`subSliceElementSize`/`sliceCopyElementSize`/
+   directions cannot independently drift. `pointerLoad*`/`pointerStore*`/
+   `pointerSlice*` now shares the same pattern via `program.d`'s
+   `pointerOpWidths` (three opcodes per width instead of two — load, store,
+   and slice): compiler.d's `pointerLoadOp`/`pointerStoreOp`/`pointerSliceOp`
+   and machine.d's `pointerElementWidth` all walk it. Every other
+   width-suffixed family still has its own independent pair (a compiler-side
+   width→Op switch, `subSliceOp`/`sliceCopyOp`/`sliceFillOp`/`sliceEqualOp`/
+   `appendElementOp`/`concatArraysOp`/`dupArrayOp`, plus a machine-side
+   Op→width counterpart, `subSliceElementSize`/`sliceCopyElementSize`/
    `appendElementSize`/`dupArrayElementSize`) not yet converted; the
-   bijectivity gap the item names is now closed for one family and open for
+   bijectivity gap the item names is now closed for two families and open for
    the rest.
 
 Reviewed and declined (2026-08): a bytecode-core disassembler with

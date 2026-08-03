@@ -796,6 +796,74 @@ in (op != Op.indexLoadN && op != Op.indexStoreN)
     assert(0, "Not a fixed-width indexLoad/indexStore opcode.");
 }
 
+// The `pointerLoad`/`pointerStore`/`pointerSlice` family's one op<->width
+// table, the same pattern as `indexOpWidths` above but with three opcodes per
+// width instead of two (a raw-pointer dereference also has a slice-taking
+// form). compiler.d's `pointerLoadOp`/`pointerStoreOp`/`pointerSliceOp`
+// width->opcode selectors and machine.d's element-size Op->width derivation
+// (`pointerElementWidth` below) both walk this same table, so the two
+// directions cannot independently drift out of sync.
+private struct PointerOpWidth {
+    uint width;
+    Op loadOp;
+    Op storeOp;
+    Op sliceOp;
+}
+
+private immutable PointerOpWidth[] pointerOpWidths = [
+    PointerOpWidth(1, Op.pointerLoad1, Op.pointerStore1, Op.pointerSlice1),
+    PointerOpWidth(2, Op.pointerLoad2, Op.pointerStore2, Op.pointerSlice2),
+    PointerOpWidth(4, Op.pointerLoad4, Op.pointerStore4, Op.pointerSlice4),
+    PointerOpWidth(8, Op.pointerLoad8, Op.pointerStore8, Op.pointerSlice8),
+    PointerOpWidth(16, Op.pointerLoad16, Op.pointerStore16, Op.pointerSlice16),
+];
+
+// The `pointerLoadN`-family width->opcode selector: `width` bytes uses the
+// fixed-width opcode for that width if the table above has one, else the
+// `N` variant (which carries the width in its own operand instead).
+package(quickbite.backends.bytecode) Op pointerLoadOp(in uint width)
+    @safe @nogc nothrow pure
+{
+    foreach (entry; pointerOpWidths)
+        if (entry.width == width)
+            return entry.loadOp;
+    return Op.pointerLoadN;
+}
+
+// See `pointerLoadOp`; the store-side counterpart sharing the same table.
+package(quickbite.backends.bytecode) Op pointerStoreOp(in uint width)
+    @safe @nogc nothrow pure
+{
+    foreach (entry; pointerOpWidths)
+        if (entry.width == width)
+            return entry.storeOp;
+    return Op.pointerStoreN;
+}
+
+// See `pointerLoadOp`; the slice-side counterpart sharing the same table.
+package(quickbite.backends.bytecode) Op pointerSliceOp(in uint width)
+    @safe @nogc nothrow pure
+{
+    foreach (entry; pointerOpWidths)
+        if (entry.width == width)
+            return entry.sliceOp;
+    return Op.pointerSliceN;
+}
+
+// The reverse direction: the fixed byte width a fixed-width `pointerLoad*`/
+// `pointerStore*`/`pointerSlice*` opcode operates on. Not valid for the `N`
+// variants, whose width is a runtime operand rather than implied by the
+// opcode.
+package(quickbite.backends.bytecode) uint pointerElementWidth(in Op op)
+    @safe @nogc nothrow pure
+in (op != Op.pointerLoadN && op != Op.pointerStoreN && op != Op.pointerSliceN)
+{
+    foreach (entry; pointerOpWidths)
+        if (entry.loadOp == op || entry.storeOp == op || entry.sliceOp == op)
+            return entry.width;
+    assert(0, "Not a fixed-width pointerLoad/pointerStore/pointerSlice opcode.");
+}
+
 package(quickbite.backends.bytecode) struct Instruction {
     Op op;
     ushort a;
