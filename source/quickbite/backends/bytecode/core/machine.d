@@ -24,9 +24,10 @@ package(quickbite.backends.bytecode) RunResult run(
 ) {
     import core.exception: RangeError;
     import quickbite.backends.bytecode.core.program:
-        assocArrayKeyIsArrayFlag, CatchClause, ClassInfo, indexElementWidth,
-        Op, noCatchObjectField, noExceptionClass, noOutParameterOffset,
-        pointerElementWidth, size, sliceDescriptorSize, subSliceElementWidth;
+        assocArrayKeyIsArrayFlag, appendElementWidth, CatchClause, ClassInfo,
+        indexElementWidth, Op, noCatchObjectField, noExceptionClass,
+        noOutParameterOffset, pointerElementWidth, size, sliceDescriptorSize,
+        subSliceElementWidth;
 
     // Reserve a generous fixed capacity so growing `stack` for callee frames
     // never reallocates: a raw `&local` pointer (`int* p = &x`) stored in a
@@ -375,7 +376,7 @@ package(quickbite.backends.bytecode) RunResult run(
                     base + instruction.b,
                     instruction.op == appendElementN
                         ? instruction.c
-                        : appendElementSize(instruction.op),
+                        : appendElementWidth(instruction.op),
                     heap,
                     appendablePointers,
                 );
@@ -2457,19 +2458,6 @@ private uint sliceCopyElementSize(
     if (op == Op.sliceCopy16)
         return 16;
     return 4;
-}
-
-private uint appendElementSize(
-    in imported!"quickbite.backends.bytecode.core.program".Op op,
-) @safe @nogc nothrow pure {
-    import quickbite.backends.bytecode.core.program: Op;
-    if (op == Op.appendElement1)
-        return 1;
-    if (op == Op.appendElement2)
-        return 2;
-    if (op == Op.appendElement8)
-        return 8;
-    return op == Op.appendElement16 ? 16 : 4;
 }
 
 private uint concatElementSize(

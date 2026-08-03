@@ -36,7 +36,7 @@ private struct Compiler {
         AssertDiagnostic, CatchClause, ClassInfo, CompiledFunction,
         Instruction, NativeCall, Op, Program,
         RefParameter, ResultType, ScalarType, StructDisplayField,
-        VirtualFunction, indexLoadOp, indexStoreOp, isSigned,
+        VirtualFunction, appendElementOp, indexLoadOp, indexStoreOp, isSigned,
         nativeArgumentSlotSize, noCatchObjectField, noExceptionClass,
         noOutParameterOffset, pointerLoadOp, pointerSliceOp, pointerStoreOp,
         size, sliceDescriptorLengthOffset, sliceDescriptorSize, subSliceOp;
@@ -19685,21 +19685,6 @@ private imported!"quickbite.backends.bytecode.core.program".Op sliceEqualOp(
                 "Unsupported array element size in bytecode core: ",
                 elementSize,
             ));
-    }
-}
-
-private imported!"quickbite.backends.bytecode.core.program".Op appendElementOp(
-    in uint elementSize,
-) @safe @nogc nothrow pure {
-    import quickbite.backends.bytecode.core.program: Op;
-
-    switch (elementSize) {
-        case 1: return Op.appendElement1;
-        case 2: return Op.appendElement2;
-        case 4: return Op.appendElement4;
-        case 8: return Op.appendElement8;
-        case 16: return Op.appendElement16;
-        default: return Op.appendElementN;
     }
 }
 

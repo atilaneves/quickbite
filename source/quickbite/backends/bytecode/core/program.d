@@ -909,6 +909,51 @@ in (op != Op.subSliceN)
     assert(0, "Not a fixed-width subSlice opcode.");
 }
 
+// The `appendElement` family's one op<->width table, the same pattern as
+// `subSliceOpWidths` above (a single opcode per width, since appending one
+// element is a single operation, not a load/store/slice split).
+// compiler.d's `appendElementOp` width->opcode selector and machine.d's
+// element-size Op->width derivation (`appendElementWidth` below) both walk
+// this same table, so the two directions cannot independently drift out of
+// sync.
+private struct AppendElementOpWidth {
+    uint width;
+    Op op;
+}
+
+private immutable AppendElementOpWidth[] appendElementOpWidths = [
+    AppendElementOpWidth(1, Op.appendElement1),
+    AppendElementOpWidth(2, Op.appendElement2),
+    AppendElementOpWidth(4, Op.appendElement4),
+    AppendElementOpWidth(8, Op.appendElement8),
+    AppendElementOpWidth(16, Op.appendElement16),
+];
+
+// The `appendElement`-family width->opcode selector: `width` bytes uses the
+// fixed-width opcode for that width if the table above has one, else the `N`
+// variant (which carries the width in its own `c` operand instead).
+package(quickbite.backends.bytecode) Op appendElementOp(in uint width)
+    @safe @nogc nothrow pure
+{
+    foreach (entry; appendElementOpWidths)
+        if (entry.width == width)
+            return entry.op;
+    return Op.appendElementN;
+}
+
+// The reverse direction: the fixed byte width a fixed-width `appendElement*`
+// opcode operates on. Not valid for `appendElementN`, whose width is a
+// runtime operand rather than implied by the opcode.
+package(quickbite.backends.bytecode) uint appendElementWidth(in Op op)
+    @safe @nogc nothrow pure
+in (op != Op.appendElementN)
+{
+    foreach (entry; appendElementOpWidths)
+        if (entry.op == op)
+            return entry.width;
+    assert(0, "Not a fixed-width appendElement opcode.");
+}
+
 package(quickbite.backends.bytecode) struct Instruction {
     Op op;
     ushort a;
