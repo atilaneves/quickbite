@@ -1772,17 +1772,38 @@ static foreach (backend; Matrix!()) {
 }
 
 // The same shape as above, but the returned lambda captures a local owned by
-// the returning function's own frame. Real compiled D promotes `total` to a
-// GC-heap closure so the returned delegate keeps working after
-// `makeCounterGetter` returns; the bytecode core has no heap closure
-// environment yet (`ai/plans/bytecode.md`'s Closures section) and previously
-// either refused the declaration outright or silently returned a stale
-// frame-index context. It now refuses the return itself with a clear
-// diagnostic rather than handing back a delegate that reads garbage the
-// first time it is called.
-static foreach (backend; AliasSeq!(Bytecode)) {
-    @("delegate.functionReturningCapturingDelegateIsRejected." ~
+// the returning function's own frame. Real compiled D (SystemLinker,
+// LLVMJit) promotes `total` to a GC-heap closure so the returned delegate
+// keeps working after `makeCounterGetter` returns. Ctfe's own dmd.dinterpret
+// engine refuses this outright, the Interpreter silently hands back a
+// delegate reading a stale frame slot, and the bytecode core has no heap
+// closure environment yet (`ai/plans/bytecode.md`'s Closures section) so it
+// refuses the return with a clear diagnostic rather than handing back a
+// dangling one -- three separate, pre-existing promotion-backlog gaps, not
+// a Bytecode-only characterization.
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.inexpressible,
+        "Ctfe wraps dmd.dinterpret, whose CTFE engine refuses the "
+            ~ "returned closure outright with \"closures are not yet "
+            ~ "supported in CTFE\""),
+    Omit!(Interpreter, Because.unconfirmed,
+        "the Interpreter does not yet promote a frame-escaping " ~
+            "captured local to a heap closure either; it returns a " ~
+            "call whose delegate reads a stale/reused frame slot " ~
+            "instead of the closed-over value (observed returning 1 " ~
+            "instead of 4) -- not yet promoted"),
+    Omit!(Bytecode, Because.unconfirmed,
+        "the bytecode core has no heap closure environment yet; a "
+            ~ "delegate that captures its own function's locals and "
+            ~ "escapes via `return` is refused with \"Unsupported "
+            ~ "delegate return in bytecode core: returning a closure "
+            ~ "over this function's own locals outlives its frame: "
+            ~ "<name>\" rather than handing back a dangling frame "
+            ~ "reference -- not yet promoted"),
+)) {
+    @("delegate.functionReturningCapturingDelegateIsCallable." ~
         backend.stringof)
+    @Tags(backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
             int delegate() makeCounterGetter(int seed) {
@@ -1795,11 +1816,7 @@ static foreach (backend; AliasSeq!(Bytecode)) {
                 auto getter = makeCounterGetter(3);
                 assert(getter() == 4);
             }
-        }).shouldThrowWithMessage(
-            "Unsupported delegate return in bytecode core: returning a " ~
-                "closure over this function's own locals outlives its " ~
-                "frame: getter",
-        );
+        });
     }
 }
 

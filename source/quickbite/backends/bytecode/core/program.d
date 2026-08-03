@@ -318,13 +318,17 @@ package(quickbite.backends.bytecode) enum Op: ubyte {
     sliceEqual2, // 2-byte element (wchar/short): backs `wstring == wstring`
     sliceEqual4,
     sliceEqual8, // 8-byte element (long/double/pointer arrays)
-    // Structural comparison for an array-of-arrays (`int[][] == int[][]`):
-    // the descriptors at frame offsets b and c hold rows that are themselves
-    // 16-byte slice descriptors, so a raw `sliceEqual*` over the outer
-    // descriptor would compare each row's `.ptr` rather than its content.
-    // Compare outer lengths, then compare every row's own length and element
-    // bytes; operand d is the *row's own* element byte width (not 16).
-    // Handles exactly one level of array-of-arrays nesting.
+    // Structural comparison for an array-of-arrays, any nesting depth
+    // (`int[][] == int[][]`, `int[][][] == int[][][]`, ...): the descriptors
+    // at frame offsets b and c hold rows that are themselves 16-byte slice
+    // descriptors (and, below that, rows of rows, down to `depth` levels), so
+    // a raw `sliceEqual*` over the outer descriptor would compare each row's
+    // `.ptr` rather than its content. Compare outer lengths, then compare
+    // every row's own length, recursing one level deeper per row until
+    // `depth` levels of descriptors have been unwrapped, then compare the
+    // innermost row's element bytes. Operand d is the nesting depth (2 for
+    // `int[][]`, 3 for `int[][][]`, ...); operand e is the innermost (leaf)
+    // element byte width (not 16).
     sliceEqualNested,
     // Append the element at frame offset b to the dynamic-array slice descriptor
     // at frame offset a: allocate a fresh heap block of (length + 1) elements,
@@ -776,15 +780,17 @@ package(quickbite.backends.bytecode) struct AssertDiagnostic {
     bool isString;
     bool lhsIsNull;
     bool rhsIsNull;
-    // When `isArray` is set, each element is itself an array of
-    // `operandType` (one level of array-of-arrays nesting) rather than a
-    // plain `operandType` scalar, so it renders recursively as `[e0, e1,
-    // ...]` too. Appended last (not inserted between existing fields) so
+    // When `isArray` is set and this is nonzero, each element is itself an
+    // array of `operandType` (array-of-arrays nesting, any depth): 1 for
+    // `int[][]`, 2 for `int[][][]`, and so on -- one less than the operand's
+    // own `arrayNestingDepth`, since the outermost level is already
+    // unwrapped by `isArray` itself. Zero means plain `operandType` scalar
+    // elements. Appended last (not inserted between existing fields) so
     // every pre-existing positional `AssertDiagnostic(...)` construction
     // site keeps its field mapping; several sites pass isString/lhsIsNull/
     // rhsIsNull positionally and would silently shift onto the wrong field
     // otherwise.
-    bool elementIsArray;
+    uint elementNestingDepth;
 }
 
 package(quickbite.backends.bytecode) struct VirtualFunction {

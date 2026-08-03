@@ -537,6 +537,60 @@ static foreach (backend; Matrix!()) {
     }
 }
 
+// Same structural-equality requirement as `arrayOfArraysEqualityIsStructural`
+// above, but two levels of nesting deep (`int[][][]`): DMD's real `__equals`
+// recurses all the way down regardless of depth, so `Op.sliceEqualNested`
+// must too. `b` is built entirely through separate `~=` appends at every
+// level (outer, middle, and row) rather than a literal, so every row and
+// sub-row it holds is a distinct heap allocation from `a`'s -- a bug that
+// compared by identity/descriptor-bytes at any level (not just the
+// outermost) would wrongly report these unequal.
+static foreach (backend; Matrix!()) {
+    @("dynamicArray.arrayOfArraysOfArraysEqualityIsStructural." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            unittest {
+                int[][][] a = [[[1, 2], [3, 4]], [[5, 6], [7, 8]]];
+
+                int[][] row0;
+                row0 ~= [1, 2];
+                row0 ~= [3, 4];
+                int[][] row1;
+                row1 ~= [5, 6];
+                row1 ~= [7, 8];
+                int[][][] b;
+                b ~= row0;
+                b ~= row1;
+
+                assert(a == b);
+                assert(!(a != b));
+            }
+        });
+    }
+}
+
+// The assert-diagnostic rendering sibling of the test above, at the same
+// three-level depth: a difference at the innermost row (not the outermost
+// or middle level) must still be detected and rendered -- a bug that
+// generalised the depth check but not the recursion itself (e.g. stopping
+// one level too shallow) would either wrongly pass or mis-render this.
+static foreach (backend; Matrix!()) {
+    @("assertDiagnostic.arrayOfArraysOfArraysSameLengthDifferentInnerContent." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            unittest {
+                int[][][] a = [[[1, 2], [3, 4]]];
+                int[][][] b = [[[1, 2], [3, 99]]];
+                assert(a == b);
+            }
+        }).shouldThrowWithMessage("[[[1, 2], [3, 4]]] != [[[1, 2], [3, 99]]]");
+    }
+}
+
 static foreach (backend; Matrix!()) {
     @("assertDiagnostic.characterEquality." ~ backend.stringof)
     @Tags(backend.stringof)
@@ -2698,13 +2752,20 @@ static foreach (backend; Matrix!()) {
             }
 
             unittest {
-                long big = key(1L << 40);
+                // Both keys have low 32 bits == 0 (only bits 40/41 set), so a
+                // 4-byte-truncated comparison would wrongly collapse them
+                // into a single entry.
+                long lo = key(1L << 40);
+                long hi = key(1L << 41);
                 int[long] table;
-                table[big] = 7;
+                table[lo] = 7;
+                table[hi] = 9;
 
-                assert((big in table) !is null);
-                assert(table[big] == 7);
-                assert(table.length == 1);
+                assert((lo in table) !is null);
+                assert((hi in table) !is null);
+                assert(table[lo] == 7);
+                assert(table[hi] == 9);
+                assert(table.length == 2);
             }
         });
     }
@@ -2722,13 +2783,22 @@ static foreach (backend; Matrix!()) {
             }
 
             unittest {
-                double pi = key(3.14159);
+                // 1.0 and 2.0 have IEEE-754 bit patterns 0x3ff0000000000000
+                // and 0x4000000000000000: both have low 32 bits == 0, so a
+                // 4-byte-truncated comparison would wrongly collapse them
+                // into a single entry, even though the high 32 bits (and so
+                // the full 64-bit patterns) differ.
+                double lo = key(1.0);
+                double hi = key(2.0);
                 int[double] table;
-                table[pi] = 9;
+                table[lo] = 9;
+                table[hi] = 11;
 
-                assert((pi in table) !is null);
-                assert(table[pi] == 9);
-                assert(table.length == 1);
+                assert((lo in table) !is null);
+                assert((hi in table) !is null);
+                assert(table[lo] == 9);
+                assert(table[hi] == 11);
+                assert(table.length == 2);
             }
         });
     }
@@ -2902,6 +2972,40 @@ static foreach (backend; Matrix!(
 
                 int[] fetched = a[1];
                 assert(fetched == [10, 20, 99]);
+            }
+        });
+    }
+}
+
+// `int[][int].values` packs each entry at its own 16-byte slice-descriptor
+// stride (`assocArrayValueWidth`), not a hardcoded 4-byte `int`. Reading
+// values back at the wrong (scalar) stride would misalign every entry after
+// the first -- summing every element of every entry is order-independent
+// (AA iteration order is unspecified) but still catches a misaligned read.
+static foreach (backend; Matrix!()) {
+    @("assocArray.valuesOnArrayValuedAAReadsFullWidth." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            int[] pair(int a, int b) {
+                return [a, b];
+            }
+
+            unittest {
+                int[][int] a;
+                a[1] = pair(10, 20);
+                a[2] = pair(30, 40);
+
+                int[][] vs = a.values;
+                assert(vs.length == 2);
+                assert(vs[0].length == 2);
+                assert(vs[1].length == 2);
+
+                int total;
+                foreach (entry; vs)
+                    foreach (x; entry)
+                        total += x;
+                assert(total == 100);
             }
         });
     }

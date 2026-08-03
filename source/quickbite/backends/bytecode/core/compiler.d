@@ -7220,9 +7220,14 @@ private struct Compiler {
 
         const count = literal.elements is null ? 0 : literal.elements.length;
 
-        // An array-of-arrays literal (`[[..], [..]]`): each element is itself an
-        // array, stored as a 16-byte descriptor. Build each inner array into a
-        // fresh descriptor slot and store it into the outer block.
+        // An array-of-arrays literal (`[[..], [..]]`, any nesting depth):
+        // each element is itself an array, stored as a 16-byte descriptor.
+        // Build each inner array into a fresh descriptor slot and store it
+        // into the outer block. A row is itself an array-of-arrays (depth 3
+        // and beyond, e.g. `int[][][]`'s `int[][]` rows) when *its own*
+        // element is an array too -- checked fresh per recursive call
+        // rather than reusing the caller's `elementIsArray`, since that
+        // flag describes this level's rows, not the row's own elements.
         if (elementIsArray) {
             _code ~= Instruction(
                 Op.allocArray,
@@ -7231,11 +7236,14 @@ private struct Compiler {
                 cast(ushort) count,
             );
 
+            const rowElementIsArray =
+                arrayElementIsArray(source.type.toBasetype.nextOf);
             foreach (elementIndex; 0 .. count) {
                 const inner =
                     allocateBytes(sliceDescriptorSize, size_t.sizeof);
                 compileDynamicArrayInto(
                     inner, elementType, (*literal.elements)[elementIndex],
+                    rowElementIsArray,
                 );
                 const index = compileSizeConstant(elementIndex);
                 _code ~= Instruction(
@@ -14089,14 +14097,15 @@ private struct Compiler {
                 dynamicArrayElementType(equal.e2.type);
         if (bothDynamicArrays) {
             const elementType = dynamicArrayElementType(equal.e1.type);
-            // `int[][] == int[][]`: each element is itself a heap-allocated
+            // `int[][] == int[][]` (any nesting depth, `int[][][]` and
+            // deeper included): each element is itself a heap-allocated
             // row descriptor, so a flat `sliceEqualOp` below would compare
             // the rows' `.ptr` values instead of their content -- two
             // separately-constructed but content-equal rows would compare
             // unequal. Structural comparison needs the dedicated nested
             // opcode instead.
-            const nested = arrayElementIsExactlyOneLevelNested(equal.e1.type) &&
-                arrayElementIsExactlyOneLevelNested(equal.e2.type);
+            const nested = arrayElementIsArray(equal.e1.type) &&
+                arrayElementIsArray(equal.e2.type);
             const left = arrayDescriptorOffset(elementType, equal.e1, nested);
             const right = arrayDescriptorOffset(elementType, equal.e2, nested);
             const offset = nested
@@ -16787,14 +16796,12 @@ private struct Compiler {
                 );
             }
 
-            case values:
+            case values: {
+                auto aaType = assocArrayType((*call.arguments)[0]);
                 return compileAssocArraySlice(
-                    Op.aaValues,
-                    handle,
-                    dynamicArrayElementSize(
-                        call.type, dynamicArrayElementType(call.type),
-                    ),
+                    Op.aaValues, handle, assocArrayValueWidth(aaType),
                 );
+            }
 
             case apply2:
                 return compileAssocArrayApply2(call, handle);
@@ -18190,17 +18197,17 @@ private struct Compiler {
             return false;
 
         const elementType = dynamicArrayElementType(lhs.type);
-        // `int[][] == int[][]`: both operands are genuine dynamic arrays
-        // whose own element is itself an array, one level deep (the mixed
-        // Tsarray/Tarray nested case above already declined; a Tsarray on
-        // both sides never reaches this function at all). Each row is a
-        // separately heap-allocated slice descriptor, so the flat
+        // `int[][] == int[][]` (any nesting depth): both operands are
+        // genuine dynamic arrays whose own element is itself an array (the
+        // mixed Tsarray/Tarray nested case above already declined; a
+        // Tsarray on both sides never reaches this function at all). Each
+        // row is a separately heap-allocated slice descriptor, so the flat
         // `sliceEqualOp` byte compare below would compare row `.ptr` values
         // instead of content -- structural comparison needs the dedicated
         // nested opcode instead.
         const nested = lhsTy == TY.Tarray && rhsTy == TY.Tarray &&
-            arrayElementIsExactlyOneLevelNested(lhs.type) &&
-            arrayElementIsExactlyOneLevelNested(rhs.type);
+            arrayElementIsArray(lhs.type) &&
+            arrayElementIsArray(rhs.type);
         const lhsOffset = arrayDescriptorOffset(elementType, lhs, nested);
         const rhsOffset = arrayDescriptorOffset(elementType, rhs, nested);
 
@@ -18226,7 +18233,7 @@ private struct Compiler {
         _program.assertDiagnostics ~=
             AssertDiagnostic(
                 op, lhsOffset, rhsOffset, elementType, true,
-                elementIsArray: nested,
+                elementNestingDepth: nested ? arrayNestingDepth(lhs.type) - 1 : 0,
             );
         _code ~= Instruction(
             Op.assertTrue,
@@ -19047,14 +19054,17 @@ private struct Compiler {
     }
 
     // The element scalar type of a dynamic array `T[]`. For an array-of-arrays
-    // (`int[][]`) the element is itself a `T[]`; return its inner element scalar
-    // (`int`), the type used to size and index the innermost elements.
+    // at any nesting depth (`int[][]`, `int[][][]`, ...) the element is
+    // itself a `T[]`; recurse through however many array layers until an
+    // element that is not itself an array turns up, and return its scalar
+    // type (`int`) -- the type used to size and index the innermost
+    // elements.
     private ScalarType dynamicArrayElementType(Type type) {
         import dmd.astenums: TY;
 
         auto element = type.toBasetype.nextOf;
         if (element.toBasetype.ty == TY.Tarray)
-            return scalarType(element.toBasetype.nextOf);
+            return dynamicArrayElementType(element);
         if (element.toBasetype.ty == TY.Tsarray)
             return dynamicArrayElementType(element);
         if (element.toBasetype.ty == TY.Tpointer)
@@ -19121,25 +19131,52 @@ private struct Compiler {
         return isStringType(type.toBasetype.nextOf);
     }
 
-    // True when `type` (`T[]`) is an array-of-arrays exactly one level deep:
-    // each element is itself an array, but every element's own elements are
-    // plain scalars. Gates `Op.sliceEqualNested`, which only handles this
-    // depth; two or more levels of nesting (`int[][][]`) still falls
-    // through to the existing (not yet correct for that shape) flat
-    // comparison.
-    private bool arrayElementIsExactlyOneLevelNested(Type type) {
-        if (!arrayElementIsArray(type))
-            return false;
-        return !arrayElementIsArray(type.toBasetype.nextOf);
+    // The nesting depth of an array-of-arrays type gated by
+    // `arrayElementIsArray` (`T[]` whose element is itself an array): 2 for
+    // `int[][]` (one row level below the outer array), 3 for `int[][][]`,
+    // and so on. Walks the chain of `Tarray` elements one level at a time,
+    // the same way `arrayElementIsArray` and `innermostArrayElementSize`
+    // do, stopping as soon as a level's element is not itself a `Tarray` --
+    // a `Tsarray` element (e.g. `int[2][]`) still counts as one nested
+    // level (matching this function's own one-level gate for that case) but
+    // does not extend the walk further: a `Tsarray` row is a raw inline
+    // block, not a 16-byte slice descriptor, so `Op.sliceEqualNested`'s
+    // row-descriptor recursion cannot reach inside it (see the
+    // Tsarray/Tarray decline block in `tryArrayComparisonAssert`).
+    private uint arrayNestingDepth(Type type) {
+        import dmd.astenums: TY;
+
+        uint depth = 1;
+        auto current = type.toBasetype;
+        while (arrayElementIsArray(current)) {
+            ++depth;
+            auto nextBase = current.nextOf.toBasetype;
+            if (nextBase.ty != TY.Tarray)
+                break;
+            current = nextBase;
+        }
+        return depth;
     }
 
-    // The byte width of one row's own elements for an array-of-arrays type
-    // gated by `arrayElementIsExactlyOneLevelNested`, e.g. 4 for `int[][]`'s
-    // `int` rows.
-    private uint nestedArrayRowElementSize(Type type) {
-        auto rowType = type.toBasetype.nextOf;
-        auto rowElementType = rowType.toBasetype.nextOf;
-        return dynamicArrayElementSize(rowType, scalarType(rowElementType));
+    // The byte width of the innermost (leaf) row's own elements for an
+    // array-of-arrays type gated by `arrayElementIsArray`, e.g. 4 for both
+    // `int[][]`'s and `int[][][]`'s `int` leaves. Walks the same `Tarray`
+    // chain as `arrayNestingDepth`, landing on the deepest array level
+    // (one above the leaf), then reuses `dynamicArrayElementSize`'s
+    // existing scalar/struct/static-array sizing for that level's own
+    // elements.
+    private uint innermostArrayElementSize(Type type) {
+        import dmd.astenums: TY;
+
+        auto current = type.toBasetype;
+        while (arrayElementIsArray(current)) {
+            auto nextBase = current.nextOf.toBasetype;
+            if (nextBase.ty != TY.Tarray)
+                break;
+            current = nextBase;
+        }
+        auto rowElementType = current.toBasetype.nextOf;
+        return dynamicArrayElementSize(current, scalarType(rowElementType));
     }
 
     // Emit `Op.sliceEqualNested`, comparing two array-of-arrays descriptors
@@ -19147,8 +19184,8 @@ private struct Compiler {
     // `__equals` lowering recurses into each element, so two separately
     // heap-allocated but content-equal rows must compare equal, unlike a
     // byte compare of the outer descriptor (which would compare the rows'
-    // `.ptr` values). Caller gates this with
-    // `arrayElementIsExactlyOneLevelNested`.
+    // `.ptr` values). Handles any nesting depth (`int[][]`, `int[][][]`,
+    // ...); caller gates this with `arrayElementIsArray`.
     private ushort emitNestedArrayEqual(
         in ushort left,
         in ushort right,
@@ -19160,7 +19197,8 @@ private struct Compiler {
             result,
             left,
             right,
-            cast(ushort) nestedArrayRowElementSize(outerType),
+            cast(ushort) arrayNestingDepth(outerType),
+            cast(ushort) innermostArrayElementSize(outerType),
         );
         return result;
     }

@@ -362,6 +362,7 @@ package(quickbite.backends.bytecode) RunResult run(
                     base + instruction.b,
                     base + instruction.c,
                     instruction.d,
+                    instruction.e,
                 ) ? 1 : 0;
                 ++ip;
                 break;
@@ -2730,23 +2731,23 @@ private bool slicesEqual(
         (cast(const(ubyte)*) rightPointer)[0 .. byteCount];
 }
 
-// True iff two array-of-arrays descriptors are structurally equal: same
-// outer length, and every row (itself a 16-byte `{ptr, length}` slice
-// descriptor, separately heap-allocated on each side) has the same length
-// and identical element bytes at `innerElementSize` each. Unlike
-// `slicesEqual`, this never compares a row's raw descriptor bytes -- two
-// separately-constructed but content-equal rows have different `.ptr`
-// values, so that would compare identity, not content. Handles exactly one
-// level of array-of-arrays nesting: a row that is itself an array of arrays
-// is not reachable through this opcode.
+// True iff two array-of-arrays descriptors are structurally equal, at any
+// nesting `depth` (2 for `int[][]`, 3 for `int[][][]`, ...): same outer
+// length, and every row (itself a 16-byte `{ptr, length}` slice descriptor,
+// separately heap-allocated on each side) recursively equal one level
+// deeper, down to the innermost row's element bytes (`innerElementSize`
+// each). Unlike `slicesEqual`, this never compares a row's raw descriptor
+// bytes -- two separately-constructed but content-equal rows have different
+// `.ptr` values, so that would compare identity, not content. `depth == 2`
+// (the original, one-level-only shape) reduces to a single row iteration
+// with an immediate byte compare, unchanged from before.
 private bool nestedSlicesEqual(
     in ubyte[] stack,
     in size_t leftOffset,
     in size_t rightOffset,
+    in uint depth,
     in uint innerElementSize,
 ) @trusted {
-    import quickbite.backends.bytecode.core.program: sliceDescriptorSize;
-
     const leftLength = scalarValue!size_t(stack, leftOffset + size_t.sizeof);
     const rightLength = scalarValue!size_t(stack, rightOffset + size_t.sizeof);
     if (leftLength != rightLength)
@@ -2754,7 +2755,37 @@ private bool nestedSlicesEqual(
 
     const leftPointer = scalarValue!size_t(stack, leftOffset);
     const rightPointer = scalarValue!size_t(stack, rightOffset);
-    foreach (index; 0 .. leftLength) {
+    return nestedRowsEqual(
+        leftPointer, rightPointer, leftLength, depth - 1, innerElementSize,
+    );
+}
+
+// Compares `length` paired left/right elements starting at the two raw
+// pointers, `stepsRemaining` row-descriptor levels above the innermost
+// element bytes. At `stepsRemaining == 0` the pointers already address
+// plain element bytes (a scalar/string row, or a struct/static-array row --
+// whatever `innerElementSize` measures) and this is a flat byte compare:
+// the base case, identical to `nestedSlicesEqual`'s original one-level
+// body. Otherwise each of the `length` elements is itself a 16-byte
+// `{ptr, length}` row descriptor -- independently lengthed, since arrays
+// can be ragged at every level -- so each row's own length is checked
+// before recursing one level deeper into it.
+private bool nestedRowsEqual(
+    in size_t leftPointer,
+    in size_t rightPointer,
+    in size_t length,
+    in uint stepsRemaining,
+    in uint innerElementSize,
+) @trusted {
+    import quickbite.backends.bytecode.core.program: sliceDescriptorSize;
+
+    if (stepsRemaining == 0) {
+        const byteCount = length * innerElementSize;
+        return (cast(const(ubyte)*) leftPointer)[0 .. byteCount] ==
+            (cast(const(ubyte)*) rightPointer)[0 .. byteCount];
+    }
+
+    foreach (index; 0 .. length) {
         const leftRow = leftPointer + index * sliceDescriptorSize;
         const rightRow = rightPointer + index * sliceDescriptorSize;
 
@@ -2767,9 +2798,10 @@ private bool nestedSlicesEqual(
 
         const leftRowPointer = *cast(const(size_t)*) leftRow;
         const rightRowPointer = *cast(const(size_t)*) rightRow;
-        const byteCount = leftRowLength * innerElementSize;
-        if ((cast(const(ubyte)*) leftRowPointer)[0 .. byteCount] !=
-            (cast(const(ubyte)*) rightRowPointer)[0 .. byteCount])
+        if (!nestedRowsEqual(
+            leftRowPointer, rightRowPointer, leftRowLength,
+            stepsRemaining - 1, innerElementSize,
+        ))
             return false;
     }
     return true;
@@ -3125,14 +3157,14 @@ private string assertMessage(
         return text(
             arrayOperandText(
                 frame, diagnostic.lhs, diagnostic.operandType,
-                diagnostic.elementIsArray,
+                diagnostic.elementNestingDepth,
             ),
             " ",
             invertedOperator(diagnostic.operator),
             " ",
             arrayOperandText(
                 frame, diagnostic.rhs, diagnostic.operandType,
-                diagnostic.elementIsArray,
+                diagnostic.elementNestingDepth,
             ),
         );
 
@@ -3171,21 +3203,23 @@ private string stringOperandText(
 
 // Render a dynamic-array operand as `[e0, e1, ...]`, reading the slice
 // descriptor at `offset` and formatting each element by its scalar type.
-// When `elementIsArray` is set (an array-of-arrays operand), each element is
-// itself a 16-byte slice descriptor of `elementType` scalars, rendered by
-// one recursive (non-nested) call, matching DMD's own `[[e0, e1], ...]`
-// rendering for one level of nesting.
+// When `elementNestingDepth` is nonzero (an array-of-arrays operand), each
+// element is itself a 16-byte slice descriptor, rendered by a recursive
+// call one nesting level shallower, until depth reaches zero and the
+// elements are plain `elementType` scalars -- matching DMD's own
+// `[[e0, e1], ...]` rendering at any nesting depth, not just one level.
 private string arrayOperandText(
     in ubyte[] frame,
     in size_t offset,
     in imported!"quickbite.backends.bytecode.core.program".ScalarType
         elementType,
-    in bool elementIsArray = false,
+    in uint elementNestingDepth = 0,
 ) @trusted {
     import quickbite.backends.bytecode.core.program: size, sliceDescriptorSize;
     import std.array: appender;
     import std.conv: text;
 
+    const elementIsArray = elementNestingDepth > 0;
     const pointer = scalarValue!size_t(frame, offset);
     const length = scalarValue!size_t(frame, offset + size_t.sizeof);
     const elementSize = elementIsArray ? sliceDescriptorSize : size(elementType);
@@ -3196,7 +3230,10 @@ private string arrayOperandText(
         if (index != 0)
             result ~= ", ";
         result ~= elementIsArray
-            ? arrayOperandText(elements, index * elementSize, elementType)
+            ? arrayOperandText(
+                elements, index * elementSize, elementType,
+                elementNestingDepth - 1,
+            )
             : operandText(elements, index * elementSize, elementType);
     }
     result ~= "]";
