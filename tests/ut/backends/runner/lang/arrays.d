@@ -1147,6 +1147,75 @@ static foreach (backend; Matrix!()) {
     }
 }
 
+// `int[3] row = arr[0];` where `arr` is `int[3][]` (a dynamic array of
+// heap-boxed static-array rows, `elementIsArray`'s representation: each row
+// is its own heap block addressed through a 16-byte slice descriptor).
+// `tryDynamicArrayIndex` materialises `arr[0]` as that row's own 16-byte
+// descriptor (pointer + length), needed as-is for further chained indexing
+// (`arr[0][j]`); `compileStaticArrayValueInto`'s generic `Tsarray`-typed-
+// source fallback used to block-copy those raw descriptor bytes straight
+// into `row`'s inline frame slot instead of the row's actual content -- a
+// silent wrong-answer bug (confirmed: read `947234800` instead of `1`), not
+// a diagnostic. Fixed by detecting this exact shape first and dereferencing
+// through the row's own heap pointer (the same `indexLoad` mechanism
+// `loadDynamicArrayElement` itself uses to read one element out of a
+// descriptor) rather than copying the descriptor's raw bytes. This shape is
+// not module-specific: a local `T[N][]` hits the identical
+// `tryDynamicArrayIndex` code path and was equally wrong before this fix,
+// simply unexercised by any prior fixture (see the local counterpart
+// below).
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.inexpressible,
+        "CTFE cannot read dataseg (__gshared/static) storage"),
+    Omit!(Interpreter, Because.unconfirmed),
+    Omit!(LLVMJit, Because.unconfirmed),
+)) {
+    @("dynamicArray.moduleStaticArrayOfArraysRowValueRead." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            int[3][] arr = [[1, 2, 3], [4, 5, 6]];
+
+            unittest {
+                int[3] row = arr[0];
+                assert(row[0] == 1);
+                assert(row[1] == 2);
+                assert(row[2] == 3);
+
+                int[3] second = arr[1];
+                assert(second[0] == 4);
+                assert(second[1] == 5);
+                assert(second[2] == 6);
+            }
+        });
+    }
+}
+
+// The local-variable counterpart of the fixture above: confirms the fix is
+// not module-specific (`tryDynamicArrayIndex`'s row-descriptor shape is the
+// same for a local base) and stands as an explicit regression guard.
+static foreach (backend; Matrix!()) {
+    @("dynamicArray.localStaticArrayOfArraysRowValueRead." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            unittest {
+                int[3][] arr = [[1, 2, 3], [4, 5, 6]];
+
+                int[3] row = arr[0];
+                assert(row[0] == 1);
+                assert(row[1] == 2);
+                assert(row[2] == 3);
+
+                int[3] second = arr[1];
+                assert(second[0] == 4);
+                assert(second[1] == 5);
+                assert(second[2] == 6);
+            }
+        });
+    }
+}
+
 static foreach (backend; Matrix!()) {
     @("dynamicArray.appendStaticArrayRow." ~ backend.stringof)
     @Tags(backend.stringof)

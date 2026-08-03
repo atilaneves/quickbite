@@ -646,7 +646,53 @@ row reaches them:
   falls through to "Unsupported variable in bytecode core". Module-level
   `Tsarray`/`Taarray`/`Tdelegate` variables and pointer/complex-double dataseg
   variables remain entirely unsupported (`moduleScalarVariableOrNull` still
-  declines them).
+  declines them). Correction to the paragraph above's own "Registration is
+  still declined for a static-array element" claim: `int[3][] arr = [[1, 2,
+  3], [4, 5, 6]];` actually already registers successfully, both at module
+  scope and as a local. `dynamicArrayElementType` walks through a `Tsarray`
+  row the same way it walks through a `Tarray` row (both are `arrayElementIsArray`
+  shapes), resolving all the way down to the leaf scalar (`int_`, not
+  `void_`) before `moduleDynamicArrayLiteralInitializerBytes`'s `void_`-gated
+  decline branch is ever reached, so each row is built as its own heap block
+  plus 16-byte `{pointer, count}` descriptor by the *same* recursive
+  `elementIsArray` branch that already handles `int[][]`. The claim was
+  simply never checked against this exact shape when written.
+- A dynamic array of heap-boxed static-array rows (`T[N][]`,
+  `elementIsArray`'s representation) has two independently-broken downstream
+  read paths once past registration, found together while investigating a
+  reported silent-corruption bug:
+  - `arr[0][0]` (a further index into the row) throws a clean, safe
+    "Unsupported static array access in bytecode core: arr" -- `tryDynamicArrayIndex`/
+    `indexedArrayDescriptor` decline (gated on `index.type.ty == Tarray`,
+    which a `Tsarray` sub-expression fails), so compilation falls through to
+    the plain static-array-chain path (`locateStaticArrayElement`/
+    `staticArrayBaseOffset`), which has no notion of a dynamic-array base at
+    all. Left unfixed: it is a diagnostic, not a wrong answer, and lower
+    priority than the sibling below. Reconfirmed still declining after the
+    fix below (the two paths are independent -- `tryDynamicArrayIndex`
+    itself never resolves this shape, so nothing about the fix touches it).
+  - `T[N] row = arr[0];` (reading the whole row VALUE, not indexing further)
+    used to compile successfully but silently read garbage (confirmed: read
+    `947234800` instead of `1`) -- a real wrong-answer bug, not a
+    diagnostic, and NOT module-specific (a local `T[N][]` base hits the
+    identical code path and was equally wrong, simply unexercised by any
+    prior fixture). Root cause: `compileStaticArrayValueInto`'s generic
+    `Tsarray`-typed-source fallback called plain `compileExpression(source)`
+    and block-copied the result's bytes; for `arr[0]` that result is
+    `tryDynamicArrayIndex`'s materialised 16-byte ROW DESCRIPTOR (pointer +
+    length, needed as-is for further chained indexing like `arr[0][j]`), not
+    the row's actual content, so the block copy blitted descriptor bytes
+    (an address and a length) into the destination instead. Fixed: detect
+    this exact shape (`source.isIndexExp` where `tryDynamicArrayIndex`
+    resolves it) before the generic block-copy fallback, and dereference
+    through the row's own heap pointer instead (`emitIndexLoad` at index 0
+    for `totalSize` bytes -- the same mechanism `loadDynamicArrayElement`
+    itself uses to read one element out of a descriptor), rather than
+    copying the descriptor's raw bytes. Confirmed against `SystemLinker` for
+    both a module-level and a local `int[3][]` base
+    (`dynamicArray.moduleStaticArrayOfArraysRowValueRead`,
+    `dynamicArray.localStaticArrayOfArraysRowValueRead`, `arrays.d`), plus
+    the full `arrays`/`expressions`/`structs` cross-module sweep.
 - A module-struct field's compound assignment (`gp.x += rhs`) now compiles
   `rhs` before `tryStructField` materialises the field's whole-block copy,
   the same reordering the module-array `~=` fix below applies: `rhs` may

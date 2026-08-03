@@ -4466,6 +4466,32 @@ private struct Compiler {
         }
 
         if (source.type.toBasetype.ty == TY.Tsarray) {
+            // `T[N] dest = arr[i]` where `arr` is `T[N][]` (a dynamic array
+            // of heap-boxed static-array rows -- `elementIsArray`'s
+            // representation, one 16-byte slice descriptor per row):
+            // `tryDynamicArrayIndex` materialises only the ROW'S OWN
+            // 16-byte descriptor (pointer + length) here, needed as-is for
+            // further chained indexing (`arr[i][j]`), not the row's actual
+            // bytes. The generic block-copy below would blit those
+            // descriptor bytes (an address and a length) straight into
+            // `dest`'s inline slot -- silent garbage, not the row's real
+            // content. Detect this shape first and dereference through the
+            // row's own heap pointer instead (index 0, `totalSize` bytes --
+            // the same `indexLoad` mechanism `loadDynamicArrayElement`
+            // itself uses to read one element out of a descriptor). A
+            // genuinely inline nested static array (`T[M][N] arr; arr[i]`)
+            // is not an `IndexExp` this resolves (its base is `Tsarray`, not
+            // `Tarray`), so it still falls through to the block copy below,
+            // unaffected.
+            if (auto index = source.isIndexExp)
+                if (auto rowDescriptor = tryDynamicArrayIndex(index)) {
+                    emitIndexLoad(
+                        offset, rowDescriptor.offset,
+                        compileSizeConstant(0), totalSize,
+                    );
+                    return true;
+                }
+
             const value = compileExpression(source);
             _code ~= Instruction(
                 Op.copy,
