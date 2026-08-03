@@ -603,9 +603,20 @@ row reaches them:
   smaller change since a plain recursive call with no depth counter is
   enough. An empty literal (`int[] arr = [];`) is registered too,
   identically to the no-initializer case (both are a null/zero-length
-  slice, so there is no element to inspect or store). Registration is still
-  declined for a struct/static-array element. "Any non-constant element
-  (e.g. a function call)" turns out not to be a real gap: DMD's frontend
+  slice, so there is no element to inspect or store). A struct-typed
+  element whose own fields are constant scalars (`Point[] pts = [Point(1,
+  2), Point(3, 4)];`) is registered too
+  (`moduleDynamicArrayStructLiteralInitializerBytes`): each element's own
+  fields are laid out at DMD's own per-field offset within the element's
+  slot, via `writeStructLiteralFieldBytes`, a helper factored out of
+  `moduleStructLiteralInitializerBytes` (below) so the per-field byte
+  layout for "a struct literal's constant-scalar fields" has one
+  implementation shared by both "a whole module-level struct variable's
+  default value" and "one struct-typed element of a module-level dynamic
+  array literal" rather than two copies. Registration is still declined
+  for a static-array element (e.g. `int[3][] arr = [[1, 2, 3], [4, 5,
+  6]];`). "Any non-constant element (e.g. a function call)" turns out not
+  to be a real gap: DMD's frontend
   requires every dataseg (module-level, non-`immutable`) initializer to
   reduce to a genuine compile-time constant, full stop -- there is no implicit
   `static this()` lowering for a plain module variable the way there is

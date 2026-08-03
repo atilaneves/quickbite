@@ -6719,7 +6719,7 @@ private struct Compiler {
 
         size_t count;
         auto literalBytes = moduleDynamicArrayLiteralInitializerBytes(
-            normalized, elementType, elementIsArray, count,
+            normalized, elementType, elementIsArray, field.type, count,
         );
         if (literalBytes is null && count == 0)
             return null;
@@ -11749,9 +11749,16 @@ private struct Compiler {
     // share one process/address space, so a pointer resolved during
     // compilation stays valid for the whole run. An array-of-arrays element
     // is handled at any nesting depth (`int[][]`, `int[][][]`, and so on --
-    // see `moduleDynamicArrayLiteralInitializerBytes`); a struct/static-array
-    // element, or any non-constant element (e.g. a function call), is not
-    // yet handled and still declines registration.
+    // see `moduleDynamicArrayLiteralInitializerBytes`); a struct-typed
+    // element whose own fields are constant scalars (`Point[] pts =
+    // [Point(1, 2), Point(3, 4)];`) is handled too, laid out at each
+    // field's own DMD-computed offset within the element's slot, the same
+    // way `moduleStructLiteralInitializerBytes` lays out a whole
+    // module-level struct variable's default value (see
+    // `moduleDynamicArrayStructLiteralInitializerBytes`,
+    // `writeStructLiteralFieldBytes`). A static-array element, or any
+    // non-constant element (e.g. a function call), is not yet handled and
+    // still declines registration.
     //
     // A plain array literal (`[1, 2, 3]`) parses as an `ArrayInitializer`,
     // not an `ExpInitializer` the way a scalar's `int x = 5;` does, so this
@@ -11801,7 +11808,8 @@ private struct Compiler {
         ubyte[] literalBytes;
         if (!hasDefaultInitializer) {
             literalBytes = moduleDynamicArrayLiteralInitializerBytes(
-                initializerExpr, elementType, elementIsArray, literalCount,
+                initializerExpr, elementType, elementIsArray,
+                declaration.type, literalCount,
             );
             if (literalBytes is null && literalCount == 0)
                 return null;
@@ -11869,17 +11877,41 @@ private struct Compiler {
     // `count` left at 0) when the initializer is not one of these shapes,
     // so the caller can tell "empty literal bytes" (`count == 0` from a
     // genuinely empty `[]` initializer, not yet given real storage either)
-    // apart from "declined".
+    // apart from "declined". `arrayType` is the array's own type at this
+    // recursion level (`declaration.type`/`field.type` at the top call,
+    // then each row's own `Expression.type` on the way down through the
+    // `elementIsArray` branch) -- only consulted when `elementType` is
+    // `ScalarType.void_` and `elementIsArray` is false, to tell a
+    // struct-typed leaf element (`dynamicArrayElementType` returns
+    // `void_` for `Tstruct` the same as it does for the still-declined
+    // `Tsarray`/`Tdelegate` leaves) apart from those, since only the
+    // struct case is handled below
+    // (`moduleDynamicArrayStructLiteralInitializerBytes`).
     private ubyte[] moduleDynamicArrayLiteralInitializerBytes(
         Expression initializerExpr,
         in ScalarType elementType,
         in bool elementIsArray,
+        Type arrayType,
         out size_t count,
     ) {
         import std.bitmanip: nativeToLittleEndian;
+        import dmd.astenums: TY;
 
-        if (elementType == ScalarType.void_)
+        if (elementType == ScalarType.void_) {
+            if (elementIsArray)
+                return null;
+
+            auto elementRawType =
+                arrayType is null ? null : arrayType.toBasetype.nextOf;
+            if (elementRawType !is null &&
+                elementRawType.toBasetype.ty == TY.Tstruct)
+            {
+                return moduleDynamicArrayStructLiteralInitializerBytes(
+                    initializerExpr, elementRawType, count,
+                );
+            }
             return null;
+        }
 
         if (elementIsArray) {
             auto outer = initializerExpr.isArrayLiteralExp;
@@ -11907,7 +11939,7 @@ private struct Compiler {
                 size_t rowCount;
                 auto rowBytes = moduleDynamicArrayLiteralInitializerBytes(
                     element, elementType, rowElementIsArray,
-                    rowCount,
+                    element is null ? null : element.type, rowCount,
                 );
                 if (rowBytes is null && rowCount == 0) {
                     count = 0;
@@ -11963,6 +11995,54 @@ private struct Compiler {
 
             count = 0;
             return null;
+        }
+        return bytes;
+    }
+
+    // The struct-element sibling of the plain-scalar branch above
+    // (`Point[] pts = [Point(1, 2), Point(3, 4)];`): each element must
+    // itself be a `StructLiteralExp` (not, say, a struct-typed variable
+    // reference or a constructor call the frontend hasn't folded away),
+    // and its own fields must be constant scalars, exactly the shape
+    // `writeStructLiteralFieldBytes` already lays out for a whole
+    // module-level struct variable's default value
+    // (`moduleStructLiteralInitializerBytes`) -- reused here verbatim,
+    // just called once per array element into that element's own
+    // `structSize`-byte slice of the outer literal's bytes rather than
+    // once for the whole variable's block. `elementRawType` is the
+    // element's own (already-confirmed-`Tstruct`) `Type`, resolved by the
+    // caller from `arrayType.toBasetype.nextOf`. Returns `null` (with
+    // `count` left at 0) when the initializer is not a non-empty array
+    // literal of `StructLiteralExp` elements each satisfying
+    // `writeStructLiteralFieldBytes`, matching every other decline in this
+    // family.
+    private ubyte[] moduleDynamicArrayStructLiteralInitializerBytes(
+        Expression initializerExpr,
+        Type elementRawType,
+        out size_t count,
+    ) {
+        auto literal = initializerExpr.isArrayLiteralExp;
+        if (literal is null || literal.elements is null ||
+            literal.elements.length == 0)
+        {
+            return null;
+        }
+
+        count = literal.elements.length;
+        const elementSize = cast(size_t) staticArraySize(elementRawType);
+        ubyte[] bytes;
+        bytes.length = count * elementSize;
+        foreach (elementIndex; 0 .. count) {
+            auto element = (*literal.elements)[elementIndex];
+            auto elementLiteral =
+                element is null ? null : element.isStructLiteralExp;
+            auto elementBytes = bytes[
+                elementIndex * elementSize .. (elementIndex + 1) * elementSize
+            ];
+            if (!writeStructLiteralFieldBytes(elementLiteral, elementBytes)) {
+                count = 0;
+                return null;
+            }
         }
         return bytes;
     }
@@ -12042,9 +12122,6 @@ private struct Compiler {
         VarDeclaration declaration,
         in ushort structSize,
     ) {
-        import std.bitmanip: nativeToLittleEndian;
-        import dmd.astenums: TY;
-
         resolveNonRootInitializer(declaration);
         auto initializer = declaration._init is null
             ? null
@@ -12054,22 +12131,50 @@ private struct Compiler {
 
         auto literal =
             initializerExpression(initializer.exp).isStructLiteralExp;
-        if (literal is null || literal.elements is null ||
-            literal.elements.length != literal.sd.fields.length)
-        {
-            return null;
-        }
 
         ubyte[] bytes;
         bytes.length = structSize;
+        if (!writeStructLiteralFieldBytes(literal, bytes))
+            return null;
+        return bytes;
+    }
+
+    // Write `literal`'s own field values into `bytes` (already sized to
+    // the struct's own byte width) at each field's own DMD-computed
+    // offset, when every field is present and a constant scalar
+    // expression. Shared by `moduleStructLiteralInitializerBytes` (a whole
+    // module-level struct variable's literal default, `bytes` spanning its
+    // own `_program.moduleData` slot) and
+    // `moduleDynamicArrayStructLiteralInitializerBytes` (one struct-typed
+    // element of a module-level dynamic array literal, `bytes` spanning
+    // just that one element's slot within the array's `literalBlocks`
+    // entry) -- the per-field layout logic is identical either way, only
+    // the destination slice differs. Returns `false` (declining; the
+    // caller discards whatever was written to `bytes` so far) when a field
+    // is omitted from the literal, is itself a
+    // struct/static-array/dynamic-array/delegate, or is not a constant
+    // scalar expression.
+    private bool writeStructLiteralFieldBytes(
+        StructLiteralExp literal,
+        ubyte[] bytes,
+    ) {
+        import std.bitmanip: nativeToLittleEndian;
+        import dmd.astenums: TY;
+
+        if (literal is null || literal.elements is null ||
+            literal.elements.length != literal.sd.fields.length)
+        {
+            return false;
+        }
+
         foreach (fieldIndex, field; literal.sd.fields) {
             auto element = (*literal.elements)[fieldIndex];
             if (element is null)
-                return null;
+                return false;
 
             switch (field.type.toBasetype.ty) with (TY) {
                 case Tstruct, Tsarray, Tarray, Tdelegate:
-                    return null;
+                    return false;
                 default:
                     break;
             }
@@ -12096,9 +12201,9 @@ private struct Compiler {
                 continue;
             }
 
-            return null;
+            return false;
         }
-        return bytes;
+        return true;
     }
 
     private ubyte[] moduleScalarInitializerBytes(

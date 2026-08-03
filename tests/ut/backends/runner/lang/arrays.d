@@ -703,6 +703,60 @@ static foreach (backend; Matrix!()) {
     }
 }
 
+// The struct-element sibling of the plain-scalar and array-of-arrays
+// module literal fixtures above (`Point[] pts = [Point(1, 2), Point(3,
+// 4)];`): `moduleDynamicArrayLiteralInitializerBytes` declined any element
+// whose leaf `dynamicArrayElementType` was `ScalarType.void_` outright
+// (the same tag it uses for a still-declined static-array/delegate
+// element), even though a struct element whose own fields are constant
+// scalars is a perfectly ordinary compile-time constant DMD's frontend
+// already accepts for a module-level `Point[]`. Each element's own
+// `StructLiteralExp` fields are now laid out at DMD's own per-field
+// offset within the element's slot
+// (`moduleDynamicArrayStructLiteralInitializerBytes`), reusing the same
+// per-field byte-writing `moduleStructLiteralInitializerBytes` already
+// uses for a whole module-level struct variable's default value
+// (`writeStructLiteralFieldBytes`).
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.inexpressible,
+        "CTFE cannot read dataseg (__gshared/static) storage"),
+    Omit!(Interpreter, Because.unconfirmed),
+    Omit!(LLVMJit, Because.unconfirmed),
+)) {
+    @("dynamicArray.moduleArrayOfStructsLiteralInitializer." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct Point { int x; int y; }
+            Point[] pts = [Point(1, 2), Point(3, 4)];
+
+            int sum() {
+                return pts[0].x + pts[0].y + pts[1].x + pts[1].y;
+            }
+
+            unittest {
+                // First touch is from a lazily-compiled callee, not the
+                // entry itself; it must still see the initialised contents.
+                assert(sum() == 10);
+
+                assert(pts.length == 2);
+                assert(pts[0].x == 1);
+                assert(pts[0].y == 2);
+                assert(pts[1].x == 3);
+                assert(pts[1].y == 4);
+
+                pts[0].x = 99;
+                assert(pts[0].x == 99);
+
+                auto p = pts[1];
+                p.x = 100;
+                assert(pts[1].x == 3);
+            }
+        });
+    }
+}
+
 // Array-of-arrays structural equality (`int[][] == int[][]`): DMD's real
 // `__equals` lowering recurses into each row's content, so two separately
 // heap-allocated but content-equal arrays-of-arrays must compare equal --
