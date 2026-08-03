@@ -3498,6 +3498,69 @@ static foreach (backend; Matrix!(
     }
 }
 
+// A module-level `cdouble` variable (`__gshared cdouble c;`) --
+// `moduleScalarVariableOrNull` used to decline every `Tcomplex64` dataseg
+// declaration outright ("Module-level complex-double dataseg variables
+// remain entirely unsupported"). Like a delegate, a `cdouble` is a 16-byte
+// `{re, im}` pair with no `ScalarType` of its own (the same reason a
+// `cdouble` LOCAL already carries its own dedicated tracking
+// (`_complexDoubleLocals`) rather than going through the generic scalar
+// machinery), so it gets its own dedicated storage record
+// (`ModuleComplexVariable`) rather than routing through the generic scalar
+// path `moduleScalarVariableOrNull` gives a module pointer/AA. Default-
+// initialized to `double.nan + double.nan * 1i` -- unlike a defaulted
+// pointer/AA/delegate (all-zero is correct there), D gives every
+// floating-point-derived type a NaN default, not zero; an initial all-zero
+// version of this test was caught by comparing against the
+// `SystemLinker`/`LLVMJit` real-compile oracles ("nan != 0"), which is why
+// the storage is explicitly NaN-filled rather than left at
+// `allocateModuleBytes`'s all-zero growth. Read, and a whole-value
+// assignment (from a runtime-computed complex expression, including one
+// assigned from inside a called function, mirroring back to the module's
+// own authoritative storage rather than a throwaway copy) are exercised. A
+// non-default initializer (`cdouble c = 1.0 + 2.0i;` at module scope) still
+// falls through to "Unsupported variable in bytecode core", scoped out like
+// every other module-variable kind's decline. `Ctfe` cannot read or write
+// dataseg storage at all (compile-time execution has no such storage to
+// access). `Interpreter` declines this shape, the same pre-existing "does
+// not mirror a dataseg write back through a called function" gap already
+// documented on the sibling pointer/AA/delegate tests above, never
+// previously exercised for a module-level `cdouble`.
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.inexpressible,
+        "CTFE cannot read or write dataseg (__gshared/static) storage"),
+    Omit!(Interpreter, Because.unconfirmed),
+)) {
+    @("dataseg.moduleComplexVariableDefaultNaNReadAndWriteThroughCall." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            import std.math: isNaN;
+
+            __gshared cdouble quickbiteDatasegComplex;
+
+            int value(int input) {
+                return input + 1;
+            }
+
+            void assignFromCall() {
+                auto base = value(41);
+                quickbiteDatasegComplex = cast(cdouble) base + 1.0i;
+            }
+
+            unittest {
+                assert(isNaN(quickbiteDatasegComplex.re));
+                assert(isNaN(quickbiteDatasegComplex.im));
+
+                assignFromCall();
+                assert(quickbiteDatasegComplex.re == 42);
+                assert(quickbiteDatasegComplex.im == 1);
+            }
+        });
+    }
+}
+
 // A module-level struct's own field that is itself a struct
 // (`quickbiteDatasegOuter.inner.x`): the generic base resolver that walks an
 // `outer.inner` chain back to its base had no case for a bare module-struct

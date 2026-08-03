@@ -179,6 +179,7 @@ private struct Compiler {
     private ModuleStructVariable[VarDeclaration] _moduleStructVariables;
     private ModuleStaticArrayVariable[VarDeclaration] _moduleStaticArrayVariables;
     private ModuleDelegateVariable[VarDeclaration] _moduleDelegateVariables;
+    private ModuleComplexVariable[VarDeclaration] _moduleComplexVariables;
     // A `Tarray` class field's shared array-literal default, computed once
     // per field and reused at every `new C()` site: see
     // `classFieldArraySharedDefaultOrNull`.
@@ -2188,6 +2189,23 @@ private struct Compiler {
                             moduleVariable.pointerElement,
                         );
                     return Operand(offset, moduleVariable.type);
+                }
+
+            // A module-level (`__gshared`/`static`) `cdouble` variable:
+            // materialise its 16-byte `{re, im}` pair out of `moduleData`
+            // into a fresh frame slot, the same way a module pointer/AA/
+            // delegate read does (`Op.loadModule`).
+            if (auto declaration = variable.var.isVarDeclaration)
+                if (auto moduleVariable =
+                        moduleComplexVariableOrNull(declaration)) {
+                    const offset = allocateComplexDouble;
+                    _code ~= Instruction(
+                        Op.loadModule,
+                        offset,
+                        moduleVariable.offset,
+                        cast(ushort) complexDoubleSize,
+                    );
+                    return complexDoubleOperand(offset);
                 }
 
             // A captured enclosing local read inside a nested struct's method
@@ -10928,6 +10946,26 @@ private struct Compiler {
                     return Operand(source, ScalarType.void_);
                 }
 
+        // `c = rhs;` for a whole module-level `cdouble` variable (`cdouble
+        // c; c = 1.0 + 2.0i;`): the complex counterpart of the module
+        // delegate whole-value assignment above -- resolve the rhs's own
+        // 16-byte `{re, im}` pair the same way any other `cdouble`
+        // expression does (`compileComplexDoubleOperand`, which also
+        // widens a plain real/integer rhs to a zero-imaginary complex
+        // value), then copy the whole block back to `c`'s own dataseg
+        // storage via `Op.storeModule`.
+        if (assign.e1.isVarExp !is null)
+            if (auto declaration = assign.e1.isVarExp.var.isVarDeclaration)
+                if (auto moduleVariable =
+                        moduleComplexVariableOrNull(declaration)) {
+                    const value = compileComplexDoubleOperand(assign.e2);
+                    _code ~= Instruction(
+                        Op.storeModule, value.offset, moduleVariable.offset,
+                        cast(ushort) complexDoubleSize,
+                    );
+                    return value;
+                }
+
         // `arr = rhs;` for a whole static-array-typed local -- including a
         // ref local aliased to one (`staticArrayOffsetOf` resolves both the
         // same way, per `_staticArrayLocals`): block-copy the new value into
@@ -12382,6 +12420,66 @@ private struct Compiler {
         _moduleDelegateVariables[declaration] =
             ModuleDelegateVariable(offset);
         return declaration in _moduleDelegateVariables;
+    }
+
+    // A module-level `cdouble` variable (`__gshared cdouble c;`) reserves a
+    // plain 16-byte native-order `{re, im}` slot in `_program.moduleData`,
+    // the complex counterpart of `ModuleDelegateVariable` above. Unlike a
+    // module pointer/associative array (an 8-byte value routed through
+    // `moduleScalarVariableOrNull`'s generic scalar path, since `scalarType`
+    // already maps `Tpointer`/`Taarray` to `ScalarType.ulong_`), a `cdouble`
+    // is a 16-byte pair with no `ScalarType` of its own -- the same reason a
+    // `cdouble` local already gets its own dedicated tracking
+    // (`_complexDoubleLocals`) rather than going through the generic scalar
+    // machinery -- so it gets its own dedicated storage record instead.
+    // Unlike a defaulted pointer/AA/delegate (all-zero is the correct
+    // default), `cdouble.init` is `double.nan + double.nan * 1i` -- D gives
+    // every floating-point-derived type a NaN default, not zero -- confirmed
+    // against the `SystemLinker`/`LLVMJit` real-compile oracles, which
+    // failed an initial all-zero-default version of this test with `nan !=
+    // 0`. So `allocateModuleBytes`'s zero-filled growth is explicitly
+    // overwritten with both lanes' NaN bytes here, rather than reused as-is
+    // the way every other module-variable kind's default does. Only the
+    // implicit default (NaN) initializer is handled; any other initializer
+    // declines registration, falling through to the pre-existing
+    // "Unsupported variable in bytecode core" error, matching every other
+    // module-variable-kind decline elsewhere in this file. Read
+    // (`compileExpression`'s new module branch) and whole-value write
+    // (`c = someExpression;`, `compileAssignExpression`'s new module branch)
+    // each materialise the current 16-byte value into a fresh frame slot via
+    // `Op.loadModule`/write it back via `Op.storeModule`, the same pattern
+    // already used for a module pointer/AA/struct/static-array/delegate
+    // variable.
+    private ModuleComplexVariable* moduleComplexVariableOrNull(
+        VarDeclaration declaration,
+    ) {
+        if (declaration is null || !declaration.isDataseg ||
+            declaration.isImmutable)
+        {
+            return null;
+        }
+
+        if (!isComplexDoubleType(declaration.type))
+            return null;
+
+        if (auto existing = declaration in _moduleComplexVariables)
+            return existing;
+
+        if (!moduleVariableHasDefaultInitializer(declaration))
+            return null;
+
+        import std.bitmanip: nativeToLittleEndian;
+
+        const offset =
+            allocateModuleBytes(complexDoubleSize, cast(uint) double.sizeof);
+        const nanBytes = nativeToLittleEndian(double.nan);
+        _program.moduleData[offset .. offset + double.sizeof] = nanBytes[];
+        _program.moduleData[
+            offset + double.sizeof .. offset + complexDoubleSize
+        ] = nanBytes[];
+        _moduleComplexVariables[declaration] =
+            ModuleComplexVariable(offset);
+        return declaration in _moduleComplexVariables;
     }
 
     // Compile-time bytes for a module-level static array's non-null,
@@ -20145,6 +20243,19 @@ private struct ModuleDynamicArrayVariable {
 // gets its own record here, the delegate counterpart of
 // `ModuleDynamicArrayVariable`. See `moduleDelegateVariableOrNull`.
 private struct ModuleDelegateVariable {
+    ushort offset;
+}
+
+// A module-level (`__gshared`/`static`) `cdouble` variable's own 16-byte
+// native-order `{re, im}` pair storage in `_program.moduleData`. Like a
+// delegate, a `cdouble` has no `ScalarType` of its own (`scalarType` has no
+// `Tcomplex64` case, and `isComplex` is carried as a separate `Operand` flag
+// rather than folded into `ScalarType`) -- the same reason a `cdouble` LOCAL
+// already gets its own dedicated tracking (`_complexDoubleLocals`) rather
+// than going through the generic scalar machinery -- so it gets its own
+// record here, the complex counterpart of `ModuleDelegateVariable`. See
+// `moduleComplexVariableOrNull`.
+private struct ModuleComplexVariable {
     ushort offset;
 }
 

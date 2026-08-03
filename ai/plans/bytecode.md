@@ -631,142 +631,102 @@ row reaches them:
   this function at all (confirmed:
   `dynamicArray.moduleArrayLiteralCtfeableCallElement` and
   `dynamicArray.moduleArrayLiteralNonCtfeableCallElementIsFrontendError`,
-  `arrays.d`). A module-level
-  struct variable (`ModuleStructVariable`) is supported for the
-  default-initialized case: field access materialises the whole block
-  via `Op.loadModule` but writes back only the touched field's own bytes via
-  `Op.storeModule` (`tryStructField`/`writeBackStructField`), so a sibling
-  field written in between (e.g. by a right-hand-side call) survives; a `ref`
-  argument bound to such a field, at any nesting depth (`go.x` or
-  `go.inner.x`), mirrors just that field into its own fresh slot with its own
-  writeback (`emitModuleStructFieldRefArgument`, resolving the field's dataseg
-  offset through `moduleStructFieldOffsetOrNull`'s `DotVarExp`-chain
-  arithmetic) rather than reusing the whole-block copy `tryStructField`
-  materialises for plain field access. A non-default struct initializer still
-  falls through to "Unsupported variable in bytecode core". Module-level
-  complex-double dataseg variables remain entirely unsupported
-  (`moduleScalarVariableOrNull` still declines them; see the `Tdelegate` case
-  below, which is now supported). A
-  module-level fixed-size static array (`int[3] arr;`) is now supported for a
-  scalar-element array (`moduleStaticArrayVariableOrNull`, the Tsarray
-  counterpart of `ModuleStructVariable`): its `N * elementSize` bytes live
-  inline in `moduleData`, default-initialized to zero (matching D's default)
-  or, for a constant array-literal initializer (`int[3] arr = [1, 2, 3];`),
-  each element's own bytes (`moduleStaticArrayLiteralInitializerBytes`,
-  normalising the `ArrayInitializer`-vs-`ExpInitializer` AST quirk the same
-  way `moduleDynamicArrayVariableOrNull` already does, by reusing its
-  `moduleDynamicArrayInitializerExpressionOrNull` directly). A
-  compile-time-constant-index element read or write
-  (`staticArrayBaseOffset`'s new `VarExp` branch) materialises the whole
-  block into a fresh frame slot (`Op.loadModule`) and writes the whole block
-  back after any write (`Op.storeModule`) -- there is no narrower "field" to
-  isolate the way there is for a module struct's own field, since the
-  touched element IS (a byte range of) the whole variable. A *runtime*-index
-  element read or write (`tryStaticArrayRuntimeAddress`'s new `VarExp`
-  branch) instead resolves the element's real dataseg address directly via
-  `Op.moduleAddress` (`moduleAddressOperand`, the module counterpart of
-  `frameAddressOperand`) and reads/writes through it, needing no whole-block
-  copy or writeback at all. A whole-array assignment (`arr = [1, 2, 3];`) or
-  whole-array read (`int[3] copy = arr;`, or `arr` as the right-hand side of
-  another module variable's assignment) goes through the same
-  materialise/(for assignment)writeback pattern, scoped narrowly to its own
-  call sites (`compileAssignment`'s new dedicated branch,
-  `compileStaticArrayValueInto`'s new `VarExp` branch) rather than taught to
-  the shared `staticArrayOffsetOf` helper itself, which many other callers
-  (`ref` local binding among them) treat as real aliasable storage rather
-  than a throwaway read -- aliasing a `ref` local, taking `&arr[i]`, or
-  viewing `arr` as a dynamic-array slice still fall through to their
-  pre-existing "Unsupported" diagnostics rather than silently reading or
-  writing a throwaway copy, an intentionally scoped-out gap for a later PR,
-  not attempted here. `.length` was already a compile-time constant
-  regardless of storage and needed no new support. A struct-element,
-  static-array-element (`int[3][3]`), dynamic-array-element (`int[3][]`), or
-  delegate-element static array -- and complex-double, matching
-  `moduleScalarVariableOrNull`'s own decline list -- still declines
-  registration, scoped out of this fix. `Interpreter` declines a
-  module-level static-array element assignment outright ("Unsupported
-  interpreter assignment target"), a separate backend from the bytecode core
-  this fix targets, never previously exercised for this shape
-  (`dataseg.moduleStaticArrayElementReadWriteAndWholeArrayCopy`, `expressions.d`).
-  A module-level pointer (`int* p;`) is now supported: it is
-  just a `size_t`-width value, so `moduleScalarVariableOrNull` registers it
-  through the same generic scalar path as `int`/`float`/etc (`scalarType`
-  already mapped `Tpointer` to `ScalarType.ulong_`); the struct gained an
-  `isPointer`/`pointerElement` pair (mirroring `_pointerLocals`' role for a
-  local pointer) so a *read* of the module variable is tagged as a pointer
-  operand too, which `*p`/`p[i]`/`&p` and a `ref` argument all key off of.
-  The frontend itself refuses a non-null initializer for a dataseg pointer
-  (`cannot take address of thread-local variable ... at compile time`), so
-  the only initializer ever seen in practice is the implicit default (null);
-  an explicit `= null` initializer is handled too. `Interpreter` has a
-  pre-existing, separate gap here (see
-  `pointer.refArgumentThroughCallReturnedShortPointerCallsExpressionOnce`):
-  writing through a pointer that addresses dataseg storage does not mirror
-  back to the module variable's own authoritative storage. A module-level
-  associative array (`int[string] counts;`) is now supported: it too is just
-  a `size_t`-width opaque VM-map handle (`scalarType` already mapped
-  `Taarray` to `ScalarType.ulong_`), so `moduleScalarVariableOrNull`
-  registers it through the same generic scalar path, default-initialized to
-  null (an empty map) -- an explicit non-null AA-literal initializer still
-  falls through to "Unsupported module scalar initializer", scoped out. The
-  one AA-specific wrinkle: every hook (`length`/`[]`/`in`/`foreach`/`.dup`/
-  etc.) resolves the handle through `assocArrayHandleOffset`, which now
-  materialises the module's own storage into a fresh frame slot
-  (`Op.loadModule`) the same way a module pointer read does; an insert
-  (`counts[k] = v`) may autovivify a still-null handle *inside that frame
-  slot* (`aaInsert`, `machine.d`), so `compileAssocArrayGetLvalue` writes the
-  (possibly new) handle back to `moduleData` (`Op.storeModule`) right after,
-  keeping a later, separately-materialised read in sync. `Ctfe` cannot read
-  or write dataseg storage at all; `Interpreter` has the same pre-existing
-  "does not mirror a dataseg write back through a called function" gap noted
-  for the pointer case above (`dataseg.moduleAssocArrayInsertLookupInLengthAndForeach`,
-  `expressions.d`). A module-level delegate variable (`int delegate() dg;`)
-  is now supported too, but unlike the pointer/AA case it does not reuse
-  `moduleScalarVariableOrNull`'s generic scalar path: a delegate is a
-  16-byte `{functionIndex, context}` pair with no `ScalarType` of its own
-  (the same reason a delegate local/field/array-element already carries its
-  own dedicated tracking rather than going through the scalar machinery),
-  so it gets its own dedicated storage record, `ModuleDelegateVariable`,
-  the delegate counterpart of `ModuleDynamicArrayVariable`
-  (`moduleDelegateVariableOrNull`). Default-initialized to null (an
-  all-zero pair, matching D's default -- `allocateModuleBytes` already
-  zero-fills fresh `moduleData` growth, so no initializer bytes need
-  writing); a non-null initializer still falls through to "Unsupported
-  variable in bytecode core", scoped out like every other module-variable
-  kind's decline. A *read* (`delegateOperandOffset`'s new module branch),
-  a whole-value *write* (`dg = someDelegate;`, `compileAssignExpression`'s
-  new module branch), and a *call* through it (`dg()`,
-  `moduleDelegateOffsetOf` dispatching through the same
-  `compileDynamicDelegateCall` a delegate-typed parameter uses) each
-  materialise the current value into a fresh frame slot via
-  `Op.loadModule`/write it back via `Op.storeModule`, the same pattern
-  already used for a module pointer/AA/struct/static-array variable. Since
-  a module delegate's callee is never statically known at the call site,
-  calling through it after it holds a struct-receiver method value
-  (`&receiver.method`) hits the same pre-existing, already-documented
-  `Op.callIndirectDynamic` `hasThis` rejection a delegate-typed parameter
-  has (`delegate.structReceiverPassedAsParameterIsRejected`) -- not
-  attempted here; assignment from such a value is still exercised (and
-  still mirrors back to the module's own authoritative storage from
-  inside a called function, verified via `!is null` rather than a call).
-  `Ctfe` cannot read or write dataseg storage at all; `Interpreter` has the
-  same pre-existing "does not mirror a dataseg write back through a called
-  function" gap noted for the pointer/AA cases above
-  (`dataseg.moduleDelegateVariableAssignmentAndCallThrough`, `expressions.d`).
-  This closes out module-scalar-variable-kind support started with the
-  pointer case above: every `Tdelegate`/`Tpointer`/`Taarray` dataseg
-  variable is now supported, leaving only complex-double open. Correction to the
-  paragraph above's own "Registration is
-  still declined for a static-array element" claim: `int[3][] arr = [[1, 2,
-  3], [4, 5, 6]];` actually already registers successfully, both at module
-  scope and as a local. `dynamicArrayElementType` walks through a `Tsarray`
-  row the same way it walks through a `Tarray` row (both are `arrayElementIsArray`
-  shapes), resolving all the way down to the leaf scalar (`int_`, not
-  `void_`) before `moduleDynamicArrayLiteralInitializerBytes`'s `void_`-gated
-  decline branch is ever reached, so each row is built as its own heap block
-  plus 16-byte `{pointer, count}` descriptor by the *same* recursive
-  `elementIsArray` branch that already handles `int[][]`. The claim was
-  simply never checked against this exact shape when written.
+  `arrays.d`). Module-scalar-variable-kind support is now complete: a
+  module-level (`__gshared`/`static`) struct, scalar-element static array,
+  pointer, associative array, delegate, and `cdouble` variable are all
+  supported.
+  - Struct (`ModuleStructVariable`): default-initialized case only; field
+    access materialises the whole block (`Op.loadModule`) but writes back
+    only the touched field's own bytes (`Op.storeModule`,
+    `tryStructField`/`writeBackStructField`), so a sibling field written in
+    between survives; a `ref` argument bound to a field at any nesting depth
+    mirrors just that field with its own writeback
+    (`emitModuleStructFieldRefArgument`). A non-default initializer falls
+    through to "Unsupported variable in bytecode core".
+  - Scalar-element static array (`int[3] arr;`, `moduleStaticArrayVariableOrNull`):
+    its `N * elementSize` bytes live inline in `moduleData`, default-zero or
+    a constant array-literal's own bytes
+    (`moduleStaticArrayLiteralInitializerBytes`). A constant-index element
+    read/write materialises/writes back the whole block
+    (`staticArrayBaseOffset`); a runtime-index element read/write resolves
+    the element's real dataseg address directly instead
+    (`tryStaticArrayRuntimeAddress`/`Op.moduleAddress`). A whole-array
+    assignment or read goes through the same materialise/writeback pattern.
+    A struct/static-array/dynamic-array/delegate/complex-double *element*
+    still declines registration -- scoped out, a later PR. `Interpreter`
+    declines a module-level static-array element assignment outright
+    (`dataseg.moduleStaticArrayElementReadWriteAndWholeArrayCopy`).
+  - Pointer (`int* p;`): just a `size_t`-width value through
+    `moduleScalarVariableOrNull`'s generic scalar path (`scalarType` already
+    maps `Tpointer` to `ScalarType.ulong_`); reads are tagged
+    `isPointer`/`pointerElement` so `*p`/`p[i]`/`&p`/`ref` all key off it.
+    The frontend itself refuses a non-null dataseg pointer initializer, so
+    only the implicit default (null) and an explicit `= null` are handled.
+    `Interpreter` has a pre-existing, separate gap: writing through a
+    pointer addressing dataseg storage does not mirror back to the module
+    variable's own authoritative storage
+    (`pointer.refArgumentThroughCallReturnedShortPointerCallsExpressionOnce`).
+  - Associative array (`int[string] counts;`): same generic scalar path as
+    a pointer (`Taarray` also maps to `ScalarType.ulong_`, an opaque VM-map
+    handle), default-initialized to null; a non-null AA-literal initializer
+    still falls through to "Unsupported module scalar initializer". Every
+    hook (`length`/`[]`/`in`/`foreach`/`.dup`/etc.) resolves the handle
+    through `assocArrayHandleOffset`, which materialises the module's
+    storage into a fresh frame slot; an insert may autovivify a still-null
+    handle *inside that slot*, so `compileAssocArrayGetLvalue` writes the
+    (possibly new) handle back to `moduleData` right after
+    (`dataseg.moduleAssocArrayInsertLookupInLengthAndForeach`). Same
+    `Interpreter` writeback gap as the pointer case.
+  - Delegate (`int delegate() dg;`): unlike pointer/AA, does not reuse
+    `moduleScalarVariableOrNull`'s scalar path -- a delegate is a 16-byte
+    `{functionIndex, context}` pair with no `ScalarType` of its own, so it
+    gets its own dedicated storage record, `ModuleDelegateVariable`
+    (`moduleDelegateVariableOrNull`). Default-initialized to null (all-zero,
+    matching D's default); a non-null initializer declines, matching every
+    other kind. Read (`delegateOperandOffset`), whole-value write
+    (`compileAssignExpression`), and call-through (`dg()`,
+    `moduleDelegateOffsetOf` dispatching through the same
+    `compileDynamicDelegateCall` a delegate parameter uses) each
+    materialise/write back via `Op.loadModule`/`Op.storeModule`. Calling
+    through it after it holds a struct-receiver method value hits the same
+    pre-existing `Op.callIndirectDynamic` `hasThis` rejection a delegate
+    parameter has (`delegate.structReceiverPassedAsParameterIsRejected`) --
+    not attempted here; assignment from such a value is still exercised.
+    Same `Interpreter` writeback gap
+    (`dataseg.moduleDelegateVariableAssignmentAndCallThrough`).
+  - `cdouble` (`cdouble c;`): still valid, reachable D under this project's
+    dmd (2.112.0) -- `cfloat`/`cdouble`/`creal` are deprecated, not a hard
+    error, so this was a real gap, not dead code. Like a delegate, gets its
+    own dedicated 16-byte `{re, im}` record (`ModuleComplexVariable`,
+    `moduleComplexVariableOrNull`) rather than the scalar path. Unlike every
+    other kind above (all-zero/null is their correct default), `cdouble.init`
+    is `double.nan + double.nan * 1i` -- D gives every floating-point-derived
+    type a NaN default, not zero -- so the storage is explicitly NaN-filled
+    at registration rather than left at `allocateModuleBytes`'s all-zero
+    growth; an initial all-zero version of this was caught by comparing
+    against the `SystemLinker`/`LLVMJit` real-compile oracles ("nan != 0").
+    Only the implicit default (NaN) initializer is handled; a non-default
+    initializer (`cdouble c = 1.0 + 2.0i;`) declines, matching every other
+    kind. Read and whole-value write (including from inside a called
+    function, mirroring back to the module's authoritative storage) are
+    exercised
+    (`dataseg.moduleComplexVariableDefaultNaNReadAndWriteThroughCall`).
+    Same `Interpreter` writeback gap as the other kinds. `cfloat`/`creal`
+    remain open, not attempted here.
+
+  `Ctfe` cannot read or write dataseg storage at all for any of the above
+  (compile-time execution has no such storage to access). A struct-element,
+  static-array-element, dynamic-array-element, delegate-element, or
+  complex-double-element static array still declines registration outright,
+  scoped out of this front entirely. Correction to an earlier claim in this
+  paragraph ("Registration is still declined for a static-array element"):
+  `int[3][] arr = [[1, 2, 3], [4, 5, 6]];` actually already registers
+  successfully, both at module scope and as a local --
+  `dynamicArrayElementType` walks through a `Tsarray` row the same way it
+  walks through a `Tarray` row, resolving to the leaf scalar before
+  `moduleDynamicArrayLiteralInitializerBytes`'s `void_`-gated decline branch
+  is ever reached. The claim was simply never checked against this exact
+  shape when written.
 - A dynamic array of heap-boxed static-array rows (`T[N][]`,
   `elementIsArray`'s representation) has two independently-broken downstream
   read paths once past registration, found together while investigating a
