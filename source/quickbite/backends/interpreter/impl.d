@@ -2065,10 +2065,9 @@ private struct Walker {
                 ? ""
                 : identifier.ident.toString.idup;
 
-            // DMD-generated exception support can leave the magic __ctfe flag
-            // as an identifier instead of lowering it to a VarExp.
+            // Runtime interpretation evaluates the magic `__ctfe` flag false.
             if (name == "__ctfe")
-                return Value(true);
+                return Value(false);
 
             if (
                 hasThis &&
@@ -2110,11 +2109,9 @@ private struct Walker {
             // Mutable because frame/layout APIs take DMD declarations.
             auto referenceVariable = variable;
 
-            // the magic __ctfe variable is true under AST interpretation,
-            // matching dmd's own interpreter; the language requires both
-            // __ctfe branches to be observably equivalent
+            // Runtime interpretation evaluates the magic `__ctfe` flag false.
             if (variable.ident is Id.ctfe)
-                return Value(true);
+                return Value(false);
 
             if (isUninitializedBinding(variable)) {
                 import quickbite.backends.interpreter.messages: uninitializedVariableMessage;
@@ -3753,6 +3750,15 @@ private struct Walker {
             functionSemantic3(call.f);
         }
 
+        bool nativeCall;
+        if (call.f !is null) {
+            import quickbite.backends.interpreter.interception_guard:
+                bodyContainsAsm;
+            import quickbite.frontend.dmd.functions: hasNoAvailableSource;
+
+            nativeCall = hasNoAvailableSource(call.f) || bodyContainsAsm(call.f);
+        }
+
         if (call.f !is null) {
             import quickbite.backends.interpreter.builtins: InterpreterBuiltin;
 
@@ -3853,10 +3859,10 @@ private struct Walker {
                 EvaluatedReferenceArgument evaluated;
                 if (parameter !is null && parameterIsLazy(parameter))
                     arguments ~= Value.undisplayable;
-                else if (
-                    parameter !is null &&
-                    isReferenceParameter(call.f, index, parameter)
-                )
+                else if (nativeCall && nativeReferenceParameter(call.f, index))
+                    arguments ~= runRefArgumentExpression(argument, evaluated);
+                else if (parameter !is null &&
+                    isReferenceParameter(call.f, index, parameter))
                     arguments ~= runRefArgumentExpression(argument, evaluated);
                 else
                     arguments ~= runExpression(argument);
@@ -4053,7 +4059,7 @@ private struct Walker {
                 InterpreterInboundTrampolineSession, NativeCallException,
                 tryCallNative;
 
-            if (hasNoAvailableSource(call.f)) {
+            if (nativeCall) {
                 Value result;
                 Value[] writebacks;
                 try {
@@ -4076,6 +4082,7 @@ private struct Walker {
                                 argumentExpressions,
                                 argumentTypes,
                                 arguments,
+                                evaluatedArguments,
                             ),
                             &invokeNativeCallback,
                             durableInboundSession,
@@ -9356,6 +9363,7 @@ private struct Walker {
         imported!"dmd.expression".Expression[] argumentExpressions,
         imported!"dmd.mtype".Type[] argumentTypes,
         in Value[] arguments,
+        in EvaluatedReferenceArgument[] evaluatedArguments,
     ) {
         import quickbite.backends.interpreter.native_block: NativeBlock;
         import quickbite.backends.interpreter.native_call_adapter: NativeOperand;
@@ -9366,6 +9374,24 @@ private struct Walker {
         NativeOperand[] operands;
         operands.length = argumentExpressions.length;
         foreach (index, expression; argumentExpressions) {
+            if (
+                index < evaluatedArguments.length &&
+                evaluatedArguments[index].address !is null
+            ) {
+                auto scratch = NativeBlock.allocate(
+                    (void*).sizeof,
+                    NativeBlock.Scan.conservative,
+                );
+                *cast(void**) scratch.address =
+                    cast(void*) evaluatedArguments[index].address;
+                operands[index] = NativeOperand(
+                    argumentTypes[index],
+                    scratch.address,
+                    scratch,
+                );
+                continue;
+            }
+
             if (
                 !isNativeAddressOfLocal(expression) ||
                 index >= argumentTypes.length ||
@@ -9393,6 +9419,18 @@ private struct Walker {
             );
         }
         return operands;
+    }
+
+    private bool nativeReferenceParameter(
+        imported!"dmd.func".FuncDeclaration function_,
+        in size_t index,
+    ) {
+        import quickbite.ffi: isNativeReferenceParameter;
+
+        auto type = function_ is null || function_.type is null
+            ? null
+            : function_.type.toBasetype.isTypeFunction;
+        return isNativeReferenceParameter(type, index);
     }
 
     private Value runIndexExpression(
