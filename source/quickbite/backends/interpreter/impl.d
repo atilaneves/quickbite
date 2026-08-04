@@ -9879,7 +9879,7 @@ private struct Walker {
         auto object = AggregateValue.allocateClass(allocationType);
         nativeClassTypes[AggregateValue.nativeClassBodyAddress(object)] = allocationType;
         nativeClassOwners[AggregateValue.nativeClassBodyAddress(object)] = object;
-        initializeNativeClassBody(allocationType, object);
+        initializeNativeClassBody(this, allocationType, object);
         if (new_.member is null)
             return object;
 
@@ -10429,6 +10429,7 @@ private imported!"quickbite.backends.interpreter.runtime_value".Value classDefau
 // same place codec used by assignments; the returned NativeAggregate retains
 // the reference slot and the body allocation as one expression value.
 private void initializeNativeClassBody(
+    ref Walker walker,
     imported!"dmd.mtype".Type type,
     in imported!"quickbite.backends.interpreter.runtime_value".Value object,
 ) {
@@ -10436,7 +10437,7 @@ private void initializeNativeClassBody(
     import quickbite.backends.interpreter.layout: classFields;
     import quickbite.backends.interpreter.place: Place;
     import quickbite.backends.interpreter.place_value: writeValue;
-    import quickbite.backends.interpreter.runtime_values: defaultValue, integerValue;
+    import quickbite.backends.interpreter.runtime_values: defaultValue;
 
     auto classType = type.toBasetype.isTypeClass;
     if (classType is null || classType.sym is null)
@@ -10445,11 +10446,11 @@ private void initializeNativeClassBody(
     auto body = Place(AggregateValue.nativeClassBodyAddress(object), type);
     foreach (field; classFields(classType.sym)) {
         auto value = defaultValue(field.type);
-        if (field._init !is null) {
-            if (auto initializer = field._init.isExpInitializer)
-                if (auto integer = initializer.exp.isIntegerExp)
-                    value = integerValue(integer);
-        }
+        if (auto initializer = field._init.isExpInitializer)
+            value = walker.storageValue(
+                field.type,
+                walker.runExpression(initializer.exp),
+            );
         writeValue(body.field(field), value);
     }
 }
