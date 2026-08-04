@@ -482,13 +482,14 @@ reaches them:
 
 Next candidate. Every remaining `Omit!(Bytecode, ...)` row is one of the
 blocked rows above, so a matrix search will not surface a bounded one. No
-named closure-escape gap remains in the Closures section either. Find a fresh
-row through `bin/qb` exploration of read-modify-write and mirror paths, or
-take a "Architecture work forced by the baseline" front. One concrete lead
-already on record: the Closures section's own open soundness question --
-whether a class-field or array-element heap-escaping delegate write followed
-by further same-function mutation of the captured locals before the
-enclosing aggregate escapes is sound or needs the same decline treatment.
+named closure-escape gap remains in the Closures section either -- the
+class-field/array-element further-mutation question is now a confirmed and
+declined shape (`delegate.classFieldEscapingCaptureDeclines`,
+`delegate.arrayElementEscapingCaptureDeclines`), not an open question. Find a
+fresh row through `bin/qb` exploration of read-modify-write and mirror paths,
+take the "Structural consolidation queue" width-authority item (still open:
+generalising `dynamicArrayElementSize`/`pointerElementMetadata` into one width
+authority), or take an "Architecture work forced by the baseline" front.
 
 ### TDD and handoff discipline
 
@@ -766,11 +767,30 @@ lifetime as the dependency bytecode cache.
   (`delegate.functionReturningNestedStructWithCapturingDelegateFieldIsCallable`),
   so a capturing delegate field nested arbitrarily deep inside a directly
   returned struct literal gets the same heap-box-or-decline treatment as a
-  top-level one. Its soundness still rests on the write being immediately
-  followed only by the enclosing aggregate's own escape; a class-field or
-  array-element write with further same-function mutation of the captured
-  locals after the write but before the aggregate escapes is unproven and not
-  yet covered.
+  top-level one. Unlike `compileDelegateReturn`'s `return`-based sites, a
+  class-field/array-element write is not itself the function's last act, so a
+  further same-function mutation of the captured locals between the write and
+  the aggregate's actual escape can diverge from the heap snapshot taken at
+  the write -- confirmed (not hypothetical): before the gate below existed,
+  `int total = 40; c.next = () => total + 2; total = 100; return c;` silently
+  returned 42 instead of SystemLinker's 102, the same silent-wrong-answer
+  shape `delegate.outParameterEscapingCaptureDeclines` documents for the
+  `ref`/`out`-parameter escape site. `heapEscapingDelegateOperandOffset` now
+  takes a `mayMutateAfterHeapBox` flag, set at exactly these two call sites,
+  that runs `capturedLocalsMayBeMutatedInCurrentFunction` (`compiler.d`) --
+  an order-insensitive scan (`CapturedLocalMutationScanner`, a
+  `SemanticTimeTransitiveVisitor`) for any write to, or address-of on, one of
+  the captured locals anywhere in the enclosing function, including inside
+  further nested function bodies -- and declines
+  (`delegate.classFieldEscapingCaptureDeclines`,
+  `delegate.arrayElementEscapingCaptureDeclines`) rather than risk it. Being
+  order-insensitive and whole-function it over-declines two provably-safe
+  shapes it cannot yet be told apart from the unsound one: a mutation
+  strictly BEFORE the heap-box write (harmless -- the snapshot already
+  reflects it), and a mutation inside the escaping lambda's own body (already
+  heap-relative once boxed). Narrowing that needs either control-flow-
+  sensitive write-site dataflow or moving the captured locals to the heap
+  from declaration onward; neither is attempted here.
 
   The eventual right design point is DMD's own per-function `needsClosure()`/
   `closureVars` decision -- every closure-needing variable heap-allocated from

@@ -2810,6 +2810,153 @@ static foreach (backend; Matrix!(
     }
 }
 
+// The open soundness question `ai/plans/bytecode.md`'s Closures section
+// flagged for the two fixtures above: unlike `compileDelegateReturn`'s
+// `return`-based escape sites, a class-field/array-element write is not
+// itself the function's last act, so a further same-function mutation of the
+// captured local between the write and the aggregate's actual escape can
+// diverge from `heapClosureContextOrNull`'s heap snapshot, taken at the
+// write. SystemLinker reflects the later write (102: `40 + 2`, then
+// `total = 100` makes the read-back-through-the-delegate value `100 + 2`);
+// before `heapEscapingDelegateOperandOffset` gained the
+// `capturedLocalsMayBeMutatedInCurrentFunction` gate below, Bytecode silently
+// returned the frozen pre-mutation snapshot (42) instead -- the same
+// silent-wrong-answer shape `delegate.outParameterEscapingCaptureDeclines`
+// documents for the `ref`/`out`-parameter escape site. `Bytecode` now
+// declines this shape outright (`delegate.classFieldEscapingCaptureDeclines`
+// below) rather than risk it.
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.inexpressible,
+        "Ctfe wraps dmd.dinterpret, whose CTFE engine refuses the "
+            ~ "returned closure outright with \"closures are not yet "
+            ~ "supported in CTFE\""),
+    Omit!(Interpreter, Because.unconfirmed,
+        "the Interpreter does not yet promote a frame-escaping " ~
+            "captured local to a heap closure either -- not yet promoted"),
+    Omit!(Bytecode, Because.refusal,
+        "a class-field write is not the escaping function's last act, so " ~
+            "`heapEscapingDelegateOperandOffset` cannot heap-box it the " ~
+            "way a `return` site can without risking a stale snapshot -- " ~
+            "see `delegate.classFieldEscapingCaptureDeclines` below"),
+)) {
+    @("delegate.classFieldMutatedAfterCapturingWriteIsCallable." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            class Counter { int delegate() next; }
+
+            Counter makeCounter() {
+                int total = 40;
+                auto c = new Counter();
+                c.next = () => total + 2;
+                total = 100;
+                return c;
+            }
+
+            unittest {
+                auto c = makeCounter();
+                assert(c.next() == 102);
+            }
+        });
+    }
+}
+
+// Bytecode-only: `capturedLocalsMayBeMutatedInCurrentFunction`
+// (`compiler.d`) declines rather than silently freeze a stale snapshot for
+// the fixture above. The diagnostic itself is a Bytecode-specific mechanism,
+// not a language restriction other backends share.
+static foreach (backend; AliasSeq!(Bytecode)) {
+    @("delegate.classFieldEscapingCaptureDeclines." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            class Counter { int delegate() next; }
+
+            Counter makeCounter() {
+                int total = 40;
+                auto c = new Counter();
+                c.next = () => total + 2;
+                total = 100;
+                return c;
+            }
+
+            unittest {
+                auto c = makeCounter();
+                assert(c.next() == 102);
+            }
+        }).shouldThrow();
+    }
+}
+
+// The array-element twin of the class-field fixture above:
+// `tryDynamicArrayElementAssign`'s `Tdelegate` branch shares the same
+// `heapEscapingDelegateOperandOffset` gate, so the same further-mutation
+// shape declines the same way.
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.inexpressible,
+        "Ctfe wraps dmd.dinterpret, whose CTFE engine refuses the "
+            ~ "returned closure outright with \"closures are not yet "
+            ~ "supported in CTFE\""),
+    Omit!(Interpreter, Because.unconfirmed,
+        "the Interpreter does not yet promote a frame-escaping " ~
+            "captured local to a heap closure either -- not yet promoted"),
+    Omit!(Bytecode, Because.refusal,
+        "an array-element write is not the escaping function's last act, " ~
+            "so `heapEscapingDelegateOperandOffset` cannot heap-box it the " ~
+            "way a `return` site can without risking a stale snapshot -- " ~
+            "see `delegate.arrayElementEscapingCaptureDeclines` below"),
+)) {
+    @("delegate.arrayElementMutatedAfterCapturingWriteIsCallable." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            alias Dg = int delegate();
+
+            Dg[] makeDelegates() {
+                int seed = 42;
+                Dg[] dgs;
+                dgs.length = 1;
+                dgs[0] = () => seed;
+                seed = 100;
+                return dgs;
+            }
+
+            unittest {
+                auto dgs = makeDelegates();
+                assert(dgs[0]() == 100);
+            }
+        });
+    }
+}
+
+// Bytecode-only: the array-element twin of
+// `delegate.classFieldEscapingCaptureDeclines` above.
+static foreach (backend; AliasSeq!(Bytecode)) {
+    @("delegate.arrayElementEscapingCaptureDeclines." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            alias Dg = int delegate();
+
+            Dg[] makeDelegates() {
+                int seed = 42;
+                Dg[] dgs;
+                dgs.length = 1;
+                dgs[0] = () => seed;
+                seed = 100;
+                return dgs;
+            }
+
+            unittest {
+                auto dgs = makeDelegates();
+                assert(dgs[0]() == 100);
+            }
+        }).shouldThrow();
+    }
+}
+
 // `==`/`!=`/`is`/`!is` between two lambda-literal delegate values: a
 // delegate is a builtin type with no `opEquals`, so all four compare the raw
 // `{functionIndex, context}` pair. Two separately-declared lambdas capturing
