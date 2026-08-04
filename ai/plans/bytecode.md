@@ -479,12 +479,11 @@ row remains bounded and unblocked: the two survivors
 `refArgument.templateRefSharedForwardsThroughNestedFunction`, both in
 `expressions.d`) are the documented `&value == expected` address-identity
 rows blocked on the ref calling convention above, not bounded single-commit
-fixes. `new T[][](rows)` (a runtime outer length over dynamic-array rows) and
-nested static-array-of-dynamic-array element mutation
-(`staticArray.elementMutationOfArrayOfArraysWritesThroughRowStorage`,
-`arrays.d`) are fixed and covered. Find a fresh row through further `bin/qb`
-exploration of read-modify-write and mirror paths (captured-array
-read/write/slice/append coverage is another open lead there), take the "One
+fixes. Captured-array read/write/slice/append/view-preservation coverage is
+now broadly swept via `bin/qb`, with one gap fixed and covered
+(`function.nestedFunctionWritesCapturedArrayOfArraysElement`,
+`expressions.d`). Find a fresh row through further `bin/qb` exploration
+(AA edge cases, exception/closure interactions are untried), take the "One
 place resolver" item, or take an "Architecture work forced by the baseline"
 front.
 

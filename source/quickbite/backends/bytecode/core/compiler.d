@@ -3217,6 +3217,51 @@ private struct Compiler {
         return null;
     }
 
+    // `outer` where `outer` is a `Tarray`-typed local captured from an
+    // enclosing function: materialise its 16-byte descriptor from the
+    // captured-frame slot into a fresh local slot, the same descriptor shape
+    // every other dynamic-array source resolves to. Shared by
+    // `dynamicArrayDescriptorOrNull`'s own top-level dispatch and
+    // `innerArrayDescriptor`'s `outer[i]`-of-a-captured-array-of-arrays
+    // base case (`captured[1][0] = rhs`, where `captured` is a captured
+    // `int[][]`): `innerArrayDescriptor`'s own `_dynamicArrayLocals` lookup
+    // never matches a captured base, since a captured local's descriptor
+    // lives in the captured-frame slot, not `_dynamicArrayLocals`. Null for
+    // anything but a captured `Tarray`-typed `VarExp`.
+    private DynamicArrayLocal* capturedArrayDescriptorOrNull(
+        Expression expression,
+    ) {
+        import dmd.astenums: TY;
+
+        if (!_hasNestedContext)
+            return null;
+        auto variable = expression.isVarExp;
+        if (variable is null)
+            return null;
+        auto declaration = variable.var.isVarDeclaration;
+        if (declaration is null)
+            return null;
+        auto captured = declaration in _capturedOffsets;
+        if (captured is null || declaration.type.toBasetype.ty != TY.Tarray)
+            return null;
+
+        const offset = allocateBytes(sliceDescriptorSize, size_t.sizeof);
+        const frameIndex =
+            capturedFrameIndex(_capturedOwners[declaration], *captured);
+        _code ~= Instruction(
+            Op.frameLoad, offset, frameIndex, cast(ushort) sliceDescriptorSize,
+        );
+        auto result = new DynamicArrayLocal;
+        *result = DynamicArrayLocal(
+            offset,
+            dynamicArrayElementType(declaration.type),
+            arrayElementIsArray(declaration.type),
+        );
+        result.writeBackThroughFrame = true;
+        result.frameIndexOffset = frameIndex;
+        return result;
+    }
+
     private DynamicArrayLocal* dynamicArrayDescriptorOrNull(
         Expression expression,
     ) {
@@ -3351,33 +3396,8 @@ private struct Compiler {
                 }
             }
 
-        if (_hasNestedContext)
-            if (auto variable = expression.isVarExp)
-                if (auto declaration = variable.var.isVarDeclaration)
-                    if (auto captured = declaration in _capturedOffsets)
-                        if (declaration.type.toBasetype.ty == TY.Tarray) {
-                            const offset = allocateBytes(
-                                sliceDescriptorSize, size_t.sizeof,
-                            );
-                            _code ~= Instruction(
-                                Op.frameLoad,
-                                offset,
-                                capturedFrameIndex(
-                                    _capturedOwners[declaration], *captured,
-                                ),
-                                cast(ushort) sliceDescriptorSize,
-                            );
-                            auto result = new DynamicArrayLocal;
-                            *result = DynamicArrayLocal(
-                                offset,
-                                dynamicArrayElementType(declaration.type),
-                            );
-                            result.writeBackThroughFrame = true;
-                            result.frameIndexOffset = capturedFrameIndex(
-                                _capturedOwners[declaration], *captured,
-                            );
-                            return result;
-                        }
+        if (auto captured = capturedArrayDescriptorOrNull(expression))
+            return captured;
 
         if (auto staticArray = staticArrayOffsetOf(expression)) {
             const elementType = dynamicArrayElementType(expression.type);
@@ -3466,6 +3486,14 @@ private struct Compiler {
             if (auto declaration = variable.var.isVarDeclaration)
                 if (auto local = declaration in _dynamicArrayLocals)
                     outer = local;
+
+        // `captured[i]` where `captured` is an array-of-arrays local
+        // captured from an enclosing function: its own descriptor never
+        // lives in `_dynamicArrayLocals` (that map only tracks the
+        // declaring function's own frame-resident locals), so the plain
+        // `VarExp` branch above never matches it.
+        if (outer is null)
+            outer = capturedArrayDescriptorOrNull(index.e1);
 
         // `a.m[i]` where `m` is itself a `Tarray`-typed class/struct field of
         // array-of-arrays element type (`int[][] m;`): resolve the field's

@@ -2566,6 +2566,51 @@ static foreach (backend; Matrix!()) {
     }
 }
 
+// A captured array-of-arrays (`int[][]`), written to through a two-level
+// index from a nested function (`captured[1][0] = ...`).
+// `dynamicArrayDescriptorOrNull`'s captured-local branch materialised the
+// outer descriptor without `elementIsArray` (it never passed the argument
+// at all, unlike the sibling module-array and array-literal branches),
+// so the outer descriptor compiled the inner index as a scalar element
+// read/store instead of a 16-byte inner-descriptor read followed by a
+// second index; `innerArrayDescriptor`'s own `_dynamicArrayLocals` lookup
+// separately never matches a captured base at all, since a captured local's
+// descriptor lives in the captured-frame slot, not `_dynamicArrayLocals`.
+// Bytecode threw "Unsupported assignment in bytecode core" outright rather
+// than silently writing the wrong element -- a clean diagnostic, not a wrong
+// answer, but still an unsupported case SystemLinker (and every other
+// backend) already runs. Both gaps are now covered by the shared
+// `capturedArrayDescriptorOrNull` helper (`compiler.d`), used by
+// `dynamicArrayDescriptorOrNull`'s own top-level dispatch and by
+// `innerArrayDescriptor`'s new captured-base branch.
+static foreach (backend; Matrix!()) {
+    @("function.nestedFunctionWritesCapturedArrayOfArraysElement." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            int bumpNested(int seed) {
+                int[][] captured = [
+                    [seed, seed + 1],
+                    [seed + 2, seed + 3],
+                ];
+
+                void bump() {
+                    captured[1][0] = 777;
+                }
+
+                bump();
+
+                return captured[1][0];
+            }
+
+            unittest {
+                assert(bumpNested(1) == 777);
+            }
+        });
+    }
+}
+
 // A nested delegate reassigning a whole captured struct-typed local
 // (`s = S(99, 100);`, not a field write) exercises `compileCapturedAssign`'s
 // write side the same way `loadCapturedLocal` already reads a captured
