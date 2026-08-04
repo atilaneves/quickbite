@@ -2795,15 +2795,15 @@ private struct Compiler {
     // `return` expression (`return Counter(() => ++count);`,
     // `compileReturnStatement`'s struct branch): identical to
     // `compileStructLiteralOperand` above except it passes
-    // `isReturnEscaping: true` down to `compileStructLiteralInto`, so a
-    // top-level `Tdelegate` field that is a capturing lambda/nested-function
-    // reference gets the same heap-escape treatment
+    // `isReturnEscaping: true` down to `compileStructLiteralInto`, so any
+    // `Tdelegate` field that is a capturing lambda/nested-function reference
+    // -- at any nesting depth inside this literal, since a nested `Tstruct`
+    // field forwards the same flag -- gets the same heap-escape treatment
     // `compileDelegateReturn` gives a bare returned delegate: a `return`
     // statement is the last thing its enclosing function executes, so
     // heap-snapshotting the capture here is exactly as sound as it is for a
     // directly-returned delegate. A struct-literal rvalue anywhere else
-    // (a plain local's own initializer, a call argument, a field nested one
-    // level deeper inside this same returned literal, ...) keeps the
+    // (a plain local's own initializer, a call argument, ...) keeps the
     // ordinary frame-relative path, since its own frame is not (necessarily)
     // going away.
     private ushort structLiteralReturnOffset(StructLiteralExp literal) {
@@ -5389,8 +5389,15 @@ private struct Compiler {
             auto fieldType = field.type;
 
             if (fieldType.toBasetype.ty == TY.Tstruct) {
+                // Forward `isReturnEscaping` into the nested literal: a field
+                // nested arbitrarily deep inside a literal that is itself the
+                // direct `return` expression is filled by this same
+                // synchronous call, before the enclosing `return` runs, so a
+                // capturing `Tdelegate` field at any depth is exactly as sound
+                // to heap-escape as one at the top level (see the `Tdelegate`
+                // branch below).
                 if (auto inner = element.isStructLiteralExp)
-                    compileStructLiteralInto(fieldOffset, inner);
+                    compileStructLiteralInto(fieldOffset, inner, isReturnEscaping);
                 continue;
             }
 
@@ -5416,16 +5423,14 @@ private struct Compiler {
                 if (isNullLiteral(element))
                     continue;
 
-                // Only a TOP-LEVEL field of a literal that is itself the
-                // direct `return` expression (`isReturnEscaping`, set by
-                // `structLiteralReturnOffset`) is heap-escape-aware here:
-                // the same capturing delegate embedded anywhere else (a
-                // plain local's own struct literal, or a field nested one
-                // level deeper inside the returned literal, e.g. `return
-                // Outer(Counter(() => ...))`) still resolves through the
-                // ordinary frame-relative `delegateOperandOffset` below,
-                // matching `heapClosureContextOrNull`'s existing
-                // one-nesting-level scope.
+                // A field of a literal that is itself the direct `return`
+                // expression (`isReturnEscaping`, set by
+                // `structLiteralReturnOffset` and forwarded through every
+                // nested `Tstruct` field above regardless of depth) is
+                // heap-escape-aware here: the same capturing delegate
+                // embedded anywhere else (a plain local's own struct
+                // literal, a call argument, ...) still resolves through the
+                // ordinary frame-relative `delegateOperandOffset` below.
                 if (isReturnEscaping) {
                     auto function_ = returnedDelegateFunctionOrNull(element);
                     if (function_ !is null && function_.outerVars.length != 0) {

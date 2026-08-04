@@ -2250,6 +2250,47 @@ static foreach (backend; AliasSeq!(Bytecode)) {
     }
 }
 
+// A sibling of `functionReturningStructWithCapturingDelegateFieldIsCallable`
+// with the capturing delegate field nested TWO levels inside the returned
+// struct literal instead of one (`Outer(Counter(() => ++count))`): before
+// this widening, `compileStructLiteralInto`'s own recursive `Tstruct` branch
+// dropped `isReturnEscaping` on the way into the nested literal, so a
+// delegate field nested more than one level down always fell through to the
+// plain frame-relative `delegateOperandOffset` -- silently capturing
+// `makeOuter`'s popped/reused frame instead of heap-escaping it, a wrong
+// answer rather than a decline.
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.inexpressible,
+        "dmd.dinterpret evaluates the struct literal's delegate field " ~
+            "against its own enclosing-scope locals directly and refuses " ~
+            "reading `count` from CTFE outright: \"variable `count` " ~
+            "cannot be read at compile time\""),
+    Omit!(Interpreter, Because.unconfirmed,
+        "place_value.writeValue has no case for a delegate value written " ~
+            "through a struct-literal initializer place at all, escaping " ~
+            "or not -- not yet promoted"),
+)) {
+    @("delegate.functionReturningNestedStructWithCapturingDelegateFieldIsCallable." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct Counter { int delegate() next; }
+            struct Outer { Counter counter; }
+            auto makeOuter() {
+                int count = 0;
+                return Outer(Counter(() => ++count));
+            }
+
+            unittest {
+                auto o = makeOuter();
+                assert(o.counter.next() == 1);
+                assert(o.counter.next() == 2);
+            }
+        });
+    }
+}
+
 // A lambda that captures nothing, itself returning another non-capturing
 // lambda: DMD's "no context needed" default types both `make` and `getter`
 // as plain function pointers (`int function() function()` and `int
