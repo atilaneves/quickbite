@@ -10900,6 +10900,12 @@ private struct Compiler {
             if (auto element = tryStaticArrayElementAddAssign(index, addAssign.e2))
                 return *element;
 
+        // `p[i] += rhs` through a pointer, including DMD's hidden-pointer
+        // lowering for `m[k] += rhs` on an associative array.
+        if (auto index = compoundAssignIndex(addAssign.e1))
+            if (auto element = tryPointerElementAddAssign(index, addAssign.e2))
+                return *element;
+
         // `arr[i] += rhs` on a dynamic-array element (e.g. a destructor's
         // `this.sink[0] += 3`): load the element, add the rhs, and store it back
         // through the descriptor.
@@ -14032,6 +14038,52 @@ private struct Compiler {
 
         auto result = new Operand;
         *result = Operand(value.offset, value.type);
+        return result;
+    }
+
+    // `p[i] += rhs` through a pointer (not `(*p)[i]`, whose own dereferenced
+    // shape `tryPointerElementAssign` handles separately): load the indexed
+    // element, add `rhs`, and store the sum back through the same pointer at
+    // the same index. Covers, among plain pointers, DMD's own hidden-pointer
+    // lowering for `m[k] += rhs` on an associative array: DMD hoists `m[k]`'s
+    // `_d_aaGetY` slot pointer into a compiler-generated pointer temp once
+    // (`__aaget<N>`) and represents the compound assignment's lvalue as
+    // `__aaget<N>[0]`, so this same generic pointer path -- not an
+    // AA-specific one -- also makes `aa[k] += rhs` (auto-vivifying a missing
+    // key with its default value first, since `_d_aaGetY` always inserts)
+    // work. Null if `index.e1` is not pointer-typed.
+    private Operand* tryPointerElementAddAssign(
+        IndexExp index,
+        Expression rhs,
+    ) {
+        import std.conv: text;
+
+        if (!isPointerType(index.e1.type))
+            return null;
+
+        const pointer = compileExpression(index.e1);
+        const indexSlot = compileExpression(index.e2).offset;
+        const current = loadThroughPointer(pointer, indexSlot);
+        const rhsValue = compileExpression(rhs);
+        if (!isCompoundIntegerScalar(current.type) ||
+            !isCompoundIntegerScalar(rhsValue.type))
+            throw new Exception(text(
+                "Unsupported compound assignment in bytecode core: ",
+                expressionChars(index),
+            ));
+
+        const addOp = isEightByteInteger(current.type)
+            ? Op.addInt8
+            : Op.addInt4;
+        _code ~= Instruction(
+            addOp, current.offset, current.offset, rhsValue.offset,
+        );
+        emitPointerStore(
+            current.offset, pointer.offset, indexSlot, size(current.type),
+        );
+
+        auto result = new Operand;
+        *result = Operand(current.offset, current.type);
         return result;
     }
 

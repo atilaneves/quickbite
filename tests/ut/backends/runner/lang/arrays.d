@@ -4056,6 +4056,60 @@ static foreach (backend; Matrix!(
     }
 }
 
+// `a[k] += rhs`: DMD hoists `_d_aaGetY`'s slot pointer into a hidden
+// compiler-generated pointer temp once and represents the compound
+// assignment as an index off that same temp, so the read and write sides
+// share one lookup and a missing key auto-vivifies with its default value
+// first (`_d_aaGetY` always inserts). Interpreter declines with "Expected
+// array." for this shape -- a separate, unconfirmed backend gap.
+static foreach (backend; Matrix!(
+    Omit!(Interpreter, Because.unconfirmed, "Expected array."),
+)) {
+    @("assocArray.compoundAddAssignAutoVivifiesMissingKeyAndAddsIntoExisting."
+        ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            unittest {
+                int[string] a;
+                a["x"] = 1;
+                a["x"] += 10;
+                assert(a["x"] == 11);
+
+                a["y"] += 5;
+                assert(a["y"] == 5);
+            }
+        });
+    }
+}
+
+// `a[k1][k2] += rhs` on an existing nested entry: the same hidden-pointer
+// compound-assignment lowering as the flat case above, one level down.
+// Interpreter declines with "Associative-array lvalue needs a variable" --
+// the same gap `nestedWriteAutoVivifiesBrandNewOuterKey` above already
+// characterizes for plain nested writes.
+static foreach (backend; Matrix!(
+    Omit!(Interpreter, Because.unconfirmed,
+        "Associative-array lvalue needs a variable"),
+)) {
+    @("assocArray.nestedCompoundAddAssignAddsIntoExistingInnerEntry." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            unittest {
+                int[string][string] a;
+                a["a"]["b"] = 1;
+                a["a"]["c"] = 2;
+                a["a"]["b"] += 10;
+
+                assert(a["a"]["b"] == 11);
+                assert(a["a"]["c"] == 2);
+            }
+        });
+    }
+}
+
 // A dynamic-array-typed value (`int[][int]`): the value slot is a 16-byte
 // slice descriptor, not an inline scalar. Interpreter reads back the wrong
 // element (`0 != 20`) for this shape -- a separate, unconfirmed backend gap.

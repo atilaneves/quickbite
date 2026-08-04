@@ -486,9 +486,11 @@ row remains bounded and unblocked: the two survivors
 `refArgument.templateRefSharedForwardsThroughNestedFunction`, both in
 `expressions.d`) are the documented `&value == expected` address-identity
 rows blocked on the ref calling convention above, not bounded single-commit
-fixes. Find a fresh row through further `bin/qb` exploration (closure
-interactions specifically are untried), take the "One place resolver" item,
-or take an "Architecture work forced by the baseline" front.
+fixes. Closure interactions with exceptions (a captured local mutated across
+try/catch/finally) match `SystemLinker` under `bin/qb` probing -- not a lead.
+Find a fresh row through further `bin/qb` exploration (class
+polymorphism/vtable edge cases are untried), take the "One place resolver"
+item, or take an "Architecture work forced by the baseline" front.
 
 ### TDD and handoff discipline
 
