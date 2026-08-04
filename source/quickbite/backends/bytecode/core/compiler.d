@@ -20803,6 +20803,15 @@ private struct Compiler {
         return Operand(offset, ScalarType.void_, false, elementType);
     }
 
+    // The aggregate-vs-scalar classification is `elementMetadataFor`'s: a
+    // struct, static array, or delegate element is a full-width byte blob
+    // (`byteStride`), everything else is a plain scalar. `Tvoid` stays a
+    // hand-checked special case ahead of that shared classification rather
+    // than folded into it: `scalarType(Tvoid)` is `ScalarType.void_`, the
+    // same tag `elementMetadataFor` uses as its aggregate marker, so routing
+    // a `void[]` element through the shared call would collide the two
+    // "void_" meanings instead of just reporting the element's real 1-byte
+    // width.
     private uint dynamicArrayElementSize(
         Type type,
         in ScalarType elementType,
@@ -20816,10 +20825,11 @@ private struct Compiler {
         auto element = type.toBasetype.nextOf;
         if (element.toBasetype.ty == TY.Tvoid)
             return 1;
-        if (element.toBasetype.ty == TY.Tstruct ||
-            element.toBasetype.ty == TY.Tsarray ||
-            element.toBasetype.ty == TY.Tdelegate)
-            return cast(uint) staticArraySize(element);
+        const metadata = elementMetadataFor(
+            element, cast(uint) staticArraySize(element),
+        );
+        if (metadata.opcodeType == ScalarType.void_)
+            return metadata.byteStride;
         return size(elementType);
     }
 

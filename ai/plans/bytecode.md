@@ -488,8 +488,9 @@ now a confirmed and declined shape
 `delegate.arrayElementEscapingCaptureDeclines`), not an open question. Find a
 fresh row through `bin/qb` exploration of read-modify-write and mirror paths,
 take the "Structural consolidation queue" width-authority item (still open:
-generalising `dynamicArrayElementSize`/`pointerElementMetadata` into one width
-authority), or take an "Architecture work forced by the baseline" front.
+`storeStructPointerField`/`storeClassPointerField`'s identical hand-rolled
+`isAggregate` gate, the next bounded piece toward the width-authority merge),
+or take an "Architecture work forced by the baseline" front.
 
 ### TDD and handoff discipline
 
@@ -559,11 +560,16 @@ place second.
    vs. a `{opcodeType, byteStride}` pair) across 30+ call sites, so take it as
    a bounded sub-piece (one call-site family, or one clearly-scoped shared
    helper) rather than attempting the whole merge in one commit.
-   `pointerElementMetadata` and `dereferencedArrayIndexElementMetadata`
-   already share their aggregate-vs-scalar branch through one helper,
-   `elementMetadataFor`; `dynamicArrayElementSize`'s own near-identical
-   struct/static-array/delegate branch (different call sites, same shape of
-   duplication risk) is the next such sub-piece.
+   `pointerElementMetadata`, `dereferencedArrayIndexElementMetadata`, and now
+   `dynamicArrayElementSize` all share their aggregate-vs-scalar branch
+   through one helper, `elementMetadataFor` (`dynamicArrayElementSize` keeps
+   its own hand-checked `Tvoid` case ahead of that shared call, since
+   `scalarType(Tvoid)` collides with `elementMetadataFor`'s `void_` aggregate
+   marker). `storeStructPointerField` and `storeClassPointerField`
+   (`compiler.d`) are the next such sub-piece: identical bodies bar their
+   field-address helper, each hand-rolling the same
+   `Tstruct`/`Tsarray`/`Tdelegate` `isAggregate` gate that `elementMetadataFor`
+   already generalises.
 
    Done: every width-suffixed opcode family (`indexLoad*`/`indexStore*`,
    `pointerLoad*`/`pointerStore*`/`pointerSlice*`, `subSlice*`,
