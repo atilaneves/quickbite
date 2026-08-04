@@ -2368,13 +2368,11 @@ static foreach (backend; Matrix!()) {
 // this must alias the direct `s.value` argument's live storage rather than
 // composing a separate copy, so both increments land on the same `int`.
 // `referenceOffset`'s `_withDerefBases` live-aliasing path handles this.
-// `Interpreter` fails this same fixture with its own, separate composition
-// bug (unconfirmed/uncharacterized).
-static foreach (backend; Matrix!(
-    Omit!(Interpreter, Because.unconfirmed,
-        "Interpreter also produces 1 instead of 2 here, via its own " ~
-        "separate ref-argument composition path -- not characterized yet"),
-)) {
+// `Interpreter` resolves both `ref` arguments to the same field address
+// (`addressOfExpression`'s `DotVarExp` arm composes it identically whether
+// the receiver is the direct local or a `with`-statement's synthetic
+// pointer dereference), so it needs no `Omit` here.
+static foreach (backend; Matrix!()) {
     @("with.fieldRefArgumentAliasesLiveStorage." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
