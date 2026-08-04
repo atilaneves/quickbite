@@ -654,6 +654,13 @@ variable as a `VarExp`. The oracle-backed runtime fixture must be green on
 `SystemLinker`, and the `Ctfe` divergence must remain omitted or characterized
 separately rather than becoming Interpreter behavior.
 
+An associative-array binding has no native-place encoding yet. Preserve the
+boxed reference path until it does: passing a direct local `int[int]` by `ref`
+and inserting through the parameter must mutate the caller, as `SystemLinker`
+does. The Interpreter currently routes the parameter read into native storage
+and fails with `Expected associative array`; adding an address for the binding
+must not bypass the boxed authority before an AA place exists.
+
 ### Item 5 — Delete Interpreter FFI marshalling fallbacks
 
 Finish decision 18 after the language-surface critical path. Normal outbound
