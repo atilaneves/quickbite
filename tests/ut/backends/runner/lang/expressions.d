@@ -2681,9 +2681,7 @@ static foreach (backend; Matrix!(
 // gets; the call-through-field dispatch
 // (`structFieldDelegateOffsetOf`) previously only recognised a struct-value
 // receiver, not a class reference.
-static foreach (backend; Matrix!(
-    Omit!(Interpreter, Because.unconfirmed),
-)) {
+static foreach (backend; Matrix!()) {
     @("delegate.classFieldDefaultIsNullDirectlyAssignableAndCallable." ~
         backend.stringof)
     @Tags(backend.stringof)

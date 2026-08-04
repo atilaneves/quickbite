@@ -6614,6 +6614,7 @@ private struct Walker {
                 ? Value.pointerValue(AggregateValue.nativeClassBodyAddress(receiver))
                 : receiver;
             if (target.isPointer && dot.e1.type.toBasetype.isTypeClass !is null) {
+                import dmd.astenums: TY;
                 import quickbite.backends.interpreter.place: Place;
                 import quickbite.backends.interpreter.place_value: readValue;
 
@@ -6627,6 +6628,17 @@ private struct Walker {
                         return *object;
                     return Value.pointerValue(address);
                 }
+                // A live delegate value has no native ABI function address
+                // (the same gap `nativeDelegateSlots`'s own field comment
+                // documents), so it lives out-of-band, keyed by the field's
+                // own address, exactly as the struct-field read arm below
+                // already checks for a mirrored local's field. A class
+                // field's own address is always the object body's own
+                // storage -- no mirror-slot gate needed, unlike a struct
+                // local's binding, which may not have been established yet.
+                if (fieldPlace.type.toBasetype.ty == TY.Tdelegate)
+                    if (auto delegate_ = fieldPlace.address in nativeDelegateSlots)
+                        return *delegate_;
                 return readValue(fieldPlace);
             }
             if (AggregateValue.isClass(target)) {
@@ -6861,7 +6873,16 @@ private struct Walker {
                     }
         }
 
-        auto value = runExpression(assign.e2);
+        // A fresh closure RHS (`c.f = (int x) => x + captured;`) is a bare
+        // `FuncExp`; ordinary `runExpression` has no general case for one
+        // (it answers `Value.undisplayable`) -- the same gap
+        // `runDeclarationExpression`/`runIndexAssignExpression`/
+        // `structLiteralValue` already route around via
+        // `runFunctionLiteralDeclaration`.
+        auto literal = assign.e2.isFuncExp;
+        auto value = literal is null
+            ? runExpression(assign.e2)
+            : runFunctionLiteralDeclaration(literal);
         if (auto target = assign.e1.isVarExp)
             if (auto variable = target.var.isVarDeclaration)
                 if (variable.type.toBasetype.isTypeClass !is null)
@@ -7025,15 +7046,28 @@ private struct Walker {
                 nativeClassReceiver.isPointer &&
                 dot.e1.type.toBasetype.isTypeClass !is null
             ) {
+                import dmd.astenums: TY;
                 import quickbite.backends.interpreter.place: Place;
                 import quickbite.backends.interpreter.place_value: writeValue;
 
                 auto field = dot.var.isVarDeclaration;
-                writeValue(
-                    Place(nativeClassReceiver.pointerAddress, dot.e1.type)
-                        .field(field),
-                    value,
-                );
+                auto fieldPlace = Place(nativeClassReceiver.pointerAddress, dot.e1.type)
+                    .field(field);
+                // A live delegate value (an interpreted closure, not `null`)
+                // has no native ABI function address, so `place_value.
+                // writeValue`'s Tdelegate arm only ever accepts `null` --
+                // register it out-of-band in `nativeDelegateSlots`, keyed by
+                // the field's own address, mirroring the struct-field write
+                // arm above. A class field's address is the object body's
+                // own storage, live for the object's whole lifetime, so no
+                // mirror-slot gate is needed the way a struct local's
+                // binding requires.
+                if (field !is null && field.type.toBasetype.ty == TY.Tdelegate) {
+                    nativeDelegateSlots[fieldPlace.address] = value;
+                    writeValue(fieldPlace, Value.null_);
+                    return;
+                }
+                writeValue(fieldPlace, value);
                 return;
             }
 
