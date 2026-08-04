@@ -453,27 +453,49 @@ does; `assocArrayKeyWidth` (the storage-side stride) is untouched, since a
 mixed-field key's binary layout is exactly the same whole-struct block width
 either way -- only the *comparison* mode differs.
 
-Still open, deliberately out of scope here: a struct key with *only*
-`string` fields and no raw field at all (e.g. `struct Pair { string a;
-string b; }`) is not recognised by `structKeyMixedFieldsOrNull` (it requires
-at least one non-array field) and falls through to the whole-block raw
-comparison, silently comparing backing pointers instead of content for both
-fields -- the same latent gap that shape already had before this change,
-now merely still uncaught rather than newly introduced. A key field that is
-itself a nested struct, a `wstring`/`dstring`, or a non-`string`
-array (dynamic or static) throws "Unsupported associative array key type in
+A struct key with *only* `string` fields and no raw field at all (e.g.
+`struct FullName { string first; string last; }`) -- the gap the mixed-field
+fix above deliberately left open -- is now also supported
+(`assocArray.structKeyWithAllStringFieldsComparesStructurally` and
+`structKeyWithAllStringFieldsSupportsForeachAndRemove`, `arrays.d`;
+construction from a literal and a local, `[]`/`in` lookup including a
+negative miss, `foreach`, and `.remove` all covered, with both `first` and
+`last` built from genuinely different backing storage per key to confirm
+each field compares by content rather than by backing pointer). This turned
+out to need no new machinery at all: `AssocArrayKeyField`/
+`AssocArrayKeyLayout` and the `keysEqual` field-by-field walk (machine.d)
+were already fully generic per field, with no assumption baked in about how
+many string or raw fields a key has. The only thing gating this shape out
+was `structKeyMixedFieldsOrNull`'s (compiler.d) own requirement of "at least
+one non-array field alongside the string field" -- a scoping choice by the
+increment that added it, not a technical constraint. Renamed to
+`structKeyFieldLayoutOrNull` and relaxed to "at least one string field" (full
+stop): an all-raw struct still falls through to the existing whole-block raw
+comparison unchanged (correct, no string field to miscompare), and *any*
+struct with a string field -- alone, mixed with scalars, or several strings
+together -- now takes the field-wise path.
+
+This closes the AssocArray front's recurring struct-key structural-comparison
+gap: every struct key shape built from `string` and scalar fields, in any
+combination, count, or order, now compares (and iterates, and constructs, and
+removes) structurally rather than by raw bytes. What remains is not a
+silent-miscompare gap but an explicit, intentional refusal: a key field that
+is itself a nested struct, a `wstring`/`dstring`, or a non-`string` array
+(dynamic or static) throws "Unsupported associative array key type in
 bytecode core" (nested struct: via `scalarType`'s existing rejection of
 `Tstruct`; `wstring`/`dstring`: explicit, mirroring `assocArrayKeyIsArray`'s
 own rejection; other arrays: via `scalarType`'s rejection of `Tarray`/
 `Tsarray`) rather than being silently miscompared -- none of these three
-shapes is exercised by any fixture. Field order (string-before-scalar,
-scalar-before-string) and field count beyond two are not specifically
-restricted by the implementation (`structKeyMixedFieldsOrNull` walks
-`declaration.fields` generically) but are also not covered by a fixture
-today, so should be treated as unverified rather than assumed correct.
-There is no separate hash to fix for any of this: `AssocArray.find`/
-`insert`/`remove` are a plain linear scan over `keysEqual`, not a hash
-table.
+shapes is exercised by any fixture, and widening to cover them (each would
+need its own content-comparison rule, not just a raw-bytes-or-not choice) is
+a distinct, not-yet-scoped future increment, not a hole in what this front
+already promises. Field order (string-before-scalar, scalar-before-string)
+and field count beyond two are not specifically restricted by the
+implementation (`structKeyFieldLayoutOrNull` walks `declaration.fields`
+generically) but are also not covered by a fixture today, so should be
+treated as unverified rather than assumed correct. There is no separate hash
+to fix for any of this: `AssocArray.find`/`insert`/`remove` are a plain
+linear scan over `keysEqual`, not a hash table.
 
 An AA value's storage width also accounts for a dynamic-array-typed value
 (`int[][int]`, sized as its own 16-byte slice descriptor) and a

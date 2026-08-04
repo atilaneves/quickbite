@@ -3576,6 +3576,106 @@ static foreach (backend; Matrix!()) {
     }
 }
 
+// A struct key with *only* `string` fields and no raw field at all (`struct
+// FullName { string first; string last; }`) -- the gap the mixed-field fix
+// above deliberately left open (its gate required at least one non-array
+// field alongside the string field). The underlying per-field machinery
+// (`AssocArrayKeyField`/`AssocArrayKeyLayout`, `keysEqual`, machine.d)
+// already compared each field by its own rule generically; the gate in
+// `structKeyFieldLayoutOrNull` (compiler.d, formerly
+// `structKeyMixedFieldsOrNull`) just needed relaxing from "at least one
+// string field and at least one non-array field" to "at least one string
+// field", since an all-string-field struct still needs the same field-wise
+// walk a mixed-field one does (a raw compare would wrongly compare each
+// field's backing pointer instead of its content). `first` and `last` are
+// each built from genuinely different backing storage (concatenation vs. an
+// appended-then-`idup`'d buffer) so a raw-byte compare of either field would
+// wrongly miss the lookup.
+static foreach (backend; Matrix!()) {
+    @("assocArray.structKeyWithAllStringFieldsComparesStructurally." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct FullName {
+                string first;
+                string last;
+            }
+
+            string firstA() {
+                return "A" ~ "da";
+            }
+
+            string firstB() {
+                char[] buf;
+                buf ~= "Ada";
+                return buf.idup;
+            }
+
+            string lastA() {
+                return "Love" ~ "lace";
+            }
+
+            string lastB() {
+                char[] buf;
+                buf ~= "Lovelace";
+                return buf.idup;
+            }
+
+            unittest {
+                int[FullName] counts;
+                counts[FullName(firstA(), lastA())] = 1;
+                assert((FullName(firstB(), lastB()) in counts) !is null);
+                assert(counts[FullName(firstB(), lastB())] == 1);
+                assert((FullName(firstB(), "Someone Else") in counts) is null);
+            }
+        });
+    }
+}
+
+// The same all-string-fields key shape, covering construction from a local
+// (not just a literal), multiple entries, `foreach` reading both fields back
+// at their own real (content-comparable) width, and `.remove`.
+static foreach (backend; Matrix!()) {
+    @("assocArray.structKeyWithAllStringFieldsSupportsForeachAndRemove." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct FullName {
+                string first;
+                string last;
+            }
+
+            unittest {
+                int[FullName] counts;
+                counts[FullName("Ada", "Lovelace")] = 1;
+
+                FullName key = FullName("Grace", "Hopper");
+                counts[key] = 2;
+                assert(counts.length == 2);
+                assert(counts[FullName("Grace", "Hopper")] == 2);
+                assert((FullName("Ada", "Hopper") in counts) is null);
+
+                int sum;
+                foreach (k, v; counts) {
+                    assert(
+                        (k.first == "Ada" && k.last == "Lovelace") ||
+                        (k.first == "Grace" && k.last == "Hopper")
+                    );
+                    sum += v;
+                }
+                assert(sum == 3);
+
+                assert(counts.remove(FullName("Ada", "Lovelace")));
+                assert(counts.length == 1);
+                assert((FullName("Ada", "Lovelace") in counts) is null);
+                assert((FullName("Grace", "Hopper") in counts) !is null);
+            }
+        });
+    }
+}
+
 static foreach (backend; Matrix!()) {
     @("assocArray.nestedLookupDereferencesAssociativeArrayPointee." ~
         backend.stringof)

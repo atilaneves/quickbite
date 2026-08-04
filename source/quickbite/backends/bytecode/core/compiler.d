@@ -17914,21 +17914,27 @@ private struct Compiler {
         return false;
     }
 
-    // The field-wise layout for a struct AA key that mixes a content-compared
-    // field (a plain `string` member) with at least one raw-compared field in
-    // the same key (e.g. `struct Name { string first; int age; }`) -- neither
-    // `assocArrayKeyIsArray` (all content) nor the default whole-block raw
-    // comparison (all raw) is sound for this shape. Returns `null` when
-    // `keyType` doesn't need this: a lone string field
-    // (`assocArrayKeyIsArray`'s own single-field carve-out) or an all-scalar
-    // struct already have their own simpler, established treatment that this
-    // leaves untouched. Mirrors `compileStructIdentity`'s field-by-field walk
-    // for `==`: a plain `string` field compares by content, everything else
-    // (any type `scalarType` accepts) by its own raw bytes; a `wstring`/
-    // `dstring` field, or any other field `scalarType` rejects (a nested
-    // struct, a non-`string` dynamic/static array), throws rather than
-    // silently miscomparing or silently falling back to a coarser mode.
-    private AssocArrayKeyField[] structKeyMixedFieldsOrNull(Type keyType) {
+    // The field-wise layout for a multi-field struct AA key that has at
+    // least one content-compared field (a plain `string` member) -- covers
+    // both a key mixing string and scalar fields (`struct Name { string
+    // first; int age; }`) and a key with two or more plain `string` fields
+    // and no scalar field at all (`struct FullName { string first; string
+    // last; }`). Neither `assocArrayKeyIsArray` (all content -- only its own
+    // single-field carve-out) nor the default whole-block raw comparison (all
+    // raw) is sound for either shape: a raw compare of an all-`string`-field
+    // struct would wrongly compare each field's backing pointer instead of
+    // its content, exactly like the mixed-field case does for its one string
+    // field. Returns `null` when `keyType` doesn't need this: a lone string
+    // field (`assocArrayKeyIsArray`'s own single-field carve-out) or an
+    // all-scalar struct already have their own simpler, established
+    // treatment that this leaves untouched. Mirrors `compileStructIdentity`'s
+    // field-by-field walk for `==`: a plain `string` field compares by
+    // content, everything else (any type `scalarType` accepts) by its own
+    // raw bytes; a `wstring`/`dstring` field, or any other field `scalarType`
+    // rejects (a nested struct, a non-`string` dynamic/static array), throws
+    // rather than silently miscomparing or silently falling back to a
+    // coarser mode.
+    private AssocArrayKeyField[] structKeyFieldLayoutOrNull(Type keyType) {
         import std.conv: text;
 
         auto declaration = structDeclarationOf(keyType);
@@ -17936,7 +17942,6 @@ private struct Compiler {
             return null;
 
         bool anyArrayField;
-        bool anyRawField;
         foreach (field; declaration.fields) {
             auto fieldType = cast(Type) field.type;
             if (isStringType(fieldType)) {
@@ -17946,18 +17951,15 @@ private struct Compiler {
                         "bytecode core: ", typeChars(keyType),
                     ));
                 anyArrayField = true;
-            } else {
-                anyRawField = true;
             }
         }
-        // Neither an all-array (multiple `string` fields, no scalar field)
-        // nor an all-raw struct needs field-wise handling: the former still
-        // falls through to `assocArrayKeyIsArray`'s own single-field
-        // carve-out (which declines it, `declaration.fields.length != 1`) and
-        // on to the whole-block raw comparison below -- a documented
-        // remaining gap, not this function's concern -- and the latter is
-        // already correctly served by that same whole-block comparison.
-        if (!anyArrayField || !anyRawField)
+        // An all-raw struct (no string field at all) needs no field-wise
+        // handling: it is already correctly served by the whole-block raw
+        // comparison below. A struct with at least one string field --
+        // whether mixed with scalar fields or not -- always needs the
+        // field-wise walk, since a raw compare would be unsound for any
+        // string field it has.
+        if (!anyArrayField)
             return null;
 
         AssocArrayKeyField[] fields;
@@ -17975,8 +17977,8 @@ private struct Compiler {
 
     // Registers (or reuses) `keyType`'s field layout in
     // `Program.assocArrayKeyLayouts`, returning its index -- one entry per
-    // distinct mixed-field struct-key shape, shared by every AA access site
-    // for that key type.
+    // distinct struct-key shape needing field-wise comparison, shared by
+    // every AA access site for that key type.
     private ushort registerAssocArrayKeyLayout(
         Type keyType, AssocArrayKeyField[] fields,
     ) {
@@ -18026,10 +18028,13 @@ private struct Compiler {
     // Packs an AA key's width and comparison mode into `Instruction.e`
     // (`assocArrayKeyIsArrayFlag`/`assocArrayKeyIsStructLayoutFlag`): every AA
     // opcode that reads or writes a key needs both, and there is no operand
-    // to spare for a second field. A mixed-field struct key
-    // (`structKeyMixedFieldsOrNull`) needs a third mode neither existing flag
-    // combination can express (it is neither all-raw nor all-content), so it
-    // is instead tagged with `assocArrayKeyIsStructLayoutFlag` and carries a
+    // to spare for a second field. A multi-field struct key with at least one
+    // string field (`structKeyFieldLayoutOrNull`) needs a third mode neither
+    // existing flag combination can express (it is neither all-raw nor
+    // all-content when mixed, and even an all-string-field key is a block of
+    // *several* content-compared descriptors, not the one whole descriptor
+    // `assocArrayKeyIsArray` handles), so it is instead tagged with
+    // `assocArrayKeyIsStructLayoutFlag` and carries a
     // `Program.assocArrayKeyLayouts` index (registered once per struct type,
     // `registerAssocArrayKeyLayout`) in the same bits the other two modes use
     // for a byte width -- the layout entry itself already knows the key's
@@ -18039,7 +18044,7 @@ private struct Compiler {
 
         auto keyType = assocArrayKeyType(aaType);
         if (keyType.toBasetype.ty == TY.Tstruct)
-            if (auto fields = structKeyMixedFieldsOrNull(keyType)) {
+            if (auto fields = structKeyFieldLayoutOrNull(keyType)) {
                 const index = registerAssocArrayKeyLayout(keyType, fields);
                 assert(index < assocArrayKeyIsStructLayoutFlag);
                 return cast(ushort) (index | assocArrayKeyIsStructLayoutFlag);
