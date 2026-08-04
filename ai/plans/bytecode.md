@@ -450,10 +450,18 @@ reaches them:
   incomplete.
 - Captured array support does not yet cover every read, write, slice, append,
   view-preservation, and closure combination.
-- A broadcast fill (`arr[0 .. 2] = value;`) declines when the destination
-  element is itself a heap-allocated row descriptor (`T[N][]`/`T[][]`):
-  broadcasting into it needs a fresh row allocation per element, not a byte
-  copy.
+- A broadcast fill (`arr[0 .. 2] = row;`) into a `T[N][]` destination, where
+  `row`'s own type matches the destination's row type, now writes through
+  each row's existing heap block (`tryDynamicArraySliceAssign`'s
+  `elementIsArray` branch, `emitRowBroadcastFill`); the plain static-array
+  twin (`int[3][3]`, `descriptor.isStaticArrayView`) is excluded since its
+  rows are contiguous inline bytes, not separate blocks. Still open: a
+  `T[][]` (`Tarray`-row) destination still declines broadcast entirely, and a
+  rhs shaped as a matching *range* of rows (`arr[0 .. 2] = otherRows[];`)
+  still routes through `sliceCopy`, which segfaults for a `T[N][]`
+  destination -- its flat 16-byte-per-row copy overwrites the destination's
+  row *pointers* with the source range's bytes instead of copying into each
+  row's own block, corrupting the pointer chain.
 - Dynamic-array and string sub-slices bounds-check both ends
   (`validateSubSlice`, `machine.d`). A raw pointer slice performs no check at
   all -- confirmed correct, not a gap: compiled D's own `p[lo .. hi]` on a bare
@@ -486,15 +494,17 @@ row remains bounded and unblocked: the two survivors
 `refArgument.templateRefSharedForwardsThroughNestedFunction`, both in
 `expressions.d`) are the documented `&value == expected` address-identity
 rows blocked on the ref calling convention above, not bounded single-commit
-fixes. `new T[N][](rows)` (a runtime outer length over statically-sized rows,
-e.g. `new int[3][](2)`) is fixed and covered
-(`dynamicArray.newArrayOfStaticArrayRowsUsesRuntimeLength`, `arrays.d`); the
-broadcast-fill-into-heap-row-descriptor and nested static-array-of-dynamic-
-array mutation leads under "Live hazards and divergences" above are still
-open. Find a fresh row through further `bin/qb` exploration of read-modify-
-write and mirror paths (captured-array read/write/slice/append coverage is
-another open lead there), take the "One place resolver" item, or take an
-"Architecture work forced by the baseline" front.
+fixes. `new T[N][](rows)` is fixed
+(`dynamicArray.newArrayOfStaticArrayRowsUsesRuntimeLength`, `arrays.d`), and
+the `T[N][]` broadcast-fill case is fixed
+(`dynamicArray.broadcastFillIntoStaticArrayRowsWritesEachRowIndependently`,
+`arrays.d`); the `T[][]` broadcast twin, the row-range `sliceCopy` segfault,
+and nested static-array-of-dynamic-array mutation under "Live hazards and
+divergences" above are still open. Find a fresh row through further `bin/qb`
+exploration of read-modify-write and mirror paths (captured-array
+read/write/slice/append coverage is another open lead there), take the "One
+place resolver" item, or take an "Architecture work forced by the baseline"
+front.
 
 ### TDD and handoff discipline
 

@@ -2260,6 +2260,37 @@ static foreach (backend; Matrix!()) {
     }
 }
 
+// A broadcast fill (`arr[lo .. hi] = row;`) whose destination element is
+// itself a `T[N]` row (`int[3][]`): each destination slot already has its
+// own separately heap-allocated block from the array's construction, so the
+// row value must be written into each existing block independently rather
+// than aliasing every slot to the same storage or being declined outright.
+static foreach (backend; Matrix!()) {
+    @("dynamicArray.broadcastFillIntoStaticArrayRowsWritesEachRowIndependently." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            unittest {
+                int[3][] values = new int[3][](3);
+                values[0 .. 2] = [1, 2, 3];
+
+                assert(values[0][0] == 1 && values[0][1] == 2 &&
+                    values[0][2] == 3);
+                assert(values[1][0] == 1 && values[1][1] == 2 &&
+                    values[1][2] == 3);
+                assert(values[2][0] == 0 && values[2][1] == 0 &&
+                    values[2][2] == 0);
+
+                // Each broadcast row is its own independent copy, not a
+                // shared reference: mutating one must not affect the other.
+                values[0][0] = 99;
+                assert(values[1][0] == 1);
+            }
+        });
+    }
+}
+
 static foreach (backend; Matrix!()) {
     @("dynamicArray.lengthAssignmentResizesArray." ~ backend.stringof)
     @Tags(backend.stringof)

@@ -14976,13 +14976,40 @@ private struct Compiler {
             dynamicArrayElementSize(slice.e1.type, elementType, elementIsArray);
 
         // `elementIsArray` means each destination element is its own
-        // separately heap-allocated row descriptor (the `T[N][]`/`T[][]`
-        // representation), not `elementSize` raw bytes shared by every row;
-        // broadcasting one rhs value into every row would need a fresh row
-        // allocation per destination element rather than a byte-for-byte
-        // fill, so this shape still declines below rather than silently
-        // aliasing every row to one block or misreading the rhs's width.
-        if (!elementIsArray && isBroadcastFillSource(rhs)) {
+        // separately heap-allocated row descriptor (the `T[N][]`
+        // representation), not `elementSize` (=`sliceDescriptorSize`) raw
+        // bytes shared by every row. A `T[N]` row's already-allocated block
+        // (from the array's construction) is written through its own
+        // pointer, one row at a time (`emitRowBroadcastFill`), the same
+        // addressing `tryDynamicArrayElementAssign`'s single-index
+        // `innerArrayRowPointer` writeback uses -- only when the rhs is
+        // itself shaped like one row (`sameType` against the row's own
+        // `Type`, not the whole sliced range). A rhs shaped like a matching
+        // range of rows (a sub-slice, another `T[N][]`) still falls through
+        // to the `sliceCopy` path below, which is not fixed here.
+        //
+        // `descriptor.isStaticArrayView` (a genuine multidimensional static
+        // array, e.g. `int[3][3]`, viewed through a throwaway heap copy)
+        // shares `elementIsArray` with the true `T[N][]` shape but its rows
+        // are contiguous inline bytes, not separate heap blocks -- excluded
+        // here, or `emitRowBroadcastFill` would dereference row bytes as if
+        // they were a row pointer.
+        import dmd.astenums: TY;
+
+        if (elementIsArray && descriptor !is null &&
+            !descriptor.isStaticArrayView) {
+            auto rowType = slice.e1.type.toBasetype.nextOf;
+            if (rowType.toBasetype.ty == TY.Tsarray &&
+                rhs.type !is null && sameType(rhs.type, rowType)) {
+                const rowByteSize = cast(uint) staticArraySize(rowType);
+                const value = compileExpression(rhs);
+                emitRowBroadcastFill(destination, value.offset, rowByteSize);
+
+                auto result = new Operand;
+                *result = Operand.init;
+                return result;
+            }
+        } else if (!elementIsArray && isBroadcastFillSource(rhs)) {
             const value = compileExpression(rhs);
             emitSliceFill(destination, value.offset, elementSize);
 
@@ -20245,6 +20272,47 @@ private struct Compiler {
         _code ~= Instruction(
             sliceFillOp(width), destination, value, cast(ushort) width,
         );
+    }
+
+    // Broadcast one already-compiled row value (`value`, `rowByteSize`
+    // bytes) into every element of a `[lo .. hi)` range of a `T[N][]`
+    // destination (`destination`, a slice descriptor over that range). Each
+    // destination slot is its own 16-byte `{ptr, length}` row descriptor
+    // pointing at a separately heap-allocated block (`Op.allocArray2D`), so
+    // this writes through each row's existing `.ptr` in a runtime loop --
+    // `emitSliceFill`'s flat byte-fill would instead overwrite the row
+    // descriptors themselves, aliasing every destination row to whatever
+    // bytes `value` happens to hold rather than writing into each row's own
+    // storage.
+    private void emitRowBroadcastFill(
+        in ushort destination,
+        in ushort value,
+        in uint rowByteSize,
+    ) {
+        const index = compileSizeConstant(0);
+        const length = allocate(ScalarType.ulong_);
+        _code ~= Instruction(Op.sliceLength, length, destination);
+
+        const conditionIndex = _code.length;
+        const condition = allocate(ScalarType.bool_);
+        _code ~= Instruction(Op.lessThanUnsigned8, condition, index, length);
+        const exitJump = emitJumpIfFalse(Operand(condition, ScalarType.bool_));
+
+        const rowDescriptor =
+            allocateBytes(sliceDescriptorSize, size_t.sizeof);
+        emitIndexLoad(rowDescriptor, destination, index, sliceDescriptorSize);
+        const rowPointer =
+            allocateBytes(cast(uint) size_t.sizeof, size_t.sizeof);
+        _code ~= Instruction(
+            Op.copy, rowPointer, rowDescriptor, cast(ushort) size_t.sizeof,
+        );
+        emitPointerStore(value, rowPointer, compileSizeConstant(0), rowByteSize);
+
+        const one = compileSizeConstant(1);
+        _code ~= Instruction(Op.addInt8, index, index, one);
+        _code ~= Instruction(Op.jump, cast(ushort) conditionIndex);
+
+        patchJump(exitJump);
     }
 
     // The `sliceEqual*` family's emit helper. Unlike every other
