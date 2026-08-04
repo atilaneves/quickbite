@@ -6,7 +6,7 @@ if [[ ! -f build.ninja ]]; then
     dub run reggae --compiler=ldc -- -b ninja
 fi
 ninja bin/ut
-bin/ut --random
+bin/ut --random ~@LLVMJit ~@Ctfe
 dmd -unittest -checkaction=context -main -run tests/example.d
 bin/bench.sh
 ninja bin/qb
