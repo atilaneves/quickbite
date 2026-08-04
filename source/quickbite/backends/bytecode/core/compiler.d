@@ -15025,6 +15025,30 @@ private struct Compiler {
                 *result = Operand.init;
                 return result;
             }
+
+            // `T[][]` (`Tarray`-row): unlike a `T[N]` row, a `T[]` row is
+            // itself just a 16-byte `{ptr, length}` descriptor, the same
+            // reference-semantics value every other broadcast-fill element
+            // is. There is no separately heap-allocated row block to write
+            // through -- broadcasting the rhs row means writing its own
+            // descriptor bytes into every destination slot, aliasing every
+            // destination row to the rhs row's backing storage, matching
+            // `SystemLinker`. `emitSliceFill` (the same helper the
+            // non-array-element branch below uses) does exactly that; a
+            // row-range rhs (another `T[][]` sub-slice) is not handled here
+            // and falls through to the flat `sliceCopy16` below, which
+            // already copies each element's 16-byte descriptor by value --
+            // correct for reference-typed rows, unlike the `T[N][]` case
+            // above.
+            if (rowType.toBasetype.ty == TY.Tarray &&
+                rhs.type !is null && sameType(rhs.type, rowType)) {
+                const value = compileExpression(rhs);
+                emitSliceFill(destination, value.offset, elementSize);
+
+                auto result = new Operand;
+                *result = Operand.init;
+                return result;
+            }
         } else if (!elementIsArray && isBroadcastFillSource(rhs)) {
             const value = compileExpression(rhs);
             emitSliceFill(destination, value.offset, elementSize);

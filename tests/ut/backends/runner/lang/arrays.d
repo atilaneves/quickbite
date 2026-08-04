@@ -2291,6 +2291,42 @@ static foreach (backend; Matrix!()) {
     }
 }
 
+// The `T[][]` (`Tarray`-row) counterpart of the broadcast fill above: unlike
+// a `T[N]` row, a `T[]` row is itself a reference-semantics slice descriptor
+// with no separately heap-allocated block to write through, so broadcasting
+// it means writing its own descriptor into every destination slot and
+// aliasing every destination row to the rhs row's backing storage, matching
+// `SystemLinker`. `Interpreter` is not the oracle here: its pointer-snapshot
+// model deep-copies the rhs row into each destination slot instead of
+// aliasing it, a pre-existing gap unrelated to this promotion.
+static foreach (backend; Matrix!(
+    Omit!(Interpreter, Because.diverges,
+        "Interpreter's pointer-snapshot model deep-copies the broadcast " ~
+        "row into each destination slot instead of aliasing it"),
+)) {
+    @("dynamicArray.broadcastFillIntoDynamicArrayRowsAliasesEachRowToTheSource." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            unittest {
+                int[] row = [1, 2, 3];
+                int[][] values = [[9, 9], [8, 8], [7, 7]];
+                values[0 .. 2] = row;
+
+                assert(values[0].length == 3 && values[0][0] == 1);
+                assert(values[1].length == 3 && values[1][0] == 1);
+                assert(values[2].length == 2 && values[2][0] == 7);
+
+                // Aliased, not copied: mutating through the destination is
+                // visible through the source row.
+                values[0][0] = 55;
+                assert(row[0] == 55);
+            }
+        });
+    }
+}
+
 // A row-range assignment (`arr[lo .. hi] = otherRows[];`) into a `T[N][]`
 // destination, where the rhs is itself a range of rows rather than a single
 // broadcast row (the sibling test above): each destination row already has
