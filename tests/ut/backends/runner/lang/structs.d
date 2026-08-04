@@ -2563,10 +2563,7 @@ static foreach (backend; Matrix!()) {
 // an untouched field (own or inherited from a base class) keeps its declared
 // default rather than reading zero, and an explicit constructor's own field
 // write still overrides the default for the field it actually touches.
-static foreach (backend; Matrix!(
-    Omit!(Interpreter, Because.unconfirmed,
-        "a class field's own default initializer is never applied on allocation"),
-)) {
+static foreach (backend; Matrix!()) {
     @("class.defaultFieldInitializerAppliesOnAllocationAndSurvivesConstructor." ~
         backend.stringof)
     @Tags(backend.stringof)

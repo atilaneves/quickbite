@@ -10369,15 +10369,22 @@ private void initializeNativeClassBody(
     import quickbite.backends.interpreter.layout: classFields;
     import quickbite.backends.interpreter.place: Place;
     import quickbite.backends.interpreter.place_value: writeValue;
-    import quickbite.backends.interpreter.runtime_values: defaultValue;
+    import quickbite.backends.interpreter.runtime_values: defaultValue, integerValue;
 
     auto classType = type.toBasetype.isTypeClass;
     if (classType is null || classType.sym is null)
         throw new Exception("initializeNativeClassBody needs a class type.");
 
     auto body = Place(AggregateValue.nativeClassBodyAddress(object), type);
-    foreach (field; classFields(classType.sym))
-        writeValue(body.field(field), defaultValue(field.type));
+    foreach (field; classFields(classType.sym)) {
+        auto value = defaultValue(field.type);
+        if (field._init !is null) {
+            if (auto initializer = field._init.isExpInitializer)
+                if (auto integer = initializer.exp.isIntegerExp)
+                    value = integerValue(integer);
+        }
+        writeValue(body.field(field), value);
+    }
 }
 
 
