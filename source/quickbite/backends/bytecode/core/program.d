@@ -738,6 +738,48 @@ package(quickbite.backends.bytecode) enum unsignedConvertFlag = 0x100;
 // (at most 8), so bit 15 is free for the flag.
 package(quickbite.backends.bytecode) enum assocArrayKeyIsArrayFlag = 0x8000;
 
+// OR'd into an AA opcode's key-width operand (`Instruction.e`) to mark a
+// struct key that mixes a content-compared field (a plain `string` member)
+// with at least one raw-compared field in the same key (e.g. `struct Name {
+// string first; int age; }`) -- more than the single bit
+// `assocArrayKeyIsArrayFlag` gives can express, since neither "all raw" nor
+// "all content" describes the key as a whole. Mutually exclusive with
+// `assocArrayKeyIsArrayFlag` (never both set); the bits packed alongside this
+// flag are an index into `Program.assocArrayKeyLayouts`, not a byte width --
+// the layout entry itself carries the key's total width
+// (`AssocArrayKeyLayout.width`), since it no longer fits in the remaining 14
+// bits alongside a nontrivial index. 14 bits of index (`0x3FFF`) comfortably
+// exceeds any realistic number of distinct mixed-field key shapes in one
+// program.
+package(quickbite.backends.bytecode) enum assocArrayKeyIsStructLayoutFlag =
+    0x4000;
+
+// One field of a struct AA key that needs field-wise comparison
+// (`assocArrayKeyIsStructLayoutFlag`): `offset`/`width` locate the field's
+// own bytes within the key block (mirroring `field.offset` from DMD's
+// struct layout), and `isArray` selects how `keysEqual` (machine.d) compares
+// them -- content, through the {ptr, length} descriptor at `offset`, for a
+// plain `string` field (`width` is then always `sliceDescriptorSize`), or
+// the field's own raw bytes directly for anything else. Mirrors
+// `compileStructIdentity`'s (compiler.d) field-by-field pattern for `==`,
+// which solves the identical problem at compile time rather than in the VM.
+package(quickbite.backends.bytecode) struct AssocArrayKeyField {
+    ushort offset;
+    ushort width;
+    bool isArray;
+}
+
+// One entry per distinct struct-key shape needing field-wise comparison,
+// referenced by index from the same `Instruction.e` operand slot
+// `assocArrayKeyIsArrayFlag` uses for the simpler (all-raw / all-content)
+// shapes, tagged instead with `assocArrayKeyIsStructLayoutFlag`. `width` is
+// the key block's total byte size (`AssocArray.keys`'s per-entry stride, the
+// same role `assocArrayKeyMeta`'s packed width plays for the simpler shapes).
+package(quickbite.backends.bytecode) struct AssocArrayKeyLayout {
+    AssocArrayKeyField[] fields;
+    ushort width;
+}
+
 // The `indexLoad`/`indexStore` family's one op<->width table: each fixed
 // width the pair supports, alongside the load and store opcode for that
 // width, declared once. compiler.d's `indexLoadOp`/`indexStoreOp`
@@ -1300,4 +1342,7 @@ package(quickbite.backends.bytecode) struct Program {
     imported!"object".TypeInfo[] nativeTypeInfos;
     ushort rangeErrorClass = noExceptionClass;
     CatchClause[] catchClauses;
+    // Indexed by `assocArrayKeyIsStructLayoutFlag`-tagged `Instruction.e`
+    // operands; see `AssocArrayKeyLayout`.
+    AssocArrayKeyLayout[] assocArrayKeyLayouts;
 }

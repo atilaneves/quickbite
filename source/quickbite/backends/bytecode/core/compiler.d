@@ -33,10 +33,12 @@ package(quickbite.backends.bytecode) Compilation compile(
 private struct Compiler {
 
     import quickbite.backends.bytecode.core.program:
-        AssertDiagnostic, CatchClause, ClassInfo, CompiledFunction,
+        AssertDiagnostic, AssocArrayKeyField, AssocArrayKeyLayout,
+        CatchClause, ClassInfo, CompiledFunction,
         Instruction, NativeCall, Op, Program,
         RefParameter, ResultType, ScalarType, StructDisplayField,
-        VirtualFunction, appendElementOp, concatArraysOp, dupArrayOp,
+        VirtualFunction, appendElementOp, assocArrayKeyIsArrayFlag,
+        assocArrayKeyIsStructLayoutFlag, concatArraysOp, dupArrayOp,
         indexLoadOp, indexStoreOp, isSigned,
         nativeArgumentSlotSize, noCatchObjectField, noExceptionClass,
         noOutParameterOffset, pointerLoadOp, pointerSliceOp, pointerStoreOp,
@@ -70,6 +72,11 @@ private struct Compiler {
     private FuncDeclaration[] _functions;
     private size_t[FuncDeclaration] _functionIndices;
     private ushort[imported!"dmd.dclass".ClassDeclaration] _classIndices;
+    // Caches a mixed-field struct AA key type's `Program.assocArrayKeyLayouts`
+    // index (`registerAssocArrayKeyLayout`), keyed by its `StructDeclaration`
+    // so every access site for the same key type shares one layout entry.
+    private ushort[imported!"dmd.dstruct".StructDeclaration]
+        _assocArrayKeyLayoutIndices;
     private Instruction[] _code;
     private uint _frameOffset;
     // The high-water mark of `_frameOffset` across the current function body.
@@ -17907,6 +17914,89 @@ private struct Compiler {
         return false;
     }
 
+    // The field-wise layout for a struct AA key that mixes a content-compared
+    // field (a plain `string` member) with at least one raw-compared field in
+    // the same key (e.g. `struct Name { string first; int age; }`) -- neither
+    // `assocArrayKeyIsArray` (all content) nor the default whole-block raw
+    // comparison (all raw) is sound for this shape. Returns `null` when
+    // `keyType` doesn't need this: a lone string field
+    // (`assocArrayKeyIsArray`'s own single-field carve-out) or an all-scalar
+    // struct already have their own simpler, established treatment that this
+    // leaves untouched. Mirrors `compileStructIdentity`'s field-by-field walk
+    // for `==`: a plain `string` field compares by content, everything else
+    // (any type `scalarType` accepts) by its own raw bytes; a `wstring`/
+    // `dstring` field, or any other field `scalarType` rejects (a nested
+    // struct, a non-`string` dynamic/static array), throws rather than
+    // silently miscomparing or silently falling back to a coarser mode.
+    private AssocArrayKeyField[] structKeyMixedFieldsOrNull(Type keyType) {
+        import std.conv: text;
+
+        auto declaration = structDeclarationOf(keyType);
+        if (declaration.fields.length < 2)
+            return null;
+
+        bool anyArrayField;
+        bool anyRawField;
+        foreach (field; declaration.fields) {
+            auto fieldType = cast(Type) field.type;
+            if (isStringType(fieldType)) {
+                if (!isCharStringType(fieldType))
+                    throw new Exception(text(
+                        "Unsupported associative array key type in ",
+                        "bytecode core: ", typeChars(keyType),
+                    ));
+                anyArrayField = true;
+            } else {
+                anyRawField = true;
+            }
+        }
+        // Neither an all-array (multiple `string` fields, no scalar field)
+        // nor an all-raw struct needs field-wise handling: the former still
+        // falls through to `assocArrayKeyIsArray`'s own single-field
+        // carve-out (which declines it, `declaration.fields.length != 1`) and
+        // on to the whole-block raw comparison below -- a documented
+        // remaining gap, not this function's concern -- and the latter is
+        // already correctly served by that same whole-block comparison.
+        if (!anyArrayField || !anyRawField)
+            return null;
+
+        AssocArrayKeyField[] fields;
+        foreach (field; declaration.fields) {
+            auto fieldType = cast(Type) field.type;
+            const isArray = isStringType(fieldType);
+            const width = isArray
+                ? sliceDescriptorSize : size(scalarType(fieldType));
+            fields ~= AssocArrayKeyField(
+                cast(ushort) field.offset, cast(ushort) width, isArray,
+            );
+        }
+        return fields;
+    }
+
+    // Registers (or reuses) `keyType`'s field layout in
+    // `Program.assocArrayKeyLayouts`, returning its index -- one entry per
+    // distinct mixed-field struct-key shape, shared by every AA access site
+    // for that key type.
+    private ushort registerAssocArrayKeyLayout(
+        Type keyType, AssocArrayKeyField[] fields,
+    ) {
+        auto declaration = structDeclarationOf(keyType);
+        if (auto existing = declaration in _assocArrayKeyLayoutIndices)
+            return *existing;
+        if (_program.assocArrayKeyLayouts.length >=
+            assocArrayKeyIsStructLayoutFlag)
+            throw new Exception(
+                "Too many associative array key layouts in bytecode core",
+            );
+
+        const index = cast(ushort) _program.assocArrayKeyLayouts.length;
+        _assocArrayKeyLayoutIndices[declaration] = index;
+        _program.assocArrayKeyLayouts ~= AssocArrayKeyLayout(
+            fields, cast(ushort) staticArraySize(keyType),
+        );
+        return index;
+    }
+
     // The byte width of a non-array AA key: a struct key is its own whole
     // block size (mirroring `dynamicArrayElementSize`'s Tstruct branch on the
     // value side), any other supported key is its scalar width. Only a
@@ -17934,11 +18024,26 @@ private struct Compiler {
     }
 
     // Packs an AA key's width and comparison mode into `Instruction.e`
-    // (`assocArrayKeyIsArrayFlag`): every AA opcode that reads or writes a
-    // key needs both, and there is no operand to spare for a second field.
+    // (`assocArrayKeyIsArrayFlag`/`assocArrayKeyIsStructLayoutFlag`): every AA
+    // opcode that reads or writes a key needs both, and there is no operand
+    // to spare for a second field. A mixed-field struct key
+    // (`structKeyMixedFieldsOrNull`) needs a third mode neither existing flag
+    // combination can express (it is neither all-raw nor all-content), so it
+    // is instead tagged with `assocArrayKeyIsStructLayoutFlag` and carries a
+    // `Program.assocArrayKeyLayouts` index (registered once per struct type,
+    // `registerAssocArrayKeyLayout`) in the same bits the other two modes use
+    // for a byte width -- the layout entry itself already knows the key's
+    // total width, so the operand doesn't need to carry it too.
     private ushort assocArrayKeyMeta(Type aaType) {
-        import quickbite.backends.bytecode.core.program:
-            assocArrayKeyIsArrayFlag;
+        import dmd.astenums: TY;
+
+        auto keyType = assocArrayKeyType(aaType);
+        if (keyType.toBasetype.ty == TY.Tstruct)
+            if (auto fields = structKeyMixedFieldsOrNull(keyType)) {
+                const index = registerAssocArrayKeyLayout(keyType, fields);
+                assert(index < assocArrayKeyIsStructLayoutFlag);
+                return cast(ushort) (index | assocArrayKeyIsStructLayoutFlag);
+            }
 
         const isArray = assocArrayKeyIsArray(aaType);
         const width = isArray

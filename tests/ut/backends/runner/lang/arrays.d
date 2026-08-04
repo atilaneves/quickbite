@@ -3492,6 +3492,90 @@ static foreach (backend; Matrix!()) {
     }
 }
 
+// A struct key mixing a content-compared `string` field with a raw-compared
+// scalar field in the same key (`struct Name { string first; int age; }`):
+// neither `assocArrayKeyIsArray`'s single-string-field carve-out (the
+// sibling fixtures above) nor the default whole-block raw comparison (the
+// `Point`-only fixture further above) is sound for this shape, since the
+// key is neither all-content nor all-raw. `assocArrayKeyMeta` (compiler.d)
+// now recognises this mix and routes it through a `Program`-level
+// `assocArrayKeyLayouts` entry instead (`assocArrayKeyIsStructLayoutFlag`),
+// giving `keysEqual` (machine.d) a field-by-field comparison mirroring
+// `compileStructIdentity`'s pattern for `==`: `first` compares by content
+// (`a()`/`b()` are content-equal `"Alice"`s built from genuinely different
+// backing storage, so a raw-byte compare of the whole block would wrongly
+// miss the lookup), `age` compares by its own raw bytes (so a same-name,
+// different-age key is correctly a distinct entry).
+static foreach (backend; Matrix!()) {
+    @("assocArray.structKeyWithMixedFieldsComparesStructurally." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct Name {
+                string first;
+                int age;
+            }
+
+            string a() {
+                return "Al" ~ "ice";
+            }
+
+            string b() {
+                char[] buf;
+                buf ~= "Alice";
+                return buf.idup;
+            }
+
+            unittest {
+                int[Name] ages;
+                ages[Name(a(), 30)] = 1;
+                assert((Name(b(), 30) in ages) !is null);
+                assert(ages[Name(b(), 30)] == 1);
+                assert((Name(b(), 31) in ages) is null);
+            }
+        });
+    }
+}
+
+// The same mixed-field key shape, covering construction from a local (not
+// just a literal), multiple entries, `foreach` reading both fields back at
+// their own real widths, and `.remove`.
+static foreach (backend; Matrix!()) {
+    @("assocArray.structKeyWithMixedFieldsSupportsForeachAndRemove." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct Name {
+                string first;
+                int age;
+            }
+
+            unittest {
+                int[Name] ages;
+                ages[Name("Alice", 30)] = 1;
+
+                Name key = Name("Bob", 25);
+                ages[key] = 2;
+                assert(ages.length == 2);
+
+                int sum;
+                foreach (k, v; ages) {
+                    assert(k.first == "Alice" || k.first == "Bob");
+                    sum += k.age + v;
+                }
+                assert(sum == 30 + 1 + 25 + 2);
+
+                assert(ages.remove(Name("Alice", 30)));
+                assert(ages.length == 1);
+                assert((Name("Alice", 30) in ages) is null);
+                assert((Name("Bob", 25) in ages) !is null);
+            }
+        });
+    }
+}
+
 static foreach (backend; Matrix!()) {
     @("assocArray.nestedLookupDereferencesAssociativeArrayPointee." ~
         backend.stringof)

@@ -419,29 +419,61 @@ already-`_pointerLocals`-tracked local, which the ordering fix now depends
 on and which any other bare pointer-local reassignment through that path
 was silently losing before.
 
-Remaining, deliberately out of scope here: a struct key with a string
-member *alongside other fields* (e.g. `struct Name { string first; int
-age; }`, mixed content-compared and raw-compared fields in one key) is not
-supported. `keysEqual`/`AssocArray.find`/`insert`/`remove` compare a key
-block only as "all raw bytes" or "one whole {ptr,length} descriptor,
-compared by content" (a single bit in `Instruction.e`'s packed
-`assocArrayKeyMeta`); every `Instruction` operand slot at the `aaIn`/
-`aaInsert`/`aaGetRvalue`/`aaRemove`/`aaEqual` opcodes is already spoken for
-(result offset, handle, key offset, value width, key meta), so there is no
-room to also carry a per-field byte-range layout (which fields are raw,
-which are content-compared, at what offsets) through the instruction
-stream as-is. The smallest next step: a `Program`-level side table of key
-layouts (one entry per distinct AA key shape needing it, each listing its
-mixed-field byte ranges), referenced by an index carried in the same
-operand slot `assocArrayKeyMeta` uses today, with `keysEqual` (and a
-matching hash if the VM ever moves off its current linear
-`AssocArray.find` scan) extended to walk that layout field-by-field --
-reusing `compileStructIdentity`'s existing field-by-field pattern
-(compiler.d: a `Tarray` field compares by content via `emitSliceEqual`,
-everything else compares raw) as the template, since it already solves the
-identical problem for `==` at compile time rather than inside the VM. Note
-there is no separate hash to fix today: `AssocArray.find`/`insert`/`remove`
-are a plain linear scan over `keysEqual`, not a hash table.
+A struct key with a `string` field *alongside other fields* (e.g. `struct
+Name { string first; int age; }`, mixed content-compared and raw-compared
+fields in one key) is now also supported
+(`assocArray.structKeyWithMixedFieldsComparesStructurally` and
+`structKeyWithMixedFieldsSupportsForeachAndRemove`, `arrays.d`; construction
+from a literal and a local, `[]`/`in` lookup including a negative miss,
+`foreach`, and `.remove` all covered). Neither of the two whole-key modes
+above (all raw bytes, or one whole {ptr, length} descriptor compared by
+content -- a single bit in `Instruction.e`'s packed `assocArrayKeyMeta`) is
+sound for this shape, and every `Instruction` operand slot at the `aaIn`/
+`aaInsert`/`aaGetRvalue`/`aaRemove`/`aaEqual` opcodes was already spoken for
+(result offset, handle, key offset, value width, key meta), so there was no
+room to also carry a per-field byte-range layout through the instruction
+stream directly. `assocArrayKeyMeta` (compiler.d) now recognises this shape
+(`structKeyMixedFieldsOrNull`: at least two fields, at least one a plain
+`string`, at least one not) and tags it with a new second flag bit,
+`assocArrayKeyIsStructLayoutFlag`, whose remaining bits are an index into a
+new `Program`-level side table, `assocArrayKeyLayouts`
+(`registerAssocArrayKeyLayout`, cached per struct type so every access site
+for the same key type shares one entry) -- exactly the side-table shape the
+previous version of this note anticipated, mirroring
+`compileStructIdentity`'s (compiler.d) existing field-by-field pattern for
+`==` as its template: a plain `string` field compares by content, everything
+else (any type `scalarType` accepts) by its own raw bytes.
+`AssocArray.find`/`insert`/`remove`/`keysEqual` (machine.d) take the matching
+layout (empty for every other key, which keeps comparing by the existing
+`keyIsArray` bool) and walk it field-by-field instead of treating the key as
+one raw or one content-compared block. The layout entry itself carries the
+key's total byte width, since a per-shape index no longer leaves 15 free
+bits to also pack a width the way the two simpler modes' operand encoding
+does; `assocArrayKeyWidth` (the storage-side stride) is untouched, since a
+mixed-field key's binary layout is exactly the same whole-struct block width
+either way -- only the *comparison* mode differs.
+
+Still open, deliberately out of scope here: a struct key with *only*
+`string` fields and no raw field at all (e.g. `struct Pair { string a;
+string b; }`) is not recognised by `structKeyMixedFieldsOrNull` (it requires
+at least one non-array field) and falls through to the whole-block raw
+comparison, silently comparing backing pointers instead of content for both
+fields -- the same latent gap that shape already had before this change,
+now merely still uncaught rather than newly introduced. A key field that is
+itself a nested struct, a `wstring`/`dstring`, or a non-`string`
+array (dynamic or static) throws "Unsupported associative array key type in
+bytecode core" (nested struct: via `scalarType`'s existing rejection of
+`Tstruct`; `wstring`/`dstring`: explicit, mirroring `assocArrayKeyIsArray`'s
+own rejection; other arrays: via `scalarType`'s rejection of `Tarray`/
+`Tsarray`) rather than being silently miscompared -- none of these three
+shapes is exercised by any fixture. Field order (string-before-scalar,
+scalar-before-string) and field count beyond two are not specifically
+restricted by the implementation (`structKeyMixedFieldsOrNull` walks
+`declaration.fields` generically) but are also not covered by a fixture
+today, so should be treated as unverified rather than assumed correct.
+There is no separate hash to fix for any of this: `AssocArray.find`/
+`insert`/`remove` are a plain linear scan over `keysEqual`, not a hash
+table.
 
 An AA value's storage width also accounts for a dynamic-array-typed value
 (`int[][int]`, sized as its own 16-byte slice descriptor) and a
