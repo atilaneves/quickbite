@@ -33,3 +33,25 @@ static foreach (backend; Matrix!(
         runBackendSourceFixtureTests!backend(extendSmallAllocationSource);
     }
 }
+
+// Supplying a real TypeInfo object to the host GC is a native ABI operation;
+// its address must not be replaced with the interpreter's display-only type.
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.inexpressible, "CTFE cannot access the host environment (libc/OS)"),
+    Omit!(Bytecode, Because.unconfirmed),
+    Omit!(LLVMJit, Because.unconfirmed),
+)) {
+    @("malloc.typeInfoArgument." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            unittest {
+                import core.memory: GC;
+
+                auto p = GC.malloc(int.sizeof, 0, typeid(int));
+                assert(p !is null);
+                GC.free(p);
+            }
+        });
+    }
+}

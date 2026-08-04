@@ -3753,6 +3753,15 @@ private struct Walker {
             functionSemantic3(call.f);
         }
 
+        bool nativeCall;
+        if (call.f !is null) {
+            import quickbite.backends.interpreter.interception_guard:
+                bodyContainsAsm;
+            import quickbite.frontend.dmd.functions: hasNoAvailableSource;
+
+            nativeCall = hasNoAvailableSource(call.f) || bodyContainsAsm(call.f);
+        }
+
         if (call.f !is null) {
             import quickbite.backends.interpreter.builtins: InterpreterBuiltin;
 
@@ -3853,10 +3862,10 @@ private struct Walker {
                 EvaluatedReferenceArgument evaluated;
                 if (parameter !is null && parameterIsLazy(parameter))
                     arguments ~= Value.undisplayable;
-                else if (
-                    parameter !is null &&
-                    isReferenceParameter(call.f, index, parameter)
-                )
+                else if (nativeCall && nativeReferenceParameter(call.f, index))
+                    arguments ~= runRefArgumentExpression(argument, evaluated);
+                else if (parameter !is null &&
+                    isReferenceParameter(call.f, index, parameter))
                     arguments ~= runRefArgumentExpression(argument, evaluated);
                 else
                     arguments ~= runExpression(argument);
@@ -4053,7 +4062,7 @@ private struct Walker {
                 InterpreterInboundTrampolineSession, NativeCallException,
                 tryCallNative;
 
-            if (hasNoAvailableSource(call.f)) {
+            if (nativeCall) {
                 Value result;
                 Value[] writebacks;
                 try {
@@ -4076,6 +4085,7 @@ private struct Walker {
                                 argumentExpressions,
                                 argumentTypes,
                                 arguments,
+                                evaluatedArguments,
                             ),
                             &invokeNativeCallback,
                             durableInboundSession,
@@ -4242,9 +4252,11 @@ private struct Walker {
         auto variable = var is null ? null : var.var.isVarDeclaration;
         if (variable !is null && variable in uninitializedLocals)
             return Value.void_;
-        if (variable !is null)
-            if (auto address = variable in nativeRefLocalAddresses)
-                evaluated.address = *address;
+        if (variable !is null) {
+            const address = bindingPointerValue(variable);
+            if (address.isPointer)
+                evaluated.address = address.pointerAddress;
+        }
 
         auto previous = _evaluatedReferenceArgumentIndices;
         _evaluatedReferenceArgumentIndices = &evaluated.indices;
@@ -7920,6 +7932,8 @@ private struct Walker {
 
         auto var = slice.e1.isVarExp;
         if (var is null) {
+            if (auto index = slice.e1.isIndexExp)
+                return runIndexedSliceAssignExpression(slice, index, rhs);
             if (auto dot = slice.e1.isDotVarExp)
                 return runFieldSliceAssignExpression(slice, dot, rhs);
             throw new Exception(text(
@@ -8008,6 +8022,45 @@ private struct Walker {
         foreach (index; lower .. upper)
             writeThroughArrayCell(variable, index, elements[index]);
 
+        return value;
+    }
+
+    // An indexed array-of-arrays element is already an independently
+    // addressable slice header.  Keep that native header and write its
+    // elements in place; rebuilding its enclosing array would restore the
+    // retired boxed-storage authority for this lvalue shape.
+    private Value runIndexedSliceAssignExpression(
+        imported!"dmd.expression".SliceExp slice,
+        imported!"dmd.expression".IndexExp index,
+        imported!"dmd.expression".Expression rhs,
+    ) {
+        import quickbite.backends.interpreter.aggregate_value: AggregateValue;
+        import std.conv: text;
+
+        const current = runIndexExpression(index);
+        const lower = slice.lwr is null
+            ? 0
+            : cast(size_t) runExpression(slice.lwr).asLong;
+        const upper = slice.upr is null
+            ? AggregateValue.length(current)
+            : cast(size_t) runExpression(slice.upr).asLong;
+
+        if (upper > AggregateValue.length(current))
+            throwRangeError(text(
+                "slice [", lower, " .. ", upper,
+                "] extends past source array of length ", AggregateValue.length(current),
+            ));
+
+        const block = isBlockSliceAssignment(slice, rhs);
+        const value = runExpression(rhs);
+        foreach (elementIndex; lower .. upper) {
+            const element = block
+                ? copyArrayValue(value, index.type.toBasetype.nextOf)
+                : AggregateValue.isArray(value)
+                    ? AggregateValue.elementAt(value, elementIndex - lower)
+                    : value;
+            AggregateValue.withArrayElement(current, elementIndex, element);
+        }
         return value;
     }
 
@@ -8485,6 +8538,7 @@ private struct Walker {
     }
 
     private Value boolCastValue(imported!"dmd.expression".CastExp cast_) {
+        import quickbite.backends.interpreter.aggregate_value: AggregateValue;
         import quickbite.backends.interpreter.runtime_casts:
             backendCastTarget = castTarget,
             backendCastValue = castValue;
@@ -8494,6 +8548,8 @@ private struct Walker {
             return Value(true);
         if (value == Value.null_)
             return Value(false);
+        if (value.isNativeAggregate && AggregateValue.isArray(value))
+            return Value(isTruthy(value));
 
         return backendCastValue(value, backendCastTarget(cast_.to));
     }
@@ -9312,6 +9368,7 @@ private struct Walker {
         imported!"dmd.expression".Expression[] argumentExpressions,
         imported!"dmd.mtype".Type[] argumentTypes,
         in Value[] arguments,
+        in EvaluatedReferenceArgument[] evaluatedArguments,
     ) {
         import quickbite.backends.interpreter.native_block: NativeBlock;
         import quickbite.backends.interpreter.native_call_adapter: NativeOperand;
@@ -9322,6 +9379,43 @@ private struct Walker {
         NativeOperand[] operands;
         operands.length = argumentExpressions.length;
         foreach (index, expression; argumentExpressions) {
+            if (auto typeid_ = expression.isTypeidExp)
+                if (auto typeInfo = typeidDeclaration(typeid_)) {
+                    import quickbite.ffi: resolveDataSymbol;
+
+                    if (auto address = resolveDataSymbol(typeInfo)) {
+                        auto scratch = NativeBlock.allocate(
+                            (void*).sizeof,
+                            NativeBlock.Scan.conservative,
+                        );
+                        *cast(const(void)**) scratch.address = address;
+                        operands[index] = NativeOperand(
+                            argumentTypes[index],
+                            scratch.address,
+                            scratch,
+                        );
+                        continue;
+                    }
+                }
+
+            if (
+                index < evaluatedArguments.length &&
+                evaluatedArguments[index].address !is null
+            ) {
+                auto scratch = NativeBlock.allocate(
+                    (void*).sizeof,
+                    NativeBlock.Scan.conservative,
+                );
+                *cast(void**) scratch.address =
+                    cast(void*) evaluatedArguments[index].address;
+                operands[index] = NativeOperand(
+                    argumentTypes[index],
+                    scratch.address,
+                    scratch,
+                );
+                continue;
+            }
+
             if (
                 !isNativeAddressOfLocal(expression) ||
                 index >= argumentTypes.length ||
@@ -9349,6 +9443,26 @@ private struct Walker {
             );
         }
         return operands;
+    }
+
+    private bool nativeReferenceParameter(
+        imported!"dmd.func".FuncDeclaration function_,
+        in size_t index,
+    ) {
+        import quickbite.ffi: isNativeReferenceParameter;
+
+        auto type = function_ is null || function_.type is null
+            ? null
+            : function_.type.toBasetype.isTypeFunction;
+        return isNativeReferenceParameter(type, index);
+    }
+
+    private imported!"dmd.declaration".TypeInfoDeclaration typeidDeclaration(
+        imported!"dmd.expression".TypeidExp typeid_,
+    ) {
+        // `auto`: `vtinfo` is DMD-owned mutable state.
+        auto type = typeidObjectType(typeid_);
+        return type is null ? null : type.vtinfo;
     }
 
     private Value runIndexExpression(
@@ -9768,7 +9882,7 @@ private struct Walker {
         auto object = AggregateValue.allocateClass(allocationType);
         nativeClassTypes[AggregateValue.nativeClassBodyAddress(object)] = allocationType;
         nativeClassOwners[AggregateValue.nativeClassBodyAddress(object)] = object;
-        initializeNativeClassBody(allocationType, object);
+        initializeNativeClassBody(this, allocationType, object);
         if (new_.member is null)
             return object;
 
@@ -10225,7 +10339,9 @@ private imported!"dmd.mtype".TypeStruct receiverStructType(
 
 
 private bool isTruthy(in imported!"quickbite.backends.interpreter.runtime_value".Value value) {
+    import dmd.astenums: TY;
     import quickbite.backends.interpreter.aggregate_value: AggregateValue;
+    import quickbite.backends.interpreter.native_array: readSliceHeaderBytes;
     import quickbite.backends.interpreter.runtime_value: Value;
 
     if (value == Value.null_)
@@ -10234,8 +10350,15 @@ private bool isTruthy(in imported!"quickbite.backends.interpreter.runtime_value"
     if (value.isPointer)
         return true;
 
-    if (AggregateValue.isArray(value))
+    if (AggregateValue.isArray(value)) {
+        if (value.isNativeAggregate) {
+            // DMD's `toBasetype` is mutable.
+            auto aggregate = AggregateValue.native(value);
+            if (aggregate.type.toBasetype.ty == TY.Tarray)
+                return readSliceHeaderBytes(aggregate.storage.bytes).ptr !is null;
+        }
         return AggregateValue.length(value) != 0;
+    }
 
     if (value == Value(false))
         return false;
@@ -10309,6 +10432,7 @@ private imported!"quickbite.backends.interpreter.runtime_value".Value classDefau
 // same place codec used by assignments; the returned NativeAggregate retains
 // the reference slot and the body allocation as one expression value.
 private void initializeNativeClassBody(
+    ref Walker walker,
     imported!"dmd.mtype".Type type,
     in imported!"quickbite.backends.interpreter.runtime_value".Value object,
 ) {
@@ -10323,8 +10447,16 @@ private void initializeNativeClassBody(
         throw new Exception("initializeNativeClassBody needs a class type.");
 
     auto body = Place(AggregateValue.nativeClassBodyAddress(object), type);
-    foreach (field; classFields(classType.sym))
-        writeValue(body.field(field), defaultValue(field.type));
+    foreach (field; classFields(classType.sym)) {
+        auto value = defaultValue(field.type);
+        if (field._init !is null)
+            if (auto initializer = field._init.isExpInitializer)
+                value = walker.storageValue(
+                    field.type,
+                    walker.runExpression(initializer.exp),
+                );
+        writeValue(body.field(field), value);
+    }
 }
 
 

@@ -78,7 +78,7 @@ public bool isLegalInterception(
 // hierarchy: a plain D class derived from an `extern (C++)` base does not
 // share its Itanium-ABI vtable layout, so dmd does not recognise the
 // override at all (as opposed to silently misbehaving).
-private bool bodyContainsAsm(
+public bool bodyContainsAsm(
     imported!"dmd.func".FuncDeclaration function_,
 ) {
     import dmd.statement: CompoundStatement;

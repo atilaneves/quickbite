@@ -16,6 +16,24 @@ private void runSse2BackendSourceFixtureTests(T)(in string moduleSource) {
 }
 
 
+static foreach (backend; Matrix!()) {
+    @("associativeArray.directLocalRefArgumentMutatesSource." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            void insert(ref int[int] values, int key, int value) {
+                values[key] = value;
+            }
+
+            unittest {
+                int[int] values;
+                insert(values, 7, 42);
+                assert(values[7] == 42);
+            }
+        });
+    }
+}
+
 /++
     Expression-specific assert diagnostics.
 
