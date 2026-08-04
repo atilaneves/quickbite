@@ -5658,6 +5658,35 @@ static foreach (backend; Matrix!()) {
     }
 }
 
+// Mutating through a static array of dynamic arrays (`int[][2]`) writes
+// through the row's own heap storage, not a copy: `a[0][1] = v` must land in
+// the same backing array a later `a[0][1]` read (or any other element of
+// row 0) observes, and must not disturb row 1's own storage.
+static foreach (backend; Matrix!()) {
+    @("staticArray.elementMutationOfArrayOfArraysWritesThroughRowStorage." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            int value(int seed) {
+                return seed;
+            }
+
+            unittest {
+                int first = value(1);
+                int[][2] a = [[first, first + 1], [first + 2, first + 3]];
+
+                a[0][1] = first + 98;
+
+                assert(a[0][1] == first + 98);
+                assert(a[0][0] == first);
+                assert(a[1][0] == first + 2);
+                assert(a[1][1] == first + 3);
+            }
+        });
+    }
+}
+
 
 /++
     `cast(void*)` of a string reads its raw byte storage through `.ptr`,

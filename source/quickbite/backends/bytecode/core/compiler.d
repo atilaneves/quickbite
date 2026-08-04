@@ -3458,6 +3458,8 @@ private struct Compiler {
     // at index `i` into a fresh slot and return a DynamicArrayLocal over it; null
     // if `outer` is not an array-of-arrays local.
     private DynamicArrayLocal* innerArrayDescriptor(IndexExp index) {
+        import dmd.astenums: TY;
+
         DynamicArrayLocal* outer;
 
         if (auto variable = index.e1.isVarExp)
@@ -3475,6 +3477,47 @@ private struct Compiler {
         if (outer is null)
             if (auto dot = index.e1.isDotVarExp)
                 outer = dynamicArrayFieldDescriptorOrNull(dot);
+
+        // `a[i]` where `a` is a static array whose own element type is
+        // itself a dynamic array (`int[][2]`): each element is an ordinary
+        // 16-byte slice descriptor stored inline in `a`'s own frame block,
+        // not a separately heap-allocated row (contrast a dynamic array of
+        // static-array rows, `T[N][]`, handled by `innerArrayRowPointer`)
+        // and not a `_dynamicArrayLocals`-tracked base, so neither branch
+        // above matches. Take the element's real frame address -- the same
+        // pointer `&a[i]` resolves to via `staticArrayElementPointer`, the
+        // mechanism `tryPointerToElement` already uses for this exact shape
+        // -- and read/write through it exactly like the `PtrExp` (`*p`)
+        // branch in `dynamicArrayDescriptorOrNull` above, so a write lands
+        // back in `a`'s own storage instead of a throwaway copy. Gated on
+        // the element type being genuinely `Tarray` (not `Tsarray`): a
+        // nested static array (`int[3][2]`) is inline bytes to chain into
+        // via the ordinary static-array-element path, not a descriptor to
+        // dereference.
+        if (outer is null)
+            if (auto baseOffset = staticArrayOffsetOf(index.e1))
+                if (index.e1.type.toBasetype.nextOf.toBasetype.ty ==
+                        TY.Tarray) {
+                    const pointer = staticArrayElementPointer(
+                        *baseOffset, index.e2, index.type,
+                        compileSizeConstant(staticArrayLength(index.e1.type)),
+                    );
+                    const offset =
+                        allocateBytes(sliceDescriptorSize, size_t.sizeof);
+                    emitPointerLoad(
+                        offset, pointer.offset, compileSizeConstant(0),
+                        sliceDescriptorSize,
+                    );
+                    auto result = new DynamicArrayLocal;
+                    *result = DynamicArrayLocal(
+                        offset,
+                        dynamicArrayElementType(index.type),
+                        arrayElementIsArray(index.type),
+                        true,
+                        pointer.offset,
+                    );
+                    return result;
+                }
 
         if (outer is null || !outer.elementIsArray)
             return null;
@@ -14526,8 +14569,21 @@ private struct Compiler {
                 return (declaration in _staticArrayLocals) !is null ||
                     moduleStaticArrayVariableOrNull(declaration) !is null;
 
+        // `expression` itself must genuinely be a static array (`Tsarray`)
+        // before its base is worth chasing further: `a[0]` of a static
+        // array of DYNAMIC arrays (`int[][2]`) recurses through this branch
+        // too (its ultimate root `a` is a static-array local), but `a[0]`'s
+        // own type is `Tarray`, not `Tsarray` -- it is a heap-backed
+        // element read out of `a`'s inline storage, not more inline
+        // static-array storage to chain into. Without this gate,
+        // `tryStaticArrayElement` mistakes `a[0][1] = v` for a nested
+        // static-array element write and computes its offset with the
+        // wrong stride, landing inside `a[0]`'s own slice-descriptor bytes
+        // and corrupting its pointer word.
         if (auto index = expression.isIndexExp)
-            return indexesStaticArray(index.e1);
+            return expression.type !is null &&
+                expression.type.toBasetype.ty == TY.Tsarray &&
+                indexesStaticArray(index.e1);
 
         // `base.field` where the field is a static array.
         if (auto dot = expression.isDotVarExp)

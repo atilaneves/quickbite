@@ -445,9 +445,6 @@ reaches them:
   `Tsarray` sub-expression, so compilation falls through to the
   static-array-chain path, which has no notion of a dynamic-array base. A
   clean diagnostic, not a wrong answer.
-- Static arrays of dynamic arrays copy each element's full 16-byte slice
-  descriptor; nested mutation and general stale-cell reconciliation remain
-  incomplete.
 - Captured array support does not yet cover every read, write, slice, append,
   view-preservation, and closure combination.
 - Dynamic-array and string sub-slices bounds-check both ends
@@ -482,14 +479,14 @@ row remains bounded and unblocked: the two survivors
 `refArgument.templateRefSharedForwardsThroughNestedFunction`, both in
 `expressions.d`) are the documented `&value == expected` address-identity
 rows blocked on the ref calling convention above, not bounded single-commit
-fixes. `new T[][](rows)` (a runtime outer length over dynamic-array rows) is
-fixed and covered (`dynamicArray.newArrayOfDynamicArrayRowsUsesRuntimeLength`,
-`arrays.d`); nested static-array-of-dynamic-array mutation under "Live
-hazards and divergences" above is still open. Find a fresh row through
-further `bin/qb` exploration of read-modify-write and mirror paths
-(captured-array read/write/slice/append coverage is another open lead
-there), take the "One place resolver" item, or take an "Architecture work
-forced by the baseline" front.
+fixes. `new T[][](rows)` (a runtime outer length over dynamic-array rows) and
+nested static-array-of-dynamic-array element mutation
+(`staticArray.elementMutationOfArrayOfArraysWritesThroughRowStorage`,
+`arrays.d`) are fixed and covered. Find a fresh row through further `bin/qb`
+exploration of read-modify-write and mirror paths (captured-array
+read/write/slice/append coverage is another open lead there), take the "One
+place resolver" item, or take an "Architecture work forced by the baseline"
+front.
 
 ### TDD and handoff discipline
 
