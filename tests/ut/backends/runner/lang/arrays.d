@@ -3763,11 +3763,26 @@ static foreach (backend; Matrix!()) {
 }
 
 // A dynamic-array-typed value (`int[][int]`): the value slot is a 16-byte
-// slice descriptor, not an inline scalar. Interpreter reads back the wrong
-// element (`0 != 20`) for this shape -- a separate, unconfirmed backend gap.
+// slice descriptor, not an inline scalar. `a[1] = [10, 20, 30]` lowers to a
+// pointer-index store into the AA's value slot
+// (`impl.d`'s `storeNativePointerElement` -> `native_call_adapter.
+// marshalNative`), and `marshalNative` only takes its direct
+// `place_value.writeValue` path when `place_value.isPlaceComposable`
+// accepts the element type; that predicate has no `Tarray` (dynamic-array)
+// arm, so a dynamic-array-valued AA element always falls through to the
+// legacy boxed `marshalArgument` reconstruction path instead (`ai/plans/
+// value.md` decision 18 / item 5, not yet deleted). The read side composes
+// correctly; the boxed fallback is what writes the wrong bytes. Fixing this
+// means extending `isPlaceComposable` (and `valueMatchesComposablePlace`)
+// to a `Tarray` arm -- a native-call-marshalling-seam change item 5 already
+// owns, not an AA-local fix -- so this stays a separate, unconfirmed
+// backend gap.
 static foreach (backend; Matrix!(
     Omit!(Interpreter, Because.unconfirmed,
-        "int[][int] element reads back 0 instead of the inserted value"),
+        "AA dynamic-array-valued element write falls through "
+            ~ "native_call_adapter.marshalNative's boxed fallback because "
+            ~ "place_value.isPlaceComposable has no Tarray arm (value.md "
+            ~ "item 5)"),
 )) {
     @("assocArray.dynamicArrayValueInsertsReadsAndMutates." ~
         backend.stringof)
@@ -3826,14 +3841,12 @@ static foreach (backend; Matrix!()) {
     }
 }
 
-// A struct-typed value (`Point[int]`): the same `p[0]` `_d_aaGetRvalueX`
-// rvalue-read shape as `dynamicArrayValueInsertsReadsAndMutates` above, but
-// for a struct rather than a dynamic array. Interpreter refuses the field
-// write -- a separate, unconfirmed backend gap.
-static foreach (backend; Matrix!(
-    Omit!(Interpreter, Because.unconfirmed,
-        "Unsupported interpreter assignment target"),
-)) {
+// A struct-typed value (`Point[int]`): field write through `p[0].x = ...`
+// composes through DMD's own `_d_aaGetRvalueX`-lowered pointer-dereference
+// receiver (`expressionsem.d`'s `revertModifiableAAIndexReads`), a plain
+// pointer-index assignment target `writeIndexLocation` handles like any
+// other native pointer.
+static foreach (backend; Matrix!()) {
     @("assocArray.structValueFieldReadWrite." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -3851,17 +3864,12 @@ static foreach (backend; Matrix!(
     }
 }
 
-// A direct consequence of the fix above: calling a mutating method through
-// an AA-value struct receiver (`a[1].bump()`) is the same
-// `IndexExp`-over-pointer-to-`Tstruct` receiver shape as the plain field
-// write above, but reached through `methodReceiver` rather than
-// `tryStructField`. Interpreter segfaults on the same shape -- a separate,
-// unconfirmed backend gap.
-static foreach (backend; Matrix!(
-    Omit!(Interpreter, Because.unconfirmed,
-        "segfaults calling a mutating method through an AA-value struct "
-            ~ "receiver"),
-)) {
+// Calling a mutating method through an AA-value struct receiver
+// (`a[1].bump()`) is the same `_d_aaGetRvalueX`-lowered pointer-dereference
+// receiver shape as the plain field write above, but reached through
+// `runMemberFunction`'s `addressOfExpression`/`arrayPointer` path instead of
+// an assignment target.
+static foreach (backend; Matrix!()) {
     @("assocArray.structValueMethodCallMutatesEntry." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -3961,14 +3969,12 @@ static foreach (backend; Matrix!()) {
 // front) but desyncing `foreach`'s per-entry read stride from the real one
 // as soon as `compileAssocArrayApply2` needed its own value width (it
 // previously had no `Tsarray` case at all, throwing "Unsupported type in
-// bytecode core: int[3]" via `scalarType`). Interpreter refuses the
-// indexed write with the same "Unsupported interpreter assignment target"
-// diagnostic `structValueFieldReadWrite` above already omits it for -- a
-// separate, unconfirmed backend gap.
-static foreach (backend; Matrix!(
-    Omit!(Interpreter, Because.unconfirmed,
-        "Unsupported interpreter assignment target"),
-)) {
+// bytecode core: int[3]" via `scalarType`). The indexed write
+// (`runNestedIndexAssignExpression`) composes through the same
+// `_d_aaGetRvalueX`-lowered pointer-dereference receiver
+// `structValueFieldReadWrite` above documents, one level further from the
+// assignment's own target.
+static foreach (backend; Matrix!()) {
     @("assocArray.staticArrayValueConstructsReadsWritesAndIterates." ~
         backend.stringof)
     @Tags(backend.stringof)

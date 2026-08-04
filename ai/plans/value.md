@@ -679,6 +679,14 @@ does. The Interpreter currently routes the parameter read into native storage
 and fails with `Expected associative array`; adding an address for the binding
 must not bypass the boxed authority before an AA place exists.
 
+An associative array's dynamic-array-typed VALUE (e.g. `int[][int]`) writes
+through `native_call_adapter.marshalNative`'s legacy boxed `marshalArgument`
+fallback rather than its direct `place_value.writeValue` path, because
+`isPlaceComposable` has no `Tarray` arm; the stored slice header comes out
+wrong. Struct- and static-array-typed AA values already compose correctly.
+Extending `isPlaceComposable`/`valueMatchesComposablePlace` to a `Tarray` arm
+is item 5's fallback-deletion scope, not a standalone language-surface fix.
+
 ### Item 5 — Delete Interpreter FFI marshalling fallbacks
 
 Finish decision 18 after the language-surface critical path. Normal outbound

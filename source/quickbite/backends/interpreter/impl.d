@@ -3142,14 +3142,27 @@ private struct Walker {
                 }
 
                 // Non-array receivers (notably pointer indexing) retain the
-                // established address path.
+                // established address path. `array.type` (this whole
+                // `IndexExp`'s own type, e.g. `Point`) has no `nextOf` to
+                // stride by when it names the pointee directly rather than a
+                // further array/pointer level -- exactly DMD's own
+                // `_d_aaGetRvalueX`-lowered pointer-dereference shape
+                // (`revertModifiableAAIndexReads`/`revertIndexAssignToRvalues`
+                // in `expressionsem.d`, reached here via a mutating AA-value
+                // method-call receiver, `aa[key].method()`), so no further
+                // offset composes past this element -- matching the
+                // `offset == 0` early return the `index.e1.isVarExp` arm
+                // above already takes for the identical reason.
                 const pointer = arrayPointer(index.e1, outerOffset, op);
-                if (pointer.isPointer)
+                if (pointer.isPointer) {
+                    if (offset == 0)
+                        return pointer;
                     return pointer.pointerOffsetBy(
                         offset * cast(long) typeByteSize(
                             array.type.toBasetype.nextOf,
                         ),
                     );
+                }
             }
 
             if (auto dot = array.isDotVarExp) {
@@ -7492,7 +7505,30 @@ private struct Walker {
         imported!"dmd.expression".IndexExp index,
         in Value value,
     ) {
+        import quickbite.frontend.dmd.types: isPointerType;
+
         const arrayIndex = cast(size_t) runExpression(index.e2).asLong;
+
+        // DMD's own `modifiableLvalue` semantic reverts an associative-array
+        // index used through a further field/method/element access (rather
+        // than being the assignment's own direct target) to an rvalue read
+        // through `_d_aaGetRvalueX` (`expressionsem.d`'s
+        // `revertModifiableAAIndexReads`) -- a `Point* __aaget = ...; *(
+        // __aaget ? __aaget : range-error)` shape whose outer node is a
+        // plain pointer-dereference `IndexExp` (index 0), reached here when
+        // `writeLocation`'s `DotVarExp` arm rebuilds the whole receiver
+        // value and recurses back onto it. That pointer already names the
+        // AA's own value-slot storage, so writing through it is the correct
+        // (and only) place for this element, matching
+        // `runIndexAssignExpression`'s identical pointer-index arm.
+        if (isPointerType(index.e1.type)) {
+            const pointer = runExpression(index.e1);
+            if (pointer.isPointer) {
+                storeNativePointerElement(index.e1.type, pointer, arrayIndex, value);
+                return;
+            }
+            throw new Exception("Pointer index assignment needs a native address.");
+        }
 
         if (auto dot = index.e1.isDotVarExp) {
             if (receiverClassType(dot.e1) !is null) {
@@ -8016,6 +8052,34 @@ private struct Walker {
         imported!"dmd.expression".IndexExp inner,
         imported!"dmd.expression".Expression rhs,
     ) {
+        // `rows["a"][1] = 99`: DMD's own `revertIndexAssignToRvalues`
+        // (`expressionsem.d`) rewrites an associative-array index nested one
+        // level deeper than the assignment's own direct target (indexing
+        // `rows["a"]`'s aggregate-typed VALUE, rather than `rows["a"]`
+        // itself being assigned) into a `_d_aaGetRvalueX`-based rvalue read
+        // -- `outer` (`rows["a"]`) becomes a pointer-dereference `IndexExp`
+        // (index 0) over that call's own result, whose address already IS
+        // the AA's own value-slot storage (the same lowering
+        // `writeIndexLocation`'s own pointer arm composes through for the
+        // sibling `aa[key].field = ...` shape). Write through that pointer
+        // directly instead of the `locals`-keyed array rebuild below, which
+        // has no pointer-typed base at all.
+        import quickbite.frontend.dmd.types: isPointerType;
+
+        if (isPointerType(outer.e1.type)) {
+            import quickbite.backends.interpreter.place: Place;
+            import quickbite.backends.interpreter.place_value: writeValue;
+
+            const pointer = runExpression(outer.e1);
+            if (!pointer.isPointer)
+                throw new Exception("Unsupported interpreter assignment target.");
+
+            const innerIndex = cast(size_t) runExpression(inner.e2).asLong;
+            const value = runExpression(rhs);
+            writeValue(Place(pointer.pointerAddress, outer.type).index(innerIndex), value);
+            return value;
+        }
+
         auto var = outer.e1.isVarExp;
         if (var is null)
             throw new Exception("Unsupported interpreter assignment target.");
