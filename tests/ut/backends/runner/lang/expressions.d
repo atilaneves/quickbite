@@ -2104,20 +2104,19 @@ static foreach (backend; Matrix!(
 // enclosing scope rather than through this core at all, and refuses reading
 // it outright ("variable `count` cannot be read at compile time") -- a
 // different message from the bare-return sibling's ("closures are not yet
-// supported in CTFE") but the same underlying gap. Interpreter's
-// `place_value.writeValue` has no case for a delegate value written through
-// a struct-literal initializer place at all (`struct.literalDelegateFieldFromFreshLambdaIsCallable`'s
-// own Omit reason), independent of whether the capture escapes.
+// supported in CTFE") but the same underlying gap. Interpreter composes its
+// two prior fixes cleanly here: `structLiteralValue`'s live-delegate-field
+// registration (`struct.literalDelegateFieldFromFreshLambdaIsCallable`) and
+// `functionReturningCapturingDelegateIsCallable`'s captured-frame-address
+// snapshot both apply unmodified to a delegate field that is itself the
+// direct `return` expression, so this fixture needed no further Interpreter
+// work once both landed.
 static foreach (backend; Matrix!(
     Omit!(Ctfe, Because.inexpressible,
         "dmd.dinterpret evaluates the struct literal's delegate field " ~
             "against its own enclosing-scope locals directly and refuses " ~
             "reading `count` from CTFE outright: \"variable `count` " ~
             "cannot be read at compile time\""),
-    Omit!(Interpreter, Because.unconfirmed,
-        "place_value.writeValue has no case for a delegate value written " ~
-            "through a struct-literal initializer place at all, escaping " ~
-            "or not -- not yet promoted"),
 )) {
     @("delegate.functionReturningStructWithCapturingDelegateFieldIsCallable." ~
         backend.stringof)
@@ -2149,10 +2148,6 @@ static foreach (backend; Matrix!(
             "against its own enclosing-scope locals directly and refuses " ~
             "reading `count` from CTFE outright: \"variable `count` " ~
             "cannot be read at compile time\""),
-    Omit!(Interpreter, Because.unconfirmed,
-        "place_value.writeValue has no case for a delegate value written " ~
-            "through a struct-literal initializer place at all, escaping " ~
-            "or not -- not yet promoted"),
 )) {
     @("delegate.functionReturningMutatingStructWithCapturingDelegateFieldIsCallable." ~
         backend.stringof)
@@ -2188,10 +2183,6 @@ static foreach (backend; Matrix!(
         "dmd.dinterpret evaluates the struct literal's delegate field " ~
             "against its own enclosing-scope locals directly and refuses " ~
             "reading `a`/`b` from CTFE outright"),
-    Omit!(Interpreter, Because.unconfirmed,
-        "place_value.writeValue has no case for a delegate value written " ~
-            "through a struct-literal initializer place at all, escaping " ~
-            "or not -- not yet promoted"),
 )) {
     @("delegate.functionReturningStructWithCapturingDelegateFieldOverTwoLocalsIsCallable." ~
         backend.stringof)
