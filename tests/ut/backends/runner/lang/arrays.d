@@ -3361,20 +3361,33 @@ static foreach (backend; Matrix!()) {
 // Struct AA keys compare dynamic-array members by their elements, not by the
 // identity of their slice backing storage. Struct-typed key storage itself
 // (`assocArrayKeyMeta`/`assocArrayKeyOffset`, raw-byte comparison, no string
-// member) is now supported (`structKeyRawBytesConstructLookupAndIterate`
-// above), so this row's refusal has moved past key compilation to
-// `assert(Name(ab()) in ages)`'s synthesized boolean temporary
-// (`__assertOpN = <InExp>`), a separate, so-far-unsupported assignment
-// shape. Reaching that point does not mean the underlying gap (whole-struct
-// raw-byte compare is wrong for a string member: two separately-constructed
-// but content-equal strings have different backing pointers) is fixed --
-// `keysEqual` still needs the same structural, not raw-byte, comparison it
-// already gives a bare `string` key.
-static foreach (backend; Matrix!(
-    Omit!(Bytecode, Because.refusal,
-        "Unsupported assignment in bytecode core: __assertOp61 = "
-            ~ "Name(ab()) in ages"),
-)) {
+// member) is supported (`structKeyRawBytesConstructLookupAndIterate` above).
+// A struct key that is itself nothing but a single plain-`string` field has
+// the exact same {ptr, length} byte layout as a bare `string` -- no
+// interleaved scalar fields to keep raw -- so `assocArrayKeyIsArray`
+// (compiler.d) now recognises that shape and routes it through the same
+// content, not descriptor-byte, comparison a bare `string` key already gets
+// (`keysEqual`, machine.d, unchanged). This fixture's own `ab()` call
+// happens to return the same backing literal both times, so it would not by
+// itself catch a raw-byte regression; the sibling
+// `structKeyWithStringMemberComparesByContentNotPointer` fixture below
+// constructs the two keys from genuinely different backing storage and is
+// the real regression guard.
+//
+// Getting here also fixed an unrelated compiler bug along the way:
+// `compilePointerDeclaration` used to register a pointer local's frame slot
+// only *after* compiling its initializer, but DMD's `in` lowering for a
+// non-constant-foldable key (`Name(ab())`, needing a hidden key temp to
+// preserve evaluation order) nests a self-referential assignment to that
+// same local inside its own initializer's `CommaExp` -- `(__aakeyN =
+// Name(ab()), variable = _d_aaInX(...))` -- so the generic assignment
+// compiler used to reach a plain `variable = ...` while the local's own
+// declaration was still being compiled, with no slot yet registered for it,
+// refusing with "Unsupported assignment in bytecode core". Registering the
+// slot before compiling the initializer (mirroring the plain-scalar
+// declaration path, which already did this) fixes that ordering bug
+// generally, independent of the string-member comparison fix above.
+static foreach (backend; Matrix!()) {
     @("assocArray.structKeyWithStringMemberComparesStructurally." ~
         backend.stringof)
     @Tags(backend.stringof)
@@ -3392,6 +3405,88 @@ static foreach (backend; Matrix!(
                 int[Name] ages;
                 ages[Name(ab())] = 1;
                 assert((Name(ab()) in ages) !is null);
+            }
+        });
+    }
+}
+
+// The real regression guard for the fix above: `a()` and `b()` both return
+// content-equal `"Alice"` strings built from genuinely different backing
+// storage (concatenation vs. an appended-then-`idup`'d buffer), so a
+// raw-byte compare of the whole `Name` block (which would compare the
+// differing backing pointers) would wrongly miss the lookup.
+static foreach (backend; Matrix!()) {
+    @("assocArray.structKeyWithStringMemberComparesByContentNotPointer." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct Name {
+                string text;
+            }
+
+            string a() {
+                return "Al" ~ "ice";
+            }
+
+            string b() {
+                char[] buf;
+                buf ~= "Alice";
+                return buf.idup;
+            }
+
+            unittest {
+                int[Name] ages;
+                ages[Name(a())] = 1;
+                assert((Name(b()) in ages) !is null);
+            }
+        });
+    }
+}
+
+// The same single-string-field struct key, covering construction from a
+// local (not just a literal), `[]` lookup, a negative `in` miss, `foreach`
+// reading the key back at its real (content-comparable) width, and
+// `.remove`.
+static foreach (backend; Matrix!()) {
+    @("assocArray.structKeyWithStringMemberSupportsForeachAndRemove." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct Name {
+                string text;
+            }
+
+            string a() {
+                return "Al" ~ "ice";
+            }
+
+            string b() {
+                char[] buf;
+                buf ~= "Alice";
+                return buf.idup;
+            }
+
+            unittest {
+                int[Name] ages;
+                ages[Name(a())] = 30;
+
+                Name key = Name(b());
+                ages[key] = 31;
+                assert(ages.length == 1);
+                assert(ages[Name("Alice")] == 31);
+                assert((Name("Bob") in ages) is null);
+
+                int sum;
+                foreach (k, v; ages) {
+                    sum += v;
+                    assert(k.text == "Alice");
+                }
+                assert(sum == 31);
+
+                assert(ages.remove(Name("Alice")));
+                assert(ages.length == 0);
             }
         });
     }

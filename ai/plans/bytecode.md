@@ -383,16 +383,65 @@ explicitly rather than silently reading the wrong element width. `foreach
 raw-byte-comparable struct keys all iterate correctly; `wstring`/`dstring`
 still refuse.
 
-The remaining candidate is `assocArray.structKeyWithStringMemberComparesStructurally`
-(`tests/ut/backends/runner/lang/arrays.d`): struct-typed key storage itself
-is solved (above), so a struct key with a string member now compiles past
-key storage -- Bytecode's refusal for this row has moved to
-`assert(Name(ab()) in ages)`'s synthesized boolean temporary
-(`Unsupported assignment in bytecode core: __assertOp61 = Name(ab()) in
-ages`). Reaching that point does not fix the underlying gap: a whole-struct
-raw-byte comparison is still wrong for a string member specifically, needing
-the same structural, not raw-byte, comparison `keysEqual` already gives a
-bare `string` key.
+`assocArray.structKeyWithStringMemberComparesStructurally` is now un-omitted
+for Bytecode and passes for the scope it covers: a struct key that is itself
+nothing but a single plain-`string` field (`struct Name { string text; }`)
+has the exact same {ptr, length} byte layout as a bare `string` -- no
+interleaved scalar fields to keep raw -- so `assocArrayKeyIsArray`
+(compiler.d) now recognises that shape and routes it through the same
+content, not descriptor-byte, comparison a bare `string` key already gets;
+`keysEqual` (machine.d) itself needed no change at all, since the bytes it
+reads are identical either way. Construction (literal and local), `[]`
+lookup, `in` (including a negative miss), `foreach`, and `.remove` all work
+(`structKeyWithStringMemberComparesByContentNotPointer` and
+`structKeyWithStringMemberSupportsForeachAndRemove`, `arrays.d`, confirm two
+content-equal keys built from genuinely different backing storage compare
+equal -- the original fixture's own `ab()` call happens to return the same
+backing literal both times, so it alone would not have caught a raw-byte
+regression).
+
+Getting here also surfaced and fixed an unrelated compiler bug:
+`compilePointerDeclaration` used to register a pointer local's frame slot
+only *after* compiling its initializer, but DMD's `in` lowering for a
+non-constant-foldable key (`Name(ab())`, needing a hidden key temp to
+preserve evaluation order) nests a self-referential assignment to that same
+local inside its own initializer's `CommaExp` -- `(__aakeyN = Name(ab()),
+variable = _d_aaInX(...))` -- so the generic assignment compiler used to
+reach a plain `variable = ...` while the local's own declaration was still
+being compiled, with no slot yet registered, refusing with "Unsupported
+assignment in bytecode core: __assertOp61 = Name(ab()) in ages" (the
+row's previously-recorded refusal). Registering the slot before compiling
+the initializer (mirroring the plain-scalar declaration path, which already
+did this) fixes the ordering bug generally, independent of the
+string-member comparison fix above; `compileAssignExpression`'s generic
+fallback was also fixed to keep tagging its result `isPointer` for an
+already-`_pointerLocals`-tracked local, which the ordering fix now depends
+on and which any other bare pointer-local reassignment through that path
+was silently losing before.
+
+Remaining, deliberately out of scope here: a struct key with a string
+member *alongside other fields* (e.g. `struct Name { string first; int
+age; }`, mixed content-compared and raw-compared fields in one key) is not
+supported. `keysEqual`/`AssocArray.find`/`insert`/`remove` compare a key
+block only as "all raw bytes" or "one whole {ptr,length} descriptor,
+compared by content" (a single bit in `Instruction.e`'s packed
+`assocArrayKeyMeta`); every `Instruction` operand slot at the `aaIn`/
+`aaInsert`/`aaGetRvalue`/`aaRemove`/`aaEqual` opcodes is already spoken for
+(result offset, handle, key offset, value width, key meta), so there is no
+room to also carry a per-field byte-range layout (which fields are raw,
+which are content-compared, at what offsets) through the instruction
+stream as-is. The smallest next step: a `Program`-level side table of key
+layouts (one entry per distinct AA key shape needing it, each listing its
+mixed-field byte ranges), referenced by an index carried in the same
+operand slot `assocArrayKeyMeta` uses today, with `keysEqual` (and a
+matching hash if the VM ever moves off its current linear
+`AssocArray.find` scan) extended to walk that layout field-by-field --
+reusing `compileStructIdentity`'s existing field-by-field pattern
+(compiler.d: a `Tarray` field compares by content via `emitSliceEqual`,
+everything else compares raw) as the template, since it already solves the
+identical problem for `==` at compile time rather than inside the VM. Note
+there is no separate hash to fix today: `AssocArray.find`/`insert`/`remove`
+are a plain linear scan over `keysEqual`, not a hash table.
 
 An AA value's storage width also accounts for a dynamic-array-typed value
 (`int[][int]`, sized as its own 16-byte slice descriptor) and a

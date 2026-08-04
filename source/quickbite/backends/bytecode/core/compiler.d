@@ -4050,6 +4050,24 @@ private struct Compiler {
             return;
         }
 
+        // Pre-register the slot *before* compiling the initializer. DMD's
+        // `in` operator lowering for an associative-array key that is not
+        // constant-foldable (e.g. `Name(ab())`, needing a hidden key temp to
+        // preserve evaluation order) nests a self-referential assignment to
+        // `variable` inside its own initializer's `CommaExp` --
+        // `(__aakeyN = Name(ab()), variable = _d_aaInX(...))` -- so the
+        // generic assignment compiler reaches a plain `variable = ...`
+        // *while still compiling `variable`'s own declaration*. Without this
+        // pre-registration that nested assignment finds no slot for
+        // `variable` and refuses with "Unsupported assignment in bytecode
+        // core". The `_locals`/`_pointerLocals` entries set here are
+        // harmlessly overwritten (with the same values, or a more precise
+        // one for the delegate-pointee case) once the initializer finishes
+        // compiling below.
+        _locals[variable] = offset;
+        _pointerLocals[variable] = pointerElementScalar(variable.type);
+        registerCapturedOffset(variable, offset);
+
         const pointer =
             compileExpression(initializerExpression(initializer.exp));
         if (!pointer.isPointer)
@@ -4070,9 +4088,14 @@ private struct Compiler {
         // struct declaration so `p.field` resolves through the pointer.
         if (auto structDeclaration = structPointerDeclaration(variable.type))
             _structPointerLocals[variable] = structDeclaration;
-        _code ~= Instruction(
-            Op.copy, offset, pointer.offset, cast(ushort) size_t.sizeof,
-        );
+        // The self-referential `CommaExp` initializer shape above (the
+        // nested `variable = ...` assignment) already writes the pointer
+        // value directly into `offset` -- skip the otherwise-redundant
+        // self-copy.
+        if (pointer.offset != offset)
+            _code ~= Instruction(
+                Op.copy, offset, pointer.offset, cast(ushort) size_t.sizeof,
+            );
     }
 
     // A delegate value is a `{functionIndex, context}` pair: two `size_t` words,
@@ -11611,6 +11634,14 @@ private struct Compiler {
             rhs.offset,
             cast(ushort) size(type),
         );
+        // A plain pointer-local reassignment (`p = otherPointerExpr;`) must
+        // keep reading as a pointer to its caller -- e.g.
+        // `compilePointerDeclaration`'s self-referential `CommaExp`
+        // initializer shape, where this very assignment IS the pointer
+        // local's own construction, checks `.isPointer` on the value
+        // returned here.
+        if (auto element = declaration in _pointerLocals)
+            return Operand(*slot, type, true, *element);
         return Operand(*slot, type);
     }
 
@@ -17644,23 +17675,31 @@ private struct Compiler {
             Op.aaValues, handle, valueElementSize,
         );
 
+        // A struct key that is itself nothing but a single `string` field
+        // (`assocArrayKeyIsArray`'s struct branch) is *compared* by content
+        // like a bare `string`, but its declared foreach-parameter type is
+        // still `Tstruct` -- checking `keyIsStruct` first here keeps it on
+        // the same `_structLocals` frame representation the raw-byte
+        // struct-key foreach case already uses (`dynamicArrayElementType`
+        // below expects an actual `Tarray`, not a struct, so it must never
+        // see this key's type).
         const keyIsStruct = keyParameter.type.toBasetype.ty == TY.Tstruct;
-        const keySlot = keyIsArray
-            ? allocateBytes(keyElementSize, size_t.sizeof)
-            : keyIsStruct
-                ? allocateBytes(
-                    keyElementSize, staticArrayAlign(keyParameter.type),
-                )
+        const keySlot = keyIsStruct
+            ? allocateBytes(
+                keyElementSize, staticArrayAlign(keyParameter.type),
+            )
+            : keyIsArray
+                ? allocateBytes(keyElementSize, size_t.sizeof)
                 : allocate(scalarType(keyParameter.type));
-        if (keyIsArray)
+        if (keyIsStruct)
+            _structLocals[keyParameter] = StructLocal(
+                keySlot, structDeclarationOf(keyParameter.type),
+            );
+        else if (keyIsArray)
             _dynamicArrayLocals[keyParameter] = DynamicArrayLocal(
                 keySlot,
                 dynamicArrayElementType(keyParameter.type),
                 arrayElementIsArray(keyParameter.type),
-            );
-        else if (keyIsStruct)
-            _structLocals[keyParameter] = StructLocal(
-                keySlot, structDeclarationOf(keyParameter.type),
             );
         else
             _locals[keyParameter] = keySlot;
@@ -17830,21 +17869,42 @@ private struct Compiler {
     // backing pointers, so a raw descriptor compare would wrongly treat them
     // as distinct keys. Only a plain `string` (immutable `char[]`) is
     // supported this way; `wstring`/`dstring` throw rather than silently
-    // miscompare by the wrong element width. A struct-typed key is never an
-    // array key: it is compared and stored as its own raw bytes, the same
-    // whole-block-width treatment `assocArrayKeyNonArrayWidth` gives it.
+    // miscompare by the wrong element width.
+    //
+    // A struct key that is itself nothing but a single plain-`string`
+    // field (`struct Name { string text; }`) has the exact same {ptr,
+    // length} byte layout as a bare `string` -- there are no interleaved
+    // scalar fields to keep raw, so it is content-compared the same way
+    // (`assocArray.structKeyWithStringMemberComparesStructurally`,
+    // `tests/ut/backends/runner/lang/arrays.d`). A struct with any other
+    // shape (more than one field, or a lone field that is not a plain
+    // `string`) still falls through to the whole-block raw-byte
+    // comparison below -- sound only when no field is itself a
+    // string/dynamic array, `assocArrayKeyNonArrayWidth`'s scope.
     private bool assocArrayKeyIsArray(Type aaType) {
+        import dmd.astenums: TY;
         import std.conv: text;
 
         auto keyType = assocArrayKeyType(aaType);
-        if (!isStringType(keyType))
-            return false;
-        if (!isCharStringType(keyType))
-            throw new Exception(text(
-                "Unsupported associative array key type in bytecode core: ",
-                typeChars(keyType),
-            ));
-        return true;
+        if (isStringType(keyType)) {
+            if (!isCharStringType(keyType))
+                throw new Exception(text(
+                    "Unsupported associative array key type in bytecode core: ",
+                    typeChars(keyType),
+                ));
+            return true;
+        }
+
+        if (keyType.toBasetype.ty == TY.Tstruct) {
+            auto declaration = structDeclarationOf(keyType);
+            if (declaration.fields.length == 1) {
+                auto fieldType = cast(Type) declaration.fields[0].type;
+                if (isCharStringType(fieldType))
+                    return true;
+            }
+        }
+
+        return false;
     }
 
     // The byte width of a non-array AA key: a struct key is its own whole
