@@ -7920,6 +7920,8 @@ private struct Walker {
 
         auto var = slice.e1.isVarExp;
         if (var is null) {
+            if (auto index = slice.e1.isIndexExp)
+                return runIndexedSliceAssignExpression(slice, index, rhs);
             if (auto dot = slice.e1.isDotVarExp)
                 return runFieldSliceAssignExpression(slice, dot, rhs);
             throw new Exception(text(
@@ -8008,6 +8010,45 @@ private struct Walker {
         foreach (index; lower .. upper)
             writeThroughArrayCell(variable, index, elements[index]);
 
+        return value;
+    }
+
+    // An indexed array-of-arrays element is already an independently
+    // addressable slice header.  Keep that native header and write its
+    // elements in place; rebuilding its enclosing array would restore the
+    // retired boxed-storage authority for this lvalue shape.
+    private Value runIndexedSliceAssignExpression(
+        imported!"dmd.expression".SliceExp slice,
+        imported!"dmd.expression".IndexExp index,
+        imported!"dmd.expression".Expression rhs,
+    ) {
+        import quickbite.backends.interpreter.aggregate_value: AggregateValue;
+        import std.conv: text;
+
+        const current = runIndexExpression(index);
+        const lower = slice.lwr is null
+            ? 0
+            : cast(size_t) runExpression(slice.lwr).asLong;
+        const upper = slice.upr is null
+            ? AggregateValue.length(current)
+            : cast(size_t) runExpression(slice.upr).asLong;
+
+        if (upper > AggregateValue.length(current))
+            throwRangeError(text(
+                "slice [", lower, " .. ", upper,
+                "] extends past source array of length ", AggregateValue.length(current),
+            ));
+
+        const block = isBlockSliceAssignment(slice, rhs);
+        const value = runExpression(rhs);
+        foreach (elementIndex; lower .. upper) {
+            const element = block
+                ? copyArrayValue(value, index.type.toBasetype.nextOf)
+                : AggregateValue.isArray(value)
+                    ? AggregateValue.elementAt(value, elementIndex - lower)
+                    : value;
+            AggregateValue.withArrayElement(current, elementIndex, element);
+        }
         return value;
     }
 

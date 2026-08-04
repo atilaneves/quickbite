@@ -1313,10 +1313,7 @@ static foreach (backend; Matrix!()) {
 // variable (`rhs`), not itself sliced (`rhs[]`) or a literal -- the general
 // case `compileSourceSlice` must resolve by compiling `rhs` as an ordinary
 // expression and reusing its own slice descriptor.
-static foreach (backend; Matrix!(
-    Omit!(Interpreter, Because.unconfirmed,
-        "assignment target is a slice of an indexed element"),
-)) {
+static foreach (backend; Matrix!()) {
     @("dynamicArray.subSliceAssignmentOntoArrayOfArraysElementFromPlainVariable." ~
         backend.stringof)
     @Tags(backend.stringof)

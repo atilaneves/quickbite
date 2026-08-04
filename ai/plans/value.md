@@ -641,6 +641,10 @@ native-pointer path matches it. The allocated-block diagnostic is a CTFE-only
 characterization, so the Interpreter belongs in the compiled-behaviour matrix;
 do not restore a boxed-storage bounds diagnostic for this operation.
 
+An indexed array-of-arrays element is its own addressed slice header. Slice
+assignment through that element writes the row's native elements in place;
+rebuilding the enclosing array would reintroduce boxed storage authority.
+
 The temporary `std.conv.text` character-array path reads the authoritative
 native slice header, including its retained backing address, rather than a
 transient aggregate handle. This is slice execution, not a formatter-specific
