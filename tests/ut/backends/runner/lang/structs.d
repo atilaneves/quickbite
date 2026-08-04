@@ -2618,28 +2618,20 @@ static foreach (backend; Matrix!()) {
 
 // A `Tarray` class field's own array-literal default (`int[] arr = [1, 2,
 // 3];`) parses as an `ArrayInitializer`, not the `ExpInitializer` the
-// scalar-field fixture above exercises, and `compileDefaultClassFields`
-// never even reached the field's initializer for that shape: every
-// `Tarray`-typed class field default was silently skipped, left zeroed by
-// `allocClass`. Also exercises real D's shared-static-default semantics
-// (confirmed against real `dmd`): every `new C()` that does not override
-// the field shares one backing array, so mutating it through one instance
-// is visible through another -- assigning a fresh array to one instance's
-// field only replaces that instance's own descriptor, leaving the shared
-// default and every other instance still pointing at it untouched.
-// `Interpreter` fails the same way the scalar-field sibling above does
-// (confirmed via real `bin/ut`: `[] != [1, 2, 3]`, the field stays
-// zero-initialised). `Ctfe` genuinely diverges here, confirmed directly
-// against real `dmd`: CTFE evaluates each `new C()`'s array-literal field
-// default as a fresh, independent array rather than sharing one static
-// backing array the way compiled/runtime D does (`static assert(({ auto a
-// = new C(); auto b = new C(); a.arr[0] = 99; return b.arr[0]; })() ==
-// 99)` fails under real `dmd`), so it cannot pass the sharing assertions
-// below.
+// scalar-field fixture above exercises. Exercises real D's
+// shared-static-default semantics (confirmed against real `dmd`): every
+// `new C()` that does not override the field shares one backing array, so
+// mutating it through one instance is visible through another -- assigning
+// a fresh array to one instance's field only replaces that instance's own
+// descriptor, leaving the shared default and every other instance still
+// pointing at it untouched. `Ctfe` genuinely diverges here, confirmed
+// directly against real `dmd`: CTFE evaluates each `new C()`'s
+// array-literal field default as a fresh, independent array rather than
+// sharing one static backing array the way compiled/runtime D does
+// (`static assert(({ auto a = new C(); auto b = new C(); a.arr[0] = 99;
+// return b.arr[0]; })() == 99)` fails under real `dmd`), so it cannot pass
+// the sharing assertions below.
 static foreach (backend; Matrix!(
-    Omit!(Interpreter, Because.unconfirmed,
-        "a Tarray class field's own array-literal default is never " ~
-        "applied on allocation"),
     Omit!(Ctfe, Because.diverges,
         "real dmd CTFE gives every `new C()` its own fresh array for an " ~
         "array-literal field default instead of sharing one static " ~
@@ -2674,9 +2666,6 @@ static foreach (backend; Matrix!(
 }
 
 static foreach (backend; Matrix!(
-    Omit!(Interpreter, Because.unconfirmed,
-        "a Tarray class field's own array-literal default is never " ~
-        "applied on allocation"),
     Omit!(Ctfe, Because.diverges,
         "real dmd CTFE gives every `new C()` its own fresh array for an " ~
         "array-literal field default instead of sharing one static " ~

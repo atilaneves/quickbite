@@ -234,6 +234,19 @@ private struct UninitializedBindings {
     public bool[void*] addresses;
 }
 
+// A class field's own array-literal default (`int[] arr = [1, 2, 3];`) is
+// compiled D's static `.init` data: every `new` that does not override the
+// field shares that one evaluated backing array. Cached per field
+// declaration behind a pointer indirection -- like `UninitializedBindings`
+// -- so a fork that first populates the cache from empty still shares the
+// same backing table with every other `Walker` in the execution, rather
+// than a plain `Value[VarDeclaration]` field silently diverging the moment
+// a fork inserts into what was, at fork time, still a null AA.
+private struct ClassArrayFieldDefaults {
+    public imported!"quickbite.backends.interpreter.runtime_value".Value[
+        imported!"dmd.declaration".VarDeclaration] table;
+}
+
 private class InterpretedException: Exception {
     public imported!"quickbite.backends.interpreter.runtime_value".Value object;
 
@@ -327,7 +340,10 @@ private struct Walker {
 
     private bool[VarDeclaration] mirrorEstablished;
 
-
+    // See `ClassArrayFieldDefaults`'s own comment. Lazily allocated on first
+    // write, like `uninitializedBindingAddresses`; shared, not duped, across
+    // forked child `Walker`s.
+    private ClassArrayFieldDefaults* classArrayFieldDefaults;
 
 
     // Array-element sibling of the common nested-field reverse lookup:
@@ -2885,6 +2901,9 @@ private struct Walker {
         // not a per-frame copy.
         child.classObjectTable = classObjectTable;
         child.uninitializedBindingAddresses = uninitializedBindingAddresses;
+        // Shared for the same reason: one evaluated array-literal class
+        // default must stay the single backing array every fork sees.
+        child.classArrayFieldDefaults = classArrayFieldDefaults;
         // Shared for the identical reason, and by the identical shape --
         // see `moduleTable`'s own field comment.
         child.moduleTable = moduleTable;
@@ -10461,14 +10480,47 @@ private void initializeNativeClassBody(
     auto body = Place(AggregateValue.nativeClassBodyAddress(object), type);
     foreach (field; classFields(classType.sym)) {
         auto value = defaultValue(field.type);
-        if (field._init !is null)
+        if (field._init !is null) {
             if (auto initializer = field._init.isExpInitializer)
                 value = walker.storageValue(
                     field.type,
                     walker.runExpression(initializer.exp),
                 );
+            else if (field._init.isArrayInitializer !is null)
+                value = classFieldArrayLiteralDefault(walker, field);
+        }
         writeValue(body.field(field), value);
     }
+}
+
+
+// A `Tarray`/`Tsarray` class field's own array-literal default (`int[] arr
+// = [1, 2, 3];`) parses as an `ArrayInitializer`, not the `ExpInitializer`
+// a scalar default parses as. Real D evaluates that literal once, into the
+// class's static `.init` data, and every `new` that does not override the
+// field shares that one backing array: mutating it through one instance is
+// visible through another. Evaluate the literal once per field declaration
+// and cache the resulting native array `Value`, so every later instance's
+// field descriptor points at the same backing storage instead of a fresh
+// per-object copy.
+private imported!"quickbite.backends.interpreter.runtime_value".Value
+classFieldArrayLiteralDefault(
+    ref Walker walker,
+    imported!"dmd.declaration".VarDeclaration field,
+) {
+    import dmd.initsem: initializerToExpression;
+
+    if (walker.classArrayFieldDefaults is null)
+        walker.classArrayFieldDefaults = new ClassArrayFieldDefaults;
+    if (auto cached = field in walker.classArrayFieldDefaults.table)
+        return *cached;
+
+    auto value = walker.storageValue(
+        field.type,
+        walker.runExpression(field._init.initializerToExpression),
+    );
+    walker.classArrayFieldDefaults.table[field] = value;
+    return value;
 }
 
 

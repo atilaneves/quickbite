@@ -664,12 +664,6 @@ native slice header, including its retained backing address, rather than a
 transient aggregate handle. This is slice execution, not a formatter-specific
 storage shim; the interceptor remains temporary per item 1.
 
-Class allocation applies scalar `ExpInitializer` field defaults through the
-native class-body place, including inherited fields before a derived
-constructor runs. `ArrayInitializer` defaults, whose compiled-D instances
-share their static backing array, remain the next class-default omission; do
-not model that sharing with a per-object copied array.
-
 Runtime Interpreter evaluation of `__ctfe` must match compiled D and therefore
 produce `false`; `Ctfe` alone observes `true`. Cover both frontend shapes before
 changing the walker: an ordinary runtime function currently leaves `__ctfe` as
