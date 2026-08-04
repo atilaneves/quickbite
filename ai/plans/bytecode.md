@@ -472,13 +472,6 @@ reaches them:
   both entry points to decline still fails that row -- so do not remove or
   narrow it without a real fix backing it, and note that any change to how a
   delegate-typed store resolves can starve that fallback and break the row.
-- A nested associative-array write that auto-vivifies a brand-new OUTER key
-  (`a[k1][k2] = v` when `a[k1]` does not yet exist) throws "Range violation":
-  `compileAssocArrayGetLvalue`'s freshly created inner-map handle is written
-  back only into a throwaway copy of the outer value (materialised by
-  `assocArrayHandleOffset`'s nested-read branch), never into the outer map's
-  own storage. Writing into an already-present outer key is unaffected
-  (`assocArray.nestedWriteIntoExistingOuterKeyPreservesOtherInnerEntries`).
 
 Next candidate. No named oracle-backed `Omit!(Bytecode, Because.unconfirmed)`
 row remains bounded and unblocked: the two survivors
@@ -486,12 +479,11 @@ row remains bounded and unblocked: the two survivors
 `refArgument.templateRefSharedForwardsThroughNestedFunction`, both in
 `expressions.d`) are the documented `&value == expected` address-identity
 rows blocked on the ref calling convention above, not bounded single-commit
-fixes. Captured-array coverage and nested-AA write-into-an-existing-outer-key
-are both now fixed and covered; the brand-new-outer-key auto-vivify gap above
-is the next concrete nested-AA target. Otherwise find a fresh row through
-further `bin/qb` exploration (exception/closure interactions are untried),
-take the "One place resolver" item, or take an "Architecture work forced by
-the baseline" front.
+fixes. Captured-array coverage and both nested-AA auto-vivification shapes
+(an existing and a brand-new outer key) are now fixed and covered. Find a
+fresh row through further `bin/qb` exploration (exception/closure
+interactions are untried), take the "One place resolver" item, or take an
+"Architecture work forced by the baseline" front.
 
 ### TDD and handoff discipline
 

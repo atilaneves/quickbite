@@ -103,6 +103,17 @@ private struct Compiler {
     // Locals whose slot holds an 8-byte associative-array handle (`int[int]`):
     // a 1-based index into the machine's VM-owned map table, 0 until created.
     private bool[VarDeclaration] _assocArrayLocals;
+    // Set by `assocArrayHandleOffset`'s nested-read branch (`a[k1]` used as
+    // the AA operand of an outer hook, e.g. `a[k1][k2]`) to the frame slot
+    // holding the pointer into the OUTER map's own storage that the handle
+    // value was just loaded through. `compileAssocArrayGetLvalue` reads and
+    // clears it immediately, so an outer-key auto-vivification
+    // (`Op.aaGetOrInsert` writing a fresh handle in place) can be mirrored
+    // back through the same pointer instead of only updating the throwaway
+    // local the value was loaded into. `ushort.max` means the handle came
+    // from somewhere else (a plain local, a module variable, or a struct
+    // field) with its own resolution/writeback.
+    private ushort _nestedAssocArrayHandleWriteBackPointer = ushort.max;
     // Locals (and by-value parameters) whose slot is a struct `S` stored inline
     // in the frame at its DMD-computed size and alignment; the value records the
     // base offset and the struct declaration, giving each field's offset and
@@ -444,6 +455,7 @@ private struct Compiler {
         _refLocalPointers = null;
         _complexDoubleLocals = null;
         _assocArrayLocals = null;
+        _nestedAssocArrayHandleWriteBackPointer = ushort.max;
         _delegateLocals = null;
         _lazyDelegateLocals = null;
         _delegateParameterLocals = null;
@@ -18148,6 +18160,11 @@ private struct Compiler {
         import std.conv: text;
 
         const handle = assocArrayHandleOffset((*call.arguments)[0]);
+        // Captured immediately: further codegen below (e.g. a key
+        // expression that itself reads a nested AA) can overwrite this
+        // field before `getLvalue` gets to consume it.
+        const handleWriteBackPointer = _nestedAssocArrayHandleWriteBackPointer;
+        _nestedAssocArrayHandleWriteBackPointer = ushort.max;
 
         with (AssocArrayHook) final switch (hook) {
             case none:
@@ -18178,7 +18195,9 @@ private struct Compiler {
             }
 
             case getLvalue:
-                return compileAssocArrayGetLvalue(call, handle);
+                return compileAssocArrayGetLvalue(
+                    call, handle, handleWriteBackPointer,
+                );
 
             case in_: {
                 // `const` fails: `Type` is DMD's mutable AST ref.
@@ -18424,6 +18443,7 @@ private struct Compiler {
     private Operand compileAssocArrayGetLvalue(
         CallExp call,
         in ushort handle,
+        in ushort handleWriteBackPointer,
     ) {
         // `const` fails: `Type` is DMD's mutable AST ref.
         auto aaType = assocArrayType((*call.arguments)[0]);
@@ -18464,6 +18484,20 @@ private struct Compiler {
                     Op.storeModule, handle, moduleVariable.offset,
                     cast(ushort) size_t.sizeof,
                 );
+
+        // Same autovivification concern for a nested-AA write into a
+        // brand-new OUTER key (`a[k1][k2] = v` when `a[k1]` does not yet
+        // exist): `handle` here was itself loaded (by
+        // `assocArrayHandleOffset`'s nested-read branch) through a pointer
+        // into the outer map's own storage. Mirror the possibly-new handle
+        // back through that same pointer so the outer map's own entry
+        // (not just this throwaway local) sees the freshly-created inner
+        // map.
+        if (handleWriteBackPointer != ushort.max)
+            emitPointerStore(
+                handle, handleWriteBackPointer, compileSizeConstant(0),
+                cast(uint) size_t.sizeof,
+            );
 
         _code ~= Instruction(
             Op.aaIn, offset, handle, keyOffset, cast(ushort) width, keyMeta,
@@ -18855,7 +18889,19 @@ private struct Compiler {
             if (auto zero = index.e2.isIntegerExp)
                 if (zero.toInteger == 0 &&
                     isPointerType(index.e1.type)) {
-                    const value = compileExpression(inner);
+                    // Inlines `tryPointerIndex`'s non-`PtrExp` branch (this
+                    // shape's `e1` is never itself a `PtrExp`) instead of
+                    // delegating to `compileExpression`, so the pointer into
+                    // the OUTER map's own storage stays available below for
+                    // `compileAssocArrayGetLvalue` to write an
+                    // auto-vivified handle back through.
+                    const pointer = compileExpression(index.e1);
+                    const indexSlot = compileExpression(index.e2);
+                    const value = asPointerValue(
+                        loadThroughPointer(pointer, indexSlot.offset),
+                        index.type,
+                    );
+                    _nestedAssocArrayHandleWriteBackPointer = pointer.offset;
                     return value.offset;
                 }
 

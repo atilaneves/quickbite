@@ -4017,6 +4017,45 @@ static foreach (backend; Matrix!()) {
     }
 }
 
+// `a[1][2] = 3` on a brand-new OUTER key (`a[1]` does not yet exist): the
+// outer level auto-vivifies a fresh, still-empty inner map, and the write
+// into that inner map must be visible back through the outer map's own
+// storage, not just a local copy of the freshly-created handle. Interpreter
+// has its own, separate gap on the same fixture ("Associative-array lvalue
+// needs a variable"), unrelated to the Bytecode issue this test targets.
+static foreach (backend; Matrix!(
+    Omit!(Interpreter, Because.unconfirmed,
+        "a brand-new-outer-key nested write throws " ~
+        "\"Associative-array lvalue needs a variable\""),
+)) {
+    @("assocArray.nestedWriteAutoVivifiesBrandNewOuterKey." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            unittest {
+                int[int][int] a;
+                a[1][2] = 3;
+
+                assert(a.length == 1);
+                assert((1 in a) !is null);
+                assert(a[1].length == 1);
+                assert(a[1][2] == 3);
+
+                a[1][5] = 9;
+                a[7][8] = 20;
+
+                assert(a.length == 2);
+                assert(a[1].length == 2);
+                assert(a[1][2] == 3);
+                assert(a[1][5] == 9);
+                assert(a[7].length == 1);
+                assert(a[7][8] == 20);
+            }
+        });
+    }
+}
+
 // A dynamic-array-typed value (`int[][int]`): the value slot is a 16-byte
 // slice descriptor, not an inline scalar. Interpreter reads back the wrong
 // element (`0 != 20`) for this shape -- a separate, unconfirmed backend gap.
