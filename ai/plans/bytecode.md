@@ -481,10 +481,10 @@ reaches them:
   delegate-typed store resolves can starve that fallback and break the row.
 
 Next candidate. Every remaining `Omit!(Bytecode, ...)` row is one of the
-blocked rows above, so a matrix search will not surface a bounded one. No
-named closure-escape gap remains in the Closures section either -- the
-class-field/array-element further-mutation question is now a confirmed and
-declined shape (`delegate.classFieldEscapingCaptureDeclines`,
+blocked rows above. No named closure-escape gap remains in the Closures
+section either -- the class-field/array-element further-mutation question is
+now a confirmed and declined shape
+(`delegate.classFieldEscapingCaptureDeclines`,
 `delegate.arrayElementEscapingCaptureDeclines`), not an open question. Find a
 fresh row through `bin/qb` exploration of read-modify-write and mirror paths,
 take the "Structural consolidation queue" width-authority item (still open:
