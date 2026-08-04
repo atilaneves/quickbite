@@ -544,6 +544,36 @@ bytecode core: int[3]" via `scalarType`). Fixed by giving
 of the `arrayElementIsArray` fallback, and having `compileAssocArrayApply2`
 call it directly instead of a local ad hoc struct-or-scalar calculation.
 
+A delegate-typed AA value (`int delegate()[string] callbacks`) is NOT yet
+supported, and is more serious than the usual clean-decline gap: `callbacks["a"]
+= &fn;` throws at compile time ("Unsupported expression in bytecode core:
+&fn"), root-caused to `storeThroughPointer`'s `_d_aaGetY`-slot-pointer
+assignment path handling `Tstruct` rhs but falling through to generic
+`compileExpression` for a `DelegateExp` rhs (which no generic dispatch
+handles) -- a narrow, well-understood fix mirroring the existing `Tstruct`
+branch, verified in isolation. But calling the delegate back out
+(`callbacks["a"]()`) causes unbounded memory growth at runtime (confirmed
+multiple gigabytes and climbing within seconds before a forced kill) --  a
+real hang/OOM, not a clean diagnostic, and unrelated to the assign-side fix.
+This is also entangled with a pre-existing narrow hack,
+`_staticDelegateAssocArrays`/`tryStaticDelegateAssocArrayAssign`/
+`tryStaticDelegateAssocArrayCall`/`staticDelegateAssocArrayDeclaration`
+(`compiler.d`), built to pass one `cerealed.d` test
+(`Writer.childWriters[...]`): it matches any `Taarray`-of-delegate variable
+generically, ignores the key (single global slot per declaration,
+last-write-wins), and falls back to a cross-call-site global
+(`_latestStaticDelegateAssocArrayFunction`) that would produce silently wrong
+results if the assign-side fix landed without also auditing this hack. Next
+attempt should, in order: (1) reproduce and fix the runaway-allocation bug in
+the indexed-call-through read path first, since it is the dangerous half; (2)
+apply the `storeThroughPointer` `Tdelegate` fix; (3) narrow or replace the
+static-delegate-registry hack so it cannot silently shadow the general case;
+(4) only then add full fixture coverage (assign/read/call/foreach) alongside
+the existing `cerealed.d` regression test. Do not land the assign-side fix
+alone without first fixing the hang -- it would make the dangerous call-through
+path reachable from ordinary local-variable code that previously couldn't even
+compile far enough to trigger it.
+
 `arr[i] = existingVar;` for a plain dynamic array of structs, and the same
 shape for a compile-time-indexed static array of structs, now works
 (previously threw "Unsupported variable in bytecode core: existingVar" on
