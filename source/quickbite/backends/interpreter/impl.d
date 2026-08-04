@@ -9374,6 +9374,25 @@ private struct Walker {
         NativeOperand[] operands;
         operands.length = argumentExpressions.length;
         foreach (index, expression; argumentExpressions) {
+            if (auto typeid_ = expression.isTypeidExp)
+                if (auto typeInfo = typeidDeclaration(typeid_)) {
+                    import quickbite.ffi: resolveDataSymbol;
+
+                    if (auto address = resolveDataSymbol(typeInfo)) {
+                        auto scratch = NativeBlock.allocate(
+                            (void*).sizeof,
+                            NativeBlock.Scan.conservative,
+                        );
+                        *cast(const(void)**) scratch.address = address;
+                        operands[index] = NativeOperand(
+                            argumentTypes[index],
+                            scratch.address,
+                            scratch,
+                        );
+                        continue;
+                    }
+                }
+
             if (
                 index < evaluatedArguments.length &&
                 evaluatedArguments[index].address !is null
@@ -9431,6 +9450,14 @@ private struct Walker {
             ? null
             : function_.type.toBasetype.isTypeFunction;
         return isNativeReferenceParameter(type, index);
+    }
+
+    private imported!"dmd.declaration".TypeInfoDeclaration typeidDeclaration(
+        imported!"dmd.expression".TypeidExp typeid_,
+    ) {
+        // `auto`: `vtinfo` is DMD-owned mutable state.
+        auto type = typeidObjectType(typeid_);
+        return type is null ? null : type.vtinfo;
     }
 
     private Value runIndexExpression(
