@@ -567,24 +567,10 @@ place second.
    helper) rather than attempting the whole merge in one commit.
    `pointerElementMetadata`, `dereferencedArrayIndexElementMetadata`,
    `dynamicArrayElementSize`, `storeStructPointerField`/
-   `storeClassPointerField`, and now `refArgumentFieldWidth` all share their
-   aggregate-vs-scalar branch through one helper, `elementMetadataFor`
-   (`dynamicArrayElementSize` keeps its own hand-checked `Tvoid` case ahead
-   of that shared call, since `scalarType(Tvoid)` collides with
-   `elementMetadataFor`'s `void_` aggregate marker). The fold widened
-   `refArgumentFieldWidth`'s aggregate gate from `Tstruct`/`Tsarray` only to
-   `elementMetadataFor`'s wider gate, which already covered `Tdelegate` as a
-   16-byte aggregate (added for `pointerElementMetadata` well before this
-   fold); `emitClassFieldRefArgument`/`emitStructPointerFieldRefArgument`
-   inherit that for free.
-   `refArgument.classFieldOfDelegateTypeWritesThroughField` and
-   `refArgument.structPointerFieldOfDelegateTypeWritesThroughField`
-   (`structs.d`) are both promoted (green on `Bytecode`): a delegate-typed
-   class-field or struct-pointer-field `ref` argument is a 16-byte
-   mirror-writeback, matching `SystemLinker`, and `delegateFieldOffsetOf`
-   unwraps `dot.e1`'s `PtrExp` the same way `tryStructPointerField` does so a
-   delegate-typed field reached through a struct pointer is callable
-   (`carrier.fn()`), not just read/written.
+   `storeClassPointerField`, and `refArgumentFieldWidth` now share their
+   aggregate-vs-scalar branch through one helper, `elementMetadataFor`;
+   remaining call sites (`staticArraySize`, `size(scalarType)`, ...) still
+   derive width independently.
 
    Done: every width-suffixed opcode family (`indexLoad*`/`indexStore*`,
    `pointerLoad*`/`pointerStore*`/`pointerSlice*`, `subSlice*`,
@@ -785,43 +771,19 @@ lifetime as the dependency bytecode cache.
   that invariant when widening: a new escape site must either be its function's
   last act, or move the variable to the heap from declaration onward.
 
-  A capturing delegate assigned into a class field
-  (`tryClassPointerField`'s `Tdelegate` branch) or a dynamic-array element
-  (`tryDynamicArrayElementAssign`'s `Tdelegate` branch) now routes through
-  `heapEscapingDelegateOperandOffset`, the same heap-box-or-decline treatment
-  `compileDelegateReturn` and `structLiteralReturnOffset` already gave a direct
-  `return dg;` or a struct literal's delegate field
-  (`delegate.functionReturningClassWithCapturingDelegateFieldIsCallable`,
-  `delegate.functionReturningArrayWithCapturingDelegateElementIsCallable`).
-  `structLiteralReturnOffset`'s `isReturnEscaping` flag forwards through every
-  nested `Tstruct` field regardless of depth
-  (`delegate.functionReturningNestedStructWithCapturingDelegateFieldIsCallable`),
-  so a capturing delegate field nested arbitrarily deep inside a directly
-  returned struct literal gets the same heap-box-or-decline treatment as a
-  top-level one. Unlike `compileDelegateReturn`'s `return`-based sites, a
-  class-field/array-element write is not itself the function's last act, so a
-  further same-function mutation of the captured locals between the write and
-  the aggregate's actual escape can diverge from the heap snapshot taken at
-  the write -- confirmed (not hypothetical): before the gate below existed,
-  `int total = 40; c.next = () => total + 2; total = 100; return c;` silently
-  returned 42 instead of SystemLinker's 102, the same silent-wrong-answer
-  shape `delegate.outParameterEscapingCaptureDeclines` documents for the
-  `ref`/`out`-parameter escape site. `heapEscapingDelegateOperandOffset` now
-  takes a `mayMutateAfterHeapBox` flag, set at exactly these two call sites,
-  that runs `capturedLocalsMayBeMutatedInCurrentFunction` (`compiler.d`) --
-  an order-insensitive scan (`CapturedLocalMutationScanner`, a
-  `SemanticTimeTransitiveVisitor`) for any write to, or address-of on, one of
-  the captured locals anywhere in the enclosing function, including inside
-  further nested function bodies -- and declines
-  (`delegate.classFieldEscapingCaptureDeclines`,
-  `delegate.arrayElementEscapingCaptureDeclines`) rather than risk it. Being
-  order-insensitive and whole-function it over-declines two provably-safe
-  shapes it cannot yet be told apart from the unsound one: a mutation
-  strictly BEFORE the heap-box write (harmless -- the snapshot already
-  reflects it), and a mutation inside the escaping lambda's own body (already
-  heap-relative once boxed). Narrowing that needs either control-flow-
-  sensitive write-site dataflow or moving the captured locals to the heap
-  from declaration onward; neither is attempted here.
+  A capturing delegate assigned into a class field, a dynamic-array element,
+  or nested arbitrarily deep inside a directly returned struct literal now
+  gets the same heap-box-or-decline treatment `compileDelegateReturn` gives a
+  direct `return dg;`. Because that write is not itself the function's last
+  act, `heapEscapingDelegateOperandOffset` declines rather than risk
+  unsoundness whenever `capturedLocalsMayBeMutatedInCurrentFunction`
+  (`compiler.d`) finds a further same-function mutation of the captured
+  locals. Still open: that scan is order-insensitive and whole-function, so
+  it over-declines two provably-safe shapes -- a mutation strictly before the
+  heap-box write, and a mutation inside the escaping lambda's own body.
+  Narrowing needs control-flow-sensitive write-site dataflow, or moving the
+  captured locals to the heap from declaration onward; neither is attempted
+  here.
 
   The eventual right design point is DMD's own per-function `needsClosure()`/
   `closureVars` decision -- every closure-needing variable heap-allocated from
