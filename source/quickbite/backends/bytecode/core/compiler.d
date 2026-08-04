@@ -4323,6 +4323,45 @@ private struct Compiler {
             return offset;
         }
 
+        // `callbacks[key]` used as a call target (`callbacks[key]()`) for an
+        // associative array whose VALUE type is itself `Tdelegate`: DMD
+        // represents the read the same way `assocArrayHandleOffset`'s own
+        // doc comment describes for a nested AA operand (`a[1][2]`) -- an
+        // `IndexExp` whose `e1` is the bounds-checked `_d_aaGetRvalueX`
+        // pointer-yielding hook glue (already `Tpointer`-typed, the value
+        // slot's real address) and whose `e2` is the constant `0` (the same
+        // `*p` == `p[0]` idiom DMD uses generally), not a further nested
+        // `CallExp` and not an `IndexExp` whose `e1` is the plain AA
+        // variable. The generic fallback just below (`compileExpression`'s
+        // `tryPointerIndex`) already recognises this exact `p[0]` shape and
+        // would normally load through the pointer correctly -- but its
+        // `loadThroughPointer` sizes the load from `pointer.pointerElement`,
+        // and an AA value's pointee scalar type is deliberately the opaque
+        // `void_` marker for any non-scalar value (`assocArrayValueScalarType`,
+        // matching every other aggregate AA value: struct, static array,
+        // delegate). `size(ScalarType.void_)` is not `delegateValueSize`, so
+        // the generic path silently loads the wrong (effectively zero) byte
+        // count, leaving the destination slot's stale contents -- commonly
+        // all-zero -- to be read back as the delegate's `{functionIndex,
+        // context}` pair. Function index 0 is ordinarily the very function
+        // doing the calling, so `callbacks[key]()` silently recurses into
+        // itself forever, growing the VM's own stack/frame arrays without
+        // bound (confirmed multiple gigabytes within seconds). Load through
+        // the pointer with the real, known-correct `delegateValueSize`
+        // instead of trusting the opaque pointee's absent scalar width.
+        if (auto index = argument.isIndexExp)
+            if (auto zero = index.e2.isIntegerExp)
+                if (zero.toInteger == 0 && isPointerType(index.e1.type)) {
+                    const pointer = compileExpression(index.e1);
+                    const destination =
+                        allocateBytes(delegateValueSize, size_t.sizeof);
+                    emitPointerLoad(
+                        destination, pointer.offset, compileSizeConstant(0),
+                        delegateValueSize,
+                    );
+                    return destination;
+                }
+
         // Any other delegate-typed expression -- a function call returning a
         // delegate, or an index into an array of delegates (`dgs[0]`) --
         // already yields its own 16-byte `{functionIndex, context}` block
@@ -13722,10 +13761,23 @@ private struct Compiler {
         // `m[k] = existingStruct;` (DMD's `_d_aaGetY` slot-pointer lowering
         // for an associative-array value UPDATE, as opposed to an initial
         // insert) reaches here with exactly this rhs shape.
+        //
+        // A delegate-typed rhs (`m[k] = someDg;`, `m[k] = &fn;`) has the same
+        // problem one level down: the generic `compileExpression` dispatch
+        // has no case for a bare delegate-typed `VarExp`/`DelegateExp`/
+        // `AddrExp`-of-function rhs (it throws "Unsupported
+        // variable"/"Unsupported expression"), because ordinary delegate
+        // reads never go through `compileExpression` at all -- every other
+        // delegate-typed rhs shape (a `_delegateLocals`/parameter local, a
+        // field, a literal, an AA/array index) already resolves through
+        // `delegateOperandOffset` instead. Route here the same way, mirroring
+        // the `Tstruct` branch above.
         const valueOffset = rhs.type !is null &&
                 rhs.type.toBasetype.ty == TY.Tstruct
             ? structOperandOffset(rhs)
-            : compileExpression(rhs).offset;
+            : rhs.type !is null && rhs.type.toBasetype.ty == TY.Tdelegate
+                ? delegateOperandOffset(rhs)
+                : compileExpression(rhs).offset;
         const elementSize = pointer.pointerElement == ScalarType.void_
             ? cast(uint) staticArraySize(rhs.type)
             : size(pointer.pointerElement);

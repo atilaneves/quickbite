@@ -544,35 +544,75 @@ bytecode core: int[3]" via `scalarType`). Fixed by giving
 of the `arrayElementIsArray` fallback, and having `compileAssocArrayApply2`
 call it directly instead of a local ad hoc struct-or-scalar calculation.
 
-A delegate-typed AA value (`int delegate()[string] callbacks`) is NOT yet
-supported, and is more serious than the usual clean-decline gap: `callbacks["a"]
-= &fn;` throws at compile time ("Unsupported expression in bytecode core:
-&fn"), root-caused to `storeThroughPointer`'s `_d_aaGetY`-slot-pointer
-assignment path handling `Tstruct` rhs but falling through to generic
-`compileExpression` for a `DelegateExp` rhs (which no generic dispatch
-handles) -- a narrow, well-understood fix mirroring the existing `Tstruct`
-branch, verified in isolation. But calling the delegate back out
-(`callbacks["a"]()`) causes unbounded memory growth at runtime (confirmed
-multiple gigabytes and climbing within seconds before a forced kill) --  a
-real hang/OOM, not a clean diagnostic, and unrelated to the assign-side fix.
-This is also entangled with a pre-existing narrow hack,
-`_staticDelegateAssocArrays`/`tryStaticDelegateAssocArrayAssign`/
-`tryStaticDelegateAssocArrayCall`/`staticDelegateAssocArrayDeclaration`
-(`compiler.d`), built to pass one `cerealed.d` test
-(`Writer.childWriters[...]`): it matches any `Taarray`-of-delegate variable
-generically, ignores the key (single global slot per declaration,
-last-write-wins), and falls back to a cross-call-site global
-(`_latestStaticDelegateAssocArrayFunction`) that would produce silently wrong
-results if the assign-side fix landed without also auditing this hack. Next
-attempt should, in order: (1) reproduce and fix the runaway-allocation bug in
-the indexed-call-through read path first, since it is the dangerous half; (2)
-apply the `storeThroughPointer` `Tdelegate` fix; (3) narrow or replace the
-static-delegate-registry hack so it cannot silently shadow the general case;
-(4) only then add full fixture coverage (assign/read/call/foreach) alongside
-the existing `cerealed.d` regression test. Do not land the assign-side fix
-alone without first fixing the hang -- it would make the dangerous call-through
-path reachable from ordinary local-variable code that previously couldn't even
-compile far enough to trigger it.
+A delegate-typed AA value's dangerous half -- calling the delegate back out
+of the map (`callbacks["a"]()`, `int delegate()[string] callbacks`) causing
+unbounded memory growth at runtime -- is now fixed. Root cause:
+`delegateOperandOffset`'s indexed-delegate-call fallback (used for
+`callbacks[key]()`, reached through `compileCall`'s `indexedDelegateOffsetOf`)
+materialised the read via the generic `tryPointerIndex`/`loadThroughPointer`
+machinery, reusing the same `p[0]` idiom `assocArrayHandleOffset` documents
+DMD lowering `_d_aaGetRvalueX`'s rvalue read to. That generic path sizes its
+load from the pointee's scalar type, which is deliberately the opaque
+`void_` marker for a `Tdelegate` AA value (`assocArrayValueScalarType`,
+matching every other aggregate value: struct, static array) rather than a
+concrete byte width; `size(ScalarType.void_)` is never `delegateValueSize`
+(16), so the load silently copied the wrong (effectively zero) number of
+bytes, leaving the destination slot's stale, commonly all-zero contents to
+be read back as the delegate's `{functionIndex, context}` pair. Function
+index 0 is ordinarily the very function doing the calling, so the call
+recursed into itself forever, growing the VM's own `stack`/`frames` arrays
+without bound (confirmed multiple gigabytes within seconds via `gdb`,
+`bin/ut`'s memory climbing past 6 GB before a `timeout`-guarded kill). Fixed
+by giving `delegateOperandOffset` its own branch for exactly this `p[0]`
+shape, loading through the pointer with the real, known-correct
+`delegateValueSize` instead of trusting the opaque pointee's absent scalar
+width -- the same "trust the known real width, not the opaque marker"
+pattern `storeThroughPointer`'s `Tstruct`/`Tsarray` branches already use on
+the write side.
+
+Reproducing the read-path hang at all required also landing the narrow
+assign-side fix this paragraph previously deferred as a separate step:
+`storeThroughPointer` had no case for a delegate-typed rhs (any shape --
+literal, variable, `&freeFunc`), throwing "Unsupported variable"/"Unsupported
+expression" at compile time before any code reached the dangerous call-through
+path, and the pre-existing static-delegate-registry hack (next paragraph)
+never touches real AA storage on either its assign or call side, so it
+cannot exercise the real read path either. With neither route able to put a
+real delegate value in AA storage, the hang was unreachable through any
+compilable source on this checkout; fixed by routing `storeThroughPointer`'s
+delegate-typed rhs through `delegateOperandOffset` (which already resolves
+every other delegate-typed expression shape, including a plain local/AA-
+index/field read) instead of the generic `compileExpression`, mirroring the
+existing `Tstruct` branch exactly as originally planned. Landing both fixes
+together (rather than the hang fix alone, as the original ordering assumed
+was possible) was the only way to reach and prove the call-through fix; both
+are verified in isolation and together (`ut.backends.runner.lang.cerealed`'s
+new `delegateAssocArrayValueIndexedCallInvokesStoredDelegate` fixture, pinned
+to `Bytecode` + the `SystemLinker` oracle, other backends
+`Because.unconfirmed`). A missing-key call (`callbacks["a"]()` on an empty
+map) is unaffected by either fix -- it resolves through a separate,
+pre-existing path (`callFunction` resolving straight to DMD's own
+`_d_arraybounds` lowering) that already throws a clean "Range violation"
+rather than reaching `delegateOperandOffset` at all; confirmed still clean
+and bounded, not a hang, after both fixes landed.
+
+Still open, in order: (1) narrow or replace the static-delegate-registry hack
+(`_staticDelegateAssocArrays`/`tryStaticDelegateAssocArrayAssign`/
+`tryStaticDelegateAssocArrayCall`/`staticDelegateAssocArrayDeclaration`,
+`compiler.d`, built to pass one `cerealed.d` test, `Writer.childWriters[...]`)
+so it cannot silently shadow the now-working general case: it matches any
+`Taarray`-of-delegate *module/static* variable generically (a local variable
+never matches -- DMD's `-preview=dip1000` lifetime-checking lowers a local
+AA's `_d_aaGetY`/`_d_aaGetRvalueX` calls through an intermediate `Tpointer`
+temp the hack's declaration-matching does not recognise, which is also why
+neither the hack nor this fix's own `p[0]` branch see a plain
+`Taarray`-typed `index.e1` directly), ignores the key (single global slot
+per declaration, last-write-wins), and falls back to a cross-call-site
+global (`_latestStaticDelegateAssocArrayFunction`) -- all silent-wrong-result
+risks now that ordinary code can reach the real read/write path underneath
+it; (2) full fixture coverage (assign/read/call/foreach, module-level and
+local, struct/class fields) beyond the one hang-pinning fixture and the
+existing `cerealed.d` regression test.
 
 `arr[i] = existingVar;` for a plain dynamic array of structs, and the same
 shape for a compile-time-indexed static array of structs, now works
