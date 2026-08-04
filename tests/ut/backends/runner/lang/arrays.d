@@ -6299,14 +6299,13 @@ static foreach (backend; Matrix!()) {
 // `arrayElementFieldPointer` (`compiler.d`), which recurses through any
 // number of `IndexExp` layers, advancing the field's own real runtime
 // pointer one dimension at a time via `advanceStaticArrayPointer` instead of
-// ever falling through to the throwaway copy. Interpreter throws
-// "Unsupported interpreter assignment target." on this doubly-indexed shape
-// even though the singly-indexed sibling above already passes -- a separate,
-// unconfirmed backend gap, not this fix's scope.
-static foreach (backend; Matrix!(
-    Omit!(Interpreter, Because.unconfirmed,
-        "Unsupported interpreter assignment target."),
-)) {
+// ever falling through to the throwaway copy. The Interpreter's own gap was
+// the identical shape one level up: `runNestedIndexAssignExpression` only
+// recognised a `VarExp`/pointer `outer.e1`, not a `DotVarExp` -- fixed by
+// giving it a `DotVarExp` arm that composes both index levels through
+// `AggregateValue.elementAt`/`withArrayElement` before writing the whole
+// field back through the receiver's own lvalue.
+static foreach (backend; Matrix!()) {
     @("dynamicArray.nestedStaticArrayFieldElementOfStructElementWritten." ~
         backend.stringof)
     @Tags(backend.stringof)
@@ -6332,12 +6331,10 @@ static foreach (backend; Matrix!(
 // (`arr[i].fixedField[j][k] += value`): the identical silent-corruption
 // shape one dimension deeper than the singly-indexed compound-assignment
 // fix. Fixed the same way, through the shared `arrayElementFieldPointer`.
-// Interpreter throws the same "Unsupported interpreter assignment target."
-// gap as the plain-assignment sibling above.
-static foreach (backend; Matrix!(
-    Omit!(Interpreter, Because.unconfirmed,
-        "Unsupported interpreter assignment target."),
-)) {
+// The Interpreter's compound-assignment path (`writeIndexLocation`, reached
+// via `writeLocation` rather than `runNestedIndexAssignExpression`) had the
+// identical gap and the identical `DotVarExp`-composing fix.
+static foreach (backend; Matrix!()) {
     @("dynamicArray.nestedStaticArrayFieldElementOfStructElementAddAssigned." ~
         backend.stringof)
     @Tags(backend.stringof)
@@ -6367,19 +6364,19 @@ static foreach (backend; Matrix!(
 // length}` descriptor, and the same `advanceStaticArrayPointer` bounds-check
 // and pointer arithmetic ordinary dynamic-array indexing already uses is fed
 // that descriptor's runtime pointer and length instead of a frame address
-// and a compile-time-constant length. Interpreter throws "Unsupported
-// interpreter assignment target." on this shape, the same pre-existing gap
-// as the `Tsarray` sibling above.
+// and a compile-time-constant length. The Interpreter's `DotVarExp` arm
+// (added for the `Tsarray` sibling above) needs no `Tarray`-specific
+// handling of its own: `AggregateValue.elementAt`/`withArrayElement` already
+// dispatch on the field's actual DMD type, so the same composition resolves
+// a dynamic-array-of-dynamic-arrays field's element just as it does a
+// static one's.
 //
 // The fixture builds `matrixField` from an intermediate `rows` local rather
 // than an inline array-of-arrays literal passed directly as the constructor
 // argument, exercising the plain descriptor-copy path
 // (`dynamicArrayDescriptorOrNull`) rather than literal construction; the
 // sibling block below exercises the literal directly.
-static foreach (backend; Matrix!(
-    Omit!(Interpreter, Because.unconfirmed,
-        "Unsupported interpreter assignment target."),
-)) {
+static foreach (backend; Matrix!()) {
     @("dynamicArray.nestedDynamicArrayFieldElementOfStructElementWritten." ~
         backend.stringof)
     @Tags(backend.stringof)
@@ -6409,11 +6406,14 @@ static foreach (backend; Matrix!(
 // (`Op.checkStaticArrayIndex`, the same check ordinary dynamic-array
 // indexing raises), so this is druntime's ordinary `ArrayIndexError` text,
 // byte for byte matching `SystemLinker`. `Ctfe`'s own bounds check uses the
-// divergent backtick-range wording pinned below.
+// divergent backtick-range wording pinned below. The Interpreter's
+// `DotVarExp` arm bounds-checks both index levels via the same
+// `checkStaticArrayIndexInBounds` helper the plain-nested-local write
+// already used for a static dimension -- it already generalises to a
+// dynamic dimension through `AggregateValue.length`, so it applies
+// unconditionally here and raises the identical compiled-D wording.
 static foreach (backend; Matrix!(
     Omit!(Ctfe, Because.diverges, "see sibling pin below (Ctfe)"),
-    Omit!(Interpreter, Because.unconfirmed,
-        "Unsupported interpreter assignment target."),
 )) {
     @("dynamicArray.nestedDynamicArrayFieldElementOutOfBoundsIndexThrows." ~
         backend.stringof)

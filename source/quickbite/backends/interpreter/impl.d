@@ -7615,6 +7615,34 @@ private struct Walker {
             throw new Exception("Pointer index assignment needs a native address.");
         }
 
+        // The compound-assignment (`arr[i].field[j][k] += value`) sibling of
+        // `runNestedIndexAssignExpression`'s identical `DotVarExp` arm: `index.e1`
+        // (`arr[i].field[j]`) is itself an `IndexExp` whose own `e1` is a
+        // `DotVarExp`, not a `DotVarExp`/`VarExp` directly, so it fell through
+        // both arms below. `value` here is already the compound-assignment's
+        // computed result (`writeLocation`'s caller resolved it), so only the
+        // write-back composition is needed, not an rhs evaluation.
+        if (auto outer = index.e1.isIndexExp) {
+            auto dot = outer.e1.isDotVarExp;
+            if (dot is null)
+                throw new Exception("Unsupported interpreter assignment target.");
+
+            const fieldIndex = structFieldIndex(dot);
+            const receiver = runExpression(dot.e1);
+            const fieldValue = AggregateValue.fieldAt(receiver, fieldIndex);
+            const outerIndex = cast(size_t) runExpression(outer.e2).asLong;
+            checkStaticArrayIndexInBounds(fieldValue, outerIndex);
+            const outerElement = AggregateValue.elementAt(fieldValue, outerIndex);
+            checkStaticArrayIndexInBounds(outerElement, arrayIndex);
+            const updatedField = AggregateValue.withArrayElement(
+                fieldValue,
+                outerIndex,
+                AggregateValue.withArrayElement(outerElement, arrayIndex, value),
+            );
+            writeLocation(dot.e1, AggregateValue.withStructField(receiver, fieldIndex, updatedField));
+            return;
+        }
+
         if (auto dot = index.e1.isDotVarExp) {
             if (receiverClassType(dot.e1) !is null) {
                 const receiver = runExpression(dot.e1);
@@ -8189,6 +8217,39 @@ private struct Walker {
             const innerIndex = cast(size_t) runExpression(inner.e2).asLong;
             const value = runExpression(rhs);
             writeValue(Place(pointer.pointerAddress, outer.type).index(innerIndex), value);
+            return value;
+        }
+
+        // `arr[i].field[j][k] = value`: `outer` (`arr[i].field[j]`) is
+        // itself an `IndexExp` whose own `e1` is a `DotVarExp`
+        // (`arr[i].field`), not a `VarExp` -- the shape the plain-local
+        // branch below assumes. Resolve the field's own current array
+        // value through the receiver (mirroring `runIndexAssignExpression`'s
+        // singly-indexed `DotVarExp` arm), then compose both index levels
+        // onto it via the same `withArrayElement`/`elementAt` pair the
+        // plain-local branch below uses, before writing the whole updated
+        // field back through the receiver's own lvalue. `checkStaticArrayIndexInBounds`
+        // bounds-checks a `Tarray` dimension just as well as a `Tsarray` one
+        // -- both go through `AggregateValue.length`, which already reads
+        // either shape's real runtime length -- so it applies to both
+        // dimensions unconditionally here rather than being gated behind
+        // `isStaticArrayType` as the plain-local branch's own checks are.
+        if (auto dot = outer.e1.isDotVarExp) {
+            const fieldIndex = structFieldIndex(dot);
+            const receiver = runExpression(dot.e1);
+            const fieldValue = AggregateValue.fieldAt(receiver, fieldIndex);
+            const outerIndex = cast(size_t) runExpression(outer.e2).asLong;
+            checkStaticArrayIndexInBounds(fieldValue, outerIndex);
+            const outerElement = AggregateValue.elementAt(fieldValue, outerIndex);
+            const innerIndex = cast(size_t) runExpression(inner.e2).asLong;
+            checkStaticArrayIndexInBounds(outerElement, innerIndex);
+            const value = runExpression(rhs);
+            const updatedField = AggregateValue.withArrayElement(
+                fieldValue,
+                outerIndex,
+                AggregateValue.withArrayElement(outerElement, innerIndex, value),
+            );
+            writeLocation(dot.e1, AggregateValue.withStructField(receiver, fieldIndex, updatedField));
             return value;
         }
 
