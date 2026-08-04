@@ -2595,6 +2595,27 @@ static foreach (backend; Matrix!()) {
     }
 }
 
+// A scalar class-field default is an `ExpInitializer`; allocation evaluates
+// that expression through the field's typed place rather than assuming an
+// integer literal.
+static foreach (backend; Matrix!()) {
+    @("class.doubleFieldDefaultInitializerAppliesOnAllocation." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            class C {
+                double x = 1.5;
+            }
+
+            unittest {
+                auto value = new C;
+                assert(value.x == 1.5);
+            }
+        });
+    }
+}
+
 // A `Tarray` class field's own array-literal default (`int[] arr = [1, 2,
 // 3];`) parses as an `ArrayInitializer`, not the `ExpInitializer` the
 // scalar-field fixture above exercises, and `compileDefaultClassFields`
