@@ -2208,12 +2208,17 @@ private struct Walker {
                 throw new Exception(uninitializedVariableMessage(variable, currentFunction));
             }
 
-            // A filled reference slot is the caller's scalar storage. Read
-            // it before the legacy parameter-cell fallback so `ref`/`out`
-            // mutation is immediately visible across the call boundary.
+            // A filled reference slot is the caller's scalar storage --
+            // for a `ref`/`out` parameter, or (per `frame_layout`'s own
+            // `Kind.reference`) a captured outer variable, the enclosing
+            // activation's own address. `hasReferenceSlot` alone
+            // distinguishes the two reference-slot owners from a plain
+            // owning local; no separate `variable.isReference` DMD flag
+            // check is needed on top of it. Read it before the legacy
+            // parameter-cell fallback so `ref`/`out` mutation and a
+            // captured local's value are immediately visible.
             import quickbite.backends.interpreter.native_scalar: isNativeScalarType;
             if (
-                referenceVariable.isReference &&
                 _activationFrame.hasReferenceSlot(referenceVariable) &&
                 _activationFrame.bindingAddress(referenceVariable) !is null &&
                 (
@@ -3656,6 +3661,7 @@ private struct Walker {
         runtime.function_ = delegate_.func;
         runtime.functionPointerId = functionPointer.functionPointerId;
         runtime.contextPointer = contextPointer;
+        runtime.capturedAddresses = closureCapturedAddresses(delegate_.func);
         if (isMemberFunction(delegate_.func)) {
             if (delegate_.e1 is null)
                 throw new Exception("Unsupported eval expression: delegate_");
@@ -3680,6 +3686,7 @@ private struct Walker {
         runtime.function_ = literal.fd;
         runtime.functionPointerId = functionPointer.functionPointerId;
         runtime.contextPointer = Value.pointerValue(null);
+        runtime.capturedAddresses = closureCapturedAddresses(literal.fd);
         if (literal.fd.isNested && hasThis) {
             runtime.receiver = thisValue;
             runtime.hasReceiver = true;
@@ -3687,6 +3694,38 @@ private struct Walker {
 
         delegates[functionPointer.functionPointerId] = runtime;
         return functionPointer;
+    }
+
+    // Each of `function_`'s captured outer variables (`frame_layout.
+    // capturedVariables`), resolved to ITS OWN address in THIS activation
+    // -- the lexically enclosing one, still live right now, whether or not
+    // it later returns before the created delegate is called. Reuses
+    // `bindingPointerValue`, the same address resolution a `&variable`
+    // expression already uses, rather than re-deriving frame addresses.
+    // Declines (omits the entry, never throws) a captured variable
+    // `bindingPointerValue` cannot resolve to a real address yet; the
+    // call-time fallback (`bindCapturedReferenceSlots`'s own
+    // `callerReferenceBase` path) still applies for it, unchanged.
+    private void*[VarDeclaration] closureCapturedAddresses(
+        imported!"dmd.func".FuncDeclaration function_,
+    ) {
+        import quickbite.backends.interpreter.frame_layout: capturedVariables;
+
+        if (!function_.isNested)
+            return null;
+
+        void*[VarDeclaration] addresses;
+        foreach (variable; capturedVariables(function_)) {
+            try {
+                const pointer = bindingPointerValue(variable);
+                if (pointer.isPointer && pointer.pointerAddress !is null)
+                    addresses[variable] = pointer.pointerAddress;
+            } catch (Exception) {
+                continue;
+            }
+        }
+
+        return addresses;
     }
 
     private Value delegateContextPointer(
@@ -4440,6 +4479,7 @@ private struct Walker {
             argumentExpressions,
             false,
             evaluatedArguments,
+            runtime.capturedAddresses,
         );
     }
 
@@ -5224,6 +5264,7 @@ private struct Walker {
         imported!"dmd.expression".Expression[] argumentExpressions,
         in bool captureLocals = false,
         in EvaluatedReferenceArgument[] evaluatedArguments = null,
+        in void*[VarDeclaration] closureAddresses = null,
     ) {
         Walker child;
         child.runningCalledFunction = true;
@@ -5234,7 +5275,7 @@ private struct Walker {
         child.locals = (captureLocals || function_.isNested)
             ? locals.dup
             : datasegLocals;
-        bindCapturedReferenceSlots(function_, child);
+        bindCapturedReferenceSlots(function_, child, closureAddresses);
         forkExecutionStateInto(child);
         child.bindFunctionParameters(
             function_,
@@ -6094,20 +6135,25 @@ private struct Walker {
     // `locals` still holds a boxed value for the captured variable to
     // compare against.
     //
-    // Escape lifetime, carried forward for the authority switch rather than
-    // solved here: a delegate created from `function_` can outlive THIS
-    // activation (stored, returned, or called later, as the boxed world
-    // already allows since it copies rather than references). Once native
-    // storage becomes the sole authority, this slot's address must stay
-    // valid for exactly as long as something can still call through it --
-    // decision 17 answers this by making the frame block a GC allocation
-    // (like DMD's own compiled closure frame), so a reference slot pointing
-    // into it keeps that block alive the same way any other GC pointer
-    // does; nothing in THIS slice depends on that, since authority is still
-    // boxed and this shadow is read by nothing.
+    // Escape lifetime: a delegate created from `function_` can outlive THIS
+    // activation (stored, returned, or called later). Decision 17 answers
+    // this by making the frame block a GC allocation (like DMD's own
+    // compiled closure frame), so a reference slot pointing into it keeps
+    // that block alive the same way any other GC pointer does -- but only
+    // if the ADDRESS itself survives past this activation's own return.
+    // `closureAddresses`, when given (a delegate value's own
+    // `RuntimeDelegate.capturedAddresses`, snapshotted at the moment the
+    // delegate was created while its enclosing activation's frame was
+    // still live -- see `closureCapturedAddresses`), is exactly that: it
+    // takes priority per variable over re-deriving an address from `this`
+    // activation's own `_activationFrame`, which is only correct when
+    // `function_` is called directly while its lexically enclosing
+    // activation (`this`) is still the one running -- never true once the
+    // delegate has escaped and something else is calling it later.
     private void bindCapturedReferenceSlots(
         imported!"dmd.func".FuncDeclaration function_,
         ref Walker child,
+        in void*[VarDeclaration] closureAddresses = null,
     ) {
         import quickbite.backends.interpreter.frame_layout: capturedVariables;
 
@@ -6118,17 +6164,21 @@ private struct Walker {
             if (!child._activationFrame.hasReferenceSlot(variable))
                 continue;
 
-            bool bindNotVerifiable;
             void* address;
-            try {
-                address = callerReferenceBase(
-                    variable,
-                    _activationFrame,
-                    &mirrorEstablished,
-                    bindNotVerifiable,
-                );
-            } catch (Exception) {
-                continue;
+            if (auto closureAddress = variable in closureAddresses) {
+                address = cast(void*) *closureAddress;
+            } else {
+                bool bindNotVerifiable;
+                try {
+                    address = callerReferenceBase(
+                        variable,
+                        _activationFrame,
+                        &mirrorEstablished,
+                        bindNotVerifiable,
+                    );
+                } catch (Exception) {
+                    continue;
+                }
             }
 
             if (address is null)
@@ -6943,14 +6993,14 @@ private struct Walker {
                 return;
             }
 
-            // A bound scalar ref/out parameter already names its
-            // caller's storage through this activation's reference slot.
-            // Write that place directly instead of allocating a parameter
-            // cell and waiting for return-time writeback to make it
-            // observable.
+            // A bound scalar ref/out parameter, or a captured outer
+            // variable (the same `Kind.reference` slot, per
+            // `frame_layout`), already names its storage through this
+            // activation's reference slot. Write that place directly
+            // instead of allocating a parameter cell and waiting for
+            // return-time writeback to make it observable.
             import quickbite.backends.interpreter.native_scalar: isNativeScalarType;
             if (
-                referenceVariable.isReference &&
                 _activationFrame.hasReferenceSlot(referenceVariable) &&
                 _activationFrame.bindingAddress(referenceVariable) !is null &&
                 isNativeScalarType(referenceVariable.type)
@@ -11198,6 +11248,17 @@ private struct RuntimeDelegate {
     public imported!"quickbite.backends.interpreter.runtime_value".Value contextPointer;
     public imported!"quickbite.backends.interpreter.runtime_value".Value receiver;
     public bool hasReceiver;
+
+    // The enclosing activation's own frame address for each of
+    // `function_`'s captured outer variables, snapshotted at the moment
+    // this delegate value was created (while that activation's frame was
+    // still live), never re-derived from whatever activation later calls
+    // the delegate. The captured addresses point into that activation's
+    // GC-backed `FrameBlock` (decision 17, `value.md`); retaining them
+    // here keeps the block itself reachable for exactly as long as this
+    // delegate can still be called, the same way any other GC pointer
+    // field does.
+    public void*[imported!"dmd.declaration".VarDeclaration] capturedAddresses;
 }
 
 

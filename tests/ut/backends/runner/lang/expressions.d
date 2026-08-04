@@ -1809,12 +1809,6 @@ static foreach (backend; Matrix!(
         "Ctfe wraps dmd.dinterpret, whose CTFE engine refuses the "
             ~ "returned closure outright with \"closures are not yet "
             ~ "supported in CTFE\""),
-    Omit!(Interpreter, Because.unconfirmed,
-        "the Interpreter does not yet promote a frame-escaping " ~
-            "captured local to a heap closure either; it returns a " ~
-            "call whose delegate reads a stale/reused frame slot " ~
-            "instead of the closed-over value (observed returning 1 " ~
-            "instead of 4) -- not yet promoted"),
 )) {
     @("delegate.functionReturningCapturingDelegateIsCallable." ~
         backend.stringof)
@@ -1847,8 +1841,16 @@ static foreach (backend; Matrix!(
             ~ "returned closure outright with \"closures are not yet "
             ~ "supported in CTFE\""),
     Omit!(Interpreter, Because.unconfirmed,
-        "the Interpreter does not yet promote a frame-escaping " ~
-            "captured local to a heap closure either -- not yet promoted"),
+        "unrelated to captured-variable escape lifetime (already fixed " ~
+            "for `functionReturningCapturingDelegateIsCallable`): a bare " ~
+            "`return () => ...;` -- a FuncExp as the direct return " ~
+            "expression, never first assigned to a local -- hits " ~
+            "`runExpression`'s generic `isFuncExp` arm, which answers " ~
+            "`Value.undisplayable` instead of routing through " ~
+            "`runFunctionLiteralDeclaration` the way a declaration " ~
+            "initializer or assignment RHS already does; every passing " ~
+            "delegate-return fixture assigns to a local first -- not yet " ~
+            "promoted"),
 )) {
     @("delegate.functionReturningMutatingCapturingDelegateIsCallable." ~
         backend.stringof)
@@ -2039,10 +2041,16 @@ static foreach (backend; Matrix!(
             ~ "returned closure outright with \"closures are not yet "
             ~ "supported in CTFE\""),
     Omit!(Interpreter, Because.unconfirmed,
-        "the Interpreter does not yet promote a frame-escaping " ~
-            "captured local to a heap closure either; it returns a " ~
-            "call whose delegate reads a stale/reused frame slot " ~
-            "instead of the closed-over values -- not yet promoted"),
+        "unrelated to captured-variable escape lifetime (already fixed " ~
+            "for `functionReturningCapturingDelegateIsCallable`): a bare " ~
+            "`return () => ...;` -- a FuncExp as the direct return " ~
+            "expression, never first assigned to a local -- hits " ~
+            "`runExpression`'s generic `isFuncExp` arm, which answers " ~
+            "`Value.undisplayable` instead of routing through " ~
+            "`runFunctionLiteralDeclaration` the way a declaration " ~
+            "initializer or assignment RHS already does; every passing " ~
+            "delegate-return fixture assigns to a local first -- not yet " ~
+            "promoted"),
 )) {
     @("delegate.functionReturningCapturingDelegateOverTwoLocalsIsCallable." ~
         backend.stringof)
@@ -2077,8 +2085,16 @@ static foreach (backend; Matrix!(
             ~ "returned closure outright with \"closures are not yet "
             ~ "supported in CTFE\""),
     Omit!(Interpreter, Because.unconfirmed,
-        "the Interpreter does not yet promote a frame-escaping " ~
-            "captured local to a heap closure either -- not yet promoted"),
+        "unrelated to captured-variable escape lifetime (already fixed " ~
+            "for `functionReturningCapturingDelegateIsCallable`): a bare " ~
+            "`return () => ...;` -- a FuncExp as the direct return " ~
+            "expression, never first assigned to a local -- hits " ~
+            "`runExpression`'s generic `isFuncExp` arm, which answers " ~
+            "`Value.undisplayable` instead of routing through " ~
+            "`runFunctionLiteralDeclaration` the way a declaration " ~
+            "initializer or assignment RHS already does; every passing " ~
+            "delegate-return fixture assigns to a local first -- not yet " ~
+            "promoted"),
 )) {
     @("delegate.functionReturningMutatingCapturingDelegateOverTwoLocalsIsCallable." ~
         backend.stringof)

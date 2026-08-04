@@ -693,6 +693,16 @@ static archive at all (see the fixtures' `Omit` notes for the confirmed
 specifics) — a new native symbol-resolution source belongs to `ffi.md`, not
 this track.
 
+A captured local's escape-lifetime address now survives past its enclosing
+activation's own return (a delegate value snapshots each captured variable's
+frame address at creation time). Three `expressions.d` delegate siblings
+remain `Omit!(Interpreter, Because.unconfirmed)` for an unrelated, narrower
+gap: a bare `return () => ...;` — a lambda literal as the direct return
+expression, never first assigned to a local — falls into `runExpression`'s
+generic `FuncExp` arm (`Value.undisplayable`) instead of the
+`runFunctionLiteralDeclaration` routing a declaration initializer or
+assignment RHS already gets; see those fixtures' own `Omit` notes.
+
 ### Item 5 — Delete Interpreter FFI marshalling fallbacks
 
 Finish decision 18 after the language-surface critical path. Normal outbound
