@@ -20998,27 +20998,7 @@ private struct Compiler {
         const byteStride = element.toBasetype.ty == TY.Tfunction
             ? 0
             : cast(uint) staticArraySize(element);
-        // A static-array pointee (`int[3]*`, `S[3]*`) is always an aggregate
-        // regardless of its own element type: `int[3]*` must resolve the same
-        // way `S[3]*` does (`void_` opcode type, DMD's full array byte width
-        // as `byteStride`), not unwrap one level and mistake a plain-scalar
-        // static array for a pointer to its bare element type. Unwrapping
-        // here previously made `int[3]*` fall through to `scalarType(int)`,
-        // so `storeThroughPointer`/`loadThroughPointer` and the ref-argument
-        // dereference path (`emitPointerDereferenceRefArgument`) read or wrote
-        // only the first 4 bytes of a 12-byte static array through such a
-        // pointer instead of the whole object.
-        if (element.toBasetype.ty == TY.Tsarray)
-            return PointerElementMetadata(ScalarType.void_, byteStride);
-        if (element.toBasetype.ty == TY.Tstruct)
-            return PointerElementMetadata(ScalarType.void_, byteStride);
-        if (element.toBasetype.ty == TY.Tarray)
-            return PointerElementMetadata(ScalarType.void_, byteStride);
-        if (element.toBasetype.ty == TY.Tdelegate)
-            return PointerElementMetadata(ScalarType.void_, byteStride);
-        if (element.toBasetype.ty == TY.Tfunction)
-            return PointerElementMetadata(ScalarType.void_, byteStride);
-        return PointerElementMetadata(scalarType(element), byteStride);
+        return elementMetadataFor(element, byteStride);
     }
 
     // `(*p)[i]` where `p`'s pointee is itself a static array (`T[N]*`, e.g.
@@ -21040,10 +21020,35 @@ private struct Compiler {
 
         auto element = pointee.toBasetype.nextOf;
         const byteStride = cast(uint) staticArraySize(element);
-        if (element.toBasetype.ty == TY.Tstruct ||
-            element.toBasetype.ty == TY.Tsarray ||
+        return elementMetadataFor(element, byteStride);
+    }
+
+    // Shared aggregate-vs-scalar classification for a pointer/array element
+    // type, given its already-computed byte stride: `pointerElementMetadata`
+    // and `dereferencedArrayIndexElementMetadata` differed only in how they
+    // derived `element` and `byteStride`, not in this classification, so a
+    // missed case here would otherwise have to be kept in sync by hand across
+    // both. A static-array, struct, dynamic-array, delegate, or function
+    // element is always an aggregate/opaque region (`void_` opcode type, full
+    // byte width as `byteStride`) regardless of its own nested element type --
+    // unwrapping one level here previously made a static-array pointee
+    // (`int[3]*`) fall through to `scalarType(int)`, so
+    // `storeThroughPointer`/`loadThroughPointer` and the ref-argument
+    // dereference path (`emitPointerDereferenceRefArgument`) read or wrote
+    // only the first 4 bytes of a 12-byte static array through such a pointer
+    // instead of the whole object. Anything else is a plain scalar read
+    // through `scalarType`.
+    private PointerElementMetadata elementMetadataFor(
+        Type element,
+        in uint byteStride,
+    ) {
+        import dmd.astenums: TY;
+
+        if (element.toBasetype.ty == TY.Tsarray ||
+            element.toBasetype.ty == TY.Tstruct ||
             element.toBasetype.ty == TY.Tarray ||
-            element.toBasetype.ty == TY.Tdelegate)
+            element.toBasetype.ty == TY.Tdelegate ||
+            element.toBasetype.ty == TY.Tfunction)
             return PointerElementMetadata(ScalarType.void_, byteStride);
         return PointerElementMetadata(scalarType(element), byteStride);
     }

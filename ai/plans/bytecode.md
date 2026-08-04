@@ -554,6 +554,16 @@ place second.
    into the single width authority every emit site's width *computation* goes
    through. Each site still derives its own width today
    (`dynamicArrayElementSize`, `staticArraySize`, `size(scalarType)`, ...).
+   This is a real generalisation, not a mechanical rename: the two named
+   functions differ materially in signature and return shape (a bare `uint`
+   vs. a `{opcodeType, byteStride}` pair) across 30+ call sites, so take it as
+   a bounded sub-piece (one call-site family, or one clearly-scoped shared
+   helper) rather than attempting the whole merge in one commit.
+   `pointerElementMetadata` and `dereferencedArrayIndexElementMetadata`
+   already share their aggregate-vs-scalar branch through one helper,
+   `elementMetadataFor`; `dynamicArrayElementSize`'s own near-identical
+   struct/static-array/delegate branch (different call sites, same shape of
+   duplication risk) is the next such sub-piece.
 
    Done: every width-suffixed opcode family (`indexLoad*`/`indexStore*`,
    `pointerLoad*`/`pointerStore*`/`pointerSlice*`, `subSlice*`,
