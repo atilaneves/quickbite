@@ -486,11 +486,15 @@ row remains bounded and unblocked: the two survivors
 `refArgument.templateRefSharedForwardsThroughNestedFunction`, both in
 `expressions.d`) are the documented `&value == expected` address-identity
 rows blocked on the ref calling convention above, not bounded single-commit
-fixes. Find a fresh row through `bin/qb` exploration of read-modify-write and
-mirror paths (nested static-array-of-dynamic-array mutation, captured-array
-read/write/slice/append coverage, broadcast-fill-into-heap-row-descriptor are
-open leads under "Live hazards and divergences" above), take the "One place
-resolver" item, or take an "Architecture work forced by the baseline" front.
+fixes. `new T[N][](rows)` (a runtime outer length over statically-sized rows,
+e.g. `new int[3][](2)`) is fixed and covered
+(`dynamicArray.newArrayOfStaticArrayRowsUsesRuntimeLength`, `arrays.d`); the
+broadcast-fill-into-heap-row-descriptor and nested static-array-of-dynamic-
+array mutation leads under "Live hazards and divergences" above are still
+open. Find a fresh row through further `bin/qb` exploration of read-modify-
+write and mirror paths (captured-array read/write/slice/append coverage is
+another open lead there), take the "One place resolver" item, or take an
+"Architecture work forced by the baseline" front.
 
 ### TDD and handoff discipline
 
@@ -572,21 +576,14 @@ place second.
    16-byte aggregate (added for `pointerElementMetadata` well before this
    fold); `emitClassFieldRefArgument`/`emitStructPointerFieldRefArgument`
    inherit that for free.
-   `refArgument.classFieldOfDelegateTypeWritesThroughField` (`structs.d`) is
-   promoted (green on `Bytecode`): a delegate-typed class field `ref`
-   argument is now a 16-byte mirror-writeback, matching `SystemLinker`.
-   `refArgument.structPointerFieldOfDelegateTypeWritesThroughField` stays
-   `Omit!(Bytecode, ...)`, but the reason has moved: the fold makes its `ref`
-   argument mirror correct too, but the fixture's own `carrier.fn()` CALL
-   (reached before the `ref` argument) throws "Unsupported call in bytecode
-   core: (*carrier).fn()" -- a distinct, pre-existing call-dispatch gap.
-   `delegateFieldOffsetOf`'s struct-pointer-field branch
-   (`compiler.d`) gates on `isPointerType(dot.e1.type)`, but DMD lowers
-   `carrier.fn` to `(*carrier).fn` first, so `dot.e1` is already the
-   dereferenced `Holder` `PtrExp`, not pointer-typed -- the gate never
-   fires. `tryStructPointerField` has the same shape and already handles it
-   by unwrapping `dot.e1.isPtrExp` before checking; `delegateFieldOffsetOf`
-   needs the same unwrap. Still open: fix that gate and promote the row.
+   `refArgument.classFieldOfDelegateTypeWritesThroughField` and
+   `refArgument.structPointerFieldOfDelegateTypeWritesThroughField`
+   (`structs.d`) are both promoted (green on `Bytecode`): a delegate-typed
+   class-field or struct-pointer-field `ref` argument is a 16-byte
+   mirror-writeback, matching `SystemLinker`, and `delegateFieldOffsetOf`
+   unwraps `dot.e1`'s `PtrExp` the same way `tryStructPointerField` does so a
+   delegate-typed field reached through a struct pointer is callable
+   (`carrier.fn()`), not just read/written.
 
    Done: every width-suffixed opcode family (`indexLoad*`/`indexStore*`,
    `pointerLoad*`/`pointerStore*`/`pointerSlice*`, `subSlice*`,

@@ -8252,11 +8252,47 @@ private struct Compiler {
         NewExp new_,
         in bool elementIsArray = false,
     ) {
+        import dmd.astenums: TY;
         import std.conv: text;
 
         // `new T[][](rows, cols)`: both lengths arrive in `new_.arguments`; build
         // an outer array of `rows` inner arrays, each of `cols` elements.
+        // `new T[N][](rows)`: only `rows` is a runtime argument -- the inner
+        // length `N` is a compile-time static-array bound baked into the
+        // element's own type (`new_.type`'s `Tsarray` element), not a second
+        // `NewExp` argument, so it is loaded as a constant instead of compiled
+        // from a second argument expression that does not exist.
         if (elementIsArray) {
+            auto innerElement = new_.type.toBasetype.nextOf;
+            const innerIsStatic =
+                innerElement.toBasetype.ty == TY.Tsarray;
+
+            if (innerIsStatic && new_.arguments !is null &&
+                new_.arguments.length == 1) {
+                const dimensions =
+                    allocateBytes(2 * size_t.sizeof, size_t.sizeof);
+                const rows = compileExpression((*new_.arguments)[0]);
+                _code ~= Instruction(
+                    Op.copy,
+                    dimensions,
+                    rows.offset,
+                    cast(ushort) size_t.sizeof,
+                );
+                _code ~= Instruction(
+                    Op.loadConstant,
+                    cast(ushort) (dimensions + size_t.sizeof),
+                    constantIndex(staticArrayLength(innerElement)),
+                    cast(ushort) size_t.sizeof,
+                );
+                _code ~= Instruction(
+                    Op.allocArray2D,
+                    destination,
+                    packedFill(elementType),
+                    dimensions,
+                );
+                return;
+            }
+
             if (new_.arguments is null || new_.arguments.length != 2)
                 throw new Exception(text(
                     "Unsupported new array in bytecode core: ",

@@ -2235,6 +2235,31 @@ static foreach (backend; Matrix!()) {
     }
 }
 
+// `new T[N][](rows)`: the outer length is a runtime `NewExp` argument, but
+// the row width `N` is a compile-time static-array bound baked into the
+// element's own type -- there is no second runtime argument to compile,
+// unlike the `new T[][](rows, cols)` sibling above.
+static foreach (backend; Matrix!()) {
+    @("dynamicArray.newArrayOfStaticArrayRowsUsesRuntimeLength." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            unittest {
+                size_t rows = 1;
+                ++rows;
+
+                int[3][] values = new int[3][](rows);
+                values[1][2] = 42;
+
+                assert(values.length == rows);
+                assert(values[0][0] == 0);
+                assert(values[1][2] == 42);
+            }
+        });
+    }
+}
+
 static foreach (backend; Matrix!()) {
     @("dynamicArray.lengthAssignmentResizesArray." ~ backend.stringof)
     @Tags(backend.stringof)
