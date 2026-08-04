@@ -482,11 +482,12 @@ reaches them:
 
 Next candidate. Every remaining `Omit!(Bytecode, ...)` row is one of the
 blocked rows above, so a matrix search will not surface a bounded one. The
-best bounded candidate is the unguarded closure-escape gap named in the
-Closures section: a capturing delegate stored into a class field or an array
-element silently captures a dead frame instead of declining. Otherwise find a
-fresh row through `bin/qb` exploration of read-modify-write and mirror paths,
-or take a "Architecture work forced by the baseline" front.
+best bounded candidate is the narrower unguarded closure-escape gap named in
+the Closures section: a capturing delegate stored into a field nested more
+than one level inside a returned struct literal silently captures a dead
+frame instead of declining. Otherwise find a fresh row through `bin/qb`
+exploration of read-modify-write and mirror paths, or take a "Architecture
+work forced by the baseline" front.
 
 ### TDD and handoff discipline
 
@@ -751,12 +752,25 @@ lifetime as the dependency bytecode cache.
   that invariant when widening: a new escape site must either be its function's
   last act, or move the variable to the heap from declaration onward.
 
-  KNOWN UNGUARDED GAP: a capturing delegate escaping through a class field, an
-  array element, or a field nested more than one level inside a returned struct
-  literal routes through none of this, and silently produces a delegate holding
-  a popped or reused frame context -- a wrong answer, not a refusal. Closing it
-  is the next real closure work, and the narrowest useful fix is to route those
-  sites through the same decline path first, then widen.
+  A capturing delegate assigned into a class field
+  (`tryClassPointerField`'s `Tdelegate` branch) or a dynamic-array element
+  (`tryDynamicArrayElementAssign`'s `Tdelegate` branch) now routes through
+  `heapEscapingDelegateOperandOffset`, the same heap-box-or-decline treatment
+  `compileDelegateReturn` and `structLiteralReturnOffset` already gave a direct
+  `return dg;` or a struct literal's top-level delegate field
+  (`delegate.functionReturningClassWithCapturingDelegateFieldIsCallable`,
+  `delegate.functionReturningArrayWithCapturingDelegateElementIsCallable`).
+  Its soundness still rests on the write being immediately followed only by
+  the enclosing aggregate's own escape; a class-field or array-element write
+  with further same-function mutation of the captured locals after the write
+  but before the aggregate escapes is unproven and not yet covered.
+
+  KNOWN UNGUARDED GAP: a capturing delegate escaping through a field nested
+  more than one level inside a returned struct literal still routes through
+  none of this, and silently produces a delegate holding a popped or reused
+  frame context -- a wrong answer, not a refusal. Closing it is the next real
+  closure work, and the narrowest useful fix is to route that site through the
+  same decline path first, then widen.
 
   The eventual right design point is DMD's own per-function `needsClosure()`/
   `closureVars` decision -- every closure-needing variable heap-allocated from

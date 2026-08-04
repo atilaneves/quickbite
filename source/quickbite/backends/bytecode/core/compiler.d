@@ -4511,6 +4511,32 @@ private struct Compiler {
     // `ai/plans/bytecode.md`'s Closures section), so decline loudly instead
     // of returning a value that reads as garbage once the frame is reused.
     private ushort compileDelegateReturn(Expression source) {
+        return heapEscapingDelegateOperandOffset(source);
+    }
+
+    // The shared mechanism `compileDelegateReturn` uses, also reused for a
+    // capturing delegate stored into a CLASS FIELD or an ARRAY ELEMENT
+    // (`tryClassPointerField`'s and `tryDynamicArrayElementAssign`'s
+    // `Tdelegate` branches): both are heap-resident storage a capturing
+    // lambda can just as easily outlive its declaring frame through as a
+    // directly returned delegate, so the same heap-box-the-narrow-shape,
+    // decline-the-rest treatment applies instead of `delegateOperandOffset`'s
+    // unconditional frame-relative context. `heapClosureContextOrNull`'s
+    // narrow shape happens to cover every capturing case exercised so far at
+    // these two sites (`delegate.functionReturningClassWithCapturingDelegateFieldIsCallable`,
+    // `delegate.functionReturningArrayWithCapturingDelegateElementIsCallable`),
+    // where the write is immediately followed only by the enclosing
+    // aggregate's own return; a class-field or array-element write with
+    // further same-function mutation of the captured locals AFTER this
+    // write but before the enclosing aggregate escapes is not yet covered --
+    // `heapClosureContextOrNull`'s snapshot is taken at the write, not the
+    // eventual escape, so such a mutation would not be reflected. Preserving
+    // `ai/plans/bytecode.md`'s "last act or heap from declaration" invariant
+    // for that remaining case needs either write-site dataflow (proving the
+    // aggregate is never again mutated through these captures before it
+    // escapes) or moving the captured locals to the heap from declaration
+    // onward; neither is attempted here.
+    private ushort heapEscapingDelegateOperandOffset(Expression source) {
         auto function_ = returnedDelegateFunctionOrNull(source);
         if (function_ !is null && function_.outerVars.length != 0) {
             if (auto heapContext = heapClosureContextOrNull(function_)) {
@@ -11703,9 +11729,16 @@ private struct Compiler {
                 // reference (`c.f = &add`), the class-field twin of
                 // `tryStructPointerField`'s identical `Tdelegate` branch
                 // above: its rhs is never a plain scalar `compileExpression`
-                // can size (`scalarType` has no `Tdelegate` case).
+                // can size (`scalarType` has no `Tdelegate` case). The class
+                // instance itself commonly outlives the assigning function
+                // (e.g. `c.next = () => ...; return c;`), so a capturing rhs
+                // needs the same heap-escape treatment a directly returned
+                // delegate gets (`heapEscapingDelegateOperandOffset`) rather
+                // than the plain frame-relative `delegateOperandOffset`,
+                // which left the field holding a context pointer into the
+                // (about-to-be-reused) assigning function's own frame.
                 if (field.type.toBasetype.ty == TY.Tdelegate) {
-                    const source = delegateOperandOffset(assign.e2);
+                    const source = heapEscapingDelegateOperandOffset(assign.e2);
                     storeClassPointerField(*field, source);
                     return Operand(source, ScalarType.void_);
                 }
@@ -14040,9 +14073,19 @@ private struct Compiler {
         // directly, so a bare lvalue (`arr[i] = existingVar;`) must route
         // through `structOperandOffset` instead, the same fix
         // `storeThroughPointer` applies for the AA-value slot-pointer shape.
+        //
+        // A delegate-typed rhs (`dgs[i] = () => x;`) is the array-element
+        // twin of `compileStaticArrayElementAssign`'s identical `Tdelegate`
+        // branch: the array itself commonly outlives the assigning function
+        // (e.g. `dgs[0] = () => ...; return dgs;`), so a capturing rhs needs
+        // `heapEscapingDelegateOperandOffset`'s heap-escape treatment rather
+        // than a plain `compileExpression`, whose own `FuncExp` case always
+        // builds a frame-relative context.
         const valueOffset = rhs.type !is null &&
                 rhs.type.toBasetype.ty == TY.Tstruct
             ? structOperandOffset(rhs)
+            : rhs.type !is null && rhs.type.toBasetype.ty == TY.Tdelegate
+            ? heapEscapingDelegateOperandOffset(rhs)
             : compileExpression(rhs).offset;
         const savedDollarLength = _activeDollarLength;
         _activeDollarLength = sliceLengthSlot(*descriptor);

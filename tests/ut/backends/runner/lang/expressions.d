@@ -2687,6 +2687,88 @@ static foreach (backend; Matrix!(
     }
 }
 
+// A capturing delegate stored into a class field, then read back only AFTER
+// the storing function has returned: the class-field counterpart of
+// `delegate.functionReturningStructWithCapturingDelegateFieldIsCallable`
+// (`structLiteralReturnOffset`'s `Tdelegate` branch), which only ever
+// heap-escape-treats a struct literal's own TOP-LEVEL delegate field.
+// `tryClassPointerField`'s `Tdelegate` assignment branch always resolved
+// through the plain frame-relative `delegateOperandOffset`, regardless of
+// whether the class instance itself (unlike the struct literal case) then
+// outlives the assigning function -- the class-field write is not itself
+// the escape site DMD's own semantics track, so nothing prevented `c`
+// escaping via `return c;` two lines later while its `next` field's context
+// still pointed at `makeCounter`'s own (about-to-be-reused) frame.
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.inexpressible,
+        "Ctfe wraps dmd.dinterpret, whose CTFE engine refuses the "
+            ~ "returned closure outright with \"closures are not yet "
+            ~ "supported in CTFE\""),
+    Omit!(Interpreter, Because.unconfirmed,
+        "the Interpreter does not yet promote a frame-escaping " ~
+            "captured local to a heap closure either -- not yet promoted"),
+)) {
+    @("delegate.functionReturningClassWithCapturingDelegateFieldIsCallable." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            class Counter { int delegate() next; }
+
+            Counter makeCounter() {
+                int total = 40;
+                auto c = new Counter();
+                c.next = () => total + 2;
+                return c;
+            }
+
+            unittest {
+                auto c = makeCounter();
+                assert(c.next() == 42);
+            }
+        });
+    }
+}
+
+// The array-element twin of the fixture above: a capturing delegate stored
+// into a dynamic-array element, read back only after the storing function
+// has returned the array. `tryDynamicArrayElementAssign`'s generic element
+// path resolved a delegate-typed rhs through plain `compileExpression`
+// (whose own `FuncExp` branch always builds a frame-relative context, never
+// heap-escape-aware), the array-element sibling of the class-field gap
+// above.
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.inexpressible,
+        "Ctfe wraps dmd.dinterpret, whose CTFE engine refuses the "
+            ~ "returned closure outright with \"closures are not yet "
+            ~ "supported in CTFE\""),
+    Omit!(Interpreter, Because.unconfirmed,
+        "the Interpreter does not yet promote a frame-escaping " ~
+            "captured local to a heap closure either -- not yet promoted"),
+)) {
+    @("delegate.functionReturningArrayWithCapturingDelegateElementIsCallable." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            alias Dg = int delegate();
+
+            Dg[] makeDelegates() {
+                int seed = 42;
+                Dg[] dgs;
+                dgs.length = 1;
+                dgs[0] = () => seed;
+                return dgs;
+            }
+
+            unittest {
+                auto dgs = makeDelegates();
+                assert(dgs[0]() == 42);
+            }
+        });
+    }
+}
+
 // `==`/`!=`/`is`/`!is` between two lambda-literal delegate values: a
 // delegate is a builtin type with no `opEquals`, so all four compare the raw
 // `{functionIndex, context}` pair. Two separately-declared lambdas capturing
