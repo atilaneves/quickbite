@@ -648,7 +648,41 @@ private struct Walker {
                 else if (addressOfRefReturn)
                     result = refReturnAddress(return_.exp);
                 else {
-                    result = runExpression(return_.exp);
+                    // A bare `return () => ...;` is a FuncExp as the direct
+                    // return expression, never first assigned to a local;
+                    // ordinary `runExpression` has no general case for one
+                    // (it answers `Value.undisplayable`) -- the same gap
+                    // `runDeclarationExpression`/`runAssignExpression`/
+                    // `structLiteralValue` already route around via
+                    // `runFunctionLiteralDeclaration`. Scoped to a literal
+                    // that actually CAPTURES an outer variable
+                    // (`frame_layout.capturedVariables`, the same source
+                    // `closureCapturedAddresses` already reads) only:
+                    // `FuncLiteralDeclaration.isNested` answers true for
+                    // any `delegate`-token literal regardless of whether
+                    // it captures anything, so it can't tell a capturing
+                    // literal apart from a non-capturing one -- and a
+                    // non-capturing bare return needs no closure machinery
+                    // in the first place. Keeping the non-capturing case on
+                    // the `Value.undisplayable` placeholder path preserves
+                    // the REPL's own synthetic top-level eval wrapper
+                    // (`auto __quickbite_repl_eval_N__() { return <input>;
+                    // }`, `frontend/cell.d`), which is the SAME `return
+                    // FuncExp;` shape and whose undisplayable-placeholder
+                    // rendering `tests/ut/bin/repl.d`'s
+                    // `displaysUndisplayablePlaceholderForFunctionLiterals`
+                    // pins on purpose (commit d8206025).
+                    auto literal = return_.exp.isFuncExp;
+                    bool captures = false;
+                    if (literal !is null && literal.fd !is null) {
+                        import quickbite.backends.interpreter.frame_layout:
+                            capturedVariables;
+
+                        captures = capturedVariables(literal.fd).length != 0;
+                    }
+                    result = !captures
+                        ? runExpression(return_.exp)
+                        : runFunctionLiteralDeclaration(literal);
                     if (return_.exp.type.toBasetype.isTypeClass !is null)
                         result = rootedNativeClassValue(return_.exp, result);
                 }
