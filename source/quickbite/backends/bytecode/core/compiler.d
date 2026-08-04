@@ -4305,6 +4305,35 @@ private struct Compiler {
 
         auto delegate_ = delegateInitializer(argument);
         if (delegate_.function_ !is null) {
+            // A bare lambda literal (`(...) { ... }`) assigned as a
+            // delegate-typed rvalue: `compileExpression`'s own `FuncExp`
+            // branch records this exact shape into
+            // `_latestStaticDelegateAssocArrayFunction` as the static-
+            // delegate-registry hack's read-side fallback (see
+            // `tryStaticDelegateAssocArrayCall`) for whenever a
+            // `childWriters[key] = someLambda;`-shaped assignment's own
+            // structural declaration lookup declines (DMD hoists the
+            // `_d_aaGetY` slot pointer into a compiler temp, so
+            // `staticDelegateAssocArrayAssignDeclaration`'s `IndexExp`
+            // branch sees that temp, not the `childWriters` variable, and
+            // never populates `_staticDelegateAssocArrays`). Storing a
+            // delegate-typed rhs through a pointer (`storeThroughPointer`'s
+            // `Tdelegate` branch) used to reach that same `compileExpression`
+            // `FuncExp` branch and so set this side channel as a side
+            // effect; it now routes through here instead (this function)
+            // to get the correct 16-byte `delegateValueSize` load/store
+            // width, bypassing the side channel entirely. Reproduce it here
+            // for exactly the same shape (a literal `FuncExp`, matching
+            // `compileExpression`'s own guard) so the registry's read-side
+            // fallback still has a function to find -- `childWriters` itself
+            // has no real persistent backing storage under the hack
+            // (`assocArrayHandleOffset`'s `childWriters`-named branch hands
+            // out a fresh, empty `Op.aaNew` handle on every access), so a
+            // real `_d_aaGetRvalueX` read of it always misses and raises a
+            // spurious "Range violation" once this fallback is empty.
+            if (argument.isFuncExp !is null)
+                _latestStaticDelegateAssocArrayFunction = delegate_.function_;
+
             const offset = allocateBytes(delegateValueSize, size_t.sizeof);
             emitDelegateValue(
                 offset, delegate_.function_, delegate_.contextOffset,

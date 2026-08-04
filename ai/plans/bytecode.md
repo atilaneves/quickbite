@@ -640,13 +640,44 @@ callee needs `_delegateParameterLocals` instead -- the same table every
 other delegate-typed *parameter* already uses, for exactly the same reason.
 Fixed with one added branch alongside the parameter's own `Tstruct`/`Tsarray`
 cases. Struct/class-field-value delegate-typed AA shapes remain uncovered,
-left for a future slice. Also surfaced, unrelated to this work and not
-fixed here: `classSerialisationReadsStaticChildRegistry.Bytecode`
-(`cerealed.d`) is a pre-existing, deterministic (not flaky) red row already
-present three commits before this one (`e719bf8f`) and untouched by any
-delegate-AA work this session -- a `Range violation` on the `Writer`
-static-struct-field shape even with the hack active and unmodified. Not
-investigated further here; still red on `Bytecode` after this slice.
+left for a future slice.
+
+`classSerialisationReadsStaticChildRegistry.Bytecode` (`cerealed.d`,
+`Writer.childWriters`) was reported by this slice as an unrelated
+pre-existing red row "already present three commits before this one
+(`e719bf8f`)" -- that claim was wrong. It was in fact a real regression
+*introduced by* the read-path hang fix two paragraphs up (this same commit's
+predecessor), confirmed by bisection (green at `e719bf8f` and at this
+session's own baseline, red starting exactly at the hang-fix commit) and
+root-caused and fixed in a follow-up commit: `storeThroughPointer`'s new
+`Tdelegate`-rhs branch routes a delegate-typed store through
+`delegateOperandOffset` instead of the generic `compileExpression`. For a
+bare lambda-literal rhs, `compileExpression`'s own `FuncExp` branch used to
+run as a side effect and set `_latestStaticDelegateAssocArrayFunction` --
+the static-delegate-registry hack's read-side fallback (used whenever
+`tryStaticDelegateAssocArrayCall`'s structural declaration lookup declines,
+as it always does for `Writer.childWriters[key] = someLambda;`: DMD hoists
+the `_d_aaGetY` slot pointer into a compiler temp, so the assign's own
+`IndexExp.e1` is that temp, never the `childWriters` variable itself).
+Routing through `delegateOperandOffset` instead bypassed that side channel
+entirely, so the fallback found nothing and the call fell through to a real
+`_d_aaGetRvalueX` read of `childWriters` -- which has no real persistent
+backing storage under the hack (`assocArrayHandleOffset`'s
+`childWriters`-named branch hands out a fresh, empty `Op.aaNew` handle on
+every access, since the hack was never designed to be read for real), so
+the read always missed and raised a spurious `Range violation`. Fixed by
+reproducing the exact same side effect inside `delegateOperandOffset`
+itself: when its own literal-`FuncExp` branch resolves a delegate via
+`delegateInitializer`, it now also sets
+`_latestStaticDelegateAssocArrayFunction`, restoring the hack's fallback
+without touching the hang fix's new `p[0]` read branch at all. Verified:
+`classSerialisationReadsStaticChildRegistry.Bytecode` green again,
+`delegateAssocArrayValueIndexedCallInvokesStoredDelegate` (the hang fix's
+own regression test) still green, and the three `assocArray.delegateValueLocal*`
+fixtures above still green -- confirming the two hacks (this one and the
+static-delegate registry) do not reintroduce the original hang. Broad sweep
+(`ut.backends.runner.lang.{arrays,expressions,structs,cerealed}`): 3225 run,
+0 unexpected failures, 6/6 failing as expected.
 
 `arr[i] = existingVar;` for a plain dynamic array of structs, and the same
 shape for a compile-time-indexed static array of structs, now works
