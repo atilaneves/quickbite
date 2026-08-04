@@ -6967,18 +6967,20 @@ private struct Compiler {
     // `Tdelegate` field is the same 16-byte aggregate shape (`staticArraySize`
     // -- DMD's own `size()` -- already reports 16 for it, same as a slice
     // descriptor), so it is grouped with the other aggregates rather than
-    // routed through `scalarType`, which has no `Tdelegate` case.
+    // routed through `scalarType`, which has no `Tdelegate` case. Reuses
+    // `elementMetadataFor`'s shared aggregate-vs-scalar classification
+    // (its wider `Tarray`/`Tfunction` aggregate cases never apply here: a
+    // dynamic-array field is written by the caller's own `Tarray` branch
+    // before this ever runs, and a field cannot itself be `Tfunction`).
     private void storeStructPointerField(
         StructPointerField field,
         in ushort valueSlot,
     ) {
-        import dmd.astenums: TY;
-
-        const ty = field.type.toBasetype.ty;
-        const isAggregate =
-            ty == TY.Tstruct || ty == TY.Tsarray || ty == TY.Tdelegate;
-        const elementSize = isAggregate
-            ? cast(uint) staticArraySize(field.type)
+        const metadata = elementMetadataFor(
+            field.type, cast(uint) staticArraySize(field.type),
+        );
+        const elementSize = metadata.opcodeType == ScalarType.void_
+            ? metadata.byteStride
             : size(scalarType(field.type));
         const fieldPointer = structFieldAddress(field);
         emitPointerStore(
@@ -7093,18 +7095,17 @@ private struct Compiler {
     // class pointer at `ptr + field.offset`. A `Tstruct`/`Tsarray` field lives
     // inline at that address, so it needs its own real byte width from
     // `staticArraySize` instead of the scalar-only gate, mirroring
-    // `storeStructPointerField`'s identical widening.
+    // `storeStructPointerField`'s identical widening -- including its reuse
+    // of `elementMetadataFor`'s shared classification.
     private void storeClassPointerField(
         ClassPointerField field,
         in ushort valueSlot,
     ) {
-        import dmd.astenums: TY;
-
-        const ty = field.type.toBasetype.ty;
-        const isAggregate =
-            ty == TY.Tstruct || ty == TY.Tsarray || ty == TY.Tdelegate;
-        const elementSize = isAggregate
-            ? cast(uint) staticArraySize(field.type)
+        const metadata = elementMetadataFor(
+            field.type, cast(uint) staticArraySize(field.type),
+        );
+        const elementSize = metadata.opcodeType == ScalarType.void_
+            ? metadata.byteStride
             : size(scalarType(field.type));
         const fieldPointer = classFieldAddress(field);
         emitPointerStore(

@@ -488,9 +488,11 @@ now a confirmed and declined shape
 `delegate.arrayElementEscapingCaptureDeclines`), not an open question. Find a
 fresh row through `bin/qb` exploration of read-modify-write and mirror paths,
 take the "Structural consolidation queue" width-authority item (still open:
-`storeStructPointerField`/`storeClassPointerField`'s identical hand-rolled
-`isAggregate` gate, the next bounded piece toward the width-authority merge),
-or take an "Architecture work forced by the baseline" front.
+`emitClassFieldRefArgument`/`emitStructPointerFieldRefArgument`'s identical
+hand-rolled width computation, the next bounded piece toward the
+width-authority merge -- see the item's note on their narrower
+`Tdelegate`-excluded `isAggregate` gate before reusing `elementMetadataFor`
+directly), or take an "Architecture work forced by the baseline" front.
 
 ### TDD and handoff discipline
 
@@ -560,16 +562,26 @@ place second.
    vs. a `{opcodeType, byteStride}` pair) across 30+ call sites, so take it as
    a bounded sub-piece (one call-site family, or one clearly-scoped shared
    helper) rather than attempting the whole merge in one commit.
-   `pointerElementMetadata`, `dereferencedArrayIndexElementMetadata`, and now
-   `dynamicArrayElementSize` all share their aggregate-vs-scalar branch
+   `pointerElementMetadata`, `dereferencedArrayIndexElementMetadata`,
+   `dynamicArrayElementSize`, and now `storeStructPointerField`/
+   `storeClassPointerField` all share their aggregate-vs-scalar branch
    through one helper, `elementMetadataFor` (`dynamicArrayElementSize` keeps
    its own hand-checked `Tvoid` case ahead of that shared call, since
    `scalarType(Tvoid)` collides with `elementMetadataFor`'s `void_` aggregate
-   marker). `storeStructPointerField` and `storeClassPointerField`
-   (`compiler.d`) are the next such sub-piece: identical bodies bar their
-   field-address helper, each hand-rolling the same
-   `Tstruct`/`Tsarray`/`Tdelegate` `isAggregate` gate that `elementMetadataFor`
-   already generalises.
+   marker). `emitClassFieldRefArgument` and `emitStructPointerFieldRefArgument`
+   (`compiler.d`, the class-field/struct-pointer-field pair in the
+   `emit*RefArgument` chain) are the next such sub-piece: identical bodies bar
+   their field-address helper, each hand-rolling the same width computation
+   -- but note their `isAggregate` gate is `Tstruct`/`Tsarray` only, not
+   `Tdelegate`; a delegate-typed field reaching either function today falls
+   through to `size(scalarType(field.type))`, which throws (`scalarType` has
+   no `Tdelegate` case) rather than being declined earlier. Swapping in
+   `elementMetadataFor` directly would silently reclassify that throw as a
+   16-byte aggregate mirror-writeback instead -- a behaviour change, not a
+   pure consolidation, so it needs its own oracle-backed exposing test (a
+   `ref` argument naming a delegate-typed struct-pointer/class field) before
+   landing, not a same-commit assumption that the wider classification is
+   safe.
 
    Done: every width-suffixed opcode family (`indexLoad*`/`indexStore*`,
    `pointerLoad*`/`pointerStore*`/`pointerSlice*`, `subSlice*`,
