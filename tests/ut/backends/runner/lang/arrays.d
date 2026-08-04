@@ -6553,11 +6553,23 @@ static foreach (backend; Matrix!()) {
 // later, ungated `staticArrayOffsetOf` branch reachable for unrelated
 // static-array-of-structs shapes, corrupting
 // `nestedStaticArrayFieldElementOfStructElementAddAssigned`'s stride.
-// Interpreter throws "Unsupported interpreter assignment target." on this
-// shape, the same pre-existing gap as the doubly-indexed siblings above.
+// Interpreter's own gap was different: `runNestedIndexAssignExpression`'s
+// `DotVarExp` arm (added for the array-element-receiver shape above)
+// resolved the field unconditionally through `structFieldIndex`, which
+// throws for a class receiver (`receiverStructType` returns `null` for a
+// class) -- "Unsupported interpreter field access.", not the assignment-
+// target message the comment above once described this as sharing.
+// Dispatching on `receiverClassType(dot.e1)` first still was not enough:
+// a class local's own runtime value is commonly a bare pointer to the
+// object body, not a `NativeAggregate`, so `AggregateValue.classFieldAt`/
+// `withClassField` (which only special-case the latter) fell through to
+// `Value.classFieldAt`'s boxed-class-object arm and threw "Expected class
+// object." instead. Fixed by resolving the field's `Place` directly
+// through the pointer (the same `nativeClassReceiver`/`fieldPlace`
+// composition `runIndexAssignExpression`'s singly-indexed `DotVarExp`/
+// class arm already uses) and writing the whole updated field back
+// through that `Place`.
 static foreach (backend; Matrix!(
-    Omit!(Interpreter, Because.unconfirmed,
-        "Unsupported interpreter assignment target."),
 )) {
     @("dynamicArray.classFieldDoublyIndexedElementWritten." ~
         backend.stringof)

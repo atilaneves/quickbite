@@ -8234,7 +8234,59 @@ private struct Walker {
         // either shape's real runtime length -- so it applies to both
         // dimensions unconditionally here rather than being gated behind
         // `isStaticArrayType` as the plain-local branch's own checks are.
+        //
+        // `a.m[i][j] = value` (a bare class-typed local's own field,
+        // `dot.e1` a `VarExp`) needs the class-field machinery instead:
+        // `structFieldIndex` resolves the receiver's type via
+        // `receiverStructType`, which returns `null` for a class, so it
+        // unconditionally threw "Unsupported interpreter field access." for
+        // this receiver shape before any indexing even ran. Dispatching on
+        // `receiverClassType(dot.e1)` alone is not enough, though: a class
+        // local's own runtime value is commonly a bare pointer to the
+        // object body (`receiver.isPointer`), not a `NativeAggregate`
+        // (`receiver.isNativeAggregate`) -- `AggregateValue.classFieldAt`/
+        // `withClassField` only special-case the latter and otherwise fall
+        // through to `Value.classFieldAt`'s boxed-class-object arm, which
+        // threw "Expected class object." for a bare pointer. Resolve the
+        // field's `Place` directly through the pointer instead, the same
+        // `nativeClassReceiver`/`fieldPlace` composition
+        // `runIndexAssignExpression`'s singly-indexed `DotVarExp`/class arm
+        // already uses, and write the whole updated field back through that
+        // same `Place` -- a class body's storage is its own host address, so
+        // there is no separate receiver lvalue to rebind the way a struct's
+        // (possibly boxed) local binding needs.
         if (auto dot = outer.e1.isDotVarExp) {
+            if (receiverClassType(dot.e1) !is null) {
+                import quickbite.backends.interpreter.place: Place;
+                import quickbite.backends.interpreter.place_value: readValue, writeValue;
+
+                const receiver = runExpression(dot.e1);
+                const nativeClassReceiver = receiver.isPointer
+                    ? receiver
+                    : receiver.isNativeAggregate
+                    ? Value.pointerValue(AggregateValue.nativeClassBodyAddress(receiver))
+                    : Value.null_;
+                if (!nativeClassReceiver.isPointer)
+                    throw new Exception("Unsupported interpreter assignment target.");
+
+                auto fieldPlace = Place(nativeClassReceiver.pointerAddress, dot.e1.type)
+                    .field(dot.var.isVarDeclaration);
+                const fieldValue = readValue(fieldPlace);
+                const outerIndex = cast(size_t) runExpression(outer.e2).asLong;
+                checkStaticArrayIndexInBounds(fieldValue, outerIndex);
+                const outerElement = AggregateValue.elementAt(fieldValue, outerIndex);
+                const innerIndex = cast(size_t) runExpression(inner.e2).asLong;
+                checkStaticArrayIndexInBounds(outerElement, innerIndex);
+                const value = runExpression(rhs);
+                const updatedField = AggregateValue.withArrayElement(
+                    fieldValue,
+                    outerIndex,
+                    AggregateValue.withArrayElement(outerElement, innerIndex, value),
+                );
+                writeValue(fieldPlace, updatedField);
+                return value;
+            }
+
             const fieldIndex = structFieldIndex(dot);
             const receiver = runExpression(dot.e1);
             const fieldValue = AggregateValue.fieldAt(receiver, fieldIndex);
