@@ -487,10 +487,10 @@ row remains bounded and unblocked: the two survivors
 `expressions.d`) are the documented `&value == expected` address-identity
 rows blocked on the ref calling convention above, not bounded single-commit
 fixes. Closure interactions with exceptions (a captured local mutated across
-try/catch/finally) match `SystemLinker` under `bin/qb` probing -- not a lead.
-Find a fresh row through further `bin/qb` exploration (class
-polymorphism/vtable edge cases are untried), take the "One place resolver"
-item, or take an "Architecture work forced by the baseline" front.
+try/catch/finally) and class polymorphism/vtable dispatch (including
+`super.f()`) match `SystemLinker` under `bin/qb` probing -- not a lead. Find
+a fresh row through further `bin/qb` exploration, take the "One place
+resolver" item, or take an "Architecture work forced by the baseline" front.
 
 ### TDD and handoff discipline
 

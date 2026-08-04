@@ -16034,6 +16034,13 @@ private struct Compiler {
         bool hasClassReceiver;
         MethodReceiver structReceiver;
         bool hasStructReceiver;
+        // `super.f(...)` binds statically to the base class's own
+        // implementation (`function_`/`index` already resolved to it via
+        // DMD's `call.f`); dispatching it through the runtime receiver's
+        // vtable instead would look the override back up and, for an
+        // override whose body itself calls `super.f()`, recurse forever.
+        auto superDot = call.e1.isDotVarExp;
+        const isSuperCall = superDot !is null && superDot.e1.isSuperExp !is null;
 
         // A struct method call `receiver.method(args)` passes the receiver as
         // the hidden `this` block (by reference) at the start of the argument
@@ -16208,7 +16215,7 @@ private struct Compiler {
                 returnType.scalar == ScalarType.void_)
                 ? cast(ushort) 0
                 : allocateBytes(size(returnType), 8);
-        if (hasClassReceiver) {
+        if (hasClassReceiver && !isSuperCall) {
             const functionSlot = allocate(ScalarType.ulong_);
             _code ~= Instruction(
                 Op.classVirtualFunction,

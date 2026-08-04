@@ -805,6 +805,48 @@ static foreach (backend; Matrix!()) {
     }
 }
 
+// `super.f()` must bind statically to the immediately overridden base
+// implementation, never through the receiver's own dynamic-class vtable: an
+// override whose body calls `super.f()` still has a `this` of the MOST
+// DERIVED runtime class, so a naive "any class-receiver call is virtual"
+// dispatch looks the override back up again and recurses on itself forever
+// instead of reaching the base. `Interpreter` crashes (confirmed via real
+// `bin/ut`: dumped core) rather than returning a wrong answer -- a
+// pre-existing gap in a different backend's track, not touched here.
+static foreach (backend; Matrix!(
+    Omit!(Interpreter, Because.unconfirmed,
+        "super.f() crashes (dumped core) instead of binding to the base " ~
+        "implementation"),
+)) {
+    @("class.superCallBindsToBaseImplementationNotDynamicClass." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            class A {
+                int f() { return 1; }
+            }
+
+            class B : A {
+                override int f() { return super.f() + 10; }
+            }
+
+            class C : B {
+                override int f() { return super.f() + 100; }
+            }
+
+            int run() {
+                A a = new C();
+                return a.f();
+            }
+
+            unittest {
+                assert(run() == 111);
+            }
+        });
+    }
+}
+
 // The write/verify TIME asymmetry: `p`'s OWN mirror write declines
 // (`classIdentityAliasedByAnotherBinding`, `impl.d`) while `y`'s object
 // identity is still shared by another live binding, leaving `p`'s frame
