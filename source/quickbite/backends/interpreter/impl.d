@@ -8687,6 +8687,35 @@ private struct Walker {
             Value reinterpreted;
             if (reinterpretScalarArrayCast(cast_, reinterpreted))
                 return reinterpreted;
+
+            // `cast(T[])staticArrayExpr` (same element type) is a full slice
+            // of the static array's own storage -- the implicit cast DMD
+            // inserts around `_d_arrayctor`'s arguments when lowering a
+            // static-array whole-value copy. Give it the same borrowed
+            // dynamic-array view an explicit `staticArrayExpr[]` gets via
+            // `AggregateValue.slice`, rather than passing the untouched
+            // static-array aggregate through as though the cast were a
+            // no-op.
+            import dmd.typesem: equivalent;
+
+            auto sourceStaticArray = cast_.e1.type is null
+                ? null
+                : cast_.e1.type.toBasetype.isTypeSArray;
+            if (
+                sourceStaticArray !is null &&
+                type.isTypeDArray !is null &&
+                equivalent(sourceStaticArray.nextOf, type.nextOf)
+            ) {
+                import quickbite.backends.interpreter.aggregate_value:
+                    AggregateValue;
+
+                const source = runExpression(cast_.e1);
+                if (source.isNativeAggregate)
+                    return AggregateValue.slice(
+                        source, cast_.to, 0, AggregateValue.length(source),
+                    );
+            }
+
             return runExpression(cast_.e1);
         }
 
@@ -10315,6 +10344,72 @@ private struct Walker {
                 if (auto value = variable in locals)
                     return *value;
                 return defaultValue(variable);
+            }
+
+        // `T[N] dest = src` for an element type with a postblit lowers to a
+        // `_d_arrayctor(cast(T[])dest, cast(T[])src)` call
+        // (`expressionsem.d`'s `ConstructExp` handling), not a plain blit.
+        // Interpreting that generic druntime template body would recurse
+        // into `core.lifetime.copyEmplace`'s TypeInfo-driven machinery,
+        // which the interpreter has no honest way to execute for an
+        // interpreted (non-native) element type -- it corrupts the native
+        // call's argument addresses instead of copying. Block-copy the
+        // source's bytes directly into the destination's own storage
+        // (the same byte copy `writeValue` already performs for a
+        // same-typed static-array source), then run the element postblit on
+        // each copied element -- mirroring `compileArrayConstructor`'s
+        // identical `_d_arrayctor` interception in the bytecode core
+        // compiler. A struct with only a copy constructor or only a
+        // destructor (no postblit) also lowers this way; that shape is left
+        // to the generic call path below, unchanged.
+        if (auto arrayCtorCall = initializer.isCallExp)
+            if (
+                arrayCtorCall.f !is null &&
+                arrayCtorCall.f.ident !is null &&
+                arrayCtorCall.f.ident.toString == "_d_arrayctor" &&
+                arrayCtorCall.arguments !is null &&
+                arrayCtorCall.arguments.length >= 2
+            ) {
+                auto elementStruct =
+                    variable.type.toBasetype.nextOf.toBasetype.isTypeStruct;
+                auto postblit = elementStruct is null
+                    ? null
+                    : elementStruct.sym.postblit;
+                if (postblit !is null && hasMirrorSlot(variable)) {
+                    import quickbite.backends.interpreter.layout:
+                        staticArrayLength, typeByteSize;
+                    import quickbite.backends.interpreter.native_aggregate:
+                        NativeAggregate;
+                    import quickbite.backends.interpreter.native_block:
+                        NativeBlock;
+
+                    auto sourceArray = (*arrayCtorCall.arguments)[1];
+                    while (auto sourceCast = sourceArray.isCastExp)
+                        sourceArray = sourceCast.e1;
+
+                    const source = runExpression(sourceArray);
+                    setLocal(variable, source);
+                    uninitializedLocals.remove(variable);
+
+                    const count =
+                        staticArrayLength(variable.type.toBasetype.isTypeSArray);
+                    foreach (i; 0 .. count) {
+                        auto elementPlace = bindingPlace(variable).index(i);
+                        const elementReceiver = Value.nativeAggregateValue(
+                            NativeAggregate(
+                                elementPlace.type,
+                                NativeBlock.borrow(
+                                    elementPlace.address,
+                                    typeByteSize(elementPlace.type),
+                                ),
+                            ));
+                        runMemberFunction(postblit, null, elementReceiver, [], []);
+                    }
+
+                    if (auto value = variable in locals)
+                        return *value;
+                    return defaultValue(variable);
+                }
             }
 
         import quickbite.frontend.dmd.types: isAssocArrayType, isDynamicArrayType;

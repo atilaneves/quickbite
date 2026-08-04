@@ -1356,10 +1356,7 @@ static foreach (backend; Matrix!()) {
     }
 }
 
-static foreach (backend; Matrix!(
-    Omit!(Interpreter, Because.unconfirmed,
-        "static-array copy postblit dereferences a null counter pointer"),
-)) {
+static foreach (backend; Matrix!()) {
     @("struct.staticArrayCopyRunsPostblitAndDtors." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
