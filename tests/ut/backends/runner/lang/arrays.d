@@ -3984,6 +3984,89 @@ static foreach (backend; Matrix!()) {
     }
 }
 
+// `a[1] == b` (nested AA read as the FIRST operand of a plain, non-assert
+// `==`): control case for the corruption below. A later, unrelated AA
+// write must not see any effect from this comparison's operand codegen.
+// Interpreter has its own, separate gap on `a[1][k] = v` ("Associative-array
+// lvalue needs a variable"), unrelated to the write-back bug this test
+// targets -- same pre-existing omission as
+// `nestedWriteAutoVivifiesBrandNewOuterKey` above.
+static foreach (backend; Matrix!(
+    Omit!(Interpreter, Because.unconfirmed,
+        "a brand-new-outer-key nested write throws " ~
+        "\"Associative-array lvalue needs a variable\""),
+)) {
+    @("assocArray.nestedReadAsFirstEqualityOperandLeavesLaterWritesUnaffected."
+        ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            unittest {
+                int[int][int] a;
+                a[1][10] = 100;
+                a[1][20] = 103;
+
+                int[int] b;
+                b[99] = 1;
+
+                const bool same = a[1] == b;
+
+                int[int] m;
+                m[5] = 6;
+
+                assert(!same);
+                assert(a[1].length == 2);
+                assert(a[1][10] == 100);
+                assert(a[1][20] == 103);
+                assert(m.length == 1);
+                assert(m[5] == 6);
+            }
+        });
+    }
+}
+
+// `b == a[1]` (nested AA read as the SECOND operand of a plain, non-assert
+// `==`): used to leave a stale write-back pointer set after the
+// comparison's operand codegen (only argument 0 of an AA hook call ever
+// consumed it). The NEXT plain, unrelated AA insert (`m[5] = 6` below)
+// then wrote its own freshly-autovivified handle through that stale
+// pointer, silently aliasing `a[1]`'s storage onto `m` -- corrupting a
+// variable the comparison never touched. Interpreter omitted for the same
+// pre-existing, unrelated gap as the control case above.
+static foreach (backend; Matrix!(
+    Omit!(Interpreter, Because.unconfirmed,
+        "a brand-new-outer-key nested write throws " ~
+        "\"Associative-array lvalue needs a variable\""),
+)) {
+    @("assocArray.nestedReadAsSecondEqualityOperandLeavesLaterWritesUnaffected."
+        ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            unittest {
+                int[int][int] a;
+                a[1][10] = 100;
+                a[1][20] = 103;
+
+                int[int] b;
+                b[99] = 1;
+
+                const bool same = b == a[1];
+
+                int[int] m;
+                m[5] = 6;
+
+                assert(!same);
+                assert(a[1].length == 2);
+                assert(a[1][10] == 100);
+                assert(a[1][20] == 103);
+                assert(m.length == 1);
+                assert(m[5] == 6);
+            }
+        });
+    }
+}
+
 // `a[1][5] = 9` on an already-present outer key: reaching the inner map for
 // the nested write reads `a[1]`'s existing value through the same
 // find-or-default-insert hook (`_d_aaGetY`) real D uses for the outer level
