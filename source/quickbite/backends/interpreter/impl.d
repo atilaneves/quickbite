@@ -10446,11 +10446,12 @@ private void initializeNativeClassBody(
     auto body = Place(AggregateValue.nativeClassBodyAddress(object), type);
     foreach (field; classFields(classType.sym)) {
         auto value = defaultValue(field.type);
-        if (auto initializer = field._init.isExpInitializer)
-            value = walker.storageValue(
-                field.type,
-                walker.runExpression(initializer.exp),
-            );
+        if (field._init !is null)
+            if (auto initializer = field._init.isExpInitializer)
+                value = walker.storageValue(
+                    field.type,
+                    walker.runExpression(initializer.exp),
+                );
         writeValue(body.field(field), value);
     }
 }
