@@ -7075,3 +7075,141 @@ static foreach (backend; Matrix!(
         });
     }
 }
+
+// A row-range assignment (`arr[lo .. hi] = otherRows[];`) into a `T[N][]`
+// destination whose rhs range is itself sourced from a multidimensional
+// static array (`s[0 .. 2]` where `s` is `int[3][3]`), not another genuine
+// `T[N][]` array (the
+// `rowRangeAssignmentIntoStaticArrayRowsCopiesEachRowIndependently` sibling
+// test above): `s`'s rows are contiguous inline bytes in a throwaway heap
+// copy (`dynamicArrayDescriptorOrNull`'s static-array-view branch), not
+// the separately heap-allocated row *pointers* `Op.rowRangeCopy` assumes.
+// `Bytecode` is omitted rather than characterized as diverging: it declines
+// this shape at compile time (proven separately below) rather than
+// reading a row's own inline bytes as if they were a heap pointer and
+// dereferencing them, a crash before this fix.
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.unconfirmed),
+    Omit!(Interpreter, Because.unconfirmed),
+    Omit!(Bytecode, Because.inexpressible,
+        "the rhs range's rows are contiguous inline bytes (a static-array " ~
+        "view), not the separately heap-allocated row pointers " ~
+        "`Op.rowRangeCopy` assumes; declines with \"Unsupported " ~
+        "slice-assignment source in bytecode core: s[0..2]\" rather than " ~
+        "reading row bytes as a pointer and dereferencing them"),
+    Omit!(LLVMJit, Because.unconfirmed),
+)) {
+    @("dynamicArray.rowRangeAssignmentFromStaticArrayViewSource." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            unittest {
+                int[3][] values = new int[3][](3);
+                int[3][3] s;
+                s[0][0] = 7;
+                s[1][2] = 9;
+                values[0 .. 2] = s[0 .. 2];
+
+                assert(values[0][0] == 7 && values[0][1] == 0 &&
+                    values[0][2] == 0);
+                assert(values[1][0] == 0 && values[1][1] == 0 &&
+                    values[1][2] == 9);
+                assert(values[2][0] == 0 && values[2][1] == 0 &&
+                    values[2][2] == 0);
+            }
+        });
+    }
+}
+
+// `Bytecode`'s own clean-decline counterpart of the sibling test above:
+// proves the row-range assignment fails at *compile* time with a
+// diagnostic (this fix) rather than crashing.
+@("dynamicArray.rowRangeAssignmentFromStaticArrayViewSourceDeclinesOnBytecode")
+@Tags("Bytecode")
+unittest {
+    runBackendSourceFixtureTests!Bytecode(q{
+        unittest {
+            int[3][] values = new int[3][](3);
+            int[3][3] s;
+            s[0][0] = 7;
+            s[1][2] = 9;
+            values[0 .. 2] = s[0 .. 2];
+        }
+    }).shouldThrowWithMessage(
+        "Unsupported slice-assignment source in bytecode core: s[0..2]",
+    );
+}
+
+// The broadcast-fill counterpart of the row-range test above: a broadcast
+// fill (`arr[lo .. hi] = row;`) into a `T[N][]` destination (the same shape
+// as `broadcastFillIntoStaticArrayRowsWritesEachRowIndependently` above),
+// but whose rhs row is itself read out of another genuine `T[N][]` array
+// (`src[0]`), not a literal or a static-array-view element. The rhs's own
+// type (`int[3]`) matches the destination's row type, but the compiled
+// read is a 16-byte row *descriptor* (a pointer into `src[0]`'s own
+// separately heap-allocated block), not the row's inline bytes.
+// `Bytecode` is omitted rather than characterized as diverging: it declines
+// this shape at compile time (proven separately below) rather than
+// broadcasting the descriptor's pointer word (plus neighbouring bytes)
+// into every destination row as if it were row data, a silent wrong
+// result before this fix.
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.unconfirmed),
+    Omit!(Interpreter, Because.unconfirmed),
+    Omit!(Bytecode, Because.inexpressible,
+        "the rhs row is read out of another genuine `T[N][]` array, so " ~
+        "the compiled read is a 16-byte row descriptor rather than the " ~
+        "row's own inline bytes; declines with \"Unsupported " ~
+        "slice-assignment source in bytecode core: src[0]\" rather than " ~
+        "broadcasting the descriptor's bytes as if they were row data"),
+    Omit!(LLVMJit, Because.unconfirmed),
+)) {
+    @("dynamicArray.broadcastFillFromDynamicArrayRowElementCopiesIndependently." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            unittest {
+                int[3][] values = new int[3][](3);
+                int[3][] src = new int[3][](1);
+                src[0][0] = 7; src[0][1] = 8; src[0][2] = 9;
+                values[0 .. 2] = src[0];
+
+                assert(values[0][0] == 7 && values[0][1] == 8 &&
+                    values[0][2] == 9);
+                assert(values[1][0] == 7 && values[1][1] == 8 &&
+                    values[1][2] == 9);
+                assert(values[2][0] == 0 && values[2][1] == 0 &&
+                    values[2][2] == 0);
+
+                // Each broadcast row is its own independent copy of
+                // `src[0]`'s current value, not aliased to it: mutating
+                // one must not affect the other (`T[N]` element assignment
+                // is a value copy, unlike the `T[][]` row-aliasing sibling
+                // test further above).
+                values[0][0] = 55;
+                assert(src[0][0] == 7);
+                assert(values[1][0] == 7);
+            }
+        });
+    }
+}
+
+// `Bytecode`'s own clean-decline counterpart of the sibling test above:
+// proves the broadcast fill fails at *compile* time with a diagnostic
+// (this fix) rather than silently filling every row with garbage.
+@("dynamicArray.broadcastFillFromDynamicArrayRowElementDeclinesOnBytecode")
+@Tags("Bytecode")
+unittest {
+    runBackendSourceFixtureTests!Bytecode(q{
+        unittest {
+            int[3][] values = new int[3][](3);
+            int[3][] src = new int[3][](1);
+            src[0][0] = 7; src[0][1] = 8; src[0][2] = 9;
+            values[0 .. 2] = src[0];
+        }
+    }).shouldThrowWithMessage(
+        "Unsupported slice-assignment source in bytecode core: src[0]",
+    );
+}

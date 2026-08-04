@@ -15149,6 +15149,23 @@ private struct Compiler {
         return rhs.type.toBasetype.ty != TY.Tarray;
     }
 
+    // True when `rhs` is an index read into a genuine array-of-arrays
+    // (`outer[i]`, where `outer`'s own elements are each a separately
+    // heap-allocated row): `loadDynamicArrayElement`'s `elementIsArray`
+    // branch always compiles such a read to the row's own 16-byte
+    // descriptor there, never the row's inline bytes, regardless of `rhs`'s
+    // own (row) type matching a broadcast-fill destination's row type. Used
+    // to keep a row broadcast-fill (`tryDynamicArraySliceAssign`'s
+    // `T[N][]` branch) from treating that descriptor as if it were row
+    // data.
+    private bool rowBroadcastSourceIsRowDescriptor(Expression rhs) {
+        auto index = rhs.isIndexExp;
+        if (index is null)
+            return false;
+        auto descriptor = dynamicArrayDescriptorOrNull(index.e1);
+        return descriptor !is null && descriptor.elementIsArray;
+    }
+
     // `arr[lo .. hi] = rhs` or `p[lo .. hi] = rhs`: form the destination
     // sub-slice descriptor sharing the array or raw pointer's backing memory,
     // materialise the rhs into a source descriptor, and emit a write-through
@@ -15185,9 +15202,7 @@ private struct Compiler {
         // addressing `tryDynamicArrayElementAssign`'s single-index
         // `innerArrayRowPointer` writeback uses -- only when the rhs is
         // itself shaped like one row (`sameType` against the row's own
-        // `Type`, not the whole sliced range). A rhs shaped like a matching
-        // range of rows (a sub-slice, another `T[N][]`) still falls through
-        // to the `sliceCopy` path below, which is not fixed here.
+        // `Type`, not the whole sliced range).
         //
         // `descriptor.isStaticArrayView` (a genuine multidimensional static
         // array, e.g. `int[3][3]`, viewed through a throwaway heap copy)
@@ -15202,7 +15217,22 @@ private struct Compiler {
             auto rowType = slice.e1.type.toBasetype.nextOf;
             if (rowType.toBasetype.ty == TY.Tsarray) {
                 const rowByteSize = cast(uint) staticArraySize(rowType);
-                if (rhs.type !is null && sameType(rhs.type, rowType)) {
+
+                // `sameType(rhs.type, rowType)` alone does not prove the
+                // compiled rhs operand holds the row's own inline bytes:
+                // `other[0]` of another genuine `T[N][]` array also has
+                // type `T[N]`, but `loadDynamicArrayElement`'s
+                // `elementIsArray` branch compiles an index read of it to a
+                // 16-byte row *descriptor* (a pointer into the row's own
+                // separately heap-allocated block), not the row's bytes.
+                // Broadcasting that would copy the pointer word (plus
+                // neighbouring bytes) into every destination row as if it
+                // were row data -- declined here rather than silently
+                // filling every row with garbage.
+                const rhsIsRowDescriptorRead =
+                    rowBroadcastSourceIsRowDescriptor(rhs);
+                if (!rhsIsRowDescriptorRead &&
+                    rhs.type !is null && sameType(rhs.type, rowType)) {
                     const value = compileExpression(rhs);
                     emitRowBroadcastFill(
                         destination, value.offset, rowByteSize,
@@ -15219,6 +15249,34 @@ private struct Compiler {
                 // `sliceCopy16`'s flat by-value descriptor copy below,
                 // which would alias every destination row to the source's
                 // block (see `Op.rowRangeCopy`'s doc comment).
+                //
+                // A rhs range sourced from a static-array view (`s[0 .. 2]`
+                // where `s` is itself a multidimensional static array, e.g.
+                // `int[3][3]`) is contiguous inline row bytes there, not
+                // the heap row-pointer descriptors `Op.rowRangeCopy`
+                // assumes -- decline cleanly rather than reading row bytes
+                // as a pointer and dereferencing them. Thrown directly
+                // (not `return null`): a `null` here would only send this
+                // shape on to `compileAssignExpression`'s later
+                // `isDynamicArrayArgument` fallback, which resolves
+                // `assign.e1` itself (the whole `values[0 .. 2]` slice
+                // expression) to a *fresh, unbacked* descriptor via
+                // `dynamicArrayDescriptorOrNull`'s own generic `SliceExp`
+                // branch -- silently writing into a throwaway copy instead
+                // of `values`'s real storage, leaving it unchanged with no
+                // diagnostic at all.
+                if (auto rhsSlice = rhs.isSliceExp)
+                    if (auto rhsBase = dynamicArrayDescriptorOrNull(rhsSlice.e1))
+                        if (rhsBase.isStaticArrayView) {
+                            import std.conv: text;
+
+                            throw new Exception(text(
+                                "Unsupported slice-assignment source in " ~
+                                    "bytecode core: ",
+                                expressionChars(rhs),
+                            ));
+                        }
+
                 const rangeSource = compileSourceSlice(elementType, rhs);
                 emitRowRangeCopy(destination, rangeSource, rowByteSize);
 

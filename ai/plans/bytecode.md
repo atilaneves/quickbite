@@ -440,6 +440,13 @@ reaches them:
 - A `T[N][]`'s rows are separately heap-allocated inner descriptors, so a
   pointer taken into one row (`&outer[i][j]`) is valid within that row, but a
   flat pointer walk across rows diverges from compiled D's contiguous layout.
+- A `T[N][]` destination's broadcast-fill and row-range slice assignment
+  (`tryDynamicArraySliceAssign`) write through each destination row's own
+  heap block only when the rhs itself supplies genuine row bytes: a
+  single-row rhs read out of another `T[N][]` array (`arr[i]`), and a
+  row-range rhs sliced from a static-array view (`s[0 .. 2]` where `s` is
+  `int[3][3]`), both decline with "Unsupported slice-assignment source in
+  bytecode core" rather than treating a row descriptor as row data.
 - `arr[0][0]` on a `T[N][]` throws "Unsupported static array access": the
   `Tarray`-gated `tryDynamicArrayIndex`/`indexedArrayDescriptor` decline a
   `Tsarray` sub-expression, so compilation falls through to the
