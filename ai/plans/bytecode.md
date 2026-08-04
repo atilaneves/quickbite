@@ -596,23 +596,57 @@ pre-existing path (`callFunction` resolving straight to DMD's own
 rather than reaching `delegateOperandOffset` at all; confirmed still clean
 and bounded, not a hang, after both fixes landed.
 
-Still open, in order: (1) narrow or replace the static-delegate-registry hack
+(1) Audited, left alone -- NOT a strict superset, do not remove or narrow
+without a real fix backing it: the static-delegate-registry hack
 (`_staticDelegateAssocArrays`/`tryStaticDelegateAssocArrayAssign`/
 `tryStaticDelegateAssocArrayCall`/`staticDelegateAssocArrayDeclaration`,
 `compiler.d`, built to pass one `cerealed.d` test, `Writer.childWriters[...]`)
-so it cannot silently shadow the now-working general case: it matches any
-`Taarray`-of-delegate *module/static* variable generically (a local variable
-never matches -- DMD's `-preview=dip1000` lifetime-checking lowers a local
-AA's `_d_aaGetY`/`_d_aaGetRvalueX` calls through an intermediate `Tpointer`
-temp the hack's declaration-matching does not recognise, which is also why
-neither the hack nor this fix's own `p[0]` branch see a plain
-`Taarray`-typed `index.e1` directly), ignores the key (single global slot
-per declaration, last-write-wins), and falls back to a cross-call-site
-global (`_latestStaticDelegateAssocArrayFunction`) -- all silent-wrong-result
-risks now that ordinary code can reach the real read/write path underneath
-it; (2) full fixture coverage (assign/read/call/foreach, module-level and
-local, struct/class fields) beyond the one hang-pinning fixture and the
-existing `cerealed.d` regression test.
+matches any `Taarray`-of-delegate *module/static* variable generically (a
+local variable never matches -- DMD's `-preview=dip1000` lifetime-checking
+lowers a local AA's `_d_aaGetY`/`_d_aaGetRvalueX` calls through an
+intermediate `Tpointer` temp the hack's declaration-matching does not
+recognise, which is also why neither the hack nor the hang fix's own `p[0]`
+branch see a plain `Taarray`-typed `index.e1` directly), ignores the key
+(single global slot per declaration, last-write-wins), and falls back to a
+cross-call-site global (`_latestStaticDelegateAssocArrayFunction`) --
+real risks in general, but tested directly: temporarily short-circuiting
+both `tryStaticDelegateAssocArrayAssign` and `tryStaticDelegateAssocArrayCall`
+to return `null` unconditionally (forcing every call site through the
+now-working general path) and rebuilding still failed
+`classSerialisationReadsStaticChildRegistry.Bytecode` (`Writer.childWriters`,
+a `Taarray`-of-delegate *static struct field*, not a plain module variable)
+with a `Range violation`, while the unrelated hang-fix regression fixture
+(`delegateAssocArrayValueIndexedCallInvokesStoredDelegate`, a plain local
+`Taarray` variable) stayed green throughout. So the general path is
+confirmed *not* yet a superset of the hack for this exact static-struct-field
+shape -- the hack stays exactly as-is; the experimental short-circuit was
+reverted (confirmed empty `git diff`) rather than landed. (2) Full fixture
+coverage: the hang fix's own `cerealed.d` regression fixture already covered
+a LOCAL variable's construct/`&freeFunction`-assign/call-through (module-
+level was never reachable at all -- see above -- so "module-level" fixture
+coverage does not apply). Three new fixtures now cover the rest of a LOCAL
+`int delegate()[string]` variable's surface, all confirmed on `Bytecode` and
+the `SystemLinker` oracle (`tests/ut/backends/runner/lang/arrays.d`,
+`assocArray.delegateValueLocal*`): a lambda-literal assign (not just
+`&freeFunction`) and call-through; reassignment (a second lambda-literal
+assign to the same key calls through to the new delegate, not a stale one);
+and `foreach (k, v; callbacks)` calling through each entry's `v`. The
+`foreach` shape was genuinely broken, not just untested: `delegateOperandOffset`
+throws "Unsupported delegate argument in bytecode core: __applyArg1" the
+moment the loop body calls `v()`, because `compileAssocArrayApply2` registered
+a `Tdelegate`-typed value-loop-variable in `_locals` (the same as an
+ordinary scalar), when a run-time delegate value with no statically-known
+callee needs `_delegateParameterLocals` instead -- the same table every
+other delegate-typed *parameter* already uses, for exactly the same reason.
+Fixed with one added branch alongside the parameter's own `Tstruct`/`Tsarray`
+cases. Struct/class-field-value delegate-typed AA shapes remain uncovered,
+left for a future slice. Also surfaced, unrelated to this work and not
+fixed here: `classSerialisationReadsStaticChildRegistry.Bytecode`
+(`cerealed.d`) is a pre-existing, deterministic (not flaky) red row already
+present three commits before this one (`e719bf8f`) and untouched by any
+delegate-AA work this session -- a `Range violation` on the `Writer`
+static-struct-field shape even with the hack active and unmodified. Not
+investigated further here; still red on `Bytecode` after this slice.
 
 `arr[i] = existingVar;` for a plain dynamic array of structs, and the same
 shape for a compile-time-indexed static array of structs, now works

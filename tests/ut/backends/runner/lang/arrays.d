@@ -4119,6 +4119,96 @@ static foreach (backend; Matrix!(
     }
 }
 
+// A delegate-typed AA VALUE for a LOCAL (non-module, non-static) variable,
+// assigned from a lambda literal rather than `&freeFunction` -- the shape
+// `ai/plans/bytecode.md`'s AssocArray section's item 2 asks for beyond the
+// `&fn`-assigned module-scoped regression fixture already pinned as
+// `ut.backends.runner.lang.cerealed`'s
+// `delegateAssocArrayValueIndexedCallInvokesStoredDelegate`. This already
+// worked before this fixture was added -- `delegateOperandOffset`'s
+// `delegateInitializer` assign-side handling and its own `p[0]` call-side
+// branch (both from the hang fix, commit 587d2a9c) are agnostic to lambda
+// vs. `&freeFunction` and to local vs. module storage -- but had no fixture
+// of its own. `Omit`s mirror the sibling regression fixture: this only pins
+// `Bytecode` plus the `SystemLinker` oracle, not full delegate-AA-value
+// support on every backend.
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.unconfirmed),
+    Omit!(Interpreter, Because.unconfirmed),
+    Omit!(LLVMJit, Because.unconfirmed),
+)) {
+    @("assocArray.delegateValueLocalLambdaAssignInvokesStoredDelegate." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            unittest {
+                int delegate()[string] callbacks;
+                callbacks["a"] = () => 42;
+                auto result = callbacks["a"]();
+                assert(result == 42);
+            }
+        });
+    }
+}
+
+// Reassigning a LOCAL delegate-typed AA value's entry (still a lambda
+// literal each time) must call through to the latest stored delegate, not a
+// stale one -- exercising `storeThroughPointer`'s `Tdelegate` write path a
+// second time over the same slot rather than only ever writing it once.
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.unconfirmed),
+    Omit!(Interpreter, Because.unconfirmed),
+    Omit!(LLVMJit, Because.unconfirmed),
+)) {
+    @("assocArray.delegateValueLocalReassignInvokesLatestDelegate." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            unittest {
+                int delegate()[string] callbacks;
+                callbacks["a"] = () => 1;
+                assert(callbacks["a"]() == 1);
+                callbacks["a"] = () => 2;
+                auto result = callbacks["a"]();
+                assert(result == 2);
+            }
+        });
+    }
+}
+
+// `foreach (k, v; callbacks)` over a LOCAL delegate-typed AA calls through
+// each stored delegate via the loop variable `v`, not just a direct
+// `callbacks[key]()` index-call -- a materially different read path
+// (`compileAssocArrayApply2`'s per-entry value read) from the one the hang
+// fix and the two lambda-assign fixtures above exercise.
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.unconfirmed),
+    Omit!(Interpreter, Because.unconfirmed),
+    Omit!(LLVMJit, Because.unconfirmed),
+)) {
+    @("assocArray.delegateValueLocalForeachInvokesEachStoredDelegate." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            unittest {
+                int delegate()[string] callbacks;
+                callbacks["a"] = () => 1;
+                callbacks["b"] = () => 2;
+                callbacks["c"] = () => 3;
+
+                int total;
+                foreach (k, v; callbacks)
+                    total += v();
+
+                assert(total == 6);
+            }
+        });
+    }
+}
+
 
 
 /++

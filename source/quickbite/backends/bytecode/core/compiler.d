@@ -17834,6 +17834,21 @@ private struct Compiler {
             );
         else if (valueParameter.type.toBasetype.ty == TY.Tsarray)
             _staticArrayLocals[valueParameter] = valueSlot;
+        else if (valueParameter.type.toBasetype.ty == TY.Tdelegate)
+            // A per-entry delegate VALUE read out of `values` above (a
+            // run-time `{functionIndex, context}` pair with no statically
+            // known callee) -- the same "caller-supplied delegate value,
+            // dispatch by its own function-index word" shape an ordinary
+            // delegate-typed function parameter already gets
+            // (`_delegateParameterLocals`, set up next to the parameter
+            // loop above this function). `_delegateLocals` is the wrong
+            // table: every entry there carries a statically-known
+            // `FuncDeclaration`, which this loop variable does not have.
+            // Without this, `delegateOperandOffset`'s `VarExp` branch never
+            // finds `valueParameter` in either delegate table and falls
+            // through to its final "Unsupported delegate argument" throw
+            // the moment the loop body calls through it (`v()`).
+            _delegateParameterLocals[valueParameter] = valueSlot;
         else
             _locals[valueParameter] = valueSlot;
 
