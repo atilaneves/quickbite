@@ -3870,6 +3870,52 @@ static foreach (backend; Matrix!()) {
     }
 }
 
+// A static-array-typed value (`int[3][string]`): construction from a
+// literal, whole-value indexed read, an indexed single-element write
+// through the AA-value-read pointer (`rows["a"][1] = 99`), and `foreach`
+// all in one fixture. Two bugs fixed to get here, both in the same
+// AA-value-pointer machinery `structValueFieldReadWrite` above already
+// established for a struct-typed value: `staticArrayBaseOffset` (and its
+// `indexesStaticArray` gate) had no branch recognising a raw pointer to a
+// static array -- DMD's associative-array rvalue-read lowering
+// (`_d_aaGetRvalueX`) yields exactly that shape -- so both the read and
+// the indexed write threw "Unsupported static array access"/"Unsupported
+// assignment in bytecode core" (Bytecode alone; `SystemLinker` always ran
+// this fine). Separately, `assocArrayValueWidth` (used by every AA opcode,
+// including `Op.aaValues`' per-entry stride) sized a static-array value as
+// a boxed 16-byte slice descriptor via `arrayElementIsArray`'s dynamic-
+// array-*row* treatment, not its own 12-byte raw block (confirmed against
+// DMD's own lowering, whose `Impl.valsz` for an `int[3]` value is 12) --
+// harmless for a single entry (the real bytes still start at the block's
+// front) but desyncing `foreach`'s per-entry read stride from the real one
+// as soon as `compileAssocArrayApply2` needed its own value width (it
+// previously had no `Tsarray` case at all, throwing "Unsupported type in
+// bytecode core: int[3]" via `scalarType`). Interpreter refuses the
+// indexed write with the same "Unsupported interpreter assignment target"
+// diagnostic `structValueFieldReadWrite` above already omits it for -- a
+// separate, unconfirmed backend gap.
+static foreach (backend; Matrix!(
+    Omit!(Interpreter, Because.unconfirmed,
+        "Unsupported interpreter assignment target"),
+)) {
+    @("assocArray.staticArrayValueConstructsReadsWritesAndIterates." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            unittest {
+                int[3][string] rows;
+                rows["a"] = [1, 2, 3];
+                assert(rows["a"][1] == 2);
+                rows["a"][1] = 99;
+                assert(rows["a"][1] == 99);
+                foreach (k, v; rows)
+                    assert(v[1] == 99);
+            }
+        });
+    }
+}
+
 static foreach (backend; Matrix!()) {
     @("assocArray.equalityComparesRuntimeEntries." ~ backend.stringof)
     @Tags(backend.stringof)

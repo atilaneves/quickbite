@@ -13996,6 +13996,7 @@ private struct Compiler {
     private ushort staticArrayBaseOffset(
         Expression expression, out StructField* writeback,
     ) {
+        import dmd.astenums: TY;
         import std.conv: text;
 
         if (auto variable = expression.isVarExp)
@@ -14054,6 +14055,41 @@ private struct Compiler {
                 return field.offset;
             }
 
+        // `p` where `p` is a raw pointer to a static array: DMD's
+        // associative-array rvalue-read lowering (`_d_aaGetRvalueX`) yields
+        // exactly this shape for a static-array-typed AA value
+        // (`int[3][string] rows; rows["a"]` lowers to `(...)[0]`, an
+        // `IndexExp` over this pointer with a constant-zero index -- so a
+        // further source-level index, `rows["a"][1]`, reaches this branch
+        // one level in through the `index.e1.isIndexExp` recursion above),
+        // the Tsarray counterpart of `structBaseOffsetOrMaterialise`'s
+        // `viaPointer` branch for the identical struct-value shape.
+        // Materialise the pointee through the same `loadStructThroughPointer`
+        // helper that branch already uses, and wire up
+        // `writeBackThroughPointer` so a write through the returned offset
+        // (`rows["a"][1] = 99`) copies the whole updated block back to the
+        // real AA slot instead of silently landing on a throwaway copy.
+        if (isPointerType(expression.type) &&
+            expression.type.nextOf !is null &&
+            expression.type.nextOf.toBasetype.ty == TY.Tsarray) {
+            const pointer = compileExpression(expression);
+            if (pointer.isPointer) {
+                const zeroOffset = compileSizeConstant(0);
+                const arraySize = cast(ushort)
+                    staticArraySize(expression.type.nextOf);
+                const blockOffset = loadStructThroughPointer(
+                    pointer.offset, zeroOffset, expression.type.nextOf,
+                );
+                auto result = new StructField;
+                *result = StructField(
+                    blockOffset, expression.type.nextOf, false, blockOffset,
+                    0, arraySize, false, 0, true, pointer.offset, zeroOffset,
+                );
+                writeback = result;
+                return blockOffset;
+            }
+        }
+
         throw new Exception(text(
             "Unsupported static array access in bytecode core: ",
             expressionChars(expression),
@@ -14097,6 +14133,20 @@ private struct Compiler {
         if (auto dot = expression.isDotVarExp)
             if (auto field = tryStructField(dot))
                 return field.type.toBasetype.ty == TY.Tsarray;
+
+        // A raw pointer to a static array: DMD's associative-array
+        // rvalue-read lowering (`_d_aaGetRvalueX`) yields exactly this shape
+        // for a static-array-typed AA value (`int[3][string] rows;
+        // rows["a"]` lowers to `(...)[0]`, an `IndexExp` over this pointer),
+        // the same shape `staticArrayBaseOffset`'s own pointer branch now
+        // resolves. Recognising it here lets `tryStaticArrayElement` (and
+        // so `compileStaticArrayElementAssign`) take the indexed-write path
+        // instead of falling through to the generic "unsupported
+        // assignment" refusal.
+        if (isPointerType(expression.type) &&
+            expression.type.nextOf !is null &&
+            expression.type.nextOf.toBasetype.ty == TY.Tsarray)
+            return true;
 
         return false;
     }
@@ -17660,9 +17710,6 @@ private struct Compiler {
 
         auto keyParameter = (*literal.fd.parameters)[0];
         auto valueParameter = (*literal.fd.parameters)[1];
-        const valueElementSize = valueParameter.type.toBasetype.ty == TY.Tstruct
-            ? cast(uint) staticArraySize(valueParameter.type)
-            : size(scalarType(valueParameter.type));
 
         // `AssocArray.keys` (machine.d) packs each key at its real width --
         // a scalar's own size, a struct's own whole-block size, or a
@@ -17676,6 +17723,18 @@ private struct Compiler {
         auto aaType = assocArrayType((*call.arguments)[0]);
         const keyIsArray = assocArrayKeyIsArray(aaType);
         const keyElementSize = assocArrayKeyWidth(aaType);
+        // Same reasoning on the value side: `assocArrayValueWidth` is the
+        // one place `aaInsert`/`aaGetRvalue`/`Op.aaValues` all size a value
+        // from, so `foreach`'s own per-entry stride must match it exactly
+        // -- a local, ad hoc struct-or-scalar calculation here previously
+        // both threw for a static-array value (`scalarType` rejects
+        // `Tsarray`) and, before `assocArrayValueWidth`'s own Tsarray fix,
+        // would have desynced from the real entry stride even if patched
+        // locally instead.
+        const valueIsAggregate =
+            valueParameter.type.toBasetype.ty == TY.Tstruct ||
+            valueParameter.type.toBasetype.ty == TY.Tsarray;
+        const valueElementSize = assocArrayValueWidth(aaType);
 
         const keys = compileAssocArraySlice(Op.aaKeys, handle, keyElementSize);
         const values = compileAssocArraySlice(
@@ -17713,7 +17772,7 @@ private struct Compiler {
 
         const valueSlot = allocateBytes(
             valueElementSize,
-            valueParameter.type.toBasetype.ty == TY.Tstruct
+            valueIsAggregate
                 ? staticArrayAlign(valueParameter.type)
                 : valueElementSize,
         );
@@ -17721,6 +17780,8 @@ private struct Compiler {
             _structLocals[valueParameter] = StructLocal(
                 valueSlot, structDeclarationOf(valueParameter.type),
             );
+        else if (valueParameter.type.toBasetype.ty == TY.Tsarray)
+            _staticArrayLocals[valueParameter] = valueSlot;
         else
             _locals[valueParameter] = valueSlot;
 
@@ -17841,21 +17902,31 @@ private struct Compiler {
 
     // The byte width of an associative array's value type, the same way
     // `dynamicArrayElementSize` sizes a dynamic array's element: a struct or
-    // static-array value is its own block size, any other value is its scalar
-    // width. `AssocArray.values` (`machine.d`) stores entries packed at this
-    // stride, mirroring how a dynamic array carries its own element size.
-    // `arrayElementIsArray(aaType)` reuses the same "is the (`nextOf`)
-    // element itself an array" test a dynamic array's own element sizing
-    // uses -- an AA value plays the same role there as a dynamic array's
-    // element -- so a `T[]`/`T[N]`-typed value (`int[][int]`) is sized as
-    // its own 16-byte slice descriptor, not (mis)read as
-    // `dynamicArrayElementType` drilling one level further into `T`'s own
-    // element type.
+    // static-array value is its own block size, a dynamic-array value is its
+    // own 16-byte slice descriptor, any other value is its scalar width.
+    // `AssocArray.values` (`machine.d`) stores entries packed at this stride,
+    // mirroring how a dynamic array carries its own element size.
+    //
+    // A static-array-typed value (`int[3][string]`) is its own inline block
+    // -- confirmed against DMD's real lowering, whose `Impl.valsz` for an
+    // `int[3]` value is 12, the array's own raw byte width, never a boxed
+    // descriptor -- unlike a `Tsarray` *row* nested inside another dynamic
+    // array (`int[2][]`), which this VM always boxes behind its own 16-byte
+    // slice descriptor (`arrayElementIsArray`'s own doc comment: "this VM's
+    // rows are never a raw inline block"). An AA value slot is not a
+    // dynamic-array row, so it must not inherit that boxing: checked before
+    // `arrayElementIsArray`, which does not distinguish the two shapes
+    // (it would otherwise (mis)size a static-array value as a 16-byte
+    // descriptor, desyncing `Op.aaValues`' per-entry stride from every
+    // opcode -- `aaInsert`/`aaGetRvalue`/`aaIn` -- that sizes the same
+    // value at its own raw block width via this same function).
     private uint assocArrayValueWidth(Type aaType) {
         import dmd.astenums: TY;
 
         if (aaType.toBasetype.nextOf.toBasetype.ty == TY.Tdelegate)
             return delegateValueSize;
+        if (aaType.toBasetype.nextOf.toBasetype.ty == TY.Tsarray)
+            return cast(uint) staticArraySize(aaType.toBasetype.nextOf);
         return dynamicArrayElementSize(
             aaType,
             dynamicArrayElementType(aaType),

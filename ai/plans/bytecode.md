@@ -510,6 +510,40 @@ is never called for this shape); and overwriting an *existing* entry from
 another struct value (`a[1] = existingVar;`, any struct, `opAssign` or not)
 now works.
 
+A static-array-typed AA value (`int[3][string]`) is now also supported:
+construction from a literal, a whole-value indexed read (`rows["a"][1]`), an
+indexed single-element write through the AA-value-read pointer
+(`rows["a"][1] = 99`), and `foreach (k, v; rows)` all work
+(`assocArray.staticArrayValueConstructsReadsWritesAndIterates`, `arrays.d`;
+`Interpreter` refuses the indexed write with the same "Unsupported
+interpreter assignment target" diagnostic the struct-value case above
+already omits it for). Two bugs fixed to get here. First,
+`staticArrayBaseOffset` (and its `indexesStaticArray` gate) had no branch
+recognising a raw pointer to a static array -- DMD's `_d_aaGetRvalueX`
+rvalue-read lowering yields exactly that shape for this value type -- so
+both the read and the indexed write threw ("Unsupported static array
+access"/"Unsupported assignment in bytecode core" respectively) on
+`Bytecode` alone (`SystemLinker` always ran this fine); fixed by
+materialising the pointee through the same `loadStructThroughPointer`
+helper the identical struct-value shape already uses
+(`structBaseOffsetOrMaterialise`'s `viaPointer` branch), with
+`writeBackThroughPointer` wired up the same way so a write copies the
+whole updated block back to the real AA slot. Second, and unrelated to the
+first: `assocArrayValueWidth` -- the one place `aaInsert`/`aaGetRvalue`/
+`Op.aaValues` all size a value from -- sized a static-array value as a
+boxed 16-byte slice descriptor via `arrayElementIsArray`'s dynamic-array-
+*row* treatment (`int[2][]`'s row, which this VM always boxes), rather than
+its own 12-byte raw block; harmless for a single entry (the real bytes
+still start at the block's front) but silently desyncing `foreach`'s own
+per-entry read stride from the real one, since `compileAssocArrayApply2`
+had no `Tsarray` case at all beforehand (it threw "Unsupported type in
+bytecode core: int[3]" via `scalarType`). Fixed by giving
+`assocArrayValueWidth` an explicit `Tsarray` case (its own
+`staticArraySize`, confirmed against DMD's own lowering, whose
+`Impl.valsz` for an `int[3]` value is 12, never a boxed descriptor) ahead
+of the `arrayElementIsArray` fallback, and having `compileAssocArrayApply2`
+call it directly instead of a local ad hoc struct-or-scalar calculation.
+
 `arr[i] = existingVar;` for a plain dynamic array of structs, and the same
 shape for a compile-time-indexed static array of structs, now works
 (previously threw "Unsupported variable in bytecode core: existingVar" on
