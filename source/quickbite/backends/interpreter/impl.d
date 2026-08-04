@@ -4249,9 +4249,11 @@ private struct Walker {
         auto variable = var is null ? null : var.var.isVarDeclaration;
         if (variable !is null && variable in uninitializedLocals)
             return Value.void_;
-        if (variable !is null)
-            if (auto address = variable in nativeRefLocalAddresses)
-                evaluated.address = *address;
+        if (variable !is null) {
+            const address = bindingPointerValue(variable);
+            if (address.isPointer)
+                evaluated.address = address.pointerAddress;
+        }
 
         auto previous = _evaluatedReferenceArgumentIndices;
         _evaluatedReferenceArgumentIndices = &evaluated.indices;
