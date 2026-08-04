@@ -21581,7 +21581,8 @@ private extern(C++) final class CapturedLocalMutationScanner:
     import dmd.visitor: SemanticTimeTransitiveVisitor;
     import dmd.declaration: VarDeclaration;
     import dmd.expression:
-        AddrExp, AssignExp, BinAssignExp, Expression, PostExp, PreExp;
+        AddrExp, AssignExp, BinAssignExp, CallExp, Expression, PostExp,
+        PreExp;
 
     alias visit = SemanticTimeTransitiveVisitor.visit;
 
@@ -21637,6 +21638,58 @@ private extern(C++) final class CapturedLocalMutationScanner:
         if (isTarget(e.e1))
             _found = true;
         super.visit(e);
+    }
+
+    // A target passed as a call argument may be mutated through a
+    // `ref`/`out` parameter without any `AddrExp` appearing here -- DMD
+    // binds `ref`/`out` arguments directly, unlike `&arg`. Narrows to just
+    // the ref/out-bound arguments when the callee's parameter list is
+    // cheaply known; when it isn't (an indirect call through a
+    // delegate/function-pointer value with no resolvable static type),
+    // conservatively flags every targeted argument, matching this scanner's
+    // documented over-decline-over-under-decline bias.
+    override void visit(CallExp e) {
+        import dmd.astenums: STC;
+
+        if (e.arguments !is null) {
+            auto parameters = calleeParametersOrNull(e);
+            foreach (i; 0 .. e.arguments.length) {
+                if (!isTarget((*e.arguments)[i]))
+                    continue;
+                if (parameters is null || i >= (*parameters).length) {
+                    _found = true;
+                    continue;
+                }
+                auto parameter = (*parameters)[i];
+                if ((parameter.storageClass & (STC.ref_ | STC.out_)) !=
+                        STC.none)
+                    _found = true;
+            }
+        }
+        super.visit(e);
+    }
+
+    private extern(D) imported!"dmd.arraytypes".Parameters* calleeParametersOrNull(
+        CallExp e,
+    ) {
+        auto calleeType = e.f !is null ? e.f.type : e.e1.type;
+        if (calleeType is null)
+            return null;
+
+        auto base = calleeType.toBasetype;
+        if (auto functionType = base.isTypeFunction)
+            return functionType.parameterList.parameters;
+        if (auto delegateType = base.isTypeDelegate) {
+            auto functionType = delegateType.next.toBasetype.isTypeFunction;
+            return functionType is null
+                ? null : functionType.parameterList.parameters;
+        }
+        if (auto pointerType = base.isTypePointer) {
+            auto functionType = pointerType.next.toBasetype.isTypeFunction;
+            return functionType is null
+                ? null : functionType.parameterList.parameters;
+        }
+        return null;
     }
 }
 

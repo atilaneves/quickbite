@@ -3044,6 +3044,82 @@ static foreach (backend; AliasSeq!(Bytecode)) {
     }
 }
 
+// The `ref`-argument twin of `delegate.classFieldMutatedAfterCapturingWriteIsCallable`
+// above: DMD does not wrap a `ref` argument in an `AddrExp` (unlike `&arg`),
+// so a captured local mutated only by being passed to a `ref` parameter is
+// just as unsound a heap-box input as a direct `total = 100;` reassignment.
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.inexpressible,
+        "Ctfe wraps dmd.dinterpret, whose CTFE engine refuses the "
+            ~ "returned closure outright with \"closures are not yet "
+            ~ "supported in CTFE\""),
+    Omit!(Interpreter, Because.unconfirmed,
+        "the Interpreter does not yet promote a frame-escaping " ~
+            "captured local to a heap closure either -- not yet promoted"),
+    Omit!(Bytecode, Because.refusal,
+        "a `ref`-argument mutation is not visible as an `AddrExp`, so " ~
+            "`capturedLocalsMayBeMutatedInCurrentFunction` must scan call " ~
+            "arguments too -- see " ~
+            "`delegate.classFieldEscapingCaptureViaRefArgumentDeclines` " ~
+            "below"),
+)) {
+    @("delegate.classFieldMutatedViaRefArgumentAfterCapturingWriteIsCallable." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            void bump(ref int v) { v += 60; }
+
+            class Counter { int delegate() next; }
+
+            Counter makeCounter() {
+                int total = 40;
+                auto c = new Counter();
+                c.next = () => total + 2;
+                bump(total);
+                return c;
+            }
+
+            unittest {
+                auto c = makeCounter();
+                assert(c.next() == 102);
+            }
+        });
+    }
+}
+
+// Bytecode-only: the `ref`-argument twin of
+// `delegate.classFieldEscapingCaptureDeclines` above.
+static foreach (backend; AliasSeq!(Bytecode)) {
+    @("delegate.classFieldEscapingCaptureViaRefArgumentDeclines." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            void bump(ref int v) { v += 60; }
+
+            class Counter { int delegate() next; }
+
+            Counter makeCounter() {
+                int total = 40;
+                auto c = new Counter();
+                c.next = () => total + 2;
+                bump(total);
+                return c;
+            }
+
+            unittest {
+                auto c = makeCounter();
+                assert(c.next() == 102);
+            }
+        }).shouldThrowWithMessage(
+            "Unsupported delegate return in bytecode core: returning a " ~
+                "closure over this function's own locals outlives its " ~
+                "frame: __lambda_L9_C26",
+        );
+    }
+}
+
 // `==`/`!=`/`is`/`!is` between two lambda-literal delegate values: a
 // delegate is a builtin type with no `opEquals`, so all four compare the raw
 // `{functionIndex, context}` pair. Two separately-declared lambdas capturing

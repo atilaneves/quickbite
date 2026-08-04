@@ -785,7 +785,9 @@ lifetime as the dependency bytecode cache.
   act, `heapEscapingDelegateOperandOffset` declines rather than risk
   unsoundness whenever `capturedLocalsMayBeMutatedInCurrentFunction`
   (`compiler.d`) finds a further same-function mutation of the captured
-  locals. Still open: that scan is order-insensitive and whole-function, so
+  locals, including one passed as a call argument bound to a `ref`/`out`
+  parameter (or to an unresolvable callee, conservatively). Still open: that
+  scan is order-insensitive and whole-function, so
   it over-declines two provably-safe shapes -- a mutation strictly before the
   heap-box write, and a mutation inside the escaping lambda's own body.
   Narrowing needs control-flow-sensitive write-site dataflow, or moving the
