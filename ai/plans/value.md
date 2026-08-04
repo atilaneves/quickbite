@@ -493,6 +493,16 @@ checked fact; do not relearn them.
 - Native calls consume argument places or fixed-width scalar scratch cells and
   write returns into typed native storage. There is no recursive aggregate
   marshalling or post-call aggregate reconstruction.
+- Native and inline-asm `ref`/`out` ABI formals come from the canonical
+  `TypeFunction.parameterList`, not `FuncDeclaration.parameters`; the CIF
+  formal is a pointer and its argument slot holds the caller's authoritative
+  pointee address. Interpreted-call classification remains declaration-driven.
+- Native `ref`/`out` argument evaluation may borrow only an established place:
+  a direct local uses its binding address, while a backend without an
+  authoritative address refuses the call. It never manufactures a copied
+  pointee or a post-call writeback authority.
+- A native `typeid(T)` argument is the resolved host address of `T.vtinfo`.
+  The interpreter's `TypeName` is display metadata and never an ABI operand.
 
 ### Unions
 
@@ -663,19 +673,19 @@ not model that sharing with a per-object copied array.
 ### Item 5 — Delete Interpreter FFI marshalling fallbacks
 
 Finish decision 18 after the language-surface critical path. Normal outbound
-calls recognize scalar `&local`/`SymOffExp` operands and hand libffi a typed
-scratch slot containing the authoritative pointee address, bypassing the
-out-cell/writeback fallback. Direct local/ref `VarExp` struct receivers and
-their direct `DotVarExp` struct fields likewise offer their typed authoritative
-address through the optional mutable `NativeReceiverAddressMarshaller` FFI
-capability, bypassing receiver-buffer materialization and returning no
-post-call receiver writeback. Other receiver shapes (temporaries, globals,
-classes, constructors, and slices) retain the fallback until their ordinary
-typed places are supplied. The adapter's public entry points still accept
-`RuntimeValue` arguments and return reconstructed values and writeback arrays.
-Consequently it retains
+calls recognize scalar `&local`/`SymOffExp` operands and direct local/ref
+`VarExp` receivers and fields as authoritative places. Native `ref`/`out`
+formals use pointer CIF entries and direct local binding addresses; native
+`typeid(T)` operands use the resolved host `TypeInfo` address. The adapter's
+public entry points still accept `RuntimeValue` arguments and return
+reconstructed values and writeback arrays. Consequently it retains
 `marshalArgument`, `unmarshalValue`, receiver buffers, mutable-slice
 copy/writeback storage, and the remaining `out`-cell reification.
+
+`PtrExp` `ref`/`out` operands, native class-array argument and receiver places,
+and `reserve`/growth call routes remain pending. Each must expose its ordinary
+typed place before it can bypass a fallback; safe refusal is preferable to a
+copied pointee or an invented writeback path.
 
 Make each ordinary native call consume typed argument, receiver, `ref`, and
 `out` places, using a fixed-width native scratch cell only for an rvalue that
