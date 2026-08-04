@@ -491,6 +491,14 @@ reaches them:
   chain: `compileThrowExpression`'s `Op.throwObject` site runs
   `runExitedFinally` for the exit but has no equivalent pending-object slot
   for the inlined finally's own throw to chain onto.
+- `throwExitedFinallyCount`'s catch-protected-scope guard is only overridden
+  when the thrown class is exactly known at the throw site (a direct
+  `new C(...)`, per `catchesCouldMatch`). A rethrow of a caught/stored
+  exception (`throw e;`, or any throw whose class isn't syntactically a `new`
+  at that point) still assumes the nearest lexically-enclosing catch might
+  claim it; if that catch's declared type doesn't actually match at runtime,
+  a `finally` between the throw site and wherever it's really caught can
+  still be silently skipped.
 
 Next candidate. No named oracle-backed `Omit!(Bytecode, Because.unconfirmed)`
 row remains bounded and unblocked: the two survivors
