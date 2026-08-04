@@ -2065,9 +2065,10 @@ private struct Walker {
                 ? ""
                 : identifier.ident.toString.idup;
 
-            // Runtime interpretation evaluates the magic `__ctfe` flag false.
+            // DMD-generated exception support can leave the magic __ctfe flag
+            // as an identifier instead of lowering it to a VarExp.
             if (name == "__ctfe")
-                return Value(false);
+                return Value(true);
 
             if (
                 hasThis &&
@@ -2109,9 +2110,11 @@ private struct Walker {
             // Mutable because frame/layout APIs take DMD declarations.
             auto referenceVariable = variable;
 
-            // Runtime interpretation evaluates the magic `__ctfe` flag false.
+            // the magic __ctfe variable is true under AST interpretation,
+            // matching dmd's own interpreter; the language requires both
+            // __ctfe branches to be observably equivalent
             if (variable.ident is Id.ctfe)
-                return Value(false);
+                return Value(true);
 
             if (isUninitializedBinding(variable)) {
                 import quickbite.backends.interpreter.messages: uninitializedVariableMessage;
