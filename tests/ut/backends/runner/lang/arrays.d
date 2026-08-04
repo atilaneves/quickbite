@@ -405,17 +405,19 @@ static foreach (backend; Matrix!(
 }
 
 // A module-level dynamic array with a non-null array-literal initializer
-// (`int[] arr = [1, 2, 3];`): `moduleDynamicArrayVariableOrNull` used to
-// treat this the same as no initializer at all (a plain array literal
-// parses as an `ArrayInitializer`, not the `ExpInitializer`
-// `moduleVariableHasDefaultInitializer` recognised), so `arr` read back a
-// zero-length null slice instead of its declared contents. `Ctfe` cannot
-// read dataseg storage at all; `Interpreter` and `LLVMJit` have the same
-// gap, unconfirmed/unfixed here.
+// (`int[] arr = [1, 2, 3];`): a plain array literal parses as an
+// `ArrayInitializer`, not an `ExpInitializer`. The Bytecode backend's
+// `moduleDynamicArrayVariableOrNull` used to treat this the same as no
+// initializer at all, and the Interpreter's `materializeDatasegInitializer`
+// had the same gap (only unwrapped `isExpInitializer`), so `arr` read back a
+// zero-length null slice instead of its declared contents; fixed there by
+// converting through `dmd.initsem.initializerToExpression`, which normalises
+// either `Initializer` subclass to the same expression. `Ctfe` cannot read
+// dataseg storage at all; `LLVMJit` has the same gap, unconfirmed/unfixed
+// here.
 static foreach (backend; Matrix!(
     Omit!(Ctfe, Because.inexpressible,
         "CTFE cannot read dataseg (__gshared/static) storage"),
-    Omit!(Interpreter, Because.unconfirmed),
     Omit!(LLVMJit, Because.unconfirmed),
 )) {
     @("dynamicArray.moduleArrayLiteralInitializer." ~ backend.stringof)

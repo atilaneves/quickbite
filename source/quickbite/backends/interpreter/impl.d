@@ -3358,11 +3358,23 @@ private struct Walker {
             return;
 
         resolveNonRootInitializer(variable);
-        if (auto initializer = variable._init.isExpInitializer) {
+
+        // A scalar `= expr` initializer parses as `ExpInitializer` directly,
+        // but a bracketed array literal (`int[] arr = [1, 2, 3];`) parses as
+        // an `ArrayInitializer` instead -- DMD's parser decides between the
+        // two by scanning ahead to the token following the closing `]`
+        // (`parse.d`'s `parseInitializer`). `initializerToExpression`
+        // converts either shape to the same plain `Expression` (an
+        // `ArrayLiteralExp` for the array case), so this stays the single
+        // dataseg-initializer path for both.
+        import dmd.initsem: initializerToExpression;
+
+        auto initializerExp = variable._init.initializerToExpression;
+        if (initializerExp !is null) {
             setLocal(variable, defaultValue(variable));
             setLocal(variable, storageValue(
                 variable.type,
-                runExpression(initializer.exp),
+                runExpression(initializerExp),
             ));
         }
     }
