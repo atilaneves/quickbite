@@ -18432,20 +18432,24 @@ private struct Compiler {
         const keyMeta = assocArrayKeyMeta(aaType);
 
         const keyOffset = assocArrayKeyOffset((*call.arguments)[1], aaType);
-        // A fresh, appropriately-sized placeholder: its bytes are immediately
-        // overwritten by the surrounding assignment through the returned
-        // pointer, so its initial content never matters, but it must be
-        // exactly `width` bytes so a wider-than-`key`-sized value (e.g. a
-        // nested AA handle) never reads past `key`'s own slot.
+        // A fresh, appropriately-sized placeholder, used only if the key
+        // turns out to be absent (`Op.aaGetOrInsert` leaves an
+        // already-present key's value untouched -- see its own doc comment
+        // for why: this call's result can be read back as an intermediate
+        // value for further indexing, e.g. `a[1]` inside `a[1][2] = 3`,
+        // before the surrounding assignment ever writes through the
+        // returned pointer). It must be exactly `width` bytes so a
+        // wider-than-`key`-sized value (e.g. a nested AA handle) never reads
+        // past `key`'s own slot.
         const placeholder = allocateBytes(width, width);
         const offset =
             allocateBytes(cast(uint) size_t.sizeof, size_t.sizeof);
         _code ~= Instruction(
-            Op.aaInsert, handle, keyOffset, placeholder, cast(ushort) width,
-            keyMeta,
+            Op.aaGetOrInsert, handle, keyOffset, placeholder,
+            cast(ushort) width, keyMeta,
         );
 
-        // `aaInsert` (`machine.d`) may have just autovivified a still-null
+        // `aaGetOrInsert` (`machine.d`) may have just autovivified a still-null
         // handle in place inside the `handle` frame slot (allocating a
         // fresh map and writing its new handle there). For a module-level
         // AA, that frame slot is only a materialised copy

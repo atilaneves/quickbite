@@ -3984,6 +3984,39 @@ static foreach (backend; Matrix!()) {
     }
 }
 
+// `a[1][5] = 9` on an already-present outer key: reaching the inner map for
+// the nested write reads `a[1]`'s existing value through the same
+// find-or-default-insert hook (`_d_aaGetY`) real D uses for the outer level
+// too. Bytecode's own hook (`Op.aaInsert`) used to unconditionally overwrite
+// the target slot's bytes with a fresh placeholder before the caller ever
+// wrote the real value through it -- correct for a direct `m[k] = v`, but
+// wrong here, where the outer slot's bytes are only ever *read* (to reach
+// the inner map) rather than assigned to, so the placeholder silently
+// replaced the real, already-populated inner map with an empty one.
+static foreach (backend; Matrix!()) {
+    @("assocArray.nestedWriteIntoExistingOuterKeyPreservesOtherInnerEntries."
+        ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            unittest {
+                int[int][int] a = [1: [2: 3]];
+                a[1][5] = 9;
+
+                assert(a.length == 1);
+                assert(a[1].length == 2);
+                assert(a[1][2] == 3);
+                assert(a[1][5] == 9);
+
+                a[1][2] = 30;
+                assert(a[1].length == 2);
+                assert(a[1][2] == 30);
+                assert(a[1][5] == 9);
+            }
+        });
+    }
+}
+
 // A dynamic-array-typed value (`int[][int]`): the value slot is a 16-byte
 // slice descriptor, not an inline scalar. Interpreter reads back the wrong
 // element (`0 != 20`) for this shape -- a separate, unconfirmed backend gap.

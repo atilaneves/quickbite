@@ -691,6 +691,18 @@ package(quickbite.backends.bytecode) enum Op: ubyte {
     // a: handle slot, b: key slot, c: value slot; insert/overwrite. Creates the
     // map on first insert into an empty (handle-0) local, writing the handle back.
     aaInsert,
+    // a: handle slot, b: key slot, c: default-value slot; find-or-default-insert.
+    // Creates the map on an empty (handle-0) local exactly like `aaInsert`, but
+    // an ALREADY-present key's existing value bytes are left untouched -- only
+    // a newly created entry gets `c`'s bytes. `_d_aaGetY`'s own lowering only
+    // writes the real value through the pointer it returns when it just
+    // created the entry; an existing entry must survive being read back as an
+    // intermediate value for further indexing (`a[1][2] = 3` reads `a[1]`
+    // through this same hook to reach the inner map). Used by the get-lvalue
+    // path (`compileAssocArrayGetLvalue`); `aaInsert` itself is still correct
+    // for a direct `m[k] = v` and a literal's per-key values, which always
+    // mean to (over)write that exact value.
+    aaGetOrInsert,
     // a: size_t pointer result, b: handle slot, c: key slot; the address of the
     // value for the key (into VM-owned memory) or 0 when the key is absent. Both
     // the `m[k]` rvalue read and `k in m` lower to this: DMD's `m[k]` lowering

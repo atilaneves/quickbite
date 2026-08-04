@@ -1812,6 +1812,30 @@ package(quickbite.backends.bytecode) RunResult run(
                 break;
             }
 
+            case aaGetOrInsert: {
+                auto handle = scalarValue!size_t(stack, base + instruction.a);
+                if (handle == 0) {
+                    maps ~= AssocArray.init;
+                    handle = maps.length;
+                    writeScalar!size_t(stack, base + instruction.a, handle);
+                }
+                const width = instruction.d;
+                const mode =
+                    assocArrayKeyMode(instruction.e, program.assocArrayKeyLayouts);
+                const keyWidth = mode.keyWidth;
+                maps[handle - 1].insertDefault(
+                    stack[
+                        base + instruction.b .. base + instruction.b + keyWidth
+                    ],
+                    mode.keyIsArray,
+                    keyWidth,
+                    stack[base + instruction.c .. base + instruction.c + width],
+                    mode.layoutFields,
+                );
+                ++ip;
+                break;
+            }
+
             case aaGetRvalue, aaIn: {
                 const handle = scalarValue!size_t(stack, base + instruction.b);
                 const width = instruction.d;
@@ -3442,6 +3466,29 @@ private struct AssocArray {
                 value[];
             return;
         }
+        keys ~= key;
+        values ~= value;
+        ++count;
+    }
+
+    // Like `insert`, but an already-present key's existing value bytes are
+    // left untouched -- only a newly created entry gets `value`. Backs
+    // `Op.aaGetOrInsert` (`_d_aaGetY`'s find-or-default-insert), where an
+    // existing entry may be read back as an intermediate value for further
+    // indexing (`a[1][2] = 3`'s `a[1]`) before any write actually happens;
+    // `insert`'s unconditional overwrite would clobber it with the caller's
+    // placeholder bytes first.
+    void insertDefault(
+        in ubyte[] key,
+        in bool keyIsArray,
+        in size_t keyWidth,
+        in const(ubyte)[] value,
+        in imported!"quickbite.backends.bytecode.core.program".AssocArrayKeyField[]
+            layoutFields = null,
+    ) @safe nothrow pure {
+        const index = findIndex(key, keyIsArray, keyWidth, layoutFields);
+        if (index != size_t.max)
+            return;
         keys ~= key;
         values ~= value;
         ++count;
