@@ -2291,6 +2291,94 @@ static foreach (backend; Matrix!()) {
     }
 }
 
+// A row-range assignment (`arr[lo .. hi] = otherRows[];`) into a `T[N][]`
+// destination, where the rhs is itself a range of rows rather than a single
+// broadcast row (the sibling test above): each destination row already has
+// its own separately heap-allocated block, so the source range's content
+// must be written into each destination row's own block rather than the
+// row *pointers* being overwritten with the source's, which would alias
+// every destination row to the source's block and corrupt the
+// destination's own pointer chain. `Ctfe` is not the oracle here: its own
+// static-array-copy aliasing quirk (see "Oracle" above) makes the mutated
+// source visible through the destination too.
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.diverges,
+        "Ctfe's static-array-copy aliasing quirk aliases the destination " ~
+        "row to the source's block instead of copying its content"),
+)) {
+    @("dynamicArray.rowRangeAssignmentIntoStaticArrayRowsCopiesEachRowIndependently." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            unittest {
+                int[3][] values = new int[3][](3);
+                int[3][] other = new int[3][](2);
+                other[0][0] = 1; other[0][1] = 2; other[0][2] = 3;
+                other[1][0] = 4; other[1][1] = 5; other[1][2] = 6;
+
+                values[0 .. 2] = other[0 .. 2];
+
+                assert(values[0][0] == 1 && values[0][1] == 2 &&
+                    values[0][2] == 3);
+                assert(values[1][0] == 4 && values[1][1] == 5 &&
+                    values[1][2] == 6);
+                assert(values[2][0] == 0 && values[2][1] == 0 &&
+                    values[2][2] == 0);
+
+                // Each destination row is its own independent copy of the
+                // source's content, not aliased to the source's block:
+                // mutating the source after the assignment must not affect
+                // the destination.
+                other[0][0] = 99;
+                assert(values[0][0] == 1);
+            }
+        });
+    }
+}
+
+// The row-range write-through above shares row *slots* -- 16 bytes apiece,
+// contiguous in the outer backing array -- between an overlapping
+// destination and source range exactly as compiled D's contiguous `T[N][]`
+// rows would, even though the row *blocks* each slot points at never
+// overlap (the sibling test above): druntime's plain "Range violation"
+// diagnostic, matching `staticArray.overlappingSubSliceAssignmentDiagnostic`
+// below. `Ctfe` is not the oracle here either: it raises its own
+// slice-range-text diagnostic instead (see the sibling pin below).
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.diverges,
+        "see staticArray.overlappingSubSliceAssignmentDiagnostic's sibling " ~
+        "pin below; Ctfe's diagnostic carries the slice range in its text"),
+)) {
+    @("dynamicArray.overlappingRowRangeAssignmentIntoStaticArrayRowsDiagnostic." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            int seed(int value) {
+                return value;
+            }
+
+            unittest {
+                int[3][] values = new int[3][](3);
+                values[0][0] = seed(1);
+                values[1][0] = seed(2);
+                values[2][0] = seed(3);
+
+                size_t targetStart = cast(size_t) seed(0);
+                size_t targetStop = cast(size_t) seed(2);
+                size_t sourceStart = cast(size_t) seed(1);
+                size_t sourceStop = cast(size_t) seed(3);
+
+                values[targetStart .. targetStop] =
+                    values[sourceStart .. sourceStop];
+
+                assert(values[0][0] == 1);
+            }
+        }).shouldThrowWithMessage("Range violation");
+    }
+}
+
 static foreach (backend; Matrix!()) {
     @("dynamicArray.lengthAssignmentResizesArray." ~ backend.stringof)
     @Tags(backend.stringof)

@@ -14999,11 +14999,27 @@ private struct Compiler {
         if (elementIsArray && descriptor !is null &&
             !descriptor.isStaticArrayView) {
             auto rowType = slice.e1.type.toBasetype.nextOf;
-            if (rowType.toBasetype.ty == TY.Tsarray &&
-                rhs.type !is null && sameType(rhs.type, rowType)) {
+            if (rowType.toBasetype.ty == TY.Tsarray) {
                 const rowByteSize = cast(uint) staticArraySize(rowType);
-                const value = compileExpression(rhs);
-                emitRowBroadcastFill(destination, value.offset, rowByteSize);
+                if (rhs.type !is null && sameType(rhs.type, rowType)) {
+                    const value = compileExpression(rhs);
+                    emitRowBroadcastFill(
+                        destination, value.offset, rowByteSize,
+                    );
+
+                    auto result = new Operand;
+                    *result = Operand.init;
+                    return result;
+                }
+
+                // A rhs shaped like a matching range of rows (a sub-slice,
+                // another `T[N][]`), not a single broadcast row: write
+                // through each destination row's own block instead of
+                // `sliceCopy16`'s flat by-value descriptor copy below,
+                // which would alias every destination row to the source's
+                // block (see `Op.rowRangeCopy`'s doc comment).
+                const rangeSource = compileSourceSlice(elementType, rhs);
+                emitRowRangeCopy(destination, rangeSource, rowByteSize);
 
                 auto result = new Operand;
                 *result = Operand.init;
@@ -20313,6 +20329,23 @@ private struct Compiler {
         _code ~= Instruction(Op.jump, cast(ushort) conditionIndex);
 
         patchJump(exitJump);
+    }
+
+    // Copy a range of rows (`arr[lo .. hi] = otherRows[];`) into a `T[N][]`
+    // destination, where `source` is itself a matching range of rows (not a
+    // single broadcast row -- see `emitRowBroadcastFill`). `Op.rowRangeCopy`
+    // writes each source row's content into the matching destination row's
+    // own existing heap-allocated block instead of `sliceCopy16`'s flat
+    // by-value descriptor copy, which would alias every destination row to
+    // the source's block (see `Op.rowRangeCopy`'s doc comment).
+    private void emitRowRangeCopy(
+        in ushort destination,
+        in ushort source,
+        in uint rowByteSize,
+    ) @safe pure {
+        _code ~= Instruction(
+            Op.rowRangeCopy, destination, source, cast(ushort) rowByteSize,
+        );
     }
 
     // The `sliceEqual*` family's emit helper. Unlike every other
