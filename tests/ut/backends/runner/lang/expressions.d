@@ -1989,12 +1989,6 @@ static foreach (backend; Matrix!(
         "Ctfe wraps dmd.dinterpret, whose CTFE engine refuses the "
             ~ "returned closure outright with \"closures are not yet "
             ~ "supported in CTFE\""),
-    Omit!(Interpreter, Because.unconfirmed,
-        "the Interpreter throws a generic \"Unsupported eval call.\" " ~
-            "for a lambda that captures a pointer local and escapes via " ~
-            "`return`, the same pre-existing frame-escaping-capture gap " ~
-            "already documented on the scalar sibling fixture -- not yet " ~
-            "promoted"),
 )) {
     @("delegate.functionReturningCapturingDelegateOverPointerIsCallable." ~
         backend.stringof)

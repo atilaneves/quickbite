@@ -2259,7 +2259,8 @@ private struct Walker {
                     isNativeScalarType(referenceVariable.type) ||
                     referenceVariable.type.toBasetype.isTypeStruct !is null ||
                     referenceVariable.type.toBasetype.isTypeSArray !is null ||
-                    referenceVariable.type.toBasetype.isTypeDArray !is null
+                    referenceVariable.type.toBasetype.isTypeDArray !is null ||
+                    referenceVariable.type.toBasetype.isTypePointer !is null
                 )
             ) {
                 import quickbite.backends.interpreter.place: Place;
