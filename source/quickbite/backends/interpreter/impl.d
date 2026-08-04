@@ -859,8 +859,65 @@ private struct Walker {
             return;
         }
 
+        // A native aggregate rvalue's own bytes may still be the temporary
+        // storage `structLiteralValue`/`AggregateValue` allocated to build
+        // it; `writeValue`'s native-aggregate arm below only copies bytes,
+        // so any Tdelegate-typed (sub)field's live `nativeDelegateSlots`
+        // registration, keyed by that temporary address, would otherwise be
+        // orphaned once `variable`'s own binding address takes over as the
+        // durable location.
+        if (value.isNativeAggregate)
+            relocateDelegateSlots(
+                variable.type,
+                AggregateValue.native(value).address,
+                bindingPlace(variable).address,
+            );
+
         writeValue(bindingPlace(variable), value);
         mirrorEstablished[variable] = true;
+    }
+
+    // Moves any `nativeDelegateSlots` entry for a Tdelegate-typed (sub)field
+    // of `type` from `oldAddress` to `newAddress`, recursing through
+    // non-union struct fields the same way `place_value.writeValue`'s own
+    // struct arm composes a field-by-field copy -- the out-of-band
+    // counterpart to that byte copy for the one part of a struct's bytes a
+    // plain `memcpy` cannot carry (`nativeDelegateSlots`'s own field
+    // comment: an interpreted delegate has no native ABI function address).
+    // A no-op when the two addresses already coincide, or when no entry is
+    // registered at a given field address (an ordinary null/uninitialized
+    // delegate field, whose bytes copy correctly on their own).
+    private void relocateDelegateSlots(
+        imported!"dmd.mtype".Type type,
+        void* oldAddress,
+        void* newAddress,
+    ) {
+        import dmd.astenums: TY;
+        import quickbite.backends.interpreter.layout: structFields, declaredType;
+        import quickbite.backends.interpreter.place: Place;
+
+        if (oldAddress is newAddress)
+            return;
+
+        auto base = type.toBasetype;
+        if (base.ty == TY.Tdelegate) {
+            if (auto delegate_ = oldAddress in nativeDelegateSlots) {
+                nativeDelegateSlots[newAddress] = *delegate_;
+                nativeDelegateSlots.remove(oldAddress);
+            }
+            return;
+        }
+
+        auto structType = base.isTypeStruct;
+        if (structType is null || structType.sym.isUnionDeclaration !is null)
+            return;
+
+        foreach (field; structFields(structType))
+            relocateDelegateSlots(
+                declaredType(field),
+                Place(oldAddress, type).field(field).address,
+                Place(newAddress, type).field(field).address,
+            );
     }
 
     private Value nativeArrayBindingValue(VarDeclaration variable, in Value value) {
@@ -8716,21 +8773,77 @@ private struct Walker {
         return AggregateValue.reconstructArray(array.type, values);
     }
 
+    // A struct-literal field typed `delegate` may carry a LIVE callable
+    // value (a fresh closure, or an existing delegate local) rather than
+    // `null`. `place_value.writeValue`'s Tdelegate arm only ever accepts
+    // `Value.null_` -- by design, an interpreted delegate has no native ABI
+    // function address, so its callable Value lives out-of-band in
+    // `nativeDelegateSlots`, keyed by the FIELD's own address, exactly as
+    // the direct field-assignment path (`s.f = &add;`, this module's
+    // `DotVarExp` write arm) and a delegate-typed local's own declaration
+    // (`setLocal`'s `TY.Tdelegate` branch) already register it. A struct
+    // literal has no field address of its own until
+    // `AggregateValue.reconstructStruct` allocates its native storage, so
+    // this substitutes `Value.null_` for any live delegate field before
+    // that call -- the same bytes the ordinary default-null case already
+    // writes -- and registers the live value at the field's own address
+    // once that address exists. `setLocal`'s own `relocateDelegateSlots`
+    // carries the registration forward again when this rvalue's bytes are
+    // later copied into a durable binding.
     private Value structLiteralValue(
         imported!"dmd.expression".StructLiteralExp literal,
     ) {
+        import dmd.astenums: TY;
+        import quickbite.backends.interpreter.place: Place;
+
         Value[] fields;
+        imported!"dmd.declaration".VarDeclaration[] liveDelegateFields;
+        Value[] liveDelegateValues;
         if (literal.sd !is null)
             foreach (index; 0 .. literal.sd.fields.length) {
                 const hasElement = literal.elements !is null
                     && index < (*literal.elements).length;
                 auto element = hasElement ? (*literal.elements)[index] : null;
-                fields ~= element is null
+                // A fresh closure element (`() => 42`) is a bare `FuncExp`,
+                // not a `DelegateExp` -- ordinary `runExpression` has no
+                // general case for one (it is only ever meaningful at a
+                // declaration/assignment seam that can register the fresh
+                // function pointer) and answers `Value.undisplayable`
+                // instead, the same gap `runIndexAssignExpression` and
+                // `runDeclarationExpression` already route around via
+                // `runFunctionLiteralDeclaration`.
+                auto elementLiteral = element is null ? null : element.isFuncExp;
+                auto value = element is null
                     ? structLiteralDefaultFieldValue(literal, index, fields)
-                    : structLiteralFieldValue(literal, index, runExpression(element));
+                    : structLiteralFieldValue(literal, index, elementLiteral is null
+                        ? runExpression(element)
+                        : runFunctionLiteralDeclaration(elementLiteral));
+
+                auto field = structLiteralField(literal, index);
+                if (
+                    field !is null &&
+                    field.type.toBasetype.ty == TY.Tdelegate &&
+                    value != Value.null_
+                ) {
+                    liveDelegateFields ~= field;
+                    liveDelegateValues ~= value;
+                    value = Value.null_;
+                }
+
+                fields ~= value;
             }
 
-        return AggregateValue.reconstructStruct(literal.type, fields);
+        auto result = AggregateValue.reconstructStruct(literal.type, fields);
+
+        if (liveDelegateFields.length != 0) {
+            auto native = AggregateValue.native(result);
+            foreach (index, field; liveDelegateFields)
+                nativeDelegateSlots[
+                    Place(native.address, native.type).field(field).address
+                ] = liveDelegateValues[index];
+        }
+
+        return result;
     }
 
     // DMD's `defaultInitLiteral` for a union only ever fills the FIRST

@@ -100,15 +100,8 @@ static foreach (backend; Matrix!()) {
 // any non-null element instead of resolving it through
 // `delegateOperandOffset` and copying the 16-byte `{functionIndex,
 // context}` pair into the field, the way the `isPointerType` branch beside
-// it already handled a non-null pointer element. Interpreter's
-// `place_value.writeValue` throws "unsupported at place" for a delegate
-// written through a struct-literal initializer specifically (the direct
-// field-assignment path above already works there); never tried.
-static foreach (backend; Matrix!(
-    Omit!(Interpreter, Because.unconfirmed,
-        "place_value.writeValue has no case for a delegate value written " ~
-            "through a struct-literal initializer place"),
-)) {
+// it already handled a non-null pointer element.
+static foreach (backend; Matrix!()) {
     @("struct.literalDelegateFieldFromFreshLambdaIsCallable." ~
         backend.stringof)
     @Tags(backend.stringof)
@@ -126,11 +119,7 @@ static foreach (backend; Matrix!(
     }
 }
 
-static foreach (backend; Matrix!(
-    Omit!(Interpreter, Because.unconfirmed,
-        "place_value.writeValue has no case for a delegate value written " ~
-            "through a struct-literal initializer place"),
-)) {
+static foreach (backend; Matrix!()) {
     @("struct.literalDelegateFieldFromExistingLocalIsCallable." ~
         backend.stringof)
     @Tags(backend.stringof)
@@ -154,8 +143,9 @@ static foreach (backend; Matrix!(
 
 static foreach (backend; Matrix!(
     Omit!(Interpreter, Because.unconfirmed,
-        "place_value.writeValue has no case for a delegate value written " ~
-            "through a struct-literal initializer place"),
+        "AggregateValue.withAppendedArrayElement's native-aggregate append " ~
+            "copies a delegate field's zeroed bytes without relocating its " ~
+            "nativeDelegateSlots registration to the new element's address"),
 )) {
     @("struct.literalDelegateFieldAppendedToArrayIsCallable." ~
         backend.stringof)
