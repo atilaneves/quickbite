@@ -7,7 +7,9 @@ module quickbite.backends.interpreter.native_call_adapter;
 
 private:
 
-import quickbite.ffi: NativeMarshaller, NativeReceiverAddressMarshaller;
+import quickbite.ffi:
+    NativeMarshaller, NativeReceiverAddressMarshaller,
+    NativeReferenceAddressMarshaller;
 
 // Re-exported so the interpreter call sites keep a single import for the native
 // call path and its exception type.
@@ -363,7 +365,8 @@ private bool isNativeAggregateType(
 
 private final class InterpreterNativeMarshaller:
     NativeMarshaller,
-    NativeReceiverAddressMarshaller
+    NativeReceiverAddressMarshaller,
+    NativeReferenceAddressMarshaller
 {
     import quickbite.backends.interpreter.runtime_value: Value;
     import dmd.mtype: Type;
@@ -638,6 +641,18 @@ private final class InterpreterNativeMarshaller:
             owner.address,
             owner,
         );
+        return _argumentOperands[index].address;
+    }
+
+    public override const(void)* referenceArgumentAddress(
+        in size_t index,
+        Type pointeeType,
+    ) {
+        if (
+            index >= _argumentOperands.length ||
+            _argumentOperands[index].address is null
+        )
+            return null;
         return _argumentOperands[index].address;
     }
 

@@ -2563,10 +2563,7 @@ static foreach (backend; Matrix!()) {
 // an untouched field (own or inherited from a base class) keeps its declared
 // default rather than reading zero, and an explicit constructor's own field
 // write still overrides the default for the field it actually touches.
-static foreach (backend; Matrix!(
-    Omit!(Interpreter, Because.unconfirmed,
-        "a class field's own default initializer is never applied on allocation"),
-)) {
+static foreach (backend; Matrix!()) {
     @("class.defaultFieldInitializerAppliesOnAllocationAndSurvivesConstructor." ~
         backend.stringof)
     @Tags(backend.stringof)
@@ -2593,6 +2590,27 @@ static foreach (backend; Matrix!(
                 assert(derived.inherited == 111);
                 assert(derived.untouched == 42);
                 assert(derived.overridden == 99);
+            }
+        });
+    }
+}
+
+// A scalar class-field default is an `ExpInitializer`; allocation evaluates
+// that expression through the field's typed place rather than assuming an
+// integer literal.
+static foreach (backend; Matrix!()) {
+    @("class.doubleFieldDefaultInitializerAppliesOnAllocation." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            class C {
+                double x = 1.5;
+            }
+
+            unittest {
+                auto value = new C;
+                assert(value.x == 1.5);
             }
         });
     }
@@ -2884,10 +2902,7 @@ static foreach (backend; Matrix!()) {
 // a bare `Value.void_` instead of the materialised default struct
 // `runExpression`'s `VarExp` branch already produces for a directly
 // uninitialized local.
-static foreach (backend; Matrix!(
-    Omit!(Interpreter, Because.unconfirmed,
-        "nested ref forwarding sees the void-initialized local before materialization"),
-)) {
+static foreach (backend; Matrix!()) {
     @("refArgument.voidStructLocalFieldWritableThroughNestedRefWrite." ~
         backend.stringof)
     @Tags(backend.stringof)
@@ -4469,4 +4484,3 @@ static foreach (backend; Matrix!(
         });
     }
 }
-

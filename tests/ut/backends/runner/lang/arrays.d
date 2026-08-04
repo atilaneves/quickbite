@@ -1313,10 +1313,7 @@ static foreach (backend; Matrix!()) {
 // variable (`rhs`), not itself sliced (`rhs[]`) or a literal -- the general
 // case `compileSourceSlice` must resolve by compiling `rhs` as an ordinary
 // expression and reusing its own slice descriptor.
-static foreach (backend; Matrix!(
-    Omit!(Interpreter, Because.unconfirmed,
-        "assignment target is a slice of an indexed element"),
-)) {
+static foreach (backend; Matrix!()) {
     @("dynamicArray.subSliceAssignmentOntoArrayOfArraysElementFromPlainVariable." ~
         backend.stringof)
     @Tags(backend.stringof)
@@ -5331,6 +5328,33 @@ static foreach (backend; Matrix!(
     }
 }
 
+// A `ref` parameter forwarded to `mulu` must preserve the caller's native
+// bool address through the imported/template-instantiated native call.
+// Bytecode native-ref plumbing remains on the bytecode-track backlog.
+static foreach (backend; Matrix!(
+    Omit!(Bytecode, Because.unconfirmed),
+    Omit!(Ctfe, Because.inexpressible,
+        "core.checkedint.mulu has inline assembly that CTFE cannot execute"),
+)) {
+    @("nativeRefArgument.muluReceivesForwardedReference." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            import core.checkedint : mulu;
+
+            size_t multiply(ref bool overflow, size_t x, size_t y) {
+                return mulu(x, y, overflow);
+            }
+
+            unittest {
+                bool overflow;
+                assert(multiply(overflow, size_t.max, 2) == size_t.max - 1);
+                assert(overflow);
+            }
+        });
+    }
+}
+
 // This fixture pins `assumeSafeAppend` through an interior pointer (a slice
 // that does not start at its backing block's base). Interpreter omitted: its
 // reserve descriptor loses the zero-length allocation's capacity when the
@@ -5749,12 +5773,7 @@ static foreach (backend; Matrix!()) {
 
 // A non-null zero-length slice (its pointer is set but length is 0) is still
 // truthy: truthiness follows the pointer, not the length.
-static foreach (backend; Matrix!(
-    Omit!(Interpreter, Because.unconfirmed,
-        "observed via bin/qb: `assert(s ? true : false)` for a non-null " ~
-        "zero-length slice evaluates false on Interpreter; SystemLinker " ~
-        "evaluates true"),
-)) {
+static foreach (backend; Matrix!()) {
     @("dynamicArray.nonNullZeroLengthSliceIsTruthy." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {

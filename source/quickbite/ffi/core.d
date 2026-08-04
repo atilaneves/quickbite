@@ -83,6 +83,16 @@ public interface NativeReceiverAddressMarshaller {
     void* receiverAddress(imported!"dmd.mtype".Type type);
 }
 
+// Optional native-reference ABI capability. The returned address names a
+// pointer-sized ABI slot whose contents are the caller's authoritative
+// pointee address. A missing capability, or a null result, refuses the call.
+public interface NativeReferenceAddressMarshaller {
+    const(void)* referenceArgumentAddress(
+        in size_t index,
+        imported!"dmd.mtype".Type pointeeType,
+    );
+}
+
 // The seam (ffi.md §5): the backend injects ABI-byte conversion so the core
 // never names a backend value type. `fill*` write argument/receiver bytes into
 // a buffer sized to the matching ffi_type; `readResult`/`writeOutParameter`
@@ -594,6 +604,7 @@ private bool callViaLibffi(
         return false;
 
     auto parameterTypes = new Type[](nargs);
+    auto referenceParameters = new bool[](nargs);
     auto argumentFfiTypes = new ffi_type*[](nargs);
     foreach (index; 0 .. nargs) {
         // Fixed parameters come from the signature; variadic-tail arguments are
@@ -601,7 +612,11 @@ private bool callViaLibffi(
         parameterTypes[index] = index < fixedNargs
             ? parameterType(type, index)
             : argumentTypes[index].toBasetype;
-        argumentFfiTypes[index] = ffiArgumentTypeFor(parameterTypes[index]);
+        referenceParameters[index] = index < fixedNargs &&
+            isNativeReferenceParameter(type, index);
+        argumentFfiTypes[index] = referenceParameters[index]
+            ? &ffi_type_pointer
+            : ffiArgumentTypeFor(parameterTypes[index]);
         if (argumentFfiTypes[index] is null)
             return false;
     }
@@ -617,6 +632,7 @@ private bool callViaLibffi(
         marshaller,
         returnType,
         parameterTypes,
+        referenceParameters,
         receiver,
         addressOfLocalArguments,
         refReturnMode,
@@ -756,7 +772,19 @@ private bool callViaLibffi(
         const addressOfLocal =
             index < addressOfLocalArguments.length &&
             addressOfLocalArguments[index];
-        if (auto address = marshaller.argumentAddress(
+        if (referenceParameters[index]) {
+            auto referenceMarshaller = cast(NativeReferenceAddressMarshaller)
+                marshaller;
+            if (referenceMarshaller is null)
+                return false;
+            auto address = referenceMarshaller.referenceArgumentAddress(
+                index,
+                parameterTypes[index],
+            );
+            if (address is null)
+                return false;
+            argumentValues[index] = cast(void*) address;
+        } else if (auto address = marshaller.argumentAddress(
             index,
             parameterTypes[index],
         )) {
@@ -949,6 +977,7 @@ private bool canRepresentCall(
     NativeMarshaller marshaller,
     imported!"dmd.mtype".Type returnType,
     imported!"dmd.mtype".Type[] parameterTypes,
+    in bool[] referenceParameters,
     NativeThis receiver,
     in bool[] addressOfLocalArguments,
     in RefReturnMode refReturnMode,
@@ -963,6 +992,8 @@ private bool canRepresentCall(
         }
 
         foreach (index, parameter; parameterTypes) {
+            if (index < referenceParameters.length && referenceParameters[index])
+                continue;
             if (isDelegateParameter(parameter))
                 continue;
 
@@ -1522,4 +1553,17 @@ private imported!"dmd.mtype".Type parameterType(
     in size_t index,
 ) {
     return (*functionType.parameterList.parameters)[index].type.toBasetype;
+}
+
+public bool isNativeReferenceParameter(
+    imported!"dmd.mtype".TypeFunction functionType,
+    in size_t index,
+) {
+    import dmd.astenums: STC;
+
+    return functionType !is null &&
+        functionType.parameterList.parameters !is null &&
+        index < functionType.parameterList.parameters.length &&
+        ((*functionType.parameterList.parameters)[index].storageClass &
+            (STC.ref_ | STC.out_)) != STC.none;
 }

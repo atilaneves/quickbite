@@ -24,7 +24,9 @@ tmp
 /bin/*
 !/bin/bench.sh
 .codex
-.claude
+.claude/*
+!.claude/skills/
+!.claude/skills/**
 .reggae
 worktrees
 .ninja*
