@@ -1863,3 +1863,42 @@ static foreach (backend; Matrix!()) {
         });
     }
 }
+
+// `int delegate()[string] callbacks; callbacks["a"] = &fn; callbacks["a"]();`
+// used to cause unbounded memory growth (confirmed multiple gigabytes within
+// seconds) rather than either running correctly or failing with a clean
+// diagnostic: `delegateOperandOffset`'s indexed-delegate-call fallback
+// materialised the read through the generic `tryPointerIndex`/
+// `loadThroughPointer` machinery, which sizes its load from the pointee's
+// scalar type -- `void_` (opaque) for a `Tdelegate` AA value, the same
+// marker every other aggregate AA value (struct, static array) carries --
+// rather than the real 16-byte `{functionIndex, context}` width. The
+// destination slot's stale (all-zero) bytes were read back as the delegate
+// to call; function index 0 is ordinarily the very function doing the
+// calling, so the call recursed into itself forever, growing the VM's own
+// `stack`/`frames` arrays without bound. `Omit!(SystemLinker)` is
+// impossible (the oracle can never be omitted); every other backend is
+// omitted here as `Because.unconfirmed` -- this fixture only pins the
+// `Bytecode` hang/fix, not full delegate-AA-value support elsewhere.
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.unconfirmed),
+    Omit!(Interpreter, Because.unconfirmed),
+    Omit!(LLVMJit, Because.unconfirmed),
+)) {
+    @("delegateAssocArrayValueIndexedCallInvokesStoredDelegate." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            unittest {
+                int captured = 42;
+                int fn() { return captured; }
+
+                int delegate()[string] callbacks;
+                callbacks["a"] = &fn;
+                auto result = callbacks["a"]();
+                assert(result == 42);
+            }
+        });
+    }
+}

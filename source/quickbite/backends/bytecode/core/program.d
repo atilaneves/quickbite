@@ -118,6 +118,28 @@ package(quickbite.backends.bytecode) struct ResultType {
 package(quickbite.backends.bytecode) enum sliceDescriptorSize =
     2 * size_t.sizeof;
 
+// Byte offset of a slice descriptor's `ptr` field relative to the
+// descriptor's own base offset `base` (a frame slot, module-data offset, or
+// a descriptor-sized buffer's start) — the one place the `{ptr, length}`
+// layout `sliceDescriptorSize` documents is expressed as field offsets, so
+// compiler.d, machine.d, and reify.d compute them the same way instead of
+// re-deriving `base` / `base + size_t.sizeof` inline. Pairs with
+// `sliceDescriptorLengthOffset`; flipping the descriptor to `{length, ptr}`
+// becomes a one-module edit to these two functions.
+package(quickbite.backends.bytecode) size_t sliceDescriptorPtrOffset(
+    in size_t base,
+) @safe @nogc nothrow pure {
+    return base;
+}
+
+// Byte offset of a slice descriptor's `length` field relative to the
+// descriptor's base offset `base`. See `sliceDescriptorPtrOffset`.
+package(quickbite.backends.bytecode) size_t sliceDescriptorLengthOffset(
+    in size_t base,
+) @safe @nogc nothrow pure {
+    return base + size_t.sizeof;
+}
+
 // A native (libc) call's argument area is N contiguous slots of this
 // stride, one per argument, laid out at
 // `argumentArea + index * nativeArgumentSlotSize` regardless of each
@@ -716,6 +738,492 @@ package(quickbite.backends.bytecode) enum unsignedConvertFlag = 0x100;
 // (at most 8), so bit 15 is free for the flag.
 package(quickbite.backends.bytecode) enum assocArrayKeyIsArrayFlag = 0x8000;
 
+// OR'd into an AA opcode's key-width operand (`Instruction.e`) to mark a
+// struct key that mixes a content-compared field (a plain `string` member)
+// with at least one raw-compared field in the same key (e.g. `struct Name {
+// string first; int age; }`) -- more than the single bit
+// `assocArrayKeyIsArrayFlag` gives can express, since neither "all raw" nor
+// "all content" describes the key as a whole. Mutually exclusive with
+// `assocArrayKeyIsArrayFlag` (never both set); the bits packed alongside this
+// flag are an index into `Program.assocArrayKeyLayouts`, not a byte width --
+// the layout entry itself carries the key's total width
+// (`AssocArrayKeyLayout.width`), since it no longer fits in the remaining 14
+// bits alongside a nontrivial index. 14 bits of index (`0x3FFF`) comfortably
+// exceeds any realistic number of distinct mixed-field key shapes in one
+// program.
+package(quickbite.backends.bytecode) enum assocArrayKeyIsStructLayoutFlag =
+    0x4000;
+
+// One field of a struct AA key that needs field-wise comparison
+// (`assocArrayKeyIsStructLayoutFlag`): `offset`/`width` locate the field's
+// own bytes within the key block (mirroring `field.offset` from DMD's
+// struct layout), and `isArray` selects how `keysEqual` (machine.d) compares
+// them -- content, through the {ptr, length} descriptor at `offset`, for a
+// plain `string` field (`width` is then always `sliceDescriptorSize`), or
+// the field's own raw bytes directly for anything else. Mirrors
+// `compileStructIdentity`'s (compiler.d) field-by-field pattern for `==`,
+// which solves the identical problem at compile time rather than in the VM.
+package(quickbite.backends.bytecode) struct AssocArrayKeyField {
+    ushort offset;
+    ushort width;
+    bool isArray;
+}
+
+// One entry per distinct struct-key shape needing field-wise comparison,
+// referenced by index from the same `Instruction.e` operand slot
+// `assocArrayKeyIsArrayFlag` uses for the simpler (all-raw / all-content)
+// shapes, tagged instead with `assocArrayKeyIsStructLayoutFlag`. `width` is
+// the key block's total byte size (`AssocArray.keys`'s per-entry stride, the
+// same role `assocArrayKeyMeta`'s packed width plays for the simpler shapes).
+package(quickbite.backends.bytecode) struct AssocArrayKeyLayout {
+    AssocArrayKeyField[] fields;
+    ushort width;
+}
+
+// The `indexLoad`/`indexStore` family's one op<->width table: each fixed
+// width the pair supports, alongside the load and store opcode for that
+// width, declared once. compiler.d's `indexLoadOp`/`indexStoreOp`
+// width->opcode selectors and machine.d's element-width Op->width derivation
+// both walk this same table (`indexLoadOp`/`indexStoreOp`/`indexElementWidth`
+// below), so the two directions cannot independently drift out of sync the
+// way two hand-written switches could. `indexLoad16`/`indexStore16`'s width
+// is `sliceDescriptorSize`, not a bare `16` literal, since that is what they
+// actually move (an inner array-of-arrays element).
+private struct IndexOpWidth {
+    uint width;
+    Op loadOp;
+    Op storeOp;
+}
+
+private immutable IndexOpWidth[] indexOpWidths = [
+    IndexOpWidth(1, Op.indexLoad1, Op.indexStore1),
+    IndexOpWidth(2, Op.indexLoad2, Op.indexStore2),
+    IndexOpWidth(4, Op.indexLoad4, Op.indexStore4),
+    IndexOpWidth(8, Op.indexLoad8, Op.indexStore8),
+    IndexOpWidth(sliceDescriptorSize, Op.indexLoad16, Op.indexStore16),
+];
+
+// The `indexLoadN`-family width->opcode selector: `width` bytes uses the
+// fixed-width opcode for that width if the table above has one, else the
+// `N` variant (which carries the width in its own `d` operand instead).
+package(quickbite.backends.bytecode) Op indexLoadOp(in uint width)
+    @safe @nogc nothrow pure
+{
+    foreach (entry; indexOpWidths)
+        if (entry.width == width)
+            return entry.loadOp;
+    return Op.indexLoadN;
+}
+
+// See `indexLoadOp`; the store-side counterpart sharing the same table.
+package(quickbite.backends.bytecode) Op indexStoreOp(in uint width)
+    @safe @nogc nothrow pure
+{
+    foreach (entry; indexOpWidths)
+        if (entry.width == width)
+            return entry.storeOp;
+    return Op.indexStoreN;
+}
+
+// The reverse direction: the fixed byte width a fixed-width `indexLoad*`/
+// `indexStore*` opcode operates on. Not valid for `indexLoadN`/`indexStoreN`,
+// whose width is a runtime operand rather than implied by the opcode.
+package(quickbite.backends.bytecode) uint indexElementWidth(in Op op)
+    @safe @nogc nothrow pure
+in (op != Op.indexLoadN && op != Op.indexStoreN)
+{
+    foreach (entry; indexOpWidths)
+        if (entry.loadOp == op || entry.storeOp == op)
+            return entry.width;
+    assert(0, "Not a fixed-width indexLoad/indexStore opcode.");
+}
+
+// The `pointerLoad`/`pointerStore`/`pointerSlice` family's one op<->width
+// table, the same pattern as `indexOpWidths` above but with three opcodes per
+// width instead of two (a raw-pointer dereference also has a slice-taking
+// form). compiler.d's `pointerLoadOp`/`pointerStoreOp`/`pointerSliceOp`
+// width->opcode selectors and machine.d's element-size Op->width derivation
+// (`pointerElementWidth` below) both walk this same table, so the two
+// directions cannot independently drift out of sync.
+private struct PointerOpWidth {
+    uint width;
+    Op loadOp;
+    Op storeOp;
+    Op sliceOp;
+}
+
+private immutable PointerOpWidth[] pointerOpWidths = [
+    PointerOpWidth(1, Op.pointerLoad1, Op.pointerStore1, Op.pointerSlice1),
+    PointerOpWidth(2, Op.pointerLoad2, Op.pointerStore2, Op.pointerSlice2),
+    PointerOpWidth(4, Op.pointerLoad4, Op.pointerStore4, Op.pointerSlice4),
+    PointerOpWidth(8, Op.pointerLoad8, Op.pointerStore8, Op.pointerSlice8),
+    PointerOpWidth(16, Op.pointerLoad16, Op.pointerStore16, Op.pointerSlice16),
+];
+
+// The `pointerLoadN`-family width->opcode selector: `width` bytes uses the
+// fixed-width opcode for that width if the table above has one, else the
+// `N` variant (which carries the width in its own operand instead).
+package(quickbite.backends.bytecode) Op pointerLoadOp(in uint width)
+    @safe @nogc nothrow pure
+{
+    foreach (entry; pointerOpWidths)
+        if (entry.width == width)
+            return entry.loadOp;
+    return Op.pointerLoadN;
+}
+
+// See `pointerLoadOp`; the store-side counterpart sharing the same table.
+package(quickbite.backends.bytecode) Op pointerStoreOp(in uint width)
+    @safe @nogc nothrow pure
+{
+    foreach (entry; pointerOpWidths)
+        if (entry.width == width)
+            return entry.storeOp;
+    return Op.pointerStoreN;
+}
+
+// See `pointerLoadOp`; the slice-side counterpart sharing the same table.
+package(quickbite.backends.bytecode) Op pointerSliceOp(in uint width)
+    @safe @nogc nothrow pure
+{
+    foreach (entry; pointerOpWidths)
+        if (entry.width == width)
+            return entry.sliceOp;
+    return Op.pointerSliceN;
+}
+
+// The reverse direction: the fixed byte width a fixed-width `pointerLoad*`/
+// `pointerStore*`/`pointerSlice*` opcode operates on. Not valid for the `N`
+// variants, whose width is a runtime operand rather than implied by the
+// opcode.
+package(quickbite.backends.bytecode) uint pointerElementWidth(in Op op)
+    @safe @nogc nothrow pure
+in (op != Op.pointerLoadN && op != Op.pointerStoreN && op != Op.pointerSliceN)
+{
+    foreach (entry; pointerOpWidths)
+        if (entry.loadOp == op || entry.storeOp == op || entry.sliceOp == op)
+            return entry.width;
+    assert(0, "Not a fixed-width pointerLoad/pointerStore/pointerSlice opcode.");
+}
+
+// The `subSlice` family's one op<->width table, the same pattern as
+// `indexOpWidths`/`pointerOpWidths` above but with a single opcode per width
+// (forming a sub-slice descriptor is one operation, not a load/store/slice
+// split). compiler.d's `subSliceOp` width->opcode selector and machine.d's
+// element-size Op->width derivation (`subSliceElementWidth` below) both walk
+// this same table, so the two directions cannot independently drift out of
+// sync.
+private struct SubSliceOpWidth {
+    uint width;
+    Op op;
+}
+
+private immutable SubSliceOpWidth[] subSliceOpWidths = [
+    SubSliceOpWidth(1, Op.subSlice1),
+    SubSliceOpWidth(2, Op.subSlice2),
+    SubSliceOpWidth(4, Op.subSlice4),
+    SubSliceOpWidth(8, Op.subSlice8),
+    SubSliceOpWidth(16, Op.subSlice16),
+];
+
+// The `subSlice`-family width->opcode selector: `width` bytes uses the
+// fixed-width opcode for that width if the table above has one, else the `N`
+// variant (which carries the width in its own `d` operand instead).
+package(quickbite.backends.bytecode) Op subSliceOp(in uint width)
+    @safe @nogc nothrow pure
+{
+    foreach (entry; subSliceOpWidths)
+        if (entry.width == width)
+            return entry.op;
+    return Op.subSliceN;
+}
+
+// The reverse direction: the fixed byte width a fixed-width `subSlice*`
+// opcode operates on. Not valid for `subSliceN`, whose width is a runtime
+// operand rather than implied by the opcode.
+package(quickbite.backends.bytecode) uint subSliceElementWidth(in Op op)
+    @safe @nogc nothrow pure
+in (op != Op.subSliceN)
+{
+    foreach (entry; subSliceOpWidths)
+        if (entry.op == op)
+            return entry.width;
+    assert(0, "Not a fixed-width subSlice opcode.");
+}
+
+// The `appendElement` family's one op<->width table, the same pattern as
+// `subSliceOpWidths` above (a single opcode per width, since appending one
+// element is a single operation, not a load/store/slice split).
+// compiler.d's `appendElementOp` width->opcode selector and machine.d's
+// element-size Op->width derivation (`appendElementWidth` below) both walk
+// this same table, so the two directions cannot independently drift out of
+// sync.
+private struct AppendElementOpWidth {
+    uint width;
+    Op op;
+}
+
+private immutable AppendElementOpWidth[] appendElementOpWidths = [
+    AppendElementOpWidth(1, Op.appendElement1),
+    AppendElementOpWidth(2, Op.appendElement2),
+    AppendElementOpWidth(4, Op.appendElement4),
+    AppendElementOpWidth(8, Op.appendElement8),
+    AppendElementOpWidth(16, Op.appendElement16),
+];
+
+// The `appendElement`-family width->opcode selector: `width` bytes uses the
+// fixed-width opcode for that width if the table above has one, else the `N`
+// variant (which carries the width in its own `c` operand instead).
+package(quickbite.backends.bytecode) Op appendElementOp(in uint width)
+    @safe @nogc nothrow pure
+{
+    foreach (entry; appendElementOpWidths)
+        if (entry.width == width)
+            return entry.op;
+    return Op.appendElementN;
+}
+
+// The reverse direction: the fixed byte width a fixed-width `appendElement*`
+// opcode operates on. Not valid for `appendElementN`, whose width is a
+// runtime operand rather than implied by the opcode.
+package(quickbite.backends.bytecode) uint appendElementWidth(in Op op)
+    @safe @nogc nothrow pure
+in (op != Op.appendElementN)
+{
+    foreach (entry; appendElementOpWidths)
+        if (entry.op == op)
+            return entry.width;
+    assert(0, "Not a fixed-width appendElement opcode.");
+}
+
+// The `dupArray` family's one op<->width table, the same pattern as
+// `appendElementOpWidths` above (a single opcode per width, since
+// duplicating an array's elements into a fresh heap block is a single
+// operation). compiler.d's `dupArrayOp` width->opcode selector and
+// machine.d's element-size Op->width derivation (`dupArrayWidth` below) both
+// walk this same table, so the two directions cannot independently drift out
+// of sync.
+private struct DupArrayOpWidth {
+    uint width;
+    Op op;
+}
+
+private immutable DupArrayOpWidth[] dupArrayOpWidths = [
+    DupArrayOpWidth(1, Op.dupArray1),
+    DupArrayOpWidth(2, Op.dupArray2),
+    DupArrayOpWidth(4, Op.dupArray4),
+    DupArrayOpWidth(8, Op.dupArray8),
+    DupArrayOpWidth(16, Op.dupArray16),
+];
+
+// The `dupArray`-family width->opcode selector: `width` bytes uses the
+// fixed-width opcode for that width if the table above has one, else the `N`
+// variant (which carries the width in its own `c` operand instead).
+package(quickbite.backends.bytecode) Op dupArrayOp(in uint width)
+    @safe @nogc nothrow pure
+{
+    foreach (entry; dupArrayOpWidths)
+        if (entry.width == width)
+            return entry.op;
+    return Op.dupArrayN;
+}
+
+// The reverse direction: the fixed byte width a fixed-width `dupArray*`
+// opcode operates on. Not valid for `dupArrayN`, whose width is a runtime
+// operand rather than implied by the opcode.
+package(quickbite.backends.bytecode) uint dupArrayWidth(in Op op)
+    @safe @nogc nothrow pure
+in (op != Op.dupArrayN)
+{
+    foreach (entry; dupArrayOpWidths)
+        if (entry.op == op)
+            return entry.width;
+    assert(0, "Not a fixed-width dupArray opcode.");
+}
+
+// The `concatArrays` family's one op<->width table, the same pattern as
+// `dupArrayOpWidths` above (a single opcode per width, since concatenating
+// two arrays is a single operation). Unlike the other families, only 1, 4,
+// and 16 bytes get a fixed-width opcode (matching indexLoad/indexStore's own
+// omission of 2 and 8 for this family). compiler.d's `concatArraysOp`
+// width->opcode selector and machine.d's element-size Op->width derivation
+// (`concatArraysWidth` below) both walk this same table, so the two
+// directions cannot independently drift out of sync.
+private struct ConcatArraysOpWidth {
+    uint width;
+    Op op;
+}
+
+private immutable ConcatArraysOpWidth[] concatArraysOpWidths = [
+    ConcatArraysOpWidth(1, Op.concatArrays1),
+    ConcatArraysOpWidth(4, Op.concatArrays4),
+    ConcatArraysOpWidth(16, Op.concatArrays16),
+];
+
+// The `concatArrays`-family width->opcode selector: `width` bytes uses the
+// fixed-width opcode for that width if the table above has one, else the `N`
+// variant (which carries the width in its own `d` operand instead).
+package(quickbite.backends.bytecode) Op concatArraysOp(in uint width)
+    @safe @nogc nothrow pure
+{
+    foreach (entry; concatArraysOpWidths)
+        if (entry.width == width)
+            return entry.op;
+    return Op.concatArraysN;
+}
+
+// The reverse direction: the fixed byte width a fixed-width `concatArrays*`
+// opcode operates on. Not valid for `concatArraysN`, whose width is a
+// runtime operand rather than implied by the opcode.
+package(quickbite.backends.bytecode) uint concatArraysWidth(in Op op)
+    @safe @nogc nothrow pure
+in (op != Op.concatArraysN)
+{
+    foreach (entry; concatArraysOpWidths)
+        if (entry.op == op)
+            return entry.width;
+    assert(0, "Not a fixed-width concatArrays opcode.");
+}
+
+// The `sliceCopy` family's one op<->width table, the same pattern as
+// `dupArrayOpWidths` above (a single opcode per width). All five fixed
+// widths get an opcode, matching indexLoad/indexStore's own 1/2/4/8/16 split
+// (a generic slice copy has to move `T[][]` rows too, not just scalars).
+// compiler.d's `sliceCopyOp` width->opcode selector and machine.d's
+// element-size Op->width derivation (`sliceCopyWidth` below) both walk this
+// same table, so the two directions cannot independently drift out of sync.
+private struct SliceCopyOpWidth {
+    uint width;
+    Op op;
+}
+
+private immutable SliceCopyOpWidth[] sliceCopyOpWidths = [
+    SliceCopyOpWidth(1, Op.sliceCopy1),
+    SliceCopyOpWidth(2, Op.sliceCopy2),
+    SliceCopyOpWidth(4, Op.sliceCopy4),
+    SliceCopyOpWidth(8, Op.sliceCopy8),
+    SliceCopyOpWidth(sliceDescriptorSize, Op.sliceCopy16),
+];
+
+// The `sliceCopy`-family width->opcode selector: `width` bytes uses the
+// fixed-width opcode for that width if the table above has one, else the `N`
+// variant (which carries the width in its own `c` operand instead).
+package(quickbite.backends.bytecode) Op sliceCopyOp(in uint width)
+    @safe @nogc nothrow pure
+{
+    foreach (entry; sliceCopyOpWidths)
+        if (entry.width == width)
+            return entry.op;
+    return Op.sliceCopyN;
+}
+
+// The reverse direction: the fixed byte width a fixed-width `sliceCopy*`
+// opcode operates on. Not valid for `sliceCopyN`, whose width is a runtime
+// operand rather than implied by the opcode.
+package(quickbite.backends.bytecode) uint sliceCopyWidth(in Op op)
+    @safe @nogc nothrow pure
+    in (op != Op.sliceCopyN)
+{
+    foreach (entry; sliceCopyOpWidths)
+        if (entry.op == op)
+            return entry.width;
+    assert(0, "Not a fixed-width sliceCopy opcode.");
+}
+
+// The `sliceFill` family's one op<->width table, the same pattern as
+// `sliceCopyOpWidths` above but with only four fixed widths (1, 2, 4, 8):
+// the broadcast source is a scalar (or, for `sliceFillN`, an arbitrary-width
+// aggregate carried via operand `c`), never a 16-byte slice-descriptor
+// element, so there is no `sliceFill16`. compiler.d's `sliceFillOp`
+// width->opcode selector and machine.d's element-size Op->width derivation
+// (`sliceFillWidth` below) both walk this same table, so the two directions
+// cannot independently drift out of sync.
+private struct SliceFillOpWidth {
+    uint width;
+    Op op;
+}
+
+private immutable SliceFillOpWidth[] sliceFillOpWidths = [
+    SliceFillOpWidth(1, Op.sliceFill1),
+    SliceFillOpWidth(ushort.sizeof, Op.sliceFill2),
+    SliceFillOpWidth(uint.sizeof, Op.sliceFill4),
+    SliceFillOpWidth(ulong.sizeof, Op.sliceFill8),
+];
+
+// The `sliceFill`-family width->opcode selector: `width` bytes uses the
+// fixed-width opcode for that width if the table above has one, else the `N`
+// variant (which carries the width in its own `c` operand instead, and reads
+// a `c`-byte-wide source rather than a narrow scalar).
+package(quickbite.backends.bytecode) Op sliceFillOp(in uint width)
+    @safe @nogc nothrow pure
+{
+    foreach (entry; sliceFillOpWidths)
+        if (entry.width == width)
+            return entry.op;
+    return Op.sliceFillN;
+}
+
+// The reverse direction: the fixed byte width a fixed-width `sliceFill*`
+// opcode operates on. Not valid for `sliceFillN`, whose width is a runtime
+// operand rather than implied by the opcode.
+package(quickbite.backends.bytecode) uint sliceFillWidth(in Op op)
+    @safe @nogc nothrow pure
+    in (op != Op.sliceFillN)
+{
+    foreach (entry; sliceFillOpWidths)
+        if (entry.op == op)
+            return entry.width;
+    assert(0, "Not a fixed-width sliceFill opcode.");
+}
+
+// The `sliceEqual` family's one op<->width table, the same pattern as
+// `sliceFillOpWidths` above (the same four fixed widths, 1/2/4/8: a 16-byte
+// slice-descriptor element, e.g. a `T[][]` row, is structural rather than
+// flat-byte equality and goes through `Op.sliceEqualNested` instead). Unlike
+// every other width-suffixed family, there is no `N` variant: every element
+// width the front end can produce a `==` for is one of these four, so
+// `sliceEqualOp` below throws rather than falling back. compiler.d's
+// `sliceEqualOp` width->opcode selector and machine.d's element-size
+// Op->width derivation (`sliceEqualWidth` below) both walk this same table,
+// so the two directions cannot independently drift out of sync.
+private struct SliceEqualOpWidth {
+    uint width;
+    Op op;
+}
+
+private immutable SliceEqualOpWidth[] sliceEqualOpWidths = [
+    SliceEqualOpWidth(1, Op.sliceEqual1),
+    SliceEqualOpWidth(2, Op.sliceEqual2),
+    SliceEqualOpWidth(4, Op.sliceEqual4),
+    SliceEqualOpWidth(8, Op.sliceEqual8),
+];
+
+// The `sliceEqual`-family width->opcode selector: `width` bytes uses the
+// fixed-width opcode for that width, or throws if the front end ever hands
+// it a width none of the four opcodes cover (there is no `N` variant; see
+// `sliceEqualOpWidths` above).
+package(quickbite.backends.bytecode) Op sliceEqualOp(in uint width) @safe pure
+{
+    foreach (entry; sliceEqualOpWidths)
+        if (entry.width == width)
+            return entry.op;
+    import std.conv: text;
+    throw new Exception(text(
+        "Unsupported array element size in bytecode core: ", width,
+    ));
+}
+
+// The reverse direction: the fixed byte width a fixed-width `sliceEqual*`
+// opcode operates on.
+package(quickbite.backends.bytecode) uint sliceEqualWidth(in Op op)
+    @safe @nogc nothrow pure
+{
+    foreach (entry; sliceEqualOpWidths)
+        if (entry.op == op)
+            return entry.width;
+    assert(0, "Not a fixed-width sliceEqual opcode.");
+}
+
 package(quickbite.backends.bytecode) struct Instruction {
     Op op;
     ushort a;
@@ -834,4 +1342,7 @@ package(quickbite.backends.bytecode) struct Program {
     imported!"object".TypeInfo[] nativeTypeInfos;
     ushort rangeErrorClass = noExceptionClass;
     CatchClause[] catchClauses;
+    // Indexed by `assocArrayKeyIsStructLayoutFlag`-tagged `Instruction.e`
+    // operands; see `AssocArrayKeyLayout`.
+    AssocArrayKeyLayout[] assocArrayKeyLayouts;
 }

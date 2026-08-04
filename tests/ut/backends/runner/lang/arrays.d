@@ -486,6 +486,277 @@ static foreach (backend; Matrix!(
     }
 }
 
+// `arr[0].length` where `arr` is a module-level `int[][]`:
+// `compileArrayLength` used to call `dynamicArrayDescriptor` ->
+// `dynamicArrayDescriptorOrNull` directly, whose `IndexExp` branch
+// (`innerArrayDescriptor`) only resolves an array-of-arrays base that is
+// either a known local (`_dynamicArrayLocals`) or a struct/class-field
+// `DotVarExp` -- never a bare module-level `VarExp`, since a module
+// dynamic array is never inserted into `_dynamicArrayLocals`. This threw
+// "Unsupported dynamic array access in bytecode core: arr[0]" even though
+// the sibling shape `arr[0][0]` (a further index, not `.length`) already
+// worked, via `tryDynamicArrayIndex`'s own fallback to
+// `indexedArrayDescriptor`, which materialises *any* array-typed
+// expression generically through `compileDynamicArrayInto`. Fixed by
+// giving `compileArrayLength` that same fallback, scoped to this one call
+// site rather than `dynamicArrayDescriptor` itself (nine other call
+// sites) to avoid touching `innerArrayDescriptor`'s own resolution at all.
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.inexpressible,
+        "CTFE cannot read dataseg (__gshared/static) storage"),
+    Omit!(Interpreter, Because.unconfirmed),
+    Omit!(LLVMJit, Because.unconfirmed),
+)) {
+    @("dynamicArray.moduleArrayOfArraysElementLength." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            int[][] arr = [[1, 2], [3, 4]];
+
+            unittest {
+                assert(arr[0].length == 2);
+            }
+        });
+    }
+}
+
+// The three-levels-deep sibling (`m[0][0].length`): confirms the fix
+// generalises through a second index rather than only unwrapping one
+// level, without needing any change to `innerArrayDescriptor` itself.
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.inexpressible,
+        "CTFE cannot read dataseg (__gshared/static) storage"),
+    Omit!(Interpreter, Because.unconfirmed),
+    Omit!(LLVMJit, Because.unconfirmed),
+)) {
+    @("dynamicArray.moduleArrayOfArraysOfArraysElementLength." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            int[][][] m = [[[1, 2], [3, 4]], [[5, 6]]];
+
+            unittest {
+                assert(m[0][0].length == 2);
+                assert(m[1][0].length == 2);
+            }
+        });
+    }
+}
+
+// The local-variable counterpart: this shape already worked before the
+// fix above, since a local's array-of-arrays base is tracked in
+// `_dynamicArrayLocals` and `innerArrayDescriptor` already resolved it
+// directly; kept here as an explicit regression guard alongside the
+// module-level fix.
+static foreach (backend; Matrix!()) {
+    @("dynamicArray.localArrayOfArraysElementLength." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            unittest {
+                int[][] arr = [[1, 2], [3, 4]];
+                assert(arr[0].length == 2);
+            }
+        });
+    }
+}
+
+// The two-levels-of-nesting sibling of the fixture above
+// (`int[][][] m = [[[1, 2], [3, 4]], [[5, 6]]];`):
+// `moduleDynamicArrayLiteralInitializerBytes` used to hardcode its
+// recursive call's `elementIsArray` to `false`, so it only ever unwrapped
+// exactly one level of array-of-arrays nesting before falling into the
+// plain-scalar branch -- a middle-level row here (itself an `int[][]`, not
+// a leaf of scalars) failed that branch's `isIntegerExp`/`isRealExp` checks
+// and declined the whole array, so `m` fell all the way through
+// `moduleDynamicArrayVariableOrNull` to "declined" and the variable was
+// never registered as dataseg storage at all. It now re-derives
+// `elementIsArray` from each row's own `Expression.type`, so this keeps
+// recursing at any nesting depth.
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.inexpressible,
+        "CTFE cannot read dataseg (__gshared/static) storage"),
+    Omit!(Interpreter, Because.unconfirmed),
+    Omit!(LLVMJit, Because.unconfirmed),
+)) {
+    @("dynamicArray.moduleArrayOfArraysOfArraysLiteralInitializer." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            int[][][] m = [[[1, 2], [3, 4]], [[5, 6]]];
+
+            int sum() {
+                return m[0][0][0] + m[0][0][1] + m[0][1][0] + m[0][1][1] +
+                    m[1][0][0] + m[1][0][1];
+            }
+
+            unittest {
+                assert(sum() == 21);
+
+                assert(m.length == 2);
+                assert(m[0][0][0] == 1);
+                assert(m[0][0][1] == 2);
+                assert(m[0][1][0] == 3);
+                assert(m[0][1][1] == 4);
+                assert(m[1][0][0] == 5);
+                assert(m[1][0][1] == 6);
+
+                auto row = m[0][1];
+                row[0] = 99;
+                assert(m[0][1][0] == 99);
+            }
+        });
+    }
+}
+
+// A module-level dynamic array with an *empty* array-literal initializer
+// (`int[] arr = [];`): `moduleDynamicArrayLiteralInitializerBytes` used to
+// treat a zero-length `elements` array the same as any other shape it
+// can't inspect an element from, declining registration entirely (the
+// variable fell through `moduleDynamicArrayVariableOrNull` to
+// "declined", same as a genuinely unsupported initializer). An empty
+// literal is semantically just the default-initialized null/zero-length
+// slice, so `moduleDynamicArrayVariableOrNull` now treats it the same as
+// no initializer at all: real (empty) storage is registered, and `arr`
+// behaves exactly like `int[] arr;` would.
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.inexpressible,
+        "CTFE cannot read dataseg (__gshared/static) storage"),
+    Omit!(Interpreter, Because.unconfirmed),
+    Omit!(LLVMJit, Because.unconfirmed),
+)) {
+    @("dynamicArray.moduleEmptyArrayLiteralInitializer." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            int[] arr = [];
+
+            unittest {
+                assert(arr.length == 0);
+                assert(arr is null || arr.length == 0);
+                arr ~= 1;
+                assert(arr.length == 1);
+                assert(arr[0] == 1);
+            }
+        });
+    }
+}
+
+// The "any non-constant element (e.g. a function call)" case the plan text
+// above lists as declined: a `pure`, side-effect-free call like `f()` here
+// is trivially CTFEable, and DMD's own frontend semantic pass requires
+// every dataseg (module-level, non-`immutable`) initializer to reduce to a
+// genuine compile-time constant -- it folds the whole `ArrayLiteralExp`
+// element-by-element via CTFE, so by the time our compiler ever inspects
+// the initializer, this element is already a plain `IntegerExp(42)`, not a
+// `CallExp`. `moduleDynamicArrayLiteralInitializerBytes`'s existing
+// `isIntegerExp`/`isRealExp` checks already handle it: no separate
+// "non-constant element" support is needed for this shape.
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.inexpressible,
+        "CTFE cannot read dataseg (__gshared/static) storage"),
+    Omit!(Interpreter, Because.unconfirmed),
+    Omit!(LLVMJit, Because.unconfirmed),
+)) {
+    @("dynamicArray.moduleArrayLiteralCtfeableCallElement." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            int f() { return 42; }
+            int[] arr = [1, f(), 3];
+
+            unittest {
+                assert(arr.length == 3);
+                assert(arr[0] == 1);
+                assert(arr[1] == 42);
+                assert(arr[2] == 3);
+            }
+        });
+    }
+}
+
+// The other half of the same finding: a genuinely non-CTFEable call
+// (`time` has no available source for the frontend to interpret) is a
+// hard compile-time error from the *shared* DMD frontend
+// (`quickbite.frontend.compiler`), identical on every backend -- it never
+// reaches `moduleDynamicArrayLiteralInitializerBytes` at all, so this is
+// not a backend-specific gap either. No `Omit`: the same error fires for
+// every backend in the matrix.
+static foreach (backend; Matrix!()) {
+    @("dynamicArray.moduleArrayLiteralNonCtfeableCallElementIsFrontendError." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            import core.stdc.time: time;
+            int f() { return cast(int)(time(null) % 1000000000); }
+            int[] arr = [1, f(), 3];
+
+            unittest {
+                assert(arr.length == 3);
+            }
+        }).shouldThrowWithMessage(
+            "`time` cannot be interpreted at compile time, because it has " ~
+            "no available source code");
+    }
+}
+
+// The struct-element sibling of the plain-scalar and array-of-arrays
+// module literal fixtures above (`Point[] pts = [Point(1, 2), Point(3,
+// 4)];`): `moduleDynamicArrayLiteralInitializerBytes` declined any element
+// whose leaf `dynamicArrayElementType` was `ScalarType.void_` outright
+// (the same tag it uses for a still-declined static-array/delegate
+// element), even though a struct element whose own fields are constant
+// scalars is a perfectly ordinary compile-time constant DMD's frontend
+// already accepts for a module-level `Point[]`. Each element's own
+// `StructLiteralExp` fields are now laid out at DMD's own per-field
+// offset within the element's slot
+// (`moduleDynamicArrayStructLiteralInitializerBytes`), reusing the same
+// per-field byte-writing `moduleStructLiteralInitializerBytes` already
+// uses for a whole module-level struct variable's default value
+// (`writeStructLiteralFieldBytes`).
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.inexpressible,
+        "CTFE cannot read dataseg (__gshared/static) storage"),
+    Omit!(Interpreter, Because.unconfirmed),
+    Omit!(LLVMJit, Because.unconfirmed),
+)) {
+    @("dynamicArray.moduleArrayOfStructsLiteralInitializer." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct Point { int x; int y; }
+            Point[] pts = [Point(1, 2), Point(3, 4)];
+
+            int sum() {
+                return pts[0].x + pts[0].y + pts[1].x + pts[1].y;
+            }
+
+            unittest {
+                // First touch is from a lazily-compiled callee, not the
+                // entry itself; it must still see the initialised contents.
+                assert(sum() == 10);
+
+                assert(pts.length == 2);
+                assert(pts[0].x == 1);
+                assert(pts[0].y == 2);
+                assert(pts[1].x == 3);
+                assert(pts[1].y == 4);
+
+                pts[0].x = 99;
+                assert(pts[0].x == 99);
+
+                auto p = pts[1];
+                p.x = 100;
+                assert(pts[1].x == 3);
+            }
+        });
+    }
+}
+
 // Array-of-arrays structural equality (`int[][] == int[][]`): DMD's real
 // `__equals` lowering recurses into each row's content, so two separately
 // heap-allocated but content-equal arrays-of-arrays must compare equal --
@@ -871,6 +1142,117 @@ static foreach (backend; Matrix!()) {
                 assert(values.length == 2);
                 assert(values[0] == 0x2au);
                 assert(values[1] == 0x2bu);
+            }
+        });
+    }
+}
+
+// `int[3] row = arr[0];` where `arr` is `int[3][]` (a dynamic array of
+// heap-boxed static-array rows, `elementIsArray`'s representation: each row
+// is its own heap block addressed through a 16-byte slice descriptor).
+// `tryDynamicArrayIndex` materialises `arr[0]` as that row's own 16-byte
+// descriptor (pointer + length), needed as-is for further chained indexing
+// (`arr[0][j]`); `compileStaticArrayValueInto`'s generic `Tsarray`-typed-
+// source fallback used to block-copy those raw descriptor bytes straight
+// into `row`'s inline frame slot instead of the row's actual content -- a
+// silent wrong-answer bug (confirmed: read `947234800` instead of `1`), not
+// a diagnostic. Fixed by detecting this exact shape first and dereferencing
+// through the row's own heap pointer (the same `indexLoad` mechanism
+// `loadDynamicArrayElement` itself uses to read one element out of a
+// descriptor) rather than copying the descriptor's raw bytes. This shape is
+// not module-specific: a local `T[N][]` hits the identical
+// `tryDynamicArrayIndex` code path and was equally wrong before this fix,
+// simply unexercised by any prior fixture (see the local counterpart
+// below).
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.inexpressible,
+        "CTFE cannot read dataseg (__gshared/static) storage"),
+    Omit!(Interpreter, Because.unconfirmed),
+    Omit!(LLVMJit, Because.unconfirmed),
+)) {
+    @("dynamicArray.moduleStaticArrayOfArraysRowValueRead." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            int[3][] arr = [[1, 2, 3], [4, 5, 6]];
+
+            unittest {
+                int[3] row = arr[0];
+                assert(row[0] == 1);
+                assert(row[1] == 2);
+                assert(row[2] == 3);
+
+                int[3] second = arr[1];
+                assert(second[0] == 4);
+                assert(second[1] == 5);
+                assert(second[2] == 6);
+            }
+        });
+    }
+}
+
+// The local-variable counterpart of the fixture above: confirms the fix is
+// not module-specific (`tryDynamicArrayIndex`'s row-descriptor shape is the
+// same for a local base) and stands as an explicit regression guard.
+static foreach (backend; Matrix!()) {
+    @("dynamicArray.localStaticArrayOfArraysRowValueRead." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            unittest {
+                int[3][] arr = [[1, 2, 3], [4, 5, 6]];
+
+                int[3] row = arr[0];
+                assert(row[0] == 1);
+                assert(row[1] == 2);
+                assert(row[2] == 3);
+
+                int[3] second = arr[1];
+                assert(second[0] == 4);
+                assert(second[1] == 5);
+                assert(second[2] == 6);
+            }
+        });
+    }
+}
+
+// Finding 4 (Fable pre-PR review), the sibling shape
+// `localStaticArrayOfArraysRowValueRead` right above does NOT cover: `m` here
+// is a genuinely INLINE nested static array (`long[2][3]`, no dynamic-array
+// level at all -- unlike `arr: int[3][]` above, whose ROWS are heap-boxed
+// behind their own 16-byte slice descriptors, this VM's representation for
+// `T[N][]`). `compileStaticArrayValueInto`'s `IndexExp` branch (added by the
+// same fix that made the sibling shape above work) used to gate only on
+// `tryDynamicArrayIndex` resolving `m[0]` at all, not on `m` itself actually
+// being a dynamic array of boxed rows -- and `tryDynamicArrayIndex` DOES
+// resolve it, through `dynamicArrayDescriptorOrNull`'s separate, ungated
+// `staticArrayOffsetOf` branch (matches any `Tsarray` local at all), which
+// built a slice-descriptor VIEW over `m`'s raw inline bytes and wrongly
+// tagged it `elementIsArray` (`m`'s own element type, `long[2]`, is itself
+// an array type) -- as if each row were its own heap-boxed descriptor to
+// dereference, when the bytes are actually `m`'s own raw, un-boxed `long[2]`
+// values. `emitIndexLoad` then dereferenced those raw bytes as a bogus
+// pointer: SystemLinker gives the correct row, Bytecode dumped core. Now
+// fixed by additionally gating that branch on `index.e1.type` (`m`'s own
+// type) actually being a genuine `Tarray`, so this inline shape instead
+// falls through to the generic block-copy path below it -- which already
+// correctly compiles a plain `IndexExp` read of a nested static-array
+// element -- rather than ever reaching the boxed-row fast path at all.
+static foreach (backend; Matrix!()) {
+    @("dynamicArray.inlineNestedStaticArrayRowValueReadIsNotBoxedRow." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            unittest {
+                long[2][3] m = [[1, 2], [3, 4], [5, 6]];
+                long[2] row = m[0];
+                assert(row[0] == 1);
+                assert(row[1] == 2);
+
+                long[2] second = m[1];
+                assert(second[0] == 3);
+                assert(second[1] == 4);
             }
         });
     }
@@ -2981,16 +3363,111 @@ static foreach (backend; Matrix!()) {
     }
 }
 
+// A struct key with no string/dynamic-array member (`Point`, two `int`
+// fields) is compared and stored as its own raw bytes, the same treatment
+// `assocArrayValueWidth` already gives a struct-typed AA *value*. Covers
+// construction from a literal (`counts[Point(1, 2)] = v`, the synthesized
+// `__aakeyN` temporary DMD's index lowering hoists a non-trivial key
+// expression into) and from a plain struct local (`counts[p] = v`), lookup
+// through both `[]` and `in`, and `foreach (k, v; counts)` reading the key
+// back at its own struct width.
+static foreach (backend; Matrix!()) {
+    @("assocArray.structKeyRawBytesConstructLookupAndIterate." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct Point { int x; int y; }
+
+            unittest {
+                int[Point] counts;
+                counts[Point(1, 2)] = 10;
+
+                Point p = Point(3, 4);
+                counts[p] = 20;
+
+                assert((Point(1, 2) in counts) !is null);
+                assert(counts[Point(1, 2)] == 10);
+                assert(counts[p] == 20);
+                assert(counts.length == 2);
+
+                int sum;
+                foreach (k, v; counts)
+                    sum += k.x + k.y + v;
+                assert(sum == 1 + 2 + 10 + 3 + 4 + 20);
+            }
+        });
+    }
+}
+
+// Finding 3 (Fable pre-PR review): `structKeyFieldLayoutOrNull` only routes
+// a struct AA key through field-wise structural comparison when it finds a
+// TOP-LEVEL plain-`string` field; a struct with an array-typed field but NO
+// top-level `string` field (a lone `int[]` field here -- neither
+// `assocArrayKeyIsArray`'s single-field carve-out, which only recognises a
+// lone plain-`string` field, nor `structKeyFieldLayoutOrNull`, which returns
+// `null` outright for fewer than two fields) used to fall all the way
+// through to `assocArrayKeyNonArrayWidth`'s whole-block RAW-byte comparison
+// with no field validation at all -- silently comparing two content-equal
+// `xs` arrays built from different backing allocations as UNEQUAL (a missed
+// lookup, not a thrown diagnostic), contradicting this very file's own
+// `structKeyRawBytesConstructLookupAndIterate` comment two fixtures up
+// ("Struct-typed key storage itself ... is supported") and this backend's
+// own documented refusal for an array-bearing AA key
+// (`assocArrayKeyIsArray`'s "Unsupported associative array key type"
+// diagnostic, already exercised for a `wstring`/`dstring` key). Now
+// declined the same way instead: `assocArrayKeyNonArrayWidth`'s Tstruct
+// branch recursively checks every field (through nested structs too) for an
+// array type before accepting the raw-byte path.
+static foreach (backend; AliasSeq!(Bytecode)) {
+    @("assocArray.structKeyWithArrayFieldAndNoStringFieldDeclines." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct K { int[] xs; }
+
+            unittest {
+                int[K] counts;
+                counts[K([1, 2])] = 1;
+                assert(K([1, 2]) in counts);
+            }
+        }).shouldThrowWithMessage(
+            "Unsupported associative array key type in bytecode core: K",
+        );
+    }
+}
+
 // Struct AA keys compare dynamic-array members by their elements, not by the
-// identity of their slice backing storage. Bytecode now refuses earlier than
-// before (`compileAssocArrayGetLvalue` computes `assocArrayKeyMeta` -- which
-// has no `Tstruct` case -- ahead of compiling the key expression itself, so
-// the diagnostic is `scalarType`'s generic one, not the previous
-// `__aakeyN`-variable refusal).
-static foreach (backend; Matrix!(
-    Omit!(Bytecode, Because.refusal,
-        "Unsupported type in bytecode core: Name"),
-)) {
+// identity of their slice backing storage. Struct-typed key storage itself
+// (`assocArrayKeyMeta`/`assocArrayKeyOffset`, raw-byte comparison, no string
+// member) is supported (`structKeyRawBytesConstructLookupAndIterate` above).
+// A struct key that is itself nothing but a single plain-`string` field has
+// the exact same {ptr, length} byte layout as a bare `string` -- no
+// interleaved scalar fields to keep raw -- so `assocArrayKeyIsArray`
+// (compiler.d) now recognises that shape and routes it through the same
+// content, not descriptor-byte, comparison a bare `string` key already gets
+// (`keysEqual`, machine.d, unchanged). This fixture's own `ab()` call
+// happens to return the same backing literal both times, so it would not by
+// itself catch a raw-byte regression; the sibling
+// `structKeyWithStringMemberComparesByContentNotPointer` fixture below
+// constructs the two keys from genuinely different backing storage and is
+// the real regression guard.
+//
+// Getting here also fixed an unrelated compiler bug along the way:
+// `compilePointerDeclaration` used to register a pointer local's frame slot
+// only *after* compiling its initializer, but DMD's `in` lowering for a
+// non-constant-foldable key (`Name(ab())`, needing a hidden key temp to
+// preserve evaluation order) nests a self-referential assignment to that
+// same local inside its own initializer's `CommaExp` -- `(__aakeyN =
+// Name(ab()), variable = _d_aaInX(...))` -- so the generic assignment
+// compiler used to reach a plain `variable = ...` while the local's own
+// declaration was still being compiled, with no slot yet registered for it,
+// refusing with "Unsupported assignment in bytecode core". Registering the
+// slot before compiling the initializer (mirroring the plain-scalar
+// declaration path, which already did this) fixes that ordering bug
+// generally, independent of the string-member comparison fix above.
+static foreach (backend; Matrix!()) {
     @("assocArray.structKeyWithStringMemberComparesStructurally." ~
         backend.stringof)
     @Tags(backend.stringof)
@@ -3008,6 +3485,272 @@ static foreach (backend; Matrix!(
                 int[Name] ages;
                 ages[Name(ab())] = 1;
                 assert((Name(ab()) in ages) !is null);
+            }
+        });
+    }
+}
+
+// The real regression guard for the fix above: `a()` and `b()` both return
+// content-equal `"Alice"` strings built from genuinely different backing
+// storage (concatenation vs. an appended-then-`idup`'d buffer), so a
+// raw-byte compare of the whole `Name` block (which would compare the
+// differing backing pointers) would wrongly miss the lookup.
+static foreach (backend; Matrix!()) {
+    @("assocArray.structKeyWithStringMemberComparesByContentNotPointer." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct Name {
+                string text;
+            }
+
+            string a() {
+                return "Al" ~ "ice";
+            }
+
+            string b() {
+                char[] buf;
+                buf ~= "Alice";
+                return buf.idup;
+            }
+
+            unittest {
+                int[Name] ages;
+                ages[Name(a())] = 1;
+                assert((Name(b()) in ages) !is null);
+            }
+        });
+    }
+}
+
+// The same single-string-field struct key, covering construction from a
+// local (not just a literal), `[]` lookup, a negative `in` miss, `foreach`
+// reading the key back at its real (content-comparable) width, and
+// `.remove`.
+static foreach (backend; Matrix!()) {
+    @("assocArray.structKeyWithStringMemberSupportsForeachAndRemove." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct Name {
+                string text;
+            }
+
+            string a() {
+                return "Al" ~ "ice";
+            }
+
+            string b() {
+                char[] buf;
+                buf ~= "Alice";
+                return buf.idup;
+            }
+
+            unittest {
+                int[Name] ages;
+                ages[Name(a())] = 30;
+
+                Name key = Name(b());
+                ages[key] = 31;
+                assert(ages.length == 1);
+                assert(ages[Name("Alice")] == 31);
+                assert((Name("Bob") in ages) is null);
+
+                int sum;
+                foreach (k, v; ages) {
+                    sum += v;
+                    assert(k.text == "Alice");
+                }
+                assert(sum == 31);
+
+                assert(ages.remove(Name("Alice")));
+                assert(ages.length == 0);
+            }
+        });
+    }
+}
+
+// A struct key mixing a content-compared `string` field with a raw-compared
+// scalar field in the same key (`struct Name { string first; int age; }`):
+// neither `assocArrayKeyIsArray`'s single-string-field carve-out (the
+// sibling fixtures above) nor the default whole-block raw comparison (the
+// `Point`-only fixture further above) is sound for this shape, since the
+// key is neither all-content nor all-raw. `assocArrayKeyMeta` (compiler.d)
+// now recognises this mix and routes it through a `Program`-level
+// `assocArrayKeyLayouts` entry instead (`assocArrayKeyIsStructLayoutFlag`),
+// giving `keysEqual` (machine.d) a field-by-field comparison mirroring
+// `compileStructIdentity`'s pattern for `==`: `first` compares by content
+// (`a()`/`b()` are content-equal `"Alice"`s built from genuinely different
+// backing storage, so a raw-byte compare of the whole block would wrongly
+// miss the lookup), `age` compares by its own raw bytes (so a same-name,
+// different-age key is correctly a distinct entry).
+static foreach (backend; Matrix!()) {
+    @("assocArray.structKeyWithMixedFieldsComparesStructurally." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct Name {
+                string first;
+                int age;
+            }
+
+            string a() {
+                return "Al" ~ "ice";
+            }
+
+            string b() {
+                char[] buf;
+                buf ~= "Alice";
+                return buf.idup;
+            }
+
+            unittest {
+                int[Name] ages;
+                ages[Name(a(), 30)] = 1;
+                assert((Name(b(), 30) in ages) !is null);
+                assert(ages[Name(b(), 30)] == 1);
+                assert((Name(b(), 31) in ages) is null);
+            }
+        });
+    }
+}
+
+// The same mixed-field key shape, covering construction from a local (not
+// just a literal), multiple entries, `foreach` reading both fields back at
+// their own real widths, and `.remove`.
+static foreach (backend; Matrix!()) {
+    @("assocArray.structKeyWithMixedFieldsSupportsForeachAndRemove." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct Name {
+                string first;
+                int age;
+            }
+
+            unittest {
+                int[Name] ages;
+                ages[Name("Alice", 30)] = 1;
+
+                Name key = Name("Bob", 25);
+                ages[key] = 2;
+                assert(ages.length == 2);
+
+                int sum;
+                foreach (k, v; ages) {
+                    assert(k.first == "Alice" || k.first == "Bob");
+                    sum += k.age + v;
+                }
+                assert(sum == 30 + 1 + 25 + 2);
+
+                assert(ages.remove(Name("Alice", 30)));
+                assert(ages.length == 1);
+                assert((Name("Alice", 30) in ages) is null);
+                assert((Name("Bob", 25) in ages) !is null);
+            }
+        });
+    }
+}
+
+// A struct key with *only* `string` fields and no raw field at all (`struct
+// FullName { string first; string last; }`) -- the gap the mixed-field fix
+// above deliberately left open (its gate required at least one non-array
+// field alongside the string field). The underlying per-field machinery
+// (`AssocArrayKeyField`/`AssocArrayKeyLayout`, `keysEqual`, machine.d)
+// already compared each field by its own rule generically; the gate in
+// `structKeyFieldLayoutOrNull` (compiler.d, formerly
+// `structKeyMixedFieldsOrNull`) just needed relaxing from "at least one
+// string field and at least one non-array field" to "at least one string
+// field", since an all-string-field struct still needs the same field-wise
+// walk a mixed-field one does (a raw compare would wrongly compare each
+// field's backing pointer instead of its content). `first` and `last` are
+// each built from genuinely different backing storage (concatenation vs. an
+// appended-then-`idup`'d buffer) so a raw-byte compare of either field would
+// wrongly miss the lookup.
+static foreach (backend; Matrix!()) {
+    @("assocArray.structKeyWithAllStringFieldsComparesStructurally." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct FullName {
+                string first;
+                string last;
+            }
+
+            string firstA() {
+                return "A" ~ "da";
+            }
+
+            string firstB() {
+                char[] buf;
+                buf ~= "Ada";
+                return buf.idup;
+            }
+
+            string lastA() {
+                return "Love" ~ "lace";
+            }
+
+            string lastB() {
+                char[] buf;
+                buf ~= "Lovelace";
+                return buf.idup;
+            }
+
+            unittest {
+                int[FullName] counts;
+                counts[FullName(firstA(), lastA())] = 1;
+                assert((FullName(firstB(), lastB()) in counts) !is null);
+                assert(counts[FullName(firstB(), lastB())] == 1);
+                assert((FullName(firstB(), "Someone Else") in counts) is null);
+            }
+        });
+    }
+}
+
+// The same all-string-fields key shape, covering construction from a local
+// (not just a literal), multiple entries, `foreach` reading both fields back
+// at their own real (content-comparable) width, and `.remove`.
+static foreach (backend; Matrix!()) {
+    @("assocArray.structKeyWithAllStringFieldsSupportsForeachAndRemove." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct FullName {
+                string first;
+                string last;
+            }
+
+            unittest {
+                int[FullName] counts;
+                counts[FullName("Ada", "Lovelace")] = 1;
+
+                FullName key = FullName("Grace", "Hopper");
+                counts[key] = 2;
+                assert(counts.length == 2);
+                assert(counts[FullName("Grace", "Hopper")] == 2);
+                assert((FullName("Ada", "Hopper") in counts) is null);
+
+                int sum;
+                foreach (k, v; counts) {
+                    assert(
+                        (k.first == "Ada" && k.last == "Lovelace") ||
+                        (k.first == "Grace" && k.last == "Hopper")
+                    );
+                    sum += v;
+                }
+                assert(sum == 3);
+
+                assert(counts.remove(FullName("Ada", "Lovelace")));
+                assert(counts.length == 1);
+                assert((FullName("Ada", "Lovelace") in counts) is null);
+                assert((FullName("Grace", "Hopper") in counts) !is null);
             }
         });
     }
@@ -3202,6 +3945,52 @@ static foreach (backend; Matrix!()) {
                 a[1] = pt;
                 assert(a[1].x == 3);
                 assert(a[1].y == 4);
+            }
+        });
+    }
+}
+
+// A static-array-typed value (`int[3][string]`): construction from a
+// literal, whole-value indexed read, an indexed single-element write
+// through the AA-value-read pointer (`rows["a"][1] = 99`), and `foreach`
+// all in one fixture. Two bugs fixed to get here, both in the same
+// AA-value-pointer machinery `structValueFieldReadWrite` above already
+// established for a struct-typed value: `staticArrayBaseOffset` (and its
+// `indexesStaticArray` gate) had no branch recognising a raw pointer to a
+// static array -- DMD's associative-array rvalue-read lowering
+// (`_d_aaGetRvalueX`) yields exactly that shape -- so both the read and
+// the indexed write threw "Unsupported static array access"/"Unsupported
+// assignment in bytecode core" (Bytecode alone; `SystemLinker` always ran
+// this fine). Separately, `assocArrayValueWidth` (used by every AA opcode,
+// including `Op.aaValues`' per-entry stride) sized a static-array value as
+// a boxed 16-byte slice descriptor via `arrayElementIsArray`'s dynamic-
+// array-*row* treatment, not its own 12-byte raw block (confirmed against
+// DMD's own lowering, whose `Impl.valsz` for an `int[3]` value is 12) --
+// harmless for a single entry (the real bytes still start at the block's
+// front) but desyncing `foreach`'s per-entry read stride from the real one
+// as soon as `compileAssocArrayApply2` needed its own value width (it
+// previously had no `Tsarray` case at all, throwing "Unsupported type in
+// bytecode core: int[3]" via `scalarType`). Interpreter refuses the
+// indexed write with the same "Unsupported interpreter assignment target"
+// diagnostic `structValueFieldReadWrite` above already omits it for -- a
+// separate, unconfirmed backend gap.
+static foreach (backend; Matrix!(
+    Omit!(Interpreter, Because.unconfirmed,
+        "Unsupported interpreter assignment target"),
+)) {
+    @("assocArray.staticArrayValueConstructsReadsWritesAndIterates." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            unittest {
+                int[3][string] rows;
+                rows["a"] = [1, 2, 3];
+                assert(rows["a"][1] == 2);
+                rows["a"][1] = 99;
+                assert(rows["a"][1] == 99);
+                foreach (k, v; rows)
+                    assert(v[1] == 99);
             }
         });
     }
@@ -3407,6 +4196,96 @@ static foreach (backend; Matrix!(
                 assert(missing == 0);
             }
         }).shouldThrowWithMessage("Range violation");
+    }
+}
+
+// A delegate-typed AA VALUE for a LOCAL (non-module, non-static) variable,
+// assigned from a lambda literal rather than `&freeFunction` -- the shape
+// `ai/plans/bytecode.md`'s AssocArray section's item 2 asks for beyond the
+// `&fn`-assigned module-scoped regression fixture already pinned as
+// `ut.backends.runner.lang.cerealed`'s
+// `delegateAssocArrayValueIndexedCallInvokesStoredDelegate`. This already
+// worked before this fixture was added -- `delegateOperandOffset`'s
+// `delegateInitializer` assign-side handling and its own `p[0]` call-side
+// branch (both from the hang fix, commit 587d2a9c) are agnostic to lambda
+// vs. `&freeFunction` and to local vs. module storage -- but had no fixture
+// of its own. `Omit`s mirror the sibling regression fixture: this only pins
+// `Bytecode` plus the `SystemLinker` oracle, not full delegate-AA-value
+// support on every backend.
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.unconfirmed),
+    Omit!(Interpreter, Because.unconfirmed),
+    Omit!(LLVMJit, Because.unconfirmed),
+)) {
+    @("assocArray.delegateValueLocalLambdaAssignInvokesStoredDelegate." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            unittest {
+                int delegate()[string] callbacks;
+                callbacks["a"] = () => 42;
+                auto result = callbacks["a"]();
+                assert(result == 42);
+            }
+        });
+    }
+}
+
+// Reassigning a LOCAL delegate-typed AA value's entry (still a lambda
+// literal each time) must call through to the latest stored delegate, not a
+// stale one -- exercising `storeThroughPointer`'s `Tdelegate` write path a
+// second time over the same slot rather than only ever writing it once.
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.unconfirmed),
+    Omit!(Interpreter, Because.unconfirmed),
+    Omit!(LLVMJit, Because.unconfirmed),
+)) {
+    @("assocArray.delegateValueLocalReassignInvokesLatestDelegate." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            unittest {
+                int delegate()[string] callbacks;
+                callbacks["a"] = () => 1;
+                assert(callbacks["a"]() == 1);
+                callbacks["a"] = () => 2;
+                auto result = callbacks["a"]();
+                assert(result == 2);
+            }
+        });
+    }
+}
+
+// `foreach (k, v; callbacks)` over a LOCAL delegate-typed AA calls through
+// each stored delegate via the loop variable `v`, not just a direct
+// `callbacks[key]()` index-call -- a materially different read path
+// (`compileAssocArrayApply2`'s per-entry value read) from the one the hang
+// fix and the two lambda-assign fixtures above exercise.
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.unconfirmed),
+    Omit!(Interpreter, Because.unconfirmed),
+    Omit!(LLVMJit, Because.unconfirmed),
+)) {
+    @("assocArray.delegateValueLocalForeachInvokesEachStoredDelegate." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            unittest {
+                int delegate()[string] callbacks;
+                callbacks["a"] = () => 1;
+                callbacks["b"] = () => 2;
+                callbacks["c"] = () => 3;
+
+                int total;
+                foreach (k, v; callbacks)
+                    total += v();
+
+                assert(total == 6);
+            }
+        });
     }
 }
 
@@ -5636,6 +6515,48 @@ static foreach (backend; Matrix!()) {
                 c.matrixField = [[1, 2], [3, 4, 5]];
                 assert(c.matrixField[1][2] == 5);
                 assert(c.matrixField[0][1] == 2);
+            }
+        });
+    }
+}
+
+// A doubly-indexed *element* write into a class field of array-of-arrays
+// type (`a.m[0][0] = 99`), with no intervening struct/field dot or
+// array-of-structs element unlike every `matrixField` shape above --
+// distinct from the whole-field-literal-assignment shape just above (which
+// never indexes at all) and from the `arr[i].matrixField[j][k]` shapes
+// further up (whose outer base is an array element, not a bare class-typed
+// local). Previously threw "Unsupported assignment in bytecode core":
+// `innerArrayDescriptor`'s outer-array resolution only recognised a plain
+// `VarExp` local, rejecting `a.m`'s `DotVarExp` base outright. Fixed by
+// giving `innerArrayDescriptor` a narrow, explicitly-`Tarray`-gated branch
+// (`dynamicArrayFieldDescriptorOrNull`, shared with
+// `dynamicArrayDescriptorOrNull`'s own `DotVarExp` dispatch) for a
+// class/struct-field base, rather than a blanket recursive call into
+// `dynamicArrayDescriptorOrNull` -- the latter also makes that function's
+// later, ungated `staticArrayOffsetOf` branch reachable for unrelated
+// static-array-of-structs shapes, corrupting
+// `nestedStaticArrayFieldElementOfStructElementAddAssigned`'s stride.
+// Interpreter throws "Unsupported interpreter assignment target." on this
+// shape, the same pre-existing gap as the doubly-indexed siblings above.
+static foreach (backend; Matrix!(
+    Omit!(Interpreter, Because.unconfirmed,
+        "Unsupported interpreter assignment target."),
+)) {
+    @("dynamicArray.classFieldDoublyIndexedElementWritten." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            class C { int[][] m; }
+            unittest {
+                C a = new C();
+                a.m = [[1, 2], [3, 4, 5]];
+                a.m[0][0] = 99;
+                assert(a.m[0][0] == 99);
+                assert(a.m[0][1] == 2);
+                assert(a.m[1][0] == 3);
+                assert(a.m[1][2] == 5);
             }
         });
     }

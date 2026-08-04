@@ -1775,12 +1775,17 @@ static foreach (backend; Matrix!()) {
 // the returning function's own frame. Real compiled D (SystemLinker,
 // LLVMJit) promotes `total` to a GC-heap closure so the returned delegate
 // keeps working after `makeCounterGetter` returns. Ctfe's own dmd.dinterpret
-// engine refuses this outright, the Interpreter silently hands back a
-// delegate reading a stale frame slot, and the bytecode core has no heap
-// closure environment yet (`ai/plans/bytecode.md`'s Closures section) so it
-// refuses the return with a clear diagnostic rather than handing back a
-// dangling one -- three separate, pre-existing promotion-backlog gaps, not
-// a Bytecode-only characterization.
+// engine refuses this outright and the Interpreter silently hands back a
+// delegate reading a stale frame slot -- two separate, pre-existing
+// promotion-backlog gaps, not a Bytecode-only characterization. Bytecode
+// itself now promotes this one narrow shape (a single scalar captured by
+// exactly one escaping lambda, one nesting level, no `this` combination) to
+// a real GC-heap closure environment (`heapClosureContextOrNull`,
+// `compiler.d`): `Op.allocStruct` snapshots `total`'s current frame value
+// into a heap block once, at the point the lambda escapes via `return`, and
+// the lambda's own body (`_heapClosureVars`-gated `loadCapturedLocal`/
+// `storeCapturedLocal`) dereferences that same block through the received
+// context pointer instead of resolving a (by-then-popped) enclosing frame.
 static foreach (backend; Matrix!(
     Omit!(Ctfe, Because.inexpressible,
         "Ctfe wraps dmd.dinterpret, whose CTFE engine refuses the "
@@ -1792,14 +1797,6 @@ static foreach (backend; Matrix!(
             "call whose delegate reads a stale/reused frame slot " ~
             "instead of the closed-over value (observed returning 1 " ~
             "instead of 4) -- not yet promoted"),
-    Omit!(Bytecode, Because.unconfirmed,
-        "the bytecode core has no heap closure environment yet; a "
-            ~ "delegate that captures its own function's locals and "
-            ~ "escapes via `return` is refused with \"Unsupported "
-            ~ "delegate return in bytecode core: returning a closure "
-            ~ "over this function's own locals outlives its frame: "
-            ~ "<name>\" rather than handing back a dangling frame "
-            ~ "reference -- not yet promoted"),
 )) {
     @("delegate.functionReturningCapturingDelegateIsCallable." ~
         backend.stringof)
@@ -1817,6 +1814,439 @@ static foreach (backend; Matrix!(
                 assert(getter() == 4);
             }
         });
+    }
+}
+
+// A sibling of the fixture above that also WRITES the escaped capture, and
+// calls the returned delegate more than once: each call must mutate and read
+// back the same heap-resident `count`, not a fresh snapshot per call, which
+// `functionReturningCapturingDelegateIsCallable` (a single read-only call)
+// does not itself exercise. This is `ai/plans/bytecode.md`'s own Closures-
+// section escaping-delegate example.
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.inexpressible,
+        "Ctfe wraps dmd.dinterpret, whose CTFE engine refuses the "
+            ~ "returned closure outright with \"closures are not yet "
+            ~ "supported in CTFE\""),
+    Omit!(Interpreter, Because.unconfirmed,
+        "the Interpreter does not yet promote a frame-escaping " ~
+            "captured local to a heap closure either -- not yet promoted"),
+)) {
+    @("delegate.functionReturningMutatingCapturingDelegateIsCallable." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            int delegate() makeCounter() {
+                int count = 0;
+                return () => ++count;
+            }
+
+            unittest {
+                auto c = makeCounter();
+                assert(c() == 1);
+                assert(c() == 2);
+                auto c2 = makeCounter();
+                assert(c2() == 1);
+                assert(c() == 3);
+            }
+        });
+    }
+}
+
+// Finding 1 (Fable pre-PR review), first repro: the SAME lambda (`dg`) is
+// both CALLED locally while its enclosing frame is still live (`early =
+// dg()`, which needs an ordinary frame-relative context) AND later escaped
+// via `return dg;` (which needs a heap-context delegate value instead).
+// Lambda bodies compile lazily -- often after a LATER escape site has
+// already registered the captured variable in `_heapClosureVars` -- so
+// `loadCapturedLocal`/`storeCapturedLocal` (`compiler.d`) used to compile
+// `dg`'s ONE shared body unconditionally against the heap path once ANY
+// escape site for `count` had been seen, even though `dg`'s already-emitted
+// local delegate value (`auto dg = ...`) still carries the earlier
+// frame-relative context the `early = dg()` call actually uses at run time:
+// that call then dereferenced the frame-base index as if it were a raw heap
+// pointer. SystemLinker gives `dg() == 2` after the return (one increment
+// from the early call, one from calling the result); Bytecode dumped core.
+// `heapClosureContextOrNull` now declines this shape instead (via
+// `_frameContextDelegates`, tracking any lambda whose delegate value was
+// already materialised with a frame-relative context earlier in the
+// function), the same loud refusal a shape it could never represent at all
+// already got.
+static foreach (backend; AliasSeq!(Bytecode)) {
+    @("delegate.capturingLambdaCalledLiveThenReturnedDeclines." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            int delegate() make() {
+                int count = 0;
+                auto dg = () => ++count;
+                auto early = dg();
+                return dg;
+            }
+
+            unittest {
+                auto dg = make();
+                assert(dg() == 2);
+            }
+        }).shouldThrow();
+    }
+}
+
+// Finding 1 (Fable pre-PR review), second repro: a SIBLING lambda (`peek`)
+// shares the SAME captured variable (`count`) with the escaping, returned
+// lambda -- `peek` is only ever called locally (`early = peek()`), through
+// its own, never-heap-escaped frame-relative context. `_heapClosureVars` (a
+// `bool[VarDeclaration]`, before this fix) was keyed by the captured
+// variable ALONE, not by which specific lambda actually escaped: once the
+// returned lambda's own escape site registered `count`, `peek`'s unrelated
+// body -- compiled lazily, possibly after that registration -- also read
+// `declaration in _heapClosureVars` as true and wrongly compiled its own
+// read through the heap path, dereferencing its own live frame-base context
+// as a raw pointer. SystemLinker runs this fine; Bytecode dumped core.
+// `_heapClosureVars`/`_heapClosureOffsets` are now keyed by BOTH the
+// capturing lambda and the variable, and `heapClosureContextOrNull` itself
+// additionally declines outright (via DMD's own `VarDeclaration.nestedrefs`)
+// whenever the captured variable is referenced by more than one nested
+// function at all, exactly this shape.
+static foreach (backend; AliasSeq!(Bytecode)) {
+    @("delegate.siblingLambdaSharingEscapedCaptureDeclines." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            int delegate() make2() {
+                int count = 0;
+                auto peek = () => count;
+                auto early = peek();
+                return () => ++count;
+            }
+
+            unittest {
+                auto dg = make2();
+                assert(dg() == 1);
+            }
+        }).shouldThrow();
+    }
+}
+
+// A nested function reading a captured POINTER local (`int* p; void
+// nested() { ... *p ... }`), the enclosing frame still live (no `return`,
+// no escape): `loadCapturedLocal` already resolved a captured pointer's
+// bytes correctly (the same generic scalar-width `Op.frameLoad`/
+// `emitPointerLoad` path any other captured scalar uses, since `scalarType`
+// already maps `Tpointer` to `ScalarType.ulong_`), but the `Operand` it
+// returned was never tagged `isPointer`/`pointerElement` the way a plain
+// (non-captured) pointer local's own `VarExp` read already is
+// (`_pointerLocals`) -- so a dereference of the captured value (`*p`)
+// threw "Unsupported pointer dereference in bytecode core: *p" even though
+// nothing about the *value* itself was wrong, the same shape of gap
+// `moduleScalarVariableOrNull`'s pointer support (commit 402d885e) fixed
+// for a module-level pointer's own read. All backends already handled
+// this correctly except Bytecode.
+static foreach (backend; Matrix!()) {
+    @("delegate.nestedFunctionReadsCapturedPointerLocal." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            unittest {
+                auto p = new int;
+                *p = 42;
+                void nested() { assert(*p == 42); }
+                nested();
+            }
+        });
+    }
+}
+
+// A sibling of `functionReturningCapturingDelegateIsCallable` that captures
+// a POINTER local instead of a plain scalar: `heapClosureContextOrNull`
+// (`compiler.d`) already handled this shape mechanically before this fix,
+// since it never excluded `TY.Tpointer` from the one narrow shape it
+// heap-allocates (only `Tstruct`/`Tsarray`/`Tarray`/`Taarray`/`Tclass`/
+// `Tdelegate` are excluded) -- `scalarType` maps `Tpointer` to the same
+// 8-byte `ScalarType.ulong_` as any other captured scalar, so
+// `Op.allocStruct`'s byte-copy snapshot does not care that the value
+// happens to be a pointer. The only missing piece was the same
+// `loadCapturedLocal` pointer-tagging fix the still-live-frame fixture
+// above exercises; this fixture is the escaping-return shape that fixture
+// does not itself cover. `p` points at heap (`new int`), not a stack local,
+// so the pointee itself already outlives the returned delegate regardless
+// of the closure mechanism -- the delegate return is what needed fixing,
+// not the pointee's own lifetime.
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.inexpressible,
+        "Ctfe wraps dmd.dinterpret, whose CTFE engine refuses the "
+            ~ "returned closure outright with \"closures are not yet "
+            ~ "supported in CTFE\""),
+    Omit!(Interpreter, Because.unconfirmed,
+        "the Interpreter throws a generic \"Unsupported eval call.\" " ~
+            "for a lambda that captures a pointer local and escapes via " ~
+            "`return`, the same pre-existing frame-escaping-capture gap " ~
+            "already documented on the scalar sibling fixture -- not yet " ~
+            "promoted"),
+)) {
+    @("delegate.functionReturningCapturingDelegateOverPointerIsCallable." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            int delegate() makeGetter() {
+                auto p = new int;
+                *p = 42;
+                return () => *p;
+            }
+
+            unittest {
+                auto g = makeGetter();
+                assert(g() == 42);
+            }
+        });
+    }
+}
+
+// A sibling of `functionReturningCapturingDelegateIsCallable` that captures
+// TWO plain scalar locals instead of one: `heapClosureContextOrNull`
+// (`compiler.d`) widened from exactly one captured local to one *or two*,
+// each landing in its own fixed `size_t.sizeof`-wide slot of the same
+// `Op.allocStruct` heap block (`_heapClosureOffsets` records each variable's
+// own slot, `0` and `size_t.sizeof` here), rather than declining with
+// "Unsupported delegate return in bytecode core" as it did before this
+// widening (the previous gate rejected any `outerVars.length != 1`
+// outright). Both `a` and `b` are read once the enclosing frame is gone.
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.inexpressible,
+        "Ctfe wraps dmd.dinterpret, whose CTFE engine refuses the "
+            ~ "returned closure outright with \"closures are not yet "
+            ~ "supported in CTFE\""),
+    Omit!(Interpreter, Because.unconfirmed,
+        "the Interpreter does not yet promote a frame-escaping " ~
+            "captured local to a heap closure either; it returns a " ~
+            "call whose delegate reads a stale/reused frame slot " ~
+            "instead of the closed-over values -- not yet promoted"),
+)) {
+    @("delegate.functionReturningCapturingDelegateOverTwoLocalsIsCallable." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            int delegate() makeAdder() {
+                int a = 1;
+                int b = 10;
+                return () => a + b;
+            }
+
+            unittest {
+                auto f = makeAdder();
+                assert(f() == 11);
+            }
+        });
+    }
+}
+
+// A mutating sibling of `functionReturningCapturingDelegateOverTwoLocalsIsCallable`,
+// writing through BOTH heap-resident captures on every call and calling the
+// returned delegate more than once (mirroring
+// `functionReturningMutatingCapturingDelegateIsCallable`'s single-capture
+// mutation coverage, but exercising two independent
+// `storeCapturedLocal`/`loadCapturedLocal` slots in the same heap block
+// instead of one): each call must read back and mutate the same pair of
+// heap-resident values, not a fresh snapshot per call.
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.inexpressible,
+        "Ctfe wraps dmd.dinterpret, whose CTFE engine refuses the "
+            ~ "returned closure outright with \"closures are not yet "
+            ~ "supported in CTFE\""),
+    Omit!(Interpreter, Because.unconfirmed,
+        "the Interpreter does not yet promote a frame-escaping " ~
+            "captured local to a heap closure either -- not yet promoted"),
+)) {
+    @("delegate.functionReturningMutatingCapturingDelegateOverTwoLocalsIsCallable." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            int delegate() makeAccumulator() {
+                int a = 0;
+                int b = 0;
+                return () {
+                    a += 1;
+                    b += 2;
+                    return a + b;
+                };
+            }
+
+            unittest {
+                auto acc = makeAccumulator();
+                assert(acc() == 3);
+                assert(acc() == 6);
+                auto acc2 = makeAccumulator();
+                assert(acc2() == 3);
+                assert(acc() == 9);
+            }
+        });
+    }
+}
+
+// The heap-closure escape mechanism widened from "is this a `return`
+// statement whose expression is directly the capturing delegate" to "is this
+// compiling a capturing-lambda expression that is itself a top-level field of
+// a struct literal that is itself the direct `return` expression"
+// (`compileReturnStatement`'s struct branch, `structLiteralReturnOffset`,
+// `compiler.d`): `return Counter(() => ++count);` embeds the same escaping
+// capture `functionReturningCapturingDelegateIsCallable` returns bare, just
+// one field-access away. Before this widening, `compileStructLiteralInto`'s
+// `Tdelegate` branch always resolved a delegate field through the plain
+// frame-relative `delegateOperandOffset` (the same path a *non-escaping*
+// struct-literal delegate field, e.g. `struct.literalDelegateFieldFromFreshLambdaIsCallable`'s
+// `Handler(() => 42)` assigned to a local, still correctly uses) -- so this
+// exact fixture previously ran to completion with the WRONG answer (`0 !=
+// 1`) instead of throwing: the delegate's context word pointed at
+// `makeCounter`'s own popped/reused frame slot, read back as whatever
+// happened to occupy that memory next, not a thrown diagnostic. Ctfe wraps
+// `dmd.dinterpret`, which evaluates `count` from the struct literal's own
+// enclosing scope rather than through this core at all, and refuses reading
+// it outright ("variable `count` cannot be read at compile time") -- a
+// different message from the bare-return sibling's ("closures are not yet
+// supported in CTFE") but the same underlying gap. Interpreter's
+// `place_value.writeValue` has no case for a delegate value written through
+// a struct-literal initializer place at all (`struct.literalDelegateFieldFromFreshLambdaIsCallable`'s
+// own Omit reason), independent of whether the capture escapes.
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.inexpressible,
+        "dmd.dinterpret evaluates the struct literal's delegate field " ~
+            "against its own enclosing-scope locals directly and refuses " ~
+            "reading `count` from CTFE outright: \"variable `count` " ~
+            "cannot be read at compile time\""),
+    Omit!(Interpreter, Because.unconfirmed,
+        "place_value.writeValue has no case for a delegate value written " ~
+            "through a struct-literal initializer place at all, escaping " ~
+            "or not -- not yet promoted"),
+)) {
+    @("delegate.functionReturningStructWithCapturingDelegateFieldIsCallable." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct Counter { int delegate() next; }
+            auto makeCounter() {
+                int count = 0;
+                return Counter(() => ++count);
+            }
+
+            unittest {
+                auto c = makeCounter();
+                assert(c.next() == 1);
+            }
+        });
+    }
+}
+
+// A mutating sibling of `functionReturningStructWithCapturingDelegateFieldIsCallable`,
+// calling the returned struct's delegate field more than once and across two
+// independently escaped instances -- the struct-field counterpart of
+// `functionReturningMutatingCapturingDelegateIsCallable`'s bare-return
+// mutation coverage.
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.inexpressible,
+        "dmd.dinterpret evaluates the struct literal's delegate field " ~
+            "against its own enclosing-scope locals directly and refuses " ~
+            "reading `count` from CTFE outright: \"variable `count` " ~
+            "cannot be read at compile time\""),
+    Omit!(Interpreter, Because.unconfirmed,
+        "place_value.writeValue has no case for a delegate value written " ~
+            "through a struct-literal initializer place at all, escaping " ~
+            "or not -- not yet promoted"),
+)) {
+    @("delegate.functionReturningMutatingStructWithCapturingDelegateFieldIsCallable." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct Counter { int delegate() next; }
+            auto makeCounter() {
+                int count = 0;
+                return Counter(() => ++count);
+            }
+
+            unittest {
+                auto c = makeCounter();
+                assert(c.next() == 1);
+                assert(c.next() == 2);
+                auto c2 = makeCounter();
+                assert(c2.next() == 1);
+                assert(c.next() == 3);
+            }
+        });
+    }
+}
+
+// A sibling of `functionReturningStructWithCapturingDelegateFieldIsCallable`
+// that captures TWO plain scalar locals instead of one, the struct-field
+// counterpart of `functionReturningCapturingDelegateOverTwoLocalsIsCallable`:
+// `structLiteralReturnOffset` reuses `heapClosureContextOrNull` unchanged, so
+// the same one-or-two-capture widening already proven for a bare returned
+// delegate carries over with no further change.
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.inexpressible,
+        "dmd.dinterpret evaluates the struct literal's delegate field " ~
+            "against its own enclosing-scope locals directly and refuses " ~
+            "reading `a`/`b` from CTFE outright"),
+    Omit!(Interpreter, Because.unconfirmed,
+        "place_value.writeValue has no case for a delegate value written " ~
+            "through a struct-literal initializer place at all, escaping " ~
+            "or not -- not yet promoted"),
+)) {
+    @("delegate.functionReturningStructWithCapturingDelegateFieldOverTwoLocalsIsCallable." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct Adder { int delegate() sum; }
+            auto makeAdder() {
+                int a = 1;
+                int b = 10;
+                return Adder(() => a + b);
+            }
+
+            unittest {
+                auto x = makeAdder();
+                assert(x.sum() == 11);
+            }
+        });
+    }
+}
+
+// THREE captures still declines, the same way a bare returned delegate over
+// three locals still declines (`heapClosureContextOrNull`'s own
+// `outerVars.length > 2` gate): `structLiteralReturnOffset`'s `Tdelegate`
+// branch raises the shared `throwFrameEscapingDelegateDiagnostic` instead of
+// falling back to the plain frame-relative `delegateOperandOffset` a
+// non-escaping struct-literal delegate field still uses -- proving the
+// widening did not also widen what heap-escapes soundly. Bytecode-only:
+// the diagnostic itself, and the heap-closure machinery it guards, are a
+// Bytecode-specific mechanism (`compiler.d`), not a language restriction
+// other backends share.
+static foreach (backend; AliasSeq!(Bytecode)) {
+    @("delegate.functionReturningStructWithCapturingDelegateFieldOverThreeLocalsDeclines." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct Adder { int delegate() sum; }
+            auto makeAdder() {
+                int a = 1;
+                int b = 10;
+                int c = 100;
+                return Adder(() => a + b + c);
+            }
+
+            unittest {
+                auto x = makeAdder();
+                assert(x.sum() == 111);
+            }
+        }).shouldThrow();
     }
 }
 
@@ -2024,6 +2454,37 @@ static foreach (backend; AliasSeq!(Bytecode)) {
             "Unsupported delegate-parameter call in bytecode core: the " ~
                 "callee is a struct-receiver method",
         );
+    }
+}
+
+// `ai/plans/bytecode.md`'s Closures section's own exposing example: a bare
+// lambda literal (not a nested named function, not under a struct method)
+// captures a single plain enclosing local and is called directly, in the
+// same still-live frame, both before and after the local is reassigned.
+// This is the simplest possible captured-local shape and was previously
+// undocumented by any fixture -- the closest existing coverage either goes
+// through a nested named helper function
+// (`lambda.passedToNestedFunctionSeesCapturedContext`) or combines the
+// capture with an enclosing struct method's `this`
+// (`struct.nestedFunctionReadsCapturedLocalAndThisField`). It already passes
+// on every backend via the existing `needsNestedFrameContext`/
+// `capturedFrameIndex` captured-locals environment: no production change
+// was needed.
+static foreach (backend; Matrix!()) {
+    @("lambda.capturesReassignedLocalInSameFrame." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            unittest {
+                int local = 1;
+                auto f = () => local;
+                assert(f() == 1);
+                local = 2;
+                assert(f() == 2);
+                local = 99;
+                assert(f() == 99);
+            }
+        });
     }
 }
 
@@ -2315,6 +2776,225 @@ static foreach (backend; Matrix!(
                 assert(dgs[0] == dgs[0]);
             }
         });
+    }
+}
+
+// A delegate-typed local (`_delegateLocals`'s statically-known-callee
+// storage) passed by `ref`: `referenceOffsetOrNull` had no case at all for a
+// delegate-typed local, so this call threw "Unsupported ref argument in
+// bytecode core" before the callee's own body ever ran, regardless of what
+// the callee does with the parameter. The callee here only reads/calls the
+// `ref` parameter (never reassigns it) -- the whole-value-reassignment
+// fixtures below exercise that separately.
+static foreach (backend; Matrix!()) {
+    @("delegate.refParameterBoundToStaticallyKnownLocalIsCallable." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            int callThroughRef(ref int delegate() dg) {
+                return dg();
+            }
+
+            unittest {
+                int delegate() a = () => 42;
+                assert(callThroughRef(a) == 42);
+            }
+        });
+    }
+}
+
+// The `_delegateParameterLocals` twin of the fixture above: a delegate local
+// whose callee is a run-time value (copied from another delegate, rather
+// than a directly-known lambda/nested-function/method literal) lives in a
+// different storage map (`_delegateParameterLocals`, a plain
+// `ushort[VarDeclaration]`) that `referenceOffsetOrNull` also had no case
+// for.
+static foreach (backend; Matrix!()) {
+    @("delegate.refParameterBoundToCopiedLocalIsCallable." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            int callThroughRef(ref int delegate() dg) {
+                return dg();
+            }
+
+            unittest {
+                int delegate() a = () => 42;
+                int delegate() c = a;
+                assert(callThroughRef(c) == 42);
+            }
+        });
+    }
+}
+
+// Whole-value reassignment of a plain (non-module, non-field) delegate
+// local -- `dg = rhs;` where `dg` is a `_delegateLocals` entry (a directly-
+// known lambda/nested-function/method-literal initializer) -- had no case
+// at all in `compileAssignExpression`: it fell through to the generic
+// scalar-assignment path and threw "Unsupported assignment in bytecode
+// core". `dg`'s `_delegateLocals` entry records its ORIGINAL callee for
+// direct call-site dispatch (`returnedDelegateFunctionOrNull`,
+// `delegateLocalOf`); this fixture's second assert would silently call the
+// STALE original callee instead of the reassigned one if that entry were
+// left in place unchanged, so the fix demotes the local into
+// `_delegateParameterLocals`'s dynamic-dispatch bookkeeping at the point of
+// assignment -- giving up the static-callee call-site optimization for this
+// local from here on, same as any other delegate value with no statically
+// known origin.
+static foreach (backend; Matrix!(
+    Omit!(Interpreter, Because.unconfirmed,
+        "the Interpreter has no case for whole-value reassignment of a " ~
+            "plain delegate local either (\"Unsupported eval call.\") -- " ~
+            "not yet promoted"),
+)) {
+    @("delegate.wholeValueReassignmentOfPlainLocalIsCallable." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            unittest {
+                int delegate() dg = () => 1;
+                assert(dg() == 1);
+                dg = () => 2;
+                assert(dg() == 2);
+            }
+        });
+    }
+}
+
+// A sibling of `wholeValueReassignmentOfPlainLocalIsCallable` that reassigns
+// through a `ref` PARAMETER rather than a plain local -- `ai/plans/
+// bytecode.md`'s own originally-suggested "plain non-escaping ref-rebinding
+// case". `dg`'s own frame slot is a `_delegateParameterLocals` entry from
+// function entry already (every delegate-typed parameter is, regardless of
+// `ref`/`out`), so this exercises the same whole-value-assignment fix as the
+// plain-local fixture above without the `_delegateLocals` demotion step --
+// `referenceOffsetOrNull`'s pre-existing delegate-local `ref`-argument
+// binding aliases the caller's `dg`'s own frame slot, so the callee's write
+// is visible back in the caller through that same slot.
+static foreach (backend; Matrix!(
+    Omit!(Interpreter, Because.unconfirmed,
+        "the Interpreter throws \"quickbite.backends.interpreter." ~
+            "place_value.writeValue: unsupported at place\" for this " ~
+            "reassignment shape -- not yet promoted"),
+)) {
+    @("delegate.plainRefRebindAssignsNewValue." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            void rebind(ref int delegate() dg, int delegate() newValue) {
+                dg = newValue;
+            }
+
+            unittest {
+                int delegate() dg = () => 1;
+                rebind(dg, () => 2);
+                assert(dg() == 2);
+            }
+        });
+    }
+}
+
+// The originally-motivating shape from `ai/plans/bytecode.md`'s Closures
+// section: an `out` delegate PARAMETER reassigned to a lambda that captures
+// a local from the REASSIGNING function's own frame (`count`), which then
+// escapes back to the caller through the `out` writeback -- once
+// `makeCounter` returns, `count`'s frame is gone, so a naive frame-relative
+// context would read as garbage, exactly the hazard
+// `heapClosureContextOrNull` already exists to avoid for a directly returned
+// capturing delegate (`functionReturningMutatingCapturingDelegateIsCallable`
+// above). This shape is NOT actually safe to heap-box the way a directly
+// returned delegate is, though: `heapClosureContextOrNull`'s soundness
+// argument depends on its escape site being the LAST thing the function ever
+// does, and a `ref`/`out`-parameter assignment can happen mid-function, with
+// further statements -- including further writes to the same captured
+// variable through the still-live frame -- still to come before this
+// function actually returns (a fable review of this branch caught exactly
+// that: `count = 10;` right after this exact assignment, still inside
+// `makeCounter`, silently diverged from the heap-boxed copy the delegate
+// itself reads). `refEscapingDelegateOperandOffset` (`compiler.d`)
+// unconditionally declines a capturing rhs here instead, via the same
+// `throwFrameEscapingDelegateDiagnostic` a directly returned delegate whose
+// capture shape can't be heap-boxed already raises -- so Bytecode no longer
+// runs this fixture to completion at all; `delegate.outParameterEscapingCaptureDeclines`
+// below covers the clean-refusal shape this fixture used to (unsoundly) run.
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.inexpressible,
+        "Ctfe wraps dmd.dinterpret, whose CTFE engine cannot read " ~
+            "`count` back through the escaped delegate at all " ~
+            "(\"variable `count` cannot be read at compile time\")"),
+    Omit!(Interpreter, Because.unconfirmed,
+        "the Interpreter throws \"quickbite.backends.interpreter." ~
+            "place_value.writeValue: unsupported at place\" for this " ~
+            "reassignment shape -- not yet promoted"),
+    Omit!(Bytecode, Because.refusal,
+        "the mid-function `ref`/`out`-parameter escape site is unsound to " ~
+            "heap-box the way a directly-returned delegate is -- see " ~
+            "`delegate.outParameterEscapingCaptureDeclines` below -- so " ~
+            "`refEscapingDelegateOperandOffset` now unconditionally " ~
+            "declines a capturing rhs assigned to a `ref`/`out` delegate " ~
+            "parameter"),
+)) {
+    @("delegate.outParameterEscapingCaptureIsCallable." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            void makeCounter(out int delegate() dg) {
+                int count = 0;
+                dg = () => ++count;
+            }
+
+            unittest {
+                int delegate() c;
+                makeCounter(c);
+                assert(c() == 1);
+                assert(c() == 2);
+
+                int delegate() c2;
+                makeCounter(c2);
+                assert(c2() == 1);
+                assert(c() == 3);
+            }
+        });
+    }
+}
+
+// Finding 2 (Fable pre-PR review): `heapClosureContextOrNull`'s soundness
+// argument for `compileDelegateReturn`'s two `return`-based escape sites
+// ("nothing in the enclosing function reads or writes these variables again
+// after this point") does NOT hold for the `ref`/`out`-parameter assignment
+// site right above (`outParameterEscapingCaptureIsCallable`): `count = 10;`
+// right after `dg = () => ++count;`, still inside `makeCounter`, mutates the
+// SAME captured local through the STILL-LIVE frame after a heap snapshot
+// would already have been taken. SystemLinker sees that later write
+// reflected through the delegate (`c()` returns 11, one past the
+// post-assignment `count`); a heap-boxed snapshot taken AT the assignment
+// (the previously shipped behaviour) would have frozen `count == 0` right
+// then and silently diverged (`c()` would have returned 1, not 11) --
+// exactly the silent-wrong-answer shape this finding is about, not a crash.
+// `refEscapingDelegateOperandOffset` (`compiler.d`) now declines this shape
+// unconditionally rather than ever attempting a heap snapshot for it.
+// Bytecode-only: the diagnostic itself is a Bytecode-specific mechanism, not
+// a language restriction other backends share.
+static foreach (backend; AliasSeq!(Bytecode)) {
+    @("delegate.outParameterEscapingCaptureDeclines." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            void makeCounter(out int delegate() dg) {
+                int count = 0;
+                dg = () => ++count;
+                count = 10;
+            }
+
+            unittest {
+                int delegate() c;
+                makeCounter(c);
+                assert(c() == 11);
+            }
+        }).shouldThrow();
     }
 }
 
@@ -3210,6 +3890,352 @@ static foreach (backend; Matrix!(
                 movePoint(3, 4);
                 assert(quickbiteDatasegPoint.x == 4);
                 assert(quickbiteDatasegPoint.y == 6);
+            }
+        });
+    }
+}
+
+// A module-level pointer variable (`__gshared int* quickbiteDatasegPointer;`)
+// -- `moduleScalarVariableOrNull` used to decline every `Tpointer` dataseg
+// declaration outright ("pointer ... dataseg variables remain entirely
+// unsupported"), even though `scalarType` already maps `Tpointer` to
+// `ScalarType.ulong_` for locals and every other module-scalar call site
+// (`loadModule`/`storeModule`/`moduleAddress`/the `ref`-argument writeback)
+// is generic over the registered `ScalarType`. The frontend itself refuses a
+// non-null initializer for a dataseg pointer (`cannot take address of
+// thread-local variable ... at compile time`), so the default (null) is the
+// only initializer this variable ever has; it is assigned, dereferenced for
+// both read and write, and rebound through a `ref` argument, all after
+// registration. `Ctfe` cannot read or write dataseg storage at all
+// (compile-time execution has no such storage to access); `Interpreter` has
+// the same pre-existing gap documented on
+// `pointer.refArgumentThroughCallReturnedShortPointerCallsExpressionOnce`
+// elsewhere in this file -- writing through a pointer that addresses
+// dataseg storage does not mirror back to the module variable's own
+// authoritative storage.
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.inexpressible,
+        "CTFE cannot read or write dataseg (__gshared/static) storage"),
+    Omit!(Interpreter, Because.unconfirmed),
+)) {
+    @("dataseg.modulePointerVariableReadWriteAndRefArgument." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            __gshared int quickbiteDatasegPointerTarget = 5;
+            __gshared int* quickbiteDatasegPointer;
+
+            void bumpThroughPointer() {
+                quickbiteDatasegPointer = &quickbiteDatasegPointerTarget;
+                *quickbiteDatasegPointer = *quickbiteDatasegPointer + 1;
+            }
+
+            void reassign(ref int* q, int* target) {
+                q = target;
+            }
+
+            unittest {
+                assert(quickbiteDatasegPointer is null);
+
+                bumpThroughPointer();
+                assert(quickbiteDatasegPointerTarget == 6);
+                assert(quickbiteDatasegPointer !is null);
+                assert(*quickbiteDatasegPointer == 6);
+
+                int other = 100;
+                reassign(quickbiteDatasegPointer, &other);
+                assert(*quickbiteDatasegPointer == 100);
+                assert(quickbiteDatasegPointerTarget == 6);
+            }
+        });
+    }
+}
+
+// A module-level fixed-size static array (`int[3] arr;`) fell through
+// `moduleScalarVariableOrNull`'s decline list outright ("Tsarray/Taarray/
+// Tdelegate ... variables remain entirely unsupported"). Scoped to a
+// scalar-element static array: constant-index element read/write
+// materialises the whole inline block into a fresh frame slot
+// (`Op.loadModule`) and writes back the whole block after any element
+// write (`Op.storeModule`) -- there is no narrower "field" to isolate the
+// way there is for a module struct's own field, since the touched element
+// IS (a byte range of) the whole variable -- and a whole-array assignment
+// or copy (into/out of a local, or between two module variables) goes
+// through the same materialise/writeback machinery. `.length` is already a
+// compile-time constant regardless of storage, so it needs no new support.
+// `Ctfe` cannot read or write dataseg storage at all. `Interpreter` declines
+// this shape outright ("Unsupported interpreter assignment target") -- a
+// separate backend from the bytecode core this fix targets, never
+// previously exercised for a module-level static array.
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.inexpressible,
+        "CTFE cannot read or write dataseg (__gshared/static) storage"),
+    Omit!(Interpreter, Because.unconfirmed),
+)) {
+    @("dataseg.moduleStaticArrayElementReadWriteAndWholeArrayCopy." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            __gshared int[3] quickbiteDatasegArray;
+            __gshared int[3] quickbiteDatasegArrayLiteral = [10, 20, 30];
+
+            void writeElement(int index, int value) {
+                quickbiteDatasegArray[index] = value;
+            }
+
+            unittest {
+                // Default-initialized to zero, matching D's default.
+                assert(quickbiteDatasegArray[0] == 0);
+                assert(quickbiteDatasegArray[1] == 0);
+                assert(quickbiteDatasegArray[2] == 0);
+                assert(quickbiteDatasegArray.length == 3);
+
+                quickbiteDatasegArray[0] = 5;
+                assert(quickbiteDatasegArray[0] == 5);
+                assert(quickbiteDatasegArray[1] == 0);
+
+                // A write from inside a function call mirrors back to the
+                // module's own authoritative storage, not a throwaway copy.
+                writeElement(1, 7);
+                assert(quickbiteDatasegArray[1] == 7);
+                assert(quickbiteDatasegArray[0] == 5);
+
+                // A constant literal initializer.
+                assert(quickbiteDatasegArrayLiteral[0] == 10);
+                assert(quickbiteDatasegArrayLiteral[1] == 20);
+                assert(quickbiteDatasegArrayLiteral[2] == 30);
+
+                // Whole-array copy into a fresh local.
+                int[3] copy = quickbiteDatasegArray;
+                assert(copy[0] == 5);
+                assert(copy[1] == 7);
+                assert(copy[2] == 0);
+
+                // Mutating the local copy must not affect the module's own
+                // storage (a real block copy, not an alias).
+                copy[0] = 999;
+                assert(quickbiteDatasegArray[0] == 5);
+
+                // Whole-array assignment writes back to the module's own
+                // storage.
+                quickbiteDatasegArray = [1, 2, 3];
+                assert(quickbiteDatasegArray[0] == 1);
+                assert(quickbiteDatasegArray[1] == 2);
+                assert(quickbiteDatasegArray[2] == 3);
+
+                // Whole-array assignment from another module variable.
+                quickbiteDatasegArray = quickbiteDatasegArrayLiteral;
+                assert(quickbiteDatasegArray[0] == 10);
+                assert(quickbiteDatasegArray[1] == 20);
+                assert(quickbiteDatasegArray[2] == 30);
+            }
+        });
+    }
+}
+
+// A module-level associative-array variable
+// (`__gshared int[string] quickbiteDatasegCounts;`) -- `moduleScalarVariableOrNull`
+// used to decline every `Taarray` dataseg declaration outright ("Taarray/
+// Tdelegate ... variables remain entirely unsupported"), even though
+// `scalarType` already maps `Taarray` to `ScalarType.ulong_` (its opaque
+// VM-map handle) the same way it does `Tpointer`/`Tclass`, so it needed no
+// AA-specific storage, only registration. The one AA-specific wrinkle: every
+// hook (`length`/`[]`/`in`/`foreach`) resolves the handle by materialising
+// the module's own `moduleData` bytes into a fresh frame slot
+// (`assocArrayHandleOffset`'s own `Op.loadModule`), and an insert
+// (`counts[k] = v`) may autovivify a still-null handle *inside that frame
+// slot* (`aaInsert`, `machine.d`) -- `compileAssocArrayGetLvalue`'s own new
+// `Op.storeModule` writes the (possibly new) handle straight back to
+// `moduleData` right after, so a later, separately-materialised read still
+// sees it. `Ctfe` cannot read or write dataseg storage at all (compile-time
+// execution has no such storage to access). `Interpreter` declines a write
+// through the module variable from inside a called function outright
+// ("Expected associative array.") -- the same pre-existing "does not mirror
+// back to the module variable's own authoritative storage" gap documented on
+// `dataseg.modulePointerVariableReadWriteAndRefArgument` above, a separate
+// backend from the bytecode core this fix targets, never previously
+// exercised for a module-level associative array.
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.inexpressible,
+        "CTFE cannot read or write dataseg (__gshared/static) storage"),
+    Omit!(Interpreter, Because.unconfirmed),
+)) {
+    @("dataseg.moduleAssocArrayInsertLookupInLengthAndForeach." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            __gshared int[string] quickbiteDatasegCounts;
+
+            void insert(string key, int value) {
+                quickbiteDatasegCounts[key] = value;
+            }
+
+            unittest {
+                // Default-initialized to a null (empty) AA.
+                assert(quickbiteDatasegCounts.length == 0);
+                assert(("a" in quickbiteDatasegCounts) is null);
+
+                // Assignment autovivifies the module's own storage, not a
+                // throwaway copy: a later, separately-compiled read sees it.
+                quickbiteDatasegCounts["a"] = 1;
+                assert(quickbiteDatasegCounts.length == 1);
+                assert(quickbiteDatasegCounts["a"] == 1);
+                assert(("a" in quickbiteDatasegCounts) !is null);
+
+                // A write from inside a function call mirrors back to the
+                // module's own authoritative storage.
+                insert("b", 2);
+                assert(quickbiteDatasegCounts.length == 2);
+                assert(quickbiteDatasegCounts["b"] == 2);
+                assert(quickbiteDatasegCounts["a"] == 1);
+
+                // Overwriting an existing key.
+                quickbiteDatasegCounts["a"] = 5;
+                assert(quickbiteDatasegCounts["a"] == 5);
+                assert(quickbiteDatasegCounts.length == 2);
+
+                int sum;
+                int count;
+                foreach (k, v; quickbiteDatasegCounts) {
+                    assert(quickbiteDatasegCounts[k] == v);
+                    sum += v;
+                    ++count;
+                }
+                assert(count == 2);
+                assert(sum == 7);
+            }
+        });
+    }
+}
+
+// A module-level delegate variable
+// (`__gshared int delegate() quickbiteDatasegDelegate;`) --
+// `moduleScalarVariableOrNull` used to decline every `Tdelegate` dataseg
+// declaration outright ("Taarray/Tdelegate ... variables remain entirely
+// unsupported"). Unlike a module pointer/associative-array (an 8-byte value
+// routed through `moduleScalarVariableOrNull`'s generic scalar path), a
+// delegate is a 16-byte `{functionIndex, context}` pair with no `ScalarType`
+// of its own -- the same shape a delegate-typed struct/class field or array
+// element already has its own dedicated `Tdelegate` branch for -- so it
+// gets its own dedicated storage record (`ModuleDelegateVariable`) rather
+// than routing through the generic scalar path. Default-initialized to null
+// (an all-zero pair, matching D's default); read, whole-value assignment
+// (from a non-capturing lambda, with a call through the result), and
+// whole-value assignment from a method delegate `&receiver.method` assigned
+// from inside a called function, mirroring back to the module's own
+// authoritative storage rather than a throwaway copy (verified via `!is
+// null`, since the module value is read again from a separately-compiled
+// context after the call returns). Calling through a struct-receiver
+// method delegate reached via this dynamic (no-statically-known-callee)
+// dispatch path is a separate, already-documented, pre-existing limitation
+// (`delegate.structReceiverPassedAsParameterIsRejected`,
+// `Op.callIndirectDynamic`'s `hasThis` rejection) shared by a delegate-typed
+// PARAMETER, not attempted here. `Ctfe` cannot read or write dataseg
+// storage at all (compile-time execution has no such storage to access).
+// `Interpreter` declines this shape outright, the same pre-existing "does
+// not mirror a dataseg write back through a called function" gap already
+// documented on the sibling pointer/AA tests above, never previously
+// exercised for a module-level delegate.
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.inexpressible,
+        "CTFE cannot read or write dataseg (__gshared/static) storage"),
+    Omit!(Interpreter, Because.unconfirmed),
+)) {
+    @("dataseg.moduleDelegateVariableAssignmentAndCallThrough." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct Greeter {
+                int base;
+                int greet() { return base + 1; }
+            }
+
+            __gshared int delegate() quickbiteDatasegDelegate;
+
+            void assignFromMethod(ref Greeter g) {
+                quickbiteDatasegDelegate = &g.greet;
+            }
+
+            unittest {
+                assert(quickbiteDatasegDelegate is null);
+
+                quickbiteDatasegDelegate = () => 42;
+                assert(quickbiteDatasegDelegate !is null);
+                assert(quickbiteDatasegDelegate() == 42);
+
+                Greeter g;
+                g.base = 9;
+                // A write from inside a function call mirrors back to the
+                // module's own authoritative storage, not a throwaway copy.
+                assignFromMethod(g);
+                assert(quickbiteDatasegDelegate !is null);
+            }
+        });
+    }
+}
+
+// A module-level `cdouble` variable (`__gshared cdouble c;`) --
+// `moduleScalarVariableOrNull` used to decline every `Tcomplex64` dataseg
+// declaration outright ("Module-level complex-double dataseg variables
+// remain entirely unsupported"). Like a delegate, a `cdouble` is a 16-byte
+// `{re, im}` pair with no `ScalarType` of its own (the same reason a
+// `cdouble` LOCAL already carries its own dedicated tracking
+// (`_complexDoubleLocals`) rather than going through the generic scalar
+// machinery), so it gets its own dedicated storage record
+// (`ModuleComplexVariable`) rather than routing through the generic scalar
+// path `moduleScalarVariableOrNull` gives a module pointer/AA. Default-
+// initialized to `double.nan + double.nan * 1i` -- unlike a defaulted
+// pointer/AA/delegate (all-zero is correct there), D gives every
+// floating-point-derived type a NaN default, not zero; an initial all-zero
+// version of this test was caught by comparing against the
+// `SystemLinker`/`LLVMJit` real-compile oracles ("nan != 0"), which is why
+// the storage is explicitly NaN-filled rather than left at
+// `allocateModuleBytes`'s all-zero growth. Read, and a whole-value
+// assignment (from a runtime-computed complex expression, including one
+// assigned from inside a called function, mirroring back to the module's
+// own authoritative storage rather than a throwaway copy) are exercised. A
+// non-default initializer (`cdouble c = 1.0 + 2.0i;` at module scope) still
+// falls through to "Unsupported variable in bytecode core", scoped out like
+// every other module-variable kind's decline. `Ctfe` cannot read or write
+// dataseg storage at all (compile-time execution has no such storage to
+// access). `Interpreter` declines this shape, the same pre-existing "does
+// not mirror a dataseg write back through a called function" gap already
+// documented on the sibling pointer/AA/delegate tests above, never
+// previously exercised for a module-level `cdouble`.
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.inexpressible,
+        "CTFE cannot read or write dataseg (__gshared/static) storage"),
+    Omit!(Interpreter, Because.unconfirmed),
+)) {
+    @("dataseg.moduleComplexVariableDefaultNaNReadAndWriteThroughCall." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            import std.math: isNaN;
+
+            __gshared cdouble quickbiteDatasegComplex;
+
+            int value(int input) {
+                return input + 1;
+            }
+
+            void assignFromCall() {
+                auto base = value(41);
+                quickbiteDatasegComplex = cast(cdouble) base + 1.0i;
+            }
+
+            unittest {
+                assert(isNaN(quickbiteDatasegComplex.re));
+                assert(isNaN(quickbiteDatasegComplex.im));
+
+                assignFromCall();
+                assert(quickbiteDatasegComplex.re == 42);
+                assert(quickbiteDatasegComplex.im == 1);
             }
         });
     }
@@ -9524,7 +10550,6 @@ static foreach (backend; Matrix!(
 
 
 static foreach (backend; Matrix!(
-    Omit!(Bytecode, Because.unconfirmed),
     Omit!(Ctfe, Because.unconfirmed),
     Omit!(LLVMJit, Because.unconfirmed),
 )) {

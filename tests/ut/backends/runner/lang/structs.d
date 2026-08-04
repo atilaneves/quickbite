@@ -1543,10 +1543,11 @@ static foreach (backend; Matrix!()) {
 }
 
 // Sibling of the fixture above, but `helper` also reads an enclosing local
-// (`x`), not just `this`. Bytecode currently throws its own clean diagnostic
-// on the captured-local read rather than producing a wrong value: no closure
-// environment is built for a function claimed as this-receiver-shaped, so `x`
-// never resolves.
+// (`x`), not just `this`. `capturedThisStructDeclaration` declines the
+// `this`-receiver shape here (`hasCapturedOuterLocal`) even though `vthis`
+// is set, so `helper` gets an ordinary captured-locals environment instead,
+// with `vthis` registered into it alongside `x` (`ai/plans/bytecode.md`'s
+// Closures section) -- both resolve through that same environment.
 static foreach (backend; Matrix!()) {
     @("struct.nestedFunctionReadsCapturedLocalAndThisField." ~ backend.stringof)
     @Tags(backend.stringof)

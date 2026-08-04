@@ -366,442 +366,127 @@ architectural non-goals with an explicit reason. An unsupported
 implementation is not, by itself, a permanent divergence from the compiled-D
 oracle.
 
-`AssocArray` storage now supports arbitrary key/value width instead of a
-hardcoded 4-byte `int`: the value side is sized from the AA's real value
-type (mirroring how a dynamic array carries its own element size), the key
-side likewise. A scalar key compares its raw bytes; a plain `string` key
-compares the content its `{ptr, length}` descriptor points at, since two
-separately-constructed but content-equal strings have different backing
-pointers -- `wstring`/`dstring` throw explicitly rather than silently
-reading the wrong element width. `foreach (k, v; aa)` reads each key back
-at its real width instead of a hardcoded 4-byte `int`: `long`/`double`/other
-scalar keys and `string` keys all iterate correctly; `wstring`/`dstring`
-and struct keys still refuse.
+Current Bytecode support boundary -- a starting point for finding the next
+row, not a guarantee. Reconfirm against the source before relying on it.
 
-The next candidate is `assocArray.structKeyWithStringMemberComparesStructurally`
-(`tests/ut/backends/runner/lang/arrays.d`): DMD's `InExp`/index lowering
-hoists a non-trivial key expression into a synthesized temporary
-(`extractSideEffect`, `__aakeyN`, an ordinary struct-typed local, not a
-hash/compare function) and passes it to the already-recognised
-`_d_aaIn`/`_d_aaGetY` hooks. Confirmed still not bounded for one commit: the
-current refusal ("Unsupported type in bytecode core: Name") now comes from
-`compileAssocArrayGetLvalue` computing `assocArrayKeyMeta` (no `Tstruct`
-case) before it ever compiles the key expression, one step earlier than the
-previous `__aakeyN`-variable refusal from `compileExpression`'s `VarExp`
-handling (which still never consults `_structLocals`, unlike
-`structBaseOffsetOrMaterialise`). Fixing the ordering alone would only trade
-one refusal for another: even with a struct case, a whole-struct raw-byte
-comparison would still be wrong for a string member specifically, needing
-the same structural, not raw-byte, comparison `keysEqual` already gives a
-bare `string` key. Both pieces -- struct-typed key storage and structural
-member comparison -- are needed together, a genuinely separate, harder
-problem than the scalar/string key work above.
+- Associative arrays. Keys: scalar, `string`, and struct. A struct key with at
+  least one top-level `string` field compares structurally, field by field and
+  `string` fields by content, via `structKeyFieldLayoutOrNull` and a
+  `Program.assocArrayKeyLayouts` side table, in any combination, count, or
+  order of `string` and scalar fields; an all-scalar struct key compares as raw
+  bytes. A struct key with no top-level `string` field but some array-typed
+  field (including through a nested struct) throws, as do `wstring`/`dstring`
+  keys and a nested-struct or `wstring` field inside an otherwise structural
+  key. Values: scalar, dynamic array, struct, static array, delegate.
+  `find`/`insert`/`remove` are a linear scan over `keysEqual`, not a hash
+  table, so there is no hash to keep consistent with equality.
+- Module-level (`__gshared`/`static`) variables: scalar, struct, dynamic
+  array, scalar-element static array, pointer, associative array, delegate,
+  and `cdouble`. Dynamic-array literal initializers cover constant scalar and
+  struct elements at any nesting depth, plus `[]`; the other kinds take only
+  their default initializer, and a struct/array/delegate/complex *element* of a
+  module static array declines. Field and element access materialises a block
+  and writes back only the bytes it touched. `Ctfe` cannot read or write
+  dataseg storage at all; `Interpreter` has a separate pre-existing gap where a
+  write through a pointer into dataseg storage does not mirror back.
+- Delegates and closures: see the Closures section.
 
-An AA value's storage width also accounts for a dynamic-array-typed value
-(`int[][int]`, sized as its own 16-byte slice descriptor) and a
-struct-typed value: reading, writing, indexing into, and calling a method
-through the value now all materialise and write back the real slot
-(`Point[int] a; a[1].x = 5; a[1].bump();`; `Interpreter` still segfaults on
-the method-call shape, `Omit!(Interpreter, Because.unconfirmed)`,
-`arrays.d`). Two sibling gaps fixed alongside: constructing a struct-typed
-AA entry from a literal with a user-defined `opAssign` (`a[1] =
-Setting(2)`) blits directly into the fresh slot, as DMD intends (`opAssign`
-is never called for this shape); and overwriting an *existing* entry from
-another struct value (`a[1] = existingVar;`, any struct, `opAssign` or not)
-now works.
+Known blocked rows, stated as the blocker rather than the symptom:
 
-`arr[i] = existingVar;` for a plain dynamic array of structs, and the same
-shape for a compile-time-indexed static array of structs, now works
-(previously threw "Unsupported variable in bytecode core: existingVar" on
-`Bytecode` while `SystemLinker` ran both fine).
+- `concurrency.thisTid.Bytecode` (`sys/concurrency.d`). `Scheduler.thisInfo`'s
+  `atomicLoad(scheduler)` (an 8-byte reference) is usually the supported
+  `RDX`/`RAX` atomic-load inline-asm shape (`tryCompileAtomicLoadAsm`), but
+  order-dependently (seed 543485028) the same call site compiles to a second
+  shape using 32-bit `EDX`/`EAX` value registers. Why the same load takes
+  either shape is not characterized. Do not add a matching `EDX`/`EAX` opcode
+  without first confirming, against a disassembled `SystemLinker` build of this
+  exact fixture, that a 4-byte-wide atomic read is the correct oracle behaviour
+  here rather than a truncation of the real 8-byte reference.
+- `file.createWriteRead.Bytecode` (`sys/file.d`). `std.stdio.File`'s
+  refcounting is `shared`, and DMD's `core.atomic` lowers `atomicOp!"+="` on
+  this platform to inline x86 asm (`lock xchg` then a plain store) rather than
+  a compiler intrinsic; the bytecode core has no inline-asm support. Either
+  implement that specific `lock`-prefixed read-modify-write/store sequence, or
+  recognise `atomicOp`/`atomicLoad`/`atomicStore` by symbol (as the `std.math`
+  builtins already are) and lower them to dedicated VM atomic ops.
+- `refArgument.templateRefSharedParameterMutatesAndPreservesAddress` and
+  `refArgument.templateRefSharedForwardsThroughNestedFunction`
+  (`expressions.d`) assert `&value == expected` across a `ref` call boundary.
+  Both are blocked on the ref calling convention below, not on
+  template/`shared` specifics, so neither is a bounded single-commit row.
 
-Struct/array field write-through was generalized across several previously
-diverging shapes, all now working for both a struct-array-of-structs
-receiver and the equivalent class-array-field receiver
-(`c.arr[i].field = rhs`; `Interpreter` still throws "Expected class
-object." on the class receiver shape, even for a plain scalar field,
-unrelated, `Omit!(Interpreter, Because.unconfirmed)`): a struct-typed field
-of a struct reached through a dynamic-array index (`arr[i].structField =
-rhs`); a static-array-typed field of such an element, written as a whole
-value (`arr[i].fixedField = [x, y, z]` / `= existingVar`); an *indexed*
-write into that field (`arr[i].fixedField[j] = value`) and its `+=`
-compound-assignment sibling; and a *further*-nested index into a
-multi-dimensional static-array field, for both a static- and a
-dynamic-array-typed dimension (`arr[i].fixedField[j][k] = value` /
-`arr[i].matrixField[j][k] = value` where the field is `int[][]`, any
-depth). The indexed-write shapes were silent-corruption bugs, not thrown
-diagnostics: the base-offset resolver for a dynamic-array-of-structs
-element returned a throwaway copy with no writeback wiring, so the write
-silently landed on scratch memory instead of the real slot. This surfaced
-a separate pre-existing bug: three struct/class `Tarray`-field branches
-defaulted `arrayElementIsArray(field.type)` to `false`, so a
-`Tarray`-of-`Tarray` field indexed its outer dimension at the wrong
-(scalar) width; fixed there and at every other genuinely-affected call
-site reachable through real, `SystemLinker`-compilable D (struct
-positional construction, a by-value `Tarray`-parameter function-call
-argument, both local- and module-variable forms of `arr ~= literal`,
-`a ~ literal`, and an array-returning call indexed). All confirmed red
-(mostly SIGSEGV, one wrong-result) via real `bin/ut` before the fix and
-green after. Confirmed via real `bin/ut` with no bug found: the other
-compound-assignment operators still throw cleanly rather than silently
-corrupting, and a struct-pointer/class-reference field's own `+=` already
-wrote back correctly.
+Ref calling convention -- the largest known correctness hazard in the current
+core, and the blocker for the rows above. A scalar `ref` argument is passed as
+a value mirrored into a fresh frame slot and written back after the callee
+returns, not as a pointer the callee dereferences. Every ref-argument kind
+that binds non-frame-resident storage (`emitModuleScalarRefArgument`,
+`emitStructPointerRefArgument`, `emitStructPointerFieldRefArgument`,
+`emitClassFieldRefArgument`, `emitRefLocalPointerArgument`,
+`emitPointerDereferenceRefArgument`) shares one hazard: if the callee also
+reaches that same storage by another path during the call, the post-call
+writeback clobbers the direct write regardless of program order. Real ABI
+`ref` has no such race. `referenceOffset`'s ordinary `_locals` path has it
+too, so `&value` inside a callee never equals the caller's `&value`.
+Reordering cannot fix it, because the callee never reaches the real address
+through the parameter at all. A real fix makes a scalar `ref` parameter a
+pointer the callee dereferences on every access, bound directly to the real
+address (e.g. via `Op.moduleAddress`), dropping the mirror/writeback pair
+entirely -- a change to the convention every ref-argument kind shares, not a
+narrow field-offset fix.
 
-A `Tarray` class field's and a module-level dynamic array's own literal
-default now also support one level of array-of-arrays nesting (`int[][] m =
-[[1, 2], [3, 4]];`), and array-of-arrays equality (`arr1 == arr2`,
-`assert(arr1 == arr2)`) now compares structurally instead of by raw
-descriptor bytes, matching `dmd`'s recursive `__equals` lowering (including
-in the assert-diagnostic renderer). Both confirmed via `bin/ut` matching
-real `dmd`. Equality has since been generalized to arbitrary nesting depth
-(`int[][][]` and beyond, including an `int[N][]` row); the literal-default
-case still declines two or more levels of nesting (`int[][][]`), a
-struct/static-array element, an empty literal (`[]`), or any non-constant
-element.
+Live hazards and divergences to reconfirm against current source when a row
+reaches them:
 
-Take `a.m[0][0] = 99` next: a class field of type `int[][]`, indexed twice,
-no intervening struct/field dot, throws "Unsupported assignment in bytecode
-core" -- distinct from the already-fixed field-of-an-array-element shapes
-above (`arr[i].fixedField[j] = value`); not yet root-caused to a specific
-dispatch function.
-
-A prior attempt at this exact row implemented a doubly-indexed write path
-that passed its own new tests in isolation but reproducibly `SIGSEGV`s
-(confirmed via `git stash`/rebuild against the unmodified parent commit:
-clean; with the change: exit 139) partway through an unrelated later test
-in a full `arrays.d`+`structs.d` sweep -- heap/frame-state corruption from
-the new codegen, not a logic bug caught by its own fixture. That attempt
-was reverted uncommitted rather than landed broken. Next attempt: reproduce
-with `bin/ut -s ut.backends.runner.lang.arrays
-ut.backends.runner.lang.structs` and get a real `gdb` backtrace
-(`gdb --args bin/ut -s ...`, `run`, `bt` on crash) before writing new
-codegen -- suspect an out-of-bounds write from an incorrect
-stride/offset when resolving the second index level, or a raw pointer to
-the outer/inner descriptor held across an intervening allocation.
-
-Every `Omit!(Bytecode, ...)` row left in `tests/ut/backends/runner/**` is one
-of the already-documented not-bounded rows above (`file.d:14`,
-`concurrency.d:24`, the cerealed exception-message row, the three
-`expressions.d` ref-calling-convention rows, the one remaining `arrays.d`
-assoc-array row, and the four `archive.d` rows); re-search before assuming
-otherwise.
-A module-level struct's own nested struct field (`go.inner.x`, `struct Inner
-{ int x; } struct Outer { Inner inner; } Outer go;`) now reads and writes
-correctly, including a nested array field (`go.inner.arr ~= ...`):
-`structBaseOffsetOrMaterialise` materialises a bare module-struct `VarExp`
-into a frame block the same way `tryStructField`'s single-dot-level branch
-already did, reporting the module offset back up through its `outer.inner`
-recursion so a field at any nesting depth writes back to its own real slot.
-
-Every currently-known Bytecode gap in `tests/ut/backends/runner/**` is one
-of the already-documented not-bounded rows listed above. Finding the next
-candidate requires fresh `bin/qb` exploration (read-modify-write/mirror
-paths, the live aggregate limitations below, or the "Architecture work
-forced by the baseline" fronts) rather than a matrix search.
-
-Reconfirm these live aggregate limitations against the current source when a
-row reaches them:
-
-- Every array/pointer opcode family that supports a fixed-width fast path
-  (`Op.subSliceN`/`sliceCopyN`/`appendElementN`/`indexLoadN`/`indexStoreN`/
-  `concatArraysN`/`pointerSliceN`/`pointerLoadN`/`pointerStoreN`) now covers
-  1, 2, 4, 8, and 16 bytes via dedicated opcodes and any other width via an
-  `N`-variant that carries the byte width as an explicit instruction operand,
-  the same way `Op.copy` already carries an arbitrary block width, instead of
-  encoding the width in the opcode or deriving it from a `ScalarType` tag
-  that resolves to 0 for a struct/static-array element. Every ref-argument
-  mirror/writeback call site that binds non-frame-resident storage
-  (`emitStructPointerRefArgument`, `emitStructPointerFieldRefArgument`,
-  `emitClassFieldRefArgument`, `emitPointerDereferenceRefArgument`,
-  `emitDynamicArrayRefArgument`/`emitDynamicArrayElementRefArgument`,
-  `emitRefReturnedDynamicArrayElementArgument`,
-  `compileClassStaticArrayAsDynamicInto`) now sizes its `pointerLoadOp`/
-  `pointerStoreOp`/`indexLoadOp`/`indexStoreOp` pair from the pointee's real
-  byte width and passes that width as the `N`-variant's explicit operand,
-  instead of declining a non-scalar element or a struct/static-array field.
-  `emitConditionalRefArgument` already handled a struct-typed branch
-  correctly via the generic, width-agnostic `referenceOffsetOrNull`, needing
-  no change. `Op.sliceCopy*`/`Op.sliceFill*` (the single-value broadcast-fill
-  path used by `arr[0 .. 2] = value;`) now also cover any width via an
-  `N`-variant, so a struct/static-array-typed broadcast source fills
-  correctly, not just a basic-type scalar. A destination element that is
-  itself a heap-allocated row descriptor (`T[N][]`/`T[][]`, `elementIsArray`)
-  still declines the fill path: broadcasting into it needs a fresh row
-  allocation per element, not a byte copy. A ref argument bound to
-  a ref-returning wrapper's
-  returned array element still loses the writeback on `Interpreter`
-  regardless of element width (confirmed via `bin/qb` with a plain scalar
-  element too), so that row stays `Omit!(Interpreter, Because.diverges,
-  ...)` independent of the Bytecode fix.
-  `loadStructPointerField`/`storeStructPointerField` (`compiler.d`) --
-  the plain (non-ref-argument) read/write path for a field reached through
-  `tryStructPointerField` -- now handle a `Tstruct`/`Tsarray` field the same
-  way the ref-argument path above does.
-- Dynamic-array and string sub-slices reject an upper bound beyond the source
-  length and a lower bound greater than the upper bound; pointer-slice bounds
-  remain unchecked.
-- Captured array support does not yet cover every read, write, slice, append,
-  view-preservation, and closure combination.
-- `Interpreter` declines an indexed write through a dereferenced
-  static-array pointer (`(*p)[i] = v`, e.g. a class field's whole-array
-  pointer indexed and written) with "Unsupported interpreter assignment
-  target"; `Omit!(Interpreter, Because.unconfirmed)` on that row
-  (`pointer.classStaticArrayFieldElementWrittenThroughWholeFieldPointerIsVisibleDirectly`,
-  `expressions.d`).
+- A `T[N][]`'s rows are separately heap-allocated inner descriptors, so a
+  pointer taken into one row (`&outer[i][j]`) is valid within that row, but a
+  flat pointer walk across rows diverges from compiled D's contiguous layout.
+- `arr[0][0]` on a `T[N][]` throws "Unsupported static array access": the
+  `Tarray`-gated `tryDynamicArrayIndex`/`indexedArrayDescriptor` decline a
+  `Tsarray` sub-expression, so compilation falls through to the
+  static-array-chain path, which has no notion of a dynamic-array base. A
+  clean diagnostic, not a wrong answer.
 - Static arrays of dynamic arrays copy each element's full 16-byte slice
   descriptor; nested mutation and general stale-cell reconciliation remain
   incomplete.
-- A `T[N][]`'s rows are materialised as separately heap-allocated inner
-  descriptors, so a pointer taken into one row (`&outer[i][j]`) is valid
-  within that row, but a flat pointer walk across rows diverges from compiled
-  D's contiguous layout. Reconfirmed current: `&outer[0][0]` then indexing
-  past row 0's own two elements reads unrelated heap bytes instead of row 1,
-  where `SystemLinker`'s contiguous backing store reads the next row.
-  Appending a row (`outer ~= [a, b]`) now builds that row's own heap block
-  and 16-byte descriptor before appending it (`compileAppendElement`'s new
-  `descriptor.elementIsArray` branch, `compiler.d`), matching what an
-  array-of-arrays literal already builds per element; previously this both
-  used the wrong element width (`appendElementOp`/`appendElementSize` only
-  distinguished 1, 2, or default-4 bytes, so an 8-byte row or descriptor
-  silently truncated to 4 bytes copied) and appended the row's raw value
-  instead of a descriptor, corrupting the backing store and segfaulting on
-  a later indexed read. `appendElementOp` now covers 8 and 16 bytes
-  (`Op.appendElement8`/`Op.appendElement16`) and throws instead of silently
-  mis-sizing any other width.
-- `compileConcatenationAssign` (`outer ~= otherOuter`, whole-array
-  concatenation of a `T[N][]`/`T[][]`) now builds its `elementIsArray`
-  operand size the same way `compileAppendElement` does
-  (`dynamicArrayElementSize(..., descriptor.elementIsArray)`), and
-  `concatArraysOp`/`concatElementSize` add an `Op.concatArrays16` variant, so
-  the right-hand array's rows copy as whole 16-byte descriptors instead of
-  truncating to 4 bytes.
-- A `__gshared`/`static` module-level dynamic-array variable
-  (`moduleDynamicArrayVariableOrNull`, `compiler.d`) with a non-null
-  initializer now has real storage when the initializer is a non-empty array
-  literal of constant scalar elements (`int[] arr = [1, 2, 3];`) or, one
-  level deep, of constant-scalar-element array-literal elements
-  (`int[][] m = [[1, 2], [3, 4]];`); still declines registration (same as
-  the default-initializer case) for two levels of nesting (`int[][][]`), a
-  struct/static-array element, an empty literal (`[]`), or any non-constant
-  element (e.g. a function call). A module-level
-  struct variable (`ModuleStructVariable`) is supported for the
-  default-initialized case: field access materialises the whole block
-  via `Op.loadModule` but writes back only the touched field's own bytes via
-  `Op.storeModule` (`tryStructField`/`writeBackStructField`), so a sibling
-  field written in between (e.g. by a right-hand-side call) survives; a `ref`
-  argument bound to such a field, at any nesting depth (`go.x` or
-  `go.inner.x`), mirrors just that field into its own fresh slot with its own
-  writeback (`emitModuleStructFieldRefArgument`, resolving the field's dataseg
-  offset through `moduleStructFieldOffsetOrNull`'s `DotVarExp`-chain
-  arithmetic) rather than reusing the whole-block copy `tryStructField`
-  materialises for plain field access. A non-default struct initializer still
-  falls through to "Unsupported variable in bytecode core". Module-level
-  `Tsarray`/`Taarray`/`Tdelegate` variables and pointer/complex-double dataseg
-  variables remain entirely unsupported (`moduleScalarVariableOrNull` still
-  declines them).
-- A module-struct field's compound assignment (`gp.x += rhs`) now compiles
-  `rhs` before `tryStructField` materialises the field's whole-block copy,
-  the same reordering the module-array `~=` fix below applies: `rhs` may
-  itself write that exact field by name (`gp.x += f()` where `f` writes
-  `gp.x` directly), and the direct write must land in real module storage
-  before the copy this read-modify-write reads from is taken, or the
-  post-op `Op.storeModule` writeback clobbers it with a stale sum. The
-  identical shape through a class reference (`gc.x += f()`,
-  `tryClassPointerField`) is fixed the same way: the field load is now
-  compiled after the rhs, so a heap object needs no whole-block-copy
-  narrowing the way module storage does -- there is no copy, just a load
-  ordered to run after whatever the rhs already wrote directly.
-- A module-level dynamic array's single-element `~=` (`compileAppendElement`)
-  and whole-array `~=` (`compileConcatenationAssign`) both now compile the
-  appended value/right-hand array before materialising the target's
-  descriptor when the target is a module variable, so a reentrant append
-  inside that value's own evaluation (`ga ~= f()` where `f` itself does
-  `ga ~= x`) lands in the descriptor instead of being overwritten by the
-  post-call writeback of a stale pre-call snapshot.
-- A scalar `ref` argument bound to module storage
-  (`emitModuleScalarRefArgument`/`emitModuleStructFieldRefArgument`) mirrors
-  the module value into a fresh frame slot for the call and writes it back
-  through `Op.storeModule` only after the callee returns. If the callee also
-  writes that same module variable directly by name during the call (a
-  `ref int x` bound to `counter` in `weird(ref int x) { x = 5; counter =
-  100; }`), the direct write is unconditionally clobbered by the post-call
-  mirror writeback regardless of which write is later in the callee's
-  program order -- real `ref`-to-global aliasing has no such race, since a
-  genuine ABI `ref` is the same storage, not a copy. Reordering cannot fix
-  this the way it fixed the append case above: nothing inside the callee's
-  body ever reaches the module address through the ref parameter itself,
-  because the parameter is an ordinary value living in its own frame slot,
-  not a pointer the callee dereferences. Every other ref-argument kind that
-  mirrors non-frame-resident storage into a fresh slot and writes it back
-  afterward (`emitStructPointerRefArgument`,
-  `emitStructPointerFieldRefArgument`, `emitClassFieldRefArgument`,
-  `emitRefLocalPointerArgument`, `emitPointerDereferenceRefArgument`)
-  shares the identical latent hazard
-  whenever the callee reaches the aliased storage by another path during
-  the same call. A real fix needs a scalar `ref` parameter to be a pointer
-  the callee dereferences on every read/write of it, so a call can bind it
-  directly to the real address (e.g. via `Op.moduleAddress`) and skip the
-  mirror/writeback pair entirely -- a change to the calling convention
-  shared by every ref-argument kind, not a narrow field-offset fix. This
-  also covers the plain-local case, not just module/struct/class-backed
-  storage: `referenceOffset`'s ordinary `_locals` path passes the same
-  caller-frame-offset-mirrored-into-a-fresh-slot value for any `ref`
-  parameter, confirmed via `bin/qb` for a bare `ref int` parameter with no
-  module or aggregate involved at all (`&value` inside the callee never
-  equals the caller's `&value`). `expressions.d`'s
-  `refArgument.templateRefSharedParameterMutatesAndPreservesAddress`,
-  `refArgument.templateRefSharedForwardsThroughNestedFunction`, and
-  `delegate.captureIsNotParameterReference` (still
-  `Omit!(Bytecode, Because.unconfirmed)`, ~line 8024) all assert `&value ==
-  expected` across a `ref`/captured-local call boundary and are blocked on
-  this same calling-convention change, not on template/`shared`/closure
-  specifics; they are not a bounded single-commit family until the ref
-  calling convention above is redesigned.
+- Captured array support does not yet cover every read, write, slice, append,
+  view-preservation, and closure combination.
+- A broadcast fill (`arr[0 .. 2] = value;`) declines when the destination
+  element is itself a heap-allocated row descriptor (`T[N][]`/`T[][]`):
+  broadcasting into it needs a fresh row allocation per element, not a byte
+  copy.
+- Dynamic-array and string sub-slices bounds-check both ends
+  (`validateSubSlice`, `machine.d`). A raw pointer slice performs no check at
+  all -- confirmed correct, not a gap: compiled D's own `p[lo .. hi]` on a bare
+  `T*` has no runtime bounds check either (verified against `dmd`, including
+  `-boundscheck=on` and `-release`; a raw pointer carries no length metadata to
+  check against). Do not add one; it would diverge from the oracle.
+- A struct-receiver method delegate cannot be called through a delegate
+  parameter: its context is a caller-frame-relative offset into a receiver
+  block, not the single pointer word a lambda or nested function carries, so
+  `Op.callIndirectDynamic` rejects it on `CompiledFunction.hasThis`
+  (`delegate.structReceiverPassedAsParameterIsRejected`). Making it callable
+  needs the receiver encoded frame-independently -- a real pointer to the
+  receiver block -- which changes how every struct method receives `this`.
+- The static-delegate-registry hack (`_staticDelegateAssocArrays`,
+  `tryStaticDelegateAssocArrayAssign`, `tryStaticDelegateAssocArrayCall`,
+  `staticDelegateAssocArrayDeclaration`, `compiler.d`) exists to pass one
+  `cerealed.d` row (`classSerialisationReadsStaticChildRegistry`,
+  `Writer.childWriters`, a `Taarray`-of-delegate static struct field). It
+  matches any module/static `Taarray`-of-delegate declaration, ignores the key
+  (one global slot per declaration, last-write-wins), and falls back to a
+  cross-call-site global (`_latestStaticDelegateAssocArrayFunction`). The
+  general delegate-AA path is confirmed NOT yet a superset of it -- forcing
+  both entry points to decline still fails that row -- so do not remove or
+  narrow it without a real fix backing it, and note that any change to how a
+  delegate-typed store resolves can starve that fallback and break the row.
 
-`concurrency.thisTid.Bytecode` (`tests/ut/backends/runner/sys/concurrency.d`)
-stays `Omit!(Bytecode, Because.unconfirmed, ...)`. `Scheduler.thisInfo`'s
-`atomicLoad(scheduler)` (an 8-byte `Scheduler` reference) is usually served
-by the already-supported `RDX`/`RAX` atomic-load inline-asm shape
-(`tryCompileAtomicLoadAsm`, `compiler.d`), but order-dependently -- confirmed
-with `bin/ut --seed 543485028` -- the same call site is sometimes compiled
-with a second, distinct shape using 32-bit `EDX`/`EAX` value registers
-instead, which the bytecode core does not recognise. Why the same 8-byte
-load takes either shape is not yet characterized; do not add a same-shaped
-`EDX`/`EAX` opcode without first confirming (e.g. against a disassembled
-`SystemLinker` build of this exact fixture) that a 4-byte-wide native atomic
-read is actually the correct oracle behaviour for this call, rather than a
-truncation of the real 8-byte reference.
-
-`file.createWriteRead.Bytecode` (`tests/ut/backends/runner/sys/file.d`) stays
-`Omit!(Bytecode, Because.refusal, "Unsupported inline asm instruction
-sequence: ...")`. `atomicOp!"+="(_p.refs, 1)` passes `_p.refs` (a field
-reached by dereferencing the pointer field `File.Impl* _p`) as a `ref`
-argument; `emitStructPointerFieldRefArgument` (`compiler.d`) now resolves
-that shape. The remaining blocker: `std.stdio.File`'s refcounting is
-`shared`, and DMD's `core.atomic` lowers `atomicOp!"+="` on this platform to
-inline x86 asm (`lock xchg` followed by a plain store) rather than a
-compiler intrinsic; the bytecode core has no inline-asm support at all.
-Candidate fixes: implement the specific `lock`-prefixed read-modify-write/
-store instruction sequence `core.atomic` emits, or recognise `atomicOp`/
-`atomicLoad`/`atomicStore` by symbol (like the `std.math` builtins) and
-lower them to dedicated VM atomic ops instead of compiling the inline asm
-body.
-
-A delegate-typed PARAMETER is an ordinary 16-byte `{functionIndex, context}`
-by-value parameter; a call through one (`Op.callIndirectDynamic`) builds its
-argument area from the delegate's declared type alone, since there is no
-statically known `FuncDeclaration` behind it. This is sound for a nested
-function/lambda, whose context is always one pointer-sized word matching the
-delegate pair's own context word. A struct-receiver method's context is
-instead a caller-frame-relative offset into a whole receiver block, so
-`callIndirectDynamic` checks the resolved callee's `CompiledFunction.hasThis`
-at run time and rejects it with a diagnostic rather than misreading the
-context word (`delegate.structReceiverPassedAsParameterIsRejected.Bytecode`,
-`tests/ut/backends/runner/lang/expressions.d`). A class-method delegate
-should carry the same single-word context as a lambda/nested function, but
-that shape is not yet verified through this mechanism: `auto d = &c.m; d()`
-already fails earlier with a pre-existing, unrelated `class this is null`
-error even as a plain local, before reaching a dynamic parameter call at
-all. Making the struct-receiver shape callable needs the receiver encoded as
-something frame-independent -- a real pointer to the receiver block rather
-than a frame-relative offset -- which changes how every struct method
-receives `this`, not just this call path.
-
-`compileIndirectCall` (`compiler.d`) now builds its argument area from the
-callee's function-pointer type alone (the same run-time-declared-type
-approach `compileDynamicDelegateCall` uses for a delegate parameter, minus
-the context word), so a plain `R function(Args...)` call with arguments
-works. A value loaded through a pointer dereference or index (`*p`, `p[i]`)
-whose static type is itself a pointer now carries `isPointer` (`compiler.d`'s
-`asPointerValue`), so a function pointer reached that way is an ordinary
-callable pointer local, the same as one bound directly from `&f`.
-
-Delegate support was broadened across most remaining shapes. A function
-whose declared return type is itself a delegate (`int delegate()
-makeGetter() { return () => 42; }`) now compiles and returns the delegate
-value correctly, including a real call-result destination at every call
-site that can produce one; a returned delegate that reads a variable from
-the returning function's own frame is deliberately refused rather than
-silently reading garbage, since it has no heap closure environment to
-survive that frame going away (see Closures section below -- needs the
-same GC-heap closure environment already described as unimplemented there).
-A delegate element in a dynamic or static array (construct, default-init to
-`null`, append, index-read, and call the result, including calling
-directly through the index with no intermediate local) now works, treated
-as a 16-byte opaque aggregate element throughout, the same shape a struct
-element already uses. A delegate comparison (`==`, `!=`, `is`, `!is`,
-including against `null`, and through the rich `assert(...)` message
-lowering) now compiles as a bitwise compare of the 16-byte
-`{functionIndex, context}` pair (a delegate has no `opEquals`), covering a
-lambda/nested-function delegate, a method delegate, and a delegate read
-back from a dynamic-array element (`Interpreter` still throws on the
-method-delegate and array-element shapes for unrelated reasons,
-`Omit!(Interpreter, Because.unconfirmed)`). A delegate-typed FIELD reached
-through a class reference or struct pointer (`c.f`, `p.f`) now supports
-every use a struct-value field already had (read, direct assignment with
-no intermediate local, call straight through the field). A delegate
-returned from a LAMBDA literal typed as a plain function pointer (DMD's
-default for a non-capturing lambda, e.g. `auto make = () => () => 42;`)
-now compiles, routed through the ordinary single-word `&f` value instead of
-being built as a 16-byte delegate pair unconditionally. A delegate-valued
-FIELD inside a STRUCT LITERAL now compiles, resolved the same way every
-other delegate-valued site is instead of unconditionally throwing for any
-non-null element. Covered by `expressions.d`'s
-`delegate.functionReturningNonCapturingDelegateIsCallable`/
-`functionReturningCapturingDelegateIsRejected`/
-`dynamicArrayElementIs{AppendableAndCallable,CallableThroughIndexDirectly}`
-and static-array equivalents (several omitted on `Interpreter`,
-unconfirmed).
-
-`&arr[i]`/`arr.ptr` for a dynamic array of structs (or any aggregate
-element) now scales by the element's real byte width instead of silently
-computing a null stride -- previously every `&arr[i]` silently addressed
-element 0 regardless of `i`, a same-root-cause sibling of the "Pointer
-metadata" section's opcode-type/byte-stride conflation. A `*p = rhs`/
-`*p op= rhs` lowered by DMD to a call on a struct pointee with a
-user-defined `opAssign`/`opOpAssign` also now writes back correctly (a bare
-pointer-dereference receiver had no writeback branch and silently discarded
-the mutation), confirmed via real `bin/ut`, not `bin/qb` alone -- `bin/qb
-file.d` without `-l` never executes the file's module unittests at all, so
-an apparent zero-exit "pass" there proves nothing.
-
-Assignment and compound assignment (every operator) through a
-`ref`-returning method call used as an lvalue, for a scalar array-field
-element accessor (`ref int at(in int index) return { return data[index];
-}`, then `p.at(0) = 42;` / `p.at(0) += 2;` / `p.at(0)++;`), now compile,
-writing through the field's real slice descriptor at the real index
-instead of the throwaway returned copy (the callee still runs first,
-preserving any side effect such as a bounds check). Scoped to a scalar
-element and a side-effect-free index argument (the real call re-evaluates
-the index to bind the callee's own parameter, so a side-effecting one is
-declined rather than double-run); a class receiver is not addressed.
-Pre-increment (`++p.at(0)`) needed no change, since DMD rewrites it to the
-already-covered `+=` form before the bytecode compiler ever sees it.
-
-A captured static array's element write and read from inside a nested
-function/closure (`int[3] arr; void mutate() { arr[1] = 55; }`, including
-further static-array indices) now compile, resolved through the same
-captured-variable frame ops already used for a captured scalar local
-rather than the in-frame path that only ever addresses a base local to
-*this* function; care is needed to still route a captured *dynamic*-array
-element write through its own separate path, since captured locals of
-every shape (dynamic arrays, structs, delegates, ...) share the same
-offset table -- caught via a full-module `bin/ut` run of
-`expressions.d`/`arrays.d` together, not the new fixture alone. A
-static-array field reached through a struct-field chain of any depth
-rooted at a class reference now compiles too, resolving through the same
-real-pointer field plumbing a direct class field already uses.
-
-Next candidate: `refArgument.templateRefSharedParameterMutatesAndPreservesAddress`
-(`expressions.d`) -- confirmed red via `bin/ut` by temporarily lifting its
-`Omit!(Bytecode, Because.unconfirmed)` (restored, not committed): `void
-setShared(T)(ref shared(T) value, shared(T)* expected) { assert(&value ==
-expected); ... }` fails its first assertion, so a template `ref shared(T)`
-parameter does not alias the caller's real storage on `Bytecode` -- not yet
-root-caused. The sibling row below it, `delegate.captureIsNotParameterReference`,
-already passes on `Bytecode` (checked the same way) -- its
-`Omit!(Bytecode, Because.unconfirmed)` is stale and worth deleting as a free
-promotion.
+Next candidate. Every remaining `Omit!(Bytecode, ...)` row is one of the
+blocked rows above, so a matrix search will not surface a bounded one. The
+best bounded candidate is the unguarded closure-escape gap named in the
+Closures section: a capturing delegate stored into a class field or an array
+element silently captures a dead frame instead of declining. Otherwise find a
+fresh row through `bin/qb` exploration of read-modify-write and mirror paths,
+or take a "Architecture work forced by the baseline" front.
 
 ### TDD and handoff discipline
 
@@ -855,21 +540,32 @@ enabled matrix and a forward-looking next-row update.
 Approved deepening work, distinct from the row-driven queue: each item lands
 as bounded, behaviour-preserving ride-along commits on the serial bytecode
 track, with the enabled matrix green after each commit. Order: width first,
-place second; the program.d item is independent except that its descriptor
-accessors must precede the descriptor-order flip (§ Memory model).
+place second.
 
 1. **One width authority.** Element/operand byte width is hand-derived at
    dozens of emit sites, and `ScalarType.void_` (size 0) doubles as the
    aggregate sentinel, so an omitted width becomes a silent zero-byte copy
-   instead of a compile error. Generalise
-   `dynamicArrayElementSize`/`pointerElementMetadata` into the single width
-   authority consumed by every emit site, and replace raw `Instruction(...)`
-   construction for the width-suffixed opcode families with per-family emit
-   helpers whose interface requires the width, so an `*N` instruction cannot
-   be built without its width operand. Known concrete divergence to fix
-   first: the `refLocalPointerRefWriteBacks` flush loop omits the width
-   operand its sibling loops pass, masked today by
-   `emitRefLocalPointerArgument`'s 1/2/4/8 gate.
+   instead of a compile error. Two sub-pieces.
+
+   Still open: generalise `dynamicArrayElementSize`/`pointerElementMetadata`
+   into the single width authority every emit site's width *computation* goes
+   through. Each site still derives its own width today
+   (`dynamicArrayElementSize`, `staticArraySize`, `size(scalarType)`, ...).
+
+   Done: every width-suffixed opcode family (`indexLoad*`/`indexStore*`,
+   `pointerLoad*`/`pointerStore*`/`pointerSlice*`, `subSlice*`,
+   `appendElement*`, `dupArray*`, `concatArrays*`, and
+   `sliceCopy*`/`sliceFill*`/`sliceEqual*`) is emitted only through a
+   per-family `emit*` helper in `compiler.d` that takes width as a required
+   parameter and builds the `Instruction` itself, so an `*N` instruction can no
+   longer be constructed with a silently-defaulted-to-zero width operand. The
+   three slice families needed separate helpers rather than one shared helper:
+   `sliceCopy` covers 1/2/4/8/16 plus `N`, `sliceFill` covers 1/2/4/8 plus `N`
+   (its broadcast source is a scalar, never a descriptor element), and
+   `sliceEqual` covers only 1/2/4/8 with no `N` variant at all.
+   `Op.sliceEqualNested` is a genuinely different opcode with its own
+   depth/element-width operands and keeps its own `emitNestedArrayEqual`
+   construction site.
 
 2. **One place resolver.** Lvalue addressing is enumerated per shape: the
    `emit*RefArgument` chain with its comment-encoded decline order,
@@ -881,15 +577,6 @@ accessors must precede the descriptor-order flip (§ Memory model).
    (base, hop chain, width, writeback rule) returned by one resolver,
    consumed by emit sites and a single flush path. A new language-surface
    shape extends the resolver, never adds a sibling emitter.
-
-3. **Shared facts move into program.d.** The op↔width mapping exists twice
-   (size→Op selectors in the compiler, Op→size derivations in the machine)
-   with nothing enforcing bijectivity; slice-descriptor field arithmetic is
-   re-encoded in compiler, machine, and reify; `ResultType` is constructed
-   positionally. Give program.d the facts as code all three consume: one
-   op↔width table, descriptor accessor functions, named `ResultType`
-   construction. The descriptor accessors land before the descriptor-order
-   flip so the flip becomes a one-module edit.
 
 Reviewed and declined (2026-08): a bytecode-core disassembler with
 instruction-level emission pins — not worth tackling; do not re-propose.
@@ -1023,48 +710,75 @@ lifetime as the dependency bytecode cache.
   further up the enclosing-function chain than one level
   (`capturedFrameIndex`, `compiler.d`) walks the remaining hops itself: each
   intermediate ancestor's own received context lives at that ancestor's own
-  `nestedContextOffset` within the frame just reached, still live on the
-  stack as the current call's transitive caller. `_capturedOwners` records,
-  per captured `VarDeclaration`, the function whose frame its offset is
-  relative to, so the read site knows how many hops to walk.
+  `nestedContextOffset` within the frame just reached, still live on the stack
+  as the current call's transitive caller. `_capturedOwners` records, per
+  captured `VarDeclaration`, the function whose frame its offset is relative
+  to, so the read site knows how many hops to walk.
 - A nested function that reads its enclosing struct method's `this` (a
-  capturing lambda literal, e.g. `() => this.field`, or a plain nested named
-  function, e.g. `auto helper() { return this.field; }`) needs a hidden
-  `this` receiver, not a captured-locals environment: DMD gives both shapes
-  an identical `vthis` context pointer (`FuncDeclaration.isNested`, set for
-  any non-`static` function whose `toParent2` is a function, regardless of
-  whether it is a `FuncLiteralDeclaration`), and `ThisExp` resolution inside
-  either one resolves to the nearest enclosing method's own `vthis`
-  (`hasThis(sc)` walking up through nested scopes). The compiler recognises
-  this case (`capturedThisStructDeclaration`) for both shapes, keyed only on
-  `vthis` plus the enclosing parent being a struct method, and only when the
-  enclosing struct itself is not function-nested: a struct declared inside a
-  function (a voldemort type) appends an extra hidden context-pointer field
-  after its declared fields (`AggregateDeclaration.isNested`), which the
-  frame layout this path builds does not account for, so a function-nested
-  struct falls back to the plain "unsupported" diagnostic instead of
-  resolving `this.field`. A direct unqualified call to such a named nested
-  function gets a call-site receiver branch in `methodReceiverOffset` for the
-  plain `VarExp` callee shape, alongside the `DotVarExp`/`FuncExp` shapes.
-  This is a `this`-receiver question, not the captured-locals-environment
-  work above, and does not by itself require a closure environment. A lambda
-  that captures a plain
-  enclosing *local* (not `this`) remains unmodelled and does need the
-  captured-locals environment described above; an immediately-invoked void
-  lambda whose body is a single expression statement can avoid needing that
-  environment by inlining the statement into the caller the same way a
-  single-`return`-expression IIFE already inlines.
+  capturing lambda literal, `() => this.field`, or a plain nested named
+  function) needs a hidden `this` receiver, not a captured-locals environment:
+  DMD gives both shapes an identical `vthis` context pointer
+  (`FuncDeclaration.isNested`), and `ThisExp` resolution inside either resolves
+  to the nearest enclosing method's own `vthis`. `capturedThisStructDeclaration`
+  recognises this, keyed on `vthis` plus the enclosing parent being a struct
+  method, and only when the enclosing struct is not itself function-nested: a
+  struct declared inside a function appends an extra hidden context-pointer
+  field after its declared fields (`AggregateDeclaration.isNested`) that this
+  path's frame layout does not account for, so a function-nested struct falls
+  back to the plain unsupported diagnostic. A direct unqualified call to such a
+  nested function gets a call-site receiver branch in `methodReceiverOffset`
+  for the plain `VarExp` callee shape. This is a `this`-receiver question, not
+  captured-locals-environment work, and needs no closure environment.
+- Frame-escaping capture. A delegate that captures a local and outlives the
+  declaring frame needs a real GC-heap environment, since the frame-relative
+  mechanism above addresses a live stack frame.
+  `heapClosureContextOrNull` (`compiler.d`) provides one for a narrow shape:
+  one or two captured locals, each scalar- or pointer-typed, captured one level
+  up from a non-`this`-receiving function, escaping either as a direct
+  `return dg;` (`compileDelegateReturn`) or as a top-level delegate field of a
+  directly returned struct literal (`structLiteralReturnOffset`). Each capture
+  gets a full machine-word slot regardless of its own narrower width, so the
+  `pointer + index * width` addressing divides exactly for every scalar width.
+  Everything outside that shape -- three or more captures, a
+  non-scalar/non-pointer capture, a multi-level capture, a capture combined
+  with `this` -- declines through `throwFrameEscapingDelegateDiagnostic`.
+
+  Soundness rests on the escape site being the last thing its function
+  executes, so the frame slots and the heap snapshot cannot diverge. That holds
+  for a `return`. It does NOT hold for a mid-function site, which is why an
+  `out`/`ref`-parameter assignment declines a capturing rhs unconditionally
+  (`refEscapingDelegateOperandOffset`) rather than heap-escaping it. Preserve
+  that invariant when widening: a new escape site must either be its function's
+  last act, or move the variable to the heap from declaration onward.
+
+  KNOWN UNGUARDED GAP: a capturing delegate escaping through a class field, an
+  array element, or a field nested more than one level inside a returned struct
+  literal routes through none of this, and silently produces a delegate holding
+  a popped or reused frame context -- a wrong answer, not a refusal. Closing it
+  is the next real closure work, and the narrowest useful fix is to route those
+  sites through the same decline path first, then widen.
+
+  The eventual right design point is DMD's own per-function `needsClosure()`/
+  `closureVars` decision -- every closure-needing variable heap-allocated from
+  declaration onward, since `needsClosure()` is typically true for any lambda
+  whose address is taken at all. Adopting it means moving every
+  `capturedFrameIndex` call site (struct and array captures, multi-level
+  ancestor chains, `this`-combined captures) onto heap-pointer addressing
+  together, not one slice at a time. An immediately-invoked void lambda whose
+  body is a single expression statement can avoid needing an environment at all
+  by inlining the statement into the caller, the way a single-`return` IIFE
+  already does.
 - The captured-parent materialisation is only for such nested functions. A
   nested struct method's own `this` remains its current receiver, even when
   that receiver also carries a context pointer.
 - `capturedThisStructDeclaration` declines the `this`-receiver shape whenever
-  the nested function also has a captured local (`hasCapturedOuterLocal`),
-  even though `vthis` is set: the function instead gets an ordinary nested
-  frame/closure context, and `vthis` is registered into that same captured-
-  offsets map alongside the captured locals, so `this.field` resolves through
-  the closure environment like any other captured variable. This covers both
-  a nested function that reads an enclosing local and `this.field` together
-  and a pure-local capture with no `this` use at all.
+  the nested function also has a captured local (`hasCapturedOuterLocal`), even
+  though `vthis` is set: the function instead gets an ordinary nested
+  frame/closure context, and `vthis` is registered into that same
+  captured-offsets map alongside the captured locals, so `this.field` resolves
+  through the closure environment like any other captured variable. This covers
+  both a nested function that reads an enclosing local and `this.field`
+  together, and a pure-local capture with no `this` use at all.
 
 The compiled-D exposing behaviour is:
 
