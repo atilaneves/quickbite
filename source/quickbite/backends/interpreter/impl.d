@@ -7754,7 +7754,7 @@ private struct Walker {
         imported!"dmd.expression".IndexExp index,
         imported!"dmd.expression".Expression rhs,
     ) {
-        import quickbite.frontend.dmd.types: isPointerType;
+        import quickbite.frontend.dmd.types: isPointerType, isStaticArrayType;
 
         if (isPointerType(index.e1.type)) {
             const pointer = runExpression(index.e1);
@@ -7858,11 +7858,38 @@ private struct Walker {
             throw new Exception("Unsupported interpreter assignment target.");
 
         const arrayIndex = cast(size_t) runExpression(index.e2).asLong;
+        if (isStaticArrayType(index.e1.type))
+            checkStaticArrayIndexInBounds(*current, arrayIndex);
         const value = runExpression(rhs);
         setLocal(variable, AggregateValue.withArrayElement(*current, arrayIndex, value));
         writeThroughArrayCell(variable, arrayIndex, value);
         uninitializedLocals.remove(variable);
         return value;
+    }
+
+    // A runtime index past a static array's fixed DMD element count is
+    // bounds checked here, before `withArrayElement`'s offset arithmetic --
+    // otherwise `Place.index` (`place.d`) raises its own generic container
+    // `Exception`, not druntime's `ArrayIndexError` text. Compiled D always
+    // raises this exact wording for a write, regardless of call depth
+    // (unlike the read path's accepted top-level/nested-call divergence), so
+    // this forces `indexOutOfBoundsMessage`'s `runningCalledFunction` arm
+    // unconditionally rather than threading the Walker's own flag through.
+    private void checkStaticArrayIndexInBounds(
+        in Value array,
+        in size_t index,
+    ) {
+        import quickbite.backends.interpreter.aggregate_value: AggregateValue;
+        import quickbite.backends.interpreter.messages: indexOutOfBoundsMessage;
+
+        const length = AggregateValue.length(array);
+        if (index >= length)
+            throwRangeError(indexOutOfBoundsMessage(
+                index,
+                length,
+                /* isSlice */ false,
+                /* runningCalledFunction */ true,
+            ));
     }
 
     private void writeThroughArrayCell(
@@ -8064,7 +8091,7 @@ private struct Walker {
         // sibling `aa[key].field = ...` shape). Write through that pointer
         // directly instead of the `locals`-keyed array rebuild below, which
         // has no pointer-typed base at all.
-        import quickbite.frontend.dmd.types: isPointerType;
+        import quickbite.frontend.dmd.types: isPointerType, isStaticArrayType;
 
         if (isPointerType(outer.e1.type)) {
             import quickbite.backends.interpreter.place: Place;
@@ -8093,12 +8120,16 @@ private struct Walker {
             throw new Exception("Unsupported interpreter assignment target.");
 
         const outerIndex = cast(size_t) runExpression(outer.e2).asLong;
+        if (isStaticArrayType(outer.e1.type))
+            checkStaticArrayIndexInBounds(*current, outerIndex);
+        const outerElement = AggregateValue.elementAt(*current, outerIndex);
         const innerIndex = cast(size_t) runExpression(inner.e2).asLong;
+        if (isStaticArrayType(inner.e1.type))
+            checkStaticArrayIndexInBounds(outerElement, innerIndex);
         const value = runExpression(rhs);
         setLocal(variable, AggregateValue.withArrayElement(*current,
             outerIndex,
-            AggregateValue.withArrayElement(
-                AggregateValue.elementAt(*current, outerIndex), innerIndex, value),
+            AggregateValue.withArrayElement(outerElement, innerIndex, value),
         ));
         const updatedOuter = AggregateValue.elementAt(locals[variable], outerIndex);
         writeThroughArrayCell(variable, outerIndex, updatedOuter);

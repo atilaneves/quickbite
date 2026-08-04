@@ -2760,7 +2760,6 @@ static foreach (backend; Matrix!()) {
 // uses the divergent backtick-range wording pinned below.
 static foreach (backend; Matrix!(
     Omit!(Ctfe, Because.diverges, "see sibling pin below (Ctfe)"),
-    Omit!(Interpreter, Because.unconfirmed),
 )) {
     @("staticArray.elementWriteWithRuntimeIndexOutOfBoundsDiagnostic." ~
         backend.stringof)
@@ -2850,7 +2849,6 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter)) {
 
 static foreach (backend; Matrix!(
     Omit!(Ctfe, Because.diverges, "see sibling pin below (Ctfe)"),
-    Omit!(Interpreter, Because.unconfirmed),
 )) {
     @("staticArray.nestedElementWriteWithRuntimeOuterIndexOutOfBoundsDiagnostic." ~
         backend.stringof)
@@ -2940,7 +2938,6 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter)) {
 
 static foreach (backend; Matrix!(
     Omit!(Ctfe, Because.diverges, "see sibling pin below (Ctfe)"),
-    Omit!(Interpreter, Because.unconfirmed),
 )) {
     @("staticArray.nestedElementWriteWithRuntimeInnerIndexOutOfBoundsDiagnostic." ~
         backend.stringof)
