@@ -17574,6 +17574,38 @@ private struct Compiler {
         return referenceOffsetOrNull(branch);
     }
 
+    // Shared width computation for `emitClassFieldRefArgument` and
+    // `emitStructPointerFieldRefArgument`: a `Tstruct`/`Tsarray` field lives
+    // inline at its own address and takes its own real byte width; every
+    // other field type takes its scalar width and declines outside
+    // 1/2/4/8. This intentionally does NOT reuse `elementMetadataFor`'s
+    // wider aggregate gate: `elementMetadataFor` treats `Tdelegate` as a
+    // 16-byte aggregate, whereas this gate falls through to
+    // `scalarType(Tdelegate)`, which throws (`scalarType` has no `Tdelegate`
+    // case). Widening this gate to match `elementMetadataFor` would silently
+    // reclassify that throw as a mirror-writeback instead -- a behaviour
+    // change needing its own oracle-backed exposing test, not a pure
+    // consolidation (`ai/plans/bytecode.md`'s consolidation queue).
+    private bool refArgumentFieldWidth(
+        Type fieldType,
+        out ushort valueSize,
+        out ushort valueAlign,
+    ) {
+        import dmd.astenums: TY;
+
+        const ty = fieldType.toBasetype.ty;
+        const isAggregate = ty == TY.Tstruct || ty == TY.Tsarray;
+        valueSize = cast(ushort) (isAggregate
+            ? staticArraySize(fieldType)
+            : size(scalarType(fieldType)));
+        if (!isAggregate && valueSize != 1 && valueSize != 2 &&
+            valueSize != 4 && valueSize != 8)
+            return false;
+        valueAlign = isAggregate
+            ? cast(ushort) staticArrayAlign(fieldType) : valueSize;
+        return true;
+    }
+
     // A `ref` argument bound to a scalar class field (`verify(c.value, ...)`):
     // mirror the field's current value into a fresh frame slot for the call,
     // matching `emitStructPointerRefArgument`'s pattern for a pointed-at
@@ -17610,15 +17642,9 @@ private struct Compiler {
         // pointer to dereference), so it needs its own real byte width
         // rather than the scalar-only 1/2/4/8 gate below -- the aggregate
         // counterpart of `emitStructPointerFieldRefArgument`.
-        const isAggregate = ty == TY.Tstruct || ty == TY.Tsarray;
-        const valueSize = cast(ushort) (isAggregate
-            ? staticArraySize(field.type)
-            : size(scalarType(field.type)));
-        if (!isAggregate && valueSize != 1 && valueSize != 2 &&
-            valueSize != 4 && valueSize != 8)
+        ushort valueSize, valueAlign;
+        if (!refArgumentFieldWidth(field.type, valueSize, valueAlign))
             return false;
-        const valueAlign =
-            isAggregate ? staticArrayAlign(field.type) : valueSize;
 
         foreach (writeBack; writeBacks)
             if (writeBack.pointerSlot == field.pointerSlot &&
@@ -17699,15 +17725,9 @@ private struct Compiler {
         if (ty == TY.Tarray || ty == TY.Taarray)
             return false;
 
-        const isAggregate = ty == TY.Tstruct || ty == TY.Tsarray;
-        const valueSize = cast(ushort) (isAggregate
-            ? staticArraySize(field.type)
-            : size(scalarType(field.type)));
-        if (!isAggregate && valueSize != 1 && valueSize != 2 &&
-            valueSize != 4 && valueSize != 8)
+        ushort valueSize, valueAlign;
+        if (!refArgumentFieldWidth(field.type, valueSize, valueAlign))
             return false;
-        const valueAlign =
-            isAggregate ? staticArrayAlign(field.type) : valueSize;
 
         foreach (writeBack; writeBacks)
             if (writeBack.pointerSlot == field.pointerSlot &&

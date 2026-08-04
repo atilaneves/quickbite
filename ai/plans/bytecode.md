@@ -488,11 +488,10 @@ now a confirmed and declined shape
 `delegate.arrayElementEscapingCaptureDeclines`), not an open question. Find a
 fresh row through `bin/qb` exploration of read-modify-write and mirror paths,
 take the "Structural consolidation queue" width-authority item (still open:
-`emitClassFieldRefArgument`/`emitStructPointerFieldRefArgument`'s identical
-hand-rolled width computation, the next bounded piece toward the
-width-authority merge -- see the item's note on their narrower
-`Tdelegate`-excluded `isAggregate` gate before reusing `elementMetadataFor`
-directly), or take an "Architecture work forced by the baseline" front.
+folding `refArgumentFieldWidth` into `elementMetadataFor` needs the
+`Tdelegate`-exposing oracle-backed test described in that item first), the
+"One place resolver" item, or take an "Architecture work forced by the
+baseline" front.
 
 ### TDD and handoff discipline
 
@@ -569,19 +568,18 @@ place second.
    its own hand-checked `Tvoid` case ahead of that shared call, since
    `scalarType(Tvoid)` collides with `elementMetadataFor`'s `void_` aggregate
    marker). `emitClassFieldRefArgument` and `emitStructPointerFieldRefArgument`
-   (`compiler.d`, the class-field/struct-pointer-field pair in the
-   `emit*RefArgument` chain) are the next such sub-piece: identical bodies bar
-   their field-address helper, each hand-rolling the same width computation
-   -- but note their `isAggregate` gate is `Tstruct`/`Tsarray` only, not
-   `Tdelegate`; a delegate-typed field reaching either function today falls
+   (`compiler.d`) now share their width computation through one helper,
+   `refArgumentFieldWidth`, kept deliberately separate from
+   `elementMetadataFor` because its `isAggregate` gate is `Tstruct`/`Tsarray`
+   only, not `Tdelegate`: a delegate-typed field reaching it still falls
    through to `size(scalarType(field.type))`, which throws (`scalarType` has
-   no `Tdelegate` case) rather than being declined earlier. Swapping in
-   `elementMetadataFor` directly would silently reclassify that throw as a
-   16-byte aggregate mirror-writeback instead -- a behaviour change, not a
-   pure consolidation, so it needs its own oracle-backed exposing test (a
-   `ref` argument naming a delegate-typed struct-pointer/class field) before
-   landing, not a same-commit assumption that the wider classification is
-   safe.
+   no `Tdelegate` case) rather than being declined earlier. Folding
+   `refArgumentFieldWidth` into `elementMetadataFor` would silently
+   reclassify that throw as a 16-byte aggregate mirror-writeback instead --
+   a behaviour change, not a pure consolidation, so it still needs its own
+   oracle-backed exposing test (a `ref` argument naming a delegate-typed
+   struct-pointer/class field, confirmed against `SystemLinker`) before that
+   final fold can land.
 
    Done: every width-suffixed opcode family (`indexLoad*`/`indexStore*`,
    `pointerLoad*`/`pointerStore*`/`pointerSlice*`, `subSlice*`,
