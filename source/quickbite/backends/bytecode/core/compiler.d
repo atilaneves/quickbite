@@ -180,6 +180,15 @@ private struct Compiler {
     // must run that scope's `finally` block first; the exited scopes' finally
     // blocks are re-emitted inline on the exit edge (see `runExitedFinally`).
     private TryFinallyContext[] _tryFinallyStack;
+    // `_tryFinallyStack.length` recorded each time a `TryCatchStatement`'s own
+    // protected try body starts compiling, innermost last; popped when that
+    // body finishes. A `throw` compiled while this is non-empty is lexically
+    // inside a try body some sibling `catch` might still claim at runtime --
+    // catch matching is a dynamic-type decision the compiler cannot resolve
+    // here -- so it must not inline finally scopes at or below the innermost
+    // recorded depth (see `throwExitedFinallyCount`); only scopes opened
+    // after that catch's protection began are unconditionally exited.
+    private size_t[] _catchProtectedDepths;
     // The label ident of a `label:` that immediately wraps the next loop, so the
     // loop records it for labeled `break`/`continue`; null otherwise.
     private const(void)* _pendingLoopLabel;
@@ -475,6 +484,7 @@ private struct Compiler {
         _loopStack = null;
         _switchStack = null;
         _tryFinallyStack = null;
+        _catchProtectedDepths = null;
         _pendingLoopLabel = null;
         _pendingFinallyExceptionMessageOffset = noCatchObjectField;
         _pendingFinallyExceptionClassIndex = noExceptionClass;
@@ -1148,9 +1158,10 @@ private struct Compiler {
     }
 
     // `try { body } finally { final }`: compile the body, then the finally on the
-    // fall-through edge. A `goto`/`break`/`continue` that leaves the body runs
-    // the finally inline first (see `runExitedFinally`); since no test throws
-    // across a `try`/`finally`, no runtime handler is needed for the throw edge.
+    // fall-through edge. A `goto`/`break`/`continue`/`throw` that leaves the body
+    // runs the finally inline first (see `runExitedFinally`, `throwExitedFinallyCount`);
+    // no runtime handler exists for the throw edge, since which scopes a throw
+    // actually exits is resolved at compile time from the enclosing catch nesting.
     private void compileTryFinallyStatement(
         imported!"dmd.statement".TryFinallyStatement tryFinally,
     ) {
@@ -1191,6 +1202,19 @@ private struct Compiler {
             _pendingFinallyExceptionClassIndex = savedExceptionClass;
             _tryFinallyStack = saved;
         }
+    }
+
+    // The count of innermost `_tryFinallyStack` scopes a `throw` at the
+    // current compile point unconditionally exits. Unlike `return`/`goto`/
+    // `break`/`continue`, a `throw` can be intercepted by a sibling `catch`
+    // whose match is a runtime, dynamic-type decision, so scopes at or below
+    // the nearest still-open catch-protected try body (`_catchProtectedDepths`)
+    // are left for the runtime handler, or for that catch handler's own later
+    // exit, to resolve -- never inlined here.
+    private size_t throwExitedFinallyCount() {
+        const guardDepth = _catchProtectedDepths.length == 0
+            ? 0 : _catchProtectedDepths[$ - 1];
+        return _tryFinallyStack.length - guardDepth;
     }
 
     private void compileReturnStatement(
@@ -1378,8 +1402,11 @@ private struct Compiler {
             cast(ushort) tryCatch.catches.length,
         );
 
-        if (tryCatch._body !is null)
+        if (tryCatch._body !is null) {
+            _catchProtectedDepths ~= _tryFinallyStack.length;
             compileNestedStatement(tryCatch._body);
+            _catchProtectedDepths.length -= 1;
+        }
 
         // Normal completion of the try body: drop the handler group and skip the
         // catch bodies.
@@ -2029,6 +2056,10 @@ private struct Compiler {
                 expressionChars(expression),
             ));
 
+        const exitCount = throwExitedFinallyCount;
+        if (exitCount != 0)
+            runExitedFinally(exitCount);
+
         _code ~= Instruction(Op.throwObject, object.offset);
         const type = throwResultType(resultType);
         return Operand(allocate(type), type);
@@ -2046,12 +2077,13 @@ private struct Compiler {
         }
 
         const nextMessageOffset = _pendingFinallyExceptionMessageOffset;
-        if (_tryFinallyStack.length != 0) {
+        const exitCount = throwExitedFinallyCount;
+        if (exitCount != 0) {
             auto savedException = _pendingFinallyExceptionMessageOffset;
             auto savedExceptionClass = _pendingFinallyExceptionClassIndex;
             _pendingFinallyExceptionMessageOffset = messageOffset;
             _pendingFinallyExceptionClassIndex = classIndex;
-            runExitedFinally(_tryFinallyStack.length);
+            runExitedFinally(exitCount);
             _pendingFinallyExceptionMessageOffset = savedException;
             _pendingFinallyExceptionClassIndex = savedExceptionClass;
         }

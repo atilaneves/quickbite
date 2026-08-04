@@ -488,6 +488,41 @@ static foreach (backend; Matrix!()) {
 }
 
 static foreach (backend; Matrix!()) {
+    @("finally.runsOnceWhenCatchExits." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            int run(bool rethrow) {
+                int finallyRuns;
+                int caughtCount;
+
+                try {
+                    try {
+                        throw new Exception("body");
+                    } catch (Exception e) {
+                        caughtCount += 1;
+                        if (rethrow)
+                            throw e;
+                        else
+                            throw new Exception("from catch");
+                    } finally {
+                        finallyRuns += 1;
+                    }
+                } catch (Exception e) {
+                }
+
+                return caughtCount * 100 + finallyRuns;
+            }
+
+            unittest {
+                assert(run(true) == 101);
+                assert(run(false) == 101);
+            }
+        });
+    }
+}
+
+static foreach (backend; Matrix!()) {
     @("finally.runsAfterReturn." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {

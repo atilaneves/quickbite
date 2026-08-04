@@ -472,6 +472,13 @@ reaches them:
   both entry points to decline still fails that row -- so do not remove or
   narrow it without a real fix backing it, and note that any change to how a
   delegate-typed store resolves can starve that fallback and break the row.
+- A `throw`'s exception-chaining (`.next`) only threads through
+  `_pendingFinallyExceptionMessageOffset` on the `emitThrowString` (string
+  `new Exception(...)`) path. An object throw (`throw e;`, or any non-string-
+  message `new`) that exits through a `finally` which itself throws does not
+  chain: `compileThrowExpression`'s `Op.throwObject` site runs
+  `runExitedFinally` for the exit but has no equivalent pending-object slot
+  for the inlined finally's own throw to chain onto.
 
 Next candidate. No named oracle-backed `Omit!(Bytecode, Because.unconfirmed)`
 row remains bounded and unblocked: the two survivors
@@ -479,11 +486,9 @@ row remains bounded and unblocked: the two survivors
 `refArgument.templateRefSharedForwardsThroughNestedFunction`, both in
 `expressions.d`) are the documented `&value == expected` address-identity
 rows blocked on the ref calling convention above, not bounded single-commit
-fixes. Captured-array coverage and both nested-AA auto-vivification shapes
-(an existing and a brand-new outer key) are now fixed and covered. Find a
-fresh row through further `bin/qb` exploration (exception/closure
-interactions are untried), take the "One place resolver" item, or take an
-"Architecture work forced by the baseline" front.
+fixes. Find a fresh row through further `bin/qb` exploration (closure
+interactions specifically are untried), take the "One place resolver" item,
+or take an "Architecture work forced by the baseline" front.
 
 ### TDD and handoff discipline
 
