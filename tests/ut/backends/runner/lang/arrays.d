@@ -2260,6 +2260,39 @@ static foreach (backend; Matrix!()) {
     }
 }
 
+// `new T[][](rows)`: unlike `new T[N][](rows)` above, the inner element is
+// itself a dynamic array, not a compile-time-sized row, so there is no row
+// width to bake in at all -- each of the `rows` outer slots default-inits to
+// its own null (empty) slice, exactly like a bare `T[]` local.
+static foreach (backend; Matrix!()) {
+    @("dynamicArray.newArrayOfDynamicArrayRowsUsesRuntimeLength." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            unittest {
+                size_t rows = 1;
+                ++rows;
+
+                int[][] values = new int[][](rows);
+
+                assert(values.length == rows);
+                assert(values[0].length == 0);
+                assert(values[1].length == 0);
+
+                values[0] ~= 42;
+                values[1] ~= 1;
+                values[1] ~= 2;
+
+                assert(values[0] == [42]);
+                assert(values[1] == [1, 2]);
+                assert(values[0].length == 1);
+                assert(values[1].length == 2);
+            }
+        });
+    }
+}
+
 // A broadcast fill (`arr[lo .. hi] = row;`) whose destination element is
 // itself a `T[N]` row (`int[3][]`): each destination slot already has its
 // own separately heap-allocated block from the array's construction, so the

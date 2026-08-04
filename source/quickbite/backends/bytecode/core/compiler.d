@@ -8293,6 +8293,27 @@ private struct Compiler {
                 return;
             }
 
+            // `new T[][](rows)`: the inner element is itself a dynamic array
+            // (not a `Tsarray` row), so there is no compile-time row width to
+            // bake in and no second runtime argument either -- each of the
+            // `rows` outer slots simply default-inits to its own null slice,
+            // the same zero-filled 16-byte descriptor a bare `T[]` local
+            // starts with. Fill with `0x00` unconditionally rather than
+            // `packedFill(elementType)`: that call's char/wchar special case
+            // targets a scalar *data* fill, not this level's slice
+            // descriptors.
+            if (!innerIsStatic && new_.arguments !is null &&
+                new_.arguments.length == 1) {
+                const length = compileExpression((*new_.arguments)[0]);
+                _code ~= Instruction(
+                    Op.allocArrayDynamic,
+                    destination,
+                    cast(ushort) sliceDescriptorSize,
+                    length.offset,
+                );
+                return;
+            }
+
             if (new_.arguments is null || new_.arguments.length != 2)
                 throw new Exception(text(
                     "Unsupported new array in bytecode core: ",
