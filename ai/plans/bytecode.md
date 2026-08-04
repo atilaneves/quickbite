@@ -480,18 +480,17 @@ reaches them:
   narrow it without a real fix backing it, and note that any change to how a
   delegate-typed store resolves can starve that fallback and break the row.
 
-Next candidate. `delegateFieldOffsetOf`'s struct-pointer-field branch
-(`compiler.d`) gates on `isPointerType(dot.e1.type)`, which never fires
-because DMD already lowers `p.field` to `(*p).field` before this code sees
-it (`dot.e1` is the dereferenced value, not a pointer) -- unlike its sibling
-`tryStructPointerField`, which unwraps `dot.e1.isPtrExp` first. Apply the
-same unwrap so a delegate-typed field reached through a struct pointer can
-be CALLED (`carrier.fn()`), not just read/written, then promote
-`refArgument.structPointerFieldOfDelegateTypeWritesThroughField`
-(`structs.d`, still `Omit!(Bytecode, ...)`) off that fix. Otherwise find a
-fresh row through `bin/qb` exploration of read-modify-write and mirror
-paths, take the "One place resolver" item, or take an "Architecture work
-forced by the baseline" front.
+Next candidate. No named oracle-backed `Omit!(Bytecode, Because.unconfirmed)`
+row remains bounded and unblocked: the two survivors
+(`refArgument.templateRefSharedParameterMutatesAndPreservesAddress`,
+`refArgument.templateRefSharedForwardsThroughNestedFunction`, both in
+`expressions.d`) are the documented `&value == expected` address-identity
+rows blocked on the ref calling convention above, not bounded single-commit
+fixes. Find a fresh row through `bin/qb` exploration of read-modify-write and
+mirror paths (nested static-array-of-dynamic-array mutation, captured-array
+read/write/slice/append coverage, broadcast-fill-into-heap-row-descriptor are
+open leads under "Live hazards and divergences" above), take the "One place
+resolver" item, or take an "Architecture work forced by the baseline" front.
 
 ### TDD and handoff discipline
 

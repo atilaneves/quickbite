@@ -4307,7 +4307,16 @@ private struct Compiler {
             return offset;
         }
 
-        if (dot.e1.type !is null && isPointerType(dot.e1.type)) {
+        // `p.field` arrives as `(*p).field`: DMD inserts a `PtrExp` over the
+        // pointer local before this code ever sees it, so `dot.e1` itself is
+        // the dereferenced struct value, not a pointer-typed expression.
+        // Unwrap it the same way `tryStructPointerField` does before
+        // checking for a pointer type.
+        auto derefBase = dot.e1;
+        if (auto deref = derefBase.isPtrExp)
+            derefBase = deref.e1;
+
+        if (derefBase.type !is null && isPointerType(derefBase.type)) {
             auto pointerField = tryStructPointerField(dot);
             if (pointerField is null ||
                 pointerField.type.toBasetype.ty != TY.Tdelegate)

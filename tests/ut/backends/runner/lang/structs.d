@@ -4235,21 +4235,15 @@ static foreach (backend; Matrix!(
 // delegate-typed field reached through a raw struct pointer, passed as a
 // `ref` argument (`replace(carrier.fn)`). The `refArgumentFieldWidth` fold
 // above already makes the ref-argument mirror-writeback itself correct for
-// this shape, but the fixture's own `carrier.fn()` CALL (before the `ref`
-// argument is ever reached) throws "Unsupported call in bytecode core:
-// (*carrier).fn()": `delegateFieldOffsetOf`'s struct-pointer-field branch
-// gates on `isPointerType(dot.e1.type)`, but DMD lowers `carrier.fn` to
-// `(*carrier).fn` first, so `dot.e1` is already the dereferenced `Holder`
-// PtrExp, not a pointer-typed expression -- the gate never fires, unlike
-// `tryStructPointerField`, which unwraps that same `PtrExp` itself. A
-// distinct, pre-existing call-dispatch gap, not a width-authority one.
+// this shape. The fixture's own `carrier.fn()` CALL previously threw
+// "Unsupported call in bytecode core: (*carrier).fn()":
+// `delegateFieldOffsetOf`'s struct-pointer-field branch gated on
+// `isPointerType(dot.e1.type)`, but DMD lowers `carrier.fn` to
+// `(*carrier).fn` first, so `dot.e1` was already the dereferenced `Holder`
+// PtrExp, not a pointer-typed expression -- the gate never fired, unlike
+// `tryStructPointerField`, which unwraps that same `PtrExp` itself.
+// `delegateFieldOffsetOf` now does the same unwrap first.
 static foreach (backend; Matrix!(
-    Omit!(Bytecode, Because.unconfirmed,
-        "`delegateFieldOffsetOf`'s struct-pointer-field gate " ~
-            "(`isPointerType(dot.e1.type)`) never fires for `carrier.fn()` " ~
-            "since DMD already lowers it to `(*carrier).fn()`, so the call " ~
-            "itself throws \"Unsupported call in bytecode core\" -- not " ~
-            "yet promoted"),
     Omit!(Interpreter, Because.unconfirmed,
         "throws \"Unsupported eval call.\" for this shape -- not yet " ~
             "promoted, owned by ai/plans/interpreter.md"),
