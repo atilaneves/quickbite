@@ -2884,10 +2884,7 @@ static foreach (backend; Matrix!()) {
 // a bare `Value.void_` instead of the materialised default struct
 // `runExpression`'s `VarExp` branch already produces for a directly
 // uninitialized local.
-static foreach (backend; Matrix!(
-    Omit!(Interpreter, Because.unconfirmed,
-        "nested ref forwarding sees the void-initialized local before materialization"),
-)) {
+static foreach (backend; Matrix!()) {
     @("refArgument.voidStructLocalFieldWritableThroughNestedRefWrite." ~
         backend.stringof)
     @Tags(backend.stringof)
@@ -4391,4 +4388,3 @@ static foreach (backend; Matrix!(
         });
     }
 }
-
