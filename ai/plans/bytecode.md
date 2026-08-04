@@ -480,18 +480,17 @@ reaches them:
   narrow it without a real fix backing it, and note that any change to how a
   delegate-typed store resolves can starve that fallback and break the row.
 
-Next candidate. Every remaining `Omit!(Bytecode, ...)` row is one of the
-blocked rows above. No named closure-escape gap remains in the Closures
-section either -- the class-field/array-element further-mutation question is
-now a confirmed and declined shape
-(`delegate.classFieldEscapingCaptureDeclines`,
-`delegate.arrayElementEscapingCaptureDeclines`), not an open question. Find a
-fresh row through `bin/qb` exploration of read-modify-write and mirror paths,
-take the "Structural consolidation queue" width-authority item (still open:
-folding `refArgumentFieldWidth` into `elementMetadataFor` needs the
-`Tdelegate`-exposing oracle-backed test described in that item first), the
-"One place resolver" item, or take an "Architecture work forced by the
-baseline" front.
+Next candidate. Two new `Omit!(Bytecode, Because.unconfirmed, ...)` rows
+(`refArgument.classFieldOfDelegateTypeWritesThroughField`,
+`refArgument.structPointerFieldOfDelegateTypeWritesThroughField`) now pin
+`SystemLinker`'s actual behaviour for a `ref` argument naming a
+delegate-typed class/struct-pointer field: the fold of `refArgumentFieldWidth`
+into `elementMetadataFor` (width-authority item, "Structural consolidation
+queue") is unblocked -- widen `elementMetadataFor`'s aggregate gate to cover
+`Tdelegate` as a 16-byte mirror-writeback, fold the two functions, and
+promote both rows. Otherwise find a fresh row through `bin/qb` exploration of
+read-modify-write and mirror paths, take the "One place resolver" item, or
+take an "Architecture work forced by the baseline" front.
 
 ### TDD and handoff discipline
 
@@ -576,10 +575,16 @@ place second.
    no `Tdelegate` case) rather than being declined earlier. Folding
    `refArgumentFieldWidth` into `elementMetadataFor` would silently
    reclassify that throw as a 16-byte aggregate mirror-writeback instead --
-   a behaviour change, not a pure consolidation, so it still needs its own
-   oracle-backed exposing test (a `ref` argument naming a delegate-typed
-   struct-pointer/class field, confirmed against `SystemLinker`) before that
-   final fold can land.
+   a behaviour change, not a pure consolidation. The needed oracle-backed
+   exposing test now exists
+   (`refArgument.classFieldOfDelegateTypeWritesThroughField`,
+   `refArgument.structPointerFieldOfDelegateTypeWritesThroughField` in
+   `tests/ut/backends/runner/lang/structs.d`, both `Omit!(Bytecode, ...)`):
+   `SystemLinker` writes the delegate through as a whole 16-byte value and
+   the callee-side write is visible through the original field afterward, so
+   the fold's honest destination is a 16-byte aggregate mirror-writeback for
+   `Tdelegate`, not a throw. Still open: land that fold and promote the two
+   rows.
 
    Done: every width-suffixed opcode family (`indexLoad*`/`indexStore*`,
    `pointerLoad*`/`pointerStore*`/`pointerSlice*`, `subSlice*`,

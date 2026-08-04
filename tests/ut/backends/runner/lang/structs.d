@@ -4195,6 +4195,87 @@ static foreach (backend; Matrix!()) {
     }
 }
 
+// A delegate-typed class field passed as a `ref` argument
+// (`replace(holder.fn)`). `refArgumentFieldWidth`'s aggregate gate is
+// `Tstruct`/`Tsarray` only, so a `Tdelegate` field falls through to
+// `size(scalarType(field.type))`, and `scalarType` has no `Tdelegate` case
+// -- confirming SystemLinker's actual behaviour (a callee-side write through
+// the `ref` is visible through the original field afterward) ahead of the
+// `ai/plans/bytecode.md` consolidation queue's width-authority fold.
+static foreach (backend; Matrix!(
+    Omit!(Bytecode, Because.unconfirmed,
+        "`refArgumentFieldWidth` (compiler.d) falls through to " ~
+            "`scalarType`, which has no `Tdelegate` case, for a " ~
+            "delegate-typed class field ref argument -- not yet promoted"),
+    Omit!(Interpreter, Because.unconfirmed,
+        "throws \"quickbite.backends.interpreter.place_value.writeValue: " ~
+            "unsupported at place\" for this shape -- not yet promoted, " ~
+            "owned by ai/plans/interpreter.md"),
+)) {
+    @("refArgument.classFieldOfDelegateTypeWritesThroughField." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            class Holder {
+                int delegate() fn;
+            }
+
+            void replace(ref int delegate() dg) {
+                dg = () => 99;
+            }
+
+            unittest {
+                auto holder = new Holder;
+                holder.fn = () => 42;
+                assert(holder.fn() == 42);
+                replace(holder.fn);
+                assert(holder.fn() == 99);
+            }
+        });
+    }
+}
+
+// The struct-pointer counterpart of the class-field fixture above: a
+// delegate-typed field reached through a raw struct pointer, passed as a
+// `ref` argument (`replace(carrier.fn)`). Same `refArgumentFieldWidth`
+// fallthrough as the class-field fixture, confirming SystemLinker's actual
+// behaviour ahead of the same consolidation-queue fold.
+static foreach (backend; Matrix!(
+    Omit!(Bytecode, Because.unconfirmed,
+        "`refArgumentFieldWidth` (compiler.d) falls through to " ~
+            "`scalarType`, which has no `Tdelegate` case, for a " ~
+            "delegate-typed struct-pointer field ref argument -- not yet " ~
+            "promoted"),
+    Omit!(Interpreter, Because.unconfirmed,
+        "throws \"Unsupported eval call.\" for this shape -- not yet " ~
+            "promoted, owned by ai/plans/interpreter.md"),
+)) {
+    @("refArgument.structPointerFieldOfDelegateTypeWritesThroughField." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct Holder {
+                int delegate() fn;
+            }
+
+            void replace(ref int delegate() dg) {
+                dg = () => 99;
+            }
+
+            unittest {
+                Holder holder;
+                holder.fn = () => 42;
+                Holder* carrier = &holder;
+                assert(carrier.fn() == 42);
+                replace(carrier.fn);
+                assert(carrier.fn() == 99);
+            }
+        });
+    }
+}
+
 // A whole-struct assignment into a field reached through a struct pointer,
 // where the right-hand side is a bare struct-local `VarExp` rather than a
 // struct literal or call. `tryStructPointerField`'s assignment branch
