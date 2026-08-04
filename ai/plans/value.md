@@ -687,6 +687,12 @@ wrong. Struct- and static-array-typed AA values already compose correctly.
 Extending `isPlaceComposable`/`valueMatchesComposablePlace` to a `Tarray` arm
 is item 5's fallback-deletion scope, not a standalone language-surface fix.
 
+`lang/archive.d`'s 5 `Omit!(Interpreter, Because.unconfirmed)` rows are not a
+language-surface gap: the Interpreter has no symbol-resolution source for a
+static archive at all (see the fixtures' `Omit` notes for the confirmed
+specifics) — a new native symbol-resolution source belongs to `ffi.md`, not
+this track.
+
 ### Item 5 — Delete Interpreter FFI marshalling fallbacks
 
 Finish decision 18 after the language-surface critical path. Normal outbound
