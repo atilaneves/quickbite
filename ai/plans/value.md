@@ -646,6 +646,14 @@ native slice header, including its retained backing address, rather than a
 transient aggregate handle. This is slice execution, not a formatter-specific
 storage shim; the interceptor remains temporary per item 1.
 
+Runtime Interpreter evaluation of `__ctfe` must match compiled D and therefore
+produce `false`; `Ctfe` alone observes `true`. Cover both frontend shapes before
+changing the walker: an ordinary runtime function currently leaves `__ctfe` as
+an `IdentifierExp`, while DMD-generated support code can present the magic
+variable as a `VarExp`. The oracle-backed runtime fixture must be green on
+`SystemLinker`, and the `Ctfe` divergence must remain omitted or characterized
+separately rather than becoming Interpreter behavior.
+
 ### Item 5 — Delete Interpreter FFI marshalling fallbacks
 
 Finish decision 18 after the language-surface critical path. Normal outbound
