@@ -4196,17 +4196,12 @@ static foreach (backend; Matrix!()) {
 }
 
 // A delegate-typed class field passed as a `ref` argument
-// (`replace(holder.fn)`). `refArgumentFieldWidth`'s aggregate gate is
-// `Tstruct`/`Tsarray` only, so a `Tdelegate` field falls through to
-// `size(scalarType(field.type))`, and `scalarType` has no `Tdelegate` case
-// -- confirming SystemLinker's actual behaviour (a callee-side write through
-// the `ref` is visible through the original field afterward) ahead of the
-// `ai/plans/bytecode.md` consolidation queue's width-authority fold.
+// (`replace(holder.fn)`). `refArgumentFieldWidth` routes through
+// `elementMetadataFor`'s aggregate gate (`Tstruct`/`Tsarray`/`Tdelegate`),
+// so a `Tdelegate` field is a 16-byte mirror-writeback: the callee-side
+// write through the `ref` is visible through the original field afterward,
+// matching `SystemLinker`.
 static foreach (backend; Matrix!(
-    Omit!(Bytecode, Because.unconfirmed,
-        "`refArgumentFieldWidth` (compiler.d) falls through to " ~
-            "`scalarType`, which has no `Tdelegate` case, for a " ~
-            "delegate-typed class field ref argument -- not yet promoted"),
     Omit!(Interpreter, Because.unconfirmed,
         "throws \"quickbite.backends.interpreter.place_value.writeValue: " ~
             "unsupported at place\" for this shape -- not yet promoted, " ~
@@ -4238,15 +4233,23 @@ static foreach (backend; Matrix!(
 
 // The struct-pointer counterpart of the class-field fixture above: a
 // delegate-typed field reached through a raw struct pointer, passed as a
-// `ref` argument (`replace(carrier.fn)`). Same `refArgumentFieldWidth`
-// fallthrough as the class-field fixture, confirming SystemLinker's actual
-// behaviour ahead of the same consolidation-queue fold.
+// `ref` argument (`replace(carrier.fn)`). The `refArgumentFieldWidth` fold
+// above already makes the ref-argument mirror-writeback itself correct for
+// this shape, but the fixture's own `carrier.fn()` CALL (before the `ref`
+// argument is ever reached) throws "Unsupported call in bytecode core:
+// (*carrier).fn()": `delegateFieldOffsetOf`'s struct-pointer-field branch
+// gates on `isPointerType(dot.e1.type)`, but DMD lowers `carrier.fn` to
+// `(*carrier).fn` first, so `dot.e1` is already the dereferenced `Holder`
+// PtrExp, not a pointer-typed expression -- the gate never fires, unlike
+// `tryStructPointerField`, which unwraps that same `PtrExp` itself. A
+// distinct, pre-existing call-dispatch gap, not a width-authority one.
 static foreach (backend; Matrix!(
     Omit!(Bytecode, Because.unconfirmed,
-        "`refArgumentFieldWidth` (compiler.d) falls through to " ~
-            "`scalarType`, which has no `Tdelegate` case, for a " ~
-            "delegate-typed struct-pointer field ref argument -- not yet " ~
-            "promoted"),
+        "`delegateFieldOffsetOf`'s struct-pointer-field gate " ~
+            "(`isPointerType(dot.e1.type)`) never fires for `carrier.fn()` " ~
+            "since DMD already lowers it to `(*carrier).fn()`, so the call " ~
+            "itself throws \"Unsupported call in bytecode core\" -- not " ~
+            "yet promoted"),
     Omit!(Interpreter, Because.unconfirmed,
         "throws \"Unsupported eval call.\" for this shape -- not yet " ~
             "promoted, owned by ai/plans/interpreter.md"),

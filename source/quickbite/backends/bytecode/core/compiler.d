@@ -17575,29 +17575,29 @@ private struct Compiler {
     }
 
     // Shared width computation for `emitClassFieldRefArgument` and
-    // `emitStructPointerFieldRefArgument`: a `Tstruct`/`Tsarray` field lives
-    // inline at its own address and takes its own real byte width; every
-    // other field type takes its scalar width and declines outside
-    // 1/2/4/8. This intentionally does NOT reuse `elementMetadataFor`'s
-    // wider aggregate gate: `elementMetadataFor` treats `Tdelegate` as a
-    // 16-byte aggregate, whereas this gate falls through to
-    // `scalarType(Tdelegate)`, which throws (`scalarType` has no `Tdelegate`
-    // case). Widening this gate to match `elementMetadataFor` would silently
-    // reclassify that throw as a mirror-writeback instead -- a behaviour
-    // change needing its own oracle-backed exposing test, not a pure
-    // consolidation (`ai/plans/bytecode.md`'s consolidation queue).
+    // `emitStructPointerFieldRefArgument`: an aggregate field (`Tstruct`,
+    // `Tsarray`, or `Tdelegate`, `elementMetadataFor`'s gate) lives inline at
+    // its own address and takes its own real byte width; every other field
+    // type takes its scalar width and declines outside 1/2/4/8. Routes
+    // through `elementMetadataFor` for the aggregate-vs-scalar
+    // classification rather than hand-rolling a narrower `Tstruct`/`Tsarray`
+    // gate, so a `Tdelegate` field is a 16-byte mirror-writeback (the write
+    // is visible through the original field afterward, confirmed against
+    // `SystemLinker` by
+    // `refArgument.classFieldOfDelegateTypeWritesThroughField`/
+    // `refArgument.structPointerFieldOfDelegateTypeWritesThroughField`) not
+    // a throw from falling through to `scalarType`, which has no `Tdelegate`
+    // case.
     private bool refArgumentFieldWidth(
         Type fieldType,
         out ushort valueSize,
         out ushort valueAlign,
     ) {
-        import dmd.astenums: TY;
-
-        const ty = fieldType.toBasetype.ty;
-        const isAggregate = ty == TY.Tstruct || ty == TY.Tsarray;
-        valueSize = cast(ushort) (isAggregate
-            ? staticArraySize(fieldType)
-            : size(scalarType(fieldType)));
+        const metadata = elementMetadataFor(
+            fieldType, cast(uint) staticArraySize(fieldType),
+        );
+        const isAggregate = metadata.opcodeType == ScalarType.void_;
+        valueSize = cast(ushort) metadata.byteStride;
         if (!isAggregate && valueSize != 1 && valueSize != 2 &&
             valueSize != 4 && valueSize != 8)
             return false;

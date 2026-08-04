@@ -480,17 +480,18 @@ reaches them:
   narrow it without a real fix backing it, and note that any change to how a
   delegate-typed store resolves can starve that fallback and break the row.
 
-Next candidate. Two new `Omit!(Bytecode, Because.unconfirmed, ...)` rows
-(`refArgument.classFieldOfDelegateTypeWritesThroughField`,
-`refArgument.structPointerFieldOfDelegateTypeWritesThroughField`) now pin
-`SystemLinker`'s actual behaviour for a `ref` argument naming a
-delegate-typed class/struct-pointer field: the fold of `refArgumentFieldWidth`
-into `elementMetadataFor` (width-authority item, "Structural consolidation
-queue") is unblocked -- widen `elementMetadataFor`'s aggregate gate to cover
-`Tdelegate` as a 16-byte mirror-writeback, fold the two functions, and
-promote both rows. Otherwise find a fresh row through `bin/qb` exploration of
-read-modify-write and mirror paths, take the "One place resolver" item, or
-take an "Architecture work forced by the baseline" front.
+Next candidate. `delegateFieldOffsetOf`'s struct-pointer-field branch
+(`compiler.d`) gates on `isPointerType(dot.e1.type)`, which never fires
+because DMD already lowers `p.field` to `(*p).field` before this code sees
+it (`dot.e1` is the dereferenced value, not a pointer) -- unlike its sibling
+`tryStructPointerField`, which unwraps `dot.e1.isPtrExp` first. Apply the
+same unwrap so a delegate-typed field reached through a struct pointer can
+be CALLED (`carrier.fn()`), not just read/written, then promote
+`refArgument.structPointerFieldOfDelegateTypeWritesThroughField`
+(`structs.d`, still `Omit!(Bytecode, ...)`) off that fix. Otherwise find a
+fresh row through `bin/qb` exploration of read-modify-write and mirror
+paths, take the "One place resolver" item, or take an "Architecture work
+forced by the baseline" front.
 
 ### TDD and handoff discipline
 
@@ -561,30 +562,32 @@ place second.
    a bounded sub-piece (one call-site family, or one clearly-scoped shared
    helper) rather than attempting the whole merge in one commit.
    `pointerElementMetadata`, `dereferencedArrayIndexElementMetadata`,
-   `dynamicArrayElementSize`, and now `storeStructPointerField`/
-   `storeClassPointerField` all share their aggregate-vs-scalar branch
-   through one helper, `elementMetadataFor` (`dynamicArrayElementSize` keeps
-   its own hand-checked `Tvoid` case ahead of that shared call, since
-   `scalarType(Tvoid)` collides with `elementMetadataFor`'s `void_` aggregate
-   marker). `emitClassFieldRefArgument` and `emitStructPointerFieldRefArgument`
-   (`compiler.d`) now share their width computation through one helper,
-   `refArgumentFieldWidth`, kept deliberately separate from
-   `elementMetadataFor` because its `isAggregate` gate is `Tstruct`/`Tsarray`
-   only, not `Tdelegate`: a delegate-typed field reaching it still falls
-   through to `size(scalarType(field.type))`, which throws (`scalarType` has
-   no `Tdelegate` case) rather than being declined earlier. Folding
-   `refArgumentFieldWidth` into `elementMetadataFor` would silently
-   reclassify that throw as a 16-byte aggregate mirror-writeback instead --
-   a behaviour change, not a pure consolidation. The needed oracle-backed
-   exposing test now exists
-   (`refArgument.classFieldOfDelegateTypeWritesThroughField`,
-   `refArgument.structPointerFieldOfDelegateTypeWritesThroughField` in
-   `tests/ut/backends/runner/lang/structs.d`, both `Omit!(Bytecode, ...)`):
-   `SystemLinker` writes the delegate through as a whole 16-byte value and
-   the callee-side write is visible through the original field afterward, so
-   the fold's honest destination is a 16-byte aggregate mirror-writeback for
-   `Tdelegate`, not a throw. Still open: land that fold and promote the two
-   rows.
+   `dynamicArrayElementSize`, `storeStructPointerField`/
+   `storeClassPointerField`, and now `refArgumentFieldWidth` all share their
+   aggregate-vs-scalar branch through one helper, `elementMetadataFor`
+   (`dynamicArrayElementSize` keeps its own hand-checked `Tvoid` case ahead
+   of that shared call, since `scalarType(Tvoid)` collides with
+   `elementMetadataFor`'s `void_` aggregate marker). The fold widened
+   `refArgumentFieldWidth`'s aggregate gate from `Tstruct`/`Tsarray` only to
+   `elementMetadataFor`'s wider gate, which already covered `Tdelegate` as a
+   16-byte aggregate (added for `pointerElementMetadata` well before this
+   fold); `emitClassFieldRefArgument`/`emitStructPointerFieldRefArgument`
+   inherit that for free.
+   `refArgument.classFieldOfDelegateTypeWritesThroughField` (`structs.d`) is
+   promoted (green on `Bytecode`): a delegate-typed class field `ref`
+   argument is now a 16-byte mirror-writeback, matching `SystemLinker`.
+   `refArgument.structPointerFieldOfDelegateTypeWritesThroughField` stays
+   `Omit!(Bytecode, ...)`, but the reason has moved: the fold makes its `ref`
+   argument mirror correct too, but the fixture's own `carrier.fn()` CALL
+   (reached before the `ref` argument) throws "Unsupported call in bytecode
+   core: (*carrier).fn()" -- a distinct, pre-existing call-dispatch gap.
+   `delegateFieldOffsetOf`'s struct-pointer-field branch
+   (`compiler.d`) gates on `isPointerType(dot.e1.type)`, but DMD lowers
+   `carrier.fn` to `(*carrier).fn` first, so `dot.e1` is already the
+   dereferenced `Holder` `PtrExp`, not pointer-typed -- the gate never
+   fires. `tryStructPointerField` has the same shape and already handles it
+   by unwrapping `dot.e1.isPtrExp` before checking; `delegateFieldOffsetOf`
+   needs the same unwrap. Still open: fix that gate and promote the row.
 
    Done: every width-suffixed opcode family (`indexLoad*`/`indexStore*`,
    `pointerLoad*`/`pointerStore*`/`pointerSlice*`, `subSlice*`,
