@@ -1216,6 +1216,48 @@ static foreach (backend; Matrix!()) {
     }
 }
 
+// Finding 4 (Fable pre-PR review), the sibling shape
+// `localStaticArrayOfArraysRowValueRead` right above does NOT cover: `m` here
+// is a genuinely INLINE nested static array (`long[2][3]`, no dynamic-array
+// level at all -- unlike `arr: int[3][]` above, whose ROWS are heap-boxed
+// behind their own 16-byte slice descriptors, this VM's representation for
+// `T[N][]`). `compileStaticArrayValueInto`'s `IndexExp` branch (added by the
+// same fix that made the sibling shape above work) used to gate only on
+// `tryDynamicArrayIndex` resolving `m[0]` at all, not on `m` itself actually
+// being a dynamic array of boxed rows -- and `tryDynamicArrayIndex` DOES
+// resolve it, through `dynamicArrayDescriptorOrNull`'s separate, ungated
+// `staticArrayOffsetOf` branch (matches any `Tsarray` local at all), which
+// built a slice-descriptor VIEW over `m`'s raw inline bytes and wrongly
+// tagged it `elementIsArray` (`m`'s own element type, `long[2]`, is itself
+// an array type) -- as if each row were its own heap-boxed descriptor to
+// dereference, when the bytes are actually `m`'s own raw, un-boxed `long[2]`
+// values. `emitIndexLoad` then dereferenced those raw bytes as a bogus
+// pointer: SystemLinker gives the correct row, Bytecode dumped core. Now
+// fixed by additionally gating that branch on `index.e1.type` (`m`'s own
+// type) actually being a genuine `Tarray`, so this inline shape instead
+// falls through to the generic block-copy path below it -- which already
+// correctly compiles a plain `IndexExp` read of a nested static-array
+// element -- rather than ever reaching the boxed-row fast path at all.
+static foreach (backend; Matrix!()) {
+    @("dynamicArray.inlineNestedStaticArrayRowValueReadIsNotBoxedRow." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            unittest {
+                long[2][3] m = [[1, 2], [3, 4], [5, 6]];
+                long[2] row = m[0];
+                assert(row[0] == 1);
+                assert(row[1] == 2);
+
+                long[2] second = m[1];
+                assert(second[0] == 3);
+                assert(second[1] == 4);
+            }
+        });
+    }
+}
+
 static foreach (backend; Matrix!()) {
     @("dynamicArray.appendStaticArrayRow." ~ backend.stringof)
     @Tags(backend.stringof)
@@ -3355,6 +3397,44 @@ static foreach (backend; Matrix!()) {
                 assert(sum == 1 + 2 + 10 + 3 + 4 + 20);
             }
         });
+    }
+}
+
+// Finding 3 (Fable pre-PR review): `structKeyFieldLayoutOrNull` only routes
+// a struct AA key through field-wise structural comparison when it finds a
+// TOP-LEVEL plain-`string` field; a struct with an array-typed field but NO
+// top-level `string` field (a lone `int[]` field here -- neither
+// `assocArrayKeyIsArray`'s single-field carve-out, which only recognises a
+// lone plain-`string` field, nor `structKeyFieldLayoutOrNull`, which returns
+// `null` outright for fewer than two fields) used to fall all the way
+// through to `assocArrayKeyNonArrayWidth`'s whole-block RAW-byte comparison
+// with no field validation at all -- silently comparing two content-equal
+// `xs` arrays built from different backing allocations as UNEQUAL (a missed
+// lookup, not a thrown diagnostic), contradicting this very file's own
+// `structKeyRawBytesConstructLookupAndIterate` comment two fixtures up
+// ("Struct-typed key storage itself ... is supported") and this backend's
+// own documented refusal for an array-bearing AA key
+// (`assocArrayKeyIsArray`'s "Unsupported associative array key type"
+// diagnostic, already exercised for a `wstring`/`dstring` key). Now
+// declined the same way instead: `assocArrayKeyNonArrayWidth`'s Tstruct
+// branch recursively checks every field (through nested structs too) for an
+// array type before accepting the raw-byte path.
+static foreach (backend; AliasSeq!(Bytecode)) {
+    @("assocArray.structKeyWithArrayFieldAndNoStringFieldDeclines." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct K { int[] xs; }
+
+            unittest {
+                int[K] counts;
+                counts[K([1, 2])] = 1;
+                assert(K([1, 2]) in counts);
+            }
+        }).shouldThrowWithMessage(
+            "Unsupported associative array key type in bytecode core: K",
+        );
     }
 }
 

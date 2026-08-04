@@ -1854,6 +1854,83 @@ static foreach (backend; Matrix!(
     }
 }
 
+// Finding 1 (Fable pre-PR review), first repro: the SAME lambda (`dg`) is
+// both CALLED locally while its enclosing frame is still live (`early =
+// dg()`, which needs an ordinary frame-relative context) AND later escaped
+// via `return dg;` (which needs a heap-context delegate value instead).
+// Lambda bodies compile lazily -- often after a LATER escape site has
+// already registered the captured variable in `_heapClosureVars` -- so
+// `loadCapturedLocal`/`storeCapturedLocal` (`compiler.d`) used to compile
+// `dg`'s ONE shared body unconditionally against the heap path once ANY
+// escape site for `count` had been seen, even though `dg`'s already-emitted
+// local delegate value (`auto dg = ...`) still carries the earlier
+// frame-relative context the `early = dg()` call actually uses at run time:
+// that call then dereferenced the frame-base index as if it were a raw heap
+// pointer. SystemLinker gives `dg() == 2` after the return (one increment
+// from the early call, one from calling the result); Bytecode dumped core.
+// `heapClosureContextOrNull` now declines this shape instead (via
+// `_frameContextDelegates`, tracking any lambda whose delegate value was
+// already materialised with a frame-relative context earlier in the
+// function), the same loud refusal a shape it could never represent at all
+// already got.
+static foreach (backend; AliasSeq!(Bytecode)) {
+    @("delegate.capturingLambdaCalledLiveThenReturnedDeclines." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            int delegate() make() {
+                int count = 0;
+                auto dg = () => ++count;
+                auto early = dg();
+                return dg;
+            }
+
+            unittest {
+                auto dg = make();
+                assert(dg() == 2);
+            }
+        }).shouldThrow();
+    }
+}
+
+// Finding 1 (Fable pre-PR review), second repro: a SIBLING lambda (`peek`)
+// shares the SAME captured variable (`count`) with the escaping, returned
+// lambda -- `peek` is only ever called locally (`early = peek()`), through
+// its own, never-heap-escaped frame-relative context. `_heapClosureVars` (a
+// `bool[VarDeclaration]`, before this fix) was keyed by the captured
+// variable ALONE, not by which specific lambda actually escaped: once the
+// returned lambda's own escape site registered `count`, `peek`'s unrelated
+// body -- compiled lazily, possibly after that registration -- also read
+// `declaration in _heapClosureVars` as true and wrongly compiled its own
+// read through the heap path, dereferencing its own live frame-base context
+// as a raw pointer. SystemLinker runs this fine; Bytecode dumped core.
+// `_heapClosureVars`/`_heapClosureOffsets` are now keyed by BOTH the
+// capturing lambda and the variable, and `heapClosureContextOrNull` itself
+// additionally declines outright (via DMD's own `VarDeclaration.nestedrefs`)
+// whenever the captured variable is referenced by more than one nested
+// function at all, exactly this shape.
+static foreach (backend; AliasSeq!(Bytecode)) {
+    @("delegate.siblingLambdaSharingEscapedCaptureDeclines." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            int delegate() make2() {
+                int count = 0;
+                auto peek = () => count;
+                auto early = peek();
+                return () => ++count;
+            }
+
+            unittest {
+                auto dg = make2();
+                assert(dg() == 1);
+            }
+        }).shouldThrow();
+    }
+}
+
 // A nested function reading a captured POINTER local (`int* p; void
 // nested() { ... *p ... }`), the enclosing frame still live (no `return`,
 // no escape): `loadCapturedLocal` already resolved a captured pointer's
@@ -2828,14 +2905,21 @@ static foreach (backend; Matrix!(
 // context would read as garbage, exactly the hazard
 // `heapClosureContextOrNull` already exists to avoid for a directly returned
 // capturing delegate (`functionReturningMutatingCapturingDelegateIsCallable`
-// above). The whole-value-assignment fix reuses that same escape-safety
-// (`compileDelegateReturn`) for any assignment TARGET that is a `ref`/`out`
-// parameter, so this capture gets heap-allocated at the point of assignment
-// instead of the plain frame-relative context a non-escaping reassignment
-// gets. Two independent `makeCounter` calls confirm each escaping capture
-// gets its own heap block rather than colliding, the same independence
-// `functionReturningMutatingCapturingDelegateIsCallable` already checks for
-// the `return`-escape shape.
+// above). This shape is NOT actually safe to heap-box the way a directly
+// returned delegate is, though: `heapClosureContextOrNull`'s soundness
+// argument depends on its escape site being the LAST thing the function ever
+// does, and a `ref`/`out`-parameter assignment can happen mid-function, with
+// further statements -- including further writes to the same captured
+// variable through the still-live frame -- still to come before this
+// function actually returns (a fable review of this branch caught exactly
+// that: `count = 10;` right after this exact assignment, still inside
+// `makeCounter`, silently diverged from the heap-boxed copy the delegate
+// itself reads). `refEscapingDelegateOperandOffset` (`compiler.d`)
+// unconditionally declines a capturing rhs here instead, via the same
+// `throwFrameEscapingDelegateDiagnostic` a directly returned delegate whose
+// capture shape can't be heap-boxed already raises -- so Bytecode no longer
+// runs this fixture to completion at all; `delegate.outParameterEscapingCaptureDeclines`
+// below covers the clean-refusal shape this fixture used to (unsoundly) run.
 static foreach (backend; Matrix!(
     Omit!(Ctfe, Because.inexpressible,
         "Ctfe wraps dmd.dinterpret, whose CTFE engine cannot read " ~
@@ -2845,6 +2929,13 @@ static foreach (backend; Matrix!(
         "the Interpreter throws \"quickbite.backends.interpreter." ~
             "place_value.writeValue: unsupported at place\" for this " ~
             "reassignment shape -- not yet promoted"),
+    Omit!(Bytecode, Because.refusal,
+        "the mid-function `ref`/`out`-parameter escape site is unsound to " ~
+            "heap-box the way a directly-returned delegate is -- see " ~
+            "`delegate.outParameterEscapingCaptureDeclines` below -- so " ~
+            "`refEscapingDelegateOperandOffset` now unconditionally " ~
+            "declines a capturing rhs assigned to a `ref`/`out` delegate " ~
+            "parameter"),
 )) {
     @("delegate.outParameterEscapingCaptureIsCallable." ~ backend.stringof)
     @Tags(backend.stringof)
@@ -2867,6 +2958,43 @@ static foreach (backend; Matrix!(
                 assert(c() == 3);
             }
         });
+    }
+}
+
+// Finding 2 (Fable pre-PR review): `heapClosureContextOrNull`'s soundness
+// argument for `compileDelegateReturn`'s two `return`-based escape sites
+// ("nothing in the enclosing function reads or writes these variables again
+// after this point") does NOT hold for the `ref`/`out`-parameter assignment
+// site right above (`outParameterEscapingCaptureIsCallable`): `count = 10;`
+// right after `dg = () => ++count;`, still inside `makeCounter`, mutates the
+// SAME captured local through the STILL-LIVE frame after a heap snapshot
+// would already have been taken. SystemLinker sees that later write
+// reflected through the delegate (`c()` returns 11, one past the
+// post-assignment `count`); a heap-boxed snapshot taken AT the assignment
+// (the previously shipped behaviour) would have frozen `count == 0` right
+// then and silently diverged (`c()` would have returned 1, not 11) --
+// exactly the silent-wrong-answer shape this finding is about, not a crash.
+// `refEscapingDelegateOperandOffset` (`compiler.d`) now declines this shape
+// unconditionally rather than ever attempting a heap snapshot for it.
+// Bytecode-only: the diagnostic itself is a Bytecode-specific mechanism, not
+// a language restriction other backends share.
+static foreach (backend; AliasSeq!(Bytecode)) {
+    @("delegate.outParameterEscapingCaptureDeclines." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            void makeCounter(out int delegate() dg) {
+                int count = 0;
+                dg = () => ++count;
+                count = 10;
+            }
+
+            unittest {
+                int delegate() c;
+                makeCounter(c);
+                assert(c() == 11);
+            }
+        }).shouldThrow();
     }
 }
 

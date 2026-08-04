@@ -476,20 +476,33 @@ struct with a string field -- alone, mixed with scalars, or several strings
 together -- now takes the field-wise path.
 
 This closes the AssocArray front's recurring struct-key structural-comparison
-gap: every struct key shape built from `string` and scalar fields, in any
-combination, count, or order, now compares (and iterates, and constructs, and
-removes) structurally rather than by raw bytes. What remains is not a
-silent-miscompare gap but an explicit, intentional refusal: a key field that
-is itself a nested struct, a `wstring`/`dstring`, or a non-`string` array
-(dynamic or static) throws "Unsupported associative array key type in
-bytecode core" (nested struct: via `scalarType`'s existing rejection of
-`Tstruct`; `wstring`/`dstring`: explicit, mirroring `assocArrayKeyIsArray`'s
-own rejection; other arrays: via `scalarType`'s rejection of `Tarray`/
-`Tsarray`) rather than being silently miscompared -- none of these three
-shapes is exercised by any fixture, and widening to cover them (each would
-need its own content-comparison rule, not just a raw-bytes-or-not choice) is
-a distinct, not-yet-scoped future increment, not a hole in what this front
-already promises. Field order (string-before-scalar, scalar-before-string)
+gap for a struct with a TOP-LEVEL `string` field: every such key shape built
+from `string` and scalar fields, in any combination, count, or order, now
+compares (and iterates, and constructs, and removes) structurally rather than
+by raw bytes. A struct key with NO top-level `string` field but with SOME
+array-typed field -- a lone non-`string` array field (`struct K { int[] xs;
+}`), a lone mutable `char[]` field, or a field that is itself a nested struct
+containing a `string` -- was a genuine silent-miscompare gap until a Fable
+pre-PR review caught it (Finding 3, 2026-08): `structKeyFieldLayoutOrNull`
+returns `null` for any of these (it only ever looks for a TOP-LEVEL `string`
+field, one level deep), so they fell all the way through to
+`assocArrayKeyNonArrayWidth`'s whole-block RAW-byte comparison with no field
+validation at all -- two content-equal keys built from different backing
+allocations silently compared as different entries, not a thrown diagnostic.
+Now fixed: `assocArrayKeyNonArrayWidth`'s Tstruct branch recursively checks
+every field, through nested structs too, for an array type before accepting
+the raw-byte path, throwing the existing "Unsupported associative array key
+type in bytecode core" diagnostic instead
+(`assocArray.structKeyWithArrayFieldAndNoStringFieldDeclines`, `arrays.d`).
+Separately, a key field WITHIN an already-structurally-routed multi-field
+struct (one that DOES have a top-level `string` field) that is itself a
+nested struct or a `wstring`/`dstring` still throws too, but via
+`scalarType`'s own generic rejection ("Unsupported type in bytecode core",
+not the AA-key-specific message above) rather than a dedicated check -- not
+exercised by any fixture, and widening to cover these (each would need its
+own content-comparison rule, not just a raw-bytes-or-not choice) remains a
+distinct, not-yet-scoped future increment. Field order (string-before-scalar,
+scalar-before-string)
 and field count beyond two are not specifically restricted by the
 implementation (`structKeyFieldLayoutOrNull` walks `declaration.fields`
 generically) but are also not covered by a fixture today, so should be
@@ -1085,14 +1098,16 @@ row reaches them:
   parameter, confirmed via `bin/qb` for a bare `ref int` parameter with no
   module or aggregate involved at all (`&value` inside the callee never
   equals the caller's `&value`). `expressions.d`'s
-  `refArgument.templateRefSharedParameterMutatesAndPreservesAddress`,
-  `refArgument.templateRefSharedForwardsThroughNestedFunction`, and
-  `delegate.captureIsNotParameterReference` (still
-  `Omit!(Bytecode, Because.unconfirmed)`, ~line 8024) all assert `&value ==
-  expected` across a `ref`/captured-local call boundary and are blocked on
-  this same calling-convention change, not on template/`shared`/closure
-  specifics; they are not a bounded single-commit family until the ref
-  calling convention above is redesigned.
+  `refArgument.templateRefSharedParameterMutatesAndPreservesAddress` and
+  `refArgument.templateRefSharedForwardsThroughNestedFunction` assert
+  `&value == expected` across a `ref`/`shared`/nested-function call boundary
+  and are blocked on this same calling-convention change, not on
+  template/`shared` specifics; they are not a bounded single-commit family
+  until the ref calling convention above is redesigned. (A third fixture
+  once listed here, `delegate.captureIsNotParameterReference`, asserted the
+  same shape across a captured-local call boundary specifically -- that one
+  is unrelated to this blocker: commit `ab78601c`, early in a later branch,
+  already promoted it off `Bytecode`'s omit list, so it now passes.)
 
 `concurrency.thisTid.Bytecode` (`tests/ut/backends/runner/sys/concurrency.d`)
 stays `Omit!(Bytecode, Because.unconfirmed, ...)`. `Scheduler.thisInfo`'s
@@ -1613,18 +1628,32 @@ lifetime as the dependency bytecode cache.
   return-expression-or-directly-returned-struct-literal-field shape: three or
   more escaping captures, a non-scalar/non-pointer capture (struct/array/AA/
   class/delegate), a multi-level capture (an escaping lambda nested two or
-  more functions deep), a capture combined with `this`, and a capturing
-  delegate reached through any other escape shape (an `out`/`ref` argument
-  assignment, a class field, an array element, a field nested more than one
-  level inside a returned struct literal, ...) are all still declined with
-  the same diagnostic (the shared `throwFrameEscapingDelegateDiagnostic`
+  more functions deep), and a capture combined with `this` all still decline
+  with the same diagnostic (the shared `throwFrameEscapingDelegateDiagnostic`
   helper both escape sites call) used to raise unconditionally
   (`compileDelegateReturn` still throws whenever `heapClosureContextOrNull`
   returns null for a function with non-empty `outerVars`, and
   `structLiteralReturnOffset`'s `Tdelegate` branch does the same for a
-  directly-returned literal's own top-level field). An `out`-parameter
-  assignment shape (`void makeCounter(out int delegate() dg) { int count =
-  0; dg = () => ++count; }`) was investigated as a third escape site;
+  directly-returned literal's own top-level field). A capturing delegate
+  reached through any OTHER escape shape -- a class field, an array element,
+  a field nested more than one level inside a returned struct literal, ... --
+  is NOT declined at all: none of these routes through
+  `heapClosureContextOrNull`/`throwFrameEscapingDelegateDiagnostic` in the
+  first place, so each silently produces a delegate holding the wrong
+  (popped/reused) frame context instead -- an open, unguarded gap, not a
+  clean refusal (pre-existing, from earlier delegate-field/array work, not
+  addressed here). An `out`/`ref`-PARAMETER assignment is the one exception:
+  it IS a real, separate escape site (`compileAssignExpression`'s
+  `refEscapingDelegateOperandOffset`, not `compileDelegateReturn`/
+  `structLiteralReturnOffset`), and, since a Fable pre-PR review found the
+  heap-escape treatment it was originally given below unsound for this site
+  specifically (Finding 2, 2026-08:
+  `delegate.outParameterEscapingCaptureDeclines`, `expressions.d`), it now
+  unconditionally declines a capturing rhs too -- via the same shared
+  diagnostic, but through its own dedicated check, never attempting
+  `heapClosureContextOrNull` at all. An `out`-parameter assignment shape
+  (`void makeCounter(out int delegate() dg) { int count = 0; dg = () =>
+  ++count; }`) was investigated as a third escape site;
   `referenceOffsetOrNull` (the `ref`/`out` call-argument resolver) having no
   case at all for a delegate-typed local -- so the call site itself
   (`makeCounter(c)`, `c` a delegate-typed local) threw "Unsupported ref
@@ -1674,30 +1703,41 @@ lifetime as the dependency bytecode cache.
   is a `ref`/`out` parameter (`declaration.isReference && declaration.
   isParameter`), its frame slot is written back to the caller's own storage
   when the function returns, so a capturing rhs lambda/nested-function
-  delegate needs the same escape-safety `compileDelegateReturn` already
-  gives a directly returned delegate: the fix resolves such an rhs through
-  `compileDelegateReturn` instead of the plain `delegateOperandOffset`, so a
-  capture that would outlive this function's own frame either gets the
-  existing one-or-two-scalar/one-level heap-closure treatment
-  (`heapClosureContextOrNull`) or the loud "Unsupported delegate return"
-  diagnostic, instead of a frame-relative context that would silently read
-  as garbage once the frame is reused. A plain (non-escaping) local/
-  parameter never needs this: `compileDelegateReturn` degrades to plain
-  `delegateOperandOffset` whenever the rhs has no statically-known callee
-  or captures nothing, the same path a naive fix would have taken. This
-  unblocks the ORIGINAL motivating example two commits ago
-  (`void makeCounter(out int delegate() dg) { int count = 0; dg = () =>
-  ++count; }`, `delegate.outParameterEscapingCaptureIsCallable`,
-  `expressions.d`, including two independent `makeCounter` calls proving
-  each escaping capture gets its own heap block) and the plain non-escaping
-  `ref`-rebind case (`delegate.plainRefRebindAssignsNewValue`) and the
-  simplest whole-value-reassignment case
-  (`delegate.wholeValueReassignmentOfPlainLocalIsCallable`), all on
-  Bytecode/SystemLinker/LLVMJit; Ctfe declines the `out`-parameter case
-  (DMD's CTFE engine cannot read `count` back through the escaped delegate
-  at all) and Interpreter declines all three (no whole-value-reassignment
-  support for a plain delegate local at all yet) -- both pre-existing,
-  unrelated backend gaps, not reached by this fix. Generalising the escape
+  delegate is a real escape site needing the same kind of protection
+  `compileDelegateReturn` gives a directly returned delegate. The fix
+  ORIGINALLY reused `compileDelegateReturn` itself here (so a capture that
+  would outlive this function's own frame either got the existing
+  one-or-two-scalar/one-level heap-closure treatment, or the loud
+  "Unsupported delegate return" diagnostic) -- but a Fable pre-PR review
+  found this reuse UNSOUND (Finding 2, 2026-08): `heapClosureContextOrNull`'s
+  soundness argument depends on its escape site being the LAST thing the
+  function ever does (`return` is always its own function's end), which does
+  NOT hold for a `ref`/`out`-parameter assignment -- it can happen
+  mid-function, with further statements, including further writes to the
+  same captured variable through the still-live frame, still to come. A heap
+  snapshot taken at the assignment silently diverges from whatever the frame
+  goes on to do (`void makeCounter(out int delegate() dg) { int count = 0;
+  dg = () => ++count; count = 10; }`: SystemLinker reflects the later write
+  through the delegate, the heap snapshot taken at the assignment would not
+  have). Now `compileAssignExpression` routes this site through its own
+  dedicated `refEscapingDelegateOperandOffset` instead, which UNCONDITIONALLY
+  declines a capturing rhs here (never attempts `heapClosureContextOrNull` at
+  all for this site) via the same shared diagnostic
+  (`delegate.outParameterEscapingCaptureDeclines`, `expressions.d`) -- so the
+  ORIGINAL motivating example from two commits before this fix
+  (`delegate.outParameterEscapingCaptureIsCallable`) no longer runs to
+  completion on Bytecode at all, only on SystemLinker/LLVMJit (`Omit!
+  (Bytecode, Because.refusal, ...)`, joining Ctfe and Interpreter's existing,
+  unrelated omissions there). A plain (non-escaping) local/parameter never
+  needs any of this: `refEscapingDelegateOperandOffset` degrades to plain
+  `delegateOperandOffset` whenever the rhs has no statically-known callee or
+  captures nothing, the same path a naive fix would have taken -- so the
+  plain non-escaping `ref`-rebind case (`delegate.plainRefRebindAssignsNewValue`)
+  and the simplest whole-value-reassignment case
+  (`delegate.wholeValueReassignmentOfPlainLocalIsCallable`) are unaffected by
+  this correction, still working on Bytecode/SystemLinker/LLVMJit; Ctfe and
+  Interpreter's omissions on those two remain pre-existing, unrelated backend
+  gaps. Generalising the escape
   mechanism to DMD's own per-function `needsClosure()`/
   `closureVars` decision -- moving every closure-needing variable to its heap
   block from declaration onward, regardless of whether it is actually

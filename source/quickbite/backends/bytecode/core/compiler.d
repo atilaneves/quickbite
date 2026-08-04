@@ -212,7 +212,20 @@ private struct Compiler {
     // `heapClosureContextOrNull` recognises -- one or two scalar or pointer
     // values captured by exactly one escaping lambda, one nesting level, no
     // `this` combination.
-    private bool[VarDeclaration] _heapClosureVars;
+    //
+    // Keyed by BOTH the capturing lambda's own `FuncDeclaration` and the
+    // captured variable, not the variable alone: a captured local's frame
+    // offset is only meaningfully a heap-block pointer when read/written
+    // from that SPECIFIC escaping lambda's own body. A sibling nested
+    // function reading the same enclosing local (never itself heap-escaped)
+    // still receives an ordinary frame-base context, and lambda bodies
+    // compile lazily -- often after a LATER escape site has already
+    // registered the variable here -- so keying by the variable alone would
+    // make that sibling's unrelated frame-base context get misread as a raw
+    // heap pointer. `loadCapturedLocal`/`storeCapturedLocal` gate the heap
+    // path on `_currentFunction` (the function whose body is presently
+    // compiling) matching the outer key.
+    private bool[VarDeclaration][FuncDeclaration] _heapClosureVars;
     // Each `_heapClosureVars` entry's own byte offset within its heap block,
     // set alongside it by `heapClosureContextOrNull`: a single captured local
     // sits at offset 0, and a second one sits at the next fixed
@@ -221,7 +234,29 @@ private struct Compiler {
     // captured value's own narrower width). `loadCapturedLocal`/
     // `storeCapturedLocal` divide this by the value's own natural width to
     // get the `pointerLoad*`/`pointerStore*` element index those ops expect.
-    private ushort[VarDeclaration] _heapClosureOffsets;
+    private ushort[VarDeclaration][FuncDeclaration] _heapClosureOffsets;
+    // Lambdas that have already been CALLED, through a statically-known
+    // callee (`compileDelegateCall`, e.g. `dg()` where `dg` is a
+    // `_delegateLocals` entry), via an ordinary frame-relative context --
+    // e.g. `auto dg = () => ++count; auto early = dg();` -- somewhere in the
+    // function currently compiling. Merely materialising such a delegate
+    // VALUE (declaring `dg`, or returning it) is not itself the hazard: the
+    // hazard is a REAL CALL that forces the lambda's one shared body to
+    // compile its captured-variable accesses against a frame-relative
+    // context, when a LATER escape site (`return dg;`) in the same function
+    // would otherwise heap-box the exact same body's accesses instead
+    // (`heapClosureContextOrNull` declines for any such lambda when it
+    // does). `compileDelegateCall` is only ever reached for a callee
+    // declared as a local IN the function currently compiling
+    // (`_delegateLocals` is reset per function), so marking here already
+    // scopes this correctly with no extra bookkeeping. Building a heap
+    // escape anyway would leave that one shared lambda body compiling its
+    // captured-variable accesses against only one of the two contexts the
+    // two different call sites (the earlier local call, and any call made
+    // through the later heap-escaped return value) actually pass at run
+    // time -- silently wrong for the loser, or, since the heap path
+    // reinterprets a frame-base index as a raw pointer, a crash.
+    private bool[FuncDeclaration] _frameContextDelegates;
     // The function whose body is currently being compiled; `_capturedOwners`
     // entries recorded while compiling it are attributed to it.
     private FuncDeclaration _currentFunction;
@@ -4212,6 +4247,36 @@ private struct Compiler {
         return DelegateInitializer.init;
     }
 
+    // `delegateInitializer`'s callee resolution alone, without computing (and
+    // so without emitting bytecode for, and without `delegateContextOffset`'s
+    // `_frameContextDelegates` bookkeeping for) the context that goes with
+    // it. For a caller that only wants to know WHICH function a delegate-typed
+    // initializer expression statically names -- not the delegate value
+    // itself, which it never builds -- calling `delegateInitializer` instead
+    // would wastefully emit a live frame-context computation for a value that
+    // is then discarded, and would wrongly mark that function as having a
+    // materialised frame-context delegate value when it never actually got
+    // one.
+    private FuncDeclaration delegateInitializerFunctionOrNull(
+        Expression initializer,
+    ) {
+        if (auto literal = initializer.isFuncExp)
+            return literal.fd;
+
+        if (auto delegate_ = initializer.isDelegateExp)
+            return delegate_.func;
+
+        if (auto address = initializer.isAddrExp) {
+            if (auto variable = address.e1.isVarExp)
+                return variable.var.isFuncDeclaration;
+
+            if (auto dot = address.e1.isDotVarExp)
+                return dot.var.isFuncDeclaration;
+        }
+
+        return null;
+    }
+
     // The frame offset of a delegate-typed FIELD's `{functionIndex, context}`
     // value (`s.f`, `c.f`, `p.f`), reached as a plain struct-value field
     // (local, captured, module, or AA-value-pointer receiver, resolved
@@ -4420,7 +4485,7 @@ private struct Compiler {
                 if (auto existing = declaration in _delegateLocals)
                     return existing.function_;
 
-        return delegateInitializer(source).function_;
+        return delegateInitializerFunctionOrNull(source);
     }
 
     // Compiles `return dg;`. A delegate literal that captures nothing
@@ -4455,6 +4520,32 @@ private struct Compiler {
             }
             throwFrameEscapingDelegateDiagnostic(source);
         }
+
+        return delegateOperandOffset(source);
+    }
+
+    // Compiles the rhs of `dg = ...;` where `dg` is a `ref`/`out`
+    // DELEGATE-TYPED PARAMETER: its frame slot is written back to the
+    // caller's own storage once this function RETURNS, so a capturing rhs
+    // still needs the same escape-safety `compileDelegateReturn` gives a
+    // directly returned delegate -- but, unlike a `return` statement,
+    // `heapClosureContextOrNull`'s soundness argument ("nothing in the
+    // enclosing function reads or writes these variables again after this
+    // point") does not hold here: the assignment can happen mid-function,
+    // with arbitrary further statements (including more writes to the same
+    // captured variables through the STILL-LIVE frame, e.g. `count = 10;`
+    // right after `dg = () => ++count;`) still to come before this function
+    // actually returns. Building a heap snapshot at the assignment would
+    // freeze a stale copy right then, silently diverging from whatever the
+    // frame goes on to do -- so, unlike `compileDelegateReturn`, this always
+    // declines a capturing rhs outright rather than ever attempting
+    // `heapClosureContextOrNull`. A non-capturing rhs (a plain rebind,
+    // e.g. `dg = newValue;`) has no captured state to protect and still
+    // resolves through the ordinary frame-relative `delegateOperandOffset`.
+    private ushort refEscapingDelegateOperandOffset(Expression source) {
+        auto function_ = returnedDelegateFunctionOrNull(source);
+        if (function_ !is null && function_.outerVars.length != 0)
+            throwFrameEscapingDelegateDiagnostic(source);
 
         return delegateOperandOffset(source);
     }
@@ -4530,6 +4621,14 @@ private struct Compiler {
         if (auto enclosing = enclosingMethodOf(function_))
             if (enclosing.isThis() !is null)
                 return null;
+        // This exact lambda already has a LIVE frame-context delegate value
+        // (e.g. `auto dg = () => ++count;` earlier in the function, possibly
+        // already called through while the frame was live): building a
+        // second, heap-context delegate value for the same lambda body would
+        // leave that one shared body unable to serve both contexts. Decline;
+        // see `_frameContextDelegates`'s own comment.
+        if (function_ in _frameContextDelegates)
+            return null;
 
         const count = function_.outerVars.length;
         VarDeclaration[2] vars;
@@ -4542,6 +4641,18 @@ private struct Compiler {
                 return null;
             auto capturedOffset = captured in _capturedOffsets;
             if (capturedOffset is null)
+                return null;
+            // Referenced by more than one nested function (DMD's own
+            // `nestedrefs` record of this): a sibling lambda sharing this
+            // same captured variable (`auto peek = () => count; auto early =
+            // peek(); return () => ++count;`) reads it through its OWN,
+            // never-heap-escaped frame-base context, but `_heapClosureVars`
+            // is per-variable-per-escaping-lambda, not per-sibling -- the
+            // sibling's own body has no way to tell "this variable is
+            // heap-boxed for a DIFFERENT lambda" from "this variable is
+            // heap-boxed for me". Decline rather than risk the sibling
+            // misreading its frame-base context as a raw heap pointer.
+            if (captured.nestedrefs.length > 1)
                 return null;
 
             // `Tpointer` is deliberately not excluded here: `scalarType`
@@ -4585,8 +4696,8 @@ private struct Compiler {
             const slotOffset = cast(ushort) (i * size_t.sizeof);
             const index = compileSizeConstant(slotOffset / widths[i]);
             emitPointerStore(capturedOffsets[i], heapPointer, index, widths[i]);
-            _heapClosureVars[vars[i]] = true;
-            _heapClosureOffsets[vars[i]] = slotOffset;
+            _heapClosureVars[function_][vars[i]] = true;
+            _heapClosureOffsets[function_][vars[i]] = slotOffset;
         }
 
         auto result = new ushort;
@@ -4833,19 +4944,40 @@ private struct Compiler {
             // content. Detect this shape first and dereference through the
             // row's own heap pointer instead (index 0, `totalSize` bytes --
             // the same `indexLoad` mechanism `loadDynamicArrayElement`
-            // itself uses to read one element out of a descriptor). A
-            // genuinely inline nested static array (`T[M][N] arr; arr[i]`)
-            // is not an `IndexExp` this resolves (its base is `Tsarray`, not
-            // `Tarray`), so it still falls through to the block copy below,
+            // itself uses to read one element out of a descriptor).
+            //
+            // A genuinely inline nested static array (`T[M][N] arr;
+            // arr[i]`) IS an `IndexExp` that reaches here too -- its OWN
+            // type (`source.type`, checked by the outer `if` above) is
+            // `Tsarray` either way, so that alone doesn't distinguish the
+            // two shapes. What actually differs is `index.e1`'s (the
+            // indexed BASE expression's, `arr` itself) own type: `Tarray`
+            // for the heap-boxed-rows shape above, `Tsarray` for a genuinely
+            // inline nested static array. Without this check,
+            // `tryDynamicArrayIndex` still successfully resolves the inline
+            // shape too -- `dynamicArrayDescriptorOrNull`'s own
+            // `staticArrayOffsetOf` branch matches ANY `Tsarray` local,
+            // unconditionally building a slice-descriptor VIEW over `arr`'s
+            // raw inline bytes and tagging it `elementIsArray` (since
+            // `arr`'s own element type, `T[M]`, is itself an array type) --
+            // a lie for this shape: the "elements" this view claims are
+            // heap-boxed row descriptors are actually `arr`'s own raw `T[M]`
+            // bytes with nothing boxed at all. `emitIndexLoad` below would
+            // then dereference those raw bytes as if they were a real
+            // pointer, a wild read that reliably segfaults. Gating on
+            // `index.e1.type` being a genuine `Tarray` keeps this branch
+            // scoped to the shape it is actually sound for; the inline case
+            // instead falls through to the generic block copy below,
             // unaffected.
             if (auto index = source.isIndexExp)
-                if (auto rowDescriptor = tryDynamicArrayIndex(index)) {
-                    emitIndexLoad(
-                        offset, rowDescriptor.offset,
-                        compileSizeConstant(0), totalSize,
-                    );
-                    return true;
-                }
+                if (index.e1.type.toBasetype.ty == TY.Tarray)
+                    if (auto rowDescriptor = tryDynamicArrayIndex(index)) {
+                        emitIndexLoad(
+                            offset, rowDescriptor.offset,
+                            compileSizeConstant(0), totalSize,
+                        );
+                        return true;
+                    }
 
             const value = compileExpression(source);
             _code ~= Instruction(
@@ -6457,6 +6589,21 @@ private struct Compiler {
         return 0;
     }
 
+    // Whether `declaration`'s captured-local access from the function
+    // CURRENTLY compiling (`_currentFunction`) should go through a
+    // heap-block pointer rather than a live frame slot: true only when
+    // `_currentFunction` is itself the specific escaping lambda
+    // `heapClosureContextOrNull` heap-boxed `declaration` for. A sibling
+    // nested function that also happens to read the same enclosing local,
+    // or a later compile of the SAME lambda body reached from a call made
+    // while its frame context was still a live frame-base index (both
+    // declined by `heapClosureContextOrNull` itself -- see its own
+    // `nestedrefs`/`_frameContextDelegates` checks), never reach this true.
+    private bool isHeapClosureVar(VarDeclaration declaration) {
+        auto forFunction = _currentFunction in _heapClosureVars;
+        return forFunction !is null && declaration in *forFunction;
+    }
+
     // Read a captured enclosing local of type `declaration` at `capturedOffset`
     // within the enclosing frame. Nested structs carry the enclosing frame's
     // base index in their hidden `this` block; nested function delegates carry
@@ -6482,10 +6629,12 @@ private struct Compiler {
         const type = scalarType(declaration.type);
         const valueSize = size(type);
         const destination = allocateBytes(valueSize, valueSize);
-        if (declaration in _heapClosureVars)
+        if (isHeapClosureVar(declaration))
             emitPointerLoad(
                 destination, _nestedContextOffset,
-                compileSizeConstant(_heapClosureOffsets[declaration] / valueSize),
+                compileSizeConstant(
+                    _heapClosureOffsets[_currentFunction][declaration] / valueSize,
+                ),
                 valueSize,
             );
         else
@@ -6530,10 +6679,12 @@ private struct Compiler {
         const valueSize = isAggregate
             ? cast(uint) staticArraySize(declaration.type)
             : size(scalarType(declaration.type));
-        if (declaration in _heapClosureVars)
+        if (isHeapClosureVar(declaration))
             emitPointerStore(
                 value.offset, _nestedContextOffset,
-                compileSizeConstant(_heapClosureOffsets[declaration] / valueSize),
+                compileSizeConstant(
+                    _heapClosureOffsets[_currentFunction][declaration] / valueSize,
+                ),
                 valueSize,
             );
         else
@@ -11326,19 +11477,33 @@ private struct Compiler {
         // When the target is a `ref`/`out` PARAMETER, its frame slot is
         // written back to the CALLER's own storage when this function
         // returns (`appendParameterLayoutEntry`'s `RefParameter` writeback),
-        // so a capturing rhs lambda/nested-function delegate needs the same
-        // escape-safety `compileDelegateReturn` already gives a directly
-        // returned delegate: resolve such an rhs through `compileDelegateReturn`
-        // instead of the plain `delegateOperandOffset`, so a capture that
-        // would outlive this function's own frame either gets the
-        // heap-closure treatment or the loud "Unsupported delegate return"
-        // diagnostic, instead of a frame-relative context that silently
-        // reads as garbage once this function returns and its frame is
-        // reused. A plain (non-escaping) local/parameter never needs this:
-        // its own frame lives exactly as long as any capture resolved
-        // against it could still be read back through it, so
-        // `compileDelegateReturn` degrades to plain `delegateOperandOffset`
-        // for it anyway (`returnedDelegateFunctionOrNull` only recognises a
+        // so a capturing rhs lambda/nested-function delegate is a THIRD
+        // frame-escape site alongside `compileDelegateReturn`'s two
+        // (`return dg;`, and a struct literal's top-level delegate field as
+        // the direct `return` expression) -- but unlike those two, this one
+        // is not sound to give the SAME heap-closure treatment to:
+        // `heapClosureContextOrNull`'s soundness argument depends on the
+        // escape site being the LAST thing the function ever does, so the
+        // frame slots it snapshots from never diverge from the heap copy it
+        // makes. A `ref`/`out`-parameter assignment can happen mid-function,
+        // with further statements -- including further writes to the same
+        // captured variables through the still-live frame -- still to come
+        // before this function actually returns; a heap snapshot taken here
+        // would freeze a stale copy that then silently diverges from
+        // whatever the frame goes on to do. So `refEscapingDelegateOperandOffset`
+        // resolves such an rhs through the same shared frame-escape
+        // diagnostic (`throwFrameEscapingDelegateDiagnostic`) `compileDelegateReturn`
+        // raises for a shape it can't safely heap-box either, but
+        // UNCONDITIONALLY -- it never attempts `heapClosureContextOrNull` at
+        // all for this site, regardless of capture shape -- instead of a
+        // frame-relative context that would silently read as garbage (or, if
+        // heap-boxed anyway, silently diverge from the live frame) once this
+        // function returns and its frame is reused. A plain (non-escaping)
+        // local/parameter never needs this: its own frame lives exactly as
+        // long as any capture resolved against it could still be read back
+        // through it, so `refEscapingDelegateOperandOffset` degrades to
+        // plain `delegateOperandOffset` for it anyway
+        // (`returnedDelegateFunctionOrNull` only recognises a
         // statically-known callee at all; any other rhs shape -- a
         // parameter/field/call-result copy -- has no captures to protect and
         // takes the same plain path regardless).
@@ -11352,7 +11517,7 @@ private struct Compiler {
                     const escapes =
                         declaration.isReference && declaration.isParameter;
                     const source = escapes
-                        ? compileDelegateReturn(assign.e2)
+                        ? refEscapingDelegateOperandOffset(assign.e2)
                         : delegateOperandOffset(assign.e2);
                     _code ~= Instruction(
                         Op.copy, offset, source, cast(ushort) delegateValueSize,
@@ -12215,11 +12380,11 @@ private struct Compiler {
         if (declaration is null)
             return null;
 
-        auto delegate_ = delegateInitializer(assign.e2);
-        if (delegate_.function_ is null)
+        auto function_ = delegateInitializerFunctionOrNull(assign.e2);
+        if (function_ is null)
             return null;
 
-        _staticDelegateAssocArrays[declaration] = delegate_.function_;
+        _staticDelegateAssocArrays[declaration] = function_;
 
         auto result = new Operand;
         *result = Operand.init;
@@ -13659,9 +13824,9 @@ private struct Compiler {
         auto declaration =
             staticDelegateAssocArrayAssignDeclaration(deref);
         if (declaration !is null) {
-            auto delegate_ = delegateInitializer(rhs);
-            if (delegate_.function_ !is null) {
-                _staticDelegateAssocArrays[declaration] = delegate_.function_;
+            auto function_ = delegateInitializerFunctionOrNull(rhs);
+            if (function_ !is null) {
+                _staticDelegateAssocArrays[declaration] = function_;
 
                 auto registryResult = new Operand;
                 *registryResult = Operand.init;
@@ -16389,6 +16554,17 @@ private struct Compiler {
     ) {
         import std.conv: text;
 
+        // This call reaches `delegateLocal.function_`'s body through its
+        // OWN local's already-materialised context, whatever kind that is
+        // (see `_frameContextDelegates`'s own comment for why a nested
+        // function/lambda's frame-relative context specifically matters to
+        // `heapClosureContextOrNull`, and why marking unconditionally here
+        // is still safe for every other context kind: `heapClosureContextOrNull`
+        // never consults this set for a callee its own earlier guards --
+        // `thisStructDeclaration`, `outerVars.length == 0` -- already
+        // exclude).
+        _frameContextDelegates[delegateLocal.function_] = true;
+
         const layout = parameterLayout(delegateLocal.function_);
         const argumentArea = allocateBytes(layout.blockSize, 8);
 
@@ -18175,11 +18351,52 @@ private struct Compiler {
     // string member (still unsupported, tracked separately).
     private uint assocArrayKeyNonArrayWidth(Type aaType) {
         import dmd.astenums: TY;
+        import std.conv: text;
 
         auto keyType = assocArrayKeyType(aaType);
-        if (keyType.toBasetype.ty == TY.Tstruct)
+        if (keyType.toBasetype.ty == TY.Tstruct) {
+            // A struct `structKeyFieldLayoutOrNull` itself declined --
+            // meaning it found no TOP-LEVEL plain-`string` field to route
+            // through field-wise structural comparison -- may still have an
+            // array-typed field this raw whole-block path cannot soundly
+            // compare: a top-level field that is an array but not a plain
+            // immutable `string` (a mutable `char[]`, a `wstring`/`dstring`,
+            // or a non-string dynamic array like `int[]`), or an array field
+            // nested one or more struct levels deeper (`structKeyFieldLayoutOrNull`
+            // only ever looks at `keyType`'s own immediate fields). Two
+            // separately-built but content-equal arrays have different
+            // backing pointers, so comparing them as part of this raw block
+            // would silently compare identity instead of content -- decline
+            // instead, the same diagnostic `assocArrayKeyIsArray` already
+            // raises for an unsupported array-typed key.
+            if (structKeyFieldLayoutOrNull(keyType) is null &&
+                    structHasArrayFieldRecursive(keyType))
+                throw new Exception(text(
+                    "Unsupported associative array key type in ",
+                    "bytecode core: ", typeChars(keyType),
+                ));
             return cast(uint) staticArraySize(keyType);
+        }
         return size(scalarType(keyType));
+    }
+
+    // `assocArrayKeyNonArrayWidth`'s own recursive field scan: true when
+    // `keyType` (a struct) has any field, at any nesting depth through
+    // further struct fields, whose own type is a dynamic array (`Tarray`,
+    // covering every string variant too).
+    private bool structHasArrayFieldRecursive(Type keyType) {
+        import dmd.astenums: TY;
+
+        auto declaration = structDeclarationOf(keyType);
+        foreach (field; declaration.fields) {
+            auto fieldType = cast(Type) field.type;
+            const ty = fieldType.toBasetype.ty;
+            if (ty == TY.Tarray)
+                return true;
+            if (ty == TY.Tstruct && structHasArrayFieldRecursive(fieldType))
+                return true;
+        }
+        return false;
     }
 
     // The byte width `AssocArray.keys` (`machine.d`) packs each key entry
