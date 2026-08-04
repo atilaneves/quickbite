@@ -5324,12 +5324,7 @@ static foreach (backend; Matrix!()) {
 
 // A non-null zero-length slice (its pointer is set but length is 0) is still
 // truthy: truthiness follows the pointer, not the length.
-static foreach (backend; Matrix!(
-    Omit!(Interpreter, Because.unconfirmed,
-        "observed via bin/qb: `assert(s ? true : false)` for a non-null " ~
-        "zero-length slice evaluates false on Interpreter; SystemLinker " ~
-        "evaluates true"),
-)) {
+static foreach (backend; Matrix!()) {
     @("dynamicArray.nonNullZeroLengthSliceIsTruthy." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {

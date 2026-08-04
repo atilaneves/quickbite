@@ -8526,6 +8526,7 @@ private struct Walker {
     }
 
     private Value boolCastValue(imported!"dmd.expression".CastExp cast_) {
+        import quickbite.backends.interpreter.aggregate_value: AggregateValue;
         import quickbite.backends.interpreter.runtime_casts:
             backendCastTarget = castTarget,
             backendCastValue = castValue;
@@ -8535,6 +8536,8 @@ private struct Walker {
             return Value(true);
         if (value == Value.null_)
             return Value(false);
+        if (value.isNativeAggregate && AggregateValue.isArray(value))
+            return Value(isTruthy(value));
 
         return backendCastValue(value, backendCastTarget(cast_.to));
     }
@@ -10266,7 +10269,9 @@ private imported!"dmd.mtype".TypeStruct receiverStructType(
 
 
 private bool isTruthy(in imported!"quickbite.backends.interpreter.runtime_value".Value value) {
+    import dmd.astenums: TY;
     import quickbite.backends.interpreter.aggregate_value: AggregateValue;
+    import quickbite.backends.interpreter.native_array: readSliceHeaderBytes;
     import quickbite.backends.interpreter.runtime_value: Value;
 
     if (value == Value.null_)
@@ -10275,8 +10280,15 @@ private bool isTruthy(in imported!"quickbite.backends.interpreter.runtime_value"
     if (value.isPointer)
         return true;
 
-    if (AggregateValue.isArray(value))
+    if (AggregateValue.isArray(value)) {
+        if (value.isNativeAggregate) {
+            // DMD's `toBasetype` is mutable.
+            auto aggregate = AggregateValue.native(value);
+            if (aggregate.type.toBasetype.ty == TY.Tarray)
+                return readSliceHeaderBytes(aggregate.storage.bytes).ptr !is null;
+        }
         return AggregateValue.length(value) != 0;
+    }
 
     if (value == Value(false))
         return false;

@@ -641,6 +641,10 @@ native-pointer path matches it. The allocated-block diagnostic is a CTFE-only
 characterization, so the Interpreter belongs in the compiled-behaviour matrix;
 do not restore a boxed-storage bounds diagnostic for this operation.
 
+Dynamic-array truthiness is the native slice header's pointer, not its length:
+a zero-length interior slice with a non-null pointer is true, while a default
+null slice is false.
+
 An indexed array-of-arrays element is its own addressed slice header. Slice
 assignment through that element writes the row's native elements in place;
 rebuilding the enclosing array would reintroduce boxed storage authority.
