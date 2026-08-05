@@ -520,6 +520,26 @@ package(quickbite.backends.bytecode) RunResult run(
                 ++ip;
                 break;
 
+            case atomicFetchAdd8:
+                const atomicFetchAddAddress = scalarValue!size_t(
+                    stack, base + instruction.b,
+                );
+                const atomicFetchAddValue = scalarValue!ulong(
+                    stack, base + instruction.c,
+                );
+                const ubyte[ulong.sizeof] atomicFetchAddResult = scalarBytes(
+                    atomicFetchAddWord(
+                        cast(ubyte*) atomicFetchAddAddress,
+                        atomicFetchAddValue,
+                    ),
+                );
+                stack[
+                    base + instruction.a
+                    .. base + instruction.a + ulong.sizeof
+                ] = atomicFetchAddResult;
+                ++ip;
+                break;
+
             case pointerStore1, pointerStore2, pointerStore4, pointerStore8,
                 pointerStore16, pointerStoreN:
                 const pointerStoreSize = instruction.op == pointerStoreN
@@ -3078,6 +3098,15 @@ private uint atomicFetchAddDword(ubyte* address, in uint value) @trusted {
     import core.atomic: atomicFetchAdd;
 
     return atomicFetchAdd(*cast(shared(uint)*) address, value);
+}
+
+// @trusted: `atomicFetchAdd` reads and writes exactly one aligned 8-byte word
+// through the raw address produced by the validated DRuntime inline-asm
+// lowering.
+private ulong atomicFetchAddWord(ubyte* address, in ulong value) @trusted {
+    import core.atomic: atomicFetchAdd;
+
+    return atomicFetchAdd(*cast(shared(ulong)*) address, value);
 }
 
 private void writeHeapElement(ubyte* element, in ubyte[] source) @trusted {

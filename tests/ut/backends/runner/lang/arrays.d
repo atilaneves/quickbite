@@ -5349,6 +5349,28 @@ static foreach (backend; Matrix!(
     }
 }
 
+// DRuntime's 64-bit `atomicFetchAdd` takes the locked `xadd` inline-asm path
+// on x86_64. Its return is the value before the update, not the new value.
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.inexpressible,
+        "core.internal.atomic.atomicFetchAdd has inline assembly that CTFE " ~
+        "cannot execute"),
+)) {
+    @("atomic.fetchAddUlongReturnsPreviousValue." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            import core.internal.atomic : atomicFetchAdd;
+
+            unittest {
+                ulong value = 41;
+                assert(atomicFetchAdd(&value, 1UL) == 41);
+                assert(value == 42);
+            }
+        });
+    }
+}
+
 // This fixture pins `assumeSafeAppend` through an interior pointer (a slice
 // that does not start at its backing block's base). Interpreter omitted: its
 // reserve descriptor loses the zero-length allocation's capacity when the

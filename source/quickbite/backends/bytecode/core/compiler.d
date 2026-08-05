@@ -830,8 +830,8 @@ private struct Compiler {
         compileUnsignedMultiplyAsm(compound);
     }
 
-    // `core.internal.atomic.atomicFetchAdd` for a 4-byte value returns the
-    // value which was in `*dest` before adding `value`. Accept its complete
+    // `core.internal.atomic.atomicFetchAdd` returns the value which was in
+    // `*dest` before adding `value`. Accept its complete 4- or 8-byte
     // naked-function sequence and lower it to one host atomic fetch-add.
     private bool tryCompileAtomicFetchAddAsm(
         imported!"dmd.statement".CompoundAsmStatement compound,
@@ -849,12 +849,12 @@ private struct Compiler {
             !isAsmIdentifier(instructions[2], 2, "RSI") ||
             !isAsmPunctuation(instructions[2], 3, "]") ||
             !isAsmPunctuation(instructions[2], 4, ",") ||
-            !isAsmIdentifier(instructions[2], 5, "EDI") ||
+            !isAsmIdentifier(instructions[2], 5, "EDI", "RDI") ||
             instructions[2].length != 6 ||
             !isAsmIdentifier(instructions[3], 0, "mov") ||
-            !isAsmIdentifier(instructions[3], 1, "EAX") ||
+            !isAsmIdentifier(instructions[3], 1, "EAX", "RAX") ||
             !isAsmPunctuation(instructions[3], 2, ",") ||
-            !isAsmIdentifier(instructions[3], 3, "EDI") ||
+            !isAsmIdentifier(instructions[3], 3, "EDI", "RDI") ||
             instructions[3].length != 4 ||
             !isAsmIdentifier(instructions[4], 0, "ret") ||
             instructions[4].length != 1)
@@ -862,14 +862,22 @@ private struct Compiler {
 
         const destination = asmPointerLocal("dest");
         const value = asmLocal("value");
-        if (destination.pointerElement != ScalarType.uint_ ||
-            value.type != ScalarType.uint_ ||
-            _currentReturnType.scalar != ScalarType.uint_)
+        const isDword = instructions[2][5].spelling == "EDI";
+        const type = isDword ? ScalarType.uint_ : ScalarType.ulong_;
+        if ((!isDword &&
+                (!isAsmIdentifier(instructions[3], 1, "RAX") ||
+                    !isAsmIdentifier(instructions[3], 3, "RDI"))) ||
+            (isDword &&
+                (!isAsmIdentifier(instructions[3], 1, "EAX") ||
+                    !isAsmIdentifier(instructions[3], 3, "EDI"))) ||
+            destination.pointerElement != type ||
+            value.type != type || _currentReturnType.scalar != type)
             throw new Exception("Unsupported inline asm atomic-fetch-add operand.");
 
-        const result = allocate(ScalarType.uint_);
+        const result = allocate(type);
         _code ~= Instruction(
-            Op.atomicFetchAdd4, result, destination.offset, value.offset,
+            isDword ? Op.atomicFetchAdd4 : Op.atomicFetchAdd8,
+            result, destination.offset, value.offset,
         );
         _code ~= Instruction(Op.ret, result);
         return true;

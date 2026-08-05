@@ -398,6 +398,10 @@ row, not a guarantee. Reconfirm against the source before relying on it.
   read itself is unsigned only as a raw-byte transport. Validate the source
   pointee against that opcode width, but not the result pointer metadata: the
   validated EAX/RAX store fixes its byte width.
+- The recognized 4- and 8-byte `core.internal.atomic.atomicFetchAdd`
+  inline-asm sequence returns the pre-addition raw bits. Validate the matching
+  EDI/EAX or RDI/RAX register pair and lower it to a width-specific host atomic
+  fetch-add rather than an ordinary load/add/store sequence.
 - Native calls pass `TypeInfo` arguments as their actual native class
   references; `GC.malloc(int.sizeof, 0, typeid(int))` uses the host's
   `TypeInfo!int` without display-value substitution.
