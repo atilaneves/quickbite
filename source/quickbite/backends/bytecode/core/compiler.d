@@ -3174,7 +3174,7 @@ private struct Compiler {
         const isAggregateElement = resultType.toBasetype.ty == TY.Tstruct ||
             resultType.toBasetype.ty == TY.Tdelegate;
         const elementSize = isAggregateElement
-            ? cast(uint) staticArraySize(resultType)
+            ? inlineByteWidth(resultType)
             : elementIsArray
             ? sliceDescriptorSize
             : size(elementType);
