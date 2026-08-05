@@ -14597,7 +14597,7 @@ private struct Compiler {
                 expressionChars(index),
             ));
 
-        const elementSize = cast(uint) staticArraySize(index.type);
+        const elementSize = inlineByteWidth(index.type);
         const offset = cast(ushort)
             (baseOffset + indexInteger.toInteger * elementSize);
         // A sub-array, struct, or delegate element has no scalar type;
@@ -14705,7 +14705,7 @@ private struct Compiler {
             if (pointer.isPointer) {
                 const zeroOffset = compileSizeConstant(0);
                 const arraySize = cast(ushort)
-                    staticArraySize(expression.type.nextOf);
+                    inlineByteWidth(expression.type.nextOf);
                 const blockOffset = loadStructThroughPointer(
                     pointer.offset, zeroOffset, expression.type.nextOf,
                 );
@@ -14834,7 +14834,7 @@ private struct Compiler {
         // all, so its width comes from DMD's own `Type.size()` for the value
         // actually being written.
         const elementSize = element.type == ScalarType.void_
-            ? cast(uint) staticArraySize(rhs.type)
+            ? inlineByteWidth(rhs.type)
             : size(element.type);
         _code ~= Instruction(
             Op.copy,
@@ -14917,7 +14917,7 @@ private struct Compiler {
         if (!capturedStaticArrayBaseOffset(index.e1, declaration, baseOffset))
             return null;
 
-        const elementSize = cast(uint) staticArraySize(index.type);
+        const elementSize = inlineByteWidth(index.type);
         const relativeOffset = cast(ushort)
             (baseOffset + indexInteger.toInteger * elementSize);
         // A sub-array, struct, or delegate element has no scalar type,
@@ -14974,7 +14974,7 @@ private struct Compiler {
             ));
 
         const elementSize = element.type == ScalarType.void_
-            ? cast(uint) staticArraySize(rhs.type)
+            ? inlineByteWidth(rhs.type)
             : size(element.type);
         _code ~= Instruction(
             Op.frameStore,
@@ -15010,7 +15010,7 @@ private struct Compiler {
         const absoluteOffset = cast(ushort) (*captured + element.relativeOffset);
 
         const elementSize = element.type == ScalarType.void_
-            ? cast(uint) staticArraySize(index.type)
+            ? inlineByteWidth(index.type)
             : size(element.type);
         const destination = element.type == ScalarType.void_
             ? allocateStructBlock(index.type)

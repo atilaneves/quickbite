@@ -591,9 +591,9 @@ place second.
    and the inline DMD-layout query through `elementMetadataFor`/
    `inlineByteWidth`; `storeStructPointerField`/`storeClassPointerField` and
    `refArgumentFieldWidth` share that classification and query.
-   The next bounded width family is static-array field/element access outside
-   struct declaration and initialization; those sites still query
-   `staticArraySize` directly for inline byte widths.
+   The next bounded width family is static-array construction and return
+   materialisation; those sites still query `staticArraySize` directly for
+   inline byte widths.
 
    Done: every width-suffixed opcode family (`indexLoad*`/`indexStore*`,
    `pointerLoad*`/`pointerStore*`/`pointerSlice*`, `subSlice*`,
