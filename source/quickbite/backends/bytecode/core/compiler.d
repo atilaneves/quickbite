@@ -6444,6 +6444,19 @@ private struct Compiler {
             !is null;
     }
 
+    // Whether a field chain is rooted in a module-level struct. Ref calls use
+    // this pure classifier before resolving the field place, so the
+    // data-segment ref emitter can consume that one resolved place instead of
+    // materialising the module block once while probing and again while
+    // emitting its writeback.
+    private bool hasModuleStructBase(DotVarExp dot) {
+        if (isModuleStructFieldTarget(dot))
+            return true;
+        if (auto base = dot.e1.isDotVarExp)
+            return hasModuleStructBase(base);
+        return false;
+    }
+
     // The enclosing-frame struct variable `expression` reads as a receiver
     // for field access -- the enclosing method's own `this` (only when this
     // function has none of its own), or an outer local captured into this
@@ -16245,12 +16258,13 @@ private struct Compiler {
                     ))
                         continue;
                 if (layout.isReference[nextArgumentIndex + argumentIndex])
-                    if (emitModuleStructFieldRefArgument(
-                        slot,
-                        (*call.arguments)[argumentIndex],
-                        moduleScalarRefWriteBacks,
-                    ))
-                        continue;
+                    if (auto dot = (*call.arguments)[argumentIndex].isDotVarExp)
+                        if (hasModuleStructBase(dot))
+                            if (auto field = tryStructField(dot))
+                                if (emitModuleStructFieldRefArgument(
+                                    slot, field, moduleScalarRefWriteBacks,
+                                ))
+                                    continue;
                 if (layout.isReference[nextArgumentIndex + argumentIndex])
                     if (emitConditionalRefArgument(
                         slot,
@@ -17798,18 +17812,12 @@ private struct Compiler {
     // target after the call.
     private bool emitModuleStructFieldRefArgument(
         in ushort slot,
-        Expression argument,
+        StructField* field,
         ref ModuleScalarRefWriteBack[] writeBacks,
     ) {
         import dmd.astenums: TY;
 
-        auto dot = argument.isDotVarExp;
-        if (dot is null)
-            return false;
-
-        auto field = tryStructField(dot);
-        if (field is null ||
-            field.writeBack != StructField.WriteBack.dataSegment)
+        if (field.writeBack != StructField.WriteBack.dataSegment)
             return false;
 
         const ty = field.type.toBasetype.ty;
