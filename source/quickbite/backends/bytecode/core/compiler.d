@@ -10931,14 +10931,14 @@ private struct Compiler {
 
         // `base.field += rhs` on an inline struct field (e.g. a `with (subject)`
         // body's `(*__withSym).field`): add into the field's own frame slot.
-        // A module-struct field's whole-block copy (`tryStructField`'s
+        // A module-struct field chain's whole-block copy (`tryStructField`'s
         // `Op.loadModule`) must be taken after the rhs runs: the rhs may
         // itself write this exact field by name (`gp.x += f()` where `f`
         // writes `gp.x` directly), and that write has to already be in the
         // copy this read-modify-write reads, or the post-op `Op.storeModule`
         // writeback below clobbers it with a stale snapshot.
         if (auto dot = compoundAssignDotVar(addAssign.e1)) {
-            const isModuleField = isModuleStructFieldTarget(dot);
+            const isModuleField = hasModuleStructBase(dot);
             Operand earlyRhsValue;
             if (isModuleField)
                 earlyRhsValue = compileExpression(addAssign.e2);

@@ -640,8 +640,10 @@ place second.
    than independently reconstructing a module offset, and receives the
    already-resolved field place so it does not materialise module storage a
    second time. Direct module fields and nested module-field chains both
-   compose from the same materialised base place. A new language-surface shape
-   extends the resolver, never adds a sibling emitter.
+   compose from the same materialised base place. Consumers whose evaluation
+   ordering depends on materialisation classify the complete chain by that
+   resolved data-segment target. A new language-surface shape extends the
+   resolver, never adds a sibling emitter.
 
 Reviewed and declined (2026-08): a bytecode-core disassembler with
 instruction-level emission pins — not worth tackling; do not re-propose.
