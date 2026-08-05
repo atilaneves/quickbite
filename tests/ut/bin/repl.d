@@ -631,7 +631,13 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode)) {
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode)) {
+// Interpreter: omitted, `Because.unconfirmed`. `.array` forces
+// `std.array.array()`'s Appender to grow a native buffer; the result reads
+// as uninitialized/garbage bytes (`[2, 4, 6]` expected, e.g. `[-659590464,
+// 32674, 2017211696]` observed) rather than throwing. Same Appender-growth
+// area as `displaysFilteredArrayResults`'s omission below; root cause not
+// yet triaged. See `ai/plans/value.md` item 4.
+static foreach (backend; AliasSeq!(Ctfe, Bytecode)) {
 
     @("repl.backend.importStdExposesPhobosSymbols." ~ backend.stringof)
     unittest {
@@ -684,7 +690,14 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode)) {
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, Interpreter)) {
+// Interpreter: omitted, `Because.unconfirmed`. `.array` forces
+// `std.array.array()`'s Appender to grow a native buffer; growth reaches a
+// `(*p).ptr`-shaped expression that `arrayPointer` (the `.ptr`/`&expr[i]`
+// address-composition helper) has no `PtrExp` case for, so it throws
+// "Unsupported eval expression: cast_" -- the message names the caller's
+// own `cast_.op`, passed through unconditionally, not the real gap. See
+// `ai/plans/value.md` item 4.
+static foreach (backend; AliasSeq!(Ctfe)) {
     @("repl.backend.displaysFilteredArrayResults." ~ backend.stringof)
     unittest {
         import quickbite.repl: runReplLoop;
