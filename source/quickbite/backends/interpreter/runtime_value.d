@@ -867,7 +867,7 @@ public struct RuntimeValue {
         );
     }
 
-    public void* pointerAddress() const {
+    public void* pointerAddress() const @safe pure {
         import std.sumtype: match;
 
         return data.match!(
@@ -1022,6 +1022,11 @@ public struct RuntimeValue {
             (const(Pointer) pointer) => Value(Pointer(
                 cast(void*) (cast(size_t) pointer.address + delta),
             )),
+            // A default-initialized pointer-typed field/local is `Null`, the
+            // same zero address `pointerAddress` already reads it as (e.g.
+            // druntime's dip1008 Throwable chain-link arithmetic reads and
+            // offsets its own default-null `_nextInChainPtr`).
+            (const(Null) null_) => Value(Pointer(cast(void*) delta)),
             (_) {
                 throw new Exception("Expected pointer.");
                 return Value.void_;
@@ -1029,24 +1034,22 @@ public struct RuntimeValue {
         );
     }
 
+    // `pointerAddress` already reads a default-initialized (`Null`)
+    // pointer-typed value as address zero; pointer comparison/difference
+    // must agree so a never-assigned pointer compares/subtracts like the
+    // zero-valued `Pointer` it represents.
+    private bool isPointerOrNull() const @safe pure {
+        return isPointer || this == Value.null_;
+    }
+
     public bool pointerSameAllocation(in Value other) const @safe pure {
-        return isPointer && other.isPointer;
+        return isPointerOrNull && other.isPointerOrNull;
     }
 
     public long pointerOffsetDifference(in Value other) const @safe pure {
-        if (isPointer && other.isPointer) {
-            import std.sumtype: match;
-
-            return data.match!(
-                (const(Pointer) left) => other.data.match!(
-                    (const(Pointer) right) =>
-                        cast(long) cast(size_t) left.address -
-                            cast(long) cast(size_t) right.address,
-                    (_) => assert(false),
-                ),
-                (_) => assert(false),
-            );
-        }
+        if (isPointerOrNull && other.isPointerOrNull)
+            return cast(long) cast(size_t) pointerAddress -
+                cast(long) cast(size_t) other.pointerAddress;
 
         throw new Exception("Expected pointers.");
     }

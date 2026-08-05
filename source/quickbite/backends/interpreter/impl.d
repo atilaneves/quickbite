@@ -2511,7 +2511,18 @@ private struct Walker {
         const leftValue = runExpression(comparison.e1);
         const rightValue = runExpression(comparison.e2);
 
-        if (leftValue.isPointer && rightValue.isPointer)
+        // A default-initialized pointer-typed operand (e.g. a GC pool
+        // boundary pointer that has never been assigned) reads as `Null`,
+        // not a zero-valued `Pointer`; the static operand type still marks
+        // this as a pointer comparison. See `runAddExpression`.
+        import quickbite.frontend.dmd.types: isPointerType;
+
+        const leftIsPointer = leftValue.isPointer ||
+            (leftValue == Value.null_ && isPointerType(comparison.e1.type));
+        const rightIsPointer = rightValue.isPointer ||
+            (rightValue == Value.null_ && isPointerType(comparison.e2.type));
+
+        if (leftIsPointer && rightIsPointer)
             return runPointerComparison(comparison.op, leftValue, rightValue);
 
         const left = leftValue.asReal;
@@ -2550,11 +2561,22 @@ private struct Walker {
     }
 
     private Value runAddExpression(imported!"dmd.expression".AddExp add) {
+        import quickbite.frontend.dmd.types: isPointerType;
+
         const left = runExpression(add.e1);
         const right = runExpression(add.e2);
 
-        if (left.isPointer) {
-            const offset = left.isPointer
+        // A default-initialized pointer-typed operand (e.g. druntime's
+        // dip1008 Throwable chain-link arithmetic on its own default-null
+        // `_nextInChainPtr`) reads as `Null`, not a zero-valued `Pointer`;
+        // the static operand type still marks it as pointer arithmetic.
+        const leftIsPointer = left.isPointer ||
+            (left == Value.null_ && isPointerType(add.e1.type));
+        const rightIsPointer = right.isPointer ||
+            (right == Value.null_ && isPointerType(add.e2.type));
+
+        if (leftIsPointer) {
+            const offset = leftIsPointer
                 ? right.asLong
                 : pointerElementOffset(add.type, right.asLong);
             return left.pointerOffsetBy(
@@ -2562,8 +2584,8 @@ private struct Walker {
             );
         }
 
-        if (right.isPointer) {
-            const offset = right.isPointer
+        if (rightIsPointer) {
+            const offset = rightIsPointer
                 ? left.asLong
                 : pointerElementOffset(add.type, left.asLong);
             return right.pointerOffsetBy(
@@ -2575,13 +2597,22 @@ private struct Walker {
     }
 
     private Value runMinExpression(imported!"dmd.expression".MinExp sub) {
+        import quickbite.frontend.dmd.types: isPointerType;
+
         const left = runExpression(sub.e1);
         const right = runExpression(sub.e2);
 
+        // See `runAddExpression`: a default-null pointer operand reads as
+        // `Null`, not a zero-valued `Pointer`.
+        const leftIsPointer = left.isPointer ||
+            (left == Value.null_ && isPointerType(sub.e1.type));
+        const rightIsPointer = right.isPointer ||
+            (right == Value.null_ && isPointerType(sub.e2.type));
+
         // DMD lowers `p - q` to `(p - q) / elementSize`; return the byte
         // difference so the lowered division yields the element difference
-        if (left.isPointer && right.isPointer) {
-            const scale = left.isPointer && right.isPointer
+        if (leftIsPointer && rightIsPointer) {
+            const scale = leftIsPointer && rightIsPointer
                 ? 1
                 : pointerElementSize(sub.e1.type);
             return Value(
@@ -2589,8 +2620,8 @@ private struct Walker {
             );
         }
 
-        if (left.isPointer) {
-            const offset = left.isPointer
+        if (leftIsPointer) {
+            const offset = leftIsPointer
                 ? right.asLong
                 : pointerElementOffset(sub.type, right.asLong);
             return left.pointerOffsetBy(
