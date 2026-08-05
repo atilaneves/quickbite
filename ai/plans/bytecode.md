@@ -392,6 +392,10 @@ row, not a guarantee. Reconfirm against the source before relying on it.
 - Whole static-array values use `compileStaticArrayValueInto` at every
   aggregate store boundary; do not route a `Tsarray` literal through the
   struct-only operand resolver.
+- The recognized 4- and 8-byte `core.internal.atomic.atomicLoad` inline-asm
+  sequence carries raw bits: retain the source pointer's signedness in its
+  result slot while using the width-specific atomic opcode. The host atomic
+  read itself is unsigned only as a raw-byte transport.
 - Native calls pass `TypeInfo` arguments as their actual native class
   references; `GC.malloc(int.sizeof, 0, typeid(int))` uses the host's
   `TypeInfo!int` without display-value substitution.

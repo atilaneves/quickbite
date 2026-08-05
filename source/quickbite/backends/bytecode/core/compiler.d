@@ -889,8 +889,9 @@ private struct Compiler {
     // `core.internal.atomic.atomicLoad` uses a locked compare-and-exchange to
     // read `src`, then writes EAX/RAX through `resultValuePtr`. This accepts
     // only the complete 4- and 8-byte sequences DRuntime emits, and lowers
-    // each to one host atomic read rather than pretending an ordinary pointer
-    // load has the same memory-order semantics.
+    // their signed and unsigned integer forms to one host atomic read rather
+    // than pretending an ordinary pointer load has the same memory-order
+    // semantics.
     private bool tryCompileAtomicLoadAsm(
         imported!"dmd.statement".CompoundAsmStatement compound,
     ) {
@@ -963,11 +964,14 @@ private struct Compiler {
             return false;
 
         const width = isDword ? uint.sizeof : ulong.sizeof;
-        if (source.pointerElement != (isDword ? ScalarType.uint_ : ScalarType.ulong_) ||
-            result.pointerElement != (isDword ? ScalarType.uint_ : ScalarType.ulong_))
+        if (source.pointerElement != result.pointerElement ||
+            (isDword && source.pointerElement != ScalarType.int_ &&
+                source.pointerElement != ScalarType.uint_) ||
+            (!isDword && source.pointerElement != ScalarType.long_ &&
+                source.pointerElement != ScalarType.ulong_))
             throw new Exception("Unsupported inline asm atomic-load operand.");
 
-        const loaded = allocate(isDword ? ScalarType.uint_ : ScalarType.ulong_);
+        const loaded = allocate(source.pointerElement);
         const zero = compileSizeConstant(0);
         _code ~= Instruction(
             isDword ? Op.atomicLoad4 : Op.atomicLoad8,
