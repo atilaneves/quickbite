@@ -639,11 +639,10 @@ place second.
    (base, hop chain, width, writeback rule) returned by one resolver,
    consumed by emit sites and a single flush path. `StructField` represents
    frame, data-segment, and pointer write-back payloads as mutually exclusive
-   variants. Next, replace `structBaseOffsetOrMaterialise`'s parallel
-   `via*`/offset out parameters with that same place-value result so field
-   resolution does not reconstruct a write-back target from parallel state.
-   A new language-surface shape extends the resolver, never adds a sibling
-   emitter.
+   variants, including the place returned by
+   `structBaseOffsetOrMaterialise`; field resolution carries that target
+   forward rather than reconstructing it from parallel state. A new
+   language-surface shape extends the resolver, never adds a sibling emitter.
 
 Reviewed and declined (2026-08): a bytecode-core disassembler with
 instruction-level emission pins — not worth tackling; do not re-propose.

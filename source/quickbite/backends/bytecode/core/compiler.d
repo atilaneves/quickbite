@@ -5458,15 +5458,12 @@ private struct Compiler {
                 if (blit !is null)
                     if (auto blitTarget = blit.e1.isVarExp)
                         if (blitTarget.var is variable) {
-                            bool blitResolved;
-                            const blitSource = structBaseOffsetOrMaterialise(
-                                blit.e2, blitResolved,
-                            );
-                            if (blitResolved) {
+                            if (auto blitSource =
+                                    structBaseOffsetOrMaterialise(blit.e2)) {
                                 _code ~= Instruction(
                                     Op.copy,
                                     offset,
-                                    blitSource,
+                                    blitSource.offset,
                                     cast(ushort) inlineByteWidth(variable.type),
                                 );
                                 auto postblitFunction = callFunction(call);
@@ -5480,13 +5477,11 @@ private struct Compiler {
         // `S dest = src` / `S dest = make(...)`: a value-type block copy of the
         // whole struct from its inline base (a local, a nested field, or a
         // materialised struct-valued call) into the declared slot.
-        bool resolved;
-        const sourceOffset = structBaseOffsetOrMaterialise(source, resolved);
-        if (resolved) {
+        if (auto sourceOffset = structBaseOffsetOrMaterialise(source)) {
             _code ~= Instruction(
                 Op.copy,
                 offset,
-                sourceOffset,
+                sourceOffset.offset,
                 cast(ushort) inlineByteWidth(variable.type),
             );
             return;
@@ -6070,30 +6065,13 @@ private struct Compiler {
                 if (dot.e1.type !is null &&
                     dot.e1.type.toBasetype.ty == TY.Tstruct &&
                     isPointerType(index.e1.type)) {
-                    bool resolved;
-                    bool viaModule;
-                    ushort moduleFrameOffset;
-                    ushort moduleOffset;
-                    bool viaPointer;
-                    ushort pointerFrameOffset;
-                    ushort pointerBaseSlot;
-                    ushort pointerIndexSlot;
-                    ushort pointerStructSize;
-                    bool viaFrame;
-                    ushort frameBaseOffset;
-                    ushort frameIndexOffset;
-                    ushort frameStructSize;
-                    const base = structBaseOffsetOrMaterialise(
-                        dot.e1, resolved, viaModule, moduleFrameOffset,
-                        moduleOffset, viaPointer, pointerFrameOffset,
-                        pointerBaseSlot, pointerIndexSlot, pointerStructSize,
-                        viaFrame, frameBaseOffset, frameIndexOffset,
-                        frameStructSize,
-                    );
-                    if (resolved && viaPointer)
+                    if (auto base = structBaseOffsetOrMaterialise(dot.e1))
+                        if (base.writeBack == StructField.WriteBack.pointer)
                         return MethodReceiver(
-                            base, 0, 0, pointerBaseSlot, pointerStructSize,
-                            pointerIndexSlot,
+                            base.offset, 0, 0,
+                            base.target.pointer.pointerBaseSlot,
+                            base.target.pointer.structSize,
+                            base.target.pointer.pointerIndexSlot,
                         );
                 }
 
@@ -6273,10 +6251,8 @@ private struct Compiler {
                 );
             }
 
-        bool resolved;
-        const base = structBaseOffsetOrMaterialise(expression, resolved);
-        if (resolved)
-            return base;
+        if (auto base = structBaseOffsetOrMaterialise(expression))
+            return base.offset;
 
         throw new Exception(text(
             "Unsupported struct value in bytecode core: ",
@@ -6420,26 +6396,8 @@ private struct Compiler {
                     return result;
                 }
 
-        bool resolved;
-        bool viaModule;
-        ushort moduleFrameOffset;
-        ushort moduleOffset;
-        bool viaPointer;
-        ushort pointerFrameOffset;
-        ushort pointerBaseSlot;
-        ushort pointerIndexSlot;
-        ushort pointerStructSize;
-        bool viaFrame;
-        ushort frameBaseOffset;
-        ushort frameIndexOffset;
-        ushort frameStructSize;
-        const base = structBaseOffsetOrMaterialise(
-            dot.e1, resolved, viaModule, moduleFrameOffset, moduleOffset,
-            viaPointer, pointerFrameOffset, pointerBaseSlot, pointerIndexSlot,
-            pointerStructSize, viaFrame, frameBaseOffset, frameIndexOffset,
-            frameStructSize,
-        );
-        if (!resolved)
+        auto base = structBaseOffsetOrMaterialise(dot.e1);
+        if (base is null)
             return null;
 
         const nestedThisFieldOffset =
@@ -6451,8 +6409,10 @@ private struct Compiler {
             : 0;
         auto result = new StructField;
         *result = StructField(
-            cast(ushort) (base + nestedThisFieldOffset + field.offset),
+            cast(ushort) (base.offset + nestedThisFieldOffset + field.offset),
             field.type,
+            base.writeBack,
+            base.target,
         );
         // `dot.e1` resolved through a materialised copy of module storage
         // (e.g. `go.inner` inside `go.inner.x`, one level below
@@ -6460,28 +6420,12 @@ private struct Compiler {
         // writeback must land at its own module slot, computed with the
         // same `moduleOffset + (offset - structOffset)` arithmetic that
         // branch already uses.
-        if (viaModule) {
-            result.writeBack = StructField.WriteBack.dataSegment;
-            result.target.dataSegment = StructField.DataSegmentWriteBack(
-                moduleFrameOffset,
-                moduleOffset,
-            );
-        }
         // `dot.e1` resolved through a materialised copy of an
         // associative-array rvalue-read pointer (`a[1]`, or a field chain
         // rooted at one, `a[1].inner.x`): the field's writeback must copy
         // the whole struct block back through that same pointer, the same
         // whole-block shape `writeBackThroughFrame` already uses for a
         // captured struct receiver.
-        if (viaPointer) {
-            result.writeBack = StructField.WriteBack.pointer;
-            result.target.pointer = StructField.PointerWriteBack(
-                pointerFrameOffset,
-                pointerStructSize,
-                pointerBaseSlot,
-                pointerIndexSlot,
-            );
-        }
         // `dot.e1` resolved through a materialised copy of an *indirectly*
         // captured struct receiver (e.g. `o.inner` inside `o.inner.arr[1]`,
         // where `o` itself -- not `o.inner` -- is the captured outer local):
@@ -6491,14 +6435,6 @@ private struct Compiler {
         // `Op.frameStore` the direct case already uses, just with the base
         // offset/frame index/size threaded up from the recursive resolution
         // of `dot.e1` rather than computed locally.
-        if (viaFrame) {
-            result.writeBack = StructField.WriteBack.frame;
-            result.target.frame = StructField.FrameWriteBack(
-                frameBaseOffset,
-                frameIndexOffset,
-                frameStructSize,
-            );
-        }
         return result;
     }
 
@@ -6610,33 +6546,11 @@ private struct Compiler {
 
     // The inline frame base of any struct-valued expression: a struct lvalue's
     // base, a nested struct field (`outer.inner` → `base + inner.offset`), or a
-    // struct-valued call / comma materialised into a fresh block. Sets `resolved`
-    // false (and returns 0) when `expression` is not a struct the core handles.
-    private ushort structBaseOffsetOrMaterialise(
-        Expression expression,
-        out bool resolved,
-    ) {
-        bool viaModule;
-        ushort moduleFrameOffset;
-        ushort moduleOffset;
-        bool viaPointer;
-        ushort pointerFrameOffset;
-        ushort pointerBaseSlot;
-        ushort pointerIndexSlot;
-        ushort pointerStructSize;
-        bool viaFrame;
-        ushort frameBaseOffset;
-        ushort frameIndexOffset;
-        ushort frameStructSize;
-        return structBaseOffsetOrMaterialise(
-            expression, resolved, viaModule, moduleFrameOffset, moduleOffset,
-            viaPointer, pointerFrameOffset, pointerBaseSlot, pointerIndexSlot,
-            pointerStructSize, viaFrame, frameBaseOffset, frameIndexOffset,
-            frameStructSize,
-        );
-    }
-
-    // Same as above, additionally reporting whether the returned base is a
+    // struct-valued call / comma materialised into a fresh block. The place's
+    // writeback target follows a materialised module, pointer, or captured
+    // receiver through every nested field level.
+    //
+    // The writeback target reports whether the returned base is a
     // fresh copy of module (`__gshared`/`static`) storage (`viaModule`) and,
     // if so, the frame offset the whole copy starts at (`moduleFrameOffset`)
     // and that module variable's own dataseg offset (`moduleOffset`) -- both
@@ -6661,27 +6575,13 @@ private struct Compiler {
     // .frameLoad`'s own second operand) -- both constant across however many
     // field levels a caller adds on top of the returned base, the same as
     // the module pair.
-    private ushort structBaseOffsetOrMaterialise(
-        Expression expression,
-        out bool resolved,
-        out bool viaModule,
-        out ushort moduleFrameOffset,
-        out ushort moduleOffset,
-        out bool viaPointer,
-        out ushort pointerFrameOffset,
-        out ushort pointerBaseSlot,
-        out ushort pointerIndexSlot,
-        out ushort pointerStructSize,
-        out bool viaFrame,
-        out ushort frameBaseOffset,
-        out ushort frameIndexOffset,
-        out ushort frameStructSize,
-    ) {
+    private StructField* structBaseOffsetOrMaterialise(Expression expression) {
         import dmd.astenums: TY;
 
         if (auto base = structBaseOffsetOrNull(expression)) {
-            resolved = true;
-            return *base;
+            auto result = new StructField;
+            *result = StructField(offset: *base, type: expression.type);
+            return result;
         }
 
         if (_hasNestedContext)
@@ -6702,12 +6602,18 @@ private struct Compiler {
                                 frameIndex,
                                 structSize,
                             );
-                            resolved = true;
-                            viaFrame = true;
-                            frameBaseOffset = structOffset;
-                            frameIndexOffset = frameIndex;
-                            frameStructSize = structSize;
-                            return structOffset;
+                            auto result = new StructField;
+                            *result = StructField(
+                                offset: structOffset,
+                                type: expression.type,
+                                writeBack: StructField.WriteBack.frame,
+                                target: StructField.WriteBackTarget(
+                                    frame: StructField.FrameWriteBack(
+                                        structOffset, frameIndex, structSize,
+                                    ),
+                                ),
+                            );
+                            return result;
                         }
 
         // A bare module-level (`__gshared`/`static`) struct variable
@@ -6728,11 +6634,18 @@ private struct Compiler {
                         moduleVariable.offset,
                         moduleVariable.size,
                     );
-                    resolved = true;
-                    viaModule = true;
-                    moduleFrameOffset = structOffset;
-                    moduleOffset = moduleVariable.offset;
-                    return structOffset;
+                    auto result = new StructField;
+                    *result = StructField(
+                        offset: structOffset,
+                        type: expression.type,
+                        writeBack: StructField.WriteBack.dataSegment,
+                        target: StructField.WriteBackTarget(
+                            dataSegment: StructField.DataSegmentWriteBack(
+                                structOffset, moduleVariable.offset,
+                            ),
+                        ),
+                    );
+                    return result;
                 }
 
         // `outer.inner` where `inner` is itself a struct-typed field: the inner
@@ -6740,50 +6653,15 @@ private struct Compiler {
         if (auto dot = expression.isDotVarExp)
             if (auto field = dot.var.isVarDeclaration)
                 if (field.type.toBasetype.ty == TY.Tstruct) {
-                    bool outerResolved;
-                    bool outerViaModule;
-                    ushort outerModuleFrameOffset;
-                    ushort outerModuleOffset;
-                    bool outerViaPointer;
-                    ushort outerPointerFrameOffset;
-                    ushort outerPointerBaseSlot;
-                    ushort outerPointerIndexSlot;
-                    ushort outerPointerStructSize;
-                    bool outerViaFrame;
-                    ushort outerFrameBaseOffset;
-                    ushort outerFrameIndexOffset;
-                    ushort outerFrameStructSize;
-                    const outerBase = structBaseOffsetOrMaterialise(
-                        dot.e1,
-                        outerResolved,
-                        outerViaModule,
-                        outerModuleFrameOffset,
-                        outerModuleOffset,
-                        outerViaPointer,
-                        outerPointerFrameOffset,
-                        outerPointerBaseSlot,
-                        outerPointerIndexSlot,
-                        outerPointerStructSize,
-                        outerViaFrame,
-                        outerFrameBaseOffset,
-                        outerFrameIndexOffset,
-                        outerFrameStructSize,
-                    );
-                    if (outerResolved) {
-                        resolved = true;
-                        viaModule = outerViaModule;
-                        moduleFrameOffset = outerModuleFrameOffset;
-                        moduleOffset = outerModuleOffset;
-                        viaPointer = outerViaPointer;
-                        pointerFrameOffset = outerPointerFrameOffset;
-                        pointerBaseSlot = outerPointerBaseSlot;
-                        pointerIndexSlot = outerPointerIndexSlot;
-                        pointerStructSize = outerPointerStructSize;
-                        viaFrame = outerViaFrame;
-                        frameBaseOffset = outerFrameBaseOffset;
-                        frameIndexOffset = outerFrameIndexOffset;
-                        frameStructSize = outerFrameStructSize;
-                        return cast(ushort) (outerBase + field.offset);
+                    if (auto outerBase = structBaseOffsetOrMaterialise(dot.e1)) {
+                        auto result = new StructField;
+                        *result = StructField(
+                            offset: cast(ushort) (outerBase.offset + field.offset),
+                            type: expression.type,
+                            writeBack: outerBase.writeBack,
+                            target: outerBase.target,
+                        );
+                        return result;
                     }
                 }
 
@@ -6798,8 +6676,12 @@ private struct Compiler {
             // write through the returned offset.
             if (auto index = expression.isIndexExp)
                 if (staticArrayOffsetOf(index.e1) !is null) {
-                    resolved = true;
-                    return locateStaticArrayElement(index).offset;
+                    auto result = new StructField;
+                    *result = StructField(
+                        offset: locateStaticArrayElement(index).offset,
+                        type: expression.type,
+                    );
+                    return result;
                 }
 
             // `arr[i]` element of a dynamic array of structs: copy the heap
@@ -6807,13 +6689,17 @@ private struct Compiler {
             // normal `base + field.offset` addressing.
             if (auto index = expression.isIndexExp)
                 if (auto descriptor = dynamicArrayDescriptorOrNull(index.e1)) {
-                    resolved = true;
-                    return loadDynamicArrayElement(
-                        descriptor.offset,
-                        descriptor.elementType,
-                        index.e2,
-                        expression.type,
-                    ).offset;
+                    auto result = new StructField;
+                    *result = StructField(
+                        offset: loadDynamicArrayElement(
+                            descriptor.offset,
+                            descriptor.elementType,
+                            index.e2,
+                            expression.type,
+                        ).offset,
+                        type: expression.type,
+                    );
+                    return result;
                 }
 
             // `p[0]` where `p` is a raw pointer to a struct (not an array of
@@ -6838,19 +6724,23 @@ private struct Compiler {
                         const blockOffset = loadStructThroughPointer(
                             pointer.offset, indexSlot.offset, expression.type,
                         );
-                        resolved = true;
-                        viaPointer = true;
-                        pointerFrameOffset = blockOffset;
-                        pointerBaseSlot = pointer.offset;
-                        pointerIndexSlot = indexSlot.offset;
-                        pointerStructSize = structSize;
-                        return blockOffset;
+                        auto result = new StructField;
+                        *result = StructField(
+                            offset: blockOffset,
+                            type: expression.type,
+                            writeBack: StructField.WriteBack.pointer,
+                            target: StructField.WriteBackTarget(
+                                pointer: StructField.PointerWriteBack(
+                                    blockOffset, structSize, pointer.offset,
+                                    indexSlot.offset,
+                                ),
+                            ),
+                        );
+                        return result;
                     }
                 }
 
             if (auto call = expression.isCallExp) {
-                resolved = true;
-
                 // `S(args)` through an explicit constructor: DMD types the
                 // `CallExp` itself as the constructed struct even though
                 // `__ctor` is declared `void`, so `compileCall`'s own
@@ -6863,23 +6753,34 @@ private struct Compiler {
                 if (function_ !is null && function_.isCtorDeclaration !is null) {
                     const receiver = MethodReceiver(methodReceiverOffset(call));
                     compileCall(call, &receiver);
-                    return receiver.offset;
+                    auto result = new StructField;
+                    *result = StructField(
+                        offset: receiver.offset, type: expression.type,
+                    );
+                    return result;
                 }
 
-                return compileCall(call).offset;
+                auto result = new StructField;
+                *result = StructField(
+                    offset: compileCall(call).offset, type: expression.type,
+                );
+                return result;
             }
             if (auto literal = expression.isStructLiteralExp) {
-                resolved = true;
-                return compileStructLiteralOperand(literal).offset;
+                auto result = new StructField;
+                *result = StructField(
+                    offset: compileStructLiteralOperand(literal).offset,
+                    type: expression.type,
+                );
+                return result;
             }
             if (auto comma = expression.isCommaExp) {
                 compileExpression(comma.e1);
-                return structBaseOffsetOrMaterialise(comma.e2, resolved);
+                return structBaseOffsetOrMaterialise(comma.e2);
             }
         }
 
-        resolved = false;
-        return 0;
+        return null;
     }
 
     // Whether `declaration`'s captured-local access from the function
@@ -12008,12 +11909,9 @@ private struct Compiler {
                 // `storeStructPointerField`'s existing width instead of
                 // storing a scalar operand offset.
                 if (isAggregate) {
-                    bool resolved;
-                    const source =
-                        structBaseOffsetOrMaterialise(assign.e2, resolved);
-                    if (resolved) {
-                        storeStructPointerField(*field, source);
-                        return Operand(source, ScalarType.void_);
+                    if (auto source = structBaseOffsetOrMaterialise(assign.e2)) {
+                        storeStructPointerField(*field, source.offset);
+                        return Operand(source.offset, ScalarType.void_);
                     }
                 }
 
@@ -12078,12 +11976,9 @@ private struct Compiler {
                 // sibling branch above resolves: `compileExpression` never
                 // returns a bare struct-typed local.
                 if (isAggregate) {
-                    bool resolved;
-                    const source =
-                        structBaseOffsetOrMaterialise(assign.e2, resolved);
-                    if (resolved) {
-                        storeClassPointerField(*field, source);
-                        return Operand(source, ScalarType.void_);
+                    if (auto source = structBaseOffsetOrMaterialise(assign.e2)) {
+                        storeClassPointerField(*field, source.offset);
+                        return Operand(source.offset, ScalarType.void_);
                     }
                 }
 
@@ -12138,13 +12033,11 @@ private struct Compiler {
                     return Operand(_thisLocal.offset, ScalarType.void_);
                 }
 
-            bool resolved;
-            const source = structBaseOffsetOrMaterialise(assign.e2, resolved);
-            if (resolved) {
+            if (auto source = structBaseOffsetOrMaterialise(assign.e2)) {
                 _code ~= Instruction(
                     Op.copy,
                     _thisLocal.offset,
-                    source,
+                    source.offset,
                     cast(ushort) inlineByteWidth(assign.e1.type),
                 );
                 return Operand(_thisLocal.offset, ScalarType.void_);
@@ -12175,16 +12068,11 @@ private struct Compiler {
                         return Operand(destination.offset, ScalarType.void_);
                     }
 
-                bool resolved;
-                const source = structBaseOffsetOrMaterialise(
-                    assign.e2,
-                    resolved,
-                );
-                if (resolved) {
+                if (auto source = structBaseOffsetOrMaterialise(assign.e2)) {
                     _code ~= Instruction(
                         Op.copy,
                         destination.offset,
-                        source,
+                        source.offset,
                         cast(ushort) inlineByteWidth(declaration.type),
                     );
                     return Operand(destination.offset, ScalarType.void_);
@@ -17447,18 +17335,17 @@ private struct Compiler {
                 return null;
 
             if (call.arguments.length == 2) {
-                bool sourceResolved;
-                const source = structBaseOffsetOrMaterialise(
-                    (*call.arguments)[1], sourceResolved,
+                auto source = structBaseOffsetOrMaterialise(
+                    (*call.arguments)[1],
                 );
-                if (!sourceResolved)
+                if (source is null)
                     return null;
 
                 const value = allocateStructBlock(index.type);
                 _code ~= Instruction(
                     Op.copy,
                     value,
-                    source,
+                    source.offset,
                     cast(ushort) elementSize,
                 );
                 if (auto postblit = structDeclarationOf(index.type).postblit)
