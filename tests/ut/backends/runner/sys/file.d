@@ -12,8 +12,7 @@ import std.conv: text;
 static foreach (backend; Matrix!(
     Omit!(Ctfe, Because.inexpressible, "needs the host filesystem, which CTFE cannot access"),
     Omit!(Bytecode, Because.refusal,
-        "after File's handle pointer is loaded, compilation declines with " ~
-        "\"Unsupported inline asm atomic-load operand\""),
+        "after atomic-load lowering, DRuntime's locked xadd remains unsupported"),
 )) {
     @("file.createWriteRead." ~ backend.stringof)
     @Tags(backend.stringof)

@@ -964,8 +964,7 @@ private struct Compiler {
             return false;
 
         const width = isDword ? uint.sizeof : ulong.sizeof;
-        if (source.pointerElement != result.pointerElement ||
-            (isDword && source.pointerElement != ScalarType.int_ &&
+        if ((isDword && source.pointerElement != ScalarType.int_ &&
                 source.pointerElement != ScalarType.uint_) ||
             (!isDword && source.pointerElement != ScalarType.long_ &&
                 source.pointerElement != ScalarType.ulong_))

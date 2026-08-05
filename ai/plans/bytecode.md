@@ -395,7 +395,9 @@ row, not a guarantee. Reconfirm against the source before relying on it.
 - The recognized 4- and 8-byte `core.internal.atomic.atomicLoad` inline-asm
   sequence carries raw bits: retain the source pointer's signedness in its
   result slot while using the width-specific atomic opcode. The host atomic
-  read itself is unsigned only as a raw-byte transport.
+  read itself is unsigned only as a raw-byte transport. Validate the source
+  pointee against that opcode width, but not the result pointer metadata: the
+  validated EAX/RAX store fixes its byte width.
 - Native calls pass `TypeInfo` arguments as their actual native class
   references; `GC.malloc(int.sizeof, 0, typeid(int))` uses the host's
   `TypeInfo!int` without display-value substitution.
@@ -403,10 +405,9 @@ row, not a guarantee. Reconfirm against the source before relying on it.
 
 Known blocked rows, stated as the blocker rather than the symptom:
 
-- `file.createWriteRead.Bytecode` (`sys/file.d`) reaches an inline atomic load
-  after File's handle pointer is materialised. It declines with "Unsupported
-  inline asm atomic-load operand". Resolve that ordinary atomic operand; do
-  not add a `File`-specific case.
+- `file.createWriteRead.Bytecode` (`sys/file.d`) passes DRuntime's atomic-load
+  inline asm, then reaches its locked `xadd` sequence. Support that ordinary
+  atomic operand without adding a `File`-specific case.
 - `refArgument.templateRefSharedParameterMutatesAndPreservesAddress` and
   `refArgument.templateRefSharedForwardsThroughNestedFunction`
   (`expressions.d`) assert `&value == expected` across a `ref` call boundary.
