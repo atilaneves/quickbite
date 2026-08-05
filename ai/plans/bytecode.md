@@ -389,6 +389,9 @@ row, not a guarantee. Reconfirm against the source before relying on it.
   and writes back only the bytes it touched. `Ctfe` cannot read or write
   dataseg storage at all; `Interpreter` has a separate pre-existing gap where a
   write through a pointer into dataseg storage does not mirror back.
+- Whole static-array values use `compileStaticArrayValueInto` at every
+  aggregate store boundary; do not route a `Tsarray` literal through the
+  struct-only operand resolver.
 - Native calls pass `TypeInfo` arguments as their actual native class
   references; `GC.malloc(int.sizeof, 0, typeid(int))` uses the host's
   `TypeInfo!int` without display-value substitution.

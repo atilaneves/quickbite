@@ -6334,6 +6334,29 @@ private struct Compiler {
         ));
     }
 
+    // The inline frame offset of an aggregate-valued expression. Structs use
+    // their existing lvalue/literal resolver; static arrays use the shared
+    // value materializer so a literal is copied as its own bytes rather than
+    // being mistaken for a struct literal.
+    private ushort aggregateOperandOffset(Type type, Expression expression) {
+        import dmd.astenums: TY;
+        import std.conv: text;
+
+        if (type.toBasetype.ty == TY.Tsarray) {
+            const offset = allocateBytes(
+                inlineByteWidth(type), staticArrayAlign(type),
+            );
+            if (compileStaticArrayValueInto(offset, type, expression))
+                return offset;
+            throw new Exception(text(
+                "Unsupported static array value in bytecode core: ",
+                expressionChars(expression),
+            ));
+        }
+
+        return structOperandOffset(expression);
+    }
+
     // Read a struct of any width out of `[pointer + indexSlot * structSize]`
     // into a fresh inline block, backing both `*p` (`indexSlot` a zero
     // constant) and `p[i]` (`indexSlot` the compiled index expression) as a
@@ -11931,7 +11954,9 @@ private struct Compiler {
                 // `storeStructPointerField`'s existing width instead of
                 // storing a scalar operand offset.
                 if (isAggregate) {
-                    const source = structOperandOffset(assign.e2);
+                    const source = aggregateOperandOffset(
+                        field.type, assign.e2,
+                    );
                     storeStructPointerField(*field, source);
                     return Operand(source, ScalarType.void_);
                 }
@@ -11997,7 +12022,9 @@ private struct Compiler {
                 // sibling branch above resolves: `compileExpression` never
                 // returns a bare struct-typed local.
                 if (isAggregate) {
-                    const source = structOperandOffset(assign.e2);
+                    const source = aggregateOperandOffset(
+                        field.type, assign.e2,
+                    );
                     storeClassPointerField(*field, source);
                     return Operand(source, ScalarType.void_);
                 }
