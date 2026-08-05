@@ -8716,10 +8716,28 @@ private struct Walker {
             );
 
         auto current = variable in locals;
-        if (current is null)
-            throw new Exception(
-                "Unsupported interpreter assignment target: slice of unset local.",
-            );
+        if (current is null) {
+            // A `T t = void;` local (e.g. `std.algorithm.mutation.swap`'s
+            // raw-byte fallback `ubyte[T.sizeof] t = void;`) never runs
+            // `setLocal` at its declaration -- there is no meaningful value
+            // to shadow -- so it has no boxed local yet the first time it is
+            // used as a slice-assignment target. Compiled D leaves its bytes
+            // unspecified until written; materialising the ordinary default
+            // here is observably identical for the whole-range overwrite
+            // (`t[] = ...`) idiom this local exists for, and is no less
+            // defined than compiled D for a genuine partial write to
+            // still-uninitialized bytes.
+            if ((variable in uninitializedLocals) is null)
+                throw new Exception(
+                    "Unsupported interpreter assignment target: slice of unset local.",
+                );
+
+            setLocal(variable, defaultLocalValue(variable));
+            if (hasMirrorSlot(variable))
+                clearUninitializedBindingAddress(bindingPlace(variable).address);
+            uninitializedLocals.remove(variable);
+            current = variable in locals;
+        }
 
         const lower = slice.lwr is null
             ? 0
