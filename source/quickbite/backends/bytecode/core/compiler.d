@@ -5939,7 +5939,7 @@ private struct Compiler {
                                 _capturedOwners[declaration], *captured,
                             );
                             const blockSize = cast(ushort)
-                                staticArraySize(declaration.type);
+                                inlineByteWidth(declaration.type);
                             _code ~= Instruction(
                                 Op.frameLoad, offset, frameIndex, blockSize,
                             );
@@ -6341,7 +6341,7 @@ private struct Compiler {
                     const frameIndexOffset = capturedFrameIndex(
                         _capturedOwners[receiver], *captured,
                     );
-                    const structSize = cast(ushort) staticArraySize(dot.e1.type);
+                    const structSize = cast(ushort) inlineByteWidth(dot.e1.type);
                     _code ~= Instruction(
                         Op.frameLoad,
                         structOffset,
@@ -6656,7 +6656,7 @@ private struct Compiler {
                                 _capturedOwners[declaration], *captured,
                             );
                             const structSize = cast(ushort)
-                                staticArraySize(declaration.type);
+                                inlineByteWidth(declaration.type);
                             _code ~= Instruction(
                                 Op.frameLoad,
                                 structOffset,
