@@ -405,9 +405,6 @@ row, not a guarantee. Reconfirm against the source before relying on it.
 
 Known blocked rows, stated as the blocker rather than the symptom:
 
-- `file.createWriteRead.Bytecode` (`sys/file.d`) passes DRuntime's atomic-load
-  inline asm, then reaches its locked `xadd` sequence. Support that ordinary
-  atomic operand without adding a `File`-specific case.
 - `refArgument.templateRefSharedParameterMutatesAndPreservesAddress` and
   `refArgument.templateRefSharedForwardsThroughNestedFunction`
   (`expressions.d`) assert `&value == expected` across a `ref` call boundary.

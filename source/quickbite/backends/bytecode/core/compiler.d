@@ -823,9 +823,56 @@ private struct Compiler {
     ) {
         if (tryCompileAtomicLoadAsm(compound))
             return;
+        if (tryCompileAtomicFetchAddAsm(compound))
+            return;
         if (tryCompileAtomicExchangeAsm(compound))
             return;
         compileUnsignedMultiplyAsm(compound);
+    }
+
+    // `core.internal.atomic.atomicFetchAdd` for a 4-byte value returns the
+    // value which was in `*dest` before adding `value`. Accept its complete
+    // naked-function sequence and lower it to one host atomic fetch-add.
+    private bool tryCompileAtomicFetchAddAsm(
+        imported!"dmd.statement".CompoundAsmStatement compound,
+    ) {
+        import quickbite.frontend.dmd.functions: inlineAsmInstructions;
+
+        const instructions = inlineAsmInstructions(compound);
+        if (instructions.length != 5 ||
+            !isAsmIdentifier(instructions[0], 0, "naked") ||
+            instructions[0].length != 1 ||
+            !isAsmIdentifier(instructions[1], 0, "lock") ||
+            instructions[1].length != 1 ||
+            !isAsmIdentifier(instructions[2], 0, "xadd") ||
+            !isAsmPunctuation(instructions[2], 1, "[") ||
+            !isAsmIdentifier(instructions[2], 2, "RSI") ||
+            !isAsmPunctuation(instructions[2], 3, "]") ||
+            !isAsmPunctuation(instructions[2], 4, ",") ||
+            !isAsmIdentifier(instructions[2], 5, "EDI") ||
+            instructions[2].length != 6 ||
+            !isAsmIdentifier(instructions[3], 0, "mov") ||
+            !isAsmIdentifier(instructions[3], 1, "EAX") ||
+            !isAsmPunctuation(instructions[3], 2, ",") ||
+            !isAsmIdentifier(instructions[3], 3, "EDI") ||
+            instructions[3].length != 4 ||
+            !isAsmIdentifier(instructions[4], 0, "ret") ||
+            instructions[4].length != 1)
+            return false;
+
+        const destination = asmPointerLocal("dest");
+        const value = asmLocal("value");
+        if (destination.pointerElement != ScalarType.uint_ ||
+            value.type != ScalarType.uint_ ||
+            _currentReturnType.scalar != ScalarType.uint_)
+            throw new Exception("Unsupported inline asm atomic-fetch-add operand.");
+
+        const result = allocate(ScalarType.uint_);
+        _code ~= Instruction(
+            Op.atomicFetchAdd4, result, destination.offset, value.offset,
+        );
+        _code ~= Instruction(Op.ret, result);
+        return true;
     }
 
     // `core.internal.atomic.atomicExchange` for a 4-byte value swaps `value`
