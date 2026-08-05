@@ -389,6 +389,9 @@ row, not a guarantee. Reconfirm against the source before relying on it.
   and writes back only the bytes it touched. `Ctfe` cannot read or write
   dataseg storage at all; `Interpreter` has a separate pre-existing gap where a
   write through a pointer into dataseg storage does not mirror back.
+- Native calls pass `TypeInfo` arguments as their actual native class
+  references; `GC.malloc(int.sizeof, 0, typeid(int))` uses the host's
+  `TypeInfo!int` without display-value substitution.
 - Delegates and closures: see the Closures section.
 
 Known blocked rows, stated as the blocker rather than the symptom:
