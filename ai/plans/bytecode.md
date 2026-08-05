@@ -487,9 +487,9 @@ class block begins with a Quickbite class index, while native virtual dispatch
 reads that word as a vtable pointer. Passing the VM reference to the native
 bridge can therefore segfault before the method body runs. Supporting it needs
 a real ABI class object (including vtable) and synchronised field storage.
-Next candidate: the existing escaping-delegate class-field-write refusal
-(`expressions.d`) needs a frame-independent closure environment for a capture
-that remains live after a non-return assignment site.
+Next candidate: promote the existing escaping-delegate dynamic-array-element
+row (`expressions.d`); it exercises the same non-return closure environment
+through the array-store path.
 Closure interactions with exceptions (a captured local mutated across
 try/catch/finally) and class polymorphism/vtable dispatch (including
 `super.f()`) match `SystemLinker` under `bin/qb` probing -- not a lead.
@@ -766,37 +766,21 @@ lifetime as the dependency bytecode cache.
   `heapClosureContextOrNull` (`compiler.d`) provides one for a narrow shape:
   one or two captured locals, each scalar- or pointer-typed, captured one level
   up from a non-`this`-receiving function, escaping either as a direct
-  `return dg;` (`compileDelegateReturn`) or as a top-level delegate field of a
-  directly returned struct literal (`structLiteralReturnOffset`). Each capture
-  gets a full machine-word slot regardless of its own narrower width, so the
-  `pointer + index * width` addressing divides exactly for every scalar width.
-  Everything outside that shape -- three or more captures, a
-  non-scalar/non-pointer capture, a multi-level capture, a capture combined
-  with `this` -- declines through `throwFrameEscapingDelegateDiagnostic`.
+  `return dg;` (`compileDelegateReturn`), as a top-level delegate field of a
+  directly returned struct literal (`structLiteralReturnOffset`), or by a
+  class-field/dynamic-array-element write. Each capture gets a full
+  machine-word slot regardless of its own narrower width, so the `pointer +
+  index * width` addressing divides exactly for every scalar width. Everything
+  outside that shape -- three or more captures, a non-scalar/non-pointer
+  capture, a multi-level capture, a capture combined with `this` -- declines
+  through `throwFrameEscapingDelegateDiagnostic`.
 
-  Soundness rests on the escape site being the last thing its function
-  executes, so the frame slots and the heap snapshot cannot diverge. That holds
-  for a `return`. It does NOT hold for a mid-function site, which is why an
-  `out`/`ref`-parameter assignment declines a capturing rhs unconditionally
-  (`refEscapingDelegateOperandOffset`) rather than heap-escaping it. Preserve
-  that invariant when widening: a new escape site must either be its function's
-  last act, or move the variable to the heap from declaration onward.
-
-  A capturing delegate assigned into a class field, a dynamic-array element,
-  or nested arbitrarily deep inside a directly returned struct literal now
-  gets the same heap-box-or-decline treatment `compileDelegateReturn` gives a
-  direct `return dg;`. Because that write is not itself the function's last
-  act, `heapEscapingDelegateOperandOffset` declines rather than risk
-  unsoundness whenever `capturedLocalsMayBeMutatedInCurrentFunction`
-  (`compiler.d`) finds a further same-function mutation of the captured
-  locals, including one passed as a call argument bound to a `ref`/`out`
-  parameter (or to an unresolvable callee, conservatively). Still open: that
-  scan is order-insensitive and whole-function, so
-  it over-declines two provably-safe shapes -- a mutation strictly before the
-  heap-box write, and a mutation inside the escaping lambda's own body.
-  Narrowing needs control-flow-sensitive write-site dataflow, or moving the
-  captured locals to the heap from declaration onward; neither is attempted
-  here.
+  A later direct scalar/pointer assignment to a heap-boxed capture mirrors the
+  new value into its heap environment, so the delegate observes the enclosing
+  function's final value. `out`/`ref`-parameter assignment still declines a
+  capturing rhs unconditionally (`refEscapingDelegateOperandOffset`): it needs
+  a closure environment from declaration onward because writes through aliases
+  are not yet mirrored.
 
   The eventual right design point is DMD's own per-function `needsClosure()`/
   `closureVars` decision -- every closure-needing variable heap-allocated from

@@ -2904,11 +2904,6 @@ static foreach (backend; Matrix!(
     Omit!(Interpreter, Because.unconfirmed,
         "the Interpreter does not yet promote a frame-escaping " ~
             "captured local to a heap closure either -- not yet promoted"),
-    Omit!(Bytecode, Because.refusal,
-        "a class-field write is not the escaping function's last act, so " ~
-            "`heapEscapingDelegateOperandOffset` cannot heap-box it the " ~
-            "way a `return` site can without risking a stale snapshot -- " ~
-            "see `delegate.classFieldEscapingCaptureDeclines` below"),
 )) {
     @("delegate.classFieldMutatedAfterCapturingWriteIsCallable." ~
         backend.stringof)
@@ -2930,33 +2925,6 @@ static foreach (backend; Matrix!(
                 assert(c.next() == 102);
             }
         });
-    }
-}
-
-// Bytecode-only: `capturedLocalsMayBeMutatedInCurrentFunction`
-// (`compiler.d`) declines rather than silently freeze a stale snapshot for
-// the fixture above. The diagnostic itself is a Bytecode-specific mechanism,
-// not a language restriction other backends share.
-static foreach (backend; AliasSeq!(Bytecode)) {
-    @("delegate.classFieldEscapingCaptureDeclines." ~ backend.stringof)
-    @Tags(backend.stringof)
-    unittest {
-        runBackendSourceFixtureTests!backend(q{
-            class Counter { int delegate() next; }
-
-            Counter makeCounter() {
-                int total = 40;
-                auto c = new Counter();
-                c.next = () => total + 2;
-                total = 100;
-                return c;
-            }
-
-            unittest {
-                auto c = makeCounter();
-                assert(c.next() == 102);
-            }
-        }).shouldThrow();
     }
 }
 

@@ -244,6 +244,11 @@ private struct Compiler {
     // path on `_currentFunction` (the function whose body is presently
     // compiling) matching the outer key.
     private bool[VarDeclaration][FuncDeclaration] _heapClosureVars;
+    // A captured local that is heap-boxed before its enclosing function
+    // returns keeps this function-local mirror. Later direct writes update
+    // both the live frame slot and the closure environment.
+    private ushort[VarDeclaration] _heapEscapingClosurePointers;
+    private ushort[VarDeclaration] _heapEscapingClosureOffsets;
     // Each `_heapClosureVars` entry's own byte offset within its heap block,
     // set alongside it by `heapClosureContextOrNull`: a single captured local
     // sits at offset 0, and a second one sits at the next fixed
@@ -4997,32 +5002,15 @@ private struct Compiler {
     // aggregate's own return.
     //
     // Unlike a `return`, a class-field/array-element write is not itself the
-    // function's last act: `mayMutateAfterHeapBox` is true for exactly those
-    // two call sites (not `compileDelegateReturn`'s, where nothing in the
-    // function executes after the `return`), and gates the box on
-    // `capturedLocalsMayBeMutatedInCurrentFunction`. Confirmed
-    // (`delegate.classFieldMutatedAfterCapturingWriteIsCallable`: SystemLinker
-    // gives 102; pre-fix Bytecode silently gave 42) before this gate existed:
-    // `heapClosureContextOrNull`'s snapshot is taken at the write, not the
-    // eventual escape, so a further same-function mutation of the captured
-    // locals between the write and the aggregate's actual escape silently
-    // froze a stale value instead of reflecting it. The scan is
-    // order-insensitive (it does not distinguish a mutation before the write,
-    // which is harmless, from one after, which is not), so it declines a few
-    // provably-safe programs along with every unsound one; see
-    // `CapturedLocalMutationScanner`. A real fix that stops over-declining
-    // needs either control-flow-sensitive write-site dataflow or moving the
-    // captured locals to the heap from declaration onward -- neither is
-    // attempted here.
+    // function's last act. For the scalar/pointer capture shape
+    // `heapClosureContextOrNull` recognises, later direct local assignments
+    // mirror into the same heap environment, so the escaping delegate sees
+    // the enclosing function's final value rather than a stale snapshot.
     private ushort heapEscapingDelegateOperandOffset(
         Expression source,
-        bool mayMutateAfterHeapBox = false,
     ) {
         auto function_ = returnedDelegateFunctionOrNull(source);
         if (function_ !is null && function_.outerVars.length != 0) {
-            if (mayMutateAfterHeapBox &&
-                    capturedLocalsMayBeMutatedInCurrentFunction(function_))
-                throwFrameEscapingDelegateDiagnostic(source);
             if (auto heapContext = heapClosureContextOrNull(function_)) {
                 const offset = allocateBytes(delegateValueSize, size_t.sizeof);
                 emitDelegateValue(offset, function_, *heapContext);
@@ -5032,25 +5020,6 @@ private struct Compiler {
         }
 
         return delegateOperandOffset(source);
-    }
-
-    // True if any of `function_`'s captured locals is written to, or has its
-    // address taken, anywhere in `_currentFunction`'s body -- the enclosing
-    // function whose frame those locals still live in until this heap-box
-    // write. See `CapturedLocalMutationScanner`.
-    private bool capturedLocalsMayBeMutatedInCurrentFunction(
-        FuncDeclaration function_,
-    ) {
-        if (_currentFunction is null || _currentFunction.fbody is null)
-            return false;
-
-        VarDeclaration[] targets;
-        foreach (i; 0 .. function_.outerVars.length)
-            targets ~= function_.outerVars[i];
-
-        scope scanner = new CapturedLocalMutationScanner(targets);
-        _currentFunction.fbody.accept(scanner);
-        return scanner.found;
     }
 
     // Compiles the rhs of `dg = ...;` where `dg` is a `ref`/`out`
@@ -5227,6 +5196,8 @@ private struct Compiler {
             emitPointerStore(capturedOffsets[i], heapPointer, index, widths[i]);
             _heapClosureVars[function_][vars[i]] = true;
             _heapClosureOffsets[function_][vars[i]] = slotOffset;
+            _heapEscapingClosurePointers[vars[i]] = heapPointer;
+            _heapEscapingClosureOffsets[vars[i]] = slotOffset;
         }
 
         auto result = new ushort;
@@ -12193,7 +12164,7 @@ private struct Compiler {
                 // (about-to-be-reused) assigning function's own frame.
                 if (field.type.toBasetype.ty == TY.Tdelegate) {
                     const source = heapEscapingDelegateOperandOffset(
-                        assign.e2, true,
+                        assign.e2,
                     );
                     storeClassPointerField(*field, source);
                     return Operand(source, ScalarType.void_);
@@ -12354,6 +12325,15 @@ private struct Compiler {
             rhs.offset,
             cast(ushort) size(type),
         );
+        if (auto closurePointer = declaration in _heapEscapingClosurePointers) {
+            const closureOffset = _heapEscapingClosureOffsets[declaration];
+            emitPointerStore(
+                *slot,
+                *closurePointer,
+                compileSizeConstant(closureOffset / size(type)),
+                size(type),
+            );
+        }
         // A plain pointer-local reassignment (`p = otherPointerExpr;`) must
         // keep reading as a pointer to its caller -- e.g.
         // `compilePointerDeclaration`'s self-referential `CommaExp`
@@ -14572,7 +14552,7 @@ private struct Compiler {
                 rhs.type.toBasetype.ty == TY.Tstruct
             ? structOperandOffset(rhs)
             : rhs.type !is null && rhs.type.toBasetype.ty == TY.Tdelegate
-            ? heapEscapingDelegateOperandOffset(rhs, true)
+            ? heapEscapingDelegateOperandOffset(rhs)
             : compileExpression(rhs).offset;
         const savedDollarLength = _activeDollarLength;
         _activeDollarLength = sliceLengthSlot(*descriptor);
@@ -21871,140 +21851,6 @@ private struct Compiler {
 
     private PointerElementMetadata elementMetadataFor(Type element) {
         return elementMetadataFor(element, inlineByteWidth(element));
-    }
-}
-
-// Walks a function body looking for a write to (or an address-of on) one of
-// a fixed set of `VarDeclaration`s -- direct assignment, compound assignment,
-// increment/decrement, or `&var`, which could hand out a pointer another
-// write later goes through. Used by
-// `Compiler.capturedLocalsMayBeMutatedInCurrentFunction` to decide whether a
-// class-field/array-element capturing-delegate write is safe to heap-box
-// (`ai/plans/bytecode.md`'s Closures section). Deliberately descends into
-// every nested function literal's own body too (`SemanticTimeTransitiveVisitor`'s
-// default `FuncExp`/`FuncLiteralDeclaration` handling) rather than stopping
-// at `_currentFunction`'s own statements: a sibling nested function that
-// mutates the same captured local through the still-live frame
-// (`void bump() { total += 1; } bump();`) is exactly as unsound as a mutation
-// written directly in `_currentFunction`'s own body. The one over-broad
-// consequence is a false positive for a mutation inside the escaping lambda's
-// OWN body (already heap-relative once boxed, so actually safe) -- untested
-// today, and declining it is the conservative direction to be wrong in.
-private extern(C++) final class CapturedLocalMutationScanner:
-    imported!"dmd.visitor".SemanticTimeTransitiveVisitor
-{
-    import dmd.visitor: SemanticTimeTransitiveVisitor;
-    import dmd.declaration: VarDeclaration;
-    import dmd.expression:
-        AddrExp, AssignExp, BinAssignExp, CallExp, Expression, PostExp,
-        PreExp;
-
-    alias visit = SemanticTimeTransitiveVisitor.visit;
-
-    private VarDeclaration[] _targets;
-    private bool _found;
-
-    extern(D) this(VarDeclaration[] targets) {
-        _targets = targets;
-    }
-
-    extern(D) bool found() const {
-        return _found;
-    }
-
-    private extern(D) bool isTarget(Expression e) {
-        auto variable = e.isVarExp;
-        if (variable is null)
-            return false;
-        auto declaration = variable.var.isVarDeclaration;
-        if (declaration is null)
-            return false;
-        foreach (target; _targets)
-            if (declaration is target)
-                return true;
-        return false;
-    }
-
-    override void visit(AssignExp e) {
-        if (isTarget(e.e1))
-            _found = true;
-        super.visit(e);
-    }
-
-    override void visit(BinAssignExp e) {
-        if (isTarget(e.e1))
-            _found = true;
-        super.visit(e);
-    }
-
-    override void visit(PreExp e) {
-        if (isTarget(e.e1))
-            _found = true;
-        super.visit(e);
-    }
-
-    override void visit(PostExp e) {
-        if (isTarget(e.e1))
-            _found = true;
-        super.visit(e);
-    }
-
-    override void visit(AddrExp e) {
-        if (isTarget(e.e1))
-            _found = true;
-        super.visit(e);
-    }
-
-    // A target passed as a call argument may be mutated through a
-    // `ref`/`out` parameter without any `AddrExp` appearing here -- DMD
-    // binds `ref`/`out` arguments directly, unlike `&arg`. Narrows to just
-    // the ref/out-bound arguments when the callee's parameter list is
-    // cheaply known; when it isn't (an indirect call through a
-    // delegate/function-pointer value with no resolvable static type),
-    // conservatively flags every targeted argument, matching this scanner's
-    // documented over-decline-over-under-decline bias.
-    override void visit(CallExp e) {
-        import dmd.astenums: STC;
-
-        if (e.arguments !is null) {
-            auto parameters = calleeParametersOrNull(e);
-            foreach (i; 0 .. e.arguments.length) {
-                if (!isTarget((*e.arguments)[i]))
-                    continue;
-                if (parameters is null || i >= (*parameters).length) {
-                    _found = true;
-                    continue;
-                }
-                auto parameter = (*parameters)[i];
-                if ((parameter.storageClass & (STC.ref_ | STC.out_)) !=
-                        STC.none)
-                    _found = true;
-            }
-        }
-        super.visit(e);
-    }
-
-    private extern(D) imported!"dmd.arraytypes".Parameters* calleeParametersOrNull(
-        CallExp e,
-    ) {
-        auto calleeType = e.f !is null ? e.f.type : e.e1.type;
-        if (calleeType is null)
-            return null;
-
-        auto base = calleeType.toBasetype;
-        if (auto functionType = base.isTypeFunction)
-            return functionType.parameterList.parameters;
-        if (auto delegateType = base.isTypeDelegate) {
-            auto functionType = delegateType.next.toBasetype.isTypeFunction;
-            return functionType is null
-                ? null : functionType.parameterList.parameters;
-        }
-        if (auto pointerType = base.isTypePointer) {
-            auto functionType = pointerType.next.toBasetype.isTypeFunction;
-            return functionType is null
-                ? null : functionType.parameterList.parameters;
-        }
-        return null;
     }
 }
 
