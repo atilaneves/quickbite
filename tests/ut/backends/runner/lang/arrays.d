@@ -5324,9 +5324,7 @@ static foreach (backend; Matrix!(
 
 // A `ref` parameter forwarded to `mulu` must preserve the caller's native
 // bool address through the imported/template-instantiated native call.
-// Bytecode native-ref plumbing remains on the bytecode-track backlog.
 static foreach (backend; Matrix!(
-    Omit!(Bytecode, Because.unconfirmed),
     Omit!(Ctfe, Because.inexpressible,
         "core.checkedint.mulu has inline assembly that CTFE cannot execute"),
 )) {
