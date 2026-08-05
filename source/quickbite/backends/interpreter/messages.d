@@ -366,6 +366,15 @@ private string charArrayString(
     return result.idup;
 }
 
+private bool isDmdAssertFailCall(
+    imported!"dmd.expression".Expression expression,
+) {
+    import dmd.id: Id;
+
+    auto call = expression.isCallExp;
+    return call !is null && call.f !is null && call.f.ident == Id._d_assert_fail;
+}
+
 public string dmdAssertFailBoolMessage(
     imported!"dmd.expression".Expression expression,
 ) {
@@ -587,6 +596,21 @@ public string assertFailureMessage(
 
         if (isVariableMessage(assert_.msg))
             return assertMessage(assert_.msg, eval);
+
+        // A user-supplied message that is neither a string literal, a plain
+        // variable, nor a shape `dmdAssertFailBoolMessage`/`dmdAssertFailMessage`
+        // recognise — e.g. a function or method call producing a string, such
+        // as `assert(false, value.toString())` — still needs evaluating
+        // rather than being silently dropped in favour of the generic
+        // fallback text below. This module always compiles with
+        // `-checkaction=context`, so a message-less `assert(cond)` also
+        // arrives here with a non-null, DMD-synthesized `_d_assert_fail`
+        // call as `assert_.msg`; that synthesized call's arguments are not
+        // guaranteed to be expressions this interpreter can evaluate (e.g.
+        // internal casts), and its message is superseded by the `e1`-based
+        // context analysis below, so it must not be eval'd here.
+        if (!isDmdAssertFailCall(assert_.msg))
+            return charArrayString(eval(assert_.msg));
     }
 
     if (auto integer = assert_.e1.isIntegerExp)

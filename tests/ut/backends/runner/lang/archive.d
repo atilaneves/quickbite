@@ -13,7 +13,18 @@ import std.algorithm.searching: canFind;
 // wraps dmd.dinterpret) cannot express it.
 static foreach (backend; Matrix!(
     Omit!(Ctfe, Because.inexpressible, "archive linking is a runtime linking mechanism; Ctfe wraps dmd.dinterpret and cannot express it"),
-    Omit!(Interpreter, Because.unconfirmed),
+    Omit!(Interpreter, Because.unconfirmed,
+        "no symbol-resolution source for a static archive: `Interpreter` " ~
+        "has no `(linkFiles, importPaths)` constructor like " ~
+        "`SystemLinker`/`LLVMJit`/`Bytecode` (only `this()` and " ~
+        "`this(dependencyImages)`, confirmed by `new Interpreter([archivePath], " ~
+        "[importPath])` failing to compile), and its native-call symbol " ~
+        "lookup (`quickbite.ffi.core.resolveSymbol`) only resolves " ~
+        "`dlsym(RTLD_DEFAULT, ...)` against symbols already in the process " ~
+        "or `dlopen`'d from a `.so` via `loadDependencyImage` -- a `.a` " ~
+        "archive cannot be `dlopen`'d at all, so this is a new " ~
+        "symbol-resolution source (e.g. a --whole-archive .so wrapper, " ~
+        "or an ORC-style generator like `LLVMJit`'s), not a language-surface fix"),
 )) {
     @("runTests.archiveBackedImportLinksFromArchive." ~ backend.stringof)
     @Tags(backend.stringof)
@@ -73,7 +84,18 @@ static foreach (backend; Matrix!(
 // safety-net test below covers why it is omitted here.
 static foreach (backend; Matrix!(
     Omit!(Ctfe, Because.inexpressible, "archive linking is a runtime linking mechanism; Ctfe wraps dmd.dinterpret and cannot express it"),
-    Omit!(Interpreter, Because.unconfirmed),
+    Omit!(Interpreter, Because.unconfirmed,
+        "no symbol-resolution source for a static archive: `Interpreter` " ~
+        "has no `(linkFiles, importPaths)` constructor like " ~
+        "`SystemLinker`/`LLVMJit`/`Bytecode` (only `this()` and " ~
+        "`this(dependencyImages)`, confirmed by `new Interpreter([archivePath], " ~
+        "[importPath])` failing to compile), and its native-call symbol " ~
+        "lookup (`quickbite.ffi.core.resolveSymbol`) only resolves " ~
+        "`dlsym(RTLD_DEFAULT, ...)` against symbols already in the process " ~
+        "or `dlopen`'d from a `.so` via `loadDependencyImage` -- a `.a` " ~
+        "archive cannot be `dlopen`'d at all, so this is a new " ~
+        "symbol-resolution source (e.g. a --whole-archive .so wrapper, " ~
+        "or an ORC-style generator like `LLVMJit`'s), not a language-surface fix"),
     Omit!(Bytecode, Because.refusal,
         "`add` is an archive-backed method: routing a receiver-bearing " ~
         "call through the native bridge or its stale rewritten source is " ~
@@ -196,7 +218,18 @@ unittest {
 // safety-net test below covers why it is omitted here.
 static foreach (backend; Matrix!(
     Omit!(Ctfe, Because.inexpressible, "archive linking is a runtime linking mechanism; Ctfe wraps dmd.dinterpret and cannot express it"),
-    Omit!(Interpreter, Because.unconfirmed),
+    Omit!(Interpreter, Because.unconfirmed,
+        "no symbol-resolution source for a static archive: `Interpreter` " ~
+        "has no `(linkFiles, importPaths)` constructor like " ~
+        "`SystemLinker`/`LLVMJit`/`Bytecode` (only `this()` and " ~
+        "`this(dependencyImages)`, confirmed by `new Interpreter([archivePath], " ~
+        "[importPath])` failing to compile), and its native-call symbol " ~
+        "lookup (`quickbite.ffi.core.resolveSymbol`) only resolves " ~
+        "`dlsym(RTLD_DEFAULT, ...)` against symbols already in the process " ~
+        "or `dlopen`'d from a `.so` via `loadDependencyImage` -- a `.a` " ~
+        "archive cannot be `dlopen`'d at all, so this is a new " ~
+        "symbol-resolution source (e.g. a --whole-archive .so wrapper, " ~
+        "or an ORC-style generator like `LLVMJit`'s), not a language-surface fix"),
     Omit!(Bytecode, Because.refusal,
         "`add` is an archive-backed method: routing a receiver-bearing " ~
         "call through the native bridge or its stale rewritten source is " ~
@@ -322,7 +355,18 @@ unittest {
 // covers why it is omitted here.
 static foreach (backend; Matrix!(
     Omit!(Ctfe, Because.inexpressible, "archive linking is a runtime linking mechanism; Ctfe wraps dmd.dinterpret and cannot express it"),
-    Omit!(Interpreter, Because.unconfirmed),
+    Omit!(Interpreter, Because.unconfirmed,
+        "no symbol-resolution source for a static archive: `Interpreter` " ~
+        "has no `(linkFiles, importPaths)` constructor like " ~
+        "`SystemLinker`/`LLVMJit`/`Bytecode` (only `this()` and " ~
+        "`this(dependencyImages)`, confirmed by `new Interpreter([archivePath], " ~
+        "[importPath])` failing to compile), and its native-call symbol " ~
+        "lookup (`quickbite.ffi.core.resolveSymbol`) only resolves " ~
+        "`dlsym(RTLD_DEFAULT, ...)` against symbols already in the process " ~
+        "or `dlopen`'d from a `.so` via `loadDependencyImage` -- a `.a` " ~
+        "archive cannot be `dlopen`'d at all, so this is a new " ~
+        "symbol-resolution source (e.g. a --whole-archive .so wrapper, " ~
+        "or an ORC-style generator like `LLVMJit`'s), not a language-surface fix"),
     Omit!(Bytecode, Because.refusal,
         "`add` is an archive-backed function reached by address: routing " ~
         "it through the native bridge or its stale rewritten source is " ~
@@ -450,7 +494,18 @@ unittest {
 // `Bytecode`'s own safety-net test below covers why it is omitted here.
 static foreach (backend; Matrix!(
     Omit!(Ctfe, Because.inexpressible, "archive linking is a runtime linking mechanism; Ctfe wraps dmd.dinterpret and cannot express it"),
-    Omit!(Interpreter, Because.unconfirmed),
+    Omit!(Interpreter, Because.unconfirmed,
+        "no symbol-resolution source for a static archive: `Interpreter` " ~
+        "has no `(linkFiles, importPaths)` constructor like " ~
+        "`SystemLinker`/`LLVMJit`/`Bytecode` (only `this()` and " ~
+        "`this(dependencyImages)`, confirmed by `new Interpreter([archivePath], " ~
+        "[importPath])` failing to compile), and its native-call symbol " ~
+        "lookup (`quickbite.ffi.core.resolveSymbol`) only resolves " ~
+        "`dlsym(RTLD_DEFAULT, ...)` against symbols already in the process " ~
+        "or `dlopen`'d from a `.so` via `loadDependencyImage` -- a `.a` " ~
+        "archive cannot be `dlopen`'d at all, so this is a new " ~
+        "symbol-resolution source (e.g. a --whole-archive .so wrapper, " ~
+        "or an ORC-style generator like `LLVMJit`'s), not a language-surface fix"),
     Omit!(Bytecode, Because.refusal,
         "`theAnswer` is an archive-backed function reached by address: " ~
         "routing it through the native bridge or its stale rewritten " ~

@@ -664,12 +664,6 @@ native slice header, including its retained backing address, rather than a
 transient aggregate handle. This is slice execution, not a formatter-specific
 storage shim; the interceptor remains temporary per item 1.
 
-Class allocation applies scalar `ExpInitializer` field defaults through the
-native class-body place, including inherited fields before a derived
-constructor runs. `ArrayInitializer` defaults, whose compiled-D instances
-share their static backing array, remain the next class-default omission; do
-not model that sharing with a per-object copied array.
-
 Runtime Interpreter evaluation of `__ctfe` must match compiled D and therefore
 produce `false`; `Ctfe` alone observes `true`. Cover both frontend shapes before
 changing the walker: an ordinary runtime function currently leaves `__ctfe` as
@@ -684,6 +678,32 @@ and inserting through the parameter must mutate the caller, as `SystemLinker`
 does. The Interpreter currently routes the parameter read into native storage
 and fails with `Expected associative array`; adding an address for the binding
 must not bypass the boxed authority before an AA place exists.
+
+An associative array's dynamic-array-typed VALUE (e.g. `int[][int]`) writes
+through `native_call_adapter.marshalNative`'s legacy boxed `marshalArgument`
+fallback rather than its direct `place_value.writeValue` path, because
+`isPlaceComposable` has no `Tarray` arm; the stored slice header comes out
+wrong. Struct- and static-array-typed AA values already compose correctly.
+Extending `isPlaceComposable`/`valueMatchesComposablePlace` to a `Tarray` arm
+is item 5's fallback-deletion scope, not a standalone language-surface fix.
+
+`lang/archive.d`'s 5 `Omit!(Interpreter, Because.unconfirmed)` rows are not a
+language-surface gap: the Interpreter has no symbol-resolution source for a
+static archive at all (see the fixtures' `Omit` notes for the confirmed
+specifics) — a new native symbol-resolution source belongs to `ffi.md`, not
+this track.
+
+`runDeclarationExpression`'s `isArrayElementAlias` branch aliases a `ref`
+local onto an indexed call result's element by re-invoking `arrayPointer` on
+the initializer's inner receiver to compose an address — a SECOND,
+independent evaluation of the same call, distinct from the one already used
+for the alias's value. The second call's returned aggregate has no GC root
+beyond `arrayPointer`'s own locals, so the `ref` binding can end up aliasing
+reclaimed/reused memory (`dynamicArray.arrayOfArraysReturningCallResultIndexing`,
+`tests/ut/backends/runner/lang/arrays.d`, reads a garbage int instead of the
+call's real element). Fix needs either rooting the second call's temporary
+for the `ref` binding's lifetime, or reusing the already-evaluated value's
+own address instead of re-invoking the `CallExp` receiver.
 
 ### Item 5 — Delete Interpreter FFI marshalling fallbacks
 

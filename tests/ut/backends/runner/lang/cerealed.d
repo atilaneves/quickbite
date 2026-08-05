@@ -1746,13 +1746,10 @@ static foreach (backend; Matrix!()) {
 }
 
 // `emplaceRef` on a struct element with a postblit must run it exactly once,
-// matching compiled construction semantics. Interpreter reaches the real
-// body and writes the value, but still skips the postblit (`0 != 1`).
+// matching compiled construction semantics.
 // Bytecode must preserve this one postblit while its `emplaceRef` wrapper
 // writes the indexed destination.
-static foreach (backend; Matrix!(
-    Omit!(Interpreter, Because.unconfirmed, "diverges pending value.md native-layout track; no characterization pin yet"),
-)) {
+static foreach (backend; Matrix!()) {
     @("emplaceRefSkipsPostblitForStructElement." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {

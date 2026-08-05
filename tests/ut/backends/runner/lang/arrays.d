@@ -405,17 +405,19 @@ static foreach (backend; Matrix!(
 }
 
 // A module-level dynamic array with a non-null array-literal initializer
-// (`int[] arr = [1, 2, 3];`): `moduleDynamicArrayVariableOrNull` used to
-// treat this the same as no initializer at all (a plain array literal
-// parses as an `ArrayInitializer`, not the `ExpInitializer`
-// `moduleVariableHasDefaultInitializer` recognised), so `arr` read back a
-// zero-length null slice instead of its declared contents. `Ctfe` cannot
-// read dataseg storage at all; `Interpreter` and `LLVMJit` have the same
-// gap, unconfirmed/unfixed here.
+// (`int[] arr = [1, 2, 3];`): a plain array literal parses as an
+// `ArrayInitializer`, not an `ExpInitializer`. The Bytecode backend's
+// `moduleDynamicArrayVariableOrNull` used to treat this the same as no
+// initializer at all, and the Interpreter's `materializeDatasegInitializer`
+// had the same gap (only unwrapped `isExpInitializer`), so `arr` read back a
+// zero-length null slice instead of its declared contents; fixed there by
+// converting through `dmd.initsem.initializerToExpression`, which normalises
+// either `Initializer` subclass to the same expression. `Ctfe` cannot read
+// dataseg storage at all; `LLVMJit` has the same gap, unconfirmed/unfixed
+// here.
 static foreach (backend; Matrix!(
     Omit!(Ctfe, Because.inexpressible,
         "CTFE cannot read dataseg (__gshared/static) storage"),
-    Omit!(Interpreter, Because.unconfirmed),
     Omit!(LLVMJit, Because.unconfirmed),
 )) {
     @("dynamicArray.moduleArrayLiteralInitializer." ~ backend.stringof)
@@ -456,7 +458,6 @@ static foreach (backend; Matrix!(
 static foreach (backend; Matrix!(
     Omit!(Ctfe, Because.inexpressible,
         "CTFE cannot read dataseg (__gshared/static) storage"),
-    Omit!(Interpreter, Because.unconfirmed),
     Omit!(LLVMJit, Because.unconfirmed),
 )) {
     @("dynamicArray.moduleArrayOfArraysLiteralInitializer." ~ backend.stringof)
@@ -504,7 +505,6 @@ static foreach (backend; Matrix!(
 static foreach (backend; Matrix!(
     Omit!(Ctfe, Because.inexpressible,
         "CTFE cannot read dataseg (__gshared/static) storage"),
-    Omit!(Interpreter, Because.unconfirmed),
     Omit!(LLVMJit, Because.unconfirmed),
 )) {
     @("dynamicArray.moduleArrayOfArraysElementLength." ~ backend.stringof)
@@ -526,7 +526,6 @@ static foreach (backend; Matrix!(
 static foreach (backend; Matrix!(
     Omit!(Ctfe, Because.inexpressible,
         "CTFE cannot read dataseg (__gshared/static) storage"),
-    Omit!(Interpreter, Because.unconfirmed),
     Omit!(LLVMJit, Because.unconfirmed),
 )) {
     @("dynamicArray.moduleArrayOfArraysOfArraysElementLength." ~
@@ -577,7 +576,6 @@ static foreach (backend; Matrix!()) {
 static foreach (backend; Matrix!(
     Omit!(Ctfe, Because.inexpressible,
         "CTFE cannot read dataseg (__gshared/static) storage"),
-    Omit!(Interpreter, Because.unconfirmed),
     Omit!(LLVMJit, Because.unconfirmed),
 )) {
     @("dynamicArray.moduleArrayOfArraysOfArraysLiteralInitializer." ~
@@ -624,7 +622,6 @@ static foreach (backend; Matrix!(
 static foreach (backend; Matrix!(
     Omit!(Ctfe, Because.inexpressible,
         "CTFE cannot read dataseg (__gshared/static) storage"),
-    Omit!(Interpreter, Because.unconfirmed),
     Omit!(LLVMJit, Because.unconfirmed),
 )) {
     @("dynamicArray.moduleEmptyArrayLiteralInitializer." ~ backend.stringof)
@@ -657,7 +654,6 @@ static foreach (backend; Matrix!(
 static foreach (backend; Matrix!(
     Omit!(Ctfe, Because.inexpressible,
         "CTFE cannot read dataseg (__gshared/static) storage"),
-    Omit!(Interpreter, Because.unconfirmed),
     Omit!(LLVMJit, Because.unconfirmed),
 )) {
     @("dynamicArray.moduleArrayLiteralCtfeableCallElement." ~ backend.stringof)
@@ -720,7 +716,6 @@ static foreach (backend; Matrix!()) {
 static foreach (backend; Matrix!(
     Omit!(Ctfe, Because.inexpressible,
         "CTFE cannot read dataseg (__gshared/static) storage"),
-    Omit!(Interpreter, Because.unconfirmed),
     Omit!(LLVMJit, Because.unconfirmed),
 )) {
     @("dynamicArray.moduleArrayOfStructsLiteralInitializer." ~
@@ -1167,7 +1162,6 @@ static foreach (backend; Matrix!()) {
 static foreach (backend; Matrix!(
     Omit!(Ctfe, Because.inexpressible,
         "CTFE cannot read dataseg (__gshared/static) storage"),
-    Omit!(Interpreter, Because.unconfirmed),
     Omit!(LLVMJit, Because.unconfirmed),
 )) {
     @("dynamicArray.moduleStaticArrayOfArraysRowValueRead." ~ backend.stringof)
@@ -2979,7 +2973,6 @@ static foreach (backend; Matrix!()) {
 // uses the divergent backtick-range wording pinned below.
 static foreach (backend; Matrix!(
     Omit!(Ctfe, Because.diverges, "see sibling pin below (Ctfe)"),
-    Omit!(Interpreter, Because.unconfirmed),
 )) {
     @("staticArray.elementWriteWithRuntimeIndexOutOfBoundsDiagnostic." ~
         backend.stringof)
@@ -3069,7 +3062,6 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter)) {
 
 static foreach (backend; Matrix!(
     Omit!(Ctfe, Because.diverges, "see sibling pin below (Ctfe)"),
-    Omit!(Interpreter, Because.unconfirmed),
 )) {
     @("staticArray.nestedElementWriteWithRuntimeOuterIndexOutOfBoundsDiagnostic." ~
         backend.stringof)
@@ -3159,7 +3151,6 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter)) {
 
 static foreach (backend; Matrix!(
     Omit!(Ctfe, Because.diverges, "see sibling pin below (Ctfe)"),
-    Omit!(Interpreter, Because.unconfirmed),
 )) {
     @("staticArray.nestedElementWriteWithRuntimeInnerIndexOutOfBoundsDiagnostic." ~
         backend.stringof)
@@ -4191,11 +4182,26 @@ static foreach (backend; Matrix!(
 }
 
 // A dynamic-array-typed value (`int[][int]`): the value slot is a 16-byte
-// slice descriptor, not an inline scalar. Interpreter reads back the wrong
-// element (`0 != 20`) for this shape -- a separate, unconfirmed backend gap.
+// slice descriptor, not an inline scalar. `a[1] = [10, 20, 30]` lowers to a
+// pointer-index store into the AA's value slot
+// (`impl.d`'s `storeNativePointerElement` -> `native_call_adapter.
+// marshalNative`), and `marshalNative` only takes its direct
+// `place_value.writeValue` path when `place_value.isPlaceComposable`
+// accepts the element type; that predicate has no `Tarray` (dynamic-array)
+// arm, so a dynamic-array-valued AA element always falls through to the
+// legacy boxed `marshalArgument` reconstruction path instead (`ai/plans/
+// value.md` decision 18 / item 5, not yet deleted). The read side composes
+// correctly; the boxed fallback is what writes the wrong bytes. Fixing this
+// means extending `isPlaceComposable` (and `valueMatchesComposablePlace`)
+// to a `Tarray` arm -- a native-call-marshalling-seam change item 5 already
+// owns, not an AA-local fix -- so this stays a separate, unconfirmed
+// backend gap.
 static foreach (backend; Matrix!(
     Omit!(Interpreter, Because.unconfirmed,
-        "int[][int] element reads back 0 instead of the inserted value"),
+        "AA dynamic-array-valued element write falls through "
+            ~ "native_call_adapter.marshalNative's boxed fallback because "
+            ~ "place_value.isPlaceComposable has no Tarray arm (value.md "
+            ~ "item 5)"),
 )) {
     @("assocArray.dynamicArrayValueInsertsReadsAndMutates." ~
         backend.stringof)
@@ -4254,14 +4260,12 @@ static foreach (backend; Matrix!()) {
     }
 }
 
-// A struct-typed value (`Point[int]`): the same `p[0]` `_d_aaGetRvalueX`
-// rvalue-read shape as `dynamicArrayValueInsertsReadsAndMutates` above, but
-// for a struct rather than a dynamic array. Interpreter refuses the field
-// write -- a separate, unconfirmed backend gap.
-static foreach (backend; Matrix!(
-    Omit!(Interpreter, Because.unconfirmed,
-        "Unsupported interpreter assignment target"),
-)) {
+// A struct-typed value (`Point[int]`): field write through `p[0].x = ...`
+// composes through DMD's own `_d_aaGetRvalueX`-lowered pointer-dereference
+// receiver (`expressionsem.d`'s `revertModifiableAAIndexReads`), a plain
+// pointer-index assignment target `writeIndexLocation` handles like any
+// other native pointer.
+static foreach (backend; Matrix!()) {
     @("assocArray.structValueFieldReadWrite." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -4279,17 +4283,12 @@ static foreach (backend; Matrix!(
     }
 }
 
-// A direct consequence of the fix above: calling a mutating method through
-// an AA-value struct receiver (`a[1].bump()`) is the same
-// `IndexExp`-over-pointer-to-`Tstruct` receiver shape as the plain field
-// write above, but reached through `methodReceiver` rather than
-// `tryStructField`. Interpreter segfaults on the same shape -- a separate,
-// unconfirmed backend gap.
-static foreach (backend; Matrix!(
-    Omit!(Interpreter, Because.unconfirmed,
-        "segfaults calling a mutating method through an AA-value struct "
-            ~ "receiver"),
-)) {
+// Calling a mutating method through an AA-value struct receiver
+// (`a[1].bump()`) is the same `_d_aaGetRvalueX`-lowered pointer-dereference
+// receiver shape as the plain field write above, but reached through
+// `runMemberFunction`'s `addressOfExpression`/`arrayPointer` path instead of
+// an assignment target.
+static foreach (backend; Matrix!()) {
     @("assocArray.structValueMethodCallMutatesEntry." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -4389,14 +4388,12 @@ static foreach (backend; Matrix!()) {
 // front) but desyncing `foreach`'s per-entry read stride from the real one
 // as soon as `compileAssocArrayApply2` needed its own value width (it
 // previously had no `Tsarray` case at all, throwing "Unsupported type in
-// bytecode core: int[3]" via `scalarType`). Interpreter refuses the
-// indexed write with the same "Unsupported interpreter assignment target"
-// diagnostic `structValueFieldReadWrite` above already omits it for -- a
-// separate, unconfirmed backend gap.
-static foreach (backend; Matrix!(
-    Omit!(Interpreter, Because.unconfirmed,
-        "Unsupported interpreter assignment target"),
-)) {
+// bytecode core: int[3]" via `scalarType`). The indexed write
+// (`runNestedIndexAssignExpression`) composes through the same
+// `_d_aaGetRvalueX`-lowered pointer-dereference receiver
+// `structValueFieldReadWrite` above documents, one level further from the
+// assignment's own target.
+static foreach (backend; Matrix!()) {
     @("assocArray.staticArrayValueConstructsReadsWritesAndIterates." ~
         backend.stringof)
     @Tags(backend.stringof)
@@ -4633,7 +4630,6 @@ static foreach (backend; Matrix!(
 // support on every backend.
 static foreach (backend; Matrix!(
     Omit!(Ctfe, Because.unconfirmed),
-    Omit!(Interpreter, Because.unconfirmed),
     Omit!(LLVMJit, Because.unconfirmed),
 )) {
     @("assocArray.delegateValueLocalLambdaAssignInvokesStoredDelegate." ~
@@ -4657,7 +4653,6 @@ static foreach (backend; Matrix!(
 // second time over the same slot rather than only ever writing it once.
 static foreach (backend; Matrix!(
     Omit!(Ctfe, Because.unconfirmed),
-    Omit!(Interpreter, Because.unconfirmed),
     Omit!(LLVMJit, Because.unconfirmed),
 )) {
     @("assocArray.delegateValueLocalReassignInvokesLatestDelegate." ~
@@ -4684,7 +4679,6 @@ static foreach (backend; Matrix!(
 // fix and the two lambda-assign fixtures above exercise.
 static foreach (backend; Matrix!(
     Omit!(Ctfe, Because.unconfirmed),
-    Omit!(Interpreter, Because.unconfirmed),
     Omit!(LLVMJit, Because.unconfirmed),
 )) {
     @("assocArray.delegateValueLocalForeachInvokesEachStoredDelegate." ~
@@ -6608,15 +6602,13 @@ static foreach (backend; Matrix!()) {
 // The class-array-field sibling of the case above (`c.arr[i].field = rhs`):
 // `storeArrayElementFieldPointer` also serves
 // `tryClassArrayFieldElementFieldPointer`'s resolved pointer, so the same
-// `Tstruct` branch closes this shape too. `Interpreter` throws "Expected
-// class object." on this receiver shape even for a plain scalar field
-// (confirmed via bin/ut with `c.arr[0].tag = 99;`), a pre-existing gap
-// unrelated to the struct-field fix here.
-static foreach (backend; Matrix!(
-    Omit!(Interpreter, Because.unconfirmed,
-        "class array-of-structs element field write throws " ~
-        "\"Expected class object.\" even for a scalar field"),
-)) {
+// `Tstruct` branch closes this shape too. `Interpreter` promoted:
+// `writeIndexLocation`'s class `DotVarExp` arm lacked the pointer-based
+// `Place` resolution `runIndexAssignExpression`'s identical arm already has
+// for a class local's bare-pointer runtime value, so it always fell through
+// to `AggregateValue.classFieldAt`'s boxed-class-object path and threw
+// "Expected class object." -- for any field type, including a plain scalar.
+static foreach (backend; Matrix!()) {
     @("classField.structFieldOfArrayOfStructsElementWrittenFromConstructorCall." ~
         backend.stringof)
     @Tags(backend.stringof)
@@ -6753,14 +6745,13 @@ static foreach (backend; Matrix!()) {
 // `arrayElementFieldPointer` (`compiler.d`), which recurses through any
 // number of `IndexExp` layers, advancing the field's own real runtime
 // pointer one dimension at a time via `advanceStaticArrayPointer` instead of
-// ever falling through to the throwaway copy. Interpreter throws
-// "Unsupported interpreter assignment target." on this doubly-indexed shape
-// even though the singly-indexed sibling above already passes -- a separate,
-// unconfirmed backend gap, not this fix's scope.
-static foreach (backend; Matrix!(
-    Omit!(Interpreter, Because.unconfirmed,
-        "Unsupported interpreter assignment target."),
-)) {
+// ever falling through to the throwaway copy. The Interpreter's own gap was
+// the identical shape one level up: `runNestedIndexAssignExpression` only
+// recognised a `VarExp`/pointer `outer.e1`, not a `DotVarExp` -- fixed by
+// giving it a `DotVarExp` arm that composes both index levels through
+// `AggregateValue.elementAt`/`withArrayElement` before writing the whole
+// field back through the receiver's own lvalue.
+static foreach (backend; Matrix!()) {
     @("dynamicArray.nestedStaticArrayFieldElementOfStructElementWritten." ~
         backend.stringof)
     @Tags(backend.stringof)
@@ -6786,12 +6777,10 @@ static foreach (backend; Matrix!(
 // (`arr[i].fixedField[j][k] += value`): the identical silent-corruption
 // shape one dimension deeper than the singly-indexed compound-assignment
 // fix. Fixed the same way, through the shared `arrayElementFieldPointer`.
-// Interpreter throws the same "Unsupported interpreter assignment target."
-// gap as the plain-assignment sibling above.
-static foreach (backend; Matrix!(
-    Omit!(Interpreter, Because.unconfirmed,
-        "Unsupported interpreter assignment target."),
-)) {
+// The Interpreter's compound-assignment path (`writeIndexLocation`, reached
+// via `writeLocation` rather than `runNestedIndexAssignExpression`) had the
+// identical gap and the identical `DotVarExp`-composing fix.
+static foreach (backend; Matrix!()) {
     @("dynamicArray.nestedStaticArrayFieldElementOfStructElementAddAssigned." ~
         backend.stringof)
     @Tags(backend.stringof)
@@ -6821,19 +6810,19 @@ static foreach (backend; Matrix!(
 // length}` descriptor, and the same `advanceStaticArrayPointer` bounds-check
 // and pointer arithmetic ordinary dynamic-array indexing already uses is fed
 // that descriptor's runtime pointer and length instead of a frame address
-// and a compile-time-constant length. Interpreter throws "Unsupported
-// interpreter assignment target." on this shape, the same pre-existing gap
-// as the `Tsarray` sibling above.
+// and a compile-time-constant length. The Interpreter's `DotVarExp` arm
+// (added for the `Tsarray` sibling above) needs no `Tarray`-specific
+// handling of its own: `AggregateValue.elementAt`/`withArrayElement` already
+// dispatch on the field's actual DMD type, so the same composition resolves
+// a dynamic-array-of-dynamic-arrays field's element just as it does a
+// static one's.
 //
 // The fixture builds `matrixField` from an intermediate `rows` local rather
 // than an inline array-of-arrays literal passed directly as the constructor
 // argument, exercising the plain descriptor-copy path
 // (`dynamicArrayDescriptorOrNull`) rather than literal construction; the
 // sibling block below exercises the literal directly.
-static foreach (backend; Matrix!(
-    Omit!(Interpreter, Because.unconfirmed,
-        "Unsupported interpreter assignment target."),
-)) {
+static foreach (backend; Matrix!()) {
     @("dynamicArray.nestedDynamicArrayFieldElementOfStructElementWritten." ~
         backend.stringof)
     @Tags(backend.stringof)
@@ -6863,11 +6852,14 @@ static foreach (backend; Matrix!(
 // (`Op.checkStaticArrayIndex`, the same check ordinary dynamic-array
 // indexing raises), so this is druntime's ordinary `ArrayIndexError` text,
 // byte for byte matching `SystemLinker`. `Ctfe`'s own bounds check uses the
-// divergent backtick-range wording pinned below.
+// divergent backtick-range wording pinned below. The Interpreter's
+// `DotVarExp` arm bounds-checks both index levels via the same
+// `checkStaticArrayIndexInBounds` helper the plain-nested-local write
+// already used for a static dimension -- it already generalises to a
+// dynamic dimension through `AggregateValue.length`, so it applies
+// unconditionally here and raises the identical compiled-D wording.
 static foreach (backend; Matrix!(
     Omit!(Ctfe, Because.diverges, "see sibling pin below (Ctfe)"),
-    Omit!(Interpreter, Because.unconfirmed,
-        "Unsupported interpreter assignment target."),
 )) {
     @("dynamicArray.nestedDynamicArrayFieldElementOutOfBoundsIndexThrows." ~
         backend.stringof)
@@ -7007,11 +6999,7 @@ static foreach (backend; Matrix!()) {
 // later, ungated `staticArrayOffsetOf` branch reachable for unrelated
 // static-array-of-structs shapes, corrupting
 // `nestedStaticArrayFieldElementOfStructElementAddAssigned`'s stride.
-// Interpreter throws "Unsupported interpreter assignment target." on this
-// shape, the same pre-existing gap as the doubly-indexed siblings above.
 static foreach (backend; Matrix!(
-    Omit!(Interpreter, Because.unconfirmed,
-        "Unsupported interpreter assignment target."),
 )) {
     @("dynamicArray.classFieldDoublyIndexedElementWritten." ~
         backend.stringof)
@@ -7158,9 +7146,32 @@ static foreach (backend; Matrix!()) {
 // "index out of bounds" (the outer descriptor's length read as 0). Fixed by
 // passing `arrayElementIsArray(expression.type)` both to
 // `compileDynamicArrayInto` and into the resulting `DynamicArrayLocal`.
+//
+// Interpreter's own gap is not a mis-sizing: `assert(matrixMaker()[1][2] ==
+// 5)` reads a garbage int (confirmed via real `bin/ut`, e.g. `-1053594512
+// != 5`) rather than throwing. Root cause, traced with temporary
+// instrumentation: DMD's `-checkaction=context` lowering hoists the LHS
+// operand into a synthetic `ref int __assertOpN = matrixMaker()[1][2];`
+// (so the failure message can reuse it without a second evaluation from
+// SOURCE). `runDeclarationExpression`'s `isArrayElementAlias` branch
+// (`impl.d`) evaluates that initializer once correctly for its VALUE, then
+// separately calls `arrayPointer` to alias the `ref` local onto the
+// element's ADDRESS -- `arrayPointer`'s `IndexExp` arm, given the
+// non-`VarExp` inner receiver `matrixMaker()[1]`, re-evaluates `index.e1`
+// (the `CallExp` `matrixMaker()`) from scratch to compose that address, a
+// SECOND, independent call. That second call's returned array-of-arrays is
+// a transient native aggregate with no GC root beyond the `arrayPointer`
+// call's own locals; `nativeRefLocalAddresses[variable]` retains only the
+// raw address, so once that temporary's backing store is reclaimed or
+// reused, reading `__assertOp12` back out returns garbage. Fixing this
+// needs either rooting the second call's temporary for the `ref` binding's
+// whole lifetime or teaching `arrayPointer`'s `IndexExp` arm to reuse the
+// already-evaluated value's own address instead of re-invoking a `CallExp`
+// receiver; both are more than a small, self-contained fix.
 static foreach (backend; Matrix!(
     Omit!(Interpreter, Because.unconfirmed,
-        "wrong result indexing an array-of-arrays-returning call's result"),
+        "ref-aliases a second, unrooted call result: garbage int, not a " ~
+        "thrown exception (see comment above)"),
 )) {
     @("dynamicArray.arrayOfArraysReturningCallResultIndexing." ~
         backend.stringof)

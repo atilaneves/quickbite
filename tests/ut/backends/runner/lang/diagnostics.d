@@ -55,8 +55,6 @@ static foreach (backend; Matrix!(Plus!(IR))) {
 
 static foreach (backend; Matrix!(
     Omit!(Ctfe, Because.diverges, "CTFE reports the generic assertion message"),
-    Omit!(Interpreter, Because.unconfirmed,
-        "does not materialize imported EntropyResult struct literals"),
 )) {
     @("computedAssertMessageMatchesDmd." ~ backend.stringof)
     @Tags(backend.stringof)

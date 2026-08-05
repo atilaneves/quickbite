@@ -100,15 +100,8 @@ static foreach (backend; Matrix!()) {
 // any non-null element instead of resolving it through
 // `delegateOperandOffset` and copying the 16-byte `{functionIndex,
 // context}` pair into the field, the way the `isPointerType` branch beside
-// it already handled a non-null pointer element. Interpreter's
-// `place_value.writeValue` throws "unsupported at place" for a delegate
-// written through a struct-literal initializer specifically (the direct
-// field-assignment path above already works there); never tried.
-static foreach (backend; Matrix!(
-    Omit!(Interpreter, Because.unconfirmed,
-        "place_value.writeValue has no case for a delegate value written " ~
-            "through a struct-literal initializer place"),
-)) {
+// it already handled a non-null pointer element.
+static foreach (backend; Matrix!()) {
     @("struct.literalDelegateFieldFromFreshLambdaIsCallable." ~
         backend.stringof)
     @Tags(backend.stringof)
@@ -126,11 +119,7 @@ static foreach (backend; Matrix!(
     }
 }
 
-static foreach (backend; Matrix!(
-    Omit!(Interpreter, Because.unconfirmed,
-        "place_value.writeValue has no case for a delegate value written " ~
-            "through a struct-literal initializer place"),
-)) {
+static foreach (backend; Matrix!()) {
     @("struct.literalDelegateFieldFromExistingLocalIsCallable." ~
         backend.stringof)
     @Tags(backend.stringof)
@@ -152,11 +141,12 @@ static foreach (backend; Matrix!(
     }
 }
 
-static foreach (backend; Matrix!(
-    Omit!(Interpreter, Because.unconfirmed,
-        "place_value.writeValue has no case for a delegate value written " ~
-            "through a struct-literal initializer place"),
-)) {
+// The second append forces `AggregateValue.withAppendedArrayElement` down
+// its reallocation path (a freshly one-element array has no spare
+// capacity), which must relocate the FIRST element's struct-field
+// `nativeDelegateSlots` registration to its new address in the reallocated
+// block, not just the newly appended element's.
+static foreach (backend; Matrix!()) {
     @("struct.literalDelegateFieldAppendedToArrayIsCallable." ~
         backend.stringof)
     @Tags(backend.stringof)
@@ -172,6 +162,11 @@ static foreach (backend; Matrix!(
 
                 assert(handlers.length == 1);
                 assert(handlers[0].action() == 42);
+
+                handlers ~= Handler(() => 43);
+                assert(handlers.length == 2);
+                assert(handlers[0].action() == 42);
+                assert(handlers[1].action() == 43);
             }
         });
     }
@@ -1366,10 +1361,7 @@ static foreach (backend; Matrix!()) {
     }
 }
 
-static foreach (backend; Matrix!(
-    Omit!(Interpreter, Because.unconfirmed,
-        "static-array copy postblit dereferences a null counter pointer"),
-)) {
+static foreach (backend; Matrix!()) {
     @("struct.staticArrayCopyRunsPostblitAndDtors." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -1413,13 +1405,8 @@ static foreach (backend; Matrix!(
 // `s = t;` for a whole struct local: `S` has a postblit but no user-defined
 // `opAssign`, so DMD synthesizes one and lowers the call argument through a
 // `__copytmp` temporary whose own postblit runs once on the copy, matching
-// `SystemLinker`. Interpreter's own assignment for this shape loses the
-// field copy entirely (`s.x` stays its default, not `t.x`'s value), pinned
-// below.
-static foreach (backend; Matrix!(
-    Omit!(Interpreter, Because.diverges,
-        "loses the field copy for a postblit-typed whole-local assignment, see sibling pin below"),
-)) {
+// `SystemLinker`.
+static foreach (backend; Matrix!()) {
     @("struct.wholeLocalAssignmentRunsPostblit." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -1447,42 +1434,6 @@ static foreach (backend; Matrix!(
                 assert(postblits == 1);
             }
         });
-    }
-}
-
-// The `Because.diverges` pin the fixture above owes: Interpreter runs the
-// exact same fixture -- including its `SystemLinker`-correct
-// `assert(s.x == 5)` -- but its own whole-local assignment for a
-// postblit-typed struct never copies `t.x` into `s.x`, so that first assert
-// fails the ordinary way inside the guest program.
-static foreach (backend; AliasSeq!(Interpreter)) {
-    @("structWholeLocalAssignmentDoesNotRunPostblit." ~ backend.stringof)
-    @Tags(backend.stringof)
-    unittest {
-        runBackendSourceFixtureTests!backend(q{
-            struct Tracker {
-                int x;
-                int* postblits;
-
-                this(this) {
-                    ++*postblits;
-                }
-            }
-
-            unittest {
-                int postblits = 0;
-
-                Tracker t;
-                t.x = 5;
-                t.postblits = &postblits;
-
-                Tracker s;
-                s = t;
-
-                assert(s.x == 5);
-                assert(postblits == 1);
-            }
-        }).shouldThrowWithMessage("0 != 5");
     }
 }
 
@@ -2381,13 +2332,11 @@ static foreach (backend; Matrix!()) {
 // this must alias the direct `s.value` argument's live storage rather than
 // composing a separate copy, so both increments land on the same `int`.
 // `referenceOffset`'s `_withDerefBases` live-aliasing path handles this.
-// `Interpreter` fails this same fixture with its own, separate composition
-// bug (unconfirmed/uncharacterized).
-static foreach (backend; Matrix!(
-    Omit!(Interpreter, Because.unconfirmed,
-        "Interpreter also produces 1 instead of 2 here, via its own " ~
-        "separate ref-argument composition path -- not characterized yet"),
-)) {
+// `Interpreter` resolves both `ref` arguments to the same field address
+// (`addressOfExpression`'s `DotVarExp` arm composes it identically whether
+// the receiver is the direct local or a `with`-statement's synthetic
+// pointer dereference), so it needs no `Omit` here.
+static foreach (backend; Matrix!()) {
     @("with.fieldRefArgumentAliasesLiveStorage." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -2618,28 +2567,20 @@ static foreach (backend; Matrix!()) {
 
 // A `Tarray` class field's own array-literal default (`int[] arr = [1, 2,
 // 3];`) parses as an `ArrayInitializer`, not the `ExpInitializer` the
-// scalar-field fixture above exercises, and `compileDefaultClassFields`
-// never even reached the field's initializer for that shape: every
-// `Tarray`-typed class field default was silently skipped, left zeroed by
-// `allocClass`. Also exercises real D's shared-static-default semantics
-// (confirmed against real `dmd`): every `new C()` that does not override
-// the field shares one backing array, so mutating it through one instance
-// is visible through another -- assigning a fresh array to one instance's
-// field only replaces that instance's own descriptor, leaving the shared
-// default and every other instance still pointing at it untouched.
-// `Interpreter` fails the same way the scalar-field sibling above does
-// (confirmed via real `bin/ut`: `[] != [1, 2, 3]`, the field stays
-// zero-initialised). `Ctfe` genuinely diverges here, confirmed directly
-// against real `dmd`: CTFE evaluates each `new C()`'s array-literal field
-// default as a fresh, independent array rather than sharing one static
-// backing array the way compiled/runtime D does (`static assert(({ auto a
-// = new C(); auto b = new C(); a.arr[0] = 99; return b.arr[0]; })() ==
-// 99)` fails under real `dmd`), so it cannot pass the sharing assertions
-// below.
+// scalar-field fixture above exercises. Exercises real D's
+// shared-static-default semantics (confirmed against real `dmd`): every
+// `new C()` that does not override the field shares one backing array, so
+// mutating it through one instance is visible through another -- assigning
+// a fresh array to one instance's field only replaces that instance's own
+// descriptor, leaving the shared default and every other instance still
+// pointing at it untouched. `Ctfe` genuinely diverges here, confirmed
+// directly against real `dmd`: CTFE evaluates each `new C()`'s
+// array-literal field default as a fresh, independent array rather than
+// sharing one static backing array the way compiled/runtime D does
+// (`static assert(({ auto a = new C(); auto b = new C(); a.arr[0] = 99;
+// return b.arr[0]; })() == 99)` fails under real `dmd`), so it cannot pass
+// the sharing assertions below.
 static foreach (backend; Matrix!(
-    Omit!(Interpreter, Because.unconfirmed,
-        "a Tarray class field's own array-literal default is never " ~
-        "applied on allocation"),
     Omit!(Ctfe, Because.diverges,
         "real dmd CTFE gives every `new C()` its own fresh array for an " ~
         "array-literal field default instead of sharing one static " ~
@@ -2674,9 +2615,6 @@ static foreach (backend; Matrix!(
 }
 
 static foreach (backend; Matrix!(
-    Omit!(Interpreter, Because.unconfirmed,
-        "a Tarray class field's own array-literal default is never " ~
-        "applied on allocation"),
     Omit!(Ctfe, Because.diverges,
         "real dmd CTFE gives every `new C()` its own fresh array for an " ~
         "array-literal field default instead of sharing one static " ~
@@ -4437,18 +4375,10 @@ static foreach (backend; Matrix!()) {
     }
 }
 
-// A direct consequence of the fix above: `p.t = a;` where `Tracker` has a
-// postblit but no user-defined `opAssign` lowers to a call,
-// `(*p).t.opAssign(copytmp)`, whose receiver is the exact same
-// pointer-reached-struct-field shape as a method call. Interpreter runs the
-// same postblit-losing whole-local assignment as
-// `struct.wholeLocalAssignmentRunsPostblit`'s sibling pin, so it stays
-// omitted here for the identical reason.
-static foreach (backend; Matrix!(
-    Omit!(Interpreter, Because.diverges,
-        "loses the field copy for a postblit-typed whole-struct assignment "
-            ~ "through a pointer field, see struct.wholeLocalAssignmentRunsPostblit"),
-)) {
+// `p.t = a;` where `Tracker` has a postblit but no user-defined `opAssign`
+// lowers to a call, `(*p).t.opAssign(copytmp)`, whose receiver is the exact
+// same pointer-reached-struct-field shape as a method call.
+static foreach (backend; Matrix!()) {
     @("pointer.structPointerFieldPostblitAssignmentRunsPostblit." ~
         backend.stringof)
     @Tags(backend.stringof)

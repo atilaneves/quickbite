@@ -1865,12 +1865,6 @@ static foreach (backend; Matrix!(
         "Ctfe wraps dmd.dinterpret, whose CTFE engine refuses the "
             ~ "returned closure outright with \"closures are not yet "
             ~ "supported in CTFE\""),
-    Omit!(Interpreter, Because.unconfirmed,
-        "the Interpreter does not yet promote a frame-escaping " ~
-            "captured local to a heap closure either; it returns a " ~
-            "call whose delegate reads a stale/reused frame slot " ~
-            "instead of the closed-over value (observed returning 1 " ~
-            "instead of 4) -- not yet promoted"),
 )) {
     @("delegate.functionReturningCapturingDelegateIsCallable." ~
         backend.stringof)
@@ -1902,9 +1896,6 @@ static foreach (backend; Matrix!(
         "Ctfe wraps dmd.dinterpret, whose CTFE engine refuses the "
             ~ "returned closure outright with \"closures are not yet "
             ~ "supported in CTFE\""),
-    Omit!(Interpreter, Because.unconfirmed,
-        "the Interpreter does not yet promote a frame-escaping " ~
-            "captured local to a heap closure either -- not yet promoted"),
 )) {
     @("delegate.functionReturningMutatingCapturingDelegateIsCallable." ~
         backend.stringof)
@@ -2054,12 +2045,6 @@ static foreach (backend; Matrix!(
         "Ctfe wraps dmd.dinterpret, whose CTFE engine refuses the "
             ~ "returned closure outright with \"closures are not yet "
             ~ "supported in CTFE\""),
-    Omit!(Interpreter, Because.unconfirmed,
-        "the Interpreter throws a generic \"Unsupported eval call.\" " ~
-            "for a lambda that captures a pointer local and escapes via " ~
-            "`return`, the same pre-existing frame-escaping-capture gap " ~
-            "already documented on the scalar sibling fixture -- not yet " ~
-            "promoted"),
 )) {
     @("delegate.functionReturningCapturingDelegateOverPointerIsCallable." ~
         backend.stringof)
@@ -2094,11 +2079,6 @@ static foreach (backend; Matrix!(
         "Ctfe wraps dmd.dinterpret, whose CTFE engine refuses the "
             ~ "returned closure outright with \"closures are not yet "
             ~ "supported in CTFE\""),
-    Omit!(Interpreter, Because.unconfirmed,
-        "the Interpreter does not yet promote a frame-escaping " ~
-            "captured local to a heap closure either; it returns a " ~
-            "call whose delegate reads a stale/reused frame slot " ~
-            "instead of the closed-over values -- not yet promoted"),
 )) {
     @("delegate.functionReturningCapturingDelegateOverTwoLocalsIsCallable." ~
         backend.stringof)
@@ -2132,9 +2112,6 @@ static foreach (backend; Matrix!(
         "Ctfe wraps dmd.dinterpret, whose CTFE engine refuses the "
             ~ "returned closure outright with \"closures are not yet "
             ~ "supported in CTFE\""),
-    Omit!(Interpreter, Because.unconfirmed,
-        "the Interpreter does not yet promote a frame-escaping " ~
-            "captured local to a heap closure either -- not yet promoted"),
 )) {
     @("delegate.functionReturningMutatingCapturingDelegateOverTwoLocalsIsCallable." ~
         backend.stringof)
@@ -2183,20 +2160,13 @@ static foreach (backend; Matrix!(
 // enclosing scope rather than through this core at all, and refuses reading
 // it outright ("variable `count` cannot be read at compile time") -- a
 // different message from the bare-return sibling's ("closures are not yet
-// supported in CTFE") but the same underlying gap. Interpreter's
-// `place_value.writeValue` has no case for a delegate value written through
-// a struct-literal initializer place at all (`struct.literalDelegateFieldFromFreshLambdaIsCallable`'s
-// own Omit reason), independent of whether the capture escapes.
+// supported in CTFE") but the same underlying gap.
 static foreach (backend; Matrix!(
     Omit!(Ctfe, Because.inexpressible,
         "dmd.dinterpret evaluates the struct literal's delegate field " ~
             "against its own enclosing-scope locals directly and refuses " ~
             "reading `count` from CTFE outright: \"variable `count` " ~
             "cannot be read at compile time\""),
-    Omit!(Interpreter, Because.unconfirmed,
-        "place_value.writeValue has no case for a delegate value written " ~
-            "through a struct-literal initializer place at all, escaping " ~
-            "or not -- not yet promoted"),
 )) {
     @("delegate.functionReturningStructWithCapturingDelegateFieldIsCallable." ~
         backend.stringof)
@@ -2228,10 +2198,6 @@ static foreach (backend; Matrix!(
             "against its own enclosing-scope locals directly and refuses " ~
             "reading `count` from CTFE outright: \"variable `count` " ~
             "cannot be read at compile time\""),
-    Omit!(Interpreter, Because.unconfirmed,
-        "place_value.writeValue has no case for a delegate value written " ~
-            "through a struct-literal initializer place at all, escaping " ~
-            "or not -- not yet promoted"),
 )) {
     @("delegate.functionReturningMutatingStructWithCapturingDelegateFieldIsCallable." ~
         backend.stringof)
@@ -2267,10 +2233,6 @@ static foreach (backend; Matrix!(
         "dmd.dinterpret evaluates the struct literal's delegate field " ~
             "against its own enclosing-scope locals directly and refuses " ~
             "reading `a`/`b` from CTFE outright"),
-    Omit!(Interpreter, Because.unconfirmed,
-        "place_value.writeValue has no case for a delegate value written " ~
-            "through a struct-literal initializer place at all, escaping " ~
-            "or not -- not yet promoted"),
 )) {
     @("delegate.functionReturningStructWithCapturingDelegateFieldOverTwoLocalsIsCallable." ~
         backend.stringof)
@@ -2731,10 +2693,12 @@ static foreach (backend; Matrix!()) {
 // A delegate is a 16-byte `{functionIndex, context}` pair, the same width as
 // a dynamic-array slice descriptor; appending one to a dynamic array and
 // reading it back exercises that shared 16-byte-width machinery rather than
-// any delegate-specific storage.
-static foreach (backend; Matrix!(
-    Omit!(Interpreter, Because.unconfirmed),
-)) {
+// any delegate-specific storage. The second append forces
+// `AggregateValue.withAppendedArrayElement` down its reallocation path (a
+// freshly one-element array has no spare capacity), which must relocate the
+// FIRST element's out-of-band `nativeDelegateSlots` registration to its new
+// address in the reallocated block, not just the newly appended element's.
+static foreach (backend; Matrix!()) {
     @("delegate.dynamicArrayElementIsAppendableAndCallable." ~
         backend.stringof)
     @Tags(backend.stringof)
@@ -2746,6 +2710,12 @@ static foreach (backend; Matrix!(
                 dgs ~= () => seed;
                 auto d = dgs[0];
                 assert(d() == 42);
+
+                int delegate()[] more;
+                more ~= () => 1;
+                more ~= () => 2;
+                assert(more[0]() == 1);
+                assert(more[1]() == 2);
             }
         });
     }
@@ -2754,9 +2724,7 @@ static foreach (backend; Matrix!(
 // The static-array twin: `int delegate()[2] dgs;` default-initializes each
 // element to `null` (DMD's whole-array `NullExp` blit), and each element is
 // then assignable and readable like any other inline aggregate slot.
-static foreach (backend; Matrix!(
-    Omit!(Interpreter, Because.unconfirmed),
-)) {
+static foreach (backend; Matrix!()) {
     @("delegate.staticArrayElementIsAssignableAndCallable." ~
         backend.stringof)
     @Tags(backend.stringof)
@@ -2778,9 +2746,7 @@ static foreach (backend; Matrix!(
 // Calling directly through an array index (`dgs[0]()`), with no
 // intermediate delegate-typed local, dispatches through the same run-time
 // descriptor an indexed read already materialises.
-static foreach (backend; Matrix!(
-    Omit!(Interpreter, Because.unconfirmed),
-)) {
+static foreach (backend; Matrix!()) {
     @("delegate.dynamicArrayElementIsCallableThroughIndexDirectly." ~
         backend.stringof)
     @Tags(backend.stringof)
@@ -2795,9 +2761,7 @@ static foreach (backend; Matrix!(
 }
 
 // The static-array twin of the fixture above.
-static foreach (backend; Matrix!(
-    Omit!(Interpreter, Because.unconfirmed),
-)) {
+static foreach (backend; Matrix!()) {
     @("delegate.staticArrayElementIsCallableThroughIndexDirectly." ~
         backend.stringof)
     @Tags(backend.stringof)
@@ -2823,9 +2787,7 @@ static foreach (backend; Matrix!(
 // gets; the call-through-field dispatch
 // (`structFieldDelegateOffsetOf`) previously only recognised a struct-value
 // receiver, not a class reference.
-static foreach (backend; Matrix!(
-    Omit!(Interpreter, Because.unconfirmed),
-)) {
+static foreach (backend; Matrix!()) {
     @("delegate.classFieldDefaultIsNullDirectlyAssignableAndCallable." ~
         backend.stringof)
     @Tags(backend.stringof)
@@ -3199,9 +3161,7 @@ static foreach (backend; Matrix!()) {
 // A method delegate's context word is the receiver's own address, so two
 // delegates bound to the same method through different receivers compare
 // unequal, while two bound through the same receiver compare equal.
-static foreach (backend; Matrix!(
-    Omit!(Interpreter, Because.unconfirmed),
-)) {
+static foreach (backend; Matrix!()) {
     @("delegate.methodDelegateComparesByReceiverAndFunction." ~
         backend.stringof)
     @Tags(backend.stringof)
@@ -3227,9 +3187,7 @@ static foreach (backend; Matrix!(
 
 // The array-element twin of the fixture above: comparing two delegate
 // elements read back from a dynamic array.
-static foreach (backend; Matrix!(
-    Omit!(Interpreter, Because.unconfirmed),
-)) {
+static foreach (backend; Matrix!()) {
     @("delegate.arrayElementsCompareByFunctionAndContext." ~
         backend.stringof)
     @Tags(backend.stringof)
@@ -3239,6 +3197,40 @@ static foreach (backend; Matrix!(
                 int delegate()[] dgs = [() => 1, () => 2];
                 assert(dgs[0] != dgs[1]);
                 assert(dgs[0] == dgs[0]);
+            }
+        });
+    }
+}
+
+// A capturing closure's `contextPointer` is always `null` (every
+// literal-created delegate shares it), so two closures of the SAME lambda
+// literal only compare equal by their captured frame addresses, not by
+// `contextPointer`: two activations of `make` each returning `() => y`
+// close over distinct per-activation storage for `y` and so must compare
+// unequal, unlike the non-capturing method-delegate/array-element twins
+// above.
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.inexpressible,
+        "Ctfe wraps dmd.dinterpret, whose CTFE engine refuses the "
+            ~ "returned closure outright with \"closures are not yet "
+            ~ "supported in CTFE\""),
+)) {
+    @("delegate.capturingClosuresFromDifferentActivationsCompareUnequal." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            int delegate() make(int x) {
+                int y = x * 2;
+                return () => y;
+            }
+
+            unittest {
+                auto d1 = make(1);
+                auto d2 = make(2);
+                assert(d1() == 2);
+                assert(d2() == 4);
+                assert(d1 != d2);
             }
         });
     }
