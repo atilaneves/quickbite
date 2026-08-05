@@ -6407,13 +6407,7 @@ private struct Compiler {
                 _thisLocal.declaration.isNested
             ? size_t.sizeof
             : 0;
-        auto result = new StructField;
-        *result = StructField(
-            cast(ushort) (base.offset + nestedThisFieldOffset + field.offset),
-            field.type,
-            base.writeBack,
-            base.target,
-        );
+        auto result = structFieldAt(base, field, nestedThisFieldOffset);
         // `dot.e1` resolved through a materialised copy of module storage
         // (e.g. `go.inner` inside `go.inner.x`, one level below
         // `tryStructField`'s own bespoke `go.x` branch above): the field's
@@ -6544,6 +6538,24 @@ private struct Compiler {
         }
     }
 
+    // Add `field` to a resolved struct place while preserving the one
+    // writeback target that owns the materialised base. `receiverOffset` is
+    // the nested-function context word preceding a struct receiver.
+    private StructField* structFieldAt(
+        StructField* base,
+        VarDeclaration field,
+        in ushort receiverOffset = 0,
+    ) {
+        auto result = new StructField;
+        *result = StructField(
+            cast(ushort) (base.offset + receiverOffset + field.offset),
+            field.type,
+            base.writeBack,
+            base.target,
+        );
+        return result;
+    }
+
     // The inline frame base of any struct-valued expression: a struct lvalue's
     // base, a nested struct field (`outer.inner` → `base + inner.offset`), or a
     // struct-valued call / comma materialised into a fresh block. The place's
@@ -6653,16 +6665,8 @@ private struct Compiler {
         if (auto dot = expression.isDotVarExp)
             if (auto field = dot.var.isVarDeclaration)
                 if (field.type.toBasetype.ty == TY.Tstruct) {
-                    if (auto outerBase = structBaseOffsetOrMaterialise(dot.e1)) {
-                        auto result = new StructField;
-                        *result = StructField(
-                            offset: cast(ushort) (outerBase.offset + field.offset),
-                            type: expression.type,
-                            writeBack: outerBase.writeBack,
-                            target: outerBase.target,
-                        );
-                        return result;
-                    }
+                    if (auto outerBase = structBaseOffsetOrMaterialise(dot.e1))
+                        return structFieldAt(outerBase, field);
                 }
 
         if (expression.type !is null &&

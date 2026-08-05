@@ -641,8 +641,12 @@ place second.
    frame, data-segment, and pointer write-back payloads as mutually exclusive
    variants, including the place returned by
    `structBaseOffsetOrMaterialise`; field resolution carries that target
-   forward rather than reconstructing it from parallel state. A new
-   language-surface shape extends the resolver, never adds a sibling emitter.
+   forward rather than reconstructing it from parallel state. Nested field
+   composition goes through `structFieldAt`, preserving that target. Next,
+   make `referenceOffsetOrNull` consume a resolved place rather than
+   discarding its write-back rule, beginning with the currently declined
+   module-struct-field `ref` shape. A new language-surface shape extends the
+   resolver, never adds a sibling emitter.
 
 Reviewed and declined (2026-08): a bytecode-core disassembler with
 instruction-level emission pins — not worth tackling; do not re-propose.
