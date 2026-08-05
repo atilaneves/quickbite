@@ -4176,7 +4176,11 @@ private struct Walker {
             // later `this`-rebind (`runMemberFunction`, guarded by
             // `isWritableLocation`) would otherwise re-derive that same
             // address via `addressOfExpression`, re-running a
-            // side-effecting operand like `p()` a second time.
+            // side-effecting operand like `p()` a second time. A struct
+            // element read through a side-effecting `IndexExp` receiver
+            // (`a[i++].method()`) has the identical hazard: compose its
+            // address once here too, and read the receiver from that
+            // address rather than through a second independent evaluation.
             Value receiverPointerAddress;
             bool hasReceiverPointerAddress;
             Value receiver;
@@ -4186,6 +4190,19 @@ private struct Walker {
                 receiver = dereferencePointerValue(
                     pointerReceiver,
                     receiverPointerAddress,
+                );
+            } else if (
+                dot.e1.isIndexExp !is null &&
+                dot.e1.type.toBasetype.isTypeStruct !is null
+            ) {
+                import dmd.tokens: EXP;
+                import quickbite.backends.interpreter.place: Place;
+                import quickbite.backends.interpreter.place_value: readValue;
+
+                receiverPointerAddress = addressOfExpression(dot.e1, EXP.address);
+                hasReceiverPointerAddress = true;
+                receiver = readValue(
+                    Place(receiverPointerAddress.pointerAddress, dot.e1.type),
                 );
             } else
                 receiver = runExpression(dot.e1);
@@ -5553,12 +5570,13 @@ private struct Walker {
         in Value[] arguments,
         imported!"dmd.expression".Expression[] argumentExpressions,
         in EvaluatedReferenceArgument[] evaluatedArguments = null,
-        // Set by a caller that already evaluated a `PtrExp` receiver's
-        // pointer operand itself (to compute `receiver` above) and kept the
-        // resulting address around. The `this`-rebind below needs that same
-        // address; reusing it here -- instead of re-deriving it from
-        // `receiverExpression` -- keeps a side-effecting pointer operand
-        // (e.g. `p()` in `p().get()`) evaluated exactly once.
+        // Set by a caller that already evaluated a `PtrExp` or `IndexExp`
+        // receiver's side-effecting operand itself (to compute `receiver`
+        // above) and kept the resulting address around. The `this`-rebind
+        // below needs that same address; reusing it here -- instead of
+        // re-deriving it from `receiverExpression` -- keeps a side-effecting
+        // operand (e.g. `p()` in `p().get()`, or `i++` in `a[i++].method()`)
+        // evaluated exactly once.
         const(Value)* precomputedReceiverPointerAddress = null,
     ) {
         const memberReceiver = nativeMemberReceiver(function_, receiver);
@@ -5655,7 +5673,10 @@ private struct Walker {
                     currentFunction.vthis.type,
                 ).field(receiverExpression.isDotVarExp.var.isVarDeclaration).address);
             } else if (
-                receiverExpression.isPtrExp !is null &&
+                (
+                    receiverExpression.isPtrExp !is null ||
+                    receiverExpression.isIndexExp !is null
+                ) &&
                 precomputedReceiverPointerAddress !is null
             ) {
                 address = *precomputedReceiverPointerAddress;

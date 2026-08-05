@@ -11145,3 +11145,46 @@ static foreach (backend; Matrix!(
         });
     }
 }
+
+// A struct method call whose receiver is a side-effecting index expression
+// (`a[i++].method()`, DMD shape `DotVarExp(IndexExp(VarExp, PostExp), method)`)
+// must evaluate `i++` exactly once. `runMemberFunction`'s `isWritableLocation`
+// `IndexExp` arm rebinds `this` by calling `addressOfExpression` on the
+// receiver, which used to re-run `index.e2` (`arrayPointer`'s `IndexExp`
+// branch) independently of the call site's own receiver evaluation -- the
+// same double-evaluation hazard
+// `methodCallThroughReturnedPointerEvaluatesReceiverOnce` above fixed for a
+// `PtrExp` receiver (`ai/plans/value.md` item 4). Fixed by composing the
+// element's address once at the call site and reusing it for the rebind.
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.diverges,
+        "Ctfe runs the unittest body through DMD's own CTFE interpreter, " ~
+        "which cannot read the mutable module-scope variable `i` at " ~
+        "compile time"),
+    Omit!(Bytecode, Because.unconfirmed,
+        "bytecode core does not yet support `++` on a module-scope variable"),
+    Omit!(LLVMJit, Because.unconfirmed,
+        "JIT child segfaults (signal 11) on this shape; root cause not " ~
+        "investigated, independent of the Interpreter-only fix this " ~
+        "fixture targets"),
+)) {
+    @("struct.methodCallThroughIndexedReceiverEvaluatesIndexOnce." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct S {
+                int x;
+                void inc() { x++; }
+            }
+            S[] arr = [S(0), S(0)];
+            int i;
+            unittest {
+                arr[i++].inc();
+                assert(i == 1);
+                assert(arr[0].x == 1);
+                assert(arr[1].x == 0);
+            }
+        });
+    }
+}
