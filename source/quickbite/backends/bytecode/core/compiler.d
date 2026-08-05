@@ -595,10 +595,10 @@ private struct Compiler {
         _program.functions[index].frameSize = (_peakFrameOffset + 15) & ~15u;
     }
 
-    // A receiver-free archive function reached through `&function_` still
-    // needs a VM function-table entry for `callIndirect`. Compile that entry
-    // as a native forwarding wrapper rather than interpreting the rewritten
-    // import source, whose body is deliberately stale in archive fixtures.
+    // An archive function reached through `&function_` still needs a VM
+    // function-table entry for `callIndirect`. Compile that entry as a native
+    // forwarding wrapper rather than interpreting the rewritten import source,
+    // whose body is deliberately stale in archive fixtures.
     private void compileArchiveFunctionPointerTarget(
         in size_t index,
         FuncDeclaration function_,
@@ -606,7 +606,12 @@ private struct Compiler {
     ) {
         import std.conv: text;
 
-        if (layout.hasThis || layout.hasClassThis ||
+        if (layout.hasThis && !layout.hasClassThis) {
+            compileArchiveStructMethodDelegateTarget(index, function_, layout);
+            return;
+        }
+
+        if (layout.hasClassThis ||
             (function_.parameters !is null && function_.parameters.length != 0))
             throw new Exception(text(
                 "`",
@@ -631,6 +636,107 @@ private struct Compiler {
             : Instruction(Op.ret);
         _program.functions[index].code = _code;
         _program.functions[index].frameSize = (_peakFrameOffset + 15) & ~15u;
+    }
+
+    // A delegate of an archive-backed struct method stores its receiver as a
+    // caller-frame offset. The ordinary indirect-call entry protocol copies
+    // that block into this wrapper's hidden `this` slot and writes it back on
+    // return, so the native bridge can safely receive the wrapper slot's real
+    // address. The explicit scalar arguments need only be repacked from the
+    // bytecode call layout into the bridge's fixed-stride slots.
+    private void compileArchiveStructMethodDelegateTarget(
+        in size_t index,
+        FuncDeclaration function_,
+        in ParameterLayout layout,
+    ) {
+        import dmd.astenums: TY;
+        import std.conv: text;
+
+        auto receiver = thisStructDeclaration(function_);
+        if (receiver is null)
+            throw new Exception("Missing archive struct-method receiver");
+        auto receiverType = receiver.type.toBasetype.isTypeStruct;
+        if (receiverType is null)
+            throw new Exception("Missing archive struct-method receiver type");
+
+        const parameterCount = function_.parameters is null
+            ? 0 : function_.parameters.length;
+        auto argumentTypes = new Type[parameterCount];
+        auto outParameterOffsets = new ushort[parameterCount];
+        foreach (ref offset; outParameterOffsets)
+            offset = noOutParameterOffset;
+        const argumentArea = allocateNativeArgumentArea(parameterCount);
+        foreach (parameterIndex; 0 .. parameterCount) {
+            auto parameter = (*function_.parameters)[parameterIndex];
+            // DMD's basetype query is mutable, so this cannot be `const`.
+            auto type = parameter.type.toBasetype;
+            if (layout.isReference[parameterIndex] ||
+                !archiveDelegateNativeScalar(type))
+                throw new Exception(text(
+                    "`",
+                    function_.ident is null
+                        ? text(function_.toPrettyChars)
+                        : function_.ident.toString,
+                    "` is an archive-backed function reached by address: ",
+                    "only value scalar native forwarding arguments are supported",
+                ));
+            argumentTypes[parameterIndex] = type;
+            _code ~= Instruction(
+                Op.copy,
+                cast(ushort) (argumentArea +
+                    parameterIndex * nativeArgumentSlotSize),
+                layout.offsets[parameterIndex],
+                cast(ushort) size(scalarType(type)),
+            );
+        }
+
+        // DMD's basetype query is mutable, so this cannot be `const`.
+        auto returnType = function_.type.toBasetype.nextOf.toBasetype;
+        if (returnType.ty != TY.Tvoid &&
+            !archiveDelegateNativeResult(returnType))
+            throw new Exception(text(
+                "`",
+                function_.ident is null
+                    ? text(function_.toPrettyChars)
+                    : function_.ident.toString,
+                "` is an archive-backed function reached by address: ",
+                "only scalar native forwarding results are supported",
+            ));
+
+        const result = emitNativeCall(
+            function_, argumentTypes, argumentArea, outParameterOffsets,
+            noOutParameterOffset, null, layout.thisOffset, receiverType,
+        );
+        _code ~= returnType.ty == TY.Tvoid
+            ? Instruction(Op.ret)
+            : Instruction(Op.ret, result.offset);
+        _program.functions[index].code = _code;
+        _program.functions[index].frameSize = (_peakFrameOffset + 15) & ~15u;
+    }
+
+    private bool archiveDelegateNativeScalar(Type type) {
+        import dmd.astenums: TY;
+
+        switch (type.toBasetype.ty) with (TY) {
+            case Tbool:
+            case Tint32:
+            case Tuns32:
+            case Tint64:
+            case Tuns64:
+            case Tfloat64:
+            case Tpointer:
+                return true;
+            default:
+                return false;
+        }
+    }
+
+    private bool archiveDelegateNativeResult(Type type) {
+        import dmd.astenums: TY;
+
+        // `BytecodeNativeMarshaller.readResult` has no uint copy-out arm.
+        return type.toBasetype.ty != TY.Tuns32 &&
+            archiveDelegateNativeScalar(type);
     }
 
     private ushort registerFunction(FuncDeclaration function_) {

@@ -305,10 +305,6 @@ static foreach (backend; Matrix!(
         "archive cannot be `dlopen`'d at all, so this is a new " ~
         "symbol-resolution source (e.g. a --whole-archive .so wrapper, " ~
         "or an ORC-style generator like `LLVMJit`'s), not a language-surface fix"),
-    Omit!(Bytecode, Because.refusal,
-        "`add` is an archive-backed function reached by address: routing " ~
-        "it through the native bridge or its stale rewritten source is " ~
-        "unsupported"),
 )) {
     @("runTests.archiveBackedDelegate." ~ backend.stringof)
     @Tags(backend.stringof)
@@ -365,11 +361,10 @@ static foreach (backend; Matrix!(
     }
 }
 
-// `Bytecode`-specific safety net: taking a delegate of an archive-backed
-// struct method reaches `registerFunction`/`compileFunctionBody` directly,
-// bypassing `compileCall`'s own guard entirely (that guard only runs for a
-// direct call expression). Without a guard at that chokepoint too, this
-// silently compiled and ran the archive module's stale rewritten source.
+// `Bytecode`-specific archive bridge check. Taking a delegate of an
+// archive-backed struct method reaches `registerFunction`/`compileFunctionBody`
+// directly rather than `compileCall`; the rewritten source returns zero, so a
+// passing run proves the indirect call reached the archive body.
 @("runTests.archiveBackedDelegate.Bytecode")
 @Tags(Bytecode.stringof)
 unittest {
@@ -420,10 +415,7 @@ unittest {
         const results = runner.runTests(moduleResult.module_);
 
         results.length.should == 1;
-        results[0].passed.should == false;
-        results[0].message.canFind(
-            "is an archive-backed function reached by address",
-        ).should == true;
+        results[0].passed.should == true;
     }
 }
 

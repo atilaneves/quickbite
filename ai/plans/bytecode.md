@@ -477,14 +477,19 @@ receiver-free zero-argument target; the function-table word remains an index,
 so the wrapper is needed before `callIndirect` can reach the native bridge.
 An archive-backed struct method accepts a direct local's native-layout frame
 block as its ABI `this` pointer; a materialised, pointer-based, or delegate
-receiver still needs a frame-independent representation and refuses. An
-archive-backed class method also refuses: a VM class block begins with a
-Quickbite class index, while native virtual dispatch reads that word as a
-vtable pointer. Passing the VM reference to the native bridge can therefore
-segfault before the method body runs. Supporting it needs a real ABI class
-object (including vtable) and synchronised field storage. Next candidate: an
-archive-backed method delegate needs a native function-pointer and receiver
-representation, rather than the bytecode function-table index.
+receiver still needs a frame-independent representation and refuses. A
+delegate of that direct-local struct method uses a native forwarding wrapper
+too: it reuses the normal indirect-call receiver copy/writeback protocol, and
+repacks value scalar arguments for the bridge. Its arguments and result stay
+limited to the native scalar shapes the bridge represents; `ref`/aggregate
+shapes remain unsupported. An archive-backed class method also refuses: a VM
+class block begins with a Quickbite class index, while native virtual dispatch
+reads that word as a vtable pointer. Passing the VM reference to the native
+bridge can therefore segfault before the method body runs. Supporting it needs
+a real ABI class object (including vtable) and synchronised field storage.
+Next candidate: the existing scalar `ref` parameter address-identity row,
+which needs a shared caller-storage ref ABI rather than another archive
+bridge exception.
 Closure interactions with exceptions (a captured local mutated across
 try/catch/finally) and class polymorphism/vtable dispatch (including
 `super.f()`) match `SystemLinker` under `bin/qb` probing -- not a lead.
