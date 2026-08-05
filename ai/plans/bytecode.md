@@ -646,7 +646,10 @@ place second.
    second time. Direct module fields and nested module-field chains both
    compose from the same materialised base place. Consumers whose evaluation
    ordering depends on materialisation classify the complete chain by that
-   resolved data-segment target. A new language-surface shape extends the
+   resolved data-segment target. Runtime address materialisation for frame and
+   module-data locations goes through `addressOperand`, leaving the resolver
+   to choose a storage kind and pointee type rather than reproduce
+   pointer-slot construction. A new language-surface shape extends the
    resolver, never adds a sibling emitter.
 
 Reviewed and declined (2026-08): a bytecode-core disassembler with

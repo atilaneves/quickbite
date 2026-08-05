@@ -2401,13 +2401,9 @@ private struct Compiler {
         if (auto variable = expression.isVarExp) {
             if (auto declaration = variable.var.isVarDeclaration)
                 if (auto base = declaration in _withDerefBases) {
-                    const pointer =
-                        allocateBytes(cast(uint) size_t.sizeof, size_t.sizeof);
-                    _code ~= Instruction(Op.frameAddress, pointer, *base);
-                    return Operand(
-                        pointer,
-                        ScalarType.ulong_,
-                        true,
+                    return *addressOperand(
+                        Op.frameAddress,
+                        *base,
                         ScalarType.void_,
                     );
                 }
@@ -2459,11 +2455,9 @@ private struct Compiler {
                 return Operand(descriptor.offset, ScalarType.void_);
             if (auto declaration = variable.var.isVarDeclaration)
                 if (auto existing = declaration in _withDerefBases) {
-                    const offset =
-                        allocateBytes(cast(uint) size_t.sizeof, size_t.sizeof);
-                    _code ~= Instruction(Op.frameAddress, offset, *existing);
-                    return Operand(
-                        offset, ScalarType.ulong_, true,
+                    return *addressOperand(
+                        Op.frameAddress,
+                        *existing,
                         ScalarType.void_,
                     );
                 }
@@ -6295,17 +6289,11 @@ private struct Compiler {
             return null;
 
         const receiverOffset = methodReceiverOffset(call);
-        const pointer = allocateBytes(cast(uint) size_t.sizeof, size_t.sizeof);
-        _code ~= Instruction(
+        return addressOperand(
             Op.frameAddress,
-            pointer,
             cast(ushort) (receiverOffset + field.offset),
+            pointerElementScalar(call.type),
         );
-        auto result = new Operand;
-        *result = Operand(
-            pointer, ScalarType.ulong_, true, pointerElementScalar(call.type),
-        );
-        return result;
     }
 
     // True when `statement` is exactly a single `return` statement (through
@@ -9134,15 +9122,15 @@ private struct Compiler {
         Type elementType,
         in ushort lengthSlot,
     ) {
-        const basePointer =
-            allocateBytes(cast(uint) size_t.sizeof, size_t.sizeof);
-        _code ~= Instruction(Op.frameAddress, basePointer, baseOffset);
-
-        const basePointerOperand = Operand(
-            basePointer, ScalarType.ulong_, true, ScalarType.void_,
-        );
         return advanceStaticArrayPointer(
-            basePointerOperand, indexExpression, elementType, lengthSlot,
+            *addressOperand(
+                Op.frameAddress,
+                baseOffset,
+                ScalarType.void_,
+            ),
+            indexExpression,
+            elementType,
+            lengthSlot,
         );
     }
 
@@ -9259,23 +9247,29 @@ private struct Compiler {
     // slot, as a pointer operand with no scalar element type of its own yet
     // (the caller advances it by an index, or reads/writes the whole block).
     private Operand* frameAddressOperand(in ushort offset) {
-        const pointer = allocateBytes(cast(uint) size_t.sizeof, size_t.sizeof);
-        _code ~= Instruction(Op.frameAddress, pointer, offset);
-        auto result = new Operand;
-        *result =
-            Operand(pointer, ScalarType.ulong_, true, ScalarType.void_);
-        return result;
+        return addressOperand(Op.frameAddress, offset, ScalarType.void_);
     }
 
     // The real runtime address of a module-level static array's own
     // dataseg storage, the module counterpart of `frameAddressOperand`
     // above (`Op.moduleAddress` instead of `Op.frameAddress`).
     private Operand* moduleAddressOperand(in ushort offset) {
+        return addressOperand(Op.moduleAddress, offset, ScalarType.void_);
+    }
+
+    // Materialise a real address from a frame or module-data offset. Keep
+    // address-producing places on this one path so a resolver can select the
+    // storage kind without duplicating pointer-slot construction.
+    private Operand* addressOperand(
+        in Op opcode,
+        in ushort offset,
+        in ScalarType elementType,
+    ) {
         const pointer = allocateBytes(cast(uint) size_t.sizeof, size_t.sizeof);
-        _code ~= Instruction(Op.moduleAddress, pointer, offset);
+        _code ~= Instruction(opcode, pointer, offset);
         auto result = new Operand;
         *result =
-            Operand(pointer, ScalarType.ulong_, true, ScalarType.void_);
+            Operand(pointer, ScalarType.ulong_, true, elementType);
         return result;
     }
 
@@ -9815,24 +9809,11 @@ private struct Compiler {
             auto moduleVariable = moduleScalarVariableOrNull(declaration);
             if (moduleVariable is null || symOff.offset != 0)
                 return null;
-
-            const pointer = allocateBytes(
-                cast(uint) size_t.sizeof,
-                size_t.sizeof,
-            );
-            _code ~= Instruction(
+            return addressOperand(
                 Op.moduleAddress,
-                pointer,
                 moduleVariable.offset,
-            );
-            auto result = new Operand;
-            *result = Operand(
-                pointer,
-                ScalarType.ulong_,
-                true,
                 moduleVariable.type,
             );
-            return result;
         }
 
         const base = existing !is null
@@ -9843,11 +9824,9 @@ private struct Compiler {
                     ? *staticArray
                     : struct_.offset;
         const slot = cast(ushort) (base + symOff.offset);
-        const pointer = allocateBytes(cast(uint) size_t.sizeof, size_t.sizeof);
-        _code ~= Instruction(Op.frameAddress, pointer, slot);
-        auto result = new Operand;
-        *result = Operand(
-            pointer, ScalarType.ulong_, true,
+        return addressOperand(
+            Op.frameAddress,
+            slot,
             dynamicArray !is null
                 ? ScalarType.void_
                 : struct_ is null
@@ -9862,7 +9841,6 @@ private struct Compiler {
                     : scalarType(declaration.type))
                 : ScalarType.void_,
         );
-        return result;
     }
 
     // `&f`: a function-pointer value, the callee's VM function index loaded as
@@ -9934,23 +9912,11 @@ private struct Compiler {
                     pointedType = declaration.type;
                 } else if (auto moduleVariable =
                         moduleScalarVariableOrNull(declaration)) {
-                    const pointer = allocateBytes(
-                        cast(uint) size_t.sizeof,
-                        size_t.sizeof,
-                    );
-                    _code ~= Instruction(
+                    return addressOperand(
                         Op.moduleAddress,
-                        pointer,
                         moduleVariable.offset,
-                    );
-                    auto result = new Operand;
-                    *result = Operand(
-                        pointer,
-                        ScalarType.ulong_,
-                        true,
                         moduleVariable.type,
                     );
-                    return result;
                 } else {
                     auto staticArray = declaration in _staticArrayLocals;
                     if (staticArray is null) {
@@ -12720,13 +12686,7 @@ private struct Compiler {
 
         compileCall(call);
         const slot = referenceOffset((*call.arguments)[parameterIndex]);
-        const pointer = allocateBytes(cast(uint) size_t.sizeof, size_t.sizeof);
-        _code ~= Instruction(Op.frameAddress, pointer, slot);
-        auto result = new Operand;
-        *result = Operand(
-            pointer, ScalarType.ulong_, true, scalarType(parameter.type),
-        );
-        return result;
+        return addressOperand(Op.frameAddress, slot, scalarType(parameter.type));
     }
 
     private Operand* tryStaticDelegateAssocArrayAssign(AssignExp assign) {
