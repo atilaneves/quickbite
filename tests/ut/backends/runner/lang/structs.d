@@ -141,12 +141,7 @@ static foreach (backend; Matrix!()) {
     }
 }
 
-static foreach (backend; Matrix!(
-    Omit!(Interpreter, Because.unconfirmed,
-        "AggregateValue.withAppendedArrayElement's native-aggregate append " ~
-            "copies a delegate field's zeroed bytes without relocating its " ~
-            "nativeDelegateSlots registration to the new element's address"),
-)) {
+static foreach (backend; Matrix!()) {
     @("struct.literalDelegateFieldAppendedToArrayIsCallable." ~
         backend.stringof)
     @Tags(backend.stringof)

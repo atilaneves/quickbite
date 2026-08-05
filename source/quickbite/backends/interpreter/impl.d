@@ -6716,6 +6716,45 @@ private struct Walker {
                             if (auto function_ = fieldPlace.address in nativeFunctionPointerSlots)
                                 return *function_;
                         }
+
+            // `handlers[i].action`: a Tdelegate-typed field of a struct
+            // ARRAY element. `AggregateValue.elementAt`'s `readValue` copies
+            // the element's bytes into a fresh boxed snapshot with its own
+            // (unregistered) address -- the same gap `nativeDelegateSlots`'s
+            // own field comment documents -- so any live entry has to be
+            // looked up against the array's own backing-storage address
+            // (`runArrayAppendAssignExpression`'s own relocation keeps that
+            // registration current across an append), not the copy's.
+            // `runIndexExpression`'s own `out arrayIndex` overload resolves
+            // the index (bounds check, `$` binding, everything) exactly
+            // once; `variable in locals` is a plain map lookup, not a second
+            // evaluation.
+            import dmd.astenums: TY;
+
+            if (field.type.toBasetype.ty == TY.Tdelegate)
+                if (auto index = dot.e1.isIndexExp)
+                    if (auto var = index.e1.isVarExp)
+                        if (auto variable = var.var.isVarDeclaration) {
+                            import quickbite.backends.interpreter.aggregate_value: AggregateValue;
+                            import quickbite.backends.interpreter.place: Place;
+
+                            size_t elementIndex;
+                            const elementValue = runIndexExpression(index, elementIndex);
+                            if (auto current = variable in locals)
+                                if ((*current).isNativeAggregate) {
+                                    auto elementType =
+                                        AggregateValue.native(*current).type.toBasetype.nextOf;
+                                    if (elementType !is null) {
+                                        auto fieldPlace = Place(
+                                            AggregateValue.elementAddress(*current, elementIndex),
+                                            elementType,
+                                        ).field(field);
+                                        if (auto delegate_ = fieldPlace.address in nativeDelegateSlots)
+                                            return *delegate_;
+                                    }
+                                }
+                            return AggregateValue.fieldAt(elementValue, structFieldIndex(dot));
+                        }
         }
 
         if (declarationName(dot.var) == "classinfo")
@@ -8809,8 +8848,26 @@ private struct Walker {
             // root; otherwise every iteration rebinds from the initial slice
             // and only the last appended character survives.
             auto appended = runExpression(assign.e1);
-            foreach (element; nativeAppendElements(variable.type, value))
+            auto elementType = variable.type.toBasetype.isTypeDArray !is null
+                ? variable.type.toBasetype.isTypeDArray.next
+                : null;
+            foreach (element; nativeAppendElements(variable.type, value)) {
+                const index = AggregateValue.elementCount(appended);
                 appended = AggregateValue.withAppendedArrayElement(appended, element);
+                // `withAppendedArrayElement`'s native-aggregate arm only
+                // copies `element`'s bytes into the array's own backing
+                // storage; any Tdelegate-typed (sub)field's live
+                // `nativeDelegateSlots` registration is keyed by `element`'s
+                // own (temporary) address, so it needs the same relocation
+                // `setLocal` already does for a whole-value local binding,
+                // here to the newly appended element's real address.
+                if (elementType !is null && element.isNativeAggregate)
+                    relocateDelegateSlots(
+                        elementType,
+                        AggregateValue.native(element).address,
+                        AggregateValue.elementAddress(appended, index),
+                    );
+            }
             // A native `ref T[]` parameter already names the caller's slice
             // header. Appending rebinds that header, so it must use the same
             // binding write route as ordinary assignment instead of replacing
