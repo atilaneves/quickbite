@@ -450,6 +450,21 @@ package(quickbite.backends.bytecode) RunResult run(
                 ++ip;
                 break;
 
+            case atomicLoad4:
+                const atomicLoadAddress =
+                    scalarValue!size_t(stack, base + instruction.b) +
+                    scalarValue!size_t(stack, base + instruction.c) *
+                        uint.sizeof;
+                const ubyte[uint.sizeof] atomicLoadValue = scalarBytes(
+                    atomicLoadDword(cast(const(ubyte)*) atomicLoadAddress),
+                );
+                stack[
+                    base + instruction.a
+                    .. base + instruction.a + uint.sizeof
+                ] = atomicLoadValue;
+                ++ip;
+                break;
+
             case atomicLoad8:
                 const atomicLoadAddress =
                     scalarValue!size_t(stack, base + instruction.b) +
@@ -2994,7 +3009,13 @@ private void readHeapElement(ubyte[] destination, in ubyte* element)
 
 // @trusted: `atomicLoad` reads exactly one aligned machine word from the raw
 // address produced by VM pointer operations; the recognised inline-asm source
-// has already restricted this use to an 8-byte atomic load.
+// has already restricted this use to a 4- or 8-byte atomic load.
+private uint atomicLoadDword(in const(ubyte)* address) @trusted {
+    import core.atomic: atomicLoad;
+
+    return atomicLoad(*cast(shared(uint)*) address);
+}
+
 private ulong atomicLoadWord(in const(ubyte)* address) @trusted {
     import core.atomic: atomicLoad;
 

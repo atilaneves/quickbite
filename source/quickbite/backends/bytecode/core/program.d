@@ -441,9 +441,10 @@ package(quickbite.backends.bytecode) enum Op: ubyte {
     // width is operand d instead of being implied by the opcode. Backs `*p`
     // and `p[i]` for such a pointee.
     pointerLoadN,
-    // Atomically read the 8-byte element at `[pointer + index * 8]` into the
-    // slot at frame offset a. The atomic-load inline-asm lowering uses this
-    // only after exact whole-sequence validation.
+    // Atomically read the 4- or 8-byte element at `[pointer + index * size]`
+    // into the slot at frame offset a. The atomic-load inline-asm lowering
+    // uses these only after exact whole-sequence validation.
+    atomicLoad4,
     atomicLoad8,
     // Write the 1- or 4-byte slot at frame offset a to `[pointer + index *
     // elementSize]`, where the raw `size_t` pointer value is at frame offset b

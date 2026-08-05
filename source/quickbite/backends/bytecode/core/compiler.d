@@ -826,11 +826,11 @@ private struct Compiler {
         compileUnsignedMultiplyAsm(compound);
     }
 
-    // `core.internal.atomic.atomicLoad` for an 8-byte value on x86_64 uses a
-    // locked compare-and-exchange to read `src`, then writes RAX through
-    // `resultValuePtr`. This is accepted only as the complete token sequence;
-    // it lowers to one host atomic read rather than pretending an ordinary
-    // pointer load has the same memory-order semantics.
+    // `core.internal.atomic.atomicLoad` uses a locked compare-and-exchange to
+    // read `src`, then writes EAX/RAX through `resultValuePtr`. This accepts
+    // only the complete 4- and 8-byte sequences DRuntime emits, and lowers
+    // each to one host atomic read rather than pretending an ordinary pointer
+    // load has the same memory-order semantics.
     private bool tryCompileAtomicLoadAsm(
         imported!"dmd.statement".CompoundAsmStatement compound,
     ) {
@@ -842,12 +842,12 @@ private struct Compiler {
             !isAsmIdentifier(instructions[0], 1, "RBX") ||
             instructions[0].length != 2 ||
             !isAsmIdentifier(instructions[1], 0, "mov") ||
-            !isAsmIdentifier(instructions[1], 1, "RDX") ||
+            !isAsmIdentifier(instructions[1], 1, "RDX", "EDX") ||
             !isAsmPunctuation(instructions[1], 2, ",") ||
             !isAsmInteger(instructions[1], 3, "0") ||
             instructions[1].length != 4 ||
             !isAsmIdentifier(instructions[2], 0, "mov") ||
-            !isAsmIdentifier(instructions[2], 1, "RAX") ||
+            !isAsmIdentifier(instructions[2], 1, "RAX", "EAX") ||
             !isAsmPunctuation(instructions[2], 2, ",") ||
             !isAsmInteger(instructions[2], 3, "0") ||
             instructions[2].length != 4 ||
@@ -863,7 +863,7 @@ private struct Compiler {
             !isAsmIdentifier(instructions[5], 2, "RCX") ||
             !isAsmPunctuation(instructions[5], 3, "]") ||
             !isAsmPunctuation(instructions[5], 4, ",") ||
-            !isAsmIdentifier(instructions[5], 5, "RDX") ||
+            !isAsmIdentifier(instructions[5], 5, "RDX", "EDX") ||
             instructions[5].length != 6 ||
             !isAsmIdentifier(instructions[6], 0, "lea") ||
             !isAsmIdentifier(instructions[6], 1, "RBX") ||
@@ -882,7 +882,7 @@ private struct Compiler {
             !isAsmIdentifier(instructions[8], 2, "RBX") ||
             !isAsmPunctuation(instructions[8], 3, "]") ||
             !isAsmPunctuation(instructions[8], 4, ",") ||
-            !isAsmIdentifier(instructions[8], 5, "RAX") ||
+            !isAsmIdentifier(instructions[8], 5, "RAX", "EAX") ||
             instructions[8].length != 6 ||
             !isAsmIdentifier(instructions[9], 0, "pop") ||
             !isAsmIdentifier(instructions[9], 1, "RBX") ||
@@ -891,19 +891,31 @@ private struct Compiler {
 
         const source = asmPointerLocal("src");
         const result = asmPointerLocal("resultValuePtr");
-        if (source.pointerElement != ScalarType.ulong_ ||
-            result.pointerElement != ScalarType.ulong_)
+        const isDword = instructions[1][1].spelling == "EDX";
+        if ((isDword &&
+                (!isAsmIdentifier(instructions[2], 1, "EAX") ||
+                    !isAsmIdentifier(instructions[5], 5, "EDX") ||
+                    !isAsmIdentifier(instructions[8], 5, "EAX"))) ||
+            (!isDword &&
+                (!isAsmIdentifier(instructions[2], 1, "RAX") ||
+                    !isAsmIdentifier(instructions[5], 5, "RDX") ||
+                    !isAsmIdentifier(instructions[8], 5, "RAX"))))
+            return false;
+
+        const width = isDword ? uint.sizeof : ulong.sizeof;
+        if (source.pointerElement != (isDword ? ScalarType.uint_ : ScalarType.ulong_) ||
+            result.pointerElement != (isDword ? ScalarType.uint_ : ScalarType.ulong_))
             throw new Exception("Unsupported inline asm atomic-load operand.");
 
-        const loaded = allocate(ScalarType.ulong_);
+        const loaded = allocate(isDword ? ScalarType.uint_ : ScalarType.ulong_);
         const zero = compileSizeConstant(0);
         _code ~= Instruction(
-            Op.atomicLoad8,
+            isDword ? Op.atomicLoad4 : Op.atomicLoad8,
             loaded,
             source.offset,
             zero,
         );
-        emitPointerStore(loaded, result.offset, zero, ulong.sizeof);
+        emitPointerStore(loaded, result.offset, zero, width);
         return true;
     }
 

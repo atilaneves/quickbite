@@ -396,15 +396,6 @@ row, not a guarantee. Reconfirm against the source before relying on it.
 
 Known blocked rows, stated as the blocker rather than the symptom:
 
-- `concurrency.thisTid.Bytecode` (`sys/concurrency.d`). `Scheduler.thisInfo`'s
-  `atomicLoad(scheduler)` (an 8-byte reference) is usually the supported
-  `RDX`/`RAX` atomic-load inline-asm shape (`tryCompileAtomicLoadAsm`), but
-  order-dependently (seed 543485028) the same call site compiles to a second
-  shape using 32-bit `EDX`/`EAX` value registers. Why the same load takes
-  either shape is not characterized. Do not add a matching `EDX`/`EAX` opcode
-  without first confirming, against a disassembled `SystemLinker` build of this
-  exact fixture, that a 4-byte-wide atomic read is the correct oracle behaviour
-  here rather than a truncation of the real 8-byte reference.
 - `file.createWriteRead.Bytecode` (`sys/file.d`). `std.stdio.File`'s
   refcounting is `shared`, and DMD's `core.atomic` lowers `atomicOp!"+="` on
   this platform to inline x86 asm (`lock xchg` then a plain store) rather than
