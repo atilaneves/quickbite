@@ -410,37 +410,6 @@ row, not a guarantee. Reconfirm against the source before relying on it.
   `TypeInfo!int` without display-value substitution.
 - Delegates and closures: see the Closures section.
 
-Ref calling convention -- the largest known correctness hazard in the current
-core. A scalar `ref` argument is passed as
-a value mirrored into a fresh frame slot and written back after the callee
-returns, not as a pointer the callee dereferences. Every ref-argument kind
-that binds non-frame-resident storage (`emitModuleScalarRefArgument`,
-`emitStructPointerRefArgument`, `emitStructPointerFieldRefArgument`,
-`emitClassFieldRefArgument`, `emitRefLocalPointerArgument`,
-`emitPointerDereferenceRefArgument`) shares one hazard: if the callee also
-reaches that same storage by another path during the call, the post-call
-writeback clobbers the direct write regardless of program order. Real ABI
-`ref` has no such race. `referenceOffset`'s ordinary `_locals` path has it
-too, so `&value` inside a callee never equals the caller's `&value`.
-Reordering cannot fix it, because the callee never reaches the real address
-through the parameter at all. In particular,
-`pointer.reinterpretWriteThroughRefParameterPointerReachesCaller` remains
-omitted: making `&refParameter` point at caller storage lets the unchanged
-writeback overwrite a through-pointer mutation. A real fix makes a scalar
-`ref` parameter a pointer the callee dereferences on every access, bound
-directly to the real address (e.g. via `Op.moduleAddress`), dropping the
-mirror/writeback pair entirely -- a change to the convention every
-ref-argument kind shares, not a narrow field-offset fix. Template
-instantiation and `shared` qualification do not change this identity contract:
-`ref shared(T)` needs the same direct address as every other `ref` parameter.
-
-The same ABI work gates native calls that take `ref` values or slice-bearing
-descriptors: `File` reaches native code with a callee-frame mirror, while the
-native callee expects a real D descriptor at the argument address. Finish the
-direct-address `ref` convention together with the native-order slice
-descriptor conversion above, then re-enable the `File` oracle row. Do not
-paper over either boundary with per-library marshalling.
-
 Live hazards and divergences to reconfirm against current source when a row
 reaches them:
 
