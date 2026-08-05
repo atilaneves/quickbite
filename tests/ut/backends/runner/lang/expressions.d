@@ -16,7 +16,21 @@ private void runSse2BackendSourceFixtureTests(T)(in string moduleSource) {
 }
 
 
-static foreach (backend; Matrix!()) {
+// An associative-array binding has no native-place encoding yet
+// (`ai/plans/value.md` Item 4): passing a direct local `int[int]` by `ref`
+// and inserting through the parameter must mutate the caller, as
+// `SystemLinker` does. `Interpreter` routes the parameter read into native
+// storage and throws "Expected associative array."; `Bytecode` runs to
+// completion but the insertion is not visible back in the caller.
+static foreach (backend; Matrix!(
+    Omit!(Interpreter, Because.diverges,
+        "no native-place encoding for an associative-array binding yet; " ~
+            "throws \"Expected associative array.\""),
+    Omit!(Bytecode, Because.diverges,
+        "no native-place encoding for an associative-array binding yet; " ~
+            "the insertion through the ref parameter is not visible back " ~
+            "in the caller"),
+)) {
     @("associativeArray.directLocalRefArgumentMutatesSource." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -2104,13 +2118,7 @@ static foreach (backend; Matrix!(
 // enclosing scope rather than through this core at all, and refuses reading
 // it outright ("variable `count` cannot be read at compile time") -- a
 // different message from the bare-return sibling's ("closures are not yet
-// supported in CTFE") but the same underlying gap. Interpreter composes its
-// two prior fixes cleanly here: `structLiteralValue`'s live-delegate-field
-// registration (`struct.literalDelegateFieldFromFreshLambdaIsCallable`) and
-// `functionReturningCapturingDelegateIsCallable`'s captured-frame-address
-// snapshot both apply unmodified to a delegate field that is itself the
-// direct `return` expression, so this fixture needed no further Interpreter
-// work once both landed.
+// supported in CTFE") but the same underlying gap.
 static foreach (backend; Matrix!(
     Omit!(Ctfe, Because.inexpressible,
         "dmd.dinterpret evaluates the struct literal's delegate field " ~

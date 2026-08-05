@@ -369,8 +369,10 @@ private string charArrayString(
 private bool isDmdAssertFailCall(
     imported!"dmd.expression".Expression expression,
 ) {
+    import dmd.id: Id;
+
     auto call = expression.isCallExp;
-    return call !is null && call.f !is null && call.f.ident.toString == "_d_assert_fail";
+    return call !is null && call.f !is null && call.f.ident == Id._d_assert_fail;
 }
 
 public string dmdAssertFailBoolMessage(
