@@ -5799,7 +5799,8 @@ private struct Walker {
             expression.isVarExp !is null ||
             expression.isDotVarExp !is null ||
             expression.isThisExp !is null ||
-            expression.isIndexExp !is null;
+            expression.isIndexExp !is null ||
+            expression.isPtrExp !is null;
     }
 
     private void bindFunctionParameters(

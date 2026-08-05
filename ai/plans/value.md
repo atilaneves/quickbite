@@ -664,16 +664,6 @@ native slice header, including its retained backing address, rather than a
 transient aggregate handle. This is slice execution, not a formatter-specific
 storage shim; the interceptor remains temporary per item 1.
 
-A mutating struct member call (constructor or ordinary method) through a
-pointer receiver obtained via a reinterpret cast (`cast(S*)
-&differentlyTypedLvalue`) loses its write; a direct field write through the
-same cast pointer works, so the gap is receiver-place resolution for a member
-call specifically, not the cast itself. Confirmed via
-`expressions.d`'s `cast.arrayFieldPtrSliceElementAddressWritesValue`
-(`Omit!(Interpreter, Because.unconfirmed)`, exposed once runtime `__ctfe`
-correctly reads `false` and routes `core.lifetime.emplace` into its
-non-CTFE `p.__ctor(args)` path). Root cause not yet triaged.
-
 An associative-array binding has no native-place encoding yet. Preserve the
 boxed reference path until it does: passing a direct local `int[int]` by `ref`
 and inserting through the parameter must mutate the caller, as `SystemLinker`

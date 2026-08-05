@@ -3579,19 +3579,14 @@ static foreach (backend; Matrix!()) {
 // picks its non-CTFE branch now that runtime `__ctfe` correctly reads false
 // (see the `identifier.ctfeIsFalseAtRuntime` fixture above), which calls
 // `p.__ctor(args)` through `S* p = cast(S*) &chunk` -- a struct pointer
-// reinterpret-cast of a differently-typed address. That exposes a narrower,
-// pre-existing gap, confirmed independent of both `__ctfe` and constructors:
-// any mutating struct member call (not just `__ctor`) through a pointer
-// receiver obtained via a reinterpret cast loses its write, while a direct
-// field write through the very same cast pointer works. Root cause is
-// unconfirmed; triage per `interpreter.md` §8.
-static foreach (backend; Matrix!(
-    Omit!(Interpreter, Because.unconfirmed,
-        "mutating struct member call (ctor or ordinary method) through a " ~
-        "pointer receiver obtained via a reinterpret cast (`cast(S*) " ~
-        "&differentlyTypedLvalue`) loses its write; a direct field write " ~
-        "through the same cast pointer works"),
-)) {
+// reinterpret-cast of a differently-typed address. Root cause: DMD lowers
+// this receiver to `PtrExp(p)` (an implicit deref), and `runMemberFunction`'s
+// `isWritableLocation` gate -- which decides whether `this` rebinds to the
+// receiver's own address rather than a disconnected copy -- omitted
+// `PtrExp`, even though `addressOfExpression` already recovers a `PtrExp`
+// receiver's address correctly (it evaluates the pointer operand). Fixed by
+// adding `expression.isPtrExp !is null` to `isWritableLocation`.
+static foreach (backend; Matrix!()) {
     @("cast.arrayFieldPtrSliceElementAddressWritesValue." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
