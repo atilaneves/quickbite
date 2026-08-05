@@ -8870,8 +8870,13 @@ private struct Walker {
         if (current is null)
             throw new Exception("Unsupported interpreter array append target.");
 
-        const value = runExpression(assign.e2);
+        auto literal = assign.e2.isFuncExp;
+        const value = literal is null
+            ? runExpression(assign.e2)
+            : runFunctionLiteralDeclaration(literal);
         if ((*current).isNativeAggregate) {
+            import dmd.astenums: TY;
+
             // A nested foreach body receives a copied `locals` root for a
             // captured slice.  The frame/reference slot is the authority, so
             // begin each append from its current header instead of that stale
@@ -8881,17 +8886,34 @@ private struct Walker {
             auto elementType = variable.type.toBasetype.isTypeDArray !is null
                 ? variable.type.toBasetype.isTypeDArray.next
                 : null;
-            foreach (element; nativeAppendElements(variable.type, value)) {
+            foreach (rawElement; nativeAppendElements(variable.type, value)) {
                 const index = AggregateValue.elementCount(appended);
+                // The appended element itself may be a live delegate value
+                // (a fresh closure or a copied delegate local), which has no
+                // native ABI function address -- `place_value.writeValue`'s
+                // Tdelegate arm only ever accepts `Value.null_`. Substitute
+                // null bytes for the write and register the live value
+                // out-of-band in `nativeDelegateSlots`, keyed by the newly
+                // appended element's own address, mirroring the sub-field
+                // relocation below and `structLiteralValue`'s identical
+                // substitute-then-register handling.
+                const isLiveDelegate = elementType !is null
+                    && elementType.toBasetype.ty == TY.Tdelegate
+                    && rawElement != Value.null_;
+                auto element = isLiveDelegate ? Value.null_ : rawElement;
                 appended = AggregateValue.withAppendedArrayElement(appended, element);
-                // `withAppendedArrayElement`'s native-aggregate arm only
-                // copies `element`'s bytes into the array's own backing
-                // storage; any Tdelegate-typed (sub)field's live
-                // `nativeDelegateSlots` registration is keyed by `element`'s
-                // own (temporary) address, so it needs the same relocation
-                // `setLocal` already does for a whole-value local binding,
-                // here to the newly appended element's real address.
-                if (elementType !is null && element.isNativeAggregate)
+                if (isLiveDelegate) {
+                    nativeDelegateSlots[
+                        AggregateValue.elementAddress(appended, index)
+                    ] = rawElement;
+                } else if (elementType !is null && element.isNativeAggregate)
+                    // `withAppendedArrayElement`'s native-aggregate arm only
+                    // copies `element`'s bytes into the array's own backing
+                    // storage; any Tdelegate-typed (sub)field's live
+                    // `nativeDelegateSlots` registration is keyed by `element`'s
+                    // own (temporary) address, so it needs the same relocation
+                    // `setLocal` already does for a whole-value local binding,
+                    // here to the newly appended element's real address.
                     relocateDelegateSlots(
                         elementType,
                         AggregateValue.native(element).address,
@@ -10200,17 +10222,34 @@ private struct Walker {
                     hasMirrorSlot(variable) &&
                     mirrorEstablished.get(variable, false)
                 ) {
+                    import dmd.astenums: TY;
                     import quickbite.backends.interpreter.place_value: readValue;
+
+                    // A live delegate element's bytes are the all-zero ABI
+                    // value (`place_value.writeValue`'s Tdelegate arm only
+                    // ever accepts `Value.null_`), so a plain `readValue`
+                    // here cannot tell a genuinely null element from one
+                    // whose live callable Value was substituted out-of-band
+                    // -- check `nativeDelegateSlots`, keyed by the element's
+                    // own address, first, exactly as `nativeArrayElementAt`
+                    // already does for the native-aggregate branch below.
+                    auto elementType = index.e1.type.toBasetype.nextOf;
+                    if (elementType !is null && elementType.toBasetype.ty == TY.Tdelegate)
+                        if (
+                            auto delegate_ = bindingPlace(variable).index(arrayIndex).address
+                                in nativeDelegateSlots
+                        )
+                            return *delegate_;
 
                     return readValue(bindingPlace(variable).index(arrayIndex));
                 }
                 if (auto current = variable in locals)
                     if ((*current).isNativeAggregate)
-                        return AggregateValue.elementAt(source, arrayIndex);
+                        return nativeArrayElementAt(source, arrayIndex);
             }
 
         return AggregateValue.isArray(source)
-            ? AggregateValue.elementAt(source, arrayIndex)
+            ? nativeArrayElementAt(source, arrayIndex)
             : source[arrayIndex];
     }
 

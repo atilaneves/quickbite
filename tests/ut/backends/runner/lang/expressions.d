@@ -2558,9 +2558,7 @@ static foreach (backend; Matrix!()) {
 // a dynamic-array slice descriptor; appending one to a dynamic array and
 // reading it back exercises that shared 16-byte-width machinery rather than
 // any delegate-specific storage.
-static foreach (backend; Matrix!(
-    Omit!(Interpreter, Because.unconfirmed),
-)) {
+static foreach (backend; Matrix!()) {
     @("delegate.dynamicArrayElementIsAppendableAndCallable." ~
         backend.stringof)
     @Tags(backend.stringof)
