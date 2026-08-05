@@ -2408,9 +2408,7 @@ static foreach (backend; Matrix!()) {
 // resolves a bare pointer-to-struct receiver the same way, materialising a
 // fresh inline copy and writing the (possibly mutated) copy back through
 // the real pointer address afterward.
-static foreach (backend; Matrix!(
-    Omit!(Interpreter, Because.unconfirmed),
-)) {
+static foreach (backend; Matrix!()) {
     @("struct.opAssignCalledThroughBarePointerToLocal." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -2437,9 +2435,7 @@ static foreach (backend; Matrix!(
 // `&arr[1]` needs the real byte stride to address the right element, and
 // the `opOpAssign` call through that pointer needs the write-back-through-
 // pointer receiver branch, together.
-static foreach (backend; Matrix!(
-    Omit!(Interpreter, Because.unconfirmed),
-)) {
+static foreach (backend; Matrix!()) {
     @("struct.opOpAssignCalledThroughDynamicArrayElementPointer." ~
         backend.stringof)
     @Tags(backend.stringof)
