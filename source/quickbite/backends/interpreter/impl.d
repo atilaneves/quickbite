@@ -8966,6 +8966,7 @@ private struct Walker {
                 : null;
             foreach (rawElement; nativeAppendElements(variable.type, value)) {
                 const index = AggregateValue.elementCount(appended);
+                const previous = appended;
                 // The appended element itself may be a live delegate value
                 // (a fresh closure or a copied delegate local), which has no
                 // native ABI function address -- `place_value.writeValue`'s
@@ -8980,6 +8981,8 @@ private struct Walker {
                     && rawElement != Value.null_;
                 auto element = isLiveDelegate ? Value.null_ : rawElement;
                 appended = AggregateValue.withAppendedArrayElement(appended, element);
+                if (elementType !is null)
+                    relocatePriorAppendedElementSlots(elementType, previous, appended, index);
                 if (isLiveDelegate) {
                     nativeDelegateSlots[
                         AggregateValue.elementAddress(appended, index)
@@ -9013,6 +9016,50 @@ private struct Walker {
         uninitializedLocals.remove(variable);
 
         return locals[variable];
+    }
+
+    // `withAppendedArrayElement` reallocates a fresh backing block as soon
+    // as the array's current block has no spare capacity -- true again
+    // immediately for a freshly one-element array's second append -- and
+    // copies every existing element's bytes into the new block. That plain
+    // byte copy carries ordinary element bytes fine, but it orphans every
+    // PRIOR element's `nativeDelegateSlots` registration, which is keyed by
+    // that element's own address in the now-freed old block: the same gap
+    // the newly appended element's own registration above needs relocating
+    // for, just for every earlier element instead of only the latest one.
+    // Detect the reallocation by comparing the slice's data pointer before
+    // (`previous`) and after (`appended`) this iteration's append, and if
+    // it moved, relocate every one of `previous`'s `count` elements from
+    // its old per-element address to its corresponding new one --
+    // `relocateDelegateSlots`'s existing struct-field/static-array
+    // recursion covers a struct-with-delegate-field element the same way
+    // it covers a bare delegate element.
+    private void relocatePriorAppendedElementSlots(
+        imported!"dmd.mtype".Type elementType,
+        in Value previous,
+        in Value appended,
+        in size_t count,
+    ) {
+        import quickbite.backends.interpreter.place: Place;
+
+        if (count == 0)
+            return;
+
+        auto previousAggregate = AggregateValue.native(previous);
+        auto appendedAggregate = AggregateValue.native(appended);
+        const oldData = Place(previousAggregate.address, previousAggregate.type)
+            .sliceDataPointer;
+        const newData = Place(appendedAggregate.address, appendedAggregate.type)
+            .sliceDataPointer;
+        if (oldData is newData)
+            return;
+
+        foreach (i; 0 .. count)
+            relocateDelegateSlots(
+                elementType,
+                AggregateValue.elementAddress(previous, i),
+                AggregateValue.elementAddress(appended, i),
+            );
     }
 
     // Appending a wide character to `string` writes its UTF-8 code units,

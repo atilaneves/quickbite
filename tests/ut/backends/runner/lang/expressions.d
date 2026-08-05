@@ -2557,7 +2557,11 @@ static foreach (backend; Matrix!()) {
 // A delegate is a 16-byte `{functionIndex, context}` pair, the same width as
 // a dynamic-array slice descriptor; appending one to a dynamic array and
 // reading it back exercises that shared 16-byte-width machinery rather than
-// any delegate-specific storage.
+// any delegate-specific storage. The second append forces
+// `AggregateValue.withAppendedArrayElement` down its reallocation path (a
+// freshly one-element array has no spare capacity), which must relocate the
+// FIRST element's out-of-band `nativeDelegateSlots` registration to its new
+// address in the reallocated block, not just the newly appended element's.
 static foreach (backend; Matrix!()) {
     @("delegate.dynamicArrayElementIsAppendableAndCallable." ~
         backend.stringof)
@@ -2570,6 +2574,12 @@ static foreach (backend; Matrix!()) {
                 dgs ~= () => seed;
                 auto d = dgs[0];
                 assert(d() == 42);
+
+                int delegate()[] more;
+                more ~= () => 1;
+                more ~= () => 2;
+                assert(more[0]() == 1);
+                assert(more[1]() == 2);
             }
         });
     }

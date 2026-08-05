@@ -141,6 +141,11 @@ static foreach (backend; Matrix!()) {
     }
 }
 
+// The second append forces `AggregateValue.withAppendedArrayElement` down
+// its reallocation path (a freshly one-element array has no spare
+// capacity), which must relocate the FIRST element's struct-field
+// `nativeDelegateSlots` registration to its new address in the reallocated
+// block, not just the newly appended element's.
 static foreach (backend; Matrix!()) {
     @("struct.literalDelegateFieldAppendedToArrayIsCallable." ~
         backend.stringof)
@@ -157,6 +162,11 @@ static foreach (backend; Matrix!()) {
 
                 assert(handlers.length == 1);
                 assert(handlers[0].action() == 42);
+
+                handlers ~= Handler(() => 43);
+                assert(handlers.length == 2);
+                assert(handlers[0].action() == 42);
+                assert(handlers[1].action() == 43);
             }
         });
     }
