@@ -6464,7 +6464,38 @@ private struct Walker {
         if (AggregateValue.isStruct(left) && AggregateValue.isStruct(right))
             return equalStructValues(left, right);
 
+        if (left.isFunctionPointer || right.isFunctionPointer)
+            return equalDelegateValues(left, right);
+
         return left == right;
+    }
+
+    // A delegate compares equal to another by its runtime `{function,
+    // context}` pair (D's builtin delegate equality) -- not by the internal
+    // `functionPointerId` this walker mints fresh for every delegate
+    // EXPRESSION evaluation. `&s1.get` evaluated twice yields two different
+    // ids for the identical function+receiver, so the raw `Value == Value`
+    // fallback (still correct for two Values that are literal copies of the
+    // same id, e.g. plain assignment) answers unequal for the exact case D
+    // requires equal. `contextPointer` already carries the receiver's own
+    // binding address for a member-function delegate, not a copy
+    // (`delegateContextPointer`'s `VarExp` arm resolves it the same way for
+    // every delegate kind, member or closure), so comparing it directly is
+    // sufficient -- no separate receiver-identity tracking is needed. A
+    // `functionPointerId` with no registered runtime (a plain function
+    // pointer, never boxed into `delegates`) falls back to the raw
+    // comparison unchanged.
+    private bool equalDelegateValues(in Value left, in Value right) {
+        if (!left.isFunctionPointer || !right.isFunctionPointer)
+            return left == right;
+
+        auto leftRuntime = left.functionPointerId in delegates;
+        auto rightRuntime = right.functionPointerId in delegates;
+        if (leftRuntime is null || rightRuntime is null)
+            return left == right;
+
+        return leftRuntime.function_ is rightRuntime.function_ &&
+            leftRuntime.contextPointer == rightRuntime.contextPointer;
     }
 
     private bool equalArrayValues(in Value left, in Value right) {

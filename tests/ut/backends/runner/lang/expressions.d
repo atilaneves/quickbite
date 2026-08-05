@@ -2710,9 +2710,7 @@ static foreach (backend; Matrix!()) {
 // A method delegate's context word is the receiver's own address, so two
 // delegates bound to the same method through different receivers compare
 // unequal, while two bound through the same receiver compare equal.
-static foreach (backend; Matrix!(
-    Omit!(Interpreter, Because.unconfirmed),
-)) {
+static foreach (backend; Matrix!()) {
     @("delegate.methodDelegateComparesByReceiverAndFunction." ~
         backend.stringof)
     @Tags(backend.stringof)
@@ -2738,9 +2736,7 @@ static foreach (backend; Matrix!(
 
 // The array-element twin of the fixture above: comparing two delegate
 // elements read back from a dynamic array.
-static foreach (backend; Matrix!(
-    Omit!(Interpreter, Because.unconfirmed),
-)) {
+static foreach (backend; Matrix!()) {
     @("delegate.arrayElementsCompareByFunctionAndContext." ~
         backend.stringof)
     @Tags(backend.stringof)
