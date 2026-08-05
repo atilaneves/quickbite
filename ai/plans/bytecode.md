@@ -392,6 +392,9 @@ row, not a guarantee. Reconfirm against the source before relying on it.
 - Whole static-array values use `compileStaticArrayValueInto` at every
   aggregate store boundary; do not route a `Tsarray` literal through the
   struct-only operand resolver.
+- An ordinary scalar local's address is its native frame address, so a
+  same-sized pointer reinterpretation observes the local's raw bytes. This
+  does not make a scalar `ref` parameter's mirror into the caller's address.
 - The recognized 4- and 8-byte `core.internal.atomic.atomicLoad` inline-asm
   sequence carries raw bits: retain the source pointer's signedness in its
   result slot while using the width-specific atomic opcode. The host atomic
