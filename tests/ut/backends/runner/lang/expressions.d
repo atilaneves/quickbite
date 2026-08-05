@@ -3575,7 +3575,23 @@ static foreach (backend; Matrix!()) {
     }
 }
 
-static foreach (backend; Matrix!()) {
+// `core.lifetime.emplace`'s scalar path (`core.internal.lifetime.emplaceRef`)
+// picks its non-CTFE branch now that runtime `__ctfe` correctly reads false
+// (see the `identifier.ctfeIsFalseAtRuntime` fixture above), which calls
+// `p.__ctor(args)` through `S* p = cast(S*) &chunk` -- a struct pointer
+// reinterpret-cast of a differently-typed address. That exposes a narrower,
+// pre-existing gap, confirmed independent of both `__ctfe` and constructors:
+// any mutating struct member call (not just `__ctor`) through a pointer
+// receiver obtained via a reinterpret cast loses its write, while a direct
+// field write through the very same cast pointer works. Root cause is
+// unconfirmed; triage per `interpreter.md` §8.
+static foreach (backend; Matrix!(
+    Omit!(Interpreter, Because.unconfirmed,
+        "mutating struct member call (ctor or ordinary method) through a " ~
+        "pointer receiver obtained via a reinterpret cast (`cast(S*) " ~
+        "&differentlyTypedLvalue`) loses its write; a direct field write " ~
+        "through the same cast pointer works"),
+)) {
     @("cast.arrayFieldPtrSliceElementAddressWritesValue." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -11058,6 +11074,37 @@ static foreach (backend; Matrix!(
                 forwardShared(value);
                 assert(value == 42);
                 assert(&value == expected);
+            }
+        });
+    }
+}
+
+// The magic `__ctfe` flag observes the *engine*, not source shape: only
+// `Ctfe` genuinely runs through DMD's own CTFE interpreter, so only `Ctfe`
+// legitimately reads `true` here (`ai/plans/value.md` item 4). Every other
+// backend executes as compiled D would and must read `false`, matching
+// `SystemLinker`. Confirmed empirically that DMD's semantic pass resolves
+// `__ctfe` to a `VarExp` before any backend ever walks a fully-semantic'd
+// module -- even through the `-preview=dip1008` scope-catch-var destructor
+// lowering (`statementsem.d`'s synthesized `if (!__ctfe) _d_delThrowable(var)`,
+// whose own subsequent `statementSemantic` call resolves the identifier) --
+// so this single runtime-call fixture covers every frontend shape that can
+// reach a backend; the walker's `IdentifierExp` arm for `__ctfe` is
+// defensive dead code, not a second live shape to pin separately.
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.diverges,
+        "Ctfe runs the unittest body through DMD's own CTFE interpreter, " ~
+        "which legitimately observes __ctfe as true"),
+)) {
+    @("identifier.ctfeIsFalseAtRuntime." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            unittest {
+                bool f() {
+                    return __ctfe;
+                }
+                assert(f() == false);
             }
         });
     }

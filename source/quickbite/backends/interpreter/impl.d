@@ -2194,10 +2194,17 @@ private struct Walker {
                 ? ""
                 : identifier.ident.toString.idup;
 
-            // DMD-generated exception support can leave the magic __ctfe flag
-            // as an identifier instead of lowering it to a VarExp.
+            // DMD's own `IdentifierExp` semantic (`expressionsem.d`) always
+            // resolves `__ctfe` into a `VarExp` before a fully-semantic'd
+            // module reaches this walker -- confirmed empirically, including
+            // through the `-preview=dip1008` scope-catch-var destructor that
+            // synthesizes this identifier (`statementsem.d`'s
+            // `if (!__ctfe) _d_delThrowable(var)`): its own subsequent
+            // `statementSemantic` resolves it before any backend walks it.
+            // This arm is defensive dead code kept in the same shape as the
+            // `VarExp` arm below rather than assumed unreachable forever.
             if (name == "__ctfe")
-                return Value(true);
+                return Value(false);
 
             if (
                 hasThis &&
@@ -2239,11 +2246,14 @@ private struct Walker {
             // Mutable because frame/layout APIs take DMD declarations.
             auto referenceVariable = variable;
 
-            // the magic __ctfe variable is true under AST interpretation,
-            // matching dmd's own interpreter; the language requires both
-            // __ctfe branches to be observably equivalent
+            // The Interpreter runs a compiled-D-equivalent runtime, not
+            // DMD's own CTFE engine (that is the separate `Ctfe` backend,
+            // `backends/ctfe/dmd_ctfe.d`, which invokes DMD's real CTFE
+            // interpreter and legitimately observes `true`); the magic
+            // `__ctfe` flag must therefore read `false` here, matching
+            // `SystemLinker`.
             if (variable.ident is Id.ctfe)
-                return Value(true);
+                return Value(false);
 
             if (isUninitializedBinding(variable)) {
                 import quickbite.backends.interpreter.messages: uninitializedVariableMessage;
