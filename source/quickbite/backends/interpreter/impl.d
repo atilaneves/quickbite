@@ -7753,6 +7753,36 @@ private struct Walker {
         if (auto dot = index.e1.isDotVarExp) {
             if (receiverClassType(dot.e1) !is null) {
                 const receiver = runExpression(dot.e1);
+                // A class local's own runtime value is commonly a bare
+                // pointer to the object body, not a `NativeAggregate` --
+                // `AggregateValue.classFieldAt`/`withClassField` only
+                // special-case the latter and otherwise fall through to
+                // `Value.classFieldAt`'s boxed-class-object arm, throwing
+                // "Expected class object." for a bare pointer (the same
+                // hazard `runIndexAssignExpression`'s identical `DotVarExp`/
+                // class arm already closes for the simple-assignment shape
+                // `c.arr[i] = v`). Resolve the field's `Place` directly
+                // through the pointer instead and write the updated array
+                // back through it, covering this compound/element-of-
+                // class-array-field shape (`c.arr[i].field = v`) the same
+                // way.
+                const nativeClassReceiver = receiver.isPointer
+                    ? receiver
+                    : receiver.isNativeAggregate
+                    ? Value.pointerValue(AggregateValue.nativeClassBodyAddress(receiver))
+                    : Value.null_;
+                if (nativeClassReceiver.isPointer) {
+                    import quickbite.backends.interpreter.place: Place;
+                    import quickbite.backends.interpreter.place_value: readValue, writeValue;
+
+                    auto fieldPlace = Place(nativeClassReceiver.pointerAddress, dot.e1.type)
+                        .field(dot.var.isVarDeclaration);
+                    const source = readValue(fieldPlace);
+                    const updatedArray = AggregateValue.withArrayElement(source, arrayIndex, value);
+                    writeValue(fieldPlace, updatedArray);
+                    return;
+                }
+
                 const fieldIndex = classFieldIndex(dot, receiver);
                 // Same stale-receiver hazard `writeLocation`'s `DotVarExp`
                 // arm closes -- re-derive from the shared cell before folding

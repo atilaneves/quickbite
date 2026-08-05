@@ -6151,15 +6151,13 @@ static foreach (backend; Matrix!()) {
 // The class-array-field sibling of the case above (`c.arr[i].field = rhs`):
 // `storeArrayElementFieldPointer` also serves
 // `tryClassArrayFieldElementFieldPointer`'s resolved pointer, so the same
-// `Tstruct` branch closes this shape too. `Interpreter` throws "Expected
-// class object." on this receiver shape even for a plain scalar field
-// (confirmed via bin/ut with `c.arr[0].tag = 99;`), a pre-existing gap
-// unrelated to the struct-field fix here.
-static foreach (backend; Matrix!(
-    Omit!(Interpreter, Because.unconfirmed,
-        "class array-of-structs element field write throws " ~
-        "\"Expected class object.\" even for a scalar field"),
-)) {
+// `Tstruct` branch closes this shape too. `Interpreter` promoted:
+// `writeIndexLocation`'s class `DotVarExp` arm lacked the pointer-based
+// `Place` resolution `runIndexAssignExpression`'s identical arm already has
+// for a class local's bare-pointer runtime value, so it always fell through
+// to `AggregateValue.classFieldAt`'s boxed-class-object path and threw
+// "Expected class object." -- for any field type, including a plain scalar.
+static foreach (backend; Matrix!()) {
     @("classField.structFieldOfArrayOfStructsElementWrittenFromConstructorCall." ~
         backend.stringof)
     @Tags(backend.stringof)
