@@ -477,9 +477,14 @@ receiver-free zero-argument target; the function-table word remains an index,
 so the wrapper is needed before `callIndirect` can reach the native bridge.
 An archive-backed struct method accepts a direct local's native-layout frame
 block as its ABI `this` pointer; a materialised, pointer-based, or delegate
-receiver still needs a frame-independent representation and refuses. Next
-candidate: an archive-backed method delegate needs a native function-pointer
-and receiver representation, rather than the bytecode function-table index.
+receiver still needs a frame-independent representation and refuses. An
+archive-backed class method also refuses: a VM class block begins with a
+Quickbite class index, while native virtual dispatch reads that word as a
+vtable pointer. Passing the VM reference to the native bridge can therefore
+segfault before the method body runs. Supporting it needs a real ABI class
+object (including vtable) and synchronised field storage. Next candidate: an
+archive-backed method delegate needs a native function-pointer and receiver
+representation, rather than the bytecode function-table index.
 Closure interactions with exceptions (a captured local mutated across
 try/catch/finally) and class polymorphism/vtable dispatch (including
 `super.f()`) match `SystemLinker` under `bin/qb` probing -- not a lead.

@@ -16187,12 +16187,6 @@ private struct Compiler {
         // and compiles the archive module's stale rewritten source body --
         // exactly what an archive-backed function's whole point is to never
         // do. Decline loudly rather than crash or run the wrong body.
-        if (isArchiveBacked && layout.hasClassThis)
-            if (auto native = tryCompileArchiveClassMethodCall(
-                    call, function_, layout,
-                ))
-                return *native;
-
         if (isArchiveBacked && layout.hasThis)
             if (auto native = tryCompileArchiveStructMethodCall(
                     call, function_, layout,
@@ -16546,8 +16540,6 @@ private struct Compiler {
         CallExp call,
         FuncDeclaration function_,
         in ParameterLayout layout,
-        in ushort nativeClassReceiverOffset = noOutParameterOffset,
-        imported!"dmd.mtype".TypeClass nativeClassReceiverType = null,
         in ushort nativeStructReceiverOffset = noOutParameterOffset,
         imported!"dmd.mtype".TypeStruct nativeStructReceiverType = null,
     ) {
@@ -16647,8 +16639,7 @@ private struct Compiler {
 
         return emitNativeCall(
             function_, argumentTypes, argumentArea, outParameterOffsets,
-            nativeClassReceiverOffset, nativeClassReceiverType,
-            nativeStructReceiverOffset,
+            noOutParameterOffset, null, nativeStructReceiverOffset,
             nativeStructReceiverType,
         );
     }
@@ -16677,39 +16668,7 @@ private struct Compiler {
         if (receiverType is null)
             return null;
         return tryCompileNativeCall(
-            call,
-            function_,
-            layout,
-            nativeStructReceiverOffset: offset.offset,
-            nativeStructReceiverType: receiverType,
-        );
-    }
-
-    // An archive class method has no source body we may interpret. A VM class
-    // object uses D's field offsets, so a direct native call may receive its
-    // real backing block as the ABI class-reference word. This deliberately
-    // remains limited to the native-call argument shapes accepted below; a
-    // virtual call would additionally require a native vtable.
-    private Operand* tryCompileArchiveClassMethodCall(
-        CallExp call,
-        FuncDeclaration function_,
-        in ParameterLayout layout,
-    ) {
-        auto dot = call.e1.isDotVarExp;
-        if (dot is null || dot.e1.type is null)
-            return null;
-
-        auto receiverType = dot.e1.type.toBasetype.isTypeClass;
-        if (receiverType is null)
-            return null;
-
-        const receiver = classMethodReceiver(call);
-        return tryCompileNativeCall(
-            call,
-            function_,
-            layout,
-            nativeClassReceiverOffset: receiver.offset,
-            nativeClassReceiverType: receiverType,
+            call, function_, layout, offset.offset, receiverType,
         );
     }
 
