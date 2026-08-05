@@ -3260,7 +3260,7 @@ private struct Compiler {
                     arrayElementIsArray(field.type),
                 );
                 result.writeBackStructThroughFrame =
-                    field.writeBackThroughFrame;
+                    field.writeBack == StructField.WriteBack.frame;
                 result.structOffset = field.structOffset;
                 result.structFrameIndexOffset = field.frameIndexOffset;
                 result.structSize = field.structSize;
@@ -3269,7 +3269,8 @@ private struct Compiler {
                 // adds back the field's offset within the struct); mirror
                 // that same arithmetic here so the array's own writeback
                 // lands at the field's own module slot, not the struct's.
-                result.writeBackThroughModule = field.writeBackThroughModule;
+                result.writeBackThroughModule =
+                    field.writeBack == StructField.WriteBack.dataSegment;
                 result.moduleOffset = cast(ushort) (
                     field.moduleOffset + (field.offset - field.structOffset)
                 );
@@ -6298,13 +6299,19 @@ private struct Compiler {
 
     // A located struct field: its inline frame offset and DMD type.
     private static struct StructField {
+        enum WriteBack {
+            none,
+            frame,
+            dataSegment,
+            pointer,
+        }
+
         ushort offset;
         Type type;
-        bool writeBackThroughFrame;
+        WriteBack writeBack;
         ushort structOffset;
         ushort frameIndexOffset;
         ushort structSize;
-        bool writeBackThroughModule;
         ushort moduleOffset;
         // Backed by an associative-array rvalue-read pointer (`a[1].x`):
         // `structOffset`/`structSize` (above) are the whole materialised
@@ -6315,7 +6322,6 @@ private struct Compiler {
         // exactly the live AA storage `_d_aaGetRvalueX` pointed at, the same
         // whole-block-writeback shape `writeBackThroughFrame` already uses
         // for a captured struct receiver.
-        bool writeBackThroughPointer;
         ushort pointerBaseSlot;
         ushort pointerIndexSlot;
     }
@@ -6350,12 +6356,12 @@ private struct Compiler {
                     );
                     auto result = new StructField;
                     *result = StructField(
-                        cast(ushort) (structOffset + field.offset),
-                        field.type,
-                        true,
-                        structOffset,
-                        frameIndexOffset,
-                        structSize,
+                        offset: cast(ushort) (structOffset + field.offset),
+                        type: field.type,
+                        writeBack: StructField.WriteBack.frame,
+                        structOffset: structOffset,
+                        frameIndexOffset: frameIndexOffset,
+                        structSize: structSize,
                     );
                     return result;
                 }
@@ -6379,14 +6385,12 @@ private struct Compiler {
                     );
                     auto result = new StructField;
                     *result = StructField(
-                        cast(ushort) (structOffset + field.offset),
-                        field.type,
-                        false,
-                        structOffset,
-                        0,
-                        moduleVariable.size,
-                        true,
-                        moduleVariable.offset,
+                        offset: cast(ushort) (structOffset + field.offset),
+                        type: field.type,
+                        writeBack: StructField.WriteBack.dataSegment,
+                        structOffset: structOffset,
+                        structSize: moduleVariable.size,
+                        moduleOffset: moduleVariable.offset,
                     );
                     return result;
                 }
@@ -6432,7 +6436,7 @@ private struct Compiler {
         // same `moduleOffset + (offset - structOffset)` arithmetic that
         // branch already uses.
         if (viaModule) {
-            result.writeBackThroughModule = true;
+            result.writeBack = StructField.WriteBack.dataSegment;
             result.structOffset = moduleFrameOffset;
             result.moduleOffset = moduleOffset;
         }
@@ -6443,7 +6447,7 @@ private struct Compiler {
         // whole-block shape `writeBackThroughFrame` already uses for a
         // captured struct receiver.
         if (viaPointer) {
-            result.writeBackThroughPointer = true;
+            result.writeBack = StructField.WriteBack.pointer;
             result.structOffset = pointerFrameOffset;
             result.structSize = pointerStructSize;
             result.pointerBaseSlot = pointerBaseSlot;
@@ -6459,7 +6463,7 @@ private struct Compiler {
         // offset/frame index/size threaded up from the recursive resolution
         // of `dot.e1` rather than computed locally.
         if (viaFrame) {
-            result.writeBackThroughFrame = true;
+            result.writeBack = StructField.WriteBack.frame;
             result.structOffset = frameBaseOffset;
             result.frameIndexOffset = frameIndexOffset;
             result.structSize = frameStructSize;
@@ -6539,33 +6543,33 @@ private struct Compiler {
     }
 
     private void writeBackStructField(in StructField field) {
-        if (field.writeBackThroughFrame) {
-            _code ~= Instruction(
-                Op.frameStore,
-                field.structOffset,
-                field.frameIndexOffset,
-                field.structSize,
-            );
-            return;
-        }
-
-        if (field.writeBackThroughModule) {
-            const fieldOffsetInStruct =
-                cast(ushort) (field.offset - field.structOffset);
-            _code ~= Instruction(
-                Op.storeModule,
-                field.offset,
-                cast(ushort) (field.moduleOffset + fieldOffsetInStruct),
-                cast(ushort) inlineByteWidth(cast(Type) field.type),
-            );
-            return;
-        }
-
-        if (field.writeBackThroughPointer) {
-            emitPointerStore(
-                field.structOffset, field.pointerBaseSlot,
-                field.pointerIndexSlot, field.structSize,
-            );
+        final switch (field.writeBack) with (StructField.WriteBack) {
+            case frame:
+                _code ~= Instruction(
+                    Op.frameStore,
+                    field.structOffset,
+                    field.frameIndexOffset,
+                    field.structSize,
+                );
+                return;
+            case dataSegment:
+                const fieldOffsetInStruct =
+                    cast(ushort) (field.offset - field.structOffset);
+                _code ~= Instruction(
+                    Op.storeModule,
+                    field.offset,
+                    cast(ushort) (field.moduleOffset + fieldOffsetInStruct),
+                    cast(ushort) inlineByteWidth(cast(Type) field.type),
+                );
+                return;
+            case pointer:
+                emitPointerStore(
+                    field.structOffset, field.pointerBaseSlot,
+                    field.pointerIndexSlot, field.structSize,
+                );
+                return;
+            case none:
+                return;
         }
     }
 
@@ -14647,14 +14651,12 @@ private struct Compiler {
                     );
                     auto result = new StructField;
                     *result = StructField(
-                        structOffset,
-                        declaration.type,
-                        false,
-                        structOffset,
-                        0,
-                        moduleVariable.size,
-                        true,
-                        moduleVariable.offset,
+                        offset: structOffset,
+                        type: declaration.type,
+                        writeBack: StructField.WriteBack.dataSegment,
+                        structOffset: structOffset,
+                        structSize: moduleVariable.size,
+                        moduleOffset: moduleVariable.offset,
                     );
                     writeback = result;
                     return structOffset;
@@ -14707,8 +14709,13 @@ private struct Compiler {
                 );
                 auto result = new StructField;
                 *result = StructField(
-                    blockOffset, expression.type.nextOf, false, blockOffset,
-                    0, arraySize, false, 0, true, pointer.offset, zeroOffset,
+                    offset: blockOffset,
+                    type: expression.type.nextOf,
+                    writeBack: StructField.WriteBack.pointer,
+                    structOffset: blockOffset,
+                    structSize: arraySize,
+                    pointerBaseSlot: pointer.offset,
+                    pointerIndexSlot: zeroOffset,
                 );
                 writeback = result;
                 return blockOffset;
@@ -19302,14 +19309,14 @@ private struct Compiler {
         // field binds to the field's inline slot (`base + field.offset`), so the
         // callee's writeback lands in the caller's struct. A module-backed
         // field's slot is a throwaway copy of the whole block instead
-        // (`writeBackThroughModule`) with no per-argument writeback wired
+        // (`StructField.WriteBack.dataSegment`) with no per-argument writeback wired
         // here; decline so an unhandled shape (`emitModuleStructFieldRefArgument`
         // only covers scalar fields) surfaces as an honest "unsupported ref
         // argument" instead of silently binding the callee to a copy nothing
         // ever writes back to.
         if (auto dot = argument.isDotVarExp)
             if (auto field = tryStructField(dot))
-                if (!field.writeBackThroughModule)
+                if (field.writeBack != StructField.WriteBack.dataSegment)
                     return &field.offset;
 
         // `setTo(arr[1], ...)`: a compile-time-constant index into a static

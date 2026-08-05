@@ -629,9 +629,11 @@ place second.
 
 2. **One place resolver.** Lvalue addressing is enumerated per shape: the
    `emit*RefArgument` chain with its comment-encoded decline order,
-   `referenceOffsetOrNull`, the `*Offset`/`*Address` helpers, and three
-   writeback-mirror mechanisms (module, frame, pointer) with per-shape flush
-   loops. Consolidate on the compose-per-hop model that
+   `referenceOffsetOrNull`, the `*Offset`/`*Address` helpers, and writeback
+   mirrors with per-shape flush loops. A resolved `StructField` has exactly
+   one discriminated writeback target (frame, data segment, pointer, or none);
+   preserve that exclusivity as the remaining lvalue shapes converge on the
+   compose-per-hop model that
    `structBaseOffsetOrMaterialise`, `capturedFrameIndex`, and the
    class/struct static-array chain plumbing already use: one place value
    (base, hop chain, width, writeback rule) returned by one resolver,
