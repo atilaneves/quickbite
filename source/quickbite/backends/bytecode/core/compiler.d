@@ -5103,7 +5103,7 @@ private struct Compiler {
         ));
     }
 
-    // Block-copies `source`'s value into the `staticArraySize(type)` bytes of
+    // Block-copies `source`'s value into the `inlineByteWidth(type)` bytes of
     // static-array storage at `offset`, or returns `false` if `source` is not
     // a recognized static-array value form. Shared by
     // `compileStaticArrayDeclaration`'s initializer handling and whole-value
@@ -13699,7 +13699,7 @@ private struct Compiler {
 
         if (fieldType.toBasetype.ty == TY.Tstruct) {
             const valueOffset = structOperandOffset(rhs);
-            const elementSize = cast(uint) staticArraySize(fieldType);
+            const elementSize = inlineByteWidth(fieldType);
             emitPointerStore(
                 valueOffset, pointer, compileSizeConstant(0), elementSize,
             );
@@ -13716,7 +13716,7 @@ private struct Compiler {
         if (fieldType.toBasetype.ty == TY.Tsarray) {
             import std.conv: text;
 
-            const elementSize = cast(uint) staticArraySize(fieldType);
+            const elementSize = inlineByteWidth(fieldType);
             const valueOffset =
                 allocateBytes(elementSize, staticArrayAlign(fieldType));
             if (!compileStaticArrayValueInto(valueOffset, fieldType, rhs))
@@ -15060,7 +15060,7 @@ private struct Compiler {
             !sameType(rhs.type, elementType))
             return null;
 
-        const rowSize = cast(uint) staticArraySize(elementType);
+        const rowSize = inlineByteWidth(elementType);
         if (auto literal = rhs.isArrayLiteralExp)
             compileStaticArrayLiteral(*slot, elementType, literal);
         else {
@@ -15070,7 +15070,7 @@ private struct Compiler {
             );
         }
 
-        const rowCount = cast(uint) (staticArraySize(declaration.type) / rowSize);
+        const rowCount = inlineByteWidth(declaration.type) / rowSize;
         foreach (row; 1 .. rowCount)
             _code ~= Instruction(
                 Op.copy,
@@ -15278,7 +15278,7 @@ private struct Compiler {
             !descriptor.isStaticArrayView) {
             auto rowType = slice.e1.type.toBasetype.nextOf;
             if (rowType.toBasetype.ty == TY.Tsarray) {
-                const rowByteSize = cast(uint) staticArraySize(rowType);
+                const rowByteSize = inlineByteWidth(rowType);
 
                 // `sameType(rhs.type, rowType)` alone does not prove the
                 // compiled rhs operand holds the row's own inline bytes:
@@ -15495,7 +15495,7 @@ private struct Compiler {
         // descriptor its 16-byte slot holds, the same width every other
         // dynamic-array element uses.
         if (isStringType(elementType)) {
-            const elementSize = cast(uint) staticArraySize(elementType);
+            const elementSize = inlineByteWidth(elementType);
             foreach (elementIndex; 0 .. literal.elements.length) {
                 auto string_ = stringLiteralOf((*literal.elements)[elementIndex]);
                 if (string_ is null)
@@ -15531,7 +15531,7 @@ private struct Compiler {
         // down: each element is itself an array literal at its own leaf
         // offset.
         if (elementType.toBasetype.ty == TY.Tsarray) {
-            const elementSize = cast(uint) staticArraySize(elementType);
+            const elementSize = inlineByteWidth(elementType);
             foreach (elementIndex; 0 .. literal.elements.length) {
                 auto element = (*literal.elements)[elementIndex];
                 auto nested =
@@ -15555,7 +15555,7 @@ private struct Compiler {
         // their own leaf offsets, reusing the same machinery a plain struct
         // field uses.
         if (elementType.toBasetype.ty == TY.Tstruct) {
-            const elementSize = cast(uint) staticArraySize(elementType);
+            const elementSize = inlineByteWidth(elementType);
             foreach (elementIndex; 0 .. literal.elements.length) {
                 auto element = (*literal.elements)[elementIndex];
                 auto structLiteral =
