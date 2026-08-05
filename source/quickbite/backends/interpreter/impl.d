@@ -912,22 +912,35 @@ private struct Walker {
     }
 
     // Moves any `nativeDelegateSlots` entry for a Tdelegate-typed (sub)field
-    // of `type` from `oldAddress` to `newAddress`, recursing through
-    // non-union struct fields the same way `place_value.writeValue`'s own
-    // struct arm composes a field-by-field copy -- the out-of-band
-    // counterpart to that byte copy for the one part of a struct's bytes a
-    // plain `memcpy` cannot carry (`nativeDelegateSlots`'s own field
-    // comment: an interpreted delegate has no native ABI function address).
-    // A no-op when the two addresses already coincide, or when no entry is
-    // registered at a given field address (an ordinary null/uninitialized
-    // delegate field, whose bytes copy correctly on their own).
+    // or STATIC-array element of `type` from `oldAddress` to `newAddress`,
+    // recursing through non-union struct fields and static-array elements
+    // the same way `place_value.writeValue`'s own struct/static-array arms
+    // compose a field-by-field or element-by-element copy -- the
+    // out-of-band counterpart to that byte copy for the one part of the
+    // bytes a plain `memcpy` cannot carry (`nativeDelegateSlots`'s own
+    // field comment: an interpreted delegate has no native ABI function
+    // address). A no-op when the two addresses already coincide, or when
+    // no entry is registered at a given field/element address (an ordinary
+    // null/uninitialized delegate, whose bytes copy correctly on their
+    // own).
+    //
+    // Deliberately NOT extended to a dynamic array (`Tarray`): rebinding a
+    // slice only copies its two-word `{length, ptr}` HEADER to a new
+    // address -- the element bytes `ptr` refers to never move -- so a
+    // dynamic-array element's `nativeDelegateSlots` key (always the
+    // element's own DATA address, from `AggregateValue.elementAddress`,
+    // never the header's address) stays valid without relocation. Reading
+    // `newAddress`'s header to recompute element addresses would also be
+    // wrong here regardless, since this call always runs BEFORE the header
+    // copy that gives `newAddress` its live `{length, ptr}` bytes.
     private void relocateDelegateSlots(
         imported!"dmd.mtype".Type type,
         void* oldAddress,
         void* newAddress,
     ) {
         import dmd.astenums: TY;
-        import quickbite.backends.interpreter.layout: structFields, declaredType;
+        import quickbite.backends.interpreter.layout:
+            structFields, declaredType, staticArrayLength;
         import quickbite.backends.interpreter.place: Place;
 
         if (oldAddress is newAddress)
@@ -943,15 +956,24 @@ private struct Walker {
         }
 
         auto structType = base.isTypeStruct;
-        if (structType is null || structType.sym.isUnionDeclaration !is null)
+        if (structType !is null && structType.sym.isUnionDeclaration is null) {
+            foreach (field; structFields(structType))
+                relocateDelegateSlots(
+                    declaredType(field),
+                    Place(oldAddress, type).field(field).address,
+                    Place(newAddress, type).field(field).address,
+                );
             return;
+        }
 
-        foreach (field; structFields(structType))
-            relocateDelegateSlots(
-                declaredType(field),
-                Place(oldAddress, type).field(field).address,
-                Place(newAddress, type).field(field).address,
-            );
+        auto staticArray = base.isTypeSArray;
+        if (staticArray !is null)
+            foreach (i; 0 .. staticArrayLength(staticArray))
+                relocateDelegateSlots(
+                    staticArray.next,
+                    Place(oldAddress, type).index(i).address,
+                    Place(newAddress, type).index(i).address,
+                );
     }
 
     private Value nativeArrayBindingValue(VarDeclaration variable, in Value value) {
@@ -8110,9 +8132,34 @@ private struct Walker {
         const arrayIndex = cast(size_t) runExpression(index.e2).asLong;
         if (isStaticArrayType(index.e1.type))
             checkStaticArrayIndexInBounds(*current, arrayIndex);
-        const value = runExpression(rhs);
-        setLocal(variable, AggregateValue.withArrayElement(*current, arrayIndex, value));
-        writeThroughArrayCell(variable, arrayIndex, value);
+
+        // A fresh closure RHS (`dgs[0] = () => 1;`) is a bare `FuncExp`;
+        // ordinary `runExpression` has no general case for one (it answers
+        // `Value.undisplayable`) -- the same gap this module's other
+        // delegate-write call sites already route around via
+        // `runFunctionLiteralDeclaration`.
+        auto literal = rhs.isFuncExp;
+        const value = literal is null
+            ? runExpression(rhs)
+            : runFunctionLiteralDeclaration(literal);
+
+        // A live delegate element has no native ABI function address --
+        // `place_value.writeValue`'s Tdelegate arm only ever accepts
+        // `Value.null_` -- so substitute null bytes for the write and
+        // register the live value out-of-band in `nativeDelegateSlots`,
+        // keyed by the element's own address, mirroring the append and
+        // struct/class-field write sites.
+        import dmd.astenums: TY;
+
+        auto elementType = index.e1.type.toBasetype.nextOf;
+        const isLiveDelegate = elementType !is null
+            && elementType.toBasetype.ty == TY.Tdelegate
+            && value != Value.null_;
+        auto storedValue = isLiveDelegate ? Value.null_ : value;
+        setLocal(variable, AggregateValue.withArrayElement(*current, arrayIndex, storedValue));
+        writeThroughArrayCell(variable, arrayIndex, storedValue);
+        if (isLiveDelegate)
+            nativeDelegateSlots[bindingPlace(variable).index(arrayIndex).address] = value;
         uninitializedLocals.remove(variable);
         return value;
     }
@@ -9293,17 +9340,51 @@ private struct Walker {
         throw new Exception(text("Unsupported eval expression: ", cast_.op));
     }
 
+    // An array-literal element typed `delegate` (`[() => 42]`) may carry a
+    // LIVE callable value rather than `null`, the same gap
+    // `structLiteralValue` already routes around: a bare `FuncExp` element
+    // needs `runFunctionLiteralDeclaration` (ordinary `runExpression`
+    // answers `Value.undisplayable` for one), and `AggregateValue.
+    // reconstructArray`'s `writeValue` call only ever accepts `Value.null_`
+    // for a Tdelegate element, so every live entry is substituted with
+    // `Value.null_` for the reconstruction and then re-registered in
+    // `nativeDelegateSlots`, keyed by the RESULT array's own element
+    // address -- mirroring `structLiteralValue`'s identical
+    // substitute-then-register handling.
     private Value arrayValue(
         imported!"dmd.expression".ArrayLiteralExp array,
     ) {
+        import dmd.astenums: TY;
+
+        auto elementType = array.type.toBasetype.nextOf;
+        const isDelegateArray = elementType !is null
+            && elementType.toBasetype.ty == TY.Tdelegate;
+
         Value[] values;
+        size_t[] liveDelegateIndices;
+        Value[] liveDelegateValues;
         if (array.elements !is null)
             // DMD's sparse form: a null element means the value is in `basis`
             // (see ArrayLiteralExp.getElement).
-            foreach (element; *array.elements)
-                values ~= runExpression(element is null ? array.basis : element);
+            foreach (index, element; *array.elements) {
+                auto source = element is null ? array.basis : element;
+                auto literal = source.isFuncExp;
+                auto value = literal is null
+                    ? runExpression(source)
+                    : runFunctionLiteralDeclaration(literal);
+                if (isDelegateArray && value != Value.null_) {
+                    liveDelegateIndices ~= index;
+                    liveDelegateValues ~= value;
+                    value = Value.null_;
+                }
+                values ~= value;
+            }
 
-        return AggregateValue.reconstructArray(array.type, values);
+        auto result = AggregateValue.reconstructArray(array.type, values);
+        foreach (position, index; liveDelegateIndices)
+            nativeDelegateSlots[AggregateValue.elementAddress(result, index)] =
+                liveDelegateValues[position];
+        return result;
     }
 
     // A struct-literal field typed `delegate` may carry a LIVE callable

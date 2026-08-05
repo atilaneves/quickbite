@@ -2578,9 +2578,7 @@ static foreach (backend; Matrix!()) {
 // The static-array twin: `int delegate()[2] dgs;` default-initializes each
 // element to `null` (DMD's whole-array `NullExp` blit), and each element is
 // then assignable and readable like any other inline aggregate slot.
-static foreach (backend; Matrix!(
-    Omit!(Interpreter, Because.unconfirmed),
-)) {
+static foreach (backend; Matrix!()) {
     @("delegate.staticArrayElementIsAssignableAndCallable." ~
         backend.stringof)
     @Tags(backend.stringof)
@@ -2602,9 +2600,7 @@ static foreach (backend; Matrix!(
 // Calling directly through an array index (`dgs[0]()`), with no
 // intermediate delegate-typed local, dispatches through the same run-time
 // descriptor an indexed read already materialises.
-static foreach (backend; Matrix!(
-    Omit!(Interpreter, Because.unconfirmed),
-)) {
+static foreach (backend; Matrix!()) {
     @("delegate.dynamicArrayElementIsCallableThroughIndexDirectly." ~
         backend.stringof)
     @Tags(backend.stringof)
@@ -2619,9 +2615,7 @@ static foreach (backend; Matrix!(
 }
 
 // The static-array twin of the fixture above.
-static foreach (backend; Matrix!(
-    Omit!(Interpreter, Because.unconfirmed),
-)) {
+static foreach (backend; Matrix!()) {
     @("delegate.staticArrayElementIsCallableThroughIndexDirectly." ~
         backend.stringof)
     @Tags(backend.stringof)
