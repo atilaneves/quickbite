@@ -586,11 +586,12 @@ place second.
    vs. a `{opcodeType, byteStride}` pair) across 30+ call sites, so take it as
    a bounded sub-piece (one call-site family, or one clearly-scoped shared
    helper) rather than attempting the whole merge in one commit.
-   `pointerElementMetadata`, `dereferencedArrayIndexElementMetadata`,
-   `dynamicArrayElementSize`, `storeStructPointerField`/
-   `storeClassPointerField`, and `refArgumentFieldWidth` now share their
-   aggregate-vs-scalar branch through one helper, `elementMetadataFor`;
-   remaining call sites (`staticArraySize`, `size(scalarType)`, ...) still
+   `pointerElementMetadata`, `dereferencedArrayIndexElementMetadata`, and
+   `dynamicArrayElementSize` now share both the aggregate-vs-scalar branch
+   and the inline DMD-layout query through `elementMetadataFor`/
+   `inlineByteWidth`; `storeStructPointerField`/`storeClassPointerField` and
+   `refArgumentFieldWidth` share the same aggregate-vs-scalar branch.
+   Remaining call sites (`staticArraySize`, `size(scalarType)`, ...) still
    derive width independently.
 
    Done: every width-suffixed opcode family (`indexLoad*`/`indexStore*`,

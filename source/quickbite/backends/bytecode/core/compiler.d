@@ -21397,9 +21397,7 @@ private struct Compiler {
         auto element = type.toBasetype.nextOf;
         if (element.toBasetype.ty == TY.Tvoid)
             return 1;
-        const metadata = elementMetadataFor(
-            element, cast(uint) staticArraySize(element),
-        );
+        const metadata = elementMetadataFor(element);
         if (metadata.opcodeType == ScalarType.void_)
             return metadata.byteStride;
         return size(elementType);
@@ -21579,7 +21577,7 @@ private struct Compiler {
             return PointerElementMetadata(ScalarType.void_, 0);
         const byteStride = element.toBasetype.ty == TY.Tfunction
             ? 0
-            : cast(uint) staticArraySize(element);
+            : inlineByteWidth(element);
         return elementMetadataFor(element, byteStride);
     }
 
@@ -21601,8 +21599,16 @@ private struct Compiler {
             return pointerElementMetadata(pointerType);
 
         auto element = pointee.toBasetype.nextOf;
-        const byteStride = cast(uint) staticArraySize(element);
+        const byteStride = inlineByteWidth(element);
         return elementMetadataFor(element, byteStride);
+    }
+
+    // The shared DMD-layout width query for an element stored inline in a
+    // frame, array, or pointed-at block. Callers with a non-inline convention
+    // (a function pointer has no dereferenceable payload) supply their own
+    // stride instead.
+    private uint inlineByteWidth(Type type) {
+        return cast(uint) staticArraySize(type);
     }
 
     // Shared aggregate-vs-scalar classification for a pointer/array element
@@ -21633,6 +21639,10 @@ private struct Compiler {
             element.toBasetype.ty == TY.Tfunction)
             return PointerElementMetadata(ScalarType.void_, byteStride);
         return PointerElementMetadata(scalarType(element), byteStride);
+    }
+
+    private PointerElementMetadata elementMetadataFor(Type element) {
+        return elementMetadataFor(element, inlineByteWidth(element));
     }
 }
 
