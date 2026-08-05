@@ -446,6 +446,10 @@ package(quickbite.backends.bytecode) enum Op: ubyte {
     // uses these only after exact whole-sequence validation.
     atomicLoad4,
     atomicLoad8,
+    // Atomically exchange the 4-byte value at the pointer in slot b with the
+    // 4-byte value in slot c, writing the previous value to slot a. The
+    // exact `lock; xchg` inline-asm lowering uses this after validation.
+    atomicExchange4,
     // Write the 1- or 4-byte slot at frame offset a to `[pointer + index *
     // elementSize]`, where the raw `size_t` pointer value is at frame offset b
     // and the `size_t` index at frame offset c. Backs `*p = v` (index 0) and

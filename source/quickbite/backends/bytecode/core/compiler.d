@@ -823,7 +823,67 @@ private struct Compiler {
     ) {
         if (tryCompileAtomicLoadAsm(compound))
             return;
+        if (tryCompileAtomicExchangeAsm(compound))
+            return;
         compileUnsignedMultiplyAsm(compound);
+    }
+
+    // `core.internal.atomic.atomicExchange` for a 4-byte value swaps `value`
+    // with `*dest` and writes the former destination value to `storage`.
+    // Accept only DRuntime's complete lock-xchg sequence, then lower it to one
+    // host atomic exchange instead of treating it as an ordinary store.
+    private bool tryCompileAtomicExchangeAsm(
+        imported!"dmd.statement".CompoundAsmStatement compound,
+    ) {
+        import quickbite.frontend.dmd.functions: inlineAsmInstructions;
+
+        const instructions = inlineAsmInstructions(compound);
+        if (instructions.length != 6 ||
+            !isAsmIdentifier(instructions[0], 0, "mov") ||
+            !isAsmIdentifier(instructions[0], 1, "EAX") ||
+            !isAsmPunctuation(instructions[0], 2, ",") ||
+            !isAsmIdentifier(instructions[0], 3, "value") ||
+            instructions[0].length != 4 ||
+            !isAsmIdentifier(instructions[1], 0, "mov") ||
+            !isAsmIdentifier(instructions[1], 1, "RCX") ||
+            !isAsmPunctuation(instructions[1], 2, ",") ||
+            !isAsmIdentifier(instructions[1], 3, "dest") ||
+            instructions[1].length != 4 ||
+            !isAsmIdentifier(instructions[2], 0, "lock") ||
+            instructions[2].length != 1 ||
+            !isAsmIdentifier(instructions[3], 0, "xchg") ||
+            !isAsmPunctuation(instructions[3], 1, "[") ||
+            !isAsmIdentifier(instructions[3], 2, "RCX") ||
+            !isAsmPunctuation(instructions[3], 3, "]") ||
+            !isAsmPunctuation(instructions[3], 4, ",") ||
+            !isAsmIdentifier(instructions[3], 5, "EAX") ||
+            instructions[3].length != 6 ||
+            !isAsmIdentifier(instructions[4], 0, "lea") ||
+            !isAsmIdentifier(instructions[4], 1, "RCX") ||
+            !isAsmPunctuation(instructions[4], 2, ",") ||
+            !isAsmIdentifier(instructions[4], 3, "storage") ||
+            instructions[4].length != 4 ||
+            !isAsmIdentifier(instructions[5], 0, "mov") ||
+            !isAsmPunctuation(instructions[5], 1, "[") ||
+            !isAsmIdentifier(instructions[5], 2, "RCX") ||
+            !isAsmPunctuation(instructions[5], 3, "]") ||
+            !isAsmPunctuation(instructions[5], 4, ",") ||
+            !isAsmIdentifier(instructions[5], 5, "EAX") ||
+            instructions[5].length != 6)
+            return false;
+
+        const value = asmLocal("value");
+        const destination = asmPointerLocal("dest");
+        const storage = asmLocal("storage");
+        if (value.type != ScalarType.uint_ ||
+            destination.pointerElement != ScalarType.uint_ ||
+            storage.type != ScalarType.ulong_)
+            throw new Exception("Unsupported inline asm atomic-exchange operand.");
+
+        _code ~= Instruction(
+            Op.atomicExchange4, storage.offset, destination.offset, value.offset,
+        );
+        return true;
     }
 
     // `core.internal.atomic.atomicLoad` uses a locked compare-and-exchange to

@@ -12,8 +12,9 @@ import std.conv: text;
 static foreach (backend; Matrix!(
     Omit!(Ctfe, Because.inexpressible, "needs the host filesystem, which CTFE cannot access"),
     Omit!(Bytecode, Because.refusal,
-        "Unsupported inline asm instruction sequence: core.atomic's " ~
-        "lock-xchg atomicOp!\"+=\" lowering has no bytecode core support"),
+        "after the `core.atomic` lock-xchg sequence, std.stdio.File's " ~
+        "struct assignment declines with \"Unsupported struct value in " ~
+        "bytecode core: this.file_ = f\""),
 )) {
     @("file.createWriteRead." ~ backend.stringof)
     @Tags(backend.stringof)

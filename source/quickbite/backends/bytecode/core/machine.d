@@ -480,6 +480,26 @@ package(quickbite.backends.bytecode) RunResult run(
                 ++ip;
                 break;
 
+            case atomicExchange4:
+                const atomicExchangeAddress = scalarValue!size_t(
+                    stack, base + instruction.b,
+                );
+                const atomicExchangeValue = scalarValue!uint(
+                    stack, base + instruction.c,
+                );
+                const ubyte[uint.sizeof] atomicExchangeResult = scalarBytes(
+                    atomicExchangeDword(
+                        cast(ubyte*) atomicExchangeAddress,
+                        atomicExchangeValue,
+                    ),
+                );
+                stack[
+                    base + instruction.a
+                    .. base + instruction.a + uint.sizeof
+                ] = atomicExchangeResult;
+                ++ip;
+                break;
+
             case pointerStore1, pointerStore2, pointerStore4, pointerStore8,
                 pointerStore16, pointerStoreN:
                 const pointerStoreSize = instruction.op == pointerStoreN
@@ -3020,6 +3040,15 @@ private ulong atomicLoadWord(in const(ubyte)* address) @trusted {
     import core.atomic: atomicLoad;
 
     return cast(ulong) atomicLoad(*cast(shared(ulong)*) address);
+}
+
+// @trusted: `atomicExchange` reads and writes exactly one aligned 4-byte word
+// through the raw address produced by the validated DRuntime inline-asm
+// lowering.
+private uint atomicExchangeDword(ubyte* address, in uint value) @trusted {
+    import core.atomic: atomicExchange;
+
+    return atomicExchange(cast(shared(uint)*) address, value);
 }
 
 private void writeHeapElement(ubyte* element, in ubyte[] source) @trusted {

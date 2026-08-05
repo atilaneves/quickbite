@@ -396,13 +396,11 @@ row, not a guarantee. Reconfirm against the source before relying on it.
 
 Known blocked rows, stated as the blocker rather than the symptom:
 
-- `file.createWriteRead.Bytecode` (`sys/file.d`). `std.stdio.File`'s
-  refcounting is `shared`, and DMD's `core.atomic` lowers `atomicOp!"+="` on
-  this platform to inline x86 asm (`lock xchg` then a plain store) rather than
-  a compiler intrinsic; the bytecode core has no inline-asm support. Either
-  implement that specific `lock`-prefixed read-modify-write/store sequence, or
-  recognise `atomicOp`/`atomicLoad`/`atomicStore` by symbol (as the `std.math`
-  builtins already are) and lower them to dedicated VM atomic ops.
+- `file.createWriteRead.Bytecode` (`sys/file.d`) reaches `std.stdio.File`'s
+  `this.file_ = f` struct assignment after the atomic paths and declines with
+  "Unsupported struct value in bytecode core". Resolve the receiver-field
+  struct assignment through the ordinary place/writeback path; do not add a
+  `File`-specific case.
 - `refArgument.templateRefSharedParameterMutatesAndPreservesAddress` and
   `refArgument.templateRefSharedForwardsThroughNestedFunction`
   (`expressions.d`) assert `&value == expected` across a `ref` call boundary.
