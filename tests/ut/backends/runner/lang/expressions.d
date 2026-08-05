@@ -3954,6 +3954,9 @@ static foreach (backend; Matrix!(
 // Ctfe and LLVMJit are omitted because address-of-local reinterpretation is
 // unsupported/unconfirmed there.
 static foreach (backend; Matrix!(
+    Omit!(Bytecode, Because.refusal,
+        "scalar `ref` parameters are callee-frame mirrors, so `&value` " ~
+            "cannot denote the caller's shared storage"),
     Omit!(Ctfe, Because.unconfirmed),
     Omit!(LLVMJit, Because.unconfirmed),
 )) {

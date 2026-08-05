@@ -429,6 +429,13 @@ directly to the real address (e.g. via `Op.moduleAddress`), dropping the
 mirror/writeback pair entirely -- a change to the convention every
 ref-argument kind shares, not a narrow field-offset fix.
 
+The same ABI work gates native calls that take `ref` values or slice-bearing
+descriptors: `File` reaches native code with a callee-frame mirror, while the
+native callee expects a real D descriptor at the argument address. Finish the
+direct-address `ref` convention together with the native-order slice
+descriptor conversion above, then re-enable the `File` oracle row. Do not
+paper over either boundary with per-library marshalling.
+
 Live hazards and divergences to reconfirm against current source when a row
 reaches them:
 

@@ -10,6 +10,9 @@ import std.conv: text;
 // source because the snippet runs under the backend, which cannot see the
 // host test's sandbox object.
 static foreach (backend; Matrix!(
+    Omit!(Bytecode, Because.refusal,
+        "native File calls receive ref/native slice descriptors through " ~
+            "callee-frame mirrors instead of the compiled-D ABI layout"),
     Omit!(Ctfe, Because.inexpressible, "needs the host filesystem, which CTFE cannot access"),
 )) {
     @("file.createWriteRead." ~ backend.stringof)
