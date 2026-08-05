@@ -3258,9 +3258,28 @@ private struct Walker {
                 }
                 if (auto field = index.e1.isDotVarExp)
                     if (field.e1.isVarExp !is null) {
+                        // Always element mode -- same reasoning as the
+                        // `VarExp` arm above: `pointer` is `field`'s own
+                        // address, one level short of `array`'s (this
+                        // IndexExp's) element.
                         const pointer = arrayPointer(field, outerOffset, op);
-                        if (pointer.isPointer)
-                            return pointer;
+                        if (pointer.isPointer) {
+                            if (selfAddress)
+                                return pointer;
+                            // Same hazard as the `VarExp` arm above: a raw
+                            // byte offset from `pointer` would land inside a
+                            // slice header instead of the row's data when
+                            // this row is itself a dynamic array. Compose
+                            // through `Place.index` instead, even when
+                            // `offset == 0`.
+                            import quickbite.backends.interpreter.place: Place;
+
+                            return Value.pointerValue(
+                                Place(cast(void*) pointer.pointerAddress, array.type)
+                                    .index(cast(size_t) offset)
+                                    .address,
+                            );
+                        }
                     }
                 // A nested/multi-dimensional static-array index
                 // (`m[i][j]`, `m.e1` itself an `IndexExp`) must compose its

@@ -11527,3 +11527,56 @@ static foreach (backend; Matrix!(
         });
     }
 }
+
+// `arrayPointer`'s `array.isIndexExp` arm has a `DotVarExp` receiver branch
+// (`s.a[i]`, `s` a struct local, `a` a dynamic-array field) that was never
+// updated by 655eec7a's `selfAddress` split alongside its `VarExp` and
+// `IndexExp` sibling arms right above it: it returned `field`'s own address
+// (i.e. `s.a[outerOffset]`'s own address, one level short of the real
+// element for a row that is itself a dynamic array) unconditionally,
+// ignoring both `selfAddress` and `offset`. A non-zero final index landed
+// the write inside the row's own `{length, ptr}` slice-header bytes instead
+// of its data. SystemLinker is the oracle.
+static foreach (backend; Matrix!()) {
+    @("pointer.addressOfFinalNonZeroIndexOfDotVarDynamicArrayRow." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            unittest {
+                static struct S { int[][] a; }
+                S s;
+                s.a ~= [1, 2, 3];
+                auto p = &s.a[0][1];
+                *p = 9;
+                assert(s.a[0][1] == 9);
+                assert(s.a[0][0] == 1);
+                assert(s.a[0].length == 3);
+            }
+        });
+    }
+}
+
+// Same `DotVarExp` receiver arm, final index `0` -- the same
+// final-index-zero hazard 655eec7a fixed for the `VarExp`/`IndexExp` arms:
+// `field`'s own address (the row's slice-header address) must not be
+// returned as element 0's data address.
+static foreach (backend; Matrix!()) {
+    @("pointer.addressOfFinalZeroIndexOfDotVarDynamicArrayRow." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            unittest {
+                static struct S { int[][] a; }
+                S s;
+                s.a ~= [1, 2, 3];
+                auto q = &s.a[0][0];
+                *q = 9;
+                assert(s.a[0][0] == 9);
+                assert(s.a[0][1] == 2);
+                assert(s.a[0].length == 3);
+            }
+        });
+    }
+}
