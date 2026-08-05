@@ -3181,22 +3181,42 @@ private struct Walker {
                     }
                 if (AggregateValue.isArray(arrayValue)) {
                     if (arrayValue.isNativeAggregate) {
-                        const element = Value.pointerValue(
-                            AggregateValue.elementAddress(
-                                arrayValue,
-                                cast(size_t) outerOffset,
-                            ),
+                        // `index.e1` had no VarExp/DotVarExp receiver, so it
+                        // was just re-evaluated above as a second, independent
+                        // call/index. That result's native storage has no
+                        // root beyond this call's own locals; retain it in
+                        // the execution roots before returning a bare address
+                        // into it, matching the DotVarExp call-result fix
+                        // above (`nativePointerRoots`) -- without this, the
+                        // composed address can outlive its backing block.
+                        auto aggregate = AggregateValue.native(arrayValue);
+                        nativePointerRoots[aggregate.storage.address] = aggregate.storage;
+                        auto elementAddress = AggregateValue.elementAddress(
+                            arrayValue,
+                            cast(size_t) outerOffset,
                         );
                         // DMD leaves this synthetic IndexExp's type null for
                         // a direct `&array[index]`. Its element address is
                         // already complete when no further offset composes
                         // through it.
                         if (offset == 0)
-                            return element;
-                        return element.pointerOffsetBy(
-                            offset * cast(long) typeByteSize(
-                                array.type.toBasetype.nextOf,
-                            ),
+                            return Value.pointerValue(elementAddress);
+                        // `array.type` (this row's own type, e.g. `int[]` or
+                        // `int[3]`) drives the leaf stride. `Place.index`
+                        // dereferences a dynamic-array row's `{length, ptr}`
+                        // header before applying that stride, and applies it
+                        // directly for a static-array row's inline bytes --
+                        // exactly the two cases the Contracts' "one level at
+                        // a time" rule distinguishes; a raw byte offset from
+                        // `elementAddress` would land inside a slice header
+                        // instead of the row's data for the dynamic-array
+                        // case.
+                        import quickbite.backends.interpreter.place: Place;
+
+                        return Value.pointerValue(
+                            Place(elementAddress, array.type)
+                                .index(cast(size_t) offset)
+                                .address,
                         );
                     }
 

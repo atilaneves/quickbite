@@ -693,18 +693,6 @@ static archive at all (see the fixtures' `Omit` notes for the confirmed
 specifics) — a new native symbol-resolution source belongs to `ffi.md`, not
 this track.
 
-`runDeclarationExpression`'s `isArrayElementAlias` branch aliases a `ref`
-local onto an indexed call result's element by re-invoking `arrayPointer` on
-the initializer's inner receiver to compose an address — a SECOND,
-independent evaluation of the same call, distinct from the one already used
-for the alias's value. The second call's returned aggregate has no GC root
-beyond `arrayPointer`'s own locals, so the `ref` binding can end up aliasing
-reclaimed/reused memory (`dynamicArray.arrayOfArraysReturningCallResultIndexing`,
-`tests/ut/backends/runner/lang/arrays.d`, reads a garbage int instead of the
-call's real element). Fix needs either rooting the second call's temporary
-for the `ref` binding's lifetime, or reusing the already-evaluated value's
-own address instead of re-invoking the `CallExp` receiver.
-
 ### Item 5 — Delete Interpreter FFI marshalling fallbacks
 
 Finish decision 18 after the language-surface critical path. Normal outbound
