@@ -650,14 +650,6 @@ module-scope *static* array (`S[N] arr; ... arr[i++].method();`) throws
 "Unsupported eval expression: address" -- unconfirmed, distinct from the
 dynamic-array case (fixed).
 
-A constructor body's whole-struct-typed field assignment (`this.field =
-OtherStruct(args)`) through a pointer-bound `this` throws `Expected struct.`,
-independent of the receiver's cast/type; a scalar-field ctor body through the
-identical receiver shape already works. Confirmed via cerealed's `emplaceRef`
-wrapper-struct shape (`emplaceRefSkipsPostblitForStructElement`,
-`emplaceRefForwardsConstructorArguments`, both
-`Omit!(Interpreter, Because.unconfirmed)`). Root cause not yet triaged.
-
 `std.array.array()` realizing a lazy range (`iota(...).filter!(...).array`,
 `.map!(...).array`) drives its Appender through a native-buffer-growth shape
 the Interpreter doesn't fully support: `repl.backend.

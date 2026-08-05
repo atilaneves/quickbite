@@ -7256,16 +7256,30 @@ private struct Walker {
         // through to `runExpression(assign.e2)` below, which evaluated the
         // `IntegerExp` as a scalar `Value(0)` and clobbered the parameter's
         // boxed struct value with a bare int.
+        //
+        // The identical synthesized zero-init blit precedes a whole-struct
+        // -typed FIELD's constructor call too (e.g. `core.internal.lifetime.
+        // emplaceRef`'s generated wrapper `this.payload = T(args)`, lowered
+        // to a zero-init blit of `this.payload` followed by its `__ctor`
+        // call): `assign.e1` is then a `DotVarExp`, not a `VarExp`, so it
+        // needs the same default-value materialization rather than writing
+        // the raw `0` literal into the field's native struct storage.
         if (auto blit = assign.isBlitExp) {
             import quickbite.frontend.dmd.types: isStructType;
 
-            if (blit.e2.isIntegerExp !is null && isStructType(assign.e1.type))
+            if (blit.e2.isIntegerExp !is null && isStructType(assign.e1.type)) {
                 if (auto var = assign.e1.isVarExp)
                     if (auto variable = var.var.isVarDeclaration) {
                         const value = defaultValue(variable);
                         writeLocation(assign.e1, value);
                         return value;
                     }
+                if (assign.e1.isDotVarExp !is null) {
+                    const value = defaultValue(assign.e1.type);
+                    writeLocation(assign.e1, value);
+                    return value;
+                }
+            }
         }
 
         // A fresh closure RHS (`c.f = (int x) => x + captured;`) is a bare
