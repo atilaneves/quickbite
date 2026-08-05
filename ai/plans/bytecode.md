@@ -600,9 +600,10 @@ place second.
    type-only fallback. Struct-method receivers materialised from a pointer,
    pointer/class field, or dynamic-array element also use it for their inline
    load/store blocks. By-value and captured struct/static-array values use it
-   for their inline copy widths. The next bounded width family should be one
-   call-site family that still queries `staticArraySize` directly for an
-   inline operand width, rather than a broad rename.
+   for their inline copy widths. The next bounded width family should be the
+   dynamic-array aggregate-element materialisation in
+   `loadDynamicArrayElement`, which still queries `staticArraySize` directly
+   for its inline operand width, rather than a broad rename.
 
    Done: every width-suffixed opcode family (`indexLoad*`/`indexStore*`,
    `pointerLoad*`/`pointerStore*`/`pointerSlice*`, `subSlice*`,

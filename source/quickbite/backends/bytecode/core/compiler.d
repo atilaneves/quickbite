@@ -6290,7 +6290,7 @@ private struct Compiler {
         in ushort indexSlot,
         Type structType,
     ) {
-        const structSize = cast(uint) staticArraySize(structType);
+        const structSize = inlineByteWidth(structType);
         const offset = allocateBytes(structSize, staticArrayAlign(structType));
         emitPointerLoad(offset, pointer, indexSlot, structSize);
         return offset;
