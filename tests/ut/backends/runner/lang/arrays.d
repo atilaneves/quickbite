@@ -4208,7 +4208,6 @@ static foreach (backend; Matrix!(
 // support on every backend.
 static foreach (backend; Matrix!(
     Omit!(Ctfe, Because.unconfirmed),
-    Omit!(Interpreter, Because.unconfirmed),
     Omit!(LLVMJit, Because.unconfirmed),
 )) {
     @("assocArray.delegateValueLocalLambdaAssignInvokesStoredDelegate." ~
@@ -4232,7 +4231,6 @@ static foreach (backend; Matrix!(
 // second time over the same slot rather than only ever writing it once.
 static foreach (backend; Matrix!(
     Omit!(Ctfe, Because.unconfirmed),
-    Omit!(Interpreter, Because.unconfirmed),
     Omit!(LLVMJit, Because.unconfirmed),
 )) {
     @("assocArray.delegateValueLocalReassignInvokesLatestDelegate." ~
@@ -4259,7 +4257,6 @@ static foreach (backend; Matrix!(
 // fix and the two lambda-assign fixtures above exercise.
 static foreach (backend; Matrix!(
     Omit!(Ctfe, Because.unconfirmed),
-    Omit!(Interpreter, Because.unconfirmed),
     Omit!(LLVMJit, Because.unconfirmed),
 )) {
     @("assocArray.delegateValueLocalForeachInvokesEachStoredDelegate." ~

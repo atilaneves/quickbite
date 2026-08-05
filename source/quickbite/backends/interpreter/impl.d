@@ -5128,7 +5128,7 @@ private struct Walker {
         foreach (index; 0 .. AggregateValue.length(keys)) {
             const arguments = [
                 AggregateValue.elementAt(keys, index),
-                AggregateValue.elementAt(values, index),
+                nativeArrayElementAt(values, index),
             ];
             const result = body is null
                 ? runDelegateCall(delegate_, arguments, [null, null])
@@ -5138,6 +5138,25 @@ private struct Walker {
         }
 
         return Value(0);
+    }
+
+    // `AggregateValue.elementAt`'s plain memory read sees a delegate-typed
+    // element's zeroed bytes, not its live callable Value -- `assocArrayValues`
+    // registers a live delegate entry out-of-band in `nativeDelegateSlots`,
+    // keyed by the RESULT array's own element address, exactly the same gap
+    // `loadNativePointerElement`'s identical `TY.Tdelegate` arm checks
+    // before falling through to a plain read.
+    private Value nativeArrayElementAt(in Value array, in size_t index) {
+        import dmd.astenums: TY;
+        import quickbite.backends.interpreter.aggregate_value: AggregateValue;
+
+        if (array.isNativeAggregate) {
+            auto elementType = AggregateValue.native(array).type.toBasetype.nextOf;
+            if (elementType !is null && elementType.toBasetype.ty == TY.Tdelegate)
+                if (auto delegate_ = AggregateValue.elementAddress(array, index) in nativeDelegateSlots)
+                    return *delegate_;
+        }
+        return AggregateValue.elementAt(array, index);
     }
 
     private size_t assocArrayLength(in Value value) {
@@ -5241,23 +5260,54 @@ private struct Walker {
         );
     }
 
+    // A delegate-typed VALUE has no native ABI function address (the same
+    // gap `nativeDelegateSlots`'s own field comment documents, and the
+    // reason `loadNativePointerElement`'s identical `TY.Tdelegate` arm
+    // checks this table before falling through to a plain memory read): the
+    // entry's live callable Value lives out-of-band, keyed by the value
+    // slot's own address, exactly as `runAssocArrayLvalueCall`'s
+    // pointer-index write path (`storeNativePointerElement`) already
+    // registers it. `AggregateValue.reconstructArray`'s `writeValue` call
+    // below only ever accepts `Value.null_` for a Tdelegate element (an
+    // interpreted delegate is not native-composable bytes), so every live
+    // entry is substituted with `Value.null_` for the reconstruction and
+    // then re-registered at the RESULT array's own element address --
+    // mirroring `structLiteralValue`'s identical substitute-then-register
+    // handling of a live delegate struct-literal field.
     private Value assocArrayValues(in Value value, imported!"dmd.mtype".Type resultType) {
         if (!isNativeAssocArray(value))
             return value.assocArrayValues;
 
+        import dmd.astenums: TY;
         import dmd.mtype: TypeDArray;
         import quickbite.backends.interpreter.aggregate_value: AggregateValue;
         import quickbite.backends.interpreter.place: Place;
         import quickbite.backends.interpreter.place_value: readValue;
 
         auto header = nativeAssocArray(value);
+        const isDelegateValue = header.valueType.toBasetype.ty == TY.Tdelegate;
         Value[] values;
-        foreach (index; 0 .. header.length)
-            values ~= readValue(Place(header.valueAt(index).address, header.valueType));
-        return AggregateValue.reconstructArray(
+        size_t[] liveDelegateIndices;
+        Value[] liveDelegateValues;
+        foreach (index; 0 .. header.length) {
+            auto address = header.valueAt(index).address;
+            if (isDelegateValue)
+                if (auto delegate_ = address in nativeDelegateSlots) {
+                    liveDelegateIndices ~= index;
+                    liveDelegateValues ~= *delegate_;
+                    values ~= Value.null_;
+                    continue;
+                }
+            values ~= readValue(Place(address, header.valueType));
+        }
+        auto result = AggregateValue.reconstructArray(
             resultType is null ? new TypeDArray(header.valueType) : resultType,
             values,
         );
+        foreach (position, index; liveDelegateIndices)
+            nativeDelegateSlots[AggregateValue.elementAddress(result, index)] =
+                liveDelegateValues[position];
+        return result;
     }
 
     private bool isNativeAssocArray(in Value value) {
