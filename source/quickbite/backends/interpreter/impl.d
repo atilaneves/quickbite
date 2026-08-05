@@ -6481,10 +6481,23 @@ private struct Walker {
     // binding address for a member-function delegate, not a copy
     // (`delegateContextPointer`'s `VarExp` arm resolves it the same way for
     // every delegate kind, member or closure), so comparing it directly is
-    // sufficient -- no separate receiver-identity tracking is needed. A
-    // `functionPointerId` with no registered runtime (a plain function
-    // pointer, never boxed into `delegates`) falls back to the raw
-    // comparison unchanged.
+    // sufficient for a NON-capturing delegate (bound method or plain
+    // function pointer) -- no separate receiver-identity tracking is
+    // needed there. A CAPTURING closure literal is different: every
+    // literal-created delegate shares the same `contextPointer` (`Value.
+    // pointerValue(null)`, set in `runFunctionLiteralDeclaration`), so two
+    // closures of the identical lambda over two different activations
+    // (`make(1)` and `make(2)` each returning `() => y`) would otherwise
+    // compare equal despite closing over distinct per-activation frame
+    // storage. `capturedAddresses` (`RuntimeDelegate`'s per-activation
+    // snapshot of each captured variable's frame address) carries that
+    // identity instead, so two delegates are equal only when their
+    // captured-variable sets match in size and every captured variable
+    // resolves to the same address on both sides; an empty set on both
+    // sides (nothing captured) falls back to the `contextPointer`
+    // comparison unchanged. A `functionPointerId` with no registered
+    // runtime (a plain function pointer, never boxed into `delegates`)
+    // falls back to the raw comparison unchanged.
     private bool equalDelegateValues(in Value left, in Value right) {
         if (!left.isFunctionPointer || !right.isFunctionPointer)
             return left == right;
@@ -6494,8 +6507,25 @@ private struct Walker {
         if (leftRuntime is null || rightRuntime is null)
             return left == right;
 
-        return leftRuntime.function_ is rightRuntime.function_ &&
-            leftRuntime.contextPointer == rightRuntime.contextPointer;
+        if (leftRuntime.function_ !is rightRuntime.function_)
+            return false;
+
+        if (
+            leftRuntime.capturedAddresses.length == 0 &&
+            rightRuntime.capturedAddresses.length == 0
+        )
+            return leftRuntime.contextPointer == rightRuntime.contextPointer;
+
+        if (leftRuntime.capturedAddresses.length != rightRuntime.capturedAddresses.length)
+            return false;
+
+        foreach (variable, address; leftRuntime.capturedAddresses) {
+            auto rightAddress = variable in rightRuntime.capturedAddresses;
+            if (rightAddress is null || *rightAddress !is address)
+                return false;
+        }
+
+        return true;
     }
 
     private bool equalArrayValues(in Value left, in Value right) {

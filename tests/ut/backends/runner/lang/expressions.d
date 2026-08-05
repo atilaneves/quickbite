@@ -2761,6 +2761,40 @@ static foreach (backend; Matrix!()) {
     }
 }
 
+// A capturing closure's `contextPointer` is always `null` (every
+// literal-created delegate shares it), so two closures of the SAME lambda
+// literal only compare equal by their captured frame addresses, not by
+// `contextPointer`: two activations of `make` each returning `() => y`
+// close over distinct per-activation storage for `y` and so must compare
+// unequal, unlike the non-capturing method-delegate/array-element twins
+// above.
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.inexpressible,
+        "Ctfe wraps dmd.dinterpret, whose CTFE engine refuses the "
+            ~ "returned closure outright with \"closures are not yet "
+            ~ "supported in CTFE\""),
+)) {
+    @("delegate.capturingClosuresFromDifferentActivationsCompareUnequal." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            int delegate() make(int x) {
+                int y = x * 2;
+                return () => y;
+            }
+
+            unittest {
+                auto d1 = make(1);
+                auto d2 = make(2);
+                assert(d1() == 2);
+                assert(d2() == 4);
+                assert(d1 != d2);
+            }
+        });
+    }
+}
+
 // A delegate-typed local (`_delegateLocals`'s statically-known-callee
 // storage) passed by `ref`: `referenceOffsetOrNull` had no case at all for a
 // delegate-typed local, so this call threw "Unsupported ref argument in
