@@ -11285,12 +11285,15 @@ static foreach (backend; Matrix!(
 
 // A struct method call through a receiver that is itself a nested/
 // multi-dimensional static-array index (`m[i][j].inc()` on `S[2][2] m`)
-// loses the mutation -- it lands on a detached row copy rather than the
-// real backing storage. The idempotent index variant below (`m[0][0]`, run
-// once, no side-effecting subscript) is enough to expose it. Reproduces
-// identically on master; pre-existing, not introduced or claimed-fixed by
-// any commit on this branch. Root cause not yet triaged (`ai/plans/value.md`
-// item 4).
+// used to lose the mutation -- it landed on a detached row copy rather than
+// the real backing storage, because `arrayPointer` (`interpreter/impl.d`)
+// had no case recursing into a nested `IndexExp` receiver and instead
+// composed the element address from `runExpression(index.e1)`'s value --
+// a copy, per `place_value.readValue`'s array arm. Fixed by recursing
+// through `arrayPointer` for an `IndexExp` receiver exactly as the
+// existing `VarExp`/`DotVarExp` cases do. The idempotent index variant
+// below (`m[0][0]`, run once, no side-effecting subscript) is enough to
+// exercise it.
 static foreach (backend; Matrix!(
     Omit!(Ctfe, Because.diverges,
         "Ctfe runs the unittest body through DMD's own CTFE interpreter, " ~
@@ -11299,11 +11302,6 @@ static foreach (backend; Matrix!(
     Omit!(Bytecode, Because.unconfirmed,
         "\"Unsupported struct value in bytecode core: m[0][0]\" -- " ~
         "independent, unconfirmed gap in the bytecode core"),
-    Omit!(Interpreter, Because.unconfirmed,
-        "a struct method-call receiver through a nested static-array " ~
-        "index (`m[i][j]`) rebinds `this` to a detached row copy instead " ~
-        "of the real backing storage, so the mutation made by `inc()` is " ~
-        "lost"),
 )) {
     @("struct.methodCallThroughNestedStaticArrayIndexedReceiverMutatesBackingStorage." ~
         backend.stringof)

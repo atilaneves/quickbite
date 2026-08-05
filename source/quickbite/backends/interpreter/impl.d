@@ -3220,6 +3220,29 @@ private struct Walker {
                         if (pointer.isPointer)
                             return pointer;
                     }
+                // A nested/multi-dimensional static-array index
+                // (`m[i][j]`, `m.e1` itself an `IndexExp`) must compose its
+                // receiver's address the same way the `VarExp` case above
+                // does, rather than falling through to `arrayValue` below:
+                // `arrayValue` is `runExpression(index.e1)`'s result, and
+                // reading a static-array-typed rvalue copies its bytes
+                // (`place_value.readValue`'s array arm returns
+                // `AggregateValue.copyFromAddress`). Composing the address
+                // from that copy silently detaches the receiver from `m`'s
+                // real backing storage, so a method call through it (or any
+                // further write) is lost.
+                if (index.e1.isIndexExp !is null) {
+                    const element = arrayPointer(index.e1, outerOffset, op);
+                    if (element.isPointer) {
+                        if (offset == 0)
+                            return element;
+                        return element.pointerOffsetBy(
+                            offset * cast(long) typeByteSize(
+                                array.type.toBasetype.nextOf,
+                            ),
+                        );
+                    }
+                }
                 if (AggregateValue.isArray(arrayValue)) {
                     if (arrayValue.isNativeAggregate) {
                         // `index.e1` had no VarExp/DotVarExp receiver, so it

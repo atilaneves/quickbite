@@ -691,14 +691,6 @@ methodCallThroughIndexedReceiverIntoUninitializedStaticArrayWithNonZeroInit`
 in `expressions.d`; LLVMJit fails the same fixture independently with a
 garbage default value, untriaged and unrelated to the Interpreter gap.)
 
-A struct method call through a receiver that is itself a nested/
-multi-dimensional static-array index (`m[i][j].inc()` on `S[2][2] m`) loses
-the mutation, landing on a detached row copy rather than the real backing
-storage; reproduces even for the idempotent `m[0][0].inc()`. Root cause not
-yet triaged. (`struct.
-methodCallThroughNestedStaticArrayIndexedReceiverMutatesBackingStorage` in
-`expressions.d`.)
-
 The temporary `std.conv.text` character-array path reads the authoritative
 native slice header, including its retained backing address, rather than a
 transient aggregate handle. This is slice execution, not a formatter-specific
