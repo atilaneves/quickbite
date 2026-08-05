@@ -6328,42 +6328,6 @@ private struct Compiler {
         if (field is null)
             return null;
 
-        // A nested function that reads a struct value from its enclosing
-        // frame -- its enclosing method's own `this`, or an outer local (a
-        // `lazy` argument thunk's captured struct) -- receives the parent
-        // frame as its context. Materialise the native struct block before
-        // addressing the field, and retain the parent-frame index so every
-        // write through this field can be copied back.
-        if (_hasNestedContext)
-            if (auto receiver = capturedStructReceiver(dot.e1))
-                if (auto captured = receiver in _capturedOffsets) {
-                    const structOffset = allocateStructBlock(dot.e1.type);
-                    const frameIndexOffset = capturedFrameIndex(
-                        _capturedOwners[receiver], *captured,
-                    );
-                    const structSize = cast(ushort) inlineByteWidth(dot.e1.type);
-                    _code ~= Instruction(
-                        Op.frameLoad,
-                        structOffset,
-                        frameIndexOffset,
-                        structSize,
-                    );
-                    auto result = new StructField;
-                    *result = StructField(
-                        offset: cast(ushort) (structOffset + field.offset),
-                        type: field.type,
-                        writeBack: StructField.WriteBack.frame,
-                        target: StructField.WriteBackTarget(
-                            frame: StructField.FrameWriteBack(
-                                structOffset,
-                                frameIndexOffset,
-                                structSize,
-                            ),
-                        ),
-                    );
-                    return result;
-                }
-
         auto base = structBaseOffsetOrMaterialise(dot.e1);
         if (base is null)
             return null;
@@ -6574,37 +6538,38 @@ private struct Compiler {
             return result;
         }
 
+        // A nested function reads an enclosing struct receiver -- either its
+        // enclosing method's `this` or an outer local -- through the parent
+        // frame. Materialise that one base place here so direct and nested
+        // field paths retain the same frame writeback target.
         if (_hasNestedContext)
-            if (auto variable = expression.isVarExp)
-                if (auto declaration = variable.var.isVarDeclaration)
-                    if (declaration.type.toBasetype.ty == TY.Tstruct)
-                        if (auto captured = declaration in _capturedOffsets) {
-                            const structOffset =
-                                allocateStructBlock(declaration.type);
-                            const frameIndex = capturedFrameIndex(
-                                _capturedOwners[declaration], *captured,
-                            );
-                            const structSize = cast(ushort)
-                                inlineByteWidth(declaration.type);
-                            _code ~= Instruction(
-                                Op.frameLoad,
-                                structOffset,
-                                frameIndex,
-                                structSize,
-                            );
-                            auto result = new StructField;
-                            *result = StructField(
-                                offset: structOffset,
-                                type: expression.type,
-                                writeBack: StructField.WriteBack.frame,
-                                target: StructField.WriteBackTarget(
-                                    frame: StructField.FrameWriteBack(
-                                        structOffset, frameIndex, structSize,
-                                    ),
-                                ),
-                            );
-                            return result;
-                        }
+            if (auto receiver = capturedStructReceiver(expression))
+                if (auto captured = receiver in _capturedOffsets) {
+                    const structOffset = allocateStructBlock(expression.type);
+                    const frameIndex = capturedFrameIndex(
+                        _capturedOwners[receiver], *captured,
+                    );
+                    const structSize = cast(ushort)
+                        inlineByteWidth(expression.type);
+                    _code ~= Instruction(
+                        Op.frameLoad,
+                        structOffset,
+                        frameIndex,
+                        structSize,
+                    );
+                    auto result = new StructField;
+                    *result = StructField(
+                        offset: structOffset,
+                        type: expression.type,
+                        writeBack: StructField.WriteBack.frame,
+                        target: StructField.WriteBackTarget(
+                            frame: StructField.FrameWriteBack(
+                                structOffset, frameIndex, structSize,
+                            ),
+                        ),
+                    );
+                    return result;
+                }
 
         // A bare module-level (`__gshared`/`static`) struct variable
         // (`go`, as opposed to `go.field`): materialise the whole block from

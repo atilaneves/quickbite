@@ -643,6 +643,8 @@ place second.
    `structBaseOffsetOrMaterialise`; field resolution carries that target
    forward rather than reconstructing it from parallel state. Nested field
    composition goes through `structFieldAt`, preserving that target. The
+   resolver materialises captured struct receivers at their base, so
+   `tryStructField` only composes a field onto the resolved place. The
    module-struct-field `ref` emitter consumes that data-segment target rather
    than independently reconstructing a module offset, and receives the
    already-resolved field place so it does not materialise module storage a
