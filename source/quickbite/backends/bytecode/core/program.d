@@ -1313,6 +1313,10 @@ package(quickbite.backends.bytecode) struct NativeCall {
     // `nativeClassReceiverType` is null for an ordinary native function call.
     ushort nativeClassReceiverOffset = noOutParameterOffset;
     imported!"dmd.mtype".TypeClass nativeClassReceiverType;
+    // A native struct method receives a pointer to the VM's inline receiver
+    // block as its hidden `this` argument.
+    ushort nativeStructReceiverOffset = noOutParameterOffset;
+    imported!"dmd.mtype".TypeStruct nativeStructReceiverType;
 }
 
 // Sentinel `NativeCall.outParameterOffsets` entry for an argument that is not

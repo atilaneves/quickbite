@@ -1784,7 +1784,8 @@ package(quickbite.backends.bytecode) RunResult run(
             case nativeCall:
                 import quickbite.frontend.dmd.functions:
                     noAvailableSourceMessage;
-                import quickbite.ffi: callNative, callNativeClassMember;
+                import quickbite.ffi:
+                    callNative, callNativeClassMember, callNativeMember;
 
                 auto native = program.nativeCalls[instruction.a];
                 auto marshaller = new BytecodeNativeMarshaller(
@@ -1794,22 +1795,29 @@ package(quickbite.backends.bytecode) RunResult run(
                     base,
                     native.outParameterOffsets,
                     native.nativeClassReceiverOffset,
+                    native.nativeStructReceiverOffset,
                 );
                 bool[] addressOfLocalArguments;
                 addressOfLocalArguments.length = native.outParameterOffsets.length;
                 foreach (index, offset; native.outParameterOffsets)
                     addressOfLocalArguments[index] =
                         offset != noOutParameterOffset;
-                const called = native.nativeClassReceiverType is null
-                    ? callNative(
-                        native.function_, marshaller, native.argumentTypes,
+                const called = native.nativeStructReceiverType !is null
+                    ? callNativeMember(
+                        native.function_, native.nativeStructReceiverType,
+                        marshaller, native.argumentTypes,
                         addressOfLocalArguments,
                     )
-                    : callNativeClassMember(
+                    : native.nativeClassReceiverType is null
+                        ? callNative(
+                            native.function_, marshaller, native.argumentTypes,
+                            addressOfLocalArguments,
+                        )
+                        : callNativeClassMember(
                         native.function_, native.nativeClassReceiverType,
                         marshaller, native.argumentTypes,
                         addressOfLocalArguments,
-                    );
+                        );
                 if (!called)
                     throw new Exception(noAvailableSourceMessage(
                         native.function_,
@@ -3754,7 +3762,8 @@ private bool descriptorContentEqual(
 }
 
 private final class BytecodeNativeMarshaller:
-    imported!"quickbite.ffi".NativeMarshaller
+    imported!"quickbite.ffi".NativeMarshaller,
+    imported!"quickbite.ffi".NativeReceiverAddressMarshaller
 {
     import dmd.mtype: Type;
     import quickbite.ffi: NativeMarshaller;
@@ -3765,6 +3774,7 @@ private final class BytecodeNativeMarshaller:
     private size_t _base;
     private const(ushort)[] _outParameterOffsets;
     private ushort _nativeClassReceiverOffset;
+    private ushort _nativeStructReceiverOffset;
 
     public this(
         ubyte[] stack,
@@ -3773,6 +3783,7 @@ private final class BytecodeNativeMarshaller:
         in size_t base,
         in ushort[] outParameterOffsets,
         in ushort nativeClassReceiverOffset,
+        in ushort nativeStructReceiverOffset,
     ) {
         _stack = stack;
         _argument = argument;
@@ -3780,6 +3791,7 @@ private final class BytecodeNativeMarshaller:
         _base = base;
         _outParameterOffsets = outParameterOffsets;
         _nativeClassReceiverOffset = nativeClassReceiverOffset;
+        _nativeStructReceiverOffset = nativeStructReceiverOffset;
     }
 
     public bool canRepresent(Type type, in NativeMarshaller.Direction direction) {
@@ -3787,11 +3799,8 @@ private final class BytecodeNativeMarshaller:
         const ty = type.toBasetype.ty;
         if (ty == TY.Tvoid)
             return direction == NativeMarshaller.Direction.fromNative;
-        // A by-value struct only crosses back out of a native call (the
-        // return value); the compiler emits no struct-by-value argument
-        // shape today.
         if (ty == TY.Tstruct)
-            return direction == NativeMarshaller.Direction.fromNative;
+            return true;
         return ty == TY.Tbool || ty == TY.Tint32 || ty == TY.Tuns32 ||
             ty == TY.Tint64 || ty == TY.Tuns64 || ty == TY.Tfloat64 ||
             ty == TY.Tpointer || ty == TY.Tclass || ty == TY.Tarray;
@@ -3992,6 +4001,14 @@ private final class BytecodeNativeMarshaller:
         return cast(const(void)*) scalarValue!size_t(
             _stack, _base + _nativeClassReceiverOffset,
         );
+    }
+
+    public void* receiverAddress(Type type) @trusted {
+        import quickbite.backends.bytecode.core.program: noOutParameterOffset;
+
+        return _nativeStructReceiverOffset == noOutParameterOffset
+            ? null
+            : &_stack[_base + _nativeStructReceiverOffset];
     }
 
     public void invokeClosure(in size_t argumentIndex, Type returnType,

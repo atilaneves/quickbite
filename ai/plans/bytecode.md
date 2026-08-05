@@ -472,12 +472,12 @@ reaches them:
 Archive function pointers use a native forwarding wrapper only for a
 receiver-free zero-argument target; the function-table word remains an index,
 so the wrapper is needed before `callIndirect` can reach the native bridge.
-Next candidate: reconfirm and promote
-`runTests.archiveBackedStructMethod`. It is the narrowest receiver-bearing
-archive row and requires the native bridge to pass the struct `this` block and
-its explicit `int` argument under the compiled-D ABI. Do not widen the
-function-pointer wrapper for this: a method delegate also needs a native,
-frame-independent receiver representation.
+An archive-backed struct method accepts a direct local's native-layout frame
+block as its ABI `this` pointer; a materialised, pointer-based, or delegate
+receiver still needs a frame-independent representation and refuses. Next
+candidate: reconfirm `runTests.archiveBackedClassMethod`; its VM class object
+is not an ABI class object, so promotion needs a real native class receiver,
+not the struct-receiver bridge.
 Closure interactions with exceptions (a captured local mutated across
 try/catch/finally) and class polymorphism/vtable dispatch (including
 `super.f()`) match `SystemLinker` under `bin/qb` probing -- not a lead.

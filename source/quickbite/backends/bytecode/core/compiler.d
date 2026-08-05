@@ -16181,6 +16181,12 @@ private struct Compiler {
         // and compiles the archive module's stale rewritten source body --
         // exactly what an archive-backed function's whole point is to never
         // do. Decline loudly rather than crash or run the wrong body.
+        if (isArchiveBacked && layout.hasThis)
+            if (auto native = tryCompileArchiveStructMethodCall(
+                    call, function_, layout,
+                ))
+                return *native;
+
         if (isArchiveBacked && (layout.hasThis || layout.hasClassThis))
             throw new Exception(text(
                 "`",
@@ -16528,6 +16534,8 @@ private struct Compiler {
         CallExp call,
         FuncDeclaration function_,
         in ParameterLayout layout,
+        in ushort nativeStructReceiverOffset = noOutParameterOffset,
+        imported!"dmd.mtype".TypeStruct nativeStructReceiverType = null,
     ) {
         import dmd.astenums: TY;
 
@@ -16625,6 +16633,36 @@ private struct Compiler {
 
         return emitNativeCall(
             function_, argumentTypes, argumentArea, outParameterOffsets,
+            noOutParameterOffset, null, nativeStructReceiverOffset,
+            nativeStructReceiverType,
+        );
+    }
+
+    // A direct struct local already occupies native-layout VM stack storage,
+    // so an archive method can receive that block as its ABI `this` pointer.
+    // More elaborate receivers need the ordinary bytecode writeback path.
+    private Operand* tryCompileArchiveStructMethodCall(
+        CallExp call,
+        FuncDeclaration function_,
+        in ParameterLayout layout,
+    ) {
+        auto dot = call.e1.isDotVarExp;
+        if (dot is null)
+            return null;
+        auto receiver = dot.e1.isVarExp;
+        if (receiver is null)
+            return null;
+        auto declaration = receiver.var.isVarDeclaration;
+        if (declaration is null)
+            return null;
+        auto offset = declaration in _structLocals;
+        if (offset is null)
+            return null;
+        auto receiverType = dot.e1.type.toBasetype.isTypeStruct;
+        if (receiverType is null)
+            return null;
+        return tryCompileNativeCall(
+            call, function_, layout, offset.offset, receiverType,
         );
     }
 
@@ -16766,6 +16804,8 @@ private struct Compiler {
         in ushort[] outParameterOffsets,
         in ushort nativeClassReceiverOffset = noOutParameterOffset,
         imported!"dmd.mtype".TypeClass nativeClassReceiverType = null,
+        in ushort nativeStructReceiverOffset = noOutParameterOffset,
+        imported!"dmd.mtype".TypeStruct nativeStructReceiverType = null,
     ) {
         import dmd.astenums: TY;
 
@@ -16800,6 +16840,8 @@ private struct Compiler {
                 outParameterOffsets.dup,
                 nativeClassReceiverOffset,
                 nativeClassReceiverType,
+                nativeStructReceiverOffset,
+                nativeStructReceiverType,
             );
         _code ~= Instruction(
             Op.nativeCall,
