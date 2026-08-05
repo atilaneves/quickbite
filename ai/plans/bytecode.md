@@ -605,10 +605,9 @@ place second.
    for their inline blocks too, as do whole-struct assignments to a receiver,
    local, or field. Static-array assignment and literal materialisation now
    use `inlineByteWidth` for their inline copy, fill, and element-placement
-   widths; module static-array storage is allocated from that same authority.
-   Next bounded width family: static-array-to-dynamic-array materialisation
-   still queries `staticArraySize` directly for source element widths and
-   counts.
+   widths; module static-array storage and static-array-to-dynamic-array
+   materialisation derive their element widths and counts from that same
+   authority.
 
    Done: every width-suffixed opcode family (`indexLoad*`/`indexStore*`,
    `pointerLoad*`/`pointerStore*`/`pointerSlice*`, `subSlice*`,

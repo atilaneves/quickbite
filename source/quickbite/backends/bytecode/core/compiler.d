@@ -8263,8 +8263,7 @@ private struct Compiler {
             ));
 
         auto sourceElementType = source.type.toBasetype.nextOf;
-        const sourceElementSize =
-            cast(uint) staticArraySize(sourceElementType);
+        const sourceElementSize = inlineByteWidth(sourceElementType);
         // A dynamic-array element (`int[][2]`'s `int[]` elements) is a
         // 16-byte slice descriptor; `elementType` names its innermost scalar
         // for indexing further in, not its own native width, so its byte
@@ -8280,8 +8279,7 @@ private struct Compiler {
                 expressionChars(source),
             ));
 
-        const count =
-            cast(uint) staticArraySize(source.type) / sourceElementSize;
+        const count = inlineByteWidth(source.type) / sourceElementSize;
         _code ~= Instruction(
             Op.allocArray,
             destination,
@@ -8310,15 +8308,13 @@ private struct Compiler {
         in ushort basePointer,
     ) {
         auto sourceElementType = sourceType.toBasetype.nextOf;
-        const sourceElementSize =
-            cast(uint) staticArraySize(sourceElementType);
+        const sourceElementSize = inlineByteWidth(sourceElementType);
         const elementSize = elementType == ScalarType.void_ ||
                 arrayElementIsArray(sourceType)
             ? sourceElementSize
             : cast(uint) size(elementType);
 
-        const count =
-            cast(uint) staticArraySize(sourceType) / sourceElementSize;
+        const count = inlineByteWidth(sourceType) / sourceElementSize;
         _code ~= Instruction(
             Op.allocArray,
             destination,
