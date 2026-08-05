@@ -607,7 +607,10 @@ place second.
    use `inlineByteWidth` for their inline copy, fill, and element-placement
    widths; module static-array storage and static-array-to-dynamic-array
    materialisation derive their element widths and counts from that same
-   authority.
+   authority. The remaining inline DMD-layout queries in the compiler --
+   static-array indexing and views, pointer/AA stores, equality, and result
+   metadata -- also go through `inlineByteWidth`; no direct
+   `staticArraySize` authority remains.
 
    Done: every width-suffixed opcode family (`indexLoad*`/`indexStore*`,
    `pointerLoad*`/`pointerStore*`/`pointerSlice*`, `subSlice*`,

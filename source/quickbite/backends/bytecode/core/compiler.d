@@ -2237,7 +2237,7 @@ private struct Compiler {
                     Op.copy,
                     offset,
                     _thisLocal.offset,
-                    cast(ushort) staticArraySize(expression.type),
+                    cast(ushort) inlineByteWidth(expression.type),
                 );
                 return Operand(offset, ScalarType.void_);
             }
@@ -9150,7 +9150,7 @@ private struct Compiler {
         const scaled =
             allocateBytes(cast(uint) size_t.sizeof, size_t.sizeof);
         const stride =
-            compileSizeConstant(cast(uint) staticArraySize(elementType));
+            compileSizeConstant(inlineByteWidth(elementType));
         _code ~= Instruction(Op.mulInt8, scaled, indexSlot.offset, stride);
 
         const pointer = allocateBytes(cast(uint) size_t.sizeof, size_t.sizeof);
@@ -12747,7 +12747,7 @@ private struct Compiler {
 
         // A static-array rhs (an array literal in particular) is compiled
         // generically as a dynamic-array descriptor by `compileExpression`,
-        // not the `staticArraySize(declaration.type)` bytes of element
+        // not the `inlineByteWidth(declaration.type)` bytes of element
         // storage a captured `T[N]` needs; route it through the same
         // literal/copy recognition `compileStaticArrayValueInto` already
         // gives a plain local's whole-array reassignment (line ~9368 above).
@@ -13857,7 +13857,7 @@ private struct Compiler {
         );
         auto element = length.e1.type.toBasetype.nextOf;
         if (element.toBasetype.ty == TY.Tstruct) {
-            const elementSize = cast(uint) staticArraySize(element);
+            const elementSize = inlineByteWidth(element);
             const initBlock = allocateBytes(elementSize, staticArrayAlign(element));
             zeroFrameBlock(initBlock, elementSize);
             auto literal = element.toBasetype.isTypeStruct.defaultInitLiteral(
@@ -14342,7 +14342,7 @@ private struct Compiler {
                 ? delegateOperandOffset(rhs)
                 : compileExpression(rhs).offset;
         const elementSize = pointer.pointerElement == ScalarType.void_
-            ? cast(uint) staticArraySize(rhs.type)
+            ? inlineByteWidth(rhs.type)
             : size(pointer.pointerElement);
         emitPointerStore(valueOffset, pointer.offset, indexSlot, elementSize);
         return Operand(valueOffset, pointer.pointerElement);
@@ -17330,7 +17330,7 @@ private struct Compiler {
         // above); its width then comes from the emplaced value's own DMD
         // type size, never a bare `size(ScalarType.void_)`, which is 0.
         const elementSize = destination.pointerElement == ScalarType.void_
-            ? cast(uint) staticArraySize((*call.arguments)[1].type)
+            ? inlineByteWidth((*call.arguments)[1].type)
             : size(destination.pointerElement);
         emitPointerStore(
             value.offset, destination.offset, compileSizeConstant(0),
@@ -17605,8 +17605,8 @@ private struct Compiler {
                 if (auto slice = staticArray.isSliceExp)
                     staticArray = slice.e1;
                 const element = staticArray.type.toBasetype.nextOf;
-                const count = staticArraySize(staticArray.type) /
-                    staticArraySize(cast(Type) element);
+                const count = inlineByteWidth(staticArray.type) /
+                    inlineByteWidth(cast(Type) element);
                 _code ~= Instruction(Op.frameAddress, slot, *source);
                 _code ~= Instruction(
                     Op.loadConstant,
@@ -17773,7 +17773,7 @@ private struct Compiler {
         const isPointerValue = argument.type.toBasetype.ty == TY.Tpointer;
         const valueSize = cast(ushort) (isPointerValue
             ? size_t.sizeof
-            : staticArraySize(argument.type));
+            : inlineByteWidth(argument.type));
         foreach (writeBack; writeBacks)
             if (writeBack.pointerOffset == pointerOffset &&
                 writeBack.valueSize == valueSize &&
@@ -18765,7 +18765,7 @@ private struct Compiler {
         if (aaType.toBasetype.nextOf.toBasetype.ty == TY.Tdelegate)
             return delegateValueSize;
         if (aaType.toBasetype.nextOf.toBasetype.ty == TY.Tsarray)
-            return cast(uint) staticArraySize(aaType.toBasetype.nextOf);
+            return inlineByteWidth(aaType.toBasetype.nextOf);
         return dynamicArrayElementSize(
             aaType,
             dynamicArrayElementType(aaType),
@@ -18904,7 +18904,7 @@ private struct Compiler {
         const index = cast(ushort) _program.assocArrayKeyLayouts.length;
         _assocArrayKeyLayoutIndices[declaration] = index;
         _program.assocArrayKeyLayouts ~= AssocArrayKeyLayout(
-            fields, cast(ushort) staticArraySize(keyType),
+            fields, cast(ushort) inlineByteWidth(keyType),
         );
         return index;
     }
@@ -18942,7 +18942,7 @@ private struct Compiler {
                     "Unsupported associative array key type in ",
                     "bytecode core: ", typeChars(keyType),
                 ));
-            return cast(uint) staticArraySize(keyType);
+            return inlineByteWidth(keyType);
         }
         return size(scalarType(keyType));
     }
@@ -20304,7 +20304,7 @@ private struct Compiler {
         const equal = allocateBytes(1, 1);
         emitSliceEqual(
             equal, lhsOffset, rhsOffset,
-            cast(uint) staticArraySize(elementType),
+            inlineByteWidth(elementType),
         );
 
         ushort condition = equal;
@@ -20368,10 +20368,10 @@ private struct Compiler {
 
         auto rowElementType = rowType.toBasetype.nextOf;
         const rowElementScalar = scalarType(rowElementType);
-        const rowByteSize = cast(uint) staticArraySize(rowType);
+        const rowByteSize = inlineByteWidth(rowType);
         const rowLength = cast(uint) (rowByteSize / size(rowElementScalar));
         const rowCount =
-            cast(uint) (staticArraySize(nestedStatic.type) / rowByteSize);
+            inlineByteWidth(nestedStatic.type) / rowByteSize;
 
         const otherDescriptor =
             arrayDescriptorOffset(rowElementScalar, other, true);
@@ -21129,7 +21129,7 @@ private struct Compiler {
                 elementType: dynamicArrayElementType(type),
                 arrayElementsAreArrays: arrayElementIsArray(type),
                 isStruct: false,
-                structSize: cast(uint) staticArraySize(type),
+                structSize: inlineByteWidth(type),
                 isUndisplayable: false,
                 isStaticArray: true,
                 arrayLength: staticArrayLength(type),
@@ -21143,7 +21143,7 @@ private struct Compiler {
                 elementType: ScalarType.void_,
                 arrayElementsAreArrays: false,
                 isStruct: true,
-                structSize: cast(uint) staticArraySize(type),
+                structSize: inlineByteWidth(type),
             );
 
         // A by-value struct result is an inline block of `Type.size()` bytes,
@@ -21156,7 +21156,7 @@ private struct Compiler {
                 elementType: ScalarType.void_,
                 arrayElementsAreArrays: false,
                 isStruct: true,
-                structSize: cast(uint) staticArraySize(type),
+                structSize: inlineByteWidth(type),
             );
             populateStructDisplay(result, type);
             return result;
@@ -21237,7 +21237,7 @@ private struct Compiler {
             elementType: ScalarType.void_,
             arrayElementsAreArrays: false,
             isStruct: true,
-            structSize: cast(uint) staticArraySize(element),
+            structSize: inlineByteWidth(element),
         );
         populateStructDisplay(elementResult, element);
         if (elementResult.structName is null)
@@ -21604,7 +21604,9 @@ private struct Compiler {
     // (a function pointer has no dereferenceable payload) supply their own
     // stride instead.
     private uint inlineByteWidth(Type type) {
-        return cast(uint) staticArraySize(type);
+        import dmd.typesem: size;
+
+        return cast(uint) size(type.toBasetype);
     }
 
     // Shared aggregate-vs-scalar classification for a pointer/array element
@@ -23014,13 +23016,6 @@ private string enumMemberName(imported!"dmd.denum".EnumMember member)
 @trusted {
     // DMD Identifier.toString only exposes the compiler-owned identifier text.
     return member.ident.toString.idup;
-}
-
-// The inline byte size and alignment of a static array, taken from DMD's
-// computed layout rather than reconstructed.
-private ulong staticArraySize(imported!"dmd.mtype".Type type) {
-    import dmd.typesem: size;
-    return size(type.toBasetype);
 }
 
 private uint staticArrayAlign(imported!"dmd.mtype".Type type) {
