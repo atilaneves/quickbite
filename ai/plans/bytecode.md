@@ -505,14 +505,13 @@ reaches them:
   a `finally` between the throw site and wherever it's really caught can
   still be silently skipped.
 
-Next candidate. No named oracle-backed `Omit!(Bytecode, Because.unconfirmed)`
-row remains bounded and unblocked: the three survivors
-(`refArgument.templateRefSharedParameterMutatesAndPreservesAddress`,
-`refArgument.templateRefSharedForwardsThroughNestedFunction`,
-and `associativeArray.directLocalRefArgumentMutatesSource`, all in
-`expressions.d`) are blocked on the ref calling convention above, not bounded
-single-commit fixes. Closure interactions with exceptions (a
-captured local mutated across
+Next candidate. `refArgument.templateRefSharedForwardsThroughNestedFunction`
+(`expressions.d`) is red with `Unsupported ref argument in bytecode core:
+value`: a nested function's captured `ref` parameter needs a real caller
+place rather than a frame-local mirror.
+`associativeArray.directLocalRefArgumentMutatesSource` remains blocked on the
+ref calling convention above. Closure interactions with exceptions (a captured
+local mutated across
 try/catch/finally) and class polymorphism/vtable dispatch (including
 `super.f()`) match `SystemLinker` under `bin/qb` probing -- not a lead. Find
 a fresh row through further `bin/qb` exploration, take the "One place
