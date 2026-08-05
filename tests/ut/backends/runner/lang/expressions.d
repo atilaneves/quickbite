@@ -4083,13 +4083,14 @@ static foreach (backend; Matrix!(
 // the callee writes raw bits into the parameter's slot via a same-size
 // pointer cast, and the CALLER's variable (bound to that `ref` parameter)
 // must observe the write after the call returns. This is the guest-level
-// call-site frontier: a freshly promoted native cell for
-// the `ref` parameter must stay connected to the caller's own cell/box.
-// SystemLinker is the oracle; Bytecode runs this confirmed typed-frame path.
-// Other backends remain omitted per the omit-don't-pin convention
+// call-site frontier: a bytecode `ref` parameter still uses a callee-frame
+// mirror, so exposing the caller address would let the return writeback
+// clobber this pointer write. SystemLinker is the oracle. Backends remain
+// omitted per the omit-don't-pin convention
 // (address-of-a-local/parameter and float byte-reinterpretation are
 // unconfirmed/unsupported there).
 static foreach (backend; Matrix!(
+    Omit!(Bytecode, Because.unconfirmed),
     Omit!(Ctfe, Because.unconfirmed),
     Omit!(LLVMJit, Because.unconfirmed),
 )) {

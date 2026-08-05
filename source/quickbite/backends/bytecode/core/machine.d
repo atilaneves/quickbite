@@ -676,8 +676,8 @@ package(quickbite.backends.bytecode) RunResult run(
                 writeFrameAddress(
                     stack,
                     base + instruction.a,
-                    refParameterCallerAddress(
-                        frames[$ - 1], base, instruction.b,
+                    base + refParameterIdentitySlot(
+                        frames[$ - 1], instruction.b,
                     ),
                 );
                 ++ip;
@@ -3199,20 +3199,22 @@ private struct RefWriteback {
     uint size;
 }
 
-// A `ref` parameter's identity is its caller storage, not its callee mirror.
-// The writeback record already preserves that absolute stack offset. Two
-// parameters that alias one caller lvalue therefore naturally have identical
-// addresses, while `synchronizeRefAliases` continues to keep their mirror
-// values coherent during execution.
-private size_t refParameterCallerAddress(
+// The callee-frame-relative slot that stands for a scalar `ref` parameter's
+// identity: its own slot, unless it is grouped with other parameters aliasing
+// the same caller storage (`frame.refAliases`), in which case every member of
+// the group must report the group's first slot so `&first == &second` holds.
+// Reads and writes still go through each parameter's own slot;
+// `synchronizeRefAliases` keeps the group's slots byte-identical between
+// instructions, so redirecting only the address is safe.
+private ushort refParameterIdentitySlot(
     in Frame frame,
-    in size_t base,
     in ushort calleeOffset,
 ) @safe pure {
-    foreach (writeback; frame.refWritebacks)
-        if (writeback.calleeOffset == calleeOffset)
-            return writeback.callerOffset;
-    return base + calleeOffset;
+    foreach (group; frame.refAliases)
+        foreach (offset; group.calleeOffsets)
+            if (offset == calleeOffset)
+                return group.calleeOffsets[0];
+    return calleeOffset;
 }
 
 // Parameter slots that denote the same caller storage. The bytecode compiler

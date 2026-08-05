@@ -420,11 +420,14 @@ writeback clobbers the direct write regardless of program order. Real ABI
 `ref` has no such race. `referenceOffset`'s ordinary `_locals` path has it
 too, so `&value` inside a callee never equals the caller's `&value`.
 Reordering cannot fix it, because the callee never reaches the real address
-through the parameter at all. A real fix makes a scalar `ref` parameter a
-pointer the callee dereferences on every access, bound directly to the real
-address (e.g. via `Op.moduleAddress`), dropping the mirror/writeback pair
-entirely -- a change to the convention every ref-argument kind shares, not a
-narrow field-offset fix.
+through the parameter at all. In particular,
+`pointer.reinterpretWriteThroughRefParameterPointerReachesCaller` remains
+omitted: making `&refParameter` point at caller storage lets the unchanged
+writeback overwrite a through-pointer mutation. A real fix makes a scalar
+`ref` parameter a pointer the callee dereferences on every access, bound
+directly to the real address (e.g. via `Op.moduleAddress`), dropping the
+mirror/writeback pair entirely -- a change to the convention every
+ref-argument kind shares, not a narrow field-offset fix.
 
 Live hazards and divergences to reconfirm against current source when a row
 reaches them:
