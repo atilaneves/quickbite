@@ -674,6 +674,31 @@ An indexed array-of-arrays element is its own addressed slice header. Slice
 assignment through that element writes the row's native elements in place;
 rebuilding the enclosing array would reintroduce boxed storage authority.
 
+A first-touch, uninitialized module-scope static array whose element type
+has a non-zero `.init` pattern reads back zero-filled bytes instead of the
+real default when addressed via `arrayPointer`'s `hasMirrorSlot` path
+(`interpreter/impl.d`): `S[2] arr;` with `struct S { int x = 7; ... }`, then
+`arr[i++].inc()`, reads `arr[0].x == 1` instead of `8` and leaves
+`arr[1].x == 0` instead of `7`. Bounded to the no-initializer case — an
+explicitly-initialized `S[2] arr = [S(5), S(9)];` first-touch is already
+correct. Per `interpreter.md` §8, this silent divergence from the oracle is
+worse than the loud refusal ("Unsupported eval expression: address") it
+replaced. Fix direction: materialize `defaultValue(variable)` into the
+binding place (or gate on `isUninitializedBinding`/`mirrorEstablished`)
+before handing out addresses into a never-written module-table block.
+(`struct.
+methodCallThroughIndexedReceiverIntoUninitializedStaticArrayWithNonZeroInit`
+in `expressions.d`; LLVMJit fails the same fixture independently with a
+garbage default value, untriaged and unrelated to the Interpreter gap.)
+
+A struct method call through a receiver that is itself a nested/
+multi-dimensional static-array index (`m[i][j].inc()` on `S[2][2] m`) loses
+the mutation, landing on a detached row copy rather than the real backing
+storage; reproduces even for the idempotent `m[0][0].inc()`. Root cause not
+yet triaged. (`struct.
+methodCallThroughNestedStaticArrayIndexedReceiverMutatesBackingStorage` in
+`expressions.d`.)
+
 The temporary `std.conv.text` character-array path reads the authoritative
 native slice header, including its retained backing address, rather than a
 transient aggregate handle. This is slice execution, not a formatter-specific

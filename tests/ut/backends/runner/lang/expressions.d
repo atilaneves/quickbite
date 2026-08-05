@@ -11228,3 +11228,97 @@ static foreach (backend; Matrix!(
         });
     }
 }
+
+// The same first-touch, uninitialized module-scope static array as the
+// fixture above, but with an element type whose `.init` pattern is non-zero
+// (`int x = 7;` rather than `int x;`). `arrayPointer`'s `hasMirrorSlot`
+// branch (added by the fix above) composes the module-table element address
+// directly without ever materializing the block's default value first, so
+// the never-written backing bytes read back as zero instead of `S.init`:
+// `arr[0].x` reads `1` (0 + the one `inc()` call) instead of `8` (7 + 1),
+// and the untouched `arr[1].x` reads `0` instead of `7`. This is bounded to
+// the no-initializer case -- an explicitly-initialized
+// `S[2] arr = [S(5), S(9)];` first-touch already reads the real values on
+// both backends. Root cause not yet triaged (`ai/plans/value.md` item 4).
+// LLVMJit fails the same fixture too, but with its own garbage value
+// (`458753 != 8`) rather than the Interpreter's zero-filled one -- an
+// independent, unconfirmed default-static-initialization gap discovered by
+// this fixture, not the `hasMirrorSlot` path above.
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.diverges,
+        "Ctfe runs the unittest body through DMD's own CTFE interpreter, " ~
+        "which cannot read the mutable module-scope variable `arr`/`i` at " ~
+        "compile time"),
+    Omit!(Bytecode, Because.unconfirmed,
+        "\"Unsupported struct value in bytecode core: arr[cast(ulong)i++]\" " ~
+        "-- independent, unconfirmed gap in the bytecode core"),
+    Omit!(Interpreter, Because.unconfirmed,
+        "a never-written module-scope static array element reads as " ~
+        "zero-filled bytes instead of its struct's non-zero `.init` " ~
+        "pattern when first addressed through `arrayPointer`'s " ~
+        "`hasMirrorSlot` path"),
+    Omit!(LLVMJit, Because.unconfirmed,
+        "reads back a garbage value (`458753 != 8`) rather than the real " ~
+        "default -- an independent, unconfirmed default-static-" ~
+        "initialization gap, not the Interpreter's `hasMirrorSlot` path"),
+)) {
+    @("struct.methodCallThroughIndexedReceiverIntoUninitializedStaticArrayWithNonZeroInit." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct S {
+                int x = 7;
+                void inc() { x++; }
+            }
+            S[2] arr;
+            int i;
+            unittest {
+                arr[i++].inc();
+                assert(i == 1);
+                assert(arr[0].x == 8);
+                assert(arr[1].x == 7);
+            }
+        });
+    }
+}
+
+// A struct method call through a receiver that is itself a nested/
+// multi-dimensional static-array index (`m[i][j].inc()` on `S[2][2] m`)
+// loses the mutation -- it lands on a detached row copy rather than the
+// real backing storage. The idempotent index variant below (`m[0][0]`, run
+// once, no side-effecting subscript) is enough to expose it. Reproduces
+// identically on master; pre-existing, not introduced or claimed-fixed by
+// any commit on this branch. Root cause not yet triaged (`ai/plans/value.md`
+// item 4).
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.diverges,
+        "Ctfe runs the unittest body through DMD's own CTFE interpreter, " ~
+        "which cannot read the mutable module-scope variable `m` at " ~
+        "compile time"),
+    Omit!(Bytecode, Because.unconfirmed,
+        "\"Unsupported struct value in bytecode core: m[0][0]\" -- " ~
+        "independent, unconfirmed gap in the bytecode core"),
+    Omit!(Interpreter, Because.unconfirmed,
+        "a struct method-call receiver through a nested static-array " ~
+        "index (`m[i][j]`) rebinds `this` to a detached row copy instead " ~
+        "of the real backing storage, so the mutation made by `inc()` is " ~
+        "lost"),
+)) {
+    @("struct.methodCallThroughNestedStaticArrayIndexedReceiverMutatesBackingStorage." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct S {
+                int x;
+                void inc() { x++; }
+            }
+            S[2][2] m;
+            unittest {
+                m[0][0].inc();
+                assert(m[0][0].x == 1);
+            }
+        });
+    }
+}
