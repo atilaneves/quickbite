@@ -3207,10 +3207,18 @@ private struct Walker {
                     if (element.isPointer) {
                         if (offset == 0)
                             return element;
-                        return element.pointerOffsetBy(
-                            offset * cast(long) typeByteSize(
-                                array.type.toBasetype.nextOf,
-                            ),
+                        // A raw byte offset from `element` would land inside
+                        // a slice header instead of the row's data when this
+                        // row is itself a dynamic array (e.g. `int[][]`).
+                        // `Place.index` dereferences that header first, and
+                        // strides directly for a static-array row -- the
+                        // same composition the fallthrough case below uses.
+                        import quickbite.backends.interpreter.place: Place;
+
+                        return Value.pointerValue(
+                            Place(cast(void*) element.pointerAddress, array.type)
+                                .index(cast(size_t) offset)
+                                .address,
                         );
                     }
                 }
@@ -3236,10 +3244,17 @@ private struct Walker {
                     if (element.isPointer) {
                         if (offset == 0)
                             return element;
-                        return element.pointerOffsetBy(
-                            offset * cast(long) typeByteSize(
-                                array.type.toBasetype.nextOf,
-                            ),
+                        // Same hazard as the `VarExp` arm above: a raw byte
+                        // offset from `element` would land inside a slice
+                        // header instead of the row's data when this nested
+                        // row is itself a dynamic array. Compose through
+                        // `Place.index` instead.
+                        import quickbite.backends.interpreter.place: Place;
+
+                        return Value.pointerValue(
+                            Place(cast(void*) element.pointerAddress, array.type)
+                                .index(cast(size_t) offset)
+                                .address,
                         );
                     }
                 }

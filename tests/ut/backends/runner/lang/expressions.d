@@ -11315,3 +11315,33 @@ static foreach (backend; Matrix!(
         });
     }
 }
+
+// `&a[0][1]` on `int[][] a` (a dynamic array of dynamic arrays): the
+// `IndexExp` receiver arm added for
+// `methodCallThroughNestedStaticArrayIndexedReceiverMutatesBackingStorage`
+// above recurses `arrayPointer(a[0], 1)`, whose own `VarExp` arm composes
+// `element` as the address of `a[0]`'s *slice header* (`a[0]` is itself a
+// dynamic array, `{length, ptr}`), then applied a raw
+// `element.pointerOffsetBy(offset * elemSize)` -- landing inside that
+// 16-byte header instead of the row's actual data. Both the `VarExp` arm
+// and the `IndexExp` arm now compose through
+// `Place(element.pointerAddress, array.type).index(offset)` instead, which
+// dereferences a dynamic row's slice header before striding (exactly what
+// the pre-existing `arrayValue` fallthrough a few lines down already did,
+// per its own neighbouring comment). SystemLinker is the oracle.
+static foreach (backend; Matrix!()) {
+    @("pointer.addressOfElementOfDynamicArrayRowOfDynamicArrayOfArrays." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            unittest {
+                int[][] a;
+                a ~= [10, 20, 30];
+                auto p = &a[0][1];
+                *p = 99;
+                assert(a[0][1] == 99);
+            }
+        });
+    }
+}
