@@ -645,20 +645,15 @@ Native storage and calls remain the ordinary execution path; do not restore
 marshalling, cell families, alias maps, or name-based representation shims.
 `interpreter.md` §8 triage remains the partition.
 
-`std.array.array()` realizing a lazy range (`iota(...).filter!(...).array`,
-`.map!(...).array`) drives its Appender through a native-buffer-growth shape
-the Interpreter doesn't fully support: `repl.backend.
-displaysFilteredArrayResults` hits a `(*p).ptr`-shaped expression that
-`arrayPointer` (the `.ptr`/`&expr[i]` address-composition helper in
-`interpreter/impl.d`) has no `PtrExp` case for, throwing "Unsupported eval
-expression: cast_" (the caller passes its own `cast_.op` through
-unconditionally, so the message never names the real gap); `repl.backend.
-importStdExposesPhobosSymbols` instead returns uninitialized/garbage
-elements with no exception at all. Both REPL fixtures currently pin
-Interpreter out via a hand-written `AliasSeq!` (not `Matrix!`/`Omit!` --
-`tests/ut/bin/repl.d` characterizes per-cell REPL behaviour, not the
-fixture-source `Matrix!()` shape). Root cause not yet triaged; the two
-failure modes (throw vs. silent garbage) may not share one fix.
+`std.array.array()` realizing a lazy range (`.map!(...).array`) still returns
+uninitialized/garbage elements on the Interpreter with no exception
+(`repl.backend.importStdExposesPhobosSymbols`). This is a distinct bug from
+the `(*p).ptr` address-composition gap in the same Appender native-buffer-
+growth path (now fixed): fixing that left this fixture's garbage output
+unchanged. The fixture remains pinned Interpreter-out via a hand-written
+`AliasSeq!` (not `Matrix!`/`Omit!` -- `tests/ut/bin/repl.d` characterizes
+per-cell REPL behaviour, not the fixture-source `Matrix!()` shape). Root
+cause not yet triaged.
 
 Pointer-slice formation past an allocation remains unchecked when its result is
 not dereferenced: this is compiled D's contract and the Interpreter's

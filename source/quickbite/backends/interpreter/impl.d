@@ -9699,6 +9699,33 @@ private struct Walker {
                         );
                 }
 
+            // Druntime's array-growth hooks (`_d_arraysetlengthT` and
+            // siblings) take a `void[]* p` parameter and read `(*p).ptr` to
+            // consult the GC block-info cache before reallocating. `p`
+            // itself is a plain local/parameter; the same zero-length-safe
+            // bypass above applies one dereference further in -- `p`'s own
+            // storage holds the pointer to dereference, and `Place.deref`
+            // follows it to the array's slice-header place.
+            if (auto pointer = cast_.e1.isPtrExp)
+                if (auto var = pointer.e1.isVarExp)
+                    if (auto variable = var.var.isVarDeclaration) {
+                        import quickbite.backends.interpreter.place: Place;
+
+                        if (auto address = variable in nativeRefLocalAddresses)
+                            return Value.pointerValue(
+                                Place(*address, variable.type)
+                                    .deref
+                                    .sliceDataPointer,
+                            );
+                        if (
+                            hasMirrorSlot(variable) &&
+                            mirrorEstablished.get(variable, false)
+                        )
+                            return Value.pointerValue(
+                                bindingPlace(variable).deref.sliceDataPointer,
+                            );
+                    }
+
             const value = runExpression(cast_.e1);
             if (value.isNativeAggregate) {
                 import quickbite.backends.interpreter.aggregate_value: AggregateValue;
