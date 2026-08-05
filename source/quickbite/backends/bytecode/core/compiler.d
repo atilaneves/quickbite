@@ -1146,6 +1146,19 @@ private struct Compiler {
     private Operand asmPointerLocal(in string name) {
         import std.conv: text;
 
+        // The DRuntime inline-asm operands are function parameters. Resolve
+        // those first: `_locals` also contains compiler-introduced variables,
+        // and associative-array iteration does not provide a stable choice
+        // when more than one declaration has the same identifier.
+        if (_currentFunction.parameters !is null)
+            foreach (parameter; *_currentFunction.parameters) {
+                if (parameter.ident is null || parameter.ident.toString != name)
+                    continue;
+                if (auto element = parameter in _pointerLocals)
+                    return Operand(_locals[parameter], ScalarType.ulong_, true, *element);
+                throw new Exception(text("Unsupported inline asm pointer operand: ", name));
+            }
+
         foreach (declaration, offset; _locals) {
             if (declaration.ident is null ||
                 declaration.ident.toString != name)
@@ -1158,26 +1171,38 @@ private struct Compiler {
     }
 
     private Operand asmLocal(in string name) {
-        import dmd.astenums: TY;
         import std.conv: text;
+
+        if (_currentFunction.parameters !is null)
+            foreach (parameter; *_currentFunction.parameters) {
+                if (parameter.ident !is null && parameter.ident.toString == name)
+                    return asmOperand(parameter);
+            }
 
         foreach (declaration, offset; _locals) {
             if (declaration.ident !is null &&
                 declaration.ident.toString == name) {
-                const type = declaration.type.toBasetype.ty;
-                if (type == TY.Tbool)
-                    return Operand(offset, ScalarType.bool_);
-                if (type == TY.Tuns32)
-                    return Operand(offset, ScalarType.uint_);
-                if (type == TY.Tuns64)
-                    return Operand(offset, ScalarType.ulong_);
-                throw new Exception(text(
-                    "Unsupported inline asm operand type: ",
-                    typeChars(declaration.type),
-                ));
+                return asmOperand(declaration);
             }
         }
         throw new Exception(text("Unsupported inline asm operand: ", name));
+    }
+
+    private Operand asmOperand(VarDeclaration declaration) {
+        import dmd.astenums: TY;
+        import std.conv: text;
+
+        const type = declaration.type.toBasetype.ty;
+        if (type == TY.Tbool)
+            return Operand(_locals[declaration], ScalarType.bool_);
+        if (type == TY.Tuns32)
+            return Operand(_locals[declaration], ScalarType.uint_);
+        if (type == TY.Tuns64)
+            return Operand(_locals[declaration], ScalarType.ulong_);
+        throw new Exception(text(
+            "Unsupported inline asm operand type: ",
+            typeChars(declaration.type),
+        ));
     }
 
     private void compileIfStatement(imported!"dmd.statement".IfStatement if_) {

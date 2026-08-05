@@ -401,7 +401,10 @@ row, not a guarantee. Reconfirm against the source before relying on it.
 - The recognized 4- and 8-byte `core.internal.atomic.atomicFetchAdd`
   inline-asm sequence returns the pre-addition raw bits. Validate the matching
   EDI/EAX or RDI/RAX register pair and lower it to a width-specific host atomic
-  fetch-add rather than an ordinary load/add/store sequence.
+  fetch-add rather than an ordinary load/add/store sequence. Resolve its named
+  `dest`/`value` operands from the function parameter list, never by
+  associative iteration over all locals: DMD can introduce other declarations
+  with the same spelling during semantic lowering.
 - Native calls pass `TypeInfo` arguments as their actual native class
   references; `GC.malloc(int.sizeof, 0, typeid(int))` uses the host's
   `TypeInfo!int` without display-value substitution.
