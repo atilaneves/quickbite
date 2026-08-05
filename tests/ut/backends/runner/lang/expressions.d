@@ -11188,3 +11188,43 @@ static foreach (backend; Matrix!(
         });
     }
 }
+
+// The static-array counterpart of the fixture above, with no explicit
+// initializer (`S[2] arr;`): a module-scope dataseg variable never runs
+// `storeBinding` (and so never populates `locals`) until something reads or
+// writes it, but `arrayPointer`'s `VarExp` fallback required a `locals`
+// entry before it would even consider `hasMirrorSlot`'s dataseg/owning-slot
+// address -- so the very first address-taking index into an
+// un-read/-written static array (`arr[i++].method()`'s receiver rebind)
+// threw "Unsupported eval expression: address" instead of composing the
+// module-table element address that already exists. Fixed by checking
+// `hasMirrorSlot` before requiring a `locals` entry.
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.diverges,
+        "Ctfe runs the unittest body through DMD's own CTFE interpreter, " ~
+        "which cannot read the mutable module-scope variable `arr`/`i` at " ~
+        "compile time"),
+    Omit!(Bytecode, Because.unconfirmed,
+        "\"Unsupported struct value in bytecode core: arr[cast(ulong)i++]\" " ~
+        "-- independent, unconfirmed gap in the bytecode core"),
+)) {
+    @("struct.methodCallThroughIndexedReceiverIntoUninitializedStaticArray." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct S {
+                int x;
+                void inc() { x++; }
+            }
+            S[2] arr;
+            int i;
+            unittest {
+                arr[i++].inc();
+                assert(i == 1);
+                assert(arr[0].x == 1);
+                assert(arr[1].x == 0);
+            }
+        });
+    }
+}

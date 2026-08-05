@@ -645,11 +645,6 @@ Native storage and calls remain the ordinary execution path; do not restore
 marshalling, cell families, alias maps, or name-based representation shims.
 `interpreter.md` §8 triage remains the partition.
 
-A struct method call through a side-effecting `IndexExp` receiver into a
-module-scope *static* array (`S[N] arr; ... arr[i++].method();`) throws
-"Unsupported eval expression: address" -- unconfirmed, distinct from the
-dynamic-array case (fixed).
-
 `std.array.array()` realizing a lazy range (`iota(...).filter!(...).array`,
 `.map!(...).array`) drives its Appender through a native-buffer-growth shape
 the Interpreter doesn't fully support: `repl.backend.

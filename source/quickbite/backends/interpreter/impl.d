@@ -3376,11 +3376,6 @@ private struct Walker {
         if (variable is null)
             throw new Exception(text("Unsupported eval expression: ", op));
 
-
-        auto current = variable in locals;
-        if (current is null)
-            throw new Exception(text("Unsupported eval expression: ", op));
-
         if (auto address = variable in nativeRefLocalAddresses) {
             import quickbite.backends.interpreter.place: Place;
 
@@ -3391,6 +3386,15 @@ private struct Walker {
             );
         }
 
+        // A dataseg element's address exists structurally the moment its
+        // module-table block exists (allocated lazily by `bindingPlace`
+        // itself), whether or not `locals` yet holds a cached read/write of
+        // it: a module-scope static array with no explicit initializer (e.g.
+        // `S[N] arr;`) never runs `storeBinding`, so requiring a `locals`
+        // entry before reaching this check rejected a first-ever
+        // address-taking index into it (`arr[i++].method()`) with the
+        // generic "Unsupported eval expression" fallback below. An owning
+        // frame slot is the analogous in-activation case.
         if (hasMirrorSlot(variable)) {
             import quickbite.backends.interpreter.place: Place;
 
@@ -3400,6 +3404,10 @@ private struct Walker {
                     .address,
             );
         }
+
+        auto current = variable in locals;
+        if (current is null)
+            throw new Exception(text("Unsupported eval expression: ", op));
 
         // A plain `ref` aggregate local has no owning slot, but its binding
         // records the caller's typed address. Element addresses through that
