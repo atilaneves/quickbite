@@ -427,7 +427,9 @@ writeback overwrite a through-pointer mutation. A real fix makes a scalar
 `ref` parameter a pointer the callee dereferences on every access, bound
 directly to the real address (e.g. via `Op.moduleAddress`), dropping the
 mirror/writeback pair entirely -- a change to the convention every
-ref-argument kind shares, not a narrow field-offset fix.
+ref-argument kind shares, not a narrow field-offset fix. Template
+instantiation and `shared` qualification do not change this identity contract:
+`ref shared(T)` needs the same direct address as every other `ref` parameter.
 
 The same ABI work gates native calls that take `ref` values or slice-bearing
 descriptors: `File` reaches native code with a callee-frame mirror, while the
