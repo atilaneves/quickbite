@@ -5716,7 +5716,7 @@ private struct Compiler {
         if (auto string_ = element.isStringExp) {
             loadStaticString(
                 fieldOffset,
-                cast(uint) staticArraySize(fieldType),
+                inlineByteWidth(fieldType),
                 string_,
             );
             return;
@@ -5731,7 +5731,7 @@ private struct Compiler {
         if (element.type.toBasetype.ty != TY.Tsarray) {
             const elementScalar = scalarType(fieldType.toBasetype.nextOf);
             const elementSize = size(elementScalar);
-            const count = cast(uint) staticArraySize(fieldType) / elementSize;
+            const count = inlineByteWidth(fieldType) / elementSize;
             const value = compileExpression(element);
             foreach (i; 0 .. count)
                 _code ~= Instruction(
