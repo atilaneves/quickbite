@@ -432,9 +432,6 @@ reaches them:
 - A `T[N][]`'s rows are separately heap-allocated inner descriptors, so a
   pointer taken into one row (`&outer[i][j]`) is valid within that row, but a
   flat pointer walk across rows diverges from compiled D's contiguous layout.
-- A `T[N][]` destination's broadcast-fill (`tryDynamicArraySliceAssign`)
-  declines a single-row rhs read out of another `T[N][]` array (`arr[i]`):
-  that read is a row descriptor, not the row's inline bytes.
 - `arr[0][0]` on a `T[N][]` throws "Unsupported static array access": the
   `Tarray`-gated `tryDynamicArrayIndex`/`indexedArrayDescriptor` decline a
   `Tsarray` sub-expression, so compilation falls through to the
@@ -488,12 +485,10 @@ reaches them:
   a `finally` between the throw site and wherever it's really caught can
   still be silently skipped.
 
-Next candidate. Promote
-`dynamicArray.broadcastFillFromDynamicArrayRowElementCopiesIndependently`:
-the rhs row descriptor must be read through before broadcasting its inline
-bytes. Otherwise reconfirm each `Because.refusal` or
-`Because.inexpressible` boundary against the current compiler and promote it
-when the smallest general semantic is clear. Closure interactions with
+Next candidate. Reconfirm and promote
+`runTests.archiveBackedFunctionPointer`: it is the receiver-free archive
+call path and therefore the narrowest remaining archive-backed Bytecode row.
+Closure interactions with
 exceptions (a captured local mutated across try/catch/finally) and class
 polymorphism/vtable dispatch (including `super.f()`) match `SystemLinker`
 under `bin/qb` probing -- not a lead. Otherwise take the "One place resolver"

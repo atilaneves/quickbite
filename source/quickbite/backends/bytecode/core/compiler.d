@@ -15280,21 +15280,42 @@ private struct Compiler {
             if (rowType.toBasetype.ty == TY.Tsarray) {
                 const rowByteSize = inlineByteWidth(rowType);
 
-                // `sameType(rhs.type, rowType)` alone does not prove the
-                // compiled rhs operand holds the row's own inline bytes:
-                // `other[0]` of another genuine `T[N][]` array also has
-                // type `T[N]`, but `loadDynamicArrayElement`'s
-                // `elementIsArray` branch compiles an index read of it to a
-                // 16-byte row *descriptor* (a pointer into the row's own
-                // separately heap-allocated block), not the row's bytes.
-                // Broadcasting that would copy the pointer word (plus
-                // neighbouring bytes) into every destination row as if it
-                // were row data -- declined here rather than silently
-                // filling every row with garbage.
                 const rhsIsRowDescriptorRead =
                     rowBroadcastSourceIsRowDescriptor(rhs);
-                if (!rhsIsRowDescriptorRead &&
-                    rhs.type !is null && sameType(rhs.type, rowType)) {
+                if (rhs.type !is null && sameType(rhs.type, rowType)) {
+                    // `other[0]` from another `T[N][]` has the row type,
+                    // but its compiled value is a 16-byte descriptor. Read
+                    // that descriptor's pointee before broadcasting the row
+                    // bytes into each independently allocated destination.
+                    if (rhsIsRowDescriptorRead) {
+                        const sourceDescriptor = compileExpression(rhs);
+                        const rowPointer = allocateBytes(
+                            cast(uint) size_t.sizeof, size_t.sizeof,
+                        );
+                        _code ~= Instruction(
+                            Op.copy,
+                            rowPointer,
+                            sourceDescriptor.offset,
+                            cast(ushort) size_t.sizeof,
+                        );
+                        const value = allocateBytes(
+                            rowByteSize, staticArrayAlign(rowType),
+                        );
+                        emitPointerLoad(
+                            value,
+                            rowPointer,
+                            compileSizeConstant(0),
+                            rowByteSize,
+                        );
+                        emitRowBroadcastFill(
+                            destination, value, rowByteSize,
+                        );
+
+                        auto result = new Operand;
+                        *result = Operand.init;
+                        return result;
+                    }
+
                     const value = compileExpression(rhs);
                     emitRowBroadcastFill(
                         destination, value.offset, rowByteSize,

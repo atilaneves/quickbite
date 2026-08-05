@@ -7252,20 +7252,9 @@ static foreach (backend; Matrix!(
 // type (`int[3]`) matches the destination's row type, but the compiled
 // read is a 16-byte row *descriptor* (a pointer into `src[0]`'s own
 // separately heap-allocated block), not the row's inline bytes.
-// `Bytecode` is omitted rather than characterized as diverging: it declines
-// this shape at compile time (proven separately below) rather than
-// broadcasting the descriptor's pointer word (plus neighbouring bytes)
-// into every destination row as if it were row data, a silent wrong
-// result before this fix.
 static foreach (backend; Matrix!(
     Omit!(Ctfe, Because.unconfirmed),
     Omit!(Interpreter, Because.unconfirmed),
-    Omit!(Bytecode, Because.inexpressible,
-        "the rhs row is read out of another genuine `T[N][]` array, so " ~
-        "the compiled read is a 16-byte row descriptor rather than the " ~
-        "row's own inline bytes; declines with \"Unsupported " ~
-        "slice-assignment source in bytecode core: src[0]\" rather than " ~
-        "broadcasting the descriptor's bytes as if they were row data"),
     Omit!(LLVMJit, Because.unconfirmed),
 )) {
     @("dynamicArray.broadcastFillFromDynamicArrayRowElementCopiesIndependently." ~
@@ -7297,22 +7286,4 @@ static foreach (backend; Matrix!(
             }
         });
     }
-}
-
-// `Bytecode`'s own clean-decline counterpart of the sibling test above:
-// proves the broadcast fill fails at *compile* time with a diagnostic
-// (this fix) rather than silently filling every row with garbage.
-@("dynamicArray.broadcastFillFromDynamicArrayRowElementDeclinesOnBytecode")
-@Tags("Bytecode")
-unittest {
-    runBackendSourceFixtureTests!Bytecode(q{
-        unittest {
-            int[3][] values = new int[3][](3);
-            int[3][] src = new int[3][](1);
-            src[0][0] = 7; src[0][1] = 8; src[0][2] = 9;
-            values[0 .. 2] = src[0];
-        }
-    }).shouldThrowWithMessage(
-        "Unsupported slice-assignment source in bytecode core: src[0]",
-    );
 }
