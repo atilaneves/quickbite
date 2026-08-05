@@ -469,14 +469,20 @@ reaches them:
   a `finally` between the throw site and wherever it's really caught can
   still be silently skipped.
 
-Next candidate. Reconfirm and promote
-`runTests.archiveBackedFunctionPointer`: it is the receiver-free archive
-call path and therefore the narrowest remaining archive-backed Bytecode row.
-Closure interactions with
-exceptions (a captured local mutated across try/catch/finally) and class
-polymorphism/vtable dispatch (including `super.f()`) match `SystemLinker`
-under `bin/qb` probing -- not a lead. Otherwise take the "One place resolver"
-item or an "Architecture work forced by the baseline" front.
+Archive function pointers use a native forwarding wrapper only for a
+receiver-free zero-argument target; the function-table word remains an index,
+so the wrapper is needed before `callIndirect` can reach the native bridge.
+Next candidate: reconfirm and promote
+`runTests.archiveBackedStructMethod`. It is the narrowest receiver-bearing
+archive row and requires the native bridge to pass the struct `this` block and
+its explicit `int` argument under the compiled-D ABI. Do not widen the
+function-pointer wrapper for this: a method delegate also needs a native,
+frame-independent receiver representation.
+Closure interactions with exceptions (a captured local mutated across
+try/catch/finally) and class polymorphism/vtable dispatch (including
+`super.f()`) match `SystemLinker` under `bin/qb` probing -- not a lead.
+Otherwise take the "One place resolver" item or an "Architecture work forced
+by the baseline" front.
 
 ### TDD and handoff discipline
 

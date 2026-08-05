@@ -428,29 +428,6 @@ private struct Compiler {
 
         auto function_ = _functions[index];
 
-        // A receiver-less archive-backed function's direct call always goes
-        // through `compileCall`'s native-leaf path and never reaches here;
-        // any archive-backed function that does reach `compileFunctionBody`
-        // was therefore registered by address instead -- `&s.method`
-        // (`emitDelegateValue`), `&freeFunction` (`functionPointer`), or
-        // virtual-dispatch table registration. Compiling the body here would
-        // run the archive module's stale rewritten source, exactly what
-        // this mechanism exists to never do; decline unconditionally,
-        // regardless of receiver kind or entry point.
-        if (isArchiveBackedFunction(function_)) {
-            import std.conv: text;
-
-            throw new Exception(text(
-                "`",
-                function_.ident is null
-                    ? text(function_.toPrettyChars)
-                    : function_.ident.toString,
-                "` is an archive-backed function reached by address: ",
-                "routing it through the native bridge or its stale ",
-                "rewritten source is unsupported",
-            ));
-        }
-
         _currentFunction = function_;
         _code = null;
         _locals = null;
@@ -595,6 +572,11 @@ private struct Compiler {
                         pointerElementScalar(parameter.type);
             }
 
+        if (isArchiveBackedFunction(function_)) {
+            compileArchiveFunctionPointerTarget(index, function_, layout);
+            return;
+        }
+
         // A function with a named `out(result)` contract gets a synthesized
         // `result` local (DMD's `vresult`): every `return expr;` in `fbody`
         // is rewritten to `result = expr; goto Lresult;`, with the ensure
@@ -609,6 +591,44 @@ private struct Compiler {
         // explicit return statement.
         _code ~= Instruction(Op.ret);
 
+        _program.functions[index].code = _code;
+        _program.functions[index].frameSize = (_peakFrameOffset + 15) & ~15u;
+    }
+
+    // A receiver-free archive function reached through `&function_` still
+    // needs a VM function-table entry for `callIndirect`. Compile that entry
+    // as a native forwarding wrapper rather than interpreting the rewritten
+    // import source, whose body is deliberately stale in archive fixtures.
+    private void compileArchiveFunctionPointerTarget(
+        in size_t index,
+        FuncDeclaration function_,
+        in ParameterLayout layout,
+    ) {
+        import std.conv: text;
+
+        if (layout.hasThis || layout.hasClassThis ||
+            (function_.parameters !is null && function_.parameters.length != 0))
+            throw new Exception(text(
+                "`",
+                function_.ident is null
+                    ? text(function_.toPrettyChars)
+                    : function_.ident.toString,
+                "` is an archive-backed function reached by address: ",
+                "only a receiver-free zero-argument native forwarding ",
+                "wrapper is supported",
+            ));
+
+        const result = emitNativeCall(
+            function_,
+            null,
+            allocateNativeArgumentArea(0),
+            null,
+        );
+        _code ~= _currentReturnType.isStruct || _currentReturnType.isArray ||
+            _currentReturnType.isDelegate ||
+            _currentReturnType.scalar != ScalarType.void_
+            ? Instruction(Op.ret, result.offset)
+            : Instruction(Op.ret);
         _program.functions[index].code = _code;
         _program.functions[index].frameSize = (_peakFrameOffset + 15) & ~15u;
     }

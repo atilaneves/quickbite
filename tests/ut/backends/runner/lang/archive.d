@@ -506,10 +506,6 @@ static foreach (backend; Matrix!(
         "archive cannot be `dlopen`'d at all, so this is a new " ~
         "symbol-resolution source (e.g. a --whole-archive .so wrapper, " ~
         "or an ORC-style generator like `LLVMJit`'s), not a language-surface fix"),
-    Omit!(Bytecode, Because.refusal,
-        "`theAnswer` is an archive-backed function reached by address: " ~
-        "routing it through the native bridge or its stale rewritten " ~
-        "source is unsupported"),
 )) {
     @("runTests.archiveBackedFunctionPointer." ~ backend.stringof)
     @Tags(backend.stringof)
@@ -565,11 +561,9 @@ static foreach (backend; Matrix!(
 }
 
 // `Bytecode`-specific safety net: a function pointer to an archive-backed
-// free function also reaches `compileFunctionBody` by address: a direct
-// call would go through `compileCall`'s native-leaf path and never reach
-// here, so any archive-backed function arriving here was registered by
-// address instead, regardless of whether it has a receiver.
-@("runTests.archiveBackedFunctionPointer.Bytecode")
+// free function reaches its native forwarding wrapper by address, whereas a
+// direct call uses `compileCall`'s native-leaf path.
+@("runTests.archiveBackedFunctionPointerBytecodeSafetyNet")
 @Tags(Bytecode.stringof)
 unittest {
     import quickbite.frontend.compiler: parseSnippetWithCheckActionContext;
@@ -617,9 +611,6 @@ unittest {
         const results = runner.runTests(moduleResult.module_);
 
         results.length.should == 1;
-        results[0].passed.should == false;
-        results[0].message.canFind(
-            "is an archive-backed function reached by address",
-        ).should == true;
+        results[0].passed.should == true;
     }
 }
