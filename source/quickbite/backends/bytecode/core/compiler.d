@@ -7148,7 +7148,7 @@ private struct Compiler {
     // `p.field = value`: write `value` (already in a frame slot) through the
     // struct pointer at `ptr + field.offset`. A `Tstruct`/`Tsarray` field
     // lives inline at that address, so it needs its own real byte width from
-    // `staticArraySize`/`staticArrayAlign` instead of the scalar-only gate,
+    // `inlineByteWidth`/`staticArrayAlign` instead of the scalar-only gate,
     // mirroring `emitStructPointerFieldRefArgument`'s identical widening. A
     // `Tdelegate` field is the same 16-byte aggregate shape (`staticArraySize`
     // -- DMD's own `size()` -- already reports 16 for it, same as a slice
@@ -7163,7 +7163,7 @@ private struct Compiler {
         in ushort valueSlot,
     ) {
         const metadata = elementMetadataFor(
-            field.type, cast(uint) staticArraySize(field.type),
+            field.type, inlineByteWidth(field.type),
         );
         const elementSize = metadata.opcodeType == ScalarType.void_
             ? metadata.byteStride
@@ -7280,7 +7280,7 @@ private struct Compiler {
     // `box.field = value`: write `value` (already in a frame slot) through the
     // class pointer at `ptr + field.offset`. A `Tstruct`/`Tsarray` field lives
     // inline at that address, so it needs its own real byte width from
-    // `staticArraySize` instead of the scalar-only gate, mirroring
+    // `inlineByteWidth` instead of the scalar-only gate, mirroring
     // `storeStructPointerField`'s identical widening -- including its reuse
     // of `elementMetadataFor`'s shared classification.
     private void storeClassPointerField(
@@ -7288,7 +7288,7 @@ private struct Compiler {
         in ushort valueSlot,
     ) {
         const metadata = elementMetadataFor(
-            field.type, cast(uint) staticArraySize(field.type),
+            field.type, inlineByteWidth(field.type),
         );
         const elementSize = metadata.opcodeType == ScalarType.void_
             ? metadata.byteStride
@@ -18034,7 +18034,7 @@ private struct Compiler {
         out ushort valueAlign,
     ) {
         const metadata = elementMetadataFor(
-            fieldType, cast(uint) staticArraySize(fieldType),
+            fieldType, inlineByteWidth(fieldType),
         );
         const isAggregate = metadata.opcodeType == ScalarType.void_;
         valueSize = cast(ushort) metadata.byteStride;

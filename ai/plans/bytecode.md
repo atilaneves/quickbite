@@ -590,7 +590,7 @@ place second.
    `dynamicArrayElementSize` now share both the aggregate-vs-scalar branch
    and the inline DMD-layout query through `elementMetadataFor`/
    `inlineByteWidth`; `storeStructPointerField`/`storeClassPointerField` and
-   `refArgumentFieldWidth` share the same aggregate-vs-scalar branch.
+   `refArgumentFieldWidth` share that classification and query.
    Remaining call sites (`staticArraySize`, `size(scalarType)`, ...) still
    derive width independently.
 
