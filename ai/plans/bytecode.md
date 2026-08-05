@@ -646,8 +646,9 @@ place second.
    module-struct-field `ref` emitter consumes that data-segment target rather
    than independently reconstructing a module offset, and receives the
    already-resolved field place so it does not materialise module storage a
-   second time. A new language-surface shape extends the resolver, never adds
-   a sibling emitter.
+   second time. Direct module fields and nested module-field chains both
+   compose from the same materialised base place. A new language-surface shape
+   extends the resolver, never adds a sibling emitter.
 
 Reviewed and declined (2026-08): a bytecode-core disassembler with
 instruction-level emission pins — not worth tackling; do not re-propose.

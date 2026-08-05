@@ -6364,38 +6364,6 @@ private struct Compiler {
                     return result;
                 }
 
-        // A module-level (`__gshared`/`static`) struct variable's field
-        // (`quickbiteDatasegPoint.x`): materialise the whole block from
-        // `_program.moduleData` into a fresh frame slot, the module
-        // counterpart of the captured-context branch above; a write through
-        // this field writes only that field's own bytes back through
-        // `Op.storeModule` (never the whole block, which would clobber any
-        // sibling field written by another statement in between).
-        if (auto variable = dot.e1.isVarExp)
-            if (auto declaration = variable.var.isVarDeclaration)
-                if (auto moduleVariable = moduleStructVariableOrNull(declaration)) {
-                    const structOffset = allocateStructBlock(dot.e1.type);
-                    _code ~= Instruction(
-                        Op.loadModule,
-                        structOffset,
-                        moduleVariable.offset,
-                        moduleVariable.size,
-                    );
-                    auto result = new StructField;
-                    *result = StructField(
-                        offset: cast(ushort) (structOffset + field.offset),
-                        type: field.type,
-                        writeBack: StructField.WriteBack.dataSegment,
-                        target: StructField.WriteBackTarget(
-                            dataSegment: StructField.DataSegmentWriteBack(
-                                structOffset,
-                                moduleVariable.offset,
-                            ),
-                        ),
-                    );
-                    return result;
-                }
-
         auto base = structBaseOffsetOrMaterialise(dot.e1);
         if (base is null)
             return null;
@@ -6409,11 +6377,8 @@ private struct Compiler {
             : 0;
         auto result = structFieldAt(base, field, nestedThisFieldOffset);
         // `dot.e1` resolved through a materialised copy of module storage
-        // (e.g. `go.inner` inside `go.inner.x`, one level below
-        // `tryStructField`'s own bespoke `go.x` branch above): the field's
-        // writeback must land at its own module slot, computed with the
-        // same `moduleOffset + (offset - structOffset)` arithmetic that
-        // branch already uses.
+        // (e.g. `go.x` or `go.inner.x`): the field's writeback lands at its
+        // own module slot through the base place's data-segment target.
         // `dot.e1` resolved through a materialised copy of an
         // associative-array rvalue-read pointer (`a[1]`, or a field chain
         // rooted at one, `a[1].inner.x`): the field's writeback must copy
@@ -6643,12 +6608,8 @@ private struct Compiler {
 
         // A bare module-level (`__gshared`/`static`) struct variable
         // (`go`, as opposed to `go.field`): materialise the whole block from
-        // `_program.moduleData` into a fresh frame slot, the same
-        // `Op.loadModule` `tryStructField`'s bespoke one-level branch already
-        // emits for `go.field`, so a further field lookup one level up
-        // (`go.inner.x`) can address the materialised block through the
-        // generic `outer.inner` recursion below instead of needing its own
-        // bespoke case per nesting depth.
+        // `_program.moduleData` into a fresh frame slot. Every field lookup,
+        // including `go.field`, then composes through this one base place.
         if (auto variable = expression.isVarExp)
             if (auto declaration = variable.var.isVarDeclaration)
                 if (auto moduleVariable = moduleStructVariableOrNull(declaration)) {
