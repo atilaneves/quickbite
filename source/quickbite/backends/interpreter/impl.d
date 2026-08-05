@@ -3417,7 +3417,14 @@ private struct Walker {
         // entry before reaching this check rejected a first-ever
         // address-taking index into it (`arr[i++].method()`) with the
         // generic "Unsupported eval expression" fallback below. An owning
-        // frame slot is the analogous in-activation case.
+        // frame slot is the analogous in-activation case. A dataseg
+        // variable must materialize its declared default value before this
+        // address is handed out: the module-table block starts as raw
+        // zeroed memory, and a struct element with a non-zero `.init`
+        // pattern must read that pattern on first touch, not zero bytes
+        // (mirrors `symbolOffsetLocalValue`'s own call below).
+        materializeDatasegInitializer(variable);
+
         if (hasMirrorSlot(variable)) {
             import quickbite.backends.interpreter.place: Place;
 
@@ -3590,15 +3597,45 @@ private struct Walker {
         )
             return;
 
-        import quickbite.frontend.dmd.types: isAssocArrayType;
+        // A never-written dataseg variable's module-table block is raw
+        // zeroed GC memory (`ModuleTable.allocateBlock`/`NativeBlock.
+        // allocate`), not its declared type's default value: the hand-rolled
+        // `defaultValue` free function recurses on each struct field's own
+        // TYPE default (`runtime_values.structDefaultValue`), silently
+        // dropping a field's own default initializer (`int x = 7;` reads
+        // back `0`, the field type's `.init`, not `7`). DMD's own
+        // `defaultInitLiteral` is the layout-authority source for a default
+        // value (the "Layout authority" contract): it already walks
+        // `VarDeclaration._init`/`getConstInitializer` per field
+        // (`typesem.d`), so evaluating it through the ordinary expression
+        // path builds the correct native default.
+        //
+        // Gate the write on `moduleTable.has(variable)`, not the
+        // `mirrorEstablished` guard above: `ModuleTable`'s block map is
+        // shared, not duped, across every forked child `Walker` a function
+        // call creates (`forkExecutionStateInto`'s `child.moduleTable =
+        // moduleTable` aliases the same underlying hashmap; D associative
+        // arrays are reference types), so it answers "has this variable's
+        // block ever been allocated" for the whole program. `mirrorEstablished`
+        // is per-activation bookkeeping that starts empty in every child and
+        // is never merged back into the caller (`mergeFunctionState` does not
+        // carry it) -- gating the default-value write on it would
+        // re-materialize, and clobber, an already-mutated dataseg block on
+        // every later call that forks a fresh child activation (observed:
+        // three `bump()` calls each resetting a `__gshared int` counter back
+        // to its default before incrementing, so the final read saw `0`
+        // instead of `3`). A first-ever address-taking read (`arrayPointer`'s
+        // `hasMirrorSlot` path) still never hands out an address into
+        // never-written bytes, because this runs before `bindingPlace`
+        // allocates the block.
+        if (variable._init is null) {
+            if (!moduleTable.has(variable)) {
+                import dmd.typesem: defaultInitLiteral;
 
-        if (variable._init is null && isAssocArrayType(variable.type)) {
-            setLocal(variable, defaultLocalValue(variable));
+                setLocal(variable, runExpression(variable.type.defaultInitLiteral(variable.loc)));
+            }
             return;
         }
-
-        if (variable._init is null)
-            return;
 
         resolveNonRootInitializer(variable);
 

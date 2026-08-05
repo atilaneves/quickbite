@@ -11231,19 +11231,19 @@ static foreach (backend; Matrix!(
 
 // The same first-touch, uninitialized module-scope static array as the
 // fixture above, but with an element type whose `.init` pattern is non-zero
-// (`int x = 7;` rather than `int x;`). `arrayPointer`'s `hasMirrorSlot`
-// branch (added by the fix above) composes the module-table element address
-// directly without ever materializing the block's default value first, so
-// the never-written backing bytes read back as zero instead of `S.init`:
-// `arr[0].x` reads `1` (0 + the one `inc()` call) instead of `8` (7 + 1),
-// and the untouched `arr[1].x` reads `0` instead of `7`. This is bounded to
-// the no-initializer case -- an explicitly-initialized
-// `S[2] arr = [S(5), S(9)];` first-touch already reads the real values on
-// both backends. Root cause not yet triaged (`ai/plans/value.md` item 4).
-// LLVMJit fails the same fixture too, but with its own garbage value
-// (`458753 != 8`) rather than the Interpreter's zero-filled one -- an
-// independent, unconfirmed default-static-initialization gap discovered by
-// this fixture, not the `hasMirrorSlot` path above.
+// (`int x = 7;` rather than `int x;`). Fixed on Interpreter:
+// `materializeDatasegInitializer` (`impl.d`) used the hand-rolled
+// `defaultValue` free function, which recurses on each struct field's own
+// TYPE default and silently drops a field's own default initializer; DMD's
+// own `defaultInitLiteral` is now the source (it already walks
+// `VarDeclaration._init` per field), and the write is gated on
+// `moduleTable.has(variable)` -- the one fact that stays correct across a
+// function call's forked child `Walker` -- rather than the per-activation
+// `mirrorEstablished` map, which does not merge back into the caller and
+// would otherwise re-clobber an already-mutated dataseg block on every
+// later call. LLVMJit still fails the same fixture, with its own garbage
+// value (`458753 != 8`) rather than a zero-filled default -- an
+// independent, unconfirmed default-static-initialization gap.
 static foreach (backend; Matrix!(
     Omit!(Ctfe, Because.diverges,
         "Ctfe runs the unittest body through DMD's own CTFE interpreter, " ~
@@ -11252,11 +11252,6 @@ static foreach (backend; Matrix!(
     Omit!(Bytecode, Because.unconfirmed,
         "\"Unsupported struct value in bytecode core: arr[cast(ulong)i++]\" " ~
         "-- independent, unconfirmed gap in the bytecode core"),
-    Omit!(Interpreter, Because.unconfirmed,
-        "a never-written module-scope static array element reads as " ~
-        "zero-filled bytes instead of its struct's non-zero `.init` " ~
-        "pattern when first addressed through `arrayPointer`'s " ~
-        "`hasMirrorSlot` path"),
     Omit!(LLVMJit, Because.unconfirmed,
         "reads back a garbage value (`458753 != 8`) rather than the real " ~
         "default -- an independent, unconfirmed default-static-" ~
