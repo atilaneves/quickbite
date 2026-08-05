@@ -6875,7 +6875,7 @@ private struct Compiler {
                 Op.frameLoad,
                 destination,
                 capturedFrameIndex(_capturedOwners[declaration], capturedOffset),
-                cast(ushort) staticArraySize(declaration.type),
+                cast(ushort) inlineByteWidth(declaration.type),
             );
             return Operand(destination, ScalarType.void_);
         }
@@ -6931,7 +6931,7 @@ private struct Compiler {
         const ty = declaration.type.toBasetype.ty;
         const isAggregate = ty == TY.Tstruct || ty == TY.Tsarray;
         const valueSize = isAggregate
-            ? cast(uint) staticArraySize(declaration.type)
+            ? inlineByteWidth(declaration.type)
             : size(scalarType(declaration.type));
         if (isHeapClosureVar(declaration))
             emitPointerStore(
