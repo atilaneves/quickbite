@@ -13148,7 +13148,7 @@ private struct Compiler {
         }
 
         count = literal.elements.length;
-        const elementSize = cast(size_t) staticArraySize(elementRawType);
+        const elementSize = cast(size_t) inlineByteWidth(elementRawType);
         ubyte[] bytes;
         bytes.length = count * elementSize;
         foreach (elementIndex; 0 .. count) {
@@ -13191,7 +13191,7 @@ private struct Compiler {
         if (auto existing = declaration in _moduleStructVariables)
             return existing;
 
-        const size = cast(ushort) staticArraySize(declaration.type);
+        const size = cast(ushort) inlineByteWidth(declaration.type);
         const hasDefaultInitializer =
             moduleVariableHasDefaultInitializer(declaration);
 
@@ -13257,7 +13257,7 @@ private struct Compiler {
         if (auto existing = declaration in _moduleStaticArrayVariables)
             return existing;
 
-        const size = cast(ushort) staticArraySize(declaration.type);
+        const size = cast(ushort) inlineByteWidth(declaration.type);
         // A plain array literal (`[1, 2, 3]`) parses as an
         // `ArrayInitializer`, not an `ExpInitializer`, so this reuses
         // `moduleDynamicArrayInitializerExpressionOrNull`'s
@@ -13420,7 +13420,7 @@ private struct Compiler {
         if (literal is null || literal.elements is null)
             return null;
 
-        const elementSize = cast(uint) staticArraySize(elementType);
+        const elementSize = inlineByteWidth(elementType);
         if (elementSize == 0 ||
             literal.elements.length * elementSize != totalSize)
         {
