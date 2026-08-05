@@ -592,35 +592,13 @@ place second.
    depth/element-width operands and keeps its own `emitNestedArrayEqual`
    construction site.
 
-2. **One place resolver.** Lvalue addressing is enumerated per shape: the
-   `emit*RefArgument` chain with its comment-encoded decline order,
-   `referenceOffsetOrNull`, the `*Offset`/`*Address` helpers, and writeback
-   mirrors with per-shape flush loops. A resolved `StructField` has exactly
-   one discriminated writeback target (frame, data segment, pointer, or none);
-   preserve that exclusivity as the remaining lvalue shapes converge on the
-   compose-per-hop model that
-   `structBaseOffsetOrMaterialise`, `capturedFrameIndex`, and the
-   class/struct static-array chain plumbing already use: one place value
-   (base, hop chain, width, writeback rule) returned by one resolver,
-   consumed by emit sites and a single flush path. `StructField` represents
-   frame, data-segment, and pointer write-back payloads as mutually exclusive
-   variants, including the place returned by
-   `structBaseOffsetOrMaterialise`; field resolution carries that target
-   forward rather than reconstructing it from parallel state. Nested field
-   composition goes through `structFieldAt`, preserving that target. The
-   resolver materialises captured struct receivers at their base, so
-   `tryStructField` only composes a field onto the resolved place. The
-   module-struct-field `ref` emitter consumes that data-segment target rather
-   than independently reconstructing a module offset, and receives the
-   already-resolved field place so it does not materialise module storage a
-   second time. Direct module fields and nested module-field chains both
-   compose from the same materialised base place. Consumers whose evaluation
-   ordering depends on materialisation classify the complete chain by that
-   resolved data-segment target. Runtime address materialisation for frame and
-   module-data locations goes through `addressOperand`, leaving the resolver
-   to choose a storage kind and pointee type rather than reproduce
-   pointer-slot construction. A new language-surface shape extends the
-   resolver, never adds a sibling emitter.
+2. **One place resolver.** A resolved `StructField` has exactly one
+   discriminated writeback target (frame, data segment, pointer, or none).
+   `structBaseOffsetOrMaterialise` and `structFieldAt` compose that target
+   through every field hop; a data-segment field derives its nested module
+   offset only through `moduleFieldOffset`. Runtime addresses go through
+   `addressOperand`. A new lvalue shape extends this resolver rather than
+   adding a sibling emitter or reconstructing storage from parallel state.
 
 Reviewed and declined (2026-08): a bytecode-core disassembler with
 instruction-level emission pins — not worth tackling; do not re-propose.

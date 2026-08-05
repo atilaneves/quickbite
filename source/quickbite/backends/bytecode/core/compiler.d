@@ -6635,6 +6635,16 @@ private struct Compiler {
         return null;
     }
 
+    // A data-segment target owns the materialised struct's complete module
+    // location. Derive a nested field's location only from that one target,
+    // so field writeback and `ref` mirrors cannot reconstruct different
+    // module offsets.
+    private ushort moduleFieldOffset(in StructField field) {
+        assert(field.writeBack == StructField.WriteBack.dataSegment);
+        return cast(ushort) (field.target.dataSegment.moduleOffset +
+            (field.offset - field.target.dataSegment.structOffset));
+    }
+
     private void writeBackStructField(in StructField field) {
         final switch (field.writeBack) with (StructField.WriteBack) {
             case frame:
@@ -6646,14 +6656,10 @@ private struct Compiler {
                 );
                 return;
             case dataSegment:
-                const fieldOffsetInStruct =
-                    cast(ushort) (field.offset -
-                        field.target.dataSegment.structOffset);
                 _code ~= Instruction(
                     Op.storeModule,
                     field.offset,
-                    cast(ushort) (field.target.dataSegment.moduleOffset +
-                        fieldOffsetInStruct),
+                    moduleFieldOffset(field),
                     cast(ushort) inlineByteWidth(cast(Type) field.type),
                 );
                 return;
@@ -18018,10 +18024,7 @@ private struct Compiler {
             valueSize != 8)
             return false;
 
-        const moduleOffset = cast(ushort) (
-            field.target.dataSegment.moduleOffset + (field.offset -
-                field.target.dataSegment.structOffset)
-        );
+        const moduleOffset = moduleFieldOffset(*field);
 
         foreach (writeBack; writeBacks)
             if (writeBack.moduleOffset == moduleOffset) {
