@@ -644,10 +644,8 @@ place second.
    forward rather than reconstructing it from parallel state. Nested field
    composition goes through `structFieldAt`, preserving that target. The
    module-struct-field `ref` emitter consumes that data-segment target rather
-   than independently reconstructing a module offset. Next, make
-   `referenceOffsetOrNull` consume a resolved place and its write-back rule
-   directly. A new language-surface shape extends the resolver, never adds a
-   sibling emitter.
+   than independently reconstructing a module offset. A new language-surface
+   shape extends the resolver, never adds a sibling emitter.
 
 Reviewed and declined (2026-08): a bytecode-core disassembler with
 instruction-level emission pins — not worth tackling; do not re-propose.

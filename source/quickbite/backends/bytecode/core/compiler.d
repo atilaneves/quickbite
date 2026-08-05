@@ -19199,19 +19199,14 @@ private struct Compiler {
         if (auto structOffset = structBaseOffsetOrNull(argument))
             return structOffset;
 
-        // `append42(buffer.bytes)` / `append42(this.bytes)`: a `ref` to a struct
-        // field binds to the field's inline slot (`base + field.offset`), so the
-        // callee's writeback lands in the caller's struct. A module-backed
-        // field's slot is a throwaway copy of the whole block instead
-        // (`StructField.WriteBack.dataSegment`) with no per-argument writeback wired
-        // here; decline so an unhandled shape (`emitModuleStructFieldRefArgument`
-        // only covers scalar fields) surfaces as an honest "unsupported ref
-        // argument" instead of silently binding the callee to a copy nothing
-        // ever writes back to.
+        // `append42(buffer.bytes)` / `append42(this.bytes)`: resolve the
+        // field's place before deciding whether its backing can be passed as
+        // a caller-frame ref slot. A module-backed field is a materialised
+        // data-segment copy, so its writeback rule must decline here for
+        // `emitModuleStructFieldRefArgument` to own the module writeback.
         if (auto dot = argument.isDotVarExp)
             if (auto field = tryStructField(dot))
-                if (field.writeBack != StructField.WriteBack.dataSegment)
-                    return &field.offset;
+                return referenceOffsetOrNull(field);
 
         // `setTo(arr[1], ...)`: a compile-time-constant index into a static
         // array resolves to the element's own inline frame slot, the same
@@ -19243,6 +19238,22 @@ private struct Compiler {
         }
 
         return null;
+    }
+
+    // The caller-frame ref slot for a resolved struct-field place, when its
+    // writeback rule leaves the field live in the caller's frame. A
+    // data-segment place is only a materialised copy and must be handled by
+    // the dedicated module ref emitter, which pairs its mirrored call slot
+    // with an `Op.storeModule` writeback after the call.
+    private ushort* referenceOffsetOrNull(StructField* field) {
+        final switch (field.writeBack) with (StructField.WriteBack) {
+            case dataSegment:
+                return null;
+            case none:
+            case frame:
+            case pointer:
+                return &field.offset;
+        }
     }
 
     // A `SymOffExp` (a variable's address plus a constant byte offset) folded
