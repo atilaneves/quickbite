@@ -2232,6 +2232,219 @@ static foreach (backend; Matrix!()) {
     }
 }
 
+// `new T[N][](rows)`: the outer length is a runtime `NewExp` argument, but
+// the row width `N` is a compile-time static-array bound baked into the
+// element's own type -- there is no second runtime argument to compile,
+// unlike the `new T[][](rows, cols)` sibling above.
+static foreach (backend; Matrix!()) {
+    @("dynamicArray.newArrayOfStaticArrayRowsUsesRuntimeLength." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            unittest {
+                size_t rows = 1;
+                ++rows;
+
+                int[3][] values = new int[3][](rows);
+                values[1][2] = 42;
+
+                assert(values.length == rows);
+                assert(values[0][0] == 0);
+                assert(values[1][2] == 42);
+            }
+        });
+    }
+}
+
+// `new T[][](rows)`: unlike `new T[N][](rows)` above, the inner element is
+// itself a dynamic array, not a compile-time-sized row, so there is no row
+// width to bake in at all -- each of the `rows` outer slots default-inits to
+// its own null (empty) slice, exactly like a bare `T[]` local.
+static foreach (backend; Matrix!()) {
+    @("dynamicArray.newArrayOfDynamicArrayRowsUsesRuntimeLength." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            unittest {
+                size_t rows = 1;
+                ++rows;
+
+                int[][] values = new int[][](rows);
+
+                assert(values.length == rows);
+                assert(values[0].length == 0);
+                assert(values[1].length == 0);
+
+                values[0] ~= 42;
+                values[1] ~= 1;
+                values[1] ~= 2;
+
+                assert(values[0] == [42]);
+                assert(values[1] == [1, 2]);
+                assert(values[0].length == 1);
+                assert(values[1].length == 2);
+            }
+        });
+    }
+}
+
+// A broadcast fill (`arr[lo .. hi] = row;`) whose destination element is
+// itself a `T[N]` row (`int[3][]`): each destination slot already has its
+// own separately heap-allocated block from the array's construction, so the
+// row value must be written into each existing block independently rather
+// than aliasing every slot to the same storage or being declined outright.
+static foreach (backend; Matrix!()) {
+    @("dynamicArray.broadcastFillIntoStaticArrayRowsWritesEachRowIndependently." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            unittest {
+                int[3][] values = new int[3][](3);
+                values[0 .. 2] = [1, 2, 3];
+
+                assert(values[0][0] == 1 && values[0][1] == 2 &&
+                    values[0][2] == 3);
+                assert(values[1][0] == 1 && values[1][1] == 2 &&
+                    values[1][2] == 3);
+                assert(values[2][0] == 0 && values[2][1] == 0 &&
+                    values[2][2] == 0);
+
+                // Each broadcast row is its own independent copy, not a
+                // shared reference: mutating one must not affect the other.
+                values[0][0] = 99;
+                assert(values[1][0] == 1);
+            }
+        });
+    }
+}
+
+// The `T[][]` (`Tarray`-row) counterpart of the broadcast fill above: unlike
+// a `T[N]` row, a `T[]` row is itself a reference-semantics slice descriptor
+// with no separately heap-allocated block to write through, so broadcasting
+// it means writing its own descriptor into every destination slot and
+// aliasing every destination row to the rhs row's backing storage, matching
+// `SystemLinker`. `Interpreter` is not the oracle here: its pointer-snapshot
+// model deep-copies the rhs row into each destination slot instead of
+// aliasing it, a pre-existing gap unrelated to this promotion.
+static foreach (backend; Matrix!(
+    Omit!(Interpreter, Because.diverges,
+        "Interpreter's pointer-snapshot model deep-copies the broadcast " ~
+        "row into each destination slot instead of aliasing it"),
+)) {
+    @("dynamicArray.broadcastFillIntoDynamicArrayRowsAliasesEachRowToTheSource." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            unittest {
+                int[] row = [1, 2, 3];
+                int[][] values = [[9, 9], [8, 8], [7, 7]];
+                values[0 .. 2] = row;
+
+                assert(values[0].length == 3 && values[0][0] == 1);
+                assert(values[1].length == 3 && values[1][0] == 1);
+                assert(values[2].length == 2 && values[2][0] == 7);
+
+                // Aliased, not copied: mutating through the destination is
+                // visible through the source row.
+                values[0][0] = 55;
+                assert(row[0] == 55);
+            }
+        });
+    }
+}
+
+// A row-range assignment (`arr[lo .. hi] = otherRows[];`) into a `T[N][]`
+// destination, where the rhs is itself a range of rows rather than a single
+// broadcast row (the sibling test above): each destination row already has
+// its own separately heap-allocated block, so the source range's content
+// must be written into each destination row's own block rather than the
+// row *pointers* being overwritten with the source's, which would alias
+// every destination row to the source's block and corrupt the
+// destination's own pointer chain. `Ctfe` is not the oracle here: its own
+// static-array-copy aliasing quirk (see "Oracle" above) makes the mutated
+// source visible through the destination too.
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.diverges,
+        "Ctfe's static-array-copy aliasing quirk aliases the destination " ~
+        "row to the source's block instead of copying its content"),
+)) {
+    @("dynamicArray.rowRangeAssignmentIntoStaticArrayRowsCopiesEachRowIndependently." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            unittest {
+                int[3][] values = new int[3][](3);
+                int[3][] other = new int[3][](2);
+                other[0][0] = 1; other[0][1] = 2; other[0][2] = 3;
+                other[1][0] = 4; other[1][1] = 5; other[1][2] = 6;
+
+                values[0 .. 2] = other[0 .. 2];
+
+                assert(values[0][0] == 1 && values[0][1] == 2 &&
+                    values[0][2] == 3);
+                assert(values[1][0] == 4 && values[1][1] == 5 &&
+                    values[1][2] == 6);
+                assert(values[2][0] == 0 && values[2][1] == 0 &&
+                    values[2][2] == 0);
+
+                // Each destination row is its own independent copy of the
+                // source's content, not aliased to the source's block:
+                // mutating the source after the assignment must not affect
+                // the destination.
+                other[0][0] = 99;
+                assert(values[0][0] == 1);
+            }
+        });
+    }
+}
+
+// The row-range write-through above shares row *slots* -- 16 bytes apiece,
+// contiguous in the outer backing array -- between an overlapping
+// destination and source range exactly as compiled D's contiguous `T[N][]`
+// rows would, even though the row *blocks* each slot points at never
+// overlap (the sibling test above): druntime's plain "Range violation"
+// diagnostic, matching `staticArray.overlappingSubSliceAssignmentDiagnostic`
+// below. `Ctfe` is not the oracle here either: it raises its own
+// slice-range-text diagnostic instead (see the sibling pin below).
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.diverges,
+        "see staticArray.overlappingSubSliceAssignmentDiagnostic's sibling " ~
+        "pin below; Ctfe's diagnostic carries the slice range in its text"),
+)) {
+    @("dynamicArray.overlappingRowRangeAssignmentIntoStaticArrayRowsDiagnostic." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            int seed(int value) {
+                return value;
+            }
+
+            unittest {
+                int[3][] values = new int[3][](3);
+                values[0][0] = seed(1);
+                values[1][0] = seed(2);
+                values[2][0] = seed(3);
+
+                size_t targetStart = cast(size_t) seed(0);
+                size_t targetStop = cast(size_t) seed(2);
+                size_t sourceStart = cast(size_t) seed(1);
+                size_t sourceStop = cast(size_t) seed(3);
+
+                values[targetStart .. targetStop] =
+                    values[sourceStart .. sourceStop];
+
+                assert(values[0][0] == 1);
+            }
+        }).shouldThrowWithMessage("Range violation");
+    }
+}
+
 static foreach (backend; Matrix!()) {
     @("dynamicArray.lengthAssignmentResizesArray." ~ backend.stringof)
     @Tags(backend.stringof)
@@ -3763,6 +3976,215 @@ static foreach (backend; Matrix!()) {
                 int[int][int] a = [1: [2: 3]];
 
                 assert(a[1][2] == 3);
+            }
+        });
+    }
+}
+
+// `a[1] == b` (nested AA read as the FIRST operand of a plain, non-assert
+// `==`): control case for the corruption below. A later, unrelated AA
+// write must not see any effect from this comparison's operand codegen.
+// Interpreter has its own, separate gap on `a[1][k] = v` ("Associative-array
+// lvalue needs a variable"), unrelated to the write-back bug this test
+// targets -- same pre-existing omission as
+// `nestedWriteAutoVivifiesBrandNewOuterKey` above.
+static foreach (backend; Matrix!(
+    Omit!(Interpreter, Because.unconfirmed,
+        "a brand-new-outer-key nested write throws " ~
+        "\"Associative-array lvalue needs a variable\""),
+)) {
+    @("assocArray.nestedReadAsFirstEqualityOperandLeavesLaterWritesUnaffected."
+        ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            unittest {
+                int[int][int] a;
+                a[1][10] = 100;
+                a[1][20] = 103;
+
+                int[int] b;
+                b[99] = 1;
+
+                const bool same = a[1] == b;
+
+                int[int] m;
+                m[5] = 6;
+
+                assert(!same);
+                assert(a[1].length == 2);
+                assert(a[1][10] == 100);
+                assert(a[1][20] == 103);
+                assert(m.length == 1);
+                assert(m[5] == 6);
+            }
+        });
+    }
+}
+
+// `b == a[1]` (nested AA read as the SECOND operand of a plain, non-assert
+// `==`): used to leave a stale write-back pointer set after the
+// comparison's operand codegen (only argument 0 of an AA hook call ever
+// consumed it). The NEXT plain, unrelated AA insert (`m[5] = 6` below)
+// then wrote its own freshly-autovivified handle through that stale
+// pointer, silently aliasing `a[1]`'s storage onto `m` -- corrupting a
+// variable the comparison never touched. Interpreter omitted for the same
+// pre-existing, unrelated gap as the control case above.
+static foreach (backend; Matrix!(
+    Omit!(Interpreter, Because.unconfirmed,
+        "a brand-new-outer-key nested write throws " ~
+        "\"Associative-array lvalue needs a variable\""),
+)) {
+    @("assocArray.nestedReadAsSecondEqualityOperandLeavesLaterWritesUnaffected."
+        ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            unittest {
+                int[int][int] a;
+                a[1][10] = 100;
+                a[1][20] = 103;
+
+                int[int] b;
+                b[99] = 1;
+
+                const bool same = b == a[1];
+
+                int[int] m;
+                m[5] = 6;
+
+                assert(!same);
+                assert(a[1].length == 2);
+                assert(a[1][10] == 100);
+                assert(a[1][20] == 103);
+                assert(m.length == 1);
+                assert(m[5] == 6);
+            }
+        });
+    }
+}
+
+// `a[1][5] = 9` on an already-present outer key: reaching the inner map for
+// the nested write reads `a[1]`'s existing value through the same
+// find-or-default-insert hook (`_d_aaGetY`) real D uses for the outer level
+// too. Bytecode's own hook (`Op.aaInsert`) used to unconditionally overwrite
+// the target slot's bytes with a fresh placeholder before the caller ever
+// wrote the real value through it -- correct for a direct `m[k] = v`, but
+// wrong here, where the outer slot's bytes are only ever *read* (to reach
+// the inner map) rather than assigned to, so the placeholder silently
+// replaced the real, already-populated inner map with an empty one.
+static foreach (backend; Matrix!()) {
+    @("assocArray.nestedWriteIntoExistingOuterKeyPreservesOtherInnerEntries."
+        ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            unittest {
+                int[int][int] a = [1: [2: 3]];
+                a[1][5] = 9;
+
+                assert(a.length == 1);
+                assert(a[1].length == 2);
+                assert(a[1][2] == 3);
+                assert(a[1][5] == 9);
+
+                a[1][2] = 30;
+                assert(a[1].length == 2);
+                assert(a[1][2] == 30);
+                assert(a[1][5] == 9);
+            }
+        });
+    }
+}
+
+// `a[1][2] = 3` on a brand-new OUTER key (`a[1]` does not yet exist): the
+// outer level auto-vivifies a fresh, still-empty inner map, and the write
+// into that inner map must be visible back through the outer map's own
+// storage, not just a local copy of the freshly-created handle. Interpreter
+// has its own, separate gap on the same fixture ("Associative-array lvalue
+// needs a variable"), unrelated to the Bytecode issue this test targets.
+static foreach (backend; Matrix!(
+    Omit!(Interpreter, Because.unconfirmed,
+        "a brand-new-outer-key nested write throws " ~
+        "\"Associative-array lvalue needs a variable\""),
+)) {
+    @("assocArray.nestedWriteAutoVivifiesBrandNewOuterKey." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            unittest {
+                int[int][int] a;
+                a[1][2] = 3;
+
+                assert(a.length == 1);
+                assert((1 in a) !is null);
+                assert(a[1].length == 1);
+                assert(a[1][2] == 3);
+
+                a[1][5] = 9;
+                a[7][8] = 20;
+
+                assert(a.length == 2);
+                assert(a[1].length == 2);
+                assert(a[1][2] == 3);
+                assert(a[1][5] == 9);
+                assert(a[7].length == 1);
+                assert(a[7][8] == 20);
+            }
+        });
+    }
+}
+
+// `a[k] += rhs`: DMD hoists `_d_aaGetY`'s slot pointer into a hidden
+// compiler-generated pointer temp once and represents the compound
+// assignment as an index off that same temp, so the read and write sides
+// share one lookup and a missing key auto-vivifies with its default value
+// first (`_d_aaGetY` always inserts). Interpreter declines with "Expected
+// array." for this shape -- a separate, unconfirmed backend gap.
+static foreach (backend; Matrix!(
+    Omit!(Interpreter, Because.unconfirmed, "Expected array."),
+)) {
+    @("assocArray.compoundAddAssignAutoVivifiesMissingKeyAndAddsIntoExisting."
+        ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            unittest {
+                int[string] a;
+                a["x"] = 1;
+                a["x"] += 10;
+                assert(a["x"] == 11);
+
+                a["y"] += 5;
+                assert(a["y"] == 5);
+            }
+        });
+    }
+}
+
+// `a[k1][k2] += rhs` on an existing nested entry: the same hidden-pointer
+// compound-assignment lowering as the flat case above, one level down.
+// Interpreter declines with "Associative-array lvalue needs a variable" --
+// the same gap `nestedWriteAutoVivifiesBrandNewOuterKey` above already
+// characterizes for plain nested writes.
+static foreach (backend; Matrix!(
+    Omit!(Interpreter, Because.unconfirmed,
+        "Associative-array lvalue needs a variable"),
+)) {
+    @("assocArray.nestedCompoundAddAssignAddsIntoExistingInnerEntry." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            unittest {
+                int[string][string] a;
+                a["a"]["b"] = 1;
+                a["a"]["c"] = 2;
+                a["a"]["b"] += 10;
+
+                assert(a["a"]["b"] == 11);
+                assert(a["a"]["c"] == 2);
             }
         });
     }
@@ -5464,6 +5886,35 @@ static foreach (backend; Matrix!()) {
     }
 }
 
+// Mutating through a static array of dynamic arrays (`int[][2]`) writes
+// through the row's own heap storage, not a copy: `a[0][1] = v` must land in
+// the same backing array a later `a[0][1]` read (or any other element of
+// row 0) observes, and must not disturb row 1's own storage.
+static foreach (backend; Matrix!()) {
+    @("staticArray.elementMutationOfArrayOfArraysWritesThroughRowStorage." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            int value(int seed) {
+                return seed;
+            }
+
+            unittest {
+                int first = value(1);
+                int[][2] a = [[first, first + 1], [first + 2, first + 3]];
+
+                a[0][1] = first + 98;
+
+                assert(a[0][1] == first + 98);
+                assert(a[0][0] == first);
+                assert(a[1][0] == first + 2);
+                assert(a[1][1] == first + 3);
+            }
+        });
+    }
+}
+
 
 /++
     `cast(void*)` of a string reads its raw byte storage through `.ptr`,
@@ -6725,4 +7176,142 @@ static foreach (backend; Matrix!(
             }
         });
     }
+}
+
+// A row-range assignment (`arr[lo .. hi] = otherRows[];`) into a `T[N][]`
+// destination whose rhs range is itself sourced from a multidimensional
+// static array (`s[0 .. 2]` where `s` is `int[3][3]`), not another genuine
+// `T[N][]` array (the
+// `rowRangeAssignmentIntoStaticArrayRowsCopiesEachRowIndependently` sibling
+// test above): `s`'s rows are contiguous inline bytes in a throwaway heap
+// copy (`dynamicArrayDescriptorOrNull`'s static-array-view branch), not
+// the separately heap-allocated row *pointers* `Op.rowRangeCopy` assumes.
+// `Bytecode` is omitted rather than characterized as diverging: it declines
+// this shape at compile time (proven separately below) rather than
+// reading a row's own inline bytes as if they were a heap pointer and
+// dereferencing them, a crash before this fix.
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.unconfirmed),
+    Omit!(Interpreter, Because.unconfirmed),
+    Omit!(Bytecode, Because.inexpressible,
+        "the rhs range's rows are contiguous inline bytes (a static-array " ~
+        "view), not the separately heap-allocated row pointers " ~
+        "`Op.rowRangeCopy` assumes; declines with \"Unsupported " ~
+        "slice-assignment source in bytecode core: s[0..2]\" rather than " ~
+        "reading row bytes as a pointer and dereferencing them"),
+    Omit!(LLVMJit, Because.unconfirmed),
+)) {
+    @("dynamicArray.rowRangeAssignmentFromStaticArrayViewSource." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            unittest {
+                int[3][] values = new int[3][](3);
+                int[3][3] s;
+                s[0][0] = 7;
+                s[1][2] = 9;
+                values[0 .. 2] = s[0 .. 2];
+
+                assert(values[0][0] == 7 && values[0][1] == 0 &&
+                    values[0][2] == 0);
+                assert(values[1][0] == 0 && values[1][1] == 0 &&
+                    values[1][2] == 9);
+                assert(values[2][0] == 0 && values[2][1] == 0 &&
+                    values[2][2] == 0);
+            }
+        });
+    }
+}
+
+// `Bytecode`'s own clean-decline counterpart of the sibling test above:
+// proves the row-range assignment fails at *compile* time with a
+// diagnostic (this fix) rather than crashing.
+@("dynamicArray.rowRangeAssignmentFromStaticArrayViewSourceDeclinesOnBytecode")
+@Tags("Bytecode")
+unittest {
+    runBackendSourceFixtureTests!Bytecode(q{
+        unittest {
+            int[3][] values = new int[3][](3);
+            int[3][3] s;
+            s[0][0] = 7;
+            s[1][2] = 9;
+            values[0 .. 2] = s[0 .. 2];
+        }
+    }).shouldThrowWithMessage(
+        "Unsupported slice-assignment source in bytecode core: s[0..2]",
+    );
+}
+
+// The broadcast-fill counterpart of the row-range test above: a broadcast
+// fill (`arr[lo .. hi] = row;`) into a `T[N][]` destination (the same shape
+// as `broadcastFillIntoStaticArrayRowsWritesEachRowIndependently` above),
+// but whose rhs row is itself read out of another genuine `T[N][]` array
+// (`src[0]`), not a literal or a static-array-view element. The rhs's own
+// type (`int[3]`) matches the destination's row type, but the compiled
+// read is a 16-byte row *descriptor* (a pointer into `src[0]`'s own
+// separately heap-allocated block), not the row's inline bytes.
+// `Bytecode` is omitted rather than characterized as diverging: it declines
+// this shape at compile time (proven separately below) rather than
+// broadcasting the descriptor's pointer word (plus neighbouring bytes)
+// into every destination row as if it were row data, a silent wrong
+// result before this fix.
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.unconfirmed),
+    Omit!(Interpreter, Because.unconfirmed),
+    Omit!(Bytecode, Because.inexpressible,
+        "the rhs row is read out of another genuine `T[N][]` array, so " ~
+        "the compiled read is a 16-byte row descriptor rather than the " ~
+        "row's own inline bytes; declines with \"Unsupported " ~
+        "slice-assignment source in bytecode core: src[0]\" rather than " ~
+        "broadcasting the descriptor's bytes as if they were row data"),
+    Omit!(LLVMJit, Because.unconfirmed),
+)) {
+    @("dynamicArray.broadcastFillFromDynamicArrayRowElementCopiesIndependently." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            unittest {
+                int[3][] values = new int[3][](3);
+                int[3][] src = new int[3][](1);
+                src[0][0] = 7; src[0][1] = 8; src[0][2] = 9;
+                values[0 .. 2] = src[0];
+
+                assert(values[0][0] == 7 && values[0][1] == 8 &&
+                    values[0][2] == 9);
+                assert(values[1][0] == 7 && values[1][1] == 8 &&
+                    values[1][2] == 9);
+                assert(values[2][0] == 0 && values[2][1] == 0 &&
+                    values[2][2] == 0);
+
+                // Each broadcast row is its own independent copy of
+                // `src[0]`'s current value, not aliased to it: mutating
+                // one must not affect the other (`T[N]` element assignment
+                // is a value copy, unlike the `T[][]` row-aliasing sibling
+                // test further above).
+                values[0][0] = 55;
+                assert(src[0][0] == 7);
+                assert(values[1][0] == 7);
+            }
+        });
+    }
+}
+
+// `Bytecode`'s own clean-decline counterpart of the sibling test above:
+// proves the broadcast fill fails at *compile* time with a diagnostic
+// (this fix) rather than silently filling every row with garbage.
+@("dynamicArray.broadcastFillFromDynamicArrayRowElementDeclinesOnBytecode")
+@Tags("Bytecode")
+unittest {
+    runBackendSourceFixtureTests!Bytecode(q{
+        unittest {
+            int[3][] values = new int[3][](3);
+            int[3][] src = new int[3][](1);
+            src[0][0] = 7; src[0][1] = 8; src[0][2] = 9;
+            values[0 .. 2] = src[0];
+        }
+    }).shouldThrowWithMessage(
+        "Unsupported slice-assignment source in bytecode core: src[0]",
+    );
 }

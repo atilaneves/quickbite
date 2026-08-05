@@ -414,6 +414,11 @@ Known blocked rows, stated as the blocker rather than the symptom:
   (`expressions.d`) assert `&value == expected` across a `ref` call boundary.
   Both are blocked on the ref calling convention below, not on
   template/`shared` specifics, so neither is a bounded single-commit row.
+- `associativeArray.directLocalRefArgumentMutatesSource` (`expressions.d`):
+  the same mirror/writeback also loses a `ref int[int]` local's callee-side
+  mutation entirely rather than merely diverging on `&value` -- the
+  caller's post-call lookup throws "Range violation" instead of seeing the
+  callee's write. Also blocked on the ref calling convention below.
 
 Ref calling convention -- the largest known correctness hazard in the current
 core, and the blocker for the rows above. A scalar `ref` argument is passed as
@@ -440,20 +445,20 @@ reaches them:
 - A `T[N][]`'s rows are separately heap-allocated inner descriptors, so a
   pointer taken into one row (`&outer[i][j]`) is valid within that row, but a
   flat pointer walk across rows diverges from compiled D's contiguous layout.
+- A `T[N][]` destination's broadcast-fill and row-range slice assignment
+  (`tryDynamicArraySliceAssign`) write through each destination row's own
+  heap block only when the rhs itself supplies genuine row bytes: a
+  single-row rhs read out of another `T[N][]` array (`arr[i]`), and a
+  row-range rhs sliced from a static-array view (`s[0 .. 2]` where `s` is
+  `int[3][3]`), both decline with "Unsupported slice-assignment source in
+  bytecode core" rather than treating a row descriptor as row data.
 - `arr[0][0]` on a `T[N][]` throws "Unsupported static array access": the
   `Tarray`-gated `tryDynamicArrayIndex`/`indexedArrayDescriptor` decline a
   `Tsarray` sub-expression, so compilation falls through to the
   static-array-chain path, which has no notion of a dynamic-array base. A
   clean diagnostic, not a wrong answer.
-- Static arrays of dynamic arrays copy each element's full 16-byte slice
-  descriptor; nested mutation and general stale-cell reconciliation remain
-  incomplete.
 - Captured array support does not yet cover every read, write, slice, append,
   view-preservation, and closure combination.
-- A broadcast fill (`arr[0 .. 2] = value;`) declines when the destination
-  element is itself a heap-allocated row descriptor (`T[N][]`/`T[][]`):
-  broadcasting into it needs a fresh row allocation per element, not a byte
-  copy.
 - Dynamic-array and string sub-slices bounds-check both ends
   (`validateSubSlice`, `machine.d`). A raw pointer slice performs no check at
   all -- confirmed correct, not a gap: compiled D's own `p[lo .. hi]` on a bare
@@ -479,14 +484,39 @@ reaches them:
   both entry points to decline still fails that row -- so do not remove or
   narrow it without a real fix backing it, and note that any change to how a
   delegate-typed store resolves can starve that fallback and break the row.
+- A dynamic array of class instances throws "Unsupported class method
+  receiver in bytecode core" on element method calls (`English[] gs; gs ~=
+  new English(); gs[0].greet();`): indexing a `Tarray` of `Tclass` elements
+  isn't wired into the class-pointer machinery
+  (`compileClassPointerDeclaration`, `compiler.d`).
+- A `throw`'s exception-chaining (`.next`) only threads through
+  `_pendingFinallyExceptionMessageOffset` on the `emitThrowString` (string
+  `new Exception(...)`) path. An object throw (`throw e;`, or any non-string-
+  message `new`) that exits through a `finally` which itself throws does not
+  chain: `compileThrowExpression`'s `Op.throwObject` site runs
+  `runExitedFinally` for the exit but has no equivalent pending-object slot
+  for the inlined finally's own throw to chain onto.
+- `throwExitedFinallyCount`'s catch-protected-scope guard is only overridden
+  when the thrown class is exactly known at the throw site (a direct
+  `new C(...)`, per `catchesCouldMatch`). A rethrow of a caught/stored
+  exception (`throw e;`, or any throw whose class isn't syntactically a `new`
+  at that point) still assumes the nearest lexically-enclosing catch might
+  claim it; if that catch's declared type doesn't actually match at runtime,
+  a `finally` between the throw site and wherever it's really caught can
+  still be silently skipped.
 
-Next candidate. Every remaining `Omit!(Bytecode, ...)` row is one of the
-blocked rows above, so a matrix search will not surface a bounded one. The
-best bounded candidate is the unguarded closure-escape gap named in the
-Closures section: a capturing delegate stored into a class field or an array
-element silently captures a dead frame instead of declining. Otherwise find a
-fresh row through `bin/qb` exploration of read-modify-write and mirror paths,
-or take a "Architecture work forced by the baseline" front.
+Next candidate. No named oracle-backed `Omit!(Bytecode, Because.unconfirmed)`
+row remains bounded and unblocked: the three survivors
+(`refArgument.templateRefSharedParameterMutatesAndPreservesAddress`,
+`refArgument.templateRefSharedForwardsThroughNestedFunction`,
+`associativeArray.directLocalRefArgumentMutatesSource`, all in
+`expressions.d`) are blocked on the ref calling convention above, not
+bounded single-commit fixes. Closure interactions with exceptions (a
+captured local mutated across
+try/catch/finally) and class polymorphism/vtable dispatch (including
+`super.f()`) match `SystemLinker` under `bin/qb` probing -- not a lead. Find
+a fresh row through further `bin/qb` exploration, take the "One place
+resolver" item, or take an "Architecture work forced by the baseline" front.
 
 ### TDD and handoff discipline
 
@@ -551,6 +581,17 @@ place second.
    into the single width authority every emit site's width *computation* goes
    through. Each site still derives its own width today
    (`dynamicArrayElementSize`, `staticArraySize`, `size(scalarType)`, ...).
+   This is a real generalisation, not a mechanical rename: the two named
+   functions differ materially in signature and return shape (a bare `uint`
+   vs. a `{opcodeType, byteStride}` pair) across 30+ call sites, so take it as
+   a bounded sub-piece (one call-site family, or one clearly-scoped shared
+   helper) rather than attempting the whole merge in one commit.
+   `pointerElementMetadata`, `dereferencedArrayIndexElementMetadata`,
+   `dynamicArrayElementSize`, `storeStructPointerField`/
+   `storeClassPointerField`, and `refArgumentFieldWidth` now share their
+   aggregate-vs-scalar branch through one helper, `elementMetadataFor`;
+   remaining call sites (`staticArraySize`, `size(scalarType)`, ...) still
+   derive width independently.
 
    Done: every width-suffixed opcode family (`indexLoad*`/`indexStore*`,
    `pointerLoad*`/`pointerStore*`/`pointerSlice*`, `subSlice*`,
@@ -751,12 +792,21 @@ lifetime as the dependency bytecode cache.
   that invariant when widening: a new escape site must either be its function's
   last act, or move the variable to the heap from declaration onward.
 
-  KNOWN UNGUARDED GAP: a capturing delegate escaping through a class field, an
-  array element, or a field nested more than one level inside a returned struct
-  literal routes through none of this, and silently produces a delegate holding
-  a popped or reused frame context -- a wrong answer, not a refusal. Closing it
-  is the next real closure work, and the narrowest useful fix is to route those
-  sites through the same decline path first, then widen.
+  A capturing delegate assigned into a class field, a dynamic-array element,
+  or nested arbitrarily deep inside a directly returned struct literal now
+  gets the same heap-box-or-decline treatment `compileDelegateReturn` gives a
+  direct `return dg;`. Because that write is not itself the function's last
+  act, `heapEscapingDelegateOperandOffset` declines rather than risk
+  unsoundness whenever `capturedLocalsMayBeMutatedInCurrentFunction`
+  (`compiler.d`) finds a further same-function mutation of the captured
+  locals, including one passed as a call argument bound to a `ref`/`out`
+  parameter (or to an unresolvable callee, conservatively). Still open: that
+  scan is order-insensitive and whole-function, so
+  it over-declines two provably-safe shapes -- a mutation strictly before the
+  heap-box write, and a mutation inside the escaping lambda's own body.
+  Narrowing needs control-flow-sensitive write-site dataflow, or moving the
+  captured locals to the heap from declaration onward; neither is attempted
+  here.
 
   The eventual right design point is DMD's own per-function `needsClosure()`/
   `closureVars` decision -- every closure-needing variable heap-allocated from

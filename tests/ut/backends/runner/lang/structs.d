@@ -4210,6 +4210,84 @@ static foreach (backend; Matrix!()) {
     }
 }
 
+// A delegate-typed class field passed as a `ref` argument
+// (`replace(holder.fn)`). `refArgumentFieldWidth` routes through
+// `elementMetadataFor`'s aggregate gate (`Tstruct`/`Tsarray`/`Tdelegate`),
+// so a `Tdelegate` field is a 16-byte mirror-writeback: the callee-side
+// write through the `ref` is visible through the original field afterward,
+// matching `SystemLinker`.
+static foreach (backend; Matrix!(
+    Omit!(Interpreter, Because.unconfirmed,
+        "throws \"quickbite.backends.interpreter.place_value.writeValue: " ~
+            "unsupported at place\" for this shape -- not yet promoted, " ~
+            "owned by ai/plans/interpreter.md"),
+)) {
+    @("refArgument.classFieldOfDelegateTypeWritesThroughField." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            class Holder {
+                int delegate() fn;
+            }
+
+            void replace(ref int delegate() dg) {
+                dg = () => 99;
+            }
+
+            unittest {
+                auto holder = new Holder;
+                holder.fn = () => 42;
+                assert(holder.fn() == 42);
+                replace(holder.fn);
+                assert(holder.fn() == 99);
+            }
+        });
+    }
+}
+
+// The struct-pointer counterpart of the class-field fixture above: a
+// delegate-typed field reached through a raw struct pointer, passed as a
+// `ref` argument (`replace(carrier.fn)`). The `refArgumentFieldWidth` fold
+// above already makes the ref-argument mirror-writeback itself correct for
+// this shape. The fixture's own `carrier.fn()` CALL previously threw
+// "Unsupported call in bytecode core: (*carrier).fn()":
+// `delegateFieldOffsetOf`'s struct-pointer-field branch gated on
+// `isPointerType(dot.e1.type)`, but DMD lowers `carrier.fn` to
+// `(*carrier).fn` first, so `dot.e1` was already the dereferenced `Holder`
+// PtrExp, not a pointer-typed expression -- the gate never fired, unlike
+// `tryStructPointerField`, which unwraps that same `PtrExp` itself.
+// `delegateFieldOffsetOf` now does the same unwrap first.
+static foreach (backend; Matrix!(
+    Omit!(Interpreter, Because.unconfirmed,
+        "throws \"Unsupported eval call.\" for this shape -- not yet " ~
+            "promoted, owned by ai/plans/interpreter.md"),
+)) {
+    @("refArgument.structPointerFieldOfDelegateTypeWritesThroughField." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct Holder {
+                int delegate() fn;
+            }
+
+            void replace(ref int delegate() dg) {
+                dg = () => 99;
+            }
+
+            unittest {
+                Holder holder;
+                holder.fn = () => 42;
+                Holder* carrier = &holder;
+                assert(carrier.fn() == 42);
+                replace(carrier.fn);
+                assert(carrier.fn() == 99);
+            }
+        });
+    }
+}
+
 // A whole-struct assignment into a field reached through a struct pointer,
 // where the right-hand side is a bare struct-local `VarExp` rather than a
 // struct literal or call. `tryStructPointerField`'s assignment branch

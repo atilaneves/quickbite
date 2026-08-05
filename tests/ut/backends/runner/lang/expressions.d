@@ -16,7 +16,21 @@ private void runSse2BackendSourceFixtureTests(T)(in string moduleSource) {
 }
 
 
-static foreach (backend; Matrix!()) {
+// A `ref int[int]` local argument: the ref calling convention (see "Ref
+// calling convention" below) mirrors the argument into a fresh frame slot
+// and writes it back after the callee returns rather than binding the
+// callee to the caller's real storage. Bytecode's writeback does not
+// propagate the callee's AA mutation back to the caller's variable, so the
+// post-call `values[7]` lookup throws "Range violation" instead of seeing
+// key 7. Interpreter declines the same shape outright with "Expected
+// associative array." -- a separate, unconfirmed gap.
+static foreach (backend; Matrix!(
+    Omit!(Bytecode, Because.unconfirmed,
+        "ref calling convention mirror/writeback does not propagate an AA " ~
+        "mutation made through a `ref int[int]` local argument back to the " ~
+        "caller; post-call lookup throws \"Range violation\""),
+    Omit!(Interpreter, Because.unconfirmed, "Expected associative array."),
+)) {
     @("associativeArray.directLocalRefArgumentMutatesSource." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -818,6 +832,48 @@ static foreach (backend; Matrix!()) {
 
             unittest {
                 assert(run(10) == 1021);
+            }
+        });
+    }
+}
+
+// `super.f()` must bind statically to the immediately overridden base
+// implementation, never through the receiver's own dynamic-class vtable: an
+// override whose body calls `super.f()` still has a `this` of the MOST
+// DERIVED runtime class, so a naive "any class-receiver call is virtual"
+// dispatch looks the override back up again and recurses on itself forever
+// instead of reaching the base. `Interpreter` crashes (confirmed via real
+// `bin/ut`: dumped core) rather than returning a wrong answer -- a
+// pre-existing gap in a different backend's track, not touched here.
+static foreach (backend; Matrix!(
+    Omit!(Interpreter, Because.unconfirmed,
+        "super.f() crashes (dumped core) instead of binding to the base " ~
+        "implementation"),
+)) {
+    @("class.superCallBindsToBaseImplementationNotDynamicClass." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            class A {
+                int f() { return 1; }
+            }
+
+            class B : A {
+                override int f() { return super.f() + 10; }
+            }
+
+            class C : B {
+                override int f() { return super.f() + 100; }
+            }
+
+            int run() {
+                A a = new C();
+                return a.f();
+            }
+
+            unittest {
+                assert(run() == 111);
             }
         });
     }
@@ -2268,6 +2324,47 @@ static foreach (backend; AliasSeq!(Bytecode)) {
     }
 }
 
+// A sibling of `functionReturningStructWithCapturingDelegateFieldIsCallable`
+// with the capturing delegate field nested TWO levels inside the returned
+// struct literal instead of one (`Outer(Counter(() => ++count))`): before
+// this widening, `compileStructLiteralInto`'s own recursive `Tstruct` branch
+// dropped `isReturnEscaping` on the way into the nested literal, so a
+// delegate field nested more than one level down always fell through to the
+// plain frame-relative `delegateOperandOffset` -- silently capturing
+// `makeOuter`'s popped/reused frame instead of heap-escaping it, a wrong
+// answer rather than a decline.
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.inexpressible,
+        "dmd.dinterpret evaluates the struct literal's delegate field " ~
+            "against its own enclosing-scope locals directly and refuses " ~
+            "reading `count` from CTFE outright: \"variable `count` " ~
+            "cannot be read at compile time\""),
+    Omit!(Interpreter, Because.unconfirmed,
+        "place_value.writeValue has no case for a delegate value written " ~
+            "through a struct-literal initializer place at all, escaping " ~
+            "or not -- not yet promoted"),
+)) {
+    @("delegate.functionReturningNestedStructWithCapturingDelegateFieldIsCallable." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct Counter { int delegate() next; }
+            struct Outer { Counter counter; }
+            auto makeOuter() {
+                int count = 0;
+                return Outer(Counter(() => ++count));
+            }
+
+            unittest {
+                auto o = makeOuter();
+                assert(o.counter.next() == 1);
+                assert(o.counter.next() == 2);
+            }
+        });
+    }
+}
+
 // A lambda that captures nothing, itself returning another non-capturing
 // lambda: DMD's "no context needed" default types both `make` and `getter`
 // as plain function pointers (`int function() function()` and `int
@@ -2543,6 +2640,51 @@ static foreach (backend; Matrix!()) {
     }
 }
 
+// A captured array-of-arrays (`int[][]`), written to through a two-level
+// index from a nested function (`captured[1][0] = ...`).
+// `dynamicArrayDescriptorOrNull`'s captured-local branch materialised the
+// outer descriptor without `elementIsArray` (it never passed the argument
+// at all, unlike the sibling module-array and array-literal branches),
+// so the outer descriptor compiled the inner index as a scalar element
+// read/store instead of a 16-byte inner-descriptor read followed by a
+// second index; `innerArrayDescriptor`'s own `_dynamicArrayLocals` lookup
+// separately never matches a captured base at all, since a captured local's
+// descriptor lives in the captured-frame slot, not `_dynamicArrayLocals`.
+// Bytecode threw "Unsupported assignment in bytecode core" outright rather
+// than silently writing the wrong element -- a clean diagnostic, not a wrong
+// answer, but still an unsupported case SystemLinker (and every other
+// backend) already runs. Both gaps are now covered by the shared
+// `capturedArrayDescriptorOrNull` helper (`compiler.d`), used by
+// `dynamicArrayDescriptorOrNull`'s own top-level dispatch and by
+// `innerArrayDescriptor`'s new captured-base branch.
+static foreach (backend; Matrix!()) {
+    @("function.nestedFunctionWritesCapturedArrayOfArraysElement." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            int bumpNested(int seed) {
+                int[][] captured = [
+                    [seed, seed + 1],
+                    [seed + 2, seed + 3],
+                ];
+
+                void bump() {
+                    captured[1][0] = 777;
+                }
+
+                bump();
+
+                return captured[1][0];
+            }
+
+            unittest {
+                assert(bumpNested(1) == 777);
+            }
+        });
+    }
+}
+
 // A nested delegate reassigning a whole captured struct-typed local
 // (`s = S(99, 100);`, not a field write) exercises `compileCapturedAssign`'s
 // write side the same way `loadCapturedLocal` already reads a captured
@@ -2702,6 +2844,311 @@ static foreach (backend; Matrix!(
                 assert(c.f(2) == 6);
             }
         });
+    }
+}
+
+// A capturing delegate stored into a class field, then read back only AFTER
+// the storing function has returned: the class-field counterpart of
+// `delegate.functionReturningStructWithCapturingDelegateFieldIsCallable`
+// (`structLiteralReturnOffset`'s `Tdelegate` branch), which only ever
+// heap-escape-treats a struct literal's own TOP-LEVEL delegate field.
+// `tryClassPointerField`'s `Tdelegate` assignment branch always resolved
+// through the plain frame-relative `delegateOperandOffset`, regardless of
+// whether the class instance itself (unlike the struct literal case) then
+// outlives the assigning function -- the class-field write is not itself
+// the escape site DMD's own semantics track, so nothing prevented `c`
+// escaping via `return c;` two lines later while its `next` field's context
+// still pointed at `makeCounter`'s own (about-to-be-reused) frame.
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.inexpressible,
+        "Ctfe wraps dmd.dinterpret, whose CTFE engine refuses the "
+            ~ "returned closure outright with \"closures are not yet "
+            ~ "supported in CTFE\""),
+    Omit!(Interpreter, Because.unconfirmed,
+        "the Interpreter does not yet promote a frame-escaping " ~
+            "captured local to a heap closure either -- not yet promoted"),
+)) {
+    @("delegate.functionReturningClassWithCapturingDelegateFieldIsCallable." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            class Counter { int delegate() next; }
+
+            Counter makeCounter() {
+                int total = 40;
+                auto c = new Counter();
+                c.next = () => total + 2;
+                return c;
+            }
+
+            unittest {
+                auto c = makeCounter();
+                assert(c.next() == 42);
+            }
+        });
+    }
+}
+
+// The array-element twin of the fixture above: a capturing delegate stored
+// into a dynamic-array element, read back only after the storing function
+// has returned the array. `tryDynamicArrayElementAssign`'s generic element
+// path resolved a delegate-typed rhs through plain `compileExpression`
+// (whose own `FuncExp` branch always builds a frame-relative context, never
+// heap-escape-aware), the array-element sibling of the class-field gap
+// above.
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.inexpressible,
+        "Ctfe wraps dmd.dinterpret, whose CTFE engine refuses the "
+            ~ "returned closure outright with \"closures are not yet "
+            ~ "supported in CTFE\""),
+    Omit!(Interpreter, Because.unconfirmed,
+        "the Interpreter does not yet promote a frame-escaping " ~
+            "captured local to a heap closure either -- not yet promoted"),
+)) {
+    @("delegate.functionReturningArrayWithCapturingDelegateElementIsCallable." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            alias Dg = int delegate();
+
+            Dg[] makeDelegates() {
+                int seed = 42;
+                Dg[] dgs;
+                dgs.length = 1;
+                dgs[0] = () => seed;
+                return dgs;
+            }
+
+            unittest {
+                auto dgs = makeDelegates();
+                assert(dgs[0]() == 42);
+            }
+        });
+    }
+}
+
+// The open soundness question `ai/plans/bytecode.md`'s Closures section
+// flagged for the two fixtures above: unlike `compileDelegateReturn`'s
+// `return`-based escape sites, a class-field/array-element write is not
+// itself the function's last act, so a further same-function mutation of the
+// captured local between the write and the aggregate's actual escape can
+// diverge from `heapClosureContextOrNull`'s heap snapshot, taken at the
+// write. SystemLinker reflects the later write (102: `40 + 2`, then
+// `total = 100` makes the read-back-through-the-delegate value `100 + 2`);
+// before `heapEscapingDelegateOperandOffset` gained the
+// `capturedLocalsMayBeMutatedInCurrentFunction` gate below, Bytecode silently
+// returned the frozen pre-mutation snapshot (42) instead -- the same
+// silent-wrong-answer shape `delegate.outParameterEscapingCaptureDeclines`
+// documents for the `ref`/`out`-parameter escape site. `Bytecode` now
+// declines this shape outright (`delegate.classFieldEscapingCaptureDeclines`
+// below) rather than risk it.
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.inexpressible,
+        "Ctfe wraps dmd.dinterpret, whose CTFE engine refuses the "
+            ~ "returned closure outright with \"closures are not yet "
+            ~ "supported in CTFE\""),
+    Omit!(Interpreter, Because.unconfirmed,
+        "the Interpreter does not yet promote a frame-escaping " ~
+            "captured local to a heap closure either -- not yet promoted"),
+    Omit!(Bytecode, Because.refusal,
+        "a class-field write is not the escaping function's last act, so " ~
+            "`heapEscapingDelegateOperandOffset` cannot heap-box it the " ~
+            "way a `return` site can without risking a stale snapshot -- " ~
+            "see `delegate.classFieldEscapingCaptureDeclines` below"),
+)) {
+    @("delegate.classFieldMutatedAfterCapturingWriteIsCallable." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            class Counter { int delegate() next; }
+
+            Counter makeCounter() {
+                int total = 40;
+                auto c = new Counter();
+                c.next = () => total + 2;
+                total = 100;
+                return c;
+            }
+
+            unittest {
+                auto c = makeCounter();
+                assert(c.next() == 102);
+            }
+        });
+    }
+}
+
+// Bytecode-only: `capturedLocalsMayBeMutatedInCurrentFunction`
+// (`compiler.d`) declines rather than silently freeze a stale snapshot for
+// the fixture above. The diagnostic itself is a Bytecode-specific mechanism,
+// not a language restriction other backends share.
+static foreach (backend; AliasSeq!(Bytecode)) {
+    @("delegate.classFieldEscapingCaptureDeclines." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            class Counter { int delegate() next; }
+
+            Counter makeCounter() {
+                int total = 40;
+                auto c = new Counter();
+                c.next = () => total + 2;
+                total = 100;
+                return c;
+            }
+
+            unittest {
+                auto c = makeCounter();
+                assert(c.next() == 102);
+            }
+        }).shouldThrow();
+    }
+}
+
+// The array-element twin of the class-field fixture above:
+// `tryDynamicArrayElementAssign`'s `Tdelegate` branch shares the same
+// `heapEscapingDelegateOperandOffset` gate, so the same further-mutation
+// shape declines the same way.
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.inexpressible,
+        "Ctfe wraps dmd.dinterpret, whose CTFE engine refuses the "
+            ~ "returned closure outright with \"closures are not yet "
+            ~ "supported in CTFE\""),
+    Omit!(Interpreter, Because.unconfirmed,
+        "the Interpreter does not yet promote a frame-escaping " ~
+            "captured local to a heap closure either -- not yet promoted"),
+    Omit!(Bytecode, Because.refusal,
+        "an array-element write is not the escaping function's last act, " ~
+            "so `heapEscapingDelegateOperandOffset` cannot heap-box it the " ~
+            "way a `return` site can without risking a stale snapshot -- " ~
+            "see `delegate.arrayElementEscapingCaptureDeclines` below"),
+)) {
+    @("delegate.arrayElementMutatedAfterCapturingWriteIsCallable." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            alias Dg = int delegate();
+
+            Dg[] makeDelegates() {
+                int seed = 42;
+                Dg[] dgs;
+                dgs.length = 1;
+                dgs[0] = () => seed;
+                seed = 100;
+                return dgs;
+            }
+
+            unittest {
+                auto dgs = makeDelegates();
+                assert(dgs[0]() == 100);
+            }
+        });
+    }
+}
+
+// Bytecode-only: the array-element twin of
+// `delegate.classFieldEscapingCaptureDeclines` above.
+static foreach (backend; AliasSeq!(Bytecode)) {
+    @("delegate.arrayElementEscapingCaptureDeclines." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            alias Dg = int delegate();
+
+            Dg[] makeDelegates() {
+                int seed = 42;
+                Dg[] dgs;
+                dgs.length = 1;
+                dgs[0] = () => seed;
+                seed = 100;
+                return dgs;
+            }
+
+            unittest {
+                auto dgs = makeDelegates();
+                assert(dgs[0]() == 100);
+            }
+        }).shouldThrow();
+    }
+}
+
+// The `ref`-argument twin of `delegate.classFieldMutatedAfterCapturingWriteIsCallable`
+// above: DMD does not wrap a `ref` argument in an `AddrExp` (unlike `&arg`),
+// so a captured local mutated only by being passed to a `ref` parameter is
+// just as unsound a heap-box input as a direct `total = 100;` reassignment.
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.inexpressible,
+        "Ctfe wraps dmd.dinterpret, whose CTFE engine refuses the "
+            ~ "returned closure outright with \"closures are not yet "
+            ~ "supported in CTFE\""),
+    Omit!(Interpreter, Because.unconfirmed,
+        "the Interpreter does not yet promote a frame-escaping " ~
+            "captured local to a heap closure either -- not yet promoted"),
+    Omit!(Bytecode, Because.refusal,
+        "a `ref`-argument mutation is not visible as an `AddrExp`, so " ~
+            "`capturedLocalsMayBeMutatedInCurrentFunction` must scan call " ~
+            "arguments too -- see " ~
+            "`delegate.classFieldEscapingCaptureViaRefArgumentDeclines` " ~
+            "below"),
+)) {
+    @("delegate.classFieldMutatedViaRefArgumentAfterCapturingWriteIsCallable." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            void bump(ref int v) { v += 60; }
+
+            class Counter { int delegate() next; }
+
+            Counter makeCounter() {
+                int total = 40;
+                auto c = new Counter();
+                c.next = () => total + 2;
+                bump(total);
+                return c;
+            }
+
+            unittest {
+                auto c = makeCounter();
+                assert(c.next() == 102);
+            }
+        });
+    }
+}
+
+// Bytecode-only: the `ref`-argument twin of
+// `delegate.classFieldEscapingCaptureDeclines` above.
+static foreach (backend; AliasSeq!(Bytecode)) {
+    @("delegate.classFieldEscapingCaptureViaRefArgumentDeclines." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            void bump(ref int v) { v += 60; }
+
+            class Counter { int delegate() next; }
+
+            Counter makeCounter() {
+                int total = 40;
+                auto c = new Counter();
+                c.next = () => total + 2;
+                bump(total);
+                return c;
+            }
+
+            unittest {
+                auto c = makeCounter();
+                assert(c.next() == 102);
+            }
+        }).shouldThrowWithMessage(
+            "Unsupported delegate return in bytecode core: returning a " ~
+                "closure over this function's own locals outlives its " ~
+                "frame: __lambda_L9_C26",
+        );
     }
 }
 

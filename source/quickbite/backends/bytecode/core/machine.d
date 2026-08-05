@@ -320,6 +320,16 @@ package(quickbite.backends.bytecode) RunResult run(
                 ++ip;
                 break;
 
+            case rowRangeCopy:
+                copyRowRange(
+                    stack,
+                    base + instruction.a,
+                    base + instruction.b,
+                    instruction.c,
+                );
+                ++ip;
+                break;
+
             case sliceFill1:
                 fillSlice1(stack, base + instruction.a, base + instruction.b);
                 ++ip;
@@ -1802,6 +1812,30 @@ package(quickbite.backends.bytecode) RunResult run(
                 break;
             }
 
+            case aaGetOrInsert: {
+                auto handle = scalarValue!size_t(stack, base + instruction.a);
+                if (handle == 0) {
+                    maps ~= AssocArray.init;
+                    handle = maps.length;
+                    writeScalar!size_t(stack, base + instruction.a, handle);
+                }
+                const width = instruction.d;
+                const mode =
+                    assocArrayKeyMode(instruction.e, program.assocArrayKeyLayouts);
+                const keyWidth = mode.keyWidth;
+                maps[handle - 1].insertDefault(
+                    stack[
+                        base + instruction.b .. base + instruction.b + keyWidth
+                    ],
+                    mode.keyIsArray,
+                    keyWidth,
+                    stack[base + instruction.c .. base + instruction.c + width],
+                    mode.layoutFields,
+                );
+                ++ip;
+                break;
+            }
+
             case aaGetRvalue, aaIn: {
                 const handle = scalarValue!size_t(stack, base + instruction.b);
                 const width = instruction.d;
@@ -2763,6 +2797,61 @@ private void copySlice(
     destination[] = source[];
 }
 
+// Copy a range of `T[N][]` rows: write each source row's `rowByteSize`
+// bytes of content into the matching destination row's own existing
+// heap-allocated block, one row at a time. The destination and source
+// "elements" here are 16-byte `{ptr, length}` row descriptors pointing at
+// separately heap-allocated `T[N]` blocks (this VM's `T[N][]` row
+// representation, not compiled D's contiguous layout -- see "Live hazards
+// and divergences" in ai/plans/bytecode.md), so `copySlice`'s flat by-value
+// descriptor copy would alias every destination row to the source's block
+// instead of writing into each row's own storage. The lengths must match,
+// matching `copySlice`'s check and message.
+private void copyRowRange(
+    ref ubyte[] stack,
+    in size_t destinationOffset,
+    in size_t sourceOffset,
+    in uint rowByteSize,
+) @trusted {
+    import std.conv: text;
+    import quickbite.backends.bytecode.core.program: sliceDescriptorSize;
+
+    const destinationPointer = scalarValue!size_t(stack, destinationOffset);
+    const destinationLength =
+        scalarValue!size_t(stack, destinationOffset + size_t.sizeof);
+    const sourcePointer = scalarValue!size_t(stack, sourceOffset);
+    const sourceLength =
+        scalarValue!size_t(stack, sourceOffset + size_t.sizeof);
+
+    if (destinationLength != sourceLength)
+        throw new Exception(text(
+            "Array lengths don't match for copy: ",
+            sourceLength, " != ", destinationLength,
+        ));
+
+    // The row *blocks* pointed at by each 16-byte slot never overlap (each
+    // is its own separate heap allocation), but the two ranges of row
+    // *slots* -- 16 bytes apiece, contiguous in the same outer backing
+    // array -- can, exactly as compiled D's contiguous `T[N][]` rows would
+    // (`arr[0 .. 2] = arr[1 .. 3]`): matches `copySlice`'s overlap check
+    // and "Range violation" message on that outer slot memory.
+    const outerByteCount = destinationLength * sliceDescriptorSize;
+    if (sourcePointer < destinationPointer + outerByteCount &&
+        destinationPointer < sourcePointer + outerByteCount)
+        throw new Exception("Range violation");
+
+    foreach (i; 0 .. destinationLength) {
+        const destRowPointer = *cast(const(size_t)*)
+            (destinationPointer + i * sliceDescriptorSize);
+        const sourceRowPointer = *cast(const(size_t)*)
+            (sourcePointer + i * sliceDescriptorSize);
+        auto destRow = (cast(ubyte*) destRowPointer)[0 .. rowByteSize];
+        const sourceRow =
+            (cast(const(ubyte)*) sourceRowPointer)[0 .. rowByteSize];
+        destRow[] = sourceRow[];
+    }
+}
+
 // The compiler supplies a valid native slice descriptor and a 1-byte scalar
 // slot; the trusted boundary only forms the corresponding typed host slice.
 private void fillSlice1(
@@ -3377,6 +3466,29 @@ private struct AssocArray {
                 value[];
             return;
         }
+        keys ~= key;
+        values ~= value;
+        ++count;
+    }
+
+    // Like `insert`, but an already-present key's existing value bytes are
+    // left untouched -- only a newly created entry gets `value`. Backs
+    // `Op.aaGetOrInsert` (`_d_aaGetY`'s find-or-default-insert), where an
+    // existing entry may be read back as an intermediate value for further
+    // indexing (`a[1][2] = 3`'s `a[1]`) before any write actually happens;
+    // `insert`'s unconditional overwrite would clobber it with the caller's
+    // placeholder bytes first.
+    void insertDefault(
+        in ubyte[] key,
+        in bool keyIsArray,
+        in size_t keyWidth,
+        in const(ubyte)[] value,
+        in imported!"quickbite.backends.bytecode.core.program".AssocArrayKeyField[]
+            layoutFields = null,
+    ) @safe nothrow pure {
+        const index = findIndex(key, keyIsArray, keyWidth, layoutFields);
+        if (index != size_t.max)
+            return;
         keys ~= key;
         values ~= value;
         ++count;
