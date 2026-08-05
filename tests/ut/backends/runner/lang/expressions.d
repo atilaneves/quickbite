@@ -4416,6 +4416,57 @@ static foreach (backend; Matrix!(
     }
 }
 
+// An INITIALIZED dataseg variable (`_init !is null`) re-materializes its
+// initializer expression on every fresh function-call activation that
+// hasn't yet cached it in that activation's own `mirrorEstablished` map,
+// clobbering the shared module block's already-mutated value.
+// `materializeDatasegInitializer`'s `_init is null` arm gates its write on
+// `moduleTable.has(variable)` rather than `mirrorEstablished` precisely
+// because `mirrorEstablished` is per-activation and never merged back from
+// a forked child `Walker` into its caller (see the comment above that arm
+// in `impl.d`); the `_init !is null` arm below it was never given the same
+// fix, so it still runs whenever the CURRENT activation's own
+// `mirrorEstablished` lacks the entry. Each `bump()` call forks a fresh
+// child activation whose `mirrorEstablished` starts empty, so its first
+// read of `counter` re-runs the initializer and resets the module block
+// back to `5` before incrementing; the final `assert` reads `counter` from
+// yet another fresh activation (the outer `unittest` body's own), which
+// re-triggers the same reset one more time, so the read observes `5`
+// rather than the mutated `8`. `Ctfe` cannot read or write dataseg storage
+// at all.
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.inexpressible,
+        "CTFE cannot read or write dataseg (__gshared/static) storage"),
+    Omit!(Interpreter, Because.unconfirmed,
+        "materializeDatasegInitializer's `_init !is null` arm gates its " ~
+            "write on the per-activation `mirrorEstablished` map instead " ~
+            "of `moduleTable.has(variable)`, so every fresh call " ~
+            "activation re-runs the initializer expression and clobbers " ~
+            "the shared module block's already-mutated value; three " ~
+            "`bump()` calls followed by a read from yet another fresh " ~
+            "activation observe `counter == 5` instead of `8`"),
+)) {
+    @("dataseg.initializedModuleScalarSurvivesRepeatedCalls." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            __gshared int counter = 5;
+
+            void bump() {
+                counter = counter + 1;
+            }
+
+            unittest {
+                bump();
+                bump();
+                bump();
+                assert(counter == 8);
+            }
+        });
+    }
+}
+
 // A module-level fixed-size static array (`int[3] arr;`) fell through
 // `moduleScalarVariableOrNull`'s decline list outright ("Tsarray/Taarray/
 // Tdelegate ... variables remain entirely unsupported"). Scoped to a
