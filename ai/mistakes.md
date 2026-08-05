@@ -394,3 +394,15 @@
   `size(target) <= size(source.type)` path, copying just the target's
   1-byte width via `Op.copy` instead of computing `operand != 0` at the
   operand's own full width.
+
+- `compileCall`'s class-method call site treated any class-receiver call as
+  virtual (`Op.classVirtualFunction` off the receiver's *runtime* class),
+  with no exemption for a `super.f()` call site. A `super.f()` inside an
+  override still runs with the most-derived object as `this`, so dispatching
+  it through that object's own vtable looks the override right back up and
+  the call recurses on itself forever (hung, not crashed) for any override
+  whose body calls `super.f()`. Fixed by gating the virtual-dispatch branch
+  on `call.e1.isDotVarExp.e1.isSuperExp is null`; a super call falls through
+  to the same direct `Op.call` a non-class-receiver call uses, since
+  `function_`/`index` are already resolved to the base implementation via
+  DMD's `call.f`.

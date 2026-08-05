@@ -1083,8 +1083,6 @@ static foreach (backend; Matrix!(
 
 static foreach (backend; Matrix!(
     Omit!(Ctfe, Because.unconfirmed),
-    Omit!(Bytecode, Because.unconfirmed,
-        "does not preserve the expected exception message while rendering ubyte[]"),
     Omit!(LLVMJit, Because.unconfirmed),
 )) {
     @("arrayTooShortExceptionMessageIncludesBytes." ~ backend.stringof)

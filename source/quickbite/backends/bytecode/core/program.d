@@ -319,6 +319,21 @@ package(quickbite.backends.bytecode) enum Op: ubyte {
     // opcode: the byte width is operand c instead of being implied by the
     // opcode.
     sliceCopyN,
+    // Copy a range of `T[N][]` rows: the source slice descriptor at frame
+    // offset b into the destination slice descriptor at frame offset a,
+    // where both descriptors' elements are 16-byte `{ptr, length}` row
+    // descriptors pointing at separately heap-allocated `T[N]` blocks (this
+    // VM's `T[N][]` row representation), not `sliceCopy16`'s flat
+    // by-value descriptor copy. `sliceCopy16` is correct for a `T[][]` row
+    // (a real dynamic-array value, copied by descriptor), but wrong here:
+    // copying the row descriptors themselves would alias every destination
+    // row to the source's backing block, leaking the destination's own
+    // block and corrupting its pointer chain instead of writing content
+    // into each row's own storage. Writes through each destination row's
+    // existing pointer with the matching source row's content, `c` bytes
+    // per row. The two lengths must match, matching `sliceCopy`'s check and
+    // message.
+    rowRangeCopy,
     // Fill every element of the destination slice descriptor at frame offset
     // a with the scalar value at frame offset b. The element size is fixed by
     // the opcode (1, 2, 4, or 8 bytes).
@@ -676,6 +691,18 @@ package(quickbite.backends.bytecode) enum Op: ubyte {
     // a: handle slot, b: key slot, c: value slot; insert/overwrite. Creates the
     // map on first insert into an empty (handle-0) local, writing the handle back.
     aaInsert,
+    // a: handle slot, b: key slot, c: default-value slot; find-or-default-insert.
+    // Creates the map on an empty (handle-0) local exactly like `aaInsert`, but
+    // an ALREADY-present key's existing value bytes are left untouched -- only
+    // a newly created entry gets `c`'s bytes. `_d_aaGetY`'s own lowering only
+    // writes the real value through the pointer it returns when it just
+    // created the entry; an existing entry must survive being read back as an
+    // intermediate value for further indexing (`a[1][2] = 3` reads `a[1]`
+    // through this same hook to reach the inner map). Used by the get-lvalue
+    // path (`compileAssocArrayGetLvalue`); `aaInsert` itself is still correct
+    // for a direct `m[k] = v` and a literal's per-key values, which always
+    // mean to (over)write that exact value.
+    aaGetOrInsert,
     // a: size_t pointer result, b: handle slot, c: key slot; the address of the
     // value for the key (into VM-owned memory) or 0 when the key is absent. Both
     // the `m[k]` rvalue read and `k in m` lower to this: DMD's `m[k]` lowering

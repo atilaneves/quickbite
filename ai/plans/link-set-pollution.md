@@ -196,7 +196,12 @@ repeated full-suite `bin/ut --random` runs on baseline vs fixed builds,
 comparing failure counts of both driver tests (`concurrency.thisTid`,
 `unpredictableSeedReadsNonRootInitializer` native legs), not a single
 shared seed. Baseline incidence for calibration: PR #353 logged 3
-flaked runs in ~9; PR #394 estimated ~1-in-32 for the second driver.
+flaked runs in ~9; PR #394 estimated ~1-in-32 for the second driver;
+PR #454's CI (run 30940907049, seed 3013090727) logged both
+`concurrency.thisTid.SystemLinker` and `.LLVMJit` failing together in
+the same run — still unreproduced locally under an isolated checkout
+(different total test count changes the shuffle), consistent with
+layout-dependence, not a regression in that PR's diff.
 
 ## Relationship to existing work
 

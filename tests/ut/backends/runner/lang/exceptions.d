@@ -488,6 +488,84 @@ static foreach (backend; Matrix!()) {
 }
 
 static foreach (backend; Matrix!()) {
+    @("finally.runsOnceWhenCatchExits." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            int run(bool rethrow) {
+                int finallyRuns;
+                int caughtCount;
+
+                try {
+                    try {
+                        throw new Exception("body");
+                    } catch (Exception e) {
+                        caughtCount += 1;
+                        if (rethrow)
+                            throw e;
+                        else
+                            throw new Exception("from catch");
+                    } finally {
+                        finallyRuns += 1;
+                    }
+                } catch (Exception e) {
+                }
+
+                return caughtCount * 100 + finallyRuns;
+            }
+
+            unittest {
+                assert(run(true) == 101);
+                assert(run(false) == 101);
+            }
+        });
+    }
+}
+
+// A `finally` between the throw site and the catch that actually matches
+// must run even when a nearer, sibling catch's type does not match the
+// thrown exception at runtime -- the throw skips it for the outer handler,
+// and the finally in between is not exempt just because *some* catch was
+// lexically nearer.
+static foreach (backend; Matrix!()) {
+    @("finally.runsWhenNearerCatchTypeMismatches." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            class Special : Exception {
+                this(string msg) {
+                    super(msg);
+                }
+            }
+
+            int run() {
+                int order;
+
+                try {
+                    try {
+                        try {
+                            throw new Exception("x");
+                        } catch (Special e) {
+                            order += 1;
+                        }
+                    } finally {
+                        order += 10;
+                    }
+                } catch (Exception e) {
+                    order += 100;
+                }
+
+                return order;
+            }
+
+            unittest {
+                assert(run() == 110);
+            }
+        });
+    }
+}
+
+static foreach (backend; Matrix!()) {
     @("finally.runsAfterReturn." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
