@@ -600,7 +600,12 @@ place second.
    type-only fallback. Struct-method receivers materialised from a pointer,
    pointer/class field, or dynamic-array element also use it for their inline
    load/store blocks. By-value and captured struct/static-array values use it
-   for their inline copy widths.
+   for their inline copy widths. Struct field write-back through module data,
+   pointer-indexed struct materialisation, and heap `new S` allocation use it
+   for their inline blocks too, as do whole-struct assignments to a receiver,
+   local, or field. Next bounded width family: the static-array assignment
+   paths around `compileStaticArrayValueInto` and module initialisation still
+   query `staticArraySize` directly for inline copy/zero widths.
 
    Done: every width-suffixed opcode family (`indexLoad*`/`indexStore*`,
    `pointerLoad*`/`pointerStore*`/`pointerSlice*`, `subSlice*`,

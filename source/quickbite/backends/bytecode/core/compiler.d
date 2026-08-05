@@ -6556,7 +6556,7 @@ private struct Compiler {
                 Op.storeModule,
                 field.offset,
                 cast(ushort) (field.moduleOffset + fieldOffsetInStruct),
-                cast(ushort) staticArraySize(cast(Type) field.type),
+                cast(ushort) inlineByteWidth(cast(Type) field.type),
             );
             return;
         }
@@ -6795,7 +6795,7 @@ private struct Compiler {
                     if (pointer.isPointer) {
                         const indexSlot = compileExpression(index.e2);
                         const structSize =
-                            cast(ushort) staticArraySize(expression.type);
+                            cast(ushort) inlineByteWidth(expression.type);
                         const blockOffset = loadStructThroughPointer(
                             pointer.offset, indexSlot.offset, expression.type,
                         );
@@ -7383,7 +7383,7 @@ private struct Compiler {
             newExp.newtype.toBasetype.ty != TY.Tstruct)
             return null;
 
-        const blockSize = cast(uint) staticArraySize(newExp.newtype);
+        const blockSize = inlineByteWidth(newExp.newtype);
 
         // Build the initialised struct value in a temporary frame block, then
         // copy it into a fresh heap block addressed by the returned pointer.
@@ -12098,7 +12098,7 @@ private struct Compiler {
                 if (integer.toInteger == 0) {
                     zeroFrameBlock(
                         _thisLocal.offset,
-                        cast(uint) staticArraySize(assign.e1.type),
+                        inlineByteWidth(assign.e1.type),
                     );
                     return Operand(_thisLocal.offset, ScalarType.void_);
                 }
@@ -12110,7 +12110,7 @@ private struct Compiler {
                     Op.copy,
                     _thisLocal.offset,
                     source,
-                    cast(ushort) staticArraySize(assign.e1.type),
+                    cast(ushort) inlineByteWidth(assign.e1.type),
                 );
                 return Operand(_thisLocal.offset, ScalarType.void_);
             }
@@ -12135,7 +12135,7 @@ private struct Compiler {
                     if (integer.toInteger == 0) {
                         zeroFrameBlock(
                             destination.offset,
-                            cast(uint) staticArraySize(declaration.type),
+                            inlineByteWidth(declaration.type),
                         );
                         return Operand(destination.offset, ScalarType.void_);
                     }
@@ -12150,7 +12150,7 @@ private struct Compiler {
                         Op.copy,
                         destination.offset,
                         source,
-                        cast(ushort) staticArraySize(declaration.type),
+                        cast(ushort) inlineByteWidth(declaration.type),
                     );
                     return Operand(destination.offset, ScalarType.void_);
                 }
@@ -13766,7 +13766,7 @@ private struct Compiler {
                 Op.copy,
                 field.offset,
                 value,
-                cast(ushort) staticArraySize(field.type),
+                cast(ushort) inlineByteWidth(field.type),
             );
             writeBackStructField(*field);
             auto structResult = new Operand;
