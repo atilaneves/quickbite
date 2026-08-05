@@ -3869,9 +3869,20 @@ private struct Walker {
     private Value runPointerExpression(
         imported!"dmd.expression".PtrExp pointer,
     ) {
+        return dereferencePointerValue(pointer, runExpression(pointer.e1));
+    }
+
+    // The dereference half of `runPointerExpression`, split out so a caller
+    // that already evaluated `pointer.e1` itself (to also retain that
+    // address for a later use, e.g. a member-call receiver rebind) can reuse
+    // that single evaluation instead of running the -- possibly
+    // side-effecting -- pointer operand a second time.
+    private Value dereferencePointerValue(
+        imported!"dmd.expression".PtrExp pointer,
+        in Value value,
+    ) {
         import quickbite.frontend.dmd.types: isStaticArrayType;
 
-        const value = runExpression(pointer.e1);
         if (value.isFunctionPointer)
             return value;
 
@@ -4159,7 +4170,25 @@ private struct Walker {
         }
 
         if (auto dot = call.e1.isDotVarExp) {
-            auto receiver = runExpression(dot.e1);
+            // For a `PtrExp` receiver (`p().get()`'s implicit deref of a
+            // pointer-returning call), evaluate the pointer operand exactly
+            // once here and keep its address around: a struct receiver's
+            // later `this`-rebind (`runMemberFunction`, guarded by
+            // `isWritableLocation`) would otherwise re-derive that same
+            // address via `addressOfExpression`, re-running a
+            // side-effecting operand like `p()` a second time.
+            Value receiverPointerAddress;
+            bool hasReceiverPointerAddress;
+            Value receiver;
+            if (auto pointerReceiver = dot.e1.isPtrExp) {
+                receiverPointerAddress = runExpression(pointerReceiver.e1);
+                hasReceiverPointerAddress = true;
+                receiver = dereferencePointerValue(
+                    pointerReceiver,
+                    receiverPointerAddress,
+                );
+            } else
+                receiver = runExpression(dot.e1);
             receiver = rootedNativeClassValue(dot.e1, receiver);
             const interpreterAllocatedClass = receiver.isNativeAggregate &&
                 dot.e1.type.toBasetype.isTypeClass !is null;
@@ -4308,6 +4337,7 @@ private struct Walker {
                     arguments,
                     argumentExpressions,
                     evaluatedArguments,
+                    hasReceiverPointerAddress ? &receiverPointerAddress : null,
                 );
             }
         }
@@ -5523,6 +5553,13 @@ private struct Walker {
         in Value[] arguments,
         imported!"dmd.expression".Expression[] argumentExpressions,
         in EvaluatedReferenceArgument[] evaluatedArguments = null,
+        // Set by a caller that already evaluated a `PtrExp` receiver's
+        // pointer operand itself (to compute `receiver` above) and kept the
+        // resulting address around. The `this`-rebind below needs that same
+        // address; reusing it here -- instead of re-deriving it from
+        // `receiverExpression` -- keeps a side-effecting pointer operand
+        // (e.g. `p()` in `p().get()`) evaluated exactly once.
+        const(Value)* precomputedReceiverPointerAddress = null,
     ) {
         const memberReceiver = nativeMemberReceiver(function_, receiver);
 
@@ -5617,6 +5654,11 @@ private struct Walker {
                     base.pointerAddress,
                     currentFunction.vthis.type,
                 ).field(receiverExpression.isDotVarExp.var.isVarDeclaration).address);
+            } else if (
+                receiverExpression.isPtrExp !is null &&
+                precomputedReceiverPointerAddress !is null
+            ) {
+                address = *precomputedReceiverPointerAddress;
             } else {
                 address = addressOfExpression(receiverExpression, EXP.address);
             }

@@ -11096,3 +11096,52 @@ static foreach (backend; Matrix!(
         });
     }
 }
+
+// A struct method call whose receiver is an implicit dereference of a
+// pointer-returning call (`p().get()`, DMD shape `DotVarExp(PtrExp(CallExp),
+// get)`) must evaluate the side-effecting `p()` operand exactly once.
+// `runMemberFunction` rebinds `this` to the receiver's address for a
+// writable-location receiver (commit b8b0e42f's `isWritableLocation` PtrExp
+// arm, needed by the opAssign/opOpAssign-through-pointer and emplace-scalar
+// fixtures above); that rebind used to call `addressOfExpression`, whose own
+// `PtrExp` arm independently re-ran `runExpression(pointer.e1)`, running
+// `p()` a second time after the call site's own receiver evaluation already
+// ran it once.
+//
+// Ctfe, Bytecode, and LLVMJit are omitted here for reasons independent of
+// that Interpreter-only fix: Ctfe cannot read a mutable module-scope
+// variable at compile time (the same model mismatch as the
+// `ctfeIsFalseAtRuntime` fixture just above); Bytecode's core does not yet
+// support `++` on a module-scope variable ("Unsupported post-increment in
+// bytecode core"); LLVMJit returns a stale `0` for `calls`, a pre-existing,
+// unconfirmed gap in that backend's codegen for this shape.
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.diverges,
+        "Ctfe runs the unittest body through DMD's own CTFE interpreter, " ~
+        "which cannot read the mutable module-scope variable `calls` at " ~
+        "compile time"),
+    Omit!(Bytecode, Because.unconfirmed,
+        "bytecode core does not yet support `++` on a module-scope variable"),
+    Omit!(LLVMJit, Because.unconfirmed,
+        "returns a stale 0 for `calls`; root cause not investigated, " ~
+        "independent of the Interpreter-only fix this fixture targets"),
+)) {
+    @("struct.methodCallThroughReturnedPointerEvaluatesReceiverOnce." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct S {
+                int x;
+                int get() const { return x; }
+            }
+            int calls;
+            S s = S(42);
+            S* p() { calls++; return &s; }
+            unittest {
+                assert(p().get() == 42);
+                assert(calls == 1);
+            }
+        });
+    }
+}

@@ -645,6 +645,12 @@ Native storage and calls remain the ordinary execution path; do not restore
 marshalling, cell families, alias maps, or name-based representation shims.
 `interpreter.md` §8 triage remains the partition.
 
+`isWritableLocation`'s `isIndexExp` arm has the same double-evaluation
+hazard the `PtrExp` arm was fixed for (`runMemberFunction`'s `this`-rebind
+re-running an already-evaluated receiver operand): a side-effecting index
+operand in a method-call receiver (e.g. `a[i++].method()`) risks running
+`i++` twice. Pre-existing on master, unconfirmed with a failing fixture yet.
+
 A constructor body's whole-struct-typed field assignment (`this.field =
 OtherStruct(args)`) through a pointer-bound `this` throws `Expected struct.`,
 independent of the receiver's cast/type; a scalar-field ctor body through the
