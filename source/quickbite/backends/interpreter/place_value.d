@@ -363,6 +363,13 @@ private bool sameBaseType(
         // materialization step, not an element-layout conversion.
         if (lhsArray.next.toBasetype.ty == TY.Tvoid)
             return true;
+        // Any dynamic array implicitly converts to `void[]` (compiled D
+        // covariance, e.g. passing a `string` argument to a `void[]`
+        // parameter such as `std.array.overlap`/`doesPointTo`'s scratch
+        // range). The header layout -- {length, ptr} -- is element-type
+        // agnostic, so the same byte copy below is correct either way.
+        if (rhsArray.next.toBasetype.ty == TY.Tvoid)
+            return true;
         return mutableOf(lhsArray.next).equals(mutableOf(rhsArray.next));
     }
 
