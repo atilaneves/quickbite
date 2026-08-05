@@ -1743,8 +1743,10 @@ package(quickbite.backends.bytecode) RunResult run(
                 RefWriteback[] refWritebacks;
                 foreach (refParameter; callee.refParameters) {
                     const valueSize = refParameter.valueSize;
-                    const callerOffset = base + scalarValue!uint(
-                        stack, calleeBase + refParameter.offset,
+                    const callerOffset = cast(size_t) (
+                        cast(ptrdiff_t) base + scalarValue!int(
+                            stack, calleeBase + refParameter.offset,
+                        )
                     );
                     refWritebacks ~= RefWriteback(
                         callerOffset, refParameter.offset, valueSize,

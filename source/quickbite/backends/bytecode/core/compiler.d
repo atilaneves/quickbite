@@ -16250,6 +16250,12 @@ private struct Compiler {
                     continue;
                 }
                 if (layout.isReference[nextArgumentIndex + argumentIndex])
+                    if (emitCapturedRefArgument(
+                        slot,
+                        (*call.arguments)[argumentIndex],
+                    ))
+                        continue;
+                if (layout.isReference[nextArgumentIndex + argumentIndex])
                     if (emitRefLocalPointerArgument(
                         slot,
                         (*call.arguments)[argumentIndex],
@@ -17539,9 +17545,40 @@ private struct Compiler {
         return null;
     }
 
+    // A captured lvalue belongs to an enclosing live frame, but the ref-call
+    // convention expects an offset relative to this nested caller's frame.
+    // `capturedFrameIndex` produces the former's absolute stack index; subtract
+    // this frame's base so the callee's normal `base + callerOffset` entry
+    // handling reaches that enclosing slot.
+    private bool emitCapturedRefArgument(
+        in ushort slot,
+        Expression argument,
+    ) {
+        auto variable = argument.isVarExp;
+        if (!_hasNestedContext || variable is null)
+            return false;
+
+        auto declaration = variable.var.isVarDeclaration;
+        if (declaration is null)
+            return false;
+        auto captured = declaration in _capturedOffsets;
+        if (captured is null ||
+            _capturedOwners[declaration] is _currentFunction)
+            return false;
+
+        const sourceIndex = capturedFrameIndex(
+            _capturedOwners[declaration], *captured,
+        );
+        const currentBase = allocate(ScalarType.ulong_);
+        _code ~= Instruction(Op.frameBaseIndex, currentBase);
+        _code ~= Instruction(Op.subInt4, slot, sourceIndex, currentBase);
+        return true;
+    }
+
     // Emit a single call argument into `slot` of the argument area: a `ref`
-    // argument passes the caller-frame offset (dereferenced on entry, written
-    // back on return); a by-value struct block-copies the whole struct; a
+    // argument passes the signed offset to its caller-frame slot (dereferenced
+    // on entry, written back on return); a by-value struct block-copies the
+    // whole struct; a
     // dynamic array copies its 16-byte descriptor; a scalar copies its value.
     private void emitCallArgument(
         in ushort slot,

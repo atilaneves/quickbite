@@ -409,11 +409,6 @@ row, not a guarantee. Reconfirm against the source before relying on it.
 
 Known blocked rows, stated as the blocker rather than the symptom:
 
-- `refArgument.templateRefSharedParameterMutatesAndPreservesAddress` and
-  `refArgument.templateRefSharedForwardsThroughNestedFunction`
-  (`expressions.d`) assert `&value == expected` across a `ref` call boundary.
-  Both are blocked on the ref calling convention below, not on
-  template/`shared` specifics, so neither is a bounded single-commit row.
 - `associativeArray.directLocalRefArgumentMutatesSource` (`expressions.d`):
   the same mirror/writeback also loses a `ref int[int]` local's callee-side
   mutation entirely rather than merely diverging on `&value` -- the
@@ -505,13 +500,9 @@ reaches them:
   a `finally` between the throw site and wherever it's really caught can
   still be silently skipped.
 
-Next candidate. `refArgument.templateRefSharedForwardsThroughNestedFunction`
-(`expressions.d`) is red with `Unsupported ref argument in bytecode core:
-value`: a nested function's captured `ref` parameter needs a real caller
-place rather than a frame-local mirror.
-`associativeArray.directLocalRefArgumentMutatesSource` remains blocked on the
-ref calling convention above. Closure interactions with exceptions (a captured
-local mutated across
+Next candidate. `associativeArray.directLocalRefArgumentMutatesSource`
+(`expressions.d`) remains blocked on the ref calling convention above. Closure
+interactions with exceptions (a captured local mutated across
 try/catch/finally) and class polymorphism/vtable dispatch (including
 `super.f()`) match `SystemLinker` under `bin/qb` probing -- not a lead. Find
 a fresh row through further `bin/qb` exploration, take the "One place
