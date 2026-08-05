@@ -509,12 +509,13 @@ reaches them:
   still be silently skipped.
 
 Next candidate. No named oracle-backed `Omit!(Bytecode, Because.unconfirmed)`
-row remains bounded and unblocked: the three survivors
+row remains bounded and unblocked: the four survivors
 (`refArgument.templateRefSharedParameterMutatesAndPreservesAddress`,
 `refArgument.templateRefSharedForwardsThroughNestedFunction`,
 `associativeArray.directLocalRefArgumentMutatesSource`, all in
-`expressions.d`) are blocked on the ref calling convention above, not
-bounded single-commit fixes. Closure interactions with exceptions (a
+`expressions.d`, and `nativeRefArgument.muluReceivesForwardedReference` in
+`arrays.d`) are blocked on the ref calling convention above, not bounded
+single-commit fixes. Closure interactions with exceptions (a
 captured local mutated across
 try/catch/finally) and class polymorphism/vtable dispatch (including
 `super.f()`) match `SystemLinker` under `bin/qb` probing -- not a lead. Find
