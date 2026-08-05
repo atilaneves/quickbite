@@ -591,9 +591,11 @@ place second.
    and the inline DMD-layout query through `elementMetadataFor`/
    `inlineByteWidth`; `storeStructPointerField`/`storeClassPointerField` and
    `refArgumentFieldWidth` share that classification and query.
-   The next bounded width family is the aggregate call-layout builder;
-   `functionLayout` still queries `staticArraySize` directly for inline
-   struct/static-array parameter and receiver widths.
+   The aggregate call-layout builder now uses `inlineByteWidth` for inline
+   struct/static-array parameter and receiver widths, including its
+   type-only fallback. The next bounded width family should be one
+   call-site family that still queries `staticArraySize` directly for an
+   inline operand width, rather than a broad rename.
 
    Done: every width-suffixed opcode family (`indexLoad*`/`indexStore*`,
    `pointerLoad*`/`pointerStore*`/`pointerSlice*`, `subSlice*`,

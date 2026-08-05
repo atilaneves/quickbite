@@ -20837,7 +20837,7 @@ private struct Compiler {
 
         if (type.toBasetype.ty == TY.Tstruct || type.toBasetype.ty == TY.Tsarray) {
             const aggregateAlign = staticArrayAlign(type);
-            const aggregateBytes = cast(uint) staticArraySize(type);
+            const aggregateBytes = inlineByteWidth(type);
             layout.blockSize = (layout.blockSize +
                 aggregateAlign - 1) & ~(aggregateAlign - 1);
             layout.offsets ~= cast(ushort) layout.blockSize;
@@ -20903,7 +20903,7 @@ private struct Compiler {
         if (auto structDeclaration = thisStructDeclaration(function_)) {
             auto thisType = structDeclaration.type;
             const structAlign = staticArrayAlign(thisType);
-            const structBytes = cast(uint) staticArraySize(thisType);
+            const structBytes = inlineByteWidth(thisType);
             const argumentBytes = structBytes < uint.sizeof
                 ? cast(uint) uint.sizeof
                 : structBytes;
@@ -20991,7 +20991,7 @@ private struct Compiler {
             // its struct in, so the callee mutates only its private copy.
             if (parameter.type.toBasetype.ty == TY.Tstruct) {
                 const structAlign = staticArrayAlign(parameter.type);
-                const structBytes = cast(uint) staticArraySize(parameter.type);
+                const structBytes = inlineByteWidth(parameter.type);
                 layout.blockSize =
                     (layout.blockSize + structAlign - 1) & ~(structAlign - 1);
                 layout.offsets ~= cast(ushort) layout.blockSize;
@@ -21010,7 +21010,7 @@ private struct Compiler {
             // caller slot offset and writes the completed block back on return.
             if (parameter.type.toBasetype.ty == TY.Tsarray) {
                 const arrayAlign = staticArrayAlign(parameter.type);
-                const arrayBytes = cast(uint) staticArraySize(parameter.type);
+                const arrayBytes = inlineByteWidth(parameter.type);
                 layout.blockSize =
                     (layout.blockSize + arrayAlign - 1) & ~(arrayAlign - 1);
                 layout.offsets ~= cast(ushort) layout.blockSize;
