@@ -1315,7 +1315,7 @@ private struct Compiler {
         if (auto existing = staticArrayOffsetOf(source))
             return *existing;
 
-        const totalSize = cast(uint) staticArraySize(source.type);
+        const totalSize = inlineByteWidth(source.type);
         const offset =
             allocateBytes(totalSize, staticArrayAlign(source.type));
 
@@ -5042,7 +5042,7 @@ private struct Compiler {
     private void compileStaticArrayDeclaration(VarDeclaration variable) {
         import std.conv: text;
 
-        const totalSize = cast(uint) staticArraySize(variable.type);
+        const totalSize = inlineByteWidth(variable.type);
         const offset = allocateBytes(totalSize, staticArrayAlign(variable.type));
         // A static array is tracked only in `_staticArrayLocals`, not
         // `_locals`: the scalar VarExp/assignment paths must not treat its
@@ -5116,7 +5116,7 @@ private struct Compiler {
     ) {
         import dmd.astenums: TY;
 
-        const totalSize = cast(uint) staticArraySize(type);
+        const totalSize = inlineByteWidth(type);
 
         // `char[N] c = "..."`: copy the literal bytes directly into the inline
         // slot rather than building a slice descriptor.
@@ -5256,7 +5256,7 @@ private struct Compiler {
         assert(vectorType !is null);
 
         auto arrayType = vectorType.basetype; // DMD Type APIs are mutable.
-        const totalSize = cast(uint) staticArraySize(arrayType);
+        const totalSize = inlineByteWidth(arrayType);
         const offset = allocateBytes(totalSize, staticArrayAlign(arrayType));
         _staticArrayLocals[variable] = offset;
 
@@ -5309,8 +5309,8 @@ private struct Compiler {
             return false;
 
         auto elementType = arrayType.toBasetype.nextOf;
-        const elementSize = cast(uint) staticArraySize(elementType);
-        const count = cast(uint) staticArraySize(arrayType) / elementSize;
+        const elementSize = inlineByteWidth(elementType);
+        const count = inlineByteWidth(arrayType) / elementSize;
 
         // The source argument is `cast(T[])sourceArray`; the static-array base
         // is under the cast.
@@ -5363,8 +5363,8 @@ private struct Compiler {
 
         auto arrayType = slice.e1.type;
         auto elementType = arrayType.toBasetype.nextOf;
-        const elementSize = cast(uint) staticArraySize(elementType);
-        const count = cast(uint) staticArraySize(arrayType) / elementSize;
+        const elementSize = inlineByteWidth(elementType);
+        const count = inlineByteWidth(arrayType) / elementSize;
 
         auto dtor = structDeclarationOf(elementType).dtor;
         if (dtor !is null)

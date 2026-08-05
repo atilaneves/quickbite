@@ -591,8 +591,7 @@ place second.
    and the inline DMD-layout query through `elementMetadataFor`/
    `inlineByteWidth`; `storeStructPointerField`/`storeClassPointerField` and
    `refArgumentFieldWidth` share that classification and query.
-   Remaining call sites (`staticArraySize`, `size(scalarType)`, ...) still
-   derive width independently.
+   Remaining call-site families still derive width independently.
 
    Done: every width-suffixed opcode family (`indexLoad*`/`indexStore*`,
    `pointerLoad*`/`pointerStore*`/`pointerSlice*`, `subSlice*`,
