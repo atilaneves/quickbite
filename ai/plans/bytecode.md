@@ -407,16 +407,8 @@ row, not a guarantee. Reconfirm against the source before relying on it.
   `TypeInfo!int` without display-value substitution.
 - Delegates and closures: see the Closures section.
 
-Known blocked rows, stated as the blocker rather than the symptom:
-
-- `associativeArray.directLocalRefArgumentMutatesSource` (`expressions.d`):
-  the same mirror/writeback also loses a `ref int[int]` local's callee-side
-  mutation entirely rather than merely diverging on `&value` -- the
-  caller's post-call lookup throws "Range violation" instead of seeing the
-  callee's write. Also blocked on the ref calling convention below.
-
 Ref calling convention -- the largest known correctness hazard in the current
-core, and the blocker for the rows above. A scalar `ref` argument is passed as
+core. A scalar `ref` argument is passed as
 a value mirrored into a fresh frame slot and written back after the callee
 returns, not as a pointer the callee dereferences. Every ref-argument kind
 that binds non-frame-resident storage (`emitModuleScalarRefArgument`,
@@ -500,13 +492,14 @@ reaches them:
   a `finally` between the throw site and wherever it's really caught can
   still be silently skipped.
 
-Next candidate. `associativeArray.directLocalRefArgumentMutatesSource`
-(`expressions.d`) remains blocked on the ref calling convention above. Closure
-interactions with exceptions (a captured local mutated across
-try/catch/finally) and class polymorphism/vtable dispatch (including
-`super.f()`) match `SystemLinker` under `bin/qb` probing -- not a lead. Find
-a fresh row through further `bin/qb` exploration, take the "One place
-resolver" item, or take an "Architecture work forced by the baseline" front.
+Next candidate. No `Bytecode` matrix row remains omitted as
+`Because.unconfirmed`. Reconfirm each `Because.refusal` or
+`Because.inexpressible` boundary against the current compiler and promote it
+when the smallest general semantic is clear. Closure interactions with
+exceptions (a captured local mutated across try/catch/finally) and class
+polymorphism/vtable dispatch (including `super.f()`) match `SystemLinker`
+under `bin/qb` probing -- not a lead. Otherwise take the "One place resolver"
+item or an "Architecture work forced by the baseline" front.
 
 ### TDD and handoff discipline
 

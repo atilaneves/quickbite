@@ -588,6 +588,8 @@ private struct Compiler {
                 }
 
                 _locals[parameter] = offset;
+                if (parameter.type.toBasetype.ty == TY.Taarray)
+                    _assocArrayLocals[parameter] = true;
                 if (isPointerType(parameter.type))
                     _pointerLocals[parameter] =
                         pointerElementScalar(parameter.type);

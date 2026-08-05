@@ -16,19 +16,9 @@ private void runSse2BackendSourceFixtureTests(T)(in string moduleSource) {
 }
 
 
-// A `ref int[int]` local argument: the ref calling convention (see "Ref
-// calling convention" below) mirrors the argument into a fresh frame slot
-// and writes it back after the callee returns rather than binding the
-// callee to the caller's real storage. Bytecode's writeback does not
-// propagate the callee's AA mutation back to the caller's variable, so the
-// post-call `values[7]` lookup throws "Range violation" instead of seeing
-// key 7. Interpreter declines the same shape outright with "Expected
-// associative array." -- a separate, unconfirmed gap.
+// Interpreter declines this shape with "Expected associative array." -- a
+// separate, unconfirmed gap.
 static foreach (backend; Matrix!(
-    Omit!(Bytecode, Because.unconfirmed,
-        "ref calling convention mirror/writeback does not propagate an AA " ~
-        "mutation made through a `ref int[int]` local argument back to the " ~
-        "caller; post-call lookup throws \"Range violation\""),
     Omit!(Interpreter, Because.unconfirmed, "Expected associative array."),
 )) {
     @("associativeArray.directLocalRefArgumentMutatesSource." ~ backend.stringof)
