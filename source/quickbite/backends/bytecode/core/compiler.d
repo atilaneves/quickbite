@@ -2894,7 +2894,7 @@ private struct Compiler {
     // call argument `read(Value(...))`): materialise the block into a fresh slot.
     private Operand compileStructLiteralOperand(StructLiteralExp literal) {
         const offset = allocateStructBlock(literal.type);
-        zeroFrameBlock(offset, cast(uint) staticArraySize(literal.type));
+        zeroFrameBlock(offset, inlineByteWidth(literal.type));
         compileStructLiteralInto(offset, literal);
         return Operand(offset, ScalarType.void_);
     }
@@ -2916,7 +2916,7 @@ private struct Compiler {
     // going away.
     private ushort structLiteralReturnOffset(StructLiteralExp literal) {
         const offset = allocateStructBlock(literal.type);
-        zeroFrameBlock(offset, cast(uint) staticArraySize(literal.type));
+        zeroFrameBlock(offset, inlineByteWidth(literal.type));
         compileStructLiteralInto(offset, literal, true);
         return offset;
     }
@@ -16720,7 +16720,7 @@ private struct Compiler {
             : scalarType(returnType.toBasetype);
         const destination = isStructReturn
             ? allocateBytes(
-                cast(uint) staticArraySize(returnType),
+                inlineByteWidth(returnType),
                 staticArrayAlign(returnType),
             )
             : isArrayReturn
