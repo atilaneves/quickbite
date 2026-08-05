@@ -7099,6 +7099,11 @@ private struct Compiler {
         );
         if (field.type.toBasetype.ty == TY.Tclass)
             return Operand(destination, fieldScalar, true, ScalarType.void_);
+        if (isPointerType(field.type))
+            return Operand(
+                destination, fieldScalar, true,
+                pointerElementScalar(field.type),
+            );
         return Operand(destination, fieldScalar);
     }
 

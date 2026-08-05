@@ -396,10 +396,10 @@ row, not a guarantee. Reconfirm against the source before relying on it.
 
 Known blocked rows, stated as the blocker rather than the symptom:
 
-- `file.createWriteRead.Bytecode` (`sys/file.d`) reaches a pointer initializer
-  `fps` after the `FileLogger` receiver-field struct assignment. It declines
-  with "Unsupported pointer initializer in bytecode core: fps". Resolve that
-  pointer's ordinary source place; do not add a `File`-specific case.
+- `file.createWriteRead.Bytecode` (`sys/file.d`) reaches an inline atomic load
+  after File's handle pointer is materialised. It declines with "Unsupported
+  inline asm atomic-load operand". Resolve that ordinary atomic operand; do
+  not add a `File`-specific case.
 - `refArgument.templateRefSharedParameterMutatesAndPreservesAddress` and
   `refArgument.templateRefSharedForwardsThroughNestedFunction`
   (`expressions.d`) assert `&value == expected` across a `ref` call boundary.

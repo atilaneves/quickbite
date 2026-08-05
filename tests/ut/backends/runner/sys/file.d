@@ -12,9 +12,8 @@ import std.conv: text;
 static foreach (backend; Matrix!(
     Omit!(Ctfe, Because.inexpressible, "needs the host filesystem, which CTFE cannot access"),
     Omit!(Bytecode, Because.refusal,
-        "after the FileLogger receiver-field struct assignment, compilation " ~
-        "declines with \"Unsupported pointer initializer in bytecode core: " ~
-        "fps\""),
+        "after File's handle pointer is loaded, compilation declines with " ~
+        "\"Unsupported inline asm atomic-load operand\""),
 )) {
     @("file.createWriteRead." ~ backend.stringof)
     @Tags(backend.stringof)
