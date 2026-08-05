@@ -5388,7 +5388,7 @@ private struct Compiler {
         _structLocals[variable] = StructLocal(offset, declaration);
         registerCapturedOffset(variable, offset);
 
-        zeroFrameBlock(offset, cast(uint) staticArraySize(variable.type));
+        zeroFrameBlock(offset, inlineByteWidth(variable.type));
 
         // A nested struct carries a hidden context pointer (`vthis`) at offset 0
         // recording the enclosing function's frame, so its methods can read
@@ -5464,7 +5464,7 @@ private struct Compiler {
                                     Op.copy,
                                     offset,
                                     blitSource,
-                                    cast(ushort) staticArraySize(variable.type),
+                                    cast(ushort) inlineByteWidth(variable.type),
                                 );
                                 auto postblitFunction = callFunction(call);
                                 if (postblitFunction !is null)
@@ -5484,7 +5484,7 @@ private struct Compiler {
                 Op.copy,
                 offset,
                 sourceOffset,
-                cast(ushort) staticArraySize(variable.type),
+                cast(ushort) inlineByteWidth(variable.type),
             );
             return;
         }
@@ -5542,7 +5542,7 @@ private struct Compiler {
 
                     loadStaticString(
                         fieldOffset,
-                        cast(uint) staticArraySize(fieldType),
+                        inlineByteWidth(fieldType),
                         string_,
                     );
                     materialised = true;
@@ -5551,7 +5551,7 @@ private struct Compiler {
 
                 const elementSize = size(ScalarType.char_);
                 const elementCount =
-                    cast(uint) staticArraySize(fieldType) / elementSize;
+                    inlineByteWidth(fieldType) / elementSize;
                 const basis = compileSizeConstant(char.init);
                 foreach (index; 0 .. elementCount)
                     _code ~= Instruction(
@@ -5584,7 +5584,7 @@ private struct Compiler {
 
     private ushort allocateStructBlock(Type type) {
         return allocateBytes(
-            cast(uint) staticArraySize(type), staticArrayAlign(type),
+            inlineByteWidth(type), staticArrayAlign(type),
         );
     }
 
