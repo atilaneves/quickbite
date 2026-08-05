@@ -396,11 +396,10 @@ row, not a guarantee. Reconfirm against the source before relying on it.
 
 Known blocked rows, stated as the blocker rather than the symptom:
 
-- `file.createWriteRead.Bytecode` (`sys/file.d`) reaches `std.stdio.File`'s
-  `this.file_ = f` struct assignment after the atomic paths and declines with
-  "Unsupported struct value in bytecode core". Resolve the receiver-field
-  struct assignment through the ordinary place/writeback path; do not add a
-  `File`-specific case.
+- `file.createWriteRead.Bytecode` (`sys/file.d`) reaches a pointer initializer
+  `fps` after the `FileLogger` receiver-field struct assignment. It declines
+  with "Unsupported pointer initializer in bytecode core: fps". Resolve that
+  pointer's ordinary source place; do not add a `File`-specific case.
 - `refArgument.templateRefSharedParameterMutatesAndPreservesAddress` and
   `refArgument.templateRefSharedForwardsThroughNestedFunction`
   (`expressions.d`) assert `&value == expected` across a `ref` call boundary.

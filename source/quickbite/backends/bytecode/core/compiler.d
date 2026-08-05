@@ -6300,6 +6300,8 @@ private struct Compiler {
     private ushort structOperandOffset(Expression expression) {
         import std.conv: text;
 
+        expression = initializerExpression(expression);
+
         if (auto dereference = expression.isPtrExp) {
             const pointer = compileExpression(dereference.e1);
             if (pointer.isPointer)
@@ -11924,10 +11926,9 @@ private struct Compiler {
                 // `storeStructPointerField`'s existing width instead of
                 // storing a scalar operand offset.
                 if (isAggregate) {
-                    if (auto source = structBaseOffsetOrMaterialise(assign.e2)) {
-                        storeStructPointerField(*field, source.offset);
-                        return Operand(source.offset, ScalarType.void_);
-                    }
+                    const source = structOperandOffset(assign.e2);
+                    storeStructPointerField(*field, source);
+                    return Operand(source, ScalarType.void_);
                 }
 
                 const value = compileExpression(assign.e2);
@@ -11991,10 +11992,9 @@ private struct Compiler {
                 // sibling branch above resolves: `compileExpression` never
                 // returns a bare struct-typed local.
                 if (isAggregate) {
-                    if (auto source = structBaseOffsetOrMaterialise(assign.e2)) {
-                        storeClassPointerField(*field, source.offset);
-                        return Operand(source.offset, ScalarType.void_);
-                    }
+                    const source = structOperandOffset(assign.e2);
+                    storeClassPointerField(*field, source);
+                    return Operand(source, ScalarType.void_);
                 }
 
                 const value = compileExpression(assign.e2);

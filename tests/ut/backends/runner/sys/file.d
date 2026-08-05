@@ -12,9 +12,9 @@ import std.conv: text;
 static foreach (backend; Matrix!(
     Omit!(Ctfe, Because.inexpressible, "needs the host filesystem, which CTFE cannot access"),
     Omit!(Bytecode, Because.refusal,
-        "after the `core.atomic` lock-xchg sequence, std.stdio.File's " ~
-        "struct assignment declines with \"Unsupported struct value in " ~
-        "bytecode core: this.file_ = f\""),
+        "after the FileLogger receiver-field struct assignment, compilation " ~
+        "declines with \"Unsupported pointer initializer in bytecode core: " ~
+        "fps\""),
 )) {
     @("file.createWriteRead." ~ backend.stringof)
     @Tags(backend.stringof)
