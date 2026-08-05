@@ -168,10 +168,6 @@ static foreach (backend; Matrix!(
         "archive cannot be `dlopen`'d at all, so this is a new " ~
         "symbol-resolution source (e.g. a --whole-archive .so wrapper, " ~
         "or an ORC-style generator like `LLVMJit`'s), not a language-surface fix"),
-    Omit!(Bytecode, Because.refusal,
-        "`add` is an archive-backed method: routing a receiver-bearing " ~
-        "call through the native bridge or its stale rewritten source is " ~
-        "unsupported"),
 )) {
     @("runTests.archiveBackedClassMethod." ~ backend.stringof)
     @Tags(backend.stringof)
@@ -226,13 +222,9 @@ static foreach (backend; Matrix!(
     }
 }
 
-// `Bytecode`-specific safety net: unlike the struct-method case above,
-// `layout.hasClassThis` used to skip both the native-call attempt and the
-// "no available source" refusal, silently falling through to compiling the
-// archive module's own stale rewritten source instead of declining. The
-// on-disk source is rewritten to a visibly wrong body after the archive is
-// built, so a passing (declining) run is distinguishable from a silent
-// compile of that wrong body.
+// `Bytecode`-specific archive bridge check. The on-disk source is rewritten
+// to a visibly wrong body after the archive is built, so a passing run proves
+// the native class method, rather than rewritten source, was called.
 @("runTests.archiveBackedClassMethod.Bytecode")
 @Tags(Bytecode.stringof)
 unittest {
@@ -281,10 +273,7 @@ unittest {
         const results = runner.runTests(moduleResult.module_);
 
         results.length.should == 1;
-        results[0].passed.should == false;
-        results[0].message.canFind(
-            "is an archive-backed method",
-        ).should == true;
+        results[0].passed.should == true;
     }
 }
 

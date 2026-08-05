@@ -478,9 +478,8 @@ so the wrapper is needed before `callIndirect` can reach the native bridge.
 An archive-backed struct method accepts a direct local's native-layout frame
 block as its ABI `this` pointer; a materialised, pointer-based, or delegate
 receiver still needs a frame-independent representation and refuses. Next
-candidate: reconfirm `runTests.archiveBackedClassMethod`; its VM class object
-is not an ABI class object, so promotion needs a real native class receiver,
-not the struct-receiver bridge.
+candidate: an archive-backed method delegate needs a native function-pointer
+and receiver representation, rather than the bytecode function-table index.
 Closure interactions with exceptions (a captured local mutated across
 try/catch/finally) and class polymorphism/vtable dispatch (including
 `super.f()`) match `SystemLinker` under `bin/qb` probing -- not a lead.
