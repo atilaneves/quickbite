@@ -1400,13 +1400,8 @@ static foreach (backend; Matrix!()) {
 // `s = t;` for a whole struct local: `S` has a postblit but no user-defined
 // `opAssign`, so DMD synthesizes one and lowers the call argument through a
 // `__copytmp` temporary whose own postblit runs once on the copy, matching
-// `SystemLinker`. Interpreter's own assignment for this shape loses the
-// field copy entirely (`s.x` stays its default, not `t.x`'s value), pinned
-// below.
-static foreach (backend; Matrix!(
-    Omit!(Interpreter, Because.diverges,
-        "loses the field copy for a postblit-typed whole-local assignment, see sibling pin below"),
-)) {
+// `SystemLinker`.
+static foreach (backend; Matrix!()) {
     @("struct.wholeLocalAssignmentRunsPostblit." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -1434,42 +1429,6 @@ static foreach (backend; Matrix!(
                 assert(postblits == 1);
             }
         });
-    }
-}
-
-// The `Because.diverges` pin the fixture above owes: Interpreter runs the
-// exact same fixture -- including its `SystemLinker`-correct
-// `assert(s.x == 5)` -- but its own whole-local assignment for a
-// postblit-typed struct never copies `t.x` into `s.x`, so that first assert
-// fails the ordinary way inside the guest program.
-static foreach (backend; AliasSeq!(Interpreter)) {
-    @("structWholeLocalAssignmentDoesNotRunPostblit." ~ backend.stringof)
-    @Tags(backend.stringof)
-    unittest {
-        runBackendSourceFixtureTests!backend(q{
-            struct Tracker {
-                int x;
-                int* postblits;
-
-                this(this) {
-                    ++*postblits;
-                }
-            }
-
-            unittest {
-                int postblits = 0;
-
-                Tracker t;
-                t.x = 5;
-                t.postblits = &postblits;
-
-                Tracker s;
-                s = t;
-
-                assert(s.x == 5);
-                assert(postblits == 1);
-            }
-        }).shouldThrowWithMessage("0 != 5");
     }
 }
 
@@ -4333,18 +4292,10 @@ static foreach (backend; Matrix!()) {
     }
 }
 
-// A direct consequence of the fix above: `p.t = a;` where `Tracker` has a
-// postblit but no user-defined `opAssign` lowers to a call,
-// `(*p).t.opAssign(copytmp)`, whose receiver is the exact same
-// pointer-reached-struct-field shape as a method call. Interpreter runs the
-// same postblit-losing whole-local assignment as
-// `struct.wholeLocalAssignmentRunsPostblit`'s sibling pin, so it stays
-// omitted here for the identical reason.
-static foreach (backend; Matrix!(
-    Omit!(Interpreter, Because.diverges,
-        "loses the field copy for a postblit-typed whole-struct assignment "
-            ~ "through a pointer field, see struct.wholeLocalAssignmentRunsPostblit"),
-)) {
+// `p.t = a;` where `Tracker` has a postblit but no user-defined `opAssign`
+// lowers to a call, `(*p).t.opAssign(copytmp)`, whose receiver is the exact
+// same pointer-reached-struct-field shape as a method call.
+static foreach (backend; Matrix!()) {
     @("pointer.structPointerFieldPostblitAssignmentRunsPostblit." ~
         backend.stringof)
     @Tags(backend.stringof)

@@ -7135,6 +7135,24 @@ private struct Walker {
         }
 
         if (target.isThisExp !is null && hasThis) {
+            // A whole-`this` rebind (e.g. the compiler-generated identity
+            // `opAssign`'s `this = p;`, invoked to finish a postblit-typed
+            // struct's `s = t;`) must write through the borrowed native
+            // address `runMemberFunction` aliased `this` to, not replace
+            // `thisValue` with a disconnected copy -- that would silently
+            // drop the mutation the caller's own storage was supposed to
+            // observe.
+            if (
+                currentFunction !is null &&
+                currentFunction.vthis !is null &&
+                currentFunction.vthis in nativeRefLocalAddresses
+            ) {
+                storeBinding(
+                    currentFunction.vthis,
+                    storageValue(currentFunction.vthis.type, value),
+                );
+                return;
+            }
             thisValue = value;
             return;
         }
