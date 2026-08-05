@@ -334,6 +334,10 @@ package(quickbite.backends.bytecode) enum Op: ubyte {
     // per row. The two lengths must match, matching `sliceCopy`'s check and
     // message.
     rowRangeCopy,
+    // Same destination representation as `rowRangeCopy`, but source elements
+    // are contiguous inline row bytes rather than row descriptors. This is a
+    // `T[N]` range viewed from a static array.
+    rowRangeCopyInline,
     // Fill every element of the destination slice descriptor at frame offset
     // a with the scalar value at frame offset b. The element size is fixed by
     // the opcode (1, 2, 4, or 8 bytes).

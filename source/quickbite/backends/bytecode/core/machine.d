@@ -330,6 +330,16 @@ package(quickbite.backends.bytecode) RunResult run(
                 ++ip;
                 break;
 
+            case rowRangeCopyInline:
+                copyInlineRowRange(
+                    stack,
+                    base + instruction.a,
+                    base + instruction.b,
+                    instruction.c,
+                );
+                ++ip;
+                break;
+
             case sliceFill1:
                 fillSlice1(stack, base + instruction.a, base + instruction.b);
                 ++ip;
@@ -2926,6 +2936,44 @@ private void copyRowRange(
         auto destRow = (cast(ubyte*) destRowPointer)[0 .. rowByteSize];
         const sourceRow =
             (cast(const(ubyte)*) sourceRowPointer)[0 .. rowByteSize];
+        destRow[] = sourceRow[];
+    }
+}
+
+// Copy contiguous inline source rows into each separately allocated `T[N][]`
+// destination row. A multidimensional static-array view supplies a normal
+// slice descriptor over its inline backing bytes, unlike `T[N][]` whose
+// source elements are row descriptors consumed by `copyRowRange`.
+// Trusted because compiler-validated descriptors and row width bound every
+// native slice formed below.
+private void copyInlineRowRange(
+    ref ubyte[] stack,
+    in size_t destinationOffset,
+    in size_t sourceOffset,
+    in uint rowByteSize,
+) @trusted {
+    import std.conv: text;
+    import quickbite.backends.bytecode.core.program: sliceDescriptorSize;
+
+    const destinationPointer = scalarValue!size_t(stack, destinationOffset);
+    const destinationLength =
+        scalarValue!size_t(stack, destinationOffset + size_t.sizeof);
+    const sourcePointer = scalarValue!size_t(stack, sourceOffset);
+    const sourceLength =
+        scalarValue!size_t(stack, sourceOffset + size_t.sizeof);
+
+    if (destinationLength != sourceLength)
+        throw new Exception(text(
+            "Array lengths don't match for copy: ",
+            sourceLength, " != ", destinationLength,
+        ));
+
+    foreach (i; 0 .. destinationLength) {
+        const destRowPointer = *cast(const(size_t)*)
+            (destinationPointer + i * sliceDescriptorSize);
+        auto destRow = (cast(ubyte*) destRowPointer)[0 .. rowByteSize];
+        const sourceRow = (cast(const(ubyte)*)
+            (sourcePointer + i * rowByteSize))[0 .. rowByteSize];
         destRow[] = sourceRow[];
     }
 }

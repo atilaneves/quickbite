@@ -15314,29 +15314,22 @@ private struct Compiler {
                 //
                 // A rhs range sourced from a static-array view (`s[0 .. 2]`
                 // where `s` is itself a multidimensional static array, e.g.
-                // `int[3][3]`) is contiguous inline row bytes there, not
-                // the heap row-pointer descriptors `Op.rowRangeCopy`
-                // assumes -- decline cleanly rather than reading row bytes
-                // as a pointer and dereferencing them. Thrown directly
-                // (not `return null`): a `null` here would only send this
-                // shape on to `compileAssignExpression`'s later
-                // `isDynamicArrayArgument` fallback, which resolves
-                // `assign.e1` itself (the whole `values[0 .. 2]` slice
-                // expression) to a *fresh, unbacked* descriptor via
-                // `dynamicArrayDescriptorOrNull`'s own generic `SliceExp`
-                // branch -- silently writing into a throwaway copy instead
-                // of `values`'s real storage, leaving it unchanged with no
-                // diagnostic at all.
+                // `int[3][3]`) is contiguous inline row bytes rather than the
+                // row descriptors `Op.rowRangeCopy` reads. It therefore gets
+                // its own source representation at execution time.
                 if (auto rhsSlice = rhs.isSliceExp)
                     if (auto rhsBase = dynamicArrayDescriptorOrNull(rhsSlice.e1))
                         if (rhsBase.isStaticArrayView) {
-                            import std.conv: text;
+                            const rangeSource = compileSourceSlice(
+                                elementType, rhs,
+                            );
+                            emitInlineRowRangeCopy(
+                                destination, rangeSource, rowByteSize,
+                            );
 
-                            throw new Exception(text(
-                                "Unsupported slice-assignment source in " ~
-                                    "bytecode core: ",
-                                expressionChars(rhs),
-                            ));
+                            auto result = new Operand;
+                            *result = Operand.init;
+                            return result;
                         }
 
                 const rangeSource = compileSourceSlice(elementType, rhs);
@@ -20753,6 +20746,19 @@ private struct Compiler {
     ) @safe pure {
         _code ~= Instruction(
             Op.rowRangeCopy, destination, source, cast(ushort) rowByteSize,
+        );
+    }
+
+    private void emitInlineRowRangeCopy(
+        in ushort destination,
+        in ushort source,
+        in uint rowByteSize,
+    ) @safe pure {
+        _code ~= Instruction(
+            Op.rowRangeCopyInline,
+            destination,
+            source,
+            cast(ushort) rowByteSize,
         );
     }
 
