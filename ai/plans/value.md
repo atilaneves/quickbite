@@ -645,6 +645,14 @@ Native storage and calls remain the ordinary execution path; do not restore
 marshalling, cell families, alias maps, or name-based representation shims.
 `interpreter.md` §8 triage remains the partition.
 
+A constructor body's whole-struct-typed field assignment (`this.field =
+OtherStruct(args)`) through a pointer-bound `this` throws `Expected struct.`,
+independent of the receiver's cast/type; a scalar-field ctor body through the
+identical receiver shape already works. Confirmed via cerealed's `emplaceRef`
+wrapper-struct shape (`emplaceRefSkipsPostblitForStructElement`,
+`emplaceRefForwardsConstructorArguments`, both
+`Omit!(Interpreter, Because.unconfirmed)`). Root cause not yet triaged.
+
 Pointer-slice formation past an allocation remains unchecked when its result is
 not dereferenced: this is compiled D's contract and the Interpreter's
 native-pointer path matches it. The allocated-block diagnostic is a CTFE-only

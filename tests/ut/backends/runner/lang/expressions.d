@@ -10164,11 +10164,7 @@ static foreach (backend; Matrix!()) {
 // class-receiver counterpart of
 // `pointer.wholeStaticArrayAssignmentWritesRealStorage`'s local-variable
 // case. SystemLinker is the oracle.
-static foreach (backend; Matrix!(
-    Omit!(Interpreter, Because.unconfirmed,
-        "an indexed write through a dereferenced static-array pointer " ~
-        "(`(*p)[i] = v`) expects a native pointer representation"),
-)) {
+static foreach (backend; Matrix!()) {
     @("pointer.classStaticArrayFieldElementWrittenThroughWholeFieldPointerIsVisibleDirectly." ~
         backend.stringof)
     @Tags(backend.stringof)

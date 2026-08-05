@@ -7836,6 +7836,28 @@ private struct Walker {
             throw new Exception("Pointer index assignment needs a native address.");
         }
 
+        // `(*p)[i] = v`: `index.e1` is itself a dereference (`p`'s pointee
+        // is the static array being indexed, e.g. `int[3]*`), not a
+        // variable/field lvalue. `&(*p)` recovers `p`'s own address
+        // (`addressOfExpression`'s identical `PtrExp` arm); index directly
+        // into the pointee's bytes at that address rather than through a
+        // binding, matching the `nativeRefLocalAddresses` arm below for a
+        // `ref` static-array alias.
+        if (auto derefBase = index.e1.isPtrExp) {
+            const pointer = runExpression(derefBase.e1);
+            if (pointer.isPointer) {
+                import quickbite.backends.interpreter.place: Place;
+                import quickbite.backends.interpreter.place_value: writeValue;
+
+                writeValue(
+                    Place(pointer.pointerAddress, index.e1.type).index(arrayIndex),
+                    value,
+                );
+                return;
+            }
+            throw new Exception("Unsupported interpreter assignment target.");
+        }
+
         // The compound-assignment (`arr[i].field[j][k] += value`) sibling of
         // `runNestedIndexAssignExpression`'s identical `DotVarExp` arm: `index.e1`
         // (`arr[i].field[j]`) is itself an `IndexExp` whose own `e1` is a
@@ -8132,6 +8154,29 @@ private struct Walker {
                 return value;
             }
             throw new Exception("Pointer index assignment needs a native address.");
+        }
+
+        // `(*p)[i] = v`'s SIMPLE-assignment path -- the counterpart of
+        // `writeIndexLocation`'s identical `PtrExp` arm (compound
+        // assignment/atomic path). `index.e1` is a dereference whose
+        // pointee is the static array being indexed (e.g. `int[3]*`), not a
+        // variable/field lvalue; `&(*p)` recovers `p`'s own address
+        // (`addressOfExpression`'s identical `PtrExp` arm).
+        if (auto derefBase = index.e1.isPtrExp) {
+            const pointer = runExpression(derefBase.e1);
+            if (pointer.isPointer) {
+                import quickbite.backends.interpreter.place: Place;
+                import quickbite.backends.interpreter.place_value: writeValue;
+
+                const arrayIndex = cast(size_t) runExpression(index.e2).asLong;
+                const value = runExpression(rhs);
+                writeValue(
+                    Place(pointer.pointerAddress, index.e1.type).index(arrayIndex),
+                    value,
+                );
+                return value;
+            }
+            throw new Exception("Unsupported interpreter assignment target.");
         }
 
         if (auto outer = index.e1.isIndexExp)
