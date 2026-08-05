@@ -539,6 +539,19 @@ public struct RuntimeValue {
                     return Value(cast(T) value.realPart);
                 } else static if (is(U == EnumValue)) {
                     return Value(cast(T) value.value);
+                } else static if (is(U == Pointer)) {
+                    // `cast(ulong)ptr`/`cast(long)ptr` etc.: druntime's
+                    // Throwable chaining (object.d, dip1008 scope-catch-var
+                    // destructor lowering) reads `_nextInChainPtr` through
+                    // this exact cast to test/clear its refcount tag bit.
+                    return () @trusted {
+                        return Value(cast(T) cast(size_t) value.address);
+                    }();
+                } else static if (is(U == Null)) {
+                    // A default-initialized pointer/class/delegate field is
+                    // `Null`, not a zero-valued `Pointer`; the same
+                    // pointer-to-integer cast must see it as address zero.
+                    return Value(cast(T) 0);
                 } else {
                     import std.conv: text;
                     throw new Exception(
