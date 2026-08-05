@@ -17570,7 +17570,7 @@ private struct Compiler {
                 Op.copy,
                 slot,
                 source,
-                cast(ushort) staticArraySize(argument.type),
+                cast(ushort) inlineByteWidth(argument.type),
             );
             return;
         }
@@ -17583,7 +17583,7 @@ private struct Compiler {
                 Op.copy,
                 slot,
                 *source,
-                cast(ushort) staticArraySize(argument.type),
+                cast(ushort) inlineByteWidth(argument.type),
             );
             return;
         }

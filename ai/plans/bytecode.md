@@ -595,9 +595,10 @@ place second.
    struct/static-array parameter and receiver widths, including its
    type-only fallback. Struct-method receivers materialised from a pointer,
    pointer/class field, or dynamic-array element also use it for their inline
-   load/store blocks. The next bounded width family should be one call-site
-   family that still queries `staticArraySize` directly for an inline operand
-   width, rather than a broad rename.
+   load/store blocks. By-value struct and static-array call arguments use it
+   for their inline copy widths. The next bounded width family should be one
+   call-site family that still queries `staticArraySize` directly for an inline
+   operand width, rather than a broad rename.
 
    Done: every width-suffixed opcode family (`indexLoad*`/`indexStore*`,
    `pointerLoad*`/`pointerStore*`/`pointerSlice*`, `subSlice*`,
