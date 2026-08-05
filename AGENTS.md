@@ -35,14 +35,6 @@ it would still be worth reading a year from now by someone who will
 never look at this commit, keep it; otherwise it belongs in the commit
 message.
 
-When parallel work tracks are running (e.g. the bytecode rewrite, the
-value/formatter track, the interpreter FFI track), edit only the plan
-that owns your track — bytecode work in `ai/plans/bytecode.md`,
-formatter/display work in `ai/plans/value.md`, FFI work in
-`ai/plans/ffi.md`. A cross-track observation goes in your own plan with
-a reference to the other, not as an edit to the other plan. This keeps
-concurrent PRs from conflicting.
-
 # Coding Guidelines
 
 ## Git worktrees
@@ -148,38 +140,44 @@ fixture written for it is real D — but it never arbitrates correctness.
 
 # Testing
 
-Run `dub run reggae --compiler=ldc -- -b ninja` if `build.ninja` does not
-exist, then `ninja bin/ut`, then `bin/ut --random` after every editing session.
-If the sandbox blocks these commands, request escalation for the same command
-instead of trying alternate test runners. Do not substitute `ut`, `./ut`, or
-another build command for the required `ninja bin/ut` and `bin/ut --random`
-commands unless the user explicitly asks for a focused unit-threaded run. We're
-using `--random` because in this project the tests run serially. If there's a
-test failure, first check with `--seed` (using the seed in the output to the
-last `bin/ut --random`) to investigate the cause of failure in that particular
-ordering.
+Run tests after every edit you make.
 
-Run `ci.sh` before creating a PR. It must pass before the PR is created or
-merged: a failure that reproduces on `master` may be documented with an
-appropriate backend-matrix omission, but it may not be ignored. If the
-benchmarks fail to run properly for any backend, identify why and come up with
-a D language feature unit test that exposes the flaw in that backend's
-implementation.
+Prefer to run focussed tests instead of the whole test suite by passing
+the relevant test names to `bin/ut`.
 
-No per-test process spawning, network access, or repeated dependency
-resolution unless explicitly approved.
+To build `/bin/ut`, run `dub run reggae --compiler=ldc -- -b ninja` if
+`build.ninja` does not exist, then `ninja bin/ut`. Do not assume you
+can run `bin/ut`. It might be stale, and running ninja is either 1)
+required anyway or 2) so fast it doesn't matter, so don't skip running
+ninja.
+
+If the sandbox blocks these commands, request escalation for the same
+command instead of trying alternate test runners.
+
+To run the full unit test suite, run `bin/ut --random`. If there's a
+test failure, first check with `--seed` (using the seed in the output
+to the last `bin/ut --random`) to investigate the cause of failure in
+that particular ordering.
+
+Run `ci.sh` before creating a PR. It must pass before the PR is
+created or merged: a failure that reproduces on `master` may be
+documented with an appropriate backend-matrix omission, but it may not
+be ignored. If the benchmarks fail to run properly for any backend,
+identify why and come up with a D language feature unit test that
+exposes the flaw in that backend's implementation.
 
 Never delete test code to make tests pass.
 
 # Do nots
 
-- Add new mistakes to `ai/mistakes.md`. New ones only — no duplicates.
 - No classes unless the goal is OOP (virtual dispatch, inheritance). A
   class with no base, no children, and no virtual methods is a struct.
+- CI must never be red. Not locally, not in a PR.
 
 # Do
 
 - Read `ai/mistakes.md` before starting.
+- Add new mistakes to `ai/mistakes.md`. No duplicates.
 - Read git history when starting a new session.
 - Wrap markdown files at 80 columns.
 
@@ -192,11 +190,6 @@ Never delete test code to make tests pass.
   fix any conflicts, don't wait to be told to do so.
 - When you create or update a PR, check to see if CI is green. If it
   isn't, fix it.
-
-
-## CI
-
-CI must never be red. Not locally, not in a PR.
 
 ## Reviews
 
