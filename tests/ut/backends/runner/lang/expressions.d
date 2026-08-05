@@ -10967,9 +10967,6 @@ static foreach (backend; Matrix!()) {
 
 
 static foreach (backend; Matrix!(
-    Omit!(Bytecode, Because.refusal,
-        "scalar `ref` parameters are callee-frame mirrors, so `&value` " ~
-            "cannot denote the caller's shared storage"),
     Omit!(Ctfe, Because.unconfirmed),
     Omit!(LLVMJit, Because.unconfirmed),
 )) {

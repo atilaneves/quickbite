@@ -487,9 +487,9 @@ class block begins with a Quickbite class index, while native virtual dispatch
 reads that word as a vtable pointer. Passing the VM reference to the native
 bridge can therefore segfault before the method body runs. Supporting it needs
 a real ABI class object (including vtable) and synchronised field storage.
-Next candidate: the existing scalar `ref` parameter address-identity row,
-which needs a shared caller-storage ref ABI rather than another archive
-bridge exception.
+Next candidate: the existing escaping-delegate class-field-write refusal
+(`expressions.d`) needs a frame-independent closure environment for a capture
+that remains live after a non-return assignment site.
 Closure interactions with exceptions (a captured local mutated across
 try/catch/finally) and class polymorphism/vtable dispatch (including
 `super.f()`) match `SystemLinker` under `bin/qb` probing -- not a lead.
