@@ -5962,7 +5962,7 @@ private struct Compiler {
                 const pointer = compileExpression(deref.e1);
                 if (pointer.isPointer) {
                     const structSize =
-                        cast(ushort) staticArraySize(dot.e1.type);
+                        cast(ushort) inlineByteWidth(dot.e1.type);
                     const offset = allocateBytes(
                         structSize, staticArrayAlign(dot.e1.type),
                     );
@@ -6002,7 +6002,7 @@ private struct Compiler {
                         }
                         if (haveAddress) {
                             const structSize =
-                                cast(ushort) staticArraySize(field.type);
+                                cast(ushort) inlineByteWidth(field.type);
                             const offset = allocateBytes(
                                 structSize, staticArrayAlign(field.type),
                             );
@@ -6035,7 +6035,7 @@ private struct Compiler {
                     !indexesStaticArray(index.e1))
                     if (auto descriptor = dynamicArrayDescriptorOrNull(index.e1)) {
                         const elementSize = cast(ushort)
-                            staticArraySize(dot.e1.type);
+                            inlineByteWidth(dot.e1.type);
                         const indexOffset = compileExpression(index.e2).offset;
                         const offset = allocateBytes(
                             elementSize, staticArrayAlign(dot.e1.type),
