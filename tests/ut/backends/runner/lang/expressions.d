@@ -11396,3 +11396,134 @@ static foreach (backend; Matrix!()) {
         });
     }
 }
+
+// bbf236db fixed the composition when the FINAL index applied is non-zero
+// (`&a[0][1]` above), by routing through `Place(...).index(offset)` instead
+// of a raw byte offset -- but left an `if (offset == 0) return element;`
+// early return in place in the very same `VarExp`/`IndexExp` receiver arms.
+// `element` there is `index.e1[outerOffset]`'s own address; for a
+// dynamic-array row that is the row's `{length, ptr}` slice header address,
+// NOT its element-0 data address, so a caller wanting "address of this
+// element" (every recursive `arrayPointer` caller) got the header's address
+// back whenever the final index of a nested chain happened to be `0`,
+// landing a write inside the row's own length/ptr fields instead of its
+// data. `arrayPointer` now takes an explicit `selfAddress` flag: `true` only
+// for the single top-level `&expr[i]` entry point (where "the address of
+// `element`" and "the address of this whole expression" really do coincide,
+// by definition), `false` (always index through `element`, even at offset
+// 0) everywhere else. SystemLinker is the oracle for both fixtures below.
+static foreach (backend; Matrix!()) {
+    @("pointer.addressOfFinalZeroIndexOfDynamicArrayRowOfDynamicArray." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            unittest {
+                int[][] a;
+                a ~= [1, 2, 3];
+                auto p = &a[0][0];
+                *p = 9;
+                assert(a[0][0] == 9);
+                assert(a[0][1] == 2);
+                assert(a[0].length == 3);
+            }
+        });
+    }
+}
+
+// Same shape one level deeper (`a[0][1][0]`, the FINAL index of a
+// triple-nested chain is `0`). Independent, unconfirmed gap: the bytecode
+// core has no support at all yet for address-of through two levels of
+// `IndexExp` receiver recursion (`"Unsupported expression in bytecode
+// core: &a[0][1][0]"`), unrelated to the Interpreter fix above.
+static foreach (backend; Matrix!(
+    Omit!(Bytecode, Because.unconfirmed,
+        "\"Unsupported expression in bytecode core: &a[0][1][0]\" -- no " ~
+        "support yet for address-of through two levels of `IndexExp` " ~
+        "receiver recursion"),
+)) {
+    @("pointer.addressOfFinalZeroIndexOfTripleNestedDynamicArray." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            unittest {
+                int[][][] a;
+                a ~= [[1, 2], [3, 4]];
+                auto p = &a[0][1][0];
+                *p = 9;
+                assert(a[0][0][0] == 1);
+                assert(a[0][0][1] == 2);
+                assert(a[0][1][0] == 9);
+                assert(a[0][1][1] == 4);
+            }
+        });
+    }
+}
+
+// Well-behaved neighbour of the fix above, proving `selfAddress` did not
+// regress the case it must keep working: `&a[0]` itself on a dynamic array
+// of dynamic arrays. The top-level entry point's `selfAddress = true` must
+// still return `a[0]`'s own slice-header address (a pointer-to-`int[]`),
+// not drill one level further into `a[0][0]`. Independent, unconfirmed gap:
+// the bytecode core does not yet compose this address correctly either
+// (`(*p)[0]` reads back `0` instead of `1`), unrelated to the Interpreter
+// fix above.
+static foreach (backend; Matrix!(
+    Omit!(Bytecode, Because.unconfirmed,
+        "`&a[0]` on a dynamic array of dynamic arrays does not yet compose " ~
+        "the row's own address correctly in the bytecode core -- " ~
+        "`(*p)[0]` reads back 0 instead of 1"),
+)) {
+    @("pointer.selfAddressOfDynamicArrayRowIsTheRowItself." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            unittest {
+                int[][] a;
+                a ~= [1, 2, 3];
+                auto p = &a[0];
+                const first = (*p)[0];
+                const len = (*p).length;
+                assert(first == 1);
+                assert(len == 3);
+                (*p)[0] = 42;
+                assert(a[0][0] == 42);
+            }
+        });
+    }
+}
+
+// Another well-behaved neighbour: a purely static nested array
+// (`int[3][2]`) has no slice header to dereference at any level, so
+// `selfAddress` vs. always-`.index` makes no observable difference there;
+// this pins that indexing through a fully static chain, including a final
+// zero index, still lands on the right byte. `Ctfe` can never run this one:
+// DMD's own CTFE engine permanently refuses to reinterpret a nested
+// static-array element's address as a pointer (confirmed independently of
+// quickbite -- `dmd -unittest` on the equivalent `enum` gives "Error:
+// reinterpreting cast from `int[3][2]` to `int*` is not supported in
+// CTFE").
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.inexpressible,
+        "DMD's own CTFE engine refuses to reinterpret a nested " ~
+        "static-array element's address as a pointer: \"reinterpreting " ~
+        "cast from `int[3][2]` to `int*` is not supported in CTFE\""),
+)) {
+    @("pointer.addressOfFinalZeroIndexOfStaticNestedArray." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            unittest {
+                int[3][2] m = [[1, 2, 3], [4, 5, 6]];
+                auto p = &m[1][0];
+                *p = 9;
+                assert(m[1][0] == 9);
+                assert(m[1][1] == 5);
+                assert(m[0][0] == 1);
+            }
+        });
+    }
+}

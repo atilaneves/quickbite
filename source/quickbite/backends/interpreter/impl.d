@@ -2913,7 +2913,7 @@ private struct Walker {
                 text("Unsupported eval expression: ", op, " of ", e1.op),
             );
 
-        return arrayPointer(index, 0, op);
+        return arrayPointer(index, 0, op, true /* selfAddress */);
     }
 
     // Stable allocation id for `&s.field`, memoized per (receiver variable,
@@ -3134,24 +3134,50 @@ private struct Walker {
         return child.result;
     }
 
+    // `selfAddress` distinguishes two shapes that both recurse into the
+    // `array.isIndexExp` arm below with what looks like the same (IndexExp
+    // receiver, offset) signature but need different results:
+    //
+    // - `true` (used only by the single top-level `&expr[i]` entry point,
+    //   `addressOfExpression`'s `arrayPointer(index, 0, op)`): `array` IS
+    //   the expression whose address is wanted. Once `element` (the address
+    //   of `array` itself, composed from its own receiver) is known, that
+    //   IS the answer -- no further `.index` composes past it, matching a
+    //   pointer-to-a-dynamic-array-typed-subexpression being that
+    //   subexpression's own header address, not its first element's.
+    // - `false` (the default; every recursive `arrayPointer` call, plus the
+    //   `&arr[i].field` member-call-receiver caller): `array[offset]`'s
+    //   address is wanted. `element` above is only `array`'s OWN address,
+    //   one level short -- `Place(element, array.type).index(offset)` must
+    //   still run even when `offset == 0`, since for a dynamic-array row
+    //   that dereferences `element`'s slice header to reach real element
+    //   data, landing somewhere completely different from `element` itself.
+    //
+    // Conflating the two (treating `offset == 0` alone as "self", the bug
+    // bbf236db left in place) silently returns a dynamic-array row's own
+    // slice-header address instead of its element 0's data address whenever
+    // the FINAL index in a nested chain (`a[0][0]`, `a[0][1][0]`, ...) is 0.
     private Value arrayPointer(
         imported!"dmd.expression".Expression array,
         in long offset,
         in imported!"dmd.tokens".EXP op,
-    ) {
+        in bool selfAddress = false,
+    )
+    in (!selfAddress || offset == 0, "selfAddress is only ever paired with offset 0") {
         import std.conv: text;
 
         auto var = array.isVarExp;
         if (var is null) {
             if (auto comma = array.isCommaExp) {
                 runExpression(comma.e1);
-                return arrayPointer(comma.e2, offset, op);
+                return arrayPointer(comma.e2, offset, op, selfAddress);
             }
             if (auto question = array.isCondExp)
                 return arrayPointer(
                     isTruthy(runExpression(question.econd)) ? question.e1 : question.e2,
                     offset,
                     op,
+                    selfAddress,
                 );
 
             // DMD lowers indexing a dynamic-array call through a pointer
@@ -3203,9 +3229,13 @@ private struct Walker {
                 // from the binding's current place so a `ref` static-array
                 // local and its source name the same inline bytes.
                 if (index.e1.isVarExp !is null) {
+                    // Always element mode: `element` below is `index.e1`'s
+                    // own address, one level short of `array`'s (this
+                    // IndexExp's) element -- see `arrayPointer`'s
+                    // `selfAddress` doc comment.
                     const element = arrayPointer(index.e1, outerOffset, op);
                     if (element.isPointer) {
-                        if (offset == 0)
+                        if (selfAddress)
                             return element;
                         // A raw byte offset from `element` would land inside
                         // a slice header instead of the row's data when this
@@ -3213,6 +3243,10 @@ private struct Walker {
                         // `Place.index` dereferences that header first, and
                         // strides directly for a static-array row -- the
                         // same composition the fallthrough case below uses.
+                        // This must run even when `offset == 0`: for a
+                        // dynamic-array row, element 0's real data address is
+                        // NOT `element` itself (that is the row's own header
+                        // address), it is one dereference further in.
                         import quickbite.backends.interpreter.place: Place;
 
                         return Value.pointerValue(
@@ -3240,15 +3274,20 @@ private struct Walker {
                 // real backing storage, so a method call through it (or any
                 // further write) is lost.
                 if (index.e1.isIndexExp !is null) {
+                    // Always element mode -- same reasoning as the `VarExp`
+                    // arm above.
                     const element = arrayPointer(index.e1, outerOffset, op);
                     if (element.isPointer) {
-                        if (offset == 0)
+                        if (selfAddress)
                             return element;
                         // Same hazard as the `VarExp` arm above: a raw byte
                         // offset from `element` would land inside a slice
                         // header instead of the row's data when this nested
                         // row is itself a dynamic array. Compose through
-                        // `Place.index` instead.
+                        // `Place.index` instead, even when `offset == 0`
+                        // (the FINAL index of a nested chain like
+                        // `a[0][1][0]`, where `element` is `a[0][1]`'s own
+                        // header address, not `a[0][1][0]`'s data address).
                         import quickbite.backends.interpreter.place: Place;
 
                         return Value.pointerValue(
@@ -3276,9 +3315,10 @@ private struct Walker {
                         );
                         // DMD leaves this synthetic IndexExp's type null for
                         // a direct `&array[index]`. Its element address is
-                        // already complete when no further offset composes
-                        // through it.
-                        if (offset == 0)
+                        // already complete when this call is itself the
+                        // top-level `&array[index]` (`selfAddress`) -- no
+                        // further offset composes through it.
+                        if (selfAddress)
                             return Value.pointerValue(elementAddress);
                         // `array.type` (this row's own type, e.g. `int[]` or
                         // `int[3]`) drives the leaf stride. `Place.index`
@@ -3312,11 +3352,14 @@ private struct Walker {
                 // in `expressionsem.d`, reached here via a mutating AA-value
                 // method-call receiver, `aa[key].method()`), so no further
                 // offset composes past this element -- matching the
-                // `offset == 0` early return the `index.e1.isVarExp` arm
-                // above already takes for the identical reason.
+                // `selfAddress` early return the `index.e1.isVarExp` arm
+                // above already takes for the identical reason. (Raw
+                // pointer arithmetic has no slice header to dereference, so
+                // `offset == 0` is harmless here either way; `selfAddress`
+                // is used for consistency with the other arms.)
                 const pointer = arrayPointer(index.e1, outerOffset, op);
                 if (pointer.isPointer) {
-                    if (offset == 0)
+                    if (selfAddress)
                         return pointer;
                     return pointer.pointerOffsetBy(
                         offset * cast(long) typeByteSize(
