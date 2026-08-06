@@ -3687,30 +3687,38 @@ private struct Walker {
         // (`typesem.d`), so evaluating it through the ordinary expression
         // path builds the correct native default.
         //
-        // Gate the write on `moduleTable.has(variable)`, not the
-        // `mirrorEstablished` guard above: `ModuleTable`'s block map is
-        // shared, not duped, across every forked child `Walker` a function
-        // call creates (`forkExecutionStateInto`'s `child.moduleTable =
-        // moduleTable` aliases the same underlying hashmap; D associative
-        // arrays are reference types), so it answers "has this variable's
-        // block ever been allocated" for the whole program. `mirrorEstablished`
-        // is per-activation bookkeeping that starts empty in every child and
-        // is never merged back into the caller (`mergeFunctionState` does not
-        // carry it) -- gating the default-value write on it would
-        // re-materialize, and clobber, an already-mutated dataseg block on
-        // every later call that forks a fresh child activation (observed:
-        // three `bump()` calls each resetting a `__gshared int` counter back
-        // to its default before incrementing, so the final read saw `0`
-        // instead of `3`). A first-ever address-taking read (`arrayPointer`'s
-        // `hasMirrorSlot` path) still never hands out an address into
-        // never-written bytes, because this runs before `bindingPlace`
-        // allocates the block.
-        if (variable._init is null) {
-            if (!moduleTable.has(variable)) {
-                import dmd.typesem: defaultInitLiteral;
+        // `ModuleTable`'s block map is shared, not duped, across every forked
+        // child `Walker` a function call creates (`forkExecutionStateInto`'s
+        // `child.moduleTable = moduleTable` aliases the same underlying
+        // hashmap; D associative arrays are reference types), so
+        // `moduleTable.has(variable)` answers "has this variable's block
+        // ever been allocated" for the whole program. `mirrorEstablished` (and
+        // `locals`) are per-activation bookkeeping that starts empty in every
+        // child and is never merged back into the caller (`mergeFunctionState`
+        // does not carry it). When the block already exists -- established by
+        // a DIFFERENT activation, whether an earlier sibling call or the
+        // activation that just returned from calling this one -- this
+        // activation must still adopt the block's current, authoritative
+        // bytes into its own `locals`/`mirrorEstablished` bookkeeping (several
+        // call sites, notably index-assignment's `variable in locals` check,
+        // require that bookkeeping even though a plain read would tolerate
+        // its absence via the `bindingPlace` fallback). Adopting is a
+        // read-then-store-the-same-value round trip: it must never re-run the
+        // initializer expression, which would clobber an already-mutated
+        // block (observed: three `bump()` calls each resetting a `__gshared
+        // int counter = 5;` back to `5` before incrementing, so the final
+        // read saw `5` instead of `8`).
+        if (moduleTable.has(variable)) {
+            import quickbite.backends.interpreter.place_value: readValue;
 
-                setLocal(variable, runExpression(variable.type.defaultInitLiteral(variable.loc)));
-            }
+            setLocal(variable, readValue(bindingPlace(variable)));
+            return;
+        }
+
+        if (variable._init is null) {
+            import dmd.typesem: defaultInitLiteral;
+
+            setLocal(variable, runExpression(variable.type.defaultInitLiteral(variable.loc)));
             return;
         }
 
