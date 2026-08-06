@@ -267,6 +267,78 @@ unittest {
 }
 
 
+@("ffi.addressOnlyLazyParameterUsesExistingDelegateStorage")
+unittest {
+    version (LDC)
+        enum hostCompilerAbi = CompilerAbi.ldc;
+    else
+        enum hostCompilerAbi = CompilerAbi.dmd;
+
+    auto signature = functionSignature(q{
+        int evaluate(int seed, lazy int value);
+    }, "evaluate");
+    auto thunk = fortyTwoThunk;
+    assert(thunk.ptr is null);
+    auto thunkType = new TypeDelegate(new TypeFunction(
+        ParameterList(null),
+        Type.tint32,
+        LINK.d,
+    ));
+    int seed = 3;
+    int result;
+
+    call(
+        Callable(cast(void*) &evaluateLazy, signature, hostCompilerAbi),
+        [
+            TypedAddress(Type.tint32, &seed),
+            TypedAddress(thunkType, &thunk),
+        ],
+        TypedAddress(Type.tint32, &result),
+    ).should == true;
+
+    result.should == evaluateLazy(seed, thunk());
+    result.should == 87;
+}
+
+
+@("ffi.addressOnlyImportCKRVariadicCallHasNoFixedArguments")
+unittest {
+    import dmd.astenums: VarArg;
+
+    auto signature = new TypeFunction(
+        ParameterList(null, VarArg.KRvariadic),
+        Type.tfloat64,
+        LINK.c,
+    );
+    signature.parameterList.hasIdentifierList = true;
+    int integer = 17;
+    double floating = 2.5;
+    double result;
+
+    call(
+        Callable(cast(void*) &krVariadicAbiOracle, signature, CompilerAbi.dmd),
+        [
+            TypedAddress(Type.tint32, &integer),
+            TypedAddress(Type.tfloat64, &floating),
+        ],
+        TypedAddress(Type.tfloat64, &result),
+    ).should == true;
+
+    result.should == krVariadicAbiOracle(integer, floating);
+    result.should == 172.5;
+
+    float unpromoted = 2.5;
+    call(
+        Callable(cast(void*) &krVariadicAbiOracle, signature, CompilerAbi.dmd),
+        [
+            TypedAddress(Type.tint32, &integer),
+            TypedAddress(Type.tfloat32, &unpromoted),
+        ],
+        TypedAddress(Type.tfloat64, &result),
+    ).should == false;
+}
+
+
 @("ffi.addressOnlyIntegralAndCharacterCalls")
 unittest {
     assertScalarRoundTrip(true, Type.tbool);
@@ -832,6 +904,19 @@ private int typesafeVariadicSum(int seed, int[] rest...) {
     foreach (const value; rest)
         result += value;
     return result;
+}
+
+
+private int evaluateLazy(int seed, lazy int value) {
+    return seed + value + value;
+}
+
+
+private int delegate() fortyTwoThunk = () => 42;
+
+
+private extern(C) double krVariadicAbiOracle(int integer, double floating) {
+    return integer * 10 + floating;
 }
 
 

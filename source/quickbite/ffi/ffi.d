@@ -47,12 +47,14 @@ public bool call(
         !hasSupportedVarArgs(callable.signature))
         return false;
 
-    const numFixedArguments = callable.signature.parameterList.length;
-    const isCVariadic = callable.signature.linkage == LINK.c &&
-        callable.signature.parameterList.varargs == VarArg.variadic;
+    const isCKRVariadic = hasKRVariadicArguments(callable.signature);
+    const numFixedArguments = isCKRVariadic
+        ? 0
+        : callable.signature.parameterList.length;
+    const hasCVariadicTail = hasCVariadicArguments(callable.signature);
     const isDVariadic = callable.signature.linkage == LINK.d &&
         callable.signature.parameterList.varargs == VarArg.variadic;
-    const hasArgumentTail = isCVariadic || isDVariadic;
+    const hasArgumentTail = hasCVariadicTail || isDVariadic;
     if (hasArgumentTail && arguments.length < numFixedArguments ||
         !hasArgumentTail && arguments.length != numFixedArguments)
         return false;
@@ -141,10 +143,16 @@ public bool call(
         const isFixedArgument = index < numFixedArguments;
         if (isFixedArgument) {
             auto parameter = callable.signature.parameterList[index];
-            if (!argument.type.toBasetype.equals(parameter.type.toBasetype))
+            if (isLazyParameter(parameter)) {
+                if (!isMatchingLazyDelegate(argument.type, parameter.type))
+                    return false;
+            } else if (!argument.type.toBasetype.equals(
+                parameter.type.toBasetype,
+            ))
                 return false;
             argumentIsReference[index] = isReferenceParameter(parameter);
-        } else if (isCVariadic && !isPromotedVariadicType(argument.type))
+        } else if (hasCVariadicTail &&
+            !isPromotedVariadicType(argument.type))
             return false;
 
         const abiIndex = abiArgumentIndex(
@@ -168,7 +176,7 @@ public bool call(
     }
 
     ffi_cif cif;
-    const prepStatus = isCVariadic
+    const prepStatus = hasCVariadicTail
         ? ffi_prep_cif_var(
             &cif,
             FFI_DEFAULT_ABI,
@@ -234,7 +242,7 @@ private bool isPromotedVariadicType(
 ) {
     import dmd.astenums: TY;
 
-    switch (type.toBasetype.ty) with (TY) {
+    switch (semanticStorageType(type).ty) with (TY) {
         case Tbool, Tint8, Tuns8, Tchar, Tint16, Tuns16, Twchar, Tfloat32:
             return false;
         default:
@@ -250,7 +258,55 @@ private bool hasSupportedVarArgs(
 
     const varargs = signature.parameterList.varargs;
     return varargs == VarArg.none || varargs == VarArg.variadic ||
+        hasKRVariadicArguments(signature) ||
         signature.linkage == LINK.d && varargs == VarArg.typesafe;
+}
+
+
+private bool hasCVariadicArguments(
+    imported!"dmd.mtype".TypeFunction signature,
+) @safe @nogc nothrow pure {
+    import dmd.astenums: LINK, VarArg;
+
+    const varargs = signature.parameterList.varargs;
+    return signature.linkage == LINK.c &&
+        (varargs == VarArg.variadic || varargs == VarArg.KRvariadic);
+}
+
+
+private bool hasKRVariadicArguments(
+    imported!"dmd.mtype".TypeFunction signature,
+) @safe @nogc nothrow pure {
+    import dmd.astenums: LINK, VarArg;
+
+    return signature.linkage == LINK.c &&
+        signature.parameterList.varargs == VarArg.KRvariadic;
+}
+
+
+private bool isLazyParameter(
+    imported!"dmd.mtype".Parameter parameter,
+) @safe @nogc nothrow pure {
+    import dmd.astenums: STC;
+
+    return (parameter.storageClass & STC.lazy_) != STC.none;
+}
+
+
+private bool isMatchingLazyDelegate(
+    imported!"dmd.mtype".Type storageType,
+    imported!"dmd.mtype".Type resultType,
+) {
+    import dmd.astenums: VarArg;
+
+    auto delegateType = storageType.toBasetype.isTypeDelegate;
+    if (delegateType is null)
+        return false;
+    auto signature = delegateType.next.toBasetype.isTypeFunction;
+    return signature !is null &&
+        signature.parameterList.length == 0 &&
+        signature.parameterList.varargs == VarArg.none &&
+        signature.next.toBasetype.equals(resultType.toBasetype);
 }
 
 
