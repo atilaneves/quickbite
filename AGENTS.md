@@ -49,18 +49,21 @@ in this repo unless instructed otherwise.
 Strict TDD: failing test → dumbest passing code → green suite. No refactoring
 until all tests pass. Ask for feedback after the refactoring step.
 
-Stop and wait for approval before adding or modifying any test. `SystemLinker`
-(compiled D) is the single behaviour oracle for every backend except `Ctfe`
-(`ai/plans/single-oracle.md`). Promoting an already-existing backend-matrix
-test to another backend is pre-approved when the test is backed by that oracle.
-`lang/` holds the hermetic language surface: behaviour that needs nothing from
-the host. `sys/` holds behaviour that needs the runtime environment
-(libc/OS — today `cstdlib`, `file`, `random`, `concurrency`). The directory
-criterion is what the behaviour *needs from the host*, never whether `Ctfe`
-can execute it: CTFE-expressibility is a per-backend capability that belongs
-in the fixture's matrix, not the directory. Every backend except `Ctfe` is a
-promotion candidate. Adding a new test or changing test behaviour still
-requires approval.
+Stop and wait for approval before adding or modifying any test for new
+functionality. Tests that you write exposing a bug do not need
+approval. `SystemLinker` (compiled D) is the single behaviour oracle
+for every backend except `Ctfe`
+(`ai/plans/single-oracle.md`). Promoting an already-existing
+backend-matrix test to another backend is pre-approved when the test
+is backed by that oracle.  `lang/` holds the hermetic language
+surface: behaviour that needs nothing from the host. `sys/` holds
+behaviour that needs the runtime environment (libc/OS — today
+`cstdlib`, `file`, `random`, `concurrency`). The directory criterion
+is what the behaviour *needs from the host*, never whether `Ctfe` can
+execute it: CTFE-expressibility is a per-backend capability that
+belongs in the fixture's matrix, not the directory. Every backend
+except `Ctfe` is a promotion candidate. Adding a new test or changing
+test behaviour still requires approval.
 
 A fixture's backend list is `Matrix!(...)` (`tests/ut/backends/package.d`).
 `lang/` blocks default to every mature backend via `Matrix!()` (=
