@@ -32,19 +32,15 @@ from a higher-priority Interpreter item. Priority 1 wins any resource or shared
 file conflict. Within `source/quickbite/backends/bytecode/core/**`, work remains
 serial because the compiler, program, and machine changes converge.
 
-The most parallel workflow is:
+With the module split established, the most parallel workflow is:
 
-1. The integrator first lands the behavior-neutral module split:
-   `quickbite.ffi.libffi` stays declaration-only, the existing implementation
-   becomes `quickbite.ffi.oldffi`, and the new module boundary is
-   `quickbite.ffi.ffi`.
-2. The Interpreter agent owns `backends/interpreter/**` and the necessary
+1. The Interpreter agent owns `backends/interpreter/**` and the necessary
    legacy-FFI correctness work until Cerealed is green.
-3. The Bytecode agent exclusively owns `backends/bytecode/core/**`, continuing
+2. The Bytecode agent exclusively owns `backends/bytecode/core/**`, continuing
    the compositional refactor and native slice-layout correction.
-4. The new-FFI agent exclusively owns `quickbite.ffi.ffi` and does not edit a
+3. The new-FFI agent exclusively owns `quickbite.ffi.ffi` and does not edit a
    backend or `quickbite.ffi.oldffi`.
-5. After the parallel work lands, the Bytecode agent integrates the new FFI;
+4. After the parallel work lands, the Bytecode agent integrates the new FFI;
    after Cerealed is green, the Interpreter migration follows under
    `value.md`.
 

@@ -1,8 +1,6 @@
 module quickbite.ffi;
 
-// The backend-neutral FFI bridge (ffi.md §5/§6): symbol resolution, the
-// Type->ffi_type mapping, CIF prep, ffi_call, and the native-Throwable
-// exception guard. The core never names a backend value type; backends inject
-// ABI-byte conversion through the NativeMarshaller seam.
+// Transitional compatibility facade for users of the package import. New
+// native-layout consumers import quickbite.ffi.ffi explicitly.
 
-public import quickbite.ffi.core;
+public import quickbite.ffi.oldffi;

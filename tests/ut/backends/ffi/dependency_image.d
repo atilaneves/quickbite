@@ -4428,7 +4428,7 @@ unittest {
 }
 
 // A native call site only ever catches `Exception` at the FFI boundary
-// (ffi/core.d: "Only Exception is caught at the call site; Error stays
+// (ffi/oldffi.d: "Only Exception is caught at the call site; Error stays
 // fatal."), so an Error can only reach `nativeExceptionRoot` (interpreter.md
 // §9.10) indirectly, via the `.next` chain of a caught Exception (ffi.md
 // §34.13's chainedNext recursion follows `.next` regardless of its dynamic

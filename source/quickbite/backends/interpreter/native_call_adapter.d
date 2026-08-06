@@ -7,13 +7,13 @@ module quickbite.backends.interpreter.native_call_adapter;
 
 private:
 
-import quickbite.ffi:
+import quickbite.ffi.oldffi:
     NativeMarshaller, NativeReceiverAddressMarshaller,
     NativeReferenceAddressMarshaller;
 
 // Re-exported so the interpreter call sites keep a single import for the native
 // call path and its exception type.
-public import quickbite.ffi.core: NativeCallException;
+public import quickbite.ffi.oldffi: NativeCallException;
 
 // Runs an interpreted delegate that native code called back into (ffi.md
 // §34.16). The Walker supplies it so the marshaller can re-enter the
@@ -28,7 +28,7 @@ public alias DelegateInvoker = imported!"quickbite.backends.interpreter.runtime_
 // interpreter Values and remains valid for the Walker session (§35.4).
 public struct InterpreterInboundTrampolineSession {
     import quickbite.backends.interpreter.runtime_value: Value;
-    import quickbite.ffi: InboundTrampolineRegistry;
+    import quickbite.ffi.oldffi: InboundTrampolineRegistry;
 
     private Value[] _callbacks;
     private DelegateInvoker _invokeDelegate;
@@ -132,7 +132,7 @@ public bool tryCallNative(
     out imported!"quickbite.backends.interpreter.runtime_value".Value result,
     out imported!"quickbite.backends.interpreter.runtime_value".Value[] argumentWritebacks,
 ) {
-    import quickbite.ffi: callNative;
+    import quickbite.ffi.oldffi: callNative;
 
     auto marshaller = new InterpreterNativeMarshaller(
         arguments,
@@ -156,7 +156,7 @@ public bool tryAssignNativeRefReturn(
     in bool[] addressOfLocalArguments,
     in imported!"quickbite.backends.interpreter.runtime_value".Value value,
 ) {
-    import quickbite.ffi: assignNativeRefReturn;
+    import quickbite.ffi.oldffi: assignNativeRefReturn;
 
     auto marshaller = new InterpreterNativeMarshaller(arguments, value);
     return assignNativeRefReturn(
@@ -175,7 +175,7 @@ public bool tryNativeRefReturnAddress(
     out void* resultAddress,
 ) {
     import quickbite.backends.interpreter.runtime_value: Value;
-    import quickbite.ffi: nativeRefReturnAddress;
+    import quickbite.ffi.oldffi: nativeRefReturnAddress;
 
     auto marshaller = new InterpreterNativeMarshaller(arguments, Value.void_);
     return nativeRefReturnAddress(
@@ -199,7 +199,7 @@ public bool tryCallNativeMember(
     out imported!"quickbite.backends.interpreter.runtime_value".Value[] argumentWritebacks,
     out imported!"quickbite.backends.interpreter.runtime_value".Value receiverWriteback,
 ) {
-    import quickbite.ffi: callNativeMember;
+    import quickbite.ffi.oldffi: callNativeMember;
 
     import quickbite.backends.interpreter.aggregate_value: AggregateValue;
 
@@ -246,7 +246,7 @@ public bool tryCallNativeConstructor(
     out imported!"quickbite.backends.interpreter.runtime_value".Value result,
     out imported!"quickbite.backends.interpreter.runtime_value".Value[] argumentWritebacks,
 ) {
-    import quickbite.ffi: callNativeMember;
+    import quickbite.ffi.oldffi: callNativeMember;
 
     import quickbite.backends.interpreter.aggregate_value: AggregateValue;
 
@@ -283,7 +283,7 @@ public bool tryCallNativeDelegate(
     out imported!"quickbite.backends.interpreter.runtime_value".Value result,
     out imported!"quickbite.backends.interpreter.runtime_value".Value[] argumentWritebacks,
 ) {
-    import quickbite.ffi: callNativeDelegate;
+    import quickbite.ffi.oldffi: callNativeDelegate;
 
     if (!delegate_.isNativeDelegate)
         return false;
@@ -322,7 +322,7 @@ public bool tryCallNativeClassMember(
     out imported!"quickbite.backends.interpreter.runtime_value".Value result,
     out imported!"quickbite.backends.interpreter.runtime_value".Value[] argumentWritebacks,
 ) {
-    import quickbite.ffi: callNativeClassMember;
+    import quickbite.ffi.oldffi: callNativeClassMember;
 
     if (
         receiverType is null ||
@@ -1197,7 +1197,7 @@ private ubyte[] marshalSliceArgument(
 // A scalar slice whose element type is mutable: native code may write through
 // it, so it needs the §34.10 writeback path rather than a copy.
 private bool isMutableScalarSlice(imported!"dmd.mtype".Type type) {
-    import quickbite.ffi: isSupportedScalarSlice;
+    import quickbite.ffi.oldffi: isSupportedScalarSlice;
     import dmd.astenums: TY;
 
     return type.ty == TY.Tarray &&
@@ -1233,7 +1233,7 @@ private imported!"quickbite.backends.interpreter.runtime_value".Value unmarshalV
         case TY.Tvoid:     return Value.void_;
 
         // A direct (non-ref) native return buffer is at least libffi's
-        // `ffi_arg` width (>= 8 bytes, `quickbite.ffi.core`'s
+        // `ffi_arg` width (>= 8 bytes, `quickbite.ffi.oldffi`'s
         // `returnSize`), wider than a narrow scalar's own `typeByteSize`;
         // every other buffer this function reads (a struct/array field, a
         // slice element, a callback argument, an out-parameter cell) is
@@ -1411,7 +1411,7 @@ private imported!"quickbite.backends.interpreter.runtime_value".Value unmarshalS
     imported!"dmd.mtype".Type type,
     in ubyte[] buffer,
 ) {
-    import quickbite.ffi: isSupportedFfiSlice;
+    import quickbite.ffi.oldffi: isSupportedFfiSlice;
     import quickbite.backends.interpreter.runtime_value: Value;
     import quickbite.backends.interpreter.aggregate_value: AggregateValue;
     import dmd.astenums: TY;

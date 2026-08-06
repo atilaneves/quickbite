@@ -1,7 +1,7 @@
 module quickbite.ffi.libffi;
 
 // Hand-written extern(C) declarations for the subset of libffi (3.x) that the
-// resident native-call chokepoint (quickbite.ffi) needs. No bindbc or libffi
+// resident native-call implementations need. No bindbc or libffi
 // dev headers: the installed libffi.so exports these symbols, so we declare the
 // prototypes ourselves, mirroring orc.bindings. Layout
 // verified against /usr/include/ffi.h on x86-64 SysV (sizeof(ffi_cif) == 32,

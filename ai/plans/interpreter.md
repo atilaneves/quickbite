@@ -2330,7 +2330,7 @@ sites reach that heuristic: `throwRangeError` (a hardcoded
 prefix pattern) and `nativeExceptionObject` (FFI-caught native throwables,
 `className` from the real `throwable.classinfo.name`).
 
-Reproducing defect 1 (Error misclassification) needed care: `ffi/core.d`'s
+Reproducing defect 1 (Error misclassification) needed care: `ffi/oldffi.d`'s
 native call site only ever `catch (Exception exception)`s ("Error stays
 fatal" per its own comment), so a natively-thrown `Error` subclass can *not*
 reach `nativeExceptionRoot` as the directly-thrown object — it propagates as

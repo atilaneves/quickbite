@@ -23,7 +23,7 @@ public class Interpreter: imported!"quickbite.backends".TreeNodeBackend {
     }
 
     public this(const string[] dependencyImages) {
-        import quickbite.ffi: loadDependencyImages;
+        import quickbite.ffi.oldffi: loadDependencyImages;
 
         loadDependencyImages(dependencyImages);
     }
@@ -2337,7 +2337,7 @@ private struct Walker {
             import quickbite.frontend.dmd.functions: isExternDataSymbol;
             if (isExternDataSymbol(variable)) {
                 import quickbite.backends.interpreter.native_call_adapter: unmarshalNative;
-                import quickbite.ffi: resolveDataSymbol;
+                import quickbite.ffi.oldffi: resolveDataSymbol;
 
                 if (auto address = resolveDataSymbol(variable))
                     return unmarshalNative(variable.type.toBasetype, address);
@@ -4759,7 +4759,7 @@ private struct Walker {
             if (call.f !is null && call.f.needThis) {
                 import quickbite.frontend.dmd.functions:
                     hasNoAvailableSource, noAvailableSourceMessage;
-                import quickbite.ffi: unsupportedNativeTypeMessage;
+                import quickbite.ffi.oldffi: unsupportedNativeTypeMessage;
 
                 if (
                     call.f.isCtorDeclaration !is null &&
@@ -4904,7 +4904,7 @@ private struct Walker {
         if (call.f !is null) {
             import quickbite.frontend.dmd.functions:
                 hasNoAvailableSource, noAvailableSourceMessage;
-            import quickbite.ffi: unsupportedNativeTypeMessage;
+            import quickbite.ffi.oldffi: unsupportedNativeTypeMessage;
             import quickbite.backends.interpreter.native_call_adapter:
                 InterpreterInboundTrampolineSession, NativeCallException,
                 tryCallNative;
@@ -7992,7 +7992,7 @@ private struct Walker {
             import quickbite.frontend.dmd.functions: isExternDataSymbol;
             if (isExternDataSymbol(variable)) {
                 import quickbite.backends.interpreter.native_call_adapter: marshalNative;
-                import quickbite.ffi: resolveDataSymbol;
+                import quickbite.ffi.oldffi: resolveDataSymbol;
 
                 if (auto address = resolveDataSymbol(variable)) {
                     // A writable process-memory address belonging to the loaded
@@ -11105,7 +11105,7 @@ private struct Walker {
         foreach (index, expression; argumentExpressions) {
             if (auto typeid_ = expression.isTypeidExp)
                 if (auto typeInfo = typeidDeclaration(typeid_)) {
-                    import quickbite.ffi: resolveDataSymbol;
+                    import quickbite.ffi.oldffi: resolveDataSymbol;
 
                     if (auto address = resolveDataSymbol(typeInfo)) {
                         auto scratch = NativeBlock.allocate(
@@ -11173,7 +11173,7 @@ private struct Walker {
         imported!"dmd.func".FuncDeclaration function_,
         in size_t index,
     ) {
-        import quickbite.ffi: isNativeReferenceParameter;
+        import quickbite.ffi.oldffi: isNativeReferenceParameter;
 
         auto type = function_ is null || function_.type is null
             ? null
