@@ -13,6 +13,7 @@ public struct Callable {
     public void* address;
     public imported!"dmd.mtype".TypeFunction signature;
     public CompilerAbi compilerAbi;
+    public imported!"dmd.func".FuncDeclaration declaration;
 }
 
 
@@ -36,15 +37,29 @@ public bool call(
 ) {
     import quickbite.ffi.libffi:
         ffi_arg, ffi_cif, ffi_call, ffi_prep_cif, ffi_prep_cif_var,
-        ffi_status, ffi_type, ffi_type_pointer, FFI_DEFAULT_ABI;
+        ffi_status, ffi_type, ffi_type_pointer, ffi_type_void,
+        FFI_DEFAULT_ABI;
     import dmd.astenums: LINK, TY, VarArg;
 
     if (callable.address is null || callable.signature is null ||
         callable.signature.next is null ||
         (callable.signature.linkage != LINK.c &&
-            callable.signature.linkage != LINK.d) ||
-        (receiver !is null && callable.signature.linkage != LINK.d) ||
+            callable.signature.linkage != LINK.d &&
+            callable.signature.linkage != LINK.cpp) ||
+        (receiver !is null && callable.signature.linkage != LINK.d &&
+            callable.signature.linkage != LINK.cpp) ||
         !hasSupportedVarArgs(callable.signature))
+        return false;
+    if (callable.declaration !is null &&
+        !callable.declaration.type.toBasetype.equals(callable.signature))
+        return false;
+    const isCppConstructor = callable.declaration !is null &&
+        callable.declaration.isCtorDeclaration !is null;
+    const isCppSpecialMember = isCppConstructor ||
+        callable.declaration !is null &&
+        callable.declaration.isDtorDeclaration !is null;
+    if (isCppSpecialMember &&
+        (callable.signature.linkage != LINK.cpp || receiver is null))
         return false;
 
     const isCKRVariadic = hasKRVariadicArguments(callable.signature);
@@ -89,15 +104,22 @@ public bool call(
         !result.type.toBasetype.equals(returnType))
         return false;
 
-    const returnsReference = callable.signature.isRef;
-    auto resultMetadata = returnsReference
+    const returnsReference = !isCppConstructor && callable.signature.isRef;
+    const returnsCppNonPod = callable.signature.linkage == LINK.cpp &&
+        isCppInvisibleReference(returnType);
+    auto resultMetadata = isCppConstructor
+        ? FfiType(&ffi_type_void)
+        : returnsReference
         ? FfiType(&ffi_type_pointer)
-        : ffiTypeFor(returnType, true);
+        : returnsCppNonPod
+            ? cppNonPodReturnFfiType(returnType)
+            : ffiTypeFor(returnType, true);
     if (resultMetadata.type is null)
         return false;
 
     const resultTy = semanticStorageType(returnType).ty;
-    const returnsVoid = resultTy == TY.Tvoid || resultTy == TY.Tnoreturn;
+    const returnsVoid = isCppConstructor || resultTy == TY.Tvoid ||
+        resultTy == TY.Tnoreturn;
     if ((returnsReference || !returnsVoid) && result.address is null)
         return false;
 
@@ -116,7 +138,7 @@ public bool call(
             return false;
     }
 
-    auto argumentIsReference = new bool[](arguments.length);
+    auto argumentIsIndirect = new bool[](arguments.length);
     auto argumentIsIgnored = new bool[](arguments.length);
     foreach (index, argument; arguments) {
         if (argument.type is null || argument.address is null)
@@ -132,11 +154,14 @@ public bool call(
                 parameter.type.toBasetype,
             ))
                 return false;
-            argumentIsReference[index] = isReferenceParameter(parameter);
+            argumentIsIndirect[index] = isReferenceParameter(parameter) ||
+                callable.signature.linkage == LINK.cpp &&
+                (argument.type.toBasetype.ty == TY.Treference ||
+                    isCppInvisibleReference(argument.type));
         } else if (hasCVariadicTail &&
             !isPromotedVariadicType(argument.type))
             return false;
-        argumentIsIgnored[index] = !argumentIsReference[index] &&
+        argumentIsIgnored[index] = !argumentIsIndirect[index] &&
             isIgnoredSysVArgument(argument.type);
     }
 
@@ -169,23 +194,23 @@ public bool call(
         argumentTypes[metadataIndex] = variadicMetadataType.type;
         argumentAddresses[metadataIndex] = variadicMetadata.value.address;
     }
-    // A ref/out ABI argument is a pointer value. Only that pointer value is
-    // temporary: its cell lives through ffi_call and points directly at the
-    // caller's authoritative storage; no pointee bytes are copied.
-    auto referenceCells = new void*[](arguments.length);
+    // Language references and C++ invisible-reference values are pointer ABI
+    // arguments. Only each pointer cell is temporary: it points directly at
+    // the caller's authoritative storage; no pointee bytes are copied.
+    auto indirectCells = new void*[](arguments.length);
     foreach (index, argument; arguments) {
         if (argumentIsIgnored[index])
             continue;
         const abiIndex = argumentAbiIndices[index];
-        argumentMetadata[abiIndex] = argumentIsReference[index]
+        argumentMetadata[abiIndex] = argumentIsIndirect[index]
             ? FfiType(&ffi_type_pointer)
             : ffiTypeFor(argument.type);
         argumentTypes[abiIndex] = argumentMetadata[abiIndex].type;
         if (argumentTypes[abiIndex] is null)
             return false;
-        if (argumentIsReference[index]) {
-            referenceCells[index] = argument.address;
-            argumentAddresses[abiIndex] = &referenceCells[index];
+        if (argumentIsIndirect[index]) {
+            indirectCells[index] = argument.address;
+            argumentAddresses[abiIndex] = &indirectCells[index];
         } else
             argumentAddresses[abiIndex] = argument.address;
     }
@@ -210,10 +235,11 @@ public bool call(
     if (prepStatus != ffi_status.FFI_OK)
         return false;
     resultMetadata.restoreNativeLayout;
-    if (!returnsReference && !layoutMatches(returnType, resultMetadata))
+    if (!isCppConstructor && !returnsReference &&
+        !layoutMatches(returnType, resultMetadata))
         return false;
     foreach (index; 0 .. arguments.length) {
-        if (!argumentIsReference[index] &&
+        if (!argumentIsIndirect[index] &&
             !argumentIsIgnored[index] &&
             !layoutMatches(
                 arguments[index].type,
@@ -279,7 +305,7 @@ private bool hasCVariadicArguments(
     import dmd.astenums: LINK, VarArg;
 
     const varargs = signature.parameterList.varargs;
-    return signature.linkage == LINK.c &&
+    return (signature.linkage == LINK.c || signature.linkage == LINK.cpp) &&
         (varargs == VarArg.variadic || varargs == VarArg.KRvariadic);
 }
 
@@ -289,8 +315,30 @@ private bool hasKRVariadicArguments(
 ) @safe @nogc nothrow pure {
     import dmd.astenums: LINK, VarArg;
 
-    return signature.linkage == LINK.c &&
+    return (signature.linkage == LINK.c || signature.linkage == LINK.cpp) &&
         signature.parameterList.varargs == VarArg.KRvariadic;
+}
+
+
+private bool isCppInvisibleReference(imported!"dmd.mtype".Type type) {
+    import dmd.astenums: TY;
+    import dmd.dsymbolsem: isPOD;
+
+    auto storageType = semanticStorageType(type);
+    return storageType.ty == TY.Tstruct &&
+        !storageType.isTypeStruct.sym.isPOD;
+}
+
+
+private FfiType cppNonPodReturnFfiType(imported!"dmd.mtype".Type type) {
+    import dmd.typesem: size;
+
+    auto storageType = semanticStorageType(type);
+    return memoryClassificationWitness(
+        cast(size_t) size(storageType),
+        cast(ushort) storageType.alignsize,
+        true,
+    );
 }
 
 
@@ -414,7 +462,7 @@ private FfiType ffiTypeFor(
         case Tcomplex32: return FfiType(&ffi_type_complex_float);
         case Tcomplex64: return FfiType(&ffi_type_complex_double);
         case Tcomplex80: return FfiType(&ffi_type_complex_longdouble);
-        case Tpointer, Tclass, Taarray, Tnull:
+        case Tpointer, Treference, Tclass, Taarray, Tnull:
             return FfiType(&ffi_type_pointer);
         case Tarray:
             // A native D dynamic array is `{length, ptr}` in word order.

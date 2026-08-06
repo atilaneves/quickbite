@@ -6,7 +6,7 @@ import dmd.arraytypes: Dsymbols;
 import dmd.func: FuncDeclaration;
 import dmd.mtype:
     ParameterList, Type, TypeClass, TypeDArray, TypeDelegate, TypeFunction,
-    TypeStruct;
+    TypeReference, TypeStruct;
 import quickbite.ffi.ffi:
     Callable, CompilerAbi, DVariadicMetadata, TypedAddress, call;
 import unit_threaded;
@@ -32,6 +32,204 @@ unittest {
     ).should == true;
 
     result.should == 47;
+}
+
+
+@("ffi.addressOnlyExternCppCallsUseNativeAbi")
+unittest {
+    auto freeSignature = functionSignature(q{
+        extern(C++) int cppEncode(int lhs, int rhs);
+    }, "cppEncode");
+    int lhs = 4;
+    int rhs = 7;
+    int result;
+
+    call(
+        Callable(cast(void*) &cppEncode, freeSignature, CompilerAbi.dmd),
+        [
+            TypedAddress(Type.tint32, &lhs),
+            TypedAddress(Type.tint32, &rhs),
+        ],
+        TypedAddress(Type.tint32, &result),
+    ).should == true;
+    result.should == cppEncode(lhs, rhs);
+
+    auto memberSignature = functionSignature(q{
+        extern(C++) struct Receiver {
+            int combine(int lhs, int rhs);
+        }
+    }, "combine");
+    auto memberReceiverType = structType(q{
+        extern(C++) struct Receiver {
+            int bias;
+        }
+    }, "Receiver");
+    CppReceiver cppReceiver = CppReceiver(3);
+    auto member = &cppReceiver.combine;
+    auto receiver = TypedAddress(memberReceiverType, &cppReceiver);
+    result = 0;
+
+    call(
+        Callable(cast(void*) member.funcptr, memberSignature, CompilerAbi.dmd),
+        [
+            TypedAddress(Type.tint32, &lhs),
+            TypedAddress(Type.tint32, &rhs),
+        ],
+        TypedAddress(Type.tint32, &result),
+        &receiver,
+    ).should == true;
+    result.should == 347;
+
+    auto nonPodSignature = functionSignature(q{
+        extern(C++) {
+            struct NonPod {
+                int value;
+                ~this();
+            }
+            NonPod transform(NonPod value, int tail);
+        }
+    }, "transform");
+    CppNonPod nonPod = CppNonPod(11);
+    CppNonPod nonPodResult;
+    const expectedNonPod = transformCppNonPod(nonPod, rhs);
+
+    call(
+        Callable(
+            cast(void*) &transformCppNonPod,
+            nonPodSignature,
+            CompilerAbi.dmd,
+        ),
+        [
+            TypedAddress(nonPodSignature.parameterList[0].type, &nonPod),
+            TypedAddress(Type.tint32, &rhs),
+        ],
+        TypedAddress(nonPodSignature.next, &nonPodResult),
+    ).should == true;
+    nonPodResult.value.should == expectedNonPod.value;
+
+    auto nonPodMemberSignature = functionSignature(q{
+        extern(C++) {
+            struct NonPod {
+                int value;
+                ~this();
+            }
+            struct Factory {
+                NonPod make(int value);
+            }
+        }
+    }, "make");
+    auto factoryType = structType(q{
+        extern(C++) struct Factory {
+            int bias;
+        }
+    }, "Factory");
+    CppNonPodFactory factory = CppNonPodFactory(5);
+    auto make = &factory.make;
+    receiver = TypedAddress(factoryType, &factory);
+    int madeValue = 13;
+    nonPodResult.value = 0;
+    call(
+        Callable(
+            cast(void*) make.funcptr,
+            nonPodMemberSignature,
+            CompilerAbi.dmd,
+        ),
+        [TypedAddress(Type.tint32, &madeValue)],
+        TypedAddress(nonPodMemberSignature.next, &nonPodResult),
+        &receiver,
+    ).should == true;
+    nonPodResult.value.should == 18;
+
+    import core.stdc.stdio: snprintf;
+
+    auto variadicSignature = functionSignature(q{
+        extern(C++) int snprintf(char*, size_t, const(char)*, ...);
+    }, "snprintf");
+    char[32] buffer;
+    char* bufferPointer = buffer.ptr;
+    size_t bufferLength = buffer.length;
+    const(char)* format = "%d %.1f".ptr;
+    int integer = 17;
+    double floating = 2.5;
+    int length;
+    call(
+        Callable(
+            cast(void*) &snprintf,
+            variadicSignature,
+            CompilerAbi.dmd,
+        ),
+        [
+            TypedAddress(variadicSignature.parameterList[0].type,
+                &bufferPointer),
+            TypedAddress(variadicSignature.parameterList[1].type,
+                &bufferLength),
+            TypedAddress(variadicSignature.parameterList[2].type, &format),
+            TypedAddress(Type.tint32, &integer),
+            TypedAddress(Type.tfloat64, &floating),
+        ],
+        TypedAddress(Type.tint32, &length),
+    ).should == true;
+    buffer[0 .. length].should == "17 2.5";
+
+    auto referenceType = new TypeReference(Type.tint32);
+    int referenced = 41;
+    int referenceResult;
+    call(
+        Callable(
+            cast(void*) &incrementCppReference,
+            functionSignature(Type.tint32, [referenceType], LINK.cpp),
+            CompilerAbi.dmd,
+        ),
+        [TypedAddress(referenceType, &referenced)],
+        TypedAddress(Type.tint32, &referenceResult),
+    ).should == true;
+    referenced.should == 42;
+    referenceResult.should == 42;
+
+    auto constructor = specialFunctionDeclaration(q{
+        extern(C++) struct Lifetime {
+            int value;
+            this(int lhs, int rhs);
+            ~this();
+        }
+    }, true);
+    CppLifetime lifetime;
+    receiver = TypedAddress(constructor.isThis.type, &lifetime);
+    call(
+        Callable(
+            cast(void*) &cppConstructorOracle,
+            constructor.type.isTypeFunction,
+            CompilerAbi.dmd,
+            constructor,
+        ),
+        [
+            TypedAddress(Type.tint32, &lhs),
+            TypedAddress(Type.tint32, &rhs),
+        ],
+        TypedAddress(constructor.type.isTypeFunction.next, null),
+        &receiver,
+    ).should == true;
+    lifetime.value.should == 47;
+
+    auto destructor = specialFunctionDeclaration(q{
+        extern(C++) struct Lifetime {
+            int value;
+            this(int lhs, int rhs);
+            ~this();
+        }
+    }, false);
+    call(
+        Callable(
+            cast(void*) &cppDestructorOracle,
+            destructor.type.isTypeFunction,
+            CompilerAbi.dmd,
+            destructor,
+        ),
+        [],
+        TypedAddress(destructor.type.isTypeFunction.next, null),
+        &receiver,
+    ).should == true;
+    lifetime.value.should == -47;
 }
 
 
@@ -944,6 +1142,70 @@ private extern(C) ref int referenceCall(
 }
 
 
+private extern(C++) int cppEncode(int lhs, int rhs) {
+    return lhs * 10 + rhs;
+}
+
+
+private extern(C++) struct CppReceiver {
+    private int bias;
+
+    private int combine(int lhs, int rhs) {
+        return bias * 100 + lhs * 10 + rhs;
+    }
+}
+
+
+private extern(C++) struct CppNonPod {
+    private int value;
+
+    private ~this() {
+    }
+}
+
+
+private extern(C++) CppNonPod transformCppNonPod(
+    CppNonPod value,
+    int tail,
+) {
+    value.value = value.value * 10 + tail;
+    return value;
+}
+
+
+private extern(C++) struct CppNonPodFactory {
+    private int bias;
+
+    private CppNonPod make(int value) {
+        return CppNonPod(bias + value);
+    }
+}
+
+
+private struct CppLifetime {
+    private int value;
+}
+
+
+private extern(C++) void cppConstructorOracle(
+    CppLifetime* receiver,
+    int lhs,
+    int rhs,
+) {
+    receiver.value = lhs * 10 + rhs;
+}
+
+
+private extern(C++) void cppDestructorOracle(CppLifetime* receiver) {
+    receiver.value = -receiver.value;
+}
+
+
+private extern(C++) int incrementCppReference(ref int value) {
+    return ++value;
+}
+
+
 private struct ReceiverStruct {
     private int value;
 
@@ -1181,15 +1443,33 @@ private TypeStruct structType(in string source, in string name) {
 
     // DMD owns mutable semantic state and type nodes.
     auto moduleResult = parseSnippet(source);
-    foreach (member; *moduleResult.module_.members)
-        if (auto struct_ = member.isStructDeclaration)
-            if (struct_.ident.toString == name) {
-                auto type = struct_.type.isTypeStruct;
-                assert(type !is null);
-                return type;
-            }
+    auto struct_ = findStruct(moduleResult.module_.members, name);
+    if (struct_ !is null) {
+        auto type = struct_.type.isTypeStruct;
+        assert(type !is null);
+        return type;
+    }
 
     assert(false, "struct not found");
+}
+
+
+private imported!"dmd.dstruct".StructDeclaration findStruct(
+    Dsymbols* members,
+    in string name,
+) {
+    if (members is null)
+        return null;
+
+    foreach (member; *members) {
+        if (auto struct_ = member.isStructDeclaration)
+            if (struct_.ident.toString == name)
+                return struct_;
+        if (auto attributes = member.isAttribDeclaration)
+            if (auto struct_ = findStruct(attributes.decl, name))
+                return struct_;
+    }
+    return null;
 }
 
 
@@ -1223,6 +1503,53 @@ private TypeFunction functionSignature(in string source, in string name) {
     }
 
     assert(false, "function not found");
+}
+
+
+private FuncDeclaration specialFunctionDeclaration(
+    in string source,
+    in bool constructor,
+) {
+    import quickbite.frontend.compiler: parseSnippet;
+
+    // DMD owns mutable semantic state and declaration nodes.
+    auto moduleResult = parseSnippet(source);
+    auto function_ = findSpecialFunction(
+        moduleResult.module_.members,
+        constructor,
+    );
+    assert(function_ !is null, "special function not found");
+    return function_;
+}
+
+
+private FuncDeclaration findSpecialFunction(
+    Dsymbols* members,
+    in bool constructor,
+) {
+    if (members is null)
+        return null;
+
+    foreach (member; *members) {
+        if (auto function_ = member.isFuncDeclaration)
+            if (constructor
+                ? function_.isCtorDeclaration !is null
+                : function_.isDtorDeclaration !is null)
+                return function_;
+        if (auto attributes = member.isAttribDeclaration)
+            if (auto function_ = findSpecialFunction(
+                attributes.decl,
+                constructor,
+            ))
+                return function_;
+        if (auto aggregate = member.isAggregateDeclaration)
+            if (auto function_ = findSpecialFunction(
+                aggregate.members,
+                constructor,
+            ))
+                return function_;
+    }
+    return null;
 }
 
 
