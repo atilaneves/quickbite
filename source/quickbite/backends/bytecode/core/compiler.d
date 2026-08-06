@@ -1422,7 +1422,7 @@ private struct Compiler {
         if (auto existing = staticArrayOffsetOf(source))
             return *existing;
 
-        const totalSize = inlineByteWidth(source.type);
+        const totalSize = typeFacts(source.type).byteWidth;
         const offset =
             allocateBytes(totalSize, staticArrayAlign(source.type));
 
@@ -2342,7 +2342,7 @@ private struct Compiler {
                     Op.copy,
                     offset,
                     _thisLocal.offset,
-                    cast(ushort) inlineByteWidth(expression.type),
+                    cast(ushort) typeFacts(expression.type).byteWidth,
                 );
                 return Operand(offset, ScalarType.void_);
             }
@@ -2500,7 +2500,9 @@ private struct Compiler {
                     Op.loadConstant,
                     offset,
                     constantIndex(0),
-                    cast(ushort) size(ScalarType.bool_),
+                    cast(ushort) TypeFacts.fromOpcode(
+                        ScalarType.bool_,
+                    ).byteWidth,
                 );
                 return Operand(offset, ScalarType.bool_);
             }
@@ -2966,7 +2968,7 @@ private struct Compiler {
     // call argument `read(Value(...))`): materialise the block into a fresh slot.
     private Operand compileStructLiteralOperand(StructLiteralExp literal) {
         const offset = allocateStructBlock(literal.type);
-        zeroFrameBlock(offset, inlineByteWidth(literal.type));
+        zeroFrameBlock(offset, typeFacts(literal.type).byteWidth);
         compileStructLiteralInto(offset, literal);
         return Operand(offset, ScalarType.void_);
     }
@@ -2988,7 +2990,7 @@ private struct Compiler {
     // going away.
     private ushort structLiteralReturnOffset(StructLiteralExp literal) {
         const offset = allocateStructBlock(literal.type);
-        zeroFrameBlock(offset, inlineByteWidth(literal.type));
+        zeroFrameBlock(offset, typeFacts(literal.type).byteWidth);
         compileStructLiteralInto(offset, literal, true);
         return offset;
     }
@@ -3510,7 +3512,7 @@ private struct Compiler {
                 result.sliceElementType =
                     dynamicArrayElementType(slice.e1.type);
                 result.sliceElementSize =
-                    inlineByteWidth(slice.e1.type.toBasetype.nextOf);
+                    typeFacts(slice.e1.type.toBasetype.nextOf).byteWidth;
                 result.isStaticSlice = true;
                 return result;
             }
@@ -4013,7 +4015,7 @@ private struct Compiler {
         if (rhs.type.toBasetype.ty == TY.Tsarray &&
             type.toBasetype.ty != TY.Tsarray) {
             const result = allocateBytes(
-                inlineByteWidth(type), staticArrayAlign(type),
+                typeFacts(type).byteWidth, staticArrayAlign(type),
             );
             if (compileStaticArrayValueInto(result, rhs.type, rhs))
                 return result;
@@ -4024,13 +4026,13 @@ private struct Compiler {
                 if (auto integer = rhs.isIntegerExp)
                     if (integer.toInteger == 0) {
                         const result = allocateStructBlock(type);
-                        zeroFrameBlock(result, inlineByteWidth(type));
+                        zeroFrameBlock(result, typeFacts(type).byteWidth);
                         return result;
                     }
                 return structOperandOffset(rhs);
             case Tsarray:
                 const result = allocateBytes(
-                    inlineByteWidth(type), staticArrayAlign(type),
+                    typeFacts(type).byteWidth, staticArrayAlign(type),
                 );
                 if (!compileStaticArrayValueInto(result, type, rhs))
                     throw new Exception(text(
@@ -4162,7 +4164,7 @@ private struct Compiler {
         const isAggregateElement = resultType.toBasetype.ty == TY.Tstruct ||
             resultType.toBasetype.ty == TY.Tdelegate;
         const elementSize = isAggregateElement
-            ? inlineByteWidth(resultType)
+            ? typeFacts(resultType).byteWidth
             : elementIsArray
             ? sliceDescriptorSize
             : size(elementType);
@@ -4535,14 +4537,14 @@ private struct Compiler {
                     Op.copy, offset, address.offset,
                     cast(ushort) size_t.sizeof,
                 );
-                const elementWidth = inlineByteWidth(
+                const elementWidth = typeFacts(
                     cast(Type) expression.type.toBasetype.nextOf,
-                );
+                ).byteWidth;
                 _code ~= Instruction(
                     Op.loadConstant,
                     cast(ushort) sliceDescriptorLengthOffset(offset),
                     constantIndex(
-                        inlineByteWidth(expression.type) / elementWidth,
+                        typeFacts(expression.type).byteWidth / elementWidth,
                     ),
                     cast(ushort) size_t.sizeof,
                 );
@@ -4919,7 +4921,9 @@ private struct Compiler {
                     Op.loadConstant,
                     offset,
                     constantIndex(native),
-                    cast(ushort) size(ScalarType.ulong_),
+                    cast(ushort) TypeFacts.fromOpcode(
+                        ScalarType.ulong_,
+                    ).byteWidth,
                 );
                 return Operand(
                     offset,
@@ -4940,7 +4944,7 @@ private struct Compiler {
             Op.loadConstant,
             offset,
             constantIndex(_program.classes[classIndex].nativeTypeInfo),
-            cast(ushort) size(ScalarType.ulong_),
+            cast(ushort) TypeFacts.fromOpcode(ScalarType.ulong_).byteWidth,
         );
         return Operand(offset, ScalarType.ulong_, true, ScalarType.void_);
     }
@@ -5812,7 +5816,7 @@ private struct Compiler {
 
             vars[i] = captured;
             capturedOffsets[i] = *capturedOffset;
-            widths[i] = cast(ushort) size(scalarType(captured.type));
+            widths[i] = cast(ushort) typeFacts(captured.type).byteWidth;
         }
 
         const totalSize = cast(ushort) (count * size_t.sizeof);
@@ -5929,7 +5933,7 @@ private struct Compiler {
     private void compileStaticArrayDeclaration(VarDeclaration variable) {
         import std.conv: text;
 
-        const totalSize = inlineByteWidth(variable.type);
+        const totalSize = typeFacts(variable.type).byteWidth;
         const offset = allocateBytes(totalSize, staticArrayAlign(variable.type));
         // A static array has aggregate declaration metadata: scalar
         // VarExp/assignment paths must not treat its inline block as a scalar
@@ -5990,7 +5994,7 @@ private struct Compiler {
         ));
     }
 
-    // Block-copies `source`'s value into the `inlineByteWidth(type)` bytes of
+    // Block-copies `source`'s value into the `typeFacts(type).byteWidth` bytes of
     // static-array storage at `offset`, or returns `false` if `source` is not
     // a recognized static-array value form. Shared by
     // `compileStaticArrayDeclaration`'s initializer handling and whole-value
@@ -6003,7 +6007,7 @@ private struct Compiler {
     ) {
         import dmd.astenums: TY;
 
-        const totalSize = inlineByteWidth(type);
+        const totalSize = typeFacts(type).byteWidth;
 
         // `char[N] c = "..."`: copy the literal bytes directly into the inline
         // slot rather than building a slice descriptor.
@@ -6143,7 +6147,7 @@ private struct Compiler {
         assert(vectorType !is null);
 
         auto arrayType = vectorType.basetype; // DMD Type APIs are mutable.
-        const totalSize = inlineByteWidth(arrayType);
+        const totalSize = typeFacts(arrayType).byteWidth;
         const offset = allocateBytes(totalSize, staticArrayAlign(arrayType));
         registerFrameDeclaration(variable).staticArray = offset;
 
@@ -6163,7 +6167,7 @@ private struct Compiler {
 
         auto elementType = arrayType.toBasetype.nextOf;
         const elementScalar = scalarType(elementType);
-        const elementSize = cast(uint) size(elementScalar);
+        const elementSize = typeFacts(elementType).byteWidth;
         const count = totalSize / elementSize;
         const value = compileExpression(vector.e1);
         foreach (index; 0 .. count)
@@ -6196,8 +6200,8 @@ private struct Compiler {
             return false;
 
         auto elementType = arrayType.toBasetype.nextOf;
-        const elementSize = inlineByteWidth(elementType);
-        const count = inlineByteWidth(arrayType) / elementSize;
+        const elementSize = typeFacts(elementType).byteWidth;
+        const count = typeFacts(arrayType).byteWidth / elementSize;
 
         // The source argument is `cast(T[])sourceArray`; the static-array base
         // is under the cast.
@@ -6250,8 +6254,8 @@ private struct Compiler {
 
         auto arrayType = slice.e1.type;
         auto elementType = arrayType.toBasetype.nextOf;
-        const elementSize = inlineByteWidth(elementType);
-        const count = inlineByteWidth(arrayType) / elementSize;
+        const elementSize = typeFacts(elementType).byteWidth;
+        const count = typeFacts(arrayType).byteWidth / elementSize;
 
         auto dtor = structDeclarationOf(elementType).dtor;
         if (dtor !is null)
@@ -6275,7 +6279,7 @@ private struct Compiler {
         registerFrameDeclaration(variable).struct_ = StructLocal(offset, declaration);
         registerCapturedOffset(variable, offset);
 
-        zeroFrameBlock(offset, inlineByteWidth(variable.type));
+        zeroFrameBlock(offset, typeFacts(variable.type).byteWidth);
 
         // A nested struct carries a hidden context pointer (`vthis`) at offset 0
         // recording the enclosing function's frame, so its methods can read
@@ -6348,7 +6352,7 @@ private struct Compiler {
                                     Op.copy,
                                     offset,
                                     blitSource.offset,
-                                    cast(ushort) inlineByteWidth(variable.type),
+                                    cast(ushort) typeFacts(variable.type).byteWidth,
                                 );
                                 auto postblitFunction = callFunction(call);
                                 if (postblitFunction !is null)
@@ -6366,7 +6370,7 @@ private struct Compiler {
                 Op.copy,
                 offset,
                 sourceOffset.offset,
-                cast(ushort) inlineByteWidth(variable.type),
+                cast(ushort) typeFacts(variable.type).byteWidth,
             );
             return;
         }
@@ -6424,16 +6428,17 @@ private struct Compiler {
 
                     loadStaticString(
                         fieldOffset,
-                        inlineByteWidth(fieldType),
+                        typeFacts(fieldType).byteWidth,
                         string_,
                     );
                     materialised = true;
                     continue;
                 }
 
-                const elementSize = size(ScalarType.char_);
+                const elementSize =
+                    TypeFacts.fromOpcode(ScalarType.char_).byteWidth;
                 const elementCount =
-                    inlineByteWidth(fieldType) / elementSize;
+                    typeFacts(fieldType).byteWidth / elementSize;
                 const basis = compileSizeConstant(char.init);
                 foreach (index; 0 .. elementCount)
                     _code ~= Instruction(
@@ -6466,7 +6471,7 @@ private struct Compiler {
 
     private ushort allocateStructBlock(Type type) {
         return allocateBytes(
-            inlineByteWidth(type), staticArrayAlign(type),
+            typeFacts(type).byteWidth, staticArrayAlign(type),
         );
     }
 
@@ -6576,7 +6581,7 @@ private struct Compiler {
                 Op.copy,
                 fieldOffset,
                 value.offset,
-                cast(ushort) size(scalarType(fieldType)),
+                cast(ushort) typeFacts(fieldType).byteWidth,
             );
         }
     }
@@ -6598,7 +6603,7 @@ private struct Compiler {
         if (auto string_ = element.isStringExp) {
             loadStaticString(
                 fieldOffset,
-                inlineByteWidth(fieldType),
+                typeFacts(fieldType).byteWidth,
                 string_,
             );
             return;
@@ -6612,8 +6617,9 @@ private struct Compiler {
         // `S(seed)` broadcasts a scalar into all elements of the field.
         if (element.type.toBasetype.ty != TY.Tsarray) {
             const elementScalar = scalarType(fieldType.toBasetype.nextOf);
-            const elementSize = size(elementScalar);
-            const count = inlineByteWidth(fieldType) / elementSize;
+            const elementSize =
+                typeFacts(fieldType.toBasetype.nextOf).byteWidth;
+            const count = typeFacts(fieldType).byteWidth / elementSize;
             const value = compileExpression(element);
             foreach (i; 0 .. count)
                 _code ~= Instruction(
@@ -6877,7 +6883,7 @@ private struct Compiler {
 
         if (type.toBasetype.ty == TY.Tsarray) {
             const offset = allocateBytes(
-                inlineByteWidth(type), staticArrayAlign(type),
+                typeFacts(type).byteWidth, staticArrayAlign(type),
             );
             if (compileStaticArrayValueInto(offset, type, expression))
                 return offset;
@@ -6899,7 +6905,7 @@ private struct Compiler {
         in ushort indexSlot,
         Type structType,
     ) {
-        const structSize = inlineByteWidth(structType);
+        const structSize = typeFacts(structType).byteWidth;
         const offset = allocateBytes(structSize, staticArrayAlign(structType));
         emitPointerLoad(offset, pointer, indexSlot, structSize);
         return offset;
@@ -7037,7 +7043,7 @@ private struct Compiler {
                     Op.storeModule,
                     field.offset,
                     moduleFieldOffset(field),
-                    cast(ushort) inlineByteWidth(cast(Type) field.type),
+                    cast(ushort) typeFacts(cast(Type) field.type).byteWidth,
                 );
                 return;
             case pointer:
@@ -7103,7 +7109,7 @@ private struct Compiler {
                         _capturedOwners[receiver], *captured,
                     );
                     const structSize = cast(ushort)
-                        inlineByteWidth(expression.type);
+                        typeFacts(expression.type).byteWidth;
                     _code ~= Instruction(
                         Op.frameLoad,
                         structOffset,
@@ -7216,7 +7222,7 @@ private struct Compiler {
                     if (pointer.isPointer) {
                         const indexSlot = compileExpression(index.e2);
                         const structSize =
-                            cast(ushort) inlineByteWidth(expression.type);
+                            cast(ushort) typeFacts(expression.type).byteWidth;
                         const blockOffset = loadStructThroughPointer(
                             pointer.offset, indexSlot.offset, expression.type,
                         );
@@ -7244,7 +7250,7 @@ private struct Compiler {
                     const value = allocateStructBlock(expression.type);
                     emitPointerLoad(
                         value, receiver.offset, compileSizeConstant(0),
-                        inlineByteWidth(expression.type),
+                        typeFacts(expression.type).byteWidth,
                     );
                     auto result = new StructField;
                     *result = StructField(
@@ -7308,7 +7314,7 @@ private struct Compiler {
                 Op.frameLoad,
                 destination,
                 capturedFrameIndex(_capturedOwners[declaration], capturedOffset),
-                cast(ushort) inlineByteWidth(declaration.type),
+                cast(ushort) typeFacts(declaration.type).byteWidth,
             );
             return Operand(destination, ScalarType.void_);
         }
@@ -7364,8 +7370,8 @@ private struct Compiler {
         const ty = declaration.type.toBasetype.ty;
         const isAggregate = ty == TY.Tstruct || ty == TY.Tsarray;
         const valueSize = isAggregate
-            ? inlineByteWidth(declaration.type)
-            : size(scalarType(declaration.type));
+            ? typeFacts(declaration.type).byteWidth
+            : typeFacts(declaration.type).byteWidth;
         if (isHeapClosureVar(declaration))
             emitPointerStore(
                 value.offset, _nestedContextOffset,
@@ -7578,7 +7584,7 @@ private struct Compiler {
         }
 
         const fieldScalar = scalarType(field.type);
-        const elementSize = size(fieldScalar);
+        const elementSize = typeFacts(field.type).byteWidth;
         const fieldPointer = heapFieldAddress(field);
         const destination = allocateBytes(elementSize, elementSize);
         emitPointerLoad(
@@ -7597,7 +7603,8 @@ private struct Compiler {
     // `p.field = value`: write `value` (already in a frame slot) through the
     // struct pointer at `ptr + field.offset`. A `Tstruct`/`Tsarray` field
     // lives inline at that address, so it needs its own real byte width from
-    // `inlineByteWidth`/`staticArrayAlign` instead of the scalar-only gate. A
+    // `TypeFacts.byteWidth`/`staticArrayAlign` instead of the scalar-only
+    // gate. A
     // `Tdelegate` field is the same 16-byte aggregate shape (`staticArraySize`
     // -- DMD's own `size()` -- already reports 16 for it, same as a slice
     // descriptor), so it is grouped with the other aggregates rather than
@@ -7680,7 +7687,7 @@ private struct Compiler {
         }
 
         const fieldScalar = scalarType(field.type);
-        const elementSize = size(fieldScalar);
+        const elementSize = typeFacts(field.type).byteWidth;
         const fieldPointer = heapFieldAddress(field);
         const destination = allocateBytes(elementSize, elementSize);
         emitPointerLoad(
@@ -7707,7 +7714,7 @@ private struct Compiler {
     // `box.field = value`: write `value` (already in a frame slot) through the
     // class pointer at `ptr + field.offset`. A `Tstruct`/`Tsarray` field lives
     // inline at that address, so it needs its own real byte width from
-    // `inlineByteWidth` instead of the scalar-only gate, mirroring
+    // `TypeFacts.byteWidth` instead of the scalar-only gate, mirroring
     // `storeStructPointerField`'s identical widening -- including its reuse
     // of `typeFacts`' shared classification.
     private void storeClassPointerField(
@@ -7805,7 +7812,7 @@ private struct Compiler {
             newExp.newtype.toBasetype.ty != TY.Tstruct)
             return null;
 
-        const blockSize = inlineByteWidth(newExp.newtype);
+        const blockSize = typeFacts(newExp.newtype).byteWidth;
 
         // Build the initialised struct value in a temporary frame block, then
         // copy it into a fresh heap block addressed by the returned pointer.
@@ -8054,7 +8061,7 @@ private struct Compiler {
         const value = compileExpression(valueExpression);
         emitPointerStore(
             value.offset, fieldPointer, compileSizeConstant(0),
-            size(scalarType(field.type)),
+            typeFacts(field.type).byteWidth,
         );
     }
 
@@ -8092,7 +8099,7 @@ private struct Compiler {
                 Op.copy,
                 fieldOffset,
                 value.offset,
-                cast(ushort) size(scalarType(field.type)),
+                cast(ushort) typeFacts(field.type).byteWidth,
             );
         }
     }
@@ -8683,7 +8690,7 @@ private struct Compiler {
             ));
 
         auto sourceElementType = source.type.toBasetype.nextOf;
-        const sourceElementSize = inlineByteWidth(sourceElementType);
+        const sourceElementSize = typeFacts(sourceElementType).byteWidth;
         // A dynamic-array element (`int[][2]`'s `int[]` elements) is a
         // 16-byte slice descriptor; `elementType` names its innermost scalar
         // for indexing further in, not its own native width, so its byte
@@ -8699,7 +8706,7 @@ private struct Compiler {
                 expressionChars(source),
             ));
 
-        const count = inlineByteWidth(source.type) / sourceElementSize;
+        const count = typeFacts(source.type).byteWidth / sourceElementSize;
         _code ~= Instruction(
             Op.allocArray,
             destination,
@@ -8728,13 +8735,13 @@ private struct Compiler {
         in ushort basePointer,
     ) {
         auto sourceElementType = sourceType.toBasetype.nextOf;
-        const sourceElementSize = inlineByteWidth(sourceElementType);
+        const sourceElementSize = typeFacts(sourceElementType).byteWidth;
         const elementSize = elementType == ScalarType.void_ ||
                 arrayElementIsArray(sourceType)
             ? sourceElementSize
             : cast(uint) size(elementType);
 
-        const count = inlineByteWidth(sourceType) / sourceElementSize;
+        const count = typeFacts(sourceType).byteWidth / sourceElementSize;
         _code ~= Instruction(
             Op.allocArray,
             destination,
@@ -9489,7 +9496,7 @@ private struct Compiler {
         const scaled =
             allocateBytes(cast(uint) size_t.sizeof, size_t.sizeof);
         const stride =
-            compileSizeConstant(inlineByteWidth(elementType));
+            compileSizeConstant(typeFacts(elementType).byteWidth);
         _code ~= Instruction(Op.mulInt8, scaled, indexSlot.offset, stride);
 
         const pointer = allocateBytes(cast(uint) size_t.sizeof, size_t.sizeof);
@@ -11147,7 +11154,7 @@ private struct Compiler {
         }
 
         count = literal.elements.length;
-        const elementSize = cast(size_t) inlineByteWidth(elementRawType);
+        const elementSize = cast(size_t) typeFacts(elementRawType).byteWidth;
         ubyte[] bytes;
         bytes.length = count * elementSize;
         foreach (elementIndex; 0 .. count) {
@@ -11190,7 +11197,7 @@ private struct Compiler {
         if (auto existing = declarationRecordView(declaration).moduleStructOrNull)
             return existing;
 
-        const size = cast(ushort) inlineByteWidth(declaration.type);
+        const size = cast(ushort) typeFacts(declaration.type).byteWidth;
         const hasDefaultInitializer =
             moduleVariableHasDefaultInitializer(declaration);
 
@@ -11256,7 +11263,7 @@ private struct Compiler {
         if (auto existing = declarationRecordView(declaration).moduleStaticArrayOrNull)
             return existing;
 
-        const size = cast(ushort) inlineByteWidth(declaration.type);
+        const size = cast(ushort) typeFacts(declaration.type).byteWidth;
         // A plain array literal (`[1, 2, 3]`) parses as an
         // `ArrayInitializer`, not an `ExpInitializer`, so this reuses
         // `moduleDynamicArrayInitializerExpressionOrNull`'s
@@ -11416,7 +11423,7 @@ private struct Compiler {
         if (literal is null || literal.elements is null)
             return null;
 
-        const elementSize = inlineByteWidth(elementType);
+        const elementSize = typeFacts(elementType).byteWidth;
         if (elementSize == 0 ||
             literal.elements.length * elementSize != totalSize)
         {
@@ -11678,7 +11685,7 @@ private struct Compiler {
         );
         auto element = length.e1.type.toBasetype.nextOf;
         if (element.toBasetype.ty == TY.Tstruct) {
-            const elementSize = inlineByteWidth(element);
+            const elementSize = typeFacts(element).byteWidth;
             const initBlock = allocateBytes(elementSize, staticArrayAlign(element));
             zeroFrameBlock(initBlock, elementSize);
             auto literal = element.toBasetype.isTypeStruct.defaultInitLiteral(
@@ -11917,7 +11924,7 @@ private struct Compiler {
                 expressionChars(index),
             ));
 
-        const elementSize = inlineByteWidth(index.type);
+        const elementSize = typeFacts(index.type).byteWidth;
         const offset = cast(ushort)
             (baseOffset + indexInteger.toInteger * elementSize);
         // A sub-array, struct, or delegate element has no scalar type;
@@ -12026,7 +12033,7 @@ private struct Compiler {
             if (pointer.isPointer) {
                 const zeroOffset = compileSizeConstant(0);
                 const arraySize = cast(ushort)
-                    inlineByteWidth(expression.type.nextOf);
+                    typeFacts(expression.type.nextOf).byteWidth;
                 const blockOffset = loadStructThroughPointer(
                     pointer.offset, zeroOffset, expression.type.nextOf,
                 );
@@ -12192,7 +12199,7 @@ private struct Compiler {
         if (!capturedStaticArrayBaseOffset(index.e1, declaration, baseOffset))
             return null;
 
-        const elementSize = inlineByteWidth(index.type);
+        const elementSize = typeFacts(index.type).byteWidth;
         const relativeOffset = cast(ushort)
             (baseOffset + indexInteger.toInteger * elementSize);
         // A sub-array, struct, or delegate element has no scalar type,
@@ -12238,9 +12245,9 @@ private struct Compiler {
         // `dynamicArrayElementSize` derives the real byte width for a
         // struct/static-array element instead of the `ScalarType.void_`-
         // implied 0 that the raw `size(elementType)` gives it.
-        const elementSize = inlineByteWidth(
+        const elementSize = typeFacts(
             slice.e1.type.toBasetype.nextOf,
-        );
+        ).byteWidth;
 
         const length = staticArrayLength(slice.e1.type);
         const bounds = allocateBytes(2 * size_t.sizeof, size_t.sizeof);
@@ -12379,7 +12386,7 @@ private struct Compiler {
             !descriptor.isStaticArrayView) {
             auto rowType = place.sliceBaseType.toBasetype.nextOf;
             if (rowType.toBasetype.ty == TY.Tsarray) {
-                const rowByteSize = inlineByteWidth(rowType);
+                const rowByteSize = typeFacts(rowType).byteWidth;
 
                 const rhsIsRowDescriptorRead =
                     rowBroadcastSourceIsRowDescriptor(rhs);
@@ -12595,7 +12602,7 @@ private struct Compiler {
         // descriptor its 16-byte slot holds, the same width every other
         // dynamic-array element uses.
         if (isStringType(elementType)) {
-            const elementSize = inlineByteWidth(elementType);
+            const elementSize = typeFacts(elementType).byteWidth;
             foreach (elementIndex; 0 .. literal.elements.length) {
                 auto string_ = stringLiteralOf((*literal.elements)[elementIndex]);
                 if (string_ is null)
@@ -12631,7 +12638,7 @@ private struct Compiler {
         // down: each element is itself an array literal at its own leaf
         // offset.
         if (elementType.toBasetype.ty == TY.Tsarray) {
-            const elementSize = inlineByteWidth(elementType);
+            const elementSize = typeFacts(elementType).byteWidth;
             foreach (elementIndex; 0 .. literal.elements.length) {
                 auto element = (*literal.elements)[elementIndex];
                 auto nested =
@@ -12655,7 +12662,7 @@ private struct Compiler {
         // their own leaf offsets, reusing the same machinery a plain struct
         // field uses.
         if (elementType.toBasetype.ty == TY.Tstruct) {
-            const elementSize = inlineByteWidth(elementType);
+            const elementSize = typeFacts(elementType).byteWidth;
             foreach (elementIndex; 0 .. literal.elements.length) {
                 auto element = (*literal.elements)[elementIndex];
                 auto structLiteral =
@@ -12676,7 +12683,7 @@ private struct Compiler {
         }
 
         const elementScalar = scalarType(elementType);
-        const elementSize = cast(uint) size(elementScalar);
+        const elementSize = typeFacts(elementType).byteWidth;
 
         foreach (elementIndex; 0 .. literal.elements.length) {
             auto element = (*literal.elements)[elementIndex];
@@ -13646,7 +13653,7 @@ private struct Compiler {
             : scalarType(returnType.toBasetype);
         const destination = isStructReturn
             ? allocateBytes(
-                inlineByteWidth(returnType),
+                typeFacts(returnType).byteWidth,
                 staticArrayAlign(returnType),
             )
             : isArrayReturn
@@ -13762,7 +13769,7 @@ private struct Compiler {
         const result = allocate(ScalarType.int_);
         _code ~= Instruction(
             Op.loadConstant, result, constantIndex(0),
-            cast(ushort) size(ScalarType.int_),
+            cast(ushort) TypeFacts.fromOpcode(ScalarType.int_).byteWidth,
         );
         return Operand(result, ScalarType.int_);
     }
@@ -14298,7 +14305,7 @@ private struct Compiler {
         // above); its width then comes from the emplaced value's own DMD
         // type size, never a bare `size(ScalarType.void_)`, which is 0.
         const elementSize = destination.pointerElement == ScalarType.void_
-            ? inlineByteWidth((*call.arguments)[1].type)
+            ? typeFacts((*call.arguments)[1].type).byteWidth
             : size(destination.pointerElement);
         emitPointerStore(
             value.offset, destination.offset, compileSizeConstant(0),
@@ -14535,7 +14542,7 @@ private struct Compiler {
                 Op.copy,
                 slot,
                 source,
-                cast(ushort) inlineByteWidth(argument.type),
+                cast(ushort) typeFacts(argument.type).byteWidth,
             );
             return;
         }
@@ -14548,7 +14555,7 @@ private struct Compiler {
                 Op.copy,
                 slot,
                 *source,
-                cast(ushort) inlineByteWidth(argument.type),
+                cast(ushort) typeFacts(argument.type).byteWidth,
             );
             return;
         }
@@ -14574,8 +14581,8 @@ private struct Compiler {
                 if (auto slice = staticArray.isSliceExp)
                     staticArray = slice.e1;
                 const element = staticArray.type.toBasetype.nextOf;
-                const count = inlineByteWidth(staticArray.type) /
-                    inlineByteWidth(cast(Type) element);
+                const count = typeFacts(staticArray.type).byteWidth /
+                    typeFacts(cast(Type) element).byteWidth;
                 _code ~= Instruction(Op.frameAddress, slot, *source);
                 _code ~= Instruction(
                     Op.loadConstant,
@@ -14917,7 +14924,7 @@ private struct Compiler {
         const result = allocate(ScalarType.int_);
         _code ~= Instruction(
             Op.loadConstant, result, constantIndex(0),
-            cast(ushort) size(ScalarType.int_),
+            cast(ushort) TypeFacts.fromOpcode(ScalarType.int_).byteWidth,
         );
         return Operand(result, ScalarType.int_);
     }
@@ -15046,7 +15053,7 @@ private struct Compiler {
         if (aaType.toBasetype.nextOf.toBasetype.ty == TY.Tdelegate)
             return delegateValueSize;
         if (aaType.toBasetype.nextOf.toBasetype.ty == TY.Tsarray)
-            return inlineByteWidth(aaType.toBasetype.nextOf);
+            return typeFacts(aaType.toBasetype.nextOf).byteWidth;
         return dynamicArrayElementSize(aaType, arrayElementIsArray(aaType));
     }
 
@@ -15154,7 +15161,7 @@ private struct Compiler {
             auto fieldType = cast(Type) field.type;
             const isArray = isStringType(fieldType);
             const width = isArray
-                ? sliceDescriptorSize : size(scalarType(fieldType));
+                ? sliceDescriptorSize : typeFacts(fieldType).byteWidth;
             fields ~= AssocArrayKeyField(
                 cast(ushort) field.offset, cast(ushort) width, isArray,
             );
@@ -15181,7 +15188,7 @@ private struct Compiler {
         const index = cast(ushort) _program.assocArrayKeyLayouts.length;
         _assocArrayKeyLayoutIndices[declaration] = index;
         _program.assocArrayKeyLayouts ~= AssocArrayKeyLayout(
-            fields, cast(ushort) inlineByteWidth(keyType),
+            fields, cast(ushort) typeFacts(keyType).byteWidth,
         );
         return index;
     }
@@ -15219,9 +15226,9 @@ private struct Compiler {
                     "Unsupported associative array key type in ",
                     "bytecode core: ", typeChars(keyType),
                 ));
-            return inlineByteWidth(keyType);
+            return typeFacts(keyType).byteWidth;
         }
-        return size(scalarType(keyType));
+        return typeFacts(keyType).byteWidth;
     }
 
     // `assocArrayKeyNonArrayWidth`'s own recursive field scan: true when
@@ -15357,7 +15364,9 @@ private struct Compiler {
                 const offset = allocate(ScalarType.ulong_);
                 _code ~= Instruction(
                     Op.loadModule, offset, moduleVariable.offset,
-                    cast(ushort) size(ScalarType.ulong_),
+                    cast(ushort) TypeFacts.fromOpcode(
+                        ScalarType.ulong_,
+                    ).byteWidth,
                 );
                 return AssocArrayHandleResult(offset);
             }
@@ -16259,7 +16268,7 @@ private struct Compiler {
             }
 
             _code ~= Instruction(
-                equalOp(size(scalarType(fieldType))),
+                equalOp(typeFacts(fieldType).byteWidth),
                 fieldEqual,
                 cast(ushort) (left + field.offset),
                 cast(ushort) (right + field.offset),
@@ -16460,7 +16469,7 @@ private struct Compiler {
         const equal = allocateBytes(1, 1);
         emitSliceEqual(
             equal, lhsOffset, rhsOffset,
-            inlineByteWidth(elementType),
+            typeFacts(elementType).byteWidth,
         );
 
         ushort condition = equal;
@@ -16524,10 +16533,10 @@ private struct Compiler {
 
         auto rowElementType = rowType.toBasetype.nextOf;
         const rowElementScalar = scalarType(rowElementType);
-        const rowByteSize = inlineByteWidth(rowType);
+        const rowByteSize = typeFacts(rowType).byteWidth;
         const rowLength = cast(uint) (rowByteSize / size(rowElementScalar));
         const rowCount =
-            inlineByteWidth(nestedStatic.type) / rowByteSize;
+            typeFacts(nestedStatic.type).byteWidth / rowByteSize;
 
         const otherDescriptor =
             arrayDescriptorOffset(rowElementScalar, other, true);
@@ -17069,7 +17078,7 @@ private struct Compiler {
 
         if (type.toBasetype.ty == TY.Tstruct || type.toBasetype.ty == TY.Tsarray) {
             const aggregateAlign = staticArrayAlign(type);
-            const aggregateBytes = inlineByteWidth(type);
+            const aggregateBytes = typeFacts(type).byteWidth;
             layout.blockSize = (layout.blockSize +
                 aggregateAlign - 1) & ~(aggregateAlign - 1);
             layout.offsets ~= cast(ushort) layout.blockSize;
@@ -17225,7 +17234,7 @@ private struct Compiler {
                 elementType: dynamicArrayElementType(type),
                 arrayElementsAreArrays: arrayElementIsArray(type),
                 isStruct: false,
-                structSize: inlineByteWidth(type),
+                structSize: typeFacts(type).byteWidth,
                 isUndisplayable: false,
                 isStaticArray: true,
                 arrayLength: staticArrayLength(type),
@@ -17239,7 +17248,7 @@ private struct Compiler {
                 elementType: ScalarType.void_,
                 arrayElementsAreArrays: false,
                 isStruct: true,
-                structSize: inlineByteWidth(type),
+                structSize: typeFacts(type).byteWidth,
             );
 
         // A by-value struct result is an inline block of `Type.size()` bytes,
@@ -17252,7 +17261,7 @@ private struct Compiler {
                 elementType: ScalarType.void_,
                 arrayElementsAreArrays: false,
                 isStruct: true,
-                structSize: inlineByteWidth(type),
+                structSize: typeFacts(type).byteWidth,
             );
             populateStructDisplay(result, type);
             return result;
@@ -17333,7 +17342,7 @@ private struct Compiler {
             elementType: ScalarType.void_,
             arrayElementsAreArrays: false,
             isStruct: true,
-            structSize: inlineByteWidth(element),
+            structSize: typeFacts(element).byteWidth,
         );
         populateStructDisplay(elementResult, element);
         if (elementResult.structName is null)
@@ -17591,7 +17600,7 @@ private struct Compiler {
             Op.loadConstant,
             offset,
             constantIndex(value),
-            cast(ushort) size(ScalarType.ulong_),
+            cast(ushort) TypeFacts.fromOpcode(ScalarType.ulong_).byteWidth,
         );
         return offset;
     }
@@ -17662,7 +17671,10 @@ private struct Compiler {
         if (element is null)
             return TypeFacts.withoutByteWidth(ScalarType.void_);
         if (element.toBasetype.ty == TY.Tfunction)
-            return TypeFacts.withoutByteWidth(ScalarType.void_, true);
+            return TypeFacts.withoutByteWidth(
+                ScalarType.void_, DeclarationRepresentation.unavailable,
+                true,
+            );
         return typeFacts(element);
     }
 
@@ -17687,15 +17699,6 @@ private struct Compiler {
         return typeFacts(element);
     }
 
-    // The shared DMD-layout width query for a value stored inline in a frame,
-    // array, or pointed-at block. A function pointer has no dereferenceable
-    // payload, so its `TypeFacts` explicitly has no byte width instead.
-    private uint inlineByteWidth(Type type) {
-        import dmd.typesem: size;
-
-        return cast(uint) size(type.toBasetype);
-    }
-
     // Shared opcode, aggregate, and byte-width classification for a stored
     // type. `pointerElementMetadata`, dynamic-array element sizing, and heap
     // field operations previously derived these facts independently, so a
@@ -17711,18 +17714,62 @@ private struct Compiler {
     // through `scalarType`.
     private TypeFacts typeFacts(Type type) {
         import dmd.astenums: TY;
+        import dmd.typesem: size;
 
         if (type.toBasetype.ty == TY.Terror)
-            return TypeFacts.withoutByteWidth(ScalarType.void_, true);
-        const byteWidth = inlineByteWidth(type);
-        if (type.toBasetype.ty == TY.Tsarray ||
-            type.toBasetype.ty == TY.Tstruct ||
-            type.toBasetype.ty == TY.Tarray ||
-            type.toBasetype.ty == TY.Tdelegate ||
-            type.toBasetype.ty == TY.Tvector ||
-            isComplexDoubleType(type))
-            return TypeFacts(ScalarType.void_, byteWidth, true);
-        return TypeFacts(scalarType(type), byteWidth, false);
+            return TypeFacts.withoutByteWidth(
+                ScalarType.void_, DeclarationRepresentation.unavailable,
+                true,
+            );
+        const byteWidth = cast(uint) size(type.toBasetype);
+        if (isComplexDoubleType(type))
+            return TypeFacts(
+                ScalarType.void_, byteWidth,
+                DeclarationRepresentation.complexDouble, true,
+            );
+        switch (type.toBasetype.ty) with (TY) {
+            case Tsarray:
+            case Tvector:
+                return TypeFacts(
+                    ScalarType.void_, byteWidth,
+                    DeclarationRepresentation.staticArray, true,
+                );
+            case Tarray:
+                return TypeFacts(
+                    ScalarType.void_, byteWidth,
+                    DeclarationRepresentation.dynamicArray, true,
+                );
+            case Tstruct:
+                return TypeFacts(
+                    ScalarType.void_, byteWidth,
+                    DeclarationRepresentation.struct_, true,
+                );
+            case Tdelegate:
+                return TypeFacts(
+                    ScalarType.void_, byteWidth,
+                    DeclarationRepresentation.delegate_, true,
+                );
+            case Tclass:
+                return TypeFacts(
+                    scalarType(type), byteWidth,
+                    DeclarationRepresentation.classPointer, false,
+                );
+            case Tpointer:
+                return TypeFacts(
+                    scalarType(type), byteWidth,
+                    DeclarationRepresentation.pointer, false,
+                );
+            case Taarray:
+                return TypeFacts(
+                    scalarType(type), byteWidth,
+                    DeclarationRepresentation.assocArray, false,
+                );
+            default:
+                return TypeFacts(
+                    scalarType(type), byteWidth,
+                    DeclarationRepresentation.scalar, false,
+                );
+        }
     }
 
     private DeclarationRecord* declarationRecordView(
@@ -17773,46 +17820,20 @@ private struct Compiler {
     }
 
     private DeclarationRecord* declarationRecord(VarDeclaration declaration) {
-        import dmd.astenums: TY;
-
         if (auto existing = declaration in _declarations)
             return existing;
         DeclarationRecord created;
         created.facts = typeFacts(declaration.type);
-        created.representation = declarationRepresentation(declaration);
-        if (declaration.type.toBasetype.ty == TY.Taarray)
-            created.aggregateRepresentation = AggregateRepresentation.assocArray;
-        if (created.representation == DeclarationRepresentation.pointer)
+        created.facts.representation = parameterIsLazy(declaration)
+            ? DeclarationRepresentation.lazyDelegate
+            : created.facts.representation;
+        if (created.facts.representation == DeclarationRepresentation.pointer)
             created.pointer = pointerElementScalar(declaration.type);
-        else if (created.representation == DeclarationRepresentation.classPointer)
+        else if (created.facts.representation ==
+            DeclarationRepresentation.classPointer)
             created.classPointer = declaration.type.toBasetype.isTypeClass.sym;
         _declarations[declaration] = created;
         return declaration in _declarations;
-    }
-
-    private DeclarationRepresentation declarationRepresentation(
-        VarDeclaration declaration,
-    ) {
-        import dmd.astenums: TY;
-
-        const type = declaration.type.toBasetype.ty;
-        if (parameterIsLazy(declaration))
-            return DeclarationRepresentation.lazyDelegate;
-        if (isComplexDoubleType(declaration.type))
-            return DeclarationRepresentation.complexDouble;
-        switch (type) with (TY) {
-            case Tsarray:
-            case Tvector:
-                return DeclarationRepresentation.staticArray;
-            case Tarray: return DeclarationRepresentation.dynamicArray;
-            case Tstruct: return DeclarationRepresentation.struct_;
-            case Tdelegate:
-                return DeclarationRepresentation.delegate_;
-            case Tclass: return DeclarationRepresentation.classPointer;
-            case Taarray: return DeclarationRepresentation.scalar;
-            case Tpointer: return DeclarationRepresentation.pointer;
-            default: return DeclarationRepresentation.scalar;
-        }
     }
 
     private void clearLocalDeclarations() {
@@ -17851,6 +17872,7 @@ private struct TypeFacts {
         imported!"quickbite.backends.bytecode.core.program".ScalarType;
 
     private ScalarType opcodeType;
+    private DeclarationRepresentation representation;
     private bool isAggregate;
     private uint _byteWidth;
     private bool _hasByteWidth;
@@ -17858,9 +17880,11 @@ private struct TypeFacts {
     private this(
         in ScalarType opcodeType,
         in uint byteWidth,
+        in DeclarationRepresentation representation,
         in bool isAggregate,
     ) @safe pure {
         this.opcodeType = opcodeType;
+        this.representation = representation;
         this.isAggregate = isAggregate;
         _byteWidth = byteWidth;
         _hasByteWidth = true;
@@ -17868,12 +17892,29 @@ private struct TypeFacts {
 
     private static TypeFacts withoutByteWidth(
         in ScalarType opcodeType,
+        in DeclarationRepresentation representation =
+            DeclarationRepresentation.scalar,
         in bool isAggregate = false,
     ) @safe pure {
         TypeFacts result;
         result.opcodeType = opcodeType;
+        result.representation = representation;
         result.isAggregate = isAggregate;
         return result;
+    }
+
+    // Low-level bytecode operations sometimes begin with an opcode scalar
+    // rather than a D type. Keep their storage width under the same checked
+    // authority; `void_` denotes an aggregate opcode and is never a width
+    // sentinel.
+    private static TypeFacts fromOpcode(in ScalarType opcodeType) @safe pure {
+        import quickbite.backends.bytecode.core.program: size;
+
+        assert(opcodeType != ScalarType.void_);
+        return TypeFacts(
+            opcodeType, cast(uint) size(opcodeType),
+            DeclarationRepresentation.scalar, false,
+        );
     }
 
     private uint byteWidth() @safe pure const {
@@ -17894,10 +17935,6 @@ private enum DeclarationRepresentation {
     complexDouble,
     lazyDelegate,
     classPointer,
-}
-
-private enum AggregateRepresentation {
-    none,
     assocArray,
 }
 
@@ -17935,23 +17972,20 @@ private struct DeclarationRecord {
     private ModuleComplexVariable moduleComplex;
     private bool moduleClassificationAttempted;
     private DeclarationStorage storage;
-    private AggregateRepresentation aggregateRepresentation;
-
-    private DeclarationRepresentation representation;
-
     private bool represents(in DeclarationRepresentation expected) const {
         if ((storage == DeclarationStorage.frame ||
             storage == DeclarationStorage.frameReference) &&
-            representation == expected)
+            facts.representation == expected)
             return true;
         if ((storage == DeclarationStorage.frame ||
             storage == DeclarationStorage.frameReference) &&
             expected == DeclarationRepresentation.scalar)
-            switch (representation) with (DeclarationRepresentation) {
+            switch (facts.representation) with (DeclarationRepresentation) {
                 case scalar:
                 case pointer:
                 case complexDouble:
                 case classPointer:
+                case assocArray:
                     return true;
                 default:
                     return false;
@@ -17967,26 +18001,26 @@ private struct DeclarationRecord {
     }
     private auto staticArrayOrNull() {
         return storage == DeclarationStorage.frame &&
-            representation == DeclarationRepresentation.staticArray
+            facts.representation == DeclarationRepresentation.staticArray
             ? &staticArray
             : null;
     }
     private auto dynamicArrayOrNull() {
         return storage == DeclarationStorage.frame &&
-            representation == DeclarationRepresentation.dynamicArray
+            facts.representation == DeclarationRepresentation.dynamicArray
             ? &dynamicArray
             : null;
     }
     private auto pointerOrNull() { return represents(DeclarationRepresentation.pointer) ? &pointer : null; }
     private auto struct_OrNull() {
         return storage == DeclarationStorage.frame &&
-            representation == DeclarationRepresentation.struct_
+            facts.representation == DeclarationRepresentation.struct_
             ? &struct_
             : null;
     }
     private auto delegate_OrNull() {
         return storage == DeclarationStorage.frame &&
-            representation == DeclarationRepresentation.delegate_ &&
+            facts.representation == DeclarationRepresentation.delegate_ &&
             !delegateRuntime && delegate_.function_ !is null
             ? &delegate_
             : null;
@@ -17998,68 +18032,76 @@ private struct DeclarationRecord {
     }
     private auto complexDoubleOrNull() {
         return storage == DeclarationStorage.frame &&
-            representation == DeclarationRepresentation.complexDouble
+            facts.representation == DeclarationRepresentation.complexDouble
             ? &complexDouble
             : null;
     }
     private auto assocArrayOrNull() {
         return (storage == DeclarationStorage.frame ||
             storage == DeclarationStorage.frameReference) &&
-            aggregateRepresentation == AggregateRepresentation.assocArray
+            facts.representation == DeclarationRepresentation.assocArray
             ? &assocArray
             : null;
     }
     private auto lazyDelegateOrNull() {
         return storage == DeclarationStorage.frame &&
-            representation == DeclarationRepresentation.lazyDelegate
+            facts.representation == DeclarationRepresentation.lazyDelegate
             ? &lazyDelegate
             : null;
     }
-    private auto lazyDeclarationOrNull() { return representation == DeclarationRepresentation.lazyDelegate ? &lazyDeclaration : null; }
+    private auto lazyDeclarationOrNull() {
+        return facts.representation == DeclarationRepresentation.lazyDelegate
+            ? &lazyDeclaration : null;
+    }
     private auto delegateParameterOrNull() {
         return storage == DeclarationStorage.frame &&
-            representation == DeclarationRepresentation.delegate_ &&
+            facts.representation == DeclarationRepresentation.delegate_ &&
             delegateRuntime
             ? &delegateParameter
             : null;
     }
-    private auto structPointerOrNull() { return storage == DeclarationStorage.frame && representation == DeclarationRepresentation.pointer && structPointer !is null ? &structPointer : null; }
+    private auto structPointerOrNull() {
+        return storage == DeclarationStorage.frame &&
+            facts.representation == DeclarationRepresentation.pointer &&
+            structPointer !is null ? &structPointer : null;
+    }
     private auto classPointerOrNull() { return represents(DeclarationRepresentation.classPointer) ? &classPointer : null; }
     private auto moduleScalarOrNull() {
         return storage == DeclarationStorage.module_ &&
-            (representation == DeclarationRepresentation.scalar ||
-            representation == DeclarationRepresentation.pointer ||
-            representation == DeclarationRepresentation.classPointer)
+            (facts.representation == DeclarationRepresentation.scalar ||
+            facts.representation == DeclarationRepresentation.pointer ||
+            facts.representation == DeclarationRepresentation.classPointer ||
+            facts.representation == DeclarationRepresentation.assocArray)
             ? &moduleScalar
             : null;
     }
     private auto moduleDynamicArrayOrNull() {
         return storage == DeclarationStorage.module_ &&
-            representation == DeclarationRepresentation.dynamicArray
+            facts.representation == DeclarationRepresentation.dynamicArray
             ? &moduleDynamicArray
             : null;
     }
     private auto moduleStructOrNull() {
         return storage == DeclarationStorage.module_ &&
-            representation == DeclarationRepresentation.struct_
+            facts.representation == DeclarationRepresentation.struct_
             ? &moduleStruct
             : null;
     }
     private auto moduleStaticArrayOrNull() {
         return storage == DeclarationStorage.module_ &&
-            representation == DeclarationRepresentation.staticArray
+            facts.representation == DeclarationRepresentation.staticArray
             ? &moduleStaticArray
             : null;
     }
     private auto moduleDelegateOrNull() {
         return storage == DeclarationStorage.module_ &&
-            representation == DeclarationRepresentation.delegate_
+            facts.representation == DeclarationRepresentation.delegate_
             ? &moduleDelegate
             : null;
     }
     private auto moduleComplexOrNull() {
         return storage == DeclarationStorage.module_ &&
-            representation == DeclarationRepresentation.complexDouble
+            facts.representation == DeclarationRepresentation.complexDouble
             ? &moduleComplex
             : null;
     }
