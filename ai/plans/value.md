@@ -476,8 +476,10 @@ checked fact; do not relearn them.
 - Native class references carry only their body address. VM-owned allocations
   retain their storage in an ownership table; borrowed native exceptions keep
   their hydrated `Throwable` metadata in a separate table keyed by object
-  address. A catch's static view may replace exception metadata, but never an
-  ordinary class allocation root.
+  address. A temporary boxed view of a borrowed native class retains its host
+  pointer in interpreter-owned capability metadata keyed by the view's object
+  identity; guest fields are never host metadata. A catch's static view may
+  replace exception metadata, but never an ordinary class allocation root.
 - A field slice borrows bytes composed from its receiver place; an aggregate
   expression snapshot is never the backing storage for an lvalue-derived view.
 - `RuntimeValue.NativeAggregate` owns or borrows DMD-layout bytes for a

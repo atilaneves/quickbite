@@ -1300,6 +1300,29 @@ public struct RuntimeValue {
         );
     }
 
+    public Value withClassIdentity(in size_t identity) const pure {
+        import std.sumtype: match;
+
+        return data.match!(
+            (const(ClassObject) object) {
+                Value[] values;
+                foreach (field; object.fields)
+                    values ~= field.value;
+                return Value.classValue(
+                    object.typeName,
+                    object.typeNames,
+                    object.fieldNames,
+                    values,
+                    identity,
+                );
+            },
+            (_) {
+                throw new Exception("Expected class object.");
+                return Value.void_;
+            },
+        );
+    }
+
     public Value withClassFieldNamed(
         in string name,
         in Value value,

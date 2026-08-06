@@ -224,10 +224,6 @@ private enum LoopControl {
     continue_,
 }
 
-private enum nativeExceptionObjectPointerField =
-    "__quickbiteNativeThrowableObjectPointer";
-
-
 // The evaluated indices within one `ref`/`out` call argument.  The ordinary
 // expression walk records them as it evaluates the argument; binding the
 // callee's reference slot later composes its address from those exact results
@@ -406,6 +402,10 @@ private struct Walker {
     // Keep its boxed field description separate from ordinary class ownership
     // so hydrating a catch's static view cannot replace an allocation root.
     private Value[void*] nativeExceptionMetadata;
+    // A boxed view of a borrowed native class retains its opaque host object
+    // pointer as interpreter metadata keyed by the view's ordinary object
+    // identity. Guest fields remain exclusively guest data.
+    private void*[size_t] borrowedNativeClassPointers;
     // Interpreted delegates have no guest ABI function pointer. Native
     // delegate slots retain their callable Value out-of-band while their
     // ordinary `{context, function}` guest bytes remain ABI-shaped.
@@ -1372,14 +1372,10 @@ private struct Walker {
         if (catch_.var is null)
             return;
 
-        if (AggregateValue.hasClassFieldNamed(object, nativeExceptionObjectPointerField)) {
+        if (auto pointer = borrowedNativeClassPointer(object)) {
             const hydrated = nativeExceptionCatchObject(catch_, object);
-            const pointer = AggregateValue.classFieldNamed(
-                hydrated,
-                nativeExceptionObjectPointerField,
-            ).pointerAddress;
-            nativeExceptionMetadata[cast(void*) pointer] = hydrated;
-            bindingPlace(catch_.var).storeReference(cast(void*) pointer);
+            nativeExceptionMetadata[*pointer] = hydrated;
+            bindingPlace(catch_.var).storeReference(*pointer);
             mirrorEstablished[catch_.var] = true;
         } else {
             setLocal(catch_.var, object);
@@ -1466,18 +1462,11 @@ private struct Walker {
                 );
         }
 
-        if (AggregateValue.hasClassFieldNamed(
-            object,
-            nativeExceptionObjectPointerField,
-        )) {
+        if (auto pointer = borrowedNativeClassPointer(object)) {
             // Throwable.next exposes another native reference before its
             // interpreted cast runs, so every captured link needs the same
             // host-only metadata lookup as the outer catch binding.
-            const pointer = AggregateValue.classFieldNamed(
-                object,
-                nativeExceptionObjectPointerField,
-            ).pointerAddress;
-            nativeExceptionMetadata[cast(void*) pointer] = object;
+            nativeExceptionMetadata[*pointer] = object;
         }
 
         return object;
@@ -1488,37 +1477,28 @@ private struct Walker {
         in string className,
         in const(void)* nativeObjectPointer = null,
     ) {
+        Value object;
         if (auto class_ = dynamicClassDeclarationByName(className)) {
-            return withNativeExceptionObjectPointer(
-                AggregateValue.withClassFieldNamed(
-                    classDefaultValue(class_),
-                    "msg",
-                    Value(message),
-                ),
-                nativeObjectPointer,
+            object = AggregateValue.withClassFieldNamed(
+                classDefaultValue(class_),
+                "msg",
+                Value(message),
             );
+        } else if (auto class_ = classDeclarationByQualifiedName(className)) {
+            // Fully-qualified name (e.g. a native throw's `classinfo.name`)
+            // may not be lexically visible from the current call frame but
+            // still be known to the frontend. Reusing the declaration gives
+            // the real base-class chain.
+            object = AggregateValue.withClassFieldNamed(
+                classDefaultValue(class_),
+                "msg",
+                Value(message),
+            );
+        } else {
+            object = nativeExceptionValue(message, className);
         }
 
-        // Fully-qualified name (e.g. a native throw's `classinfo.name`) may
-        // not be lexically visible from the current call frame but still be
-        // known to the frontend, since druntime/Phobos modules the source
-        // imports are semantically analysed by dmd-as-a-library. Reusing
-        // classDefaultValue/classTypeNames here (rather than the string
-        // heuristic below) gives the real base-class chain: correct
-        // Error-vs-Exception classification and intermediate bases, instead
-        // of `nativeExceptionRoot`'s name-prefix guess.
-        if (auto class_ = classDeclarationByQualifiedName(className)) {
-            return withNativeExceptionObjectPointer(
-                AggregateValue.withClassFieldNamed(
-                    classDefaultValue(class_),
-                    "msg",
-                    Value(message),
-                ),
-                nativeObjectPointer,
-            );
-        }
-
-        return nativeExceptionValue(message, className, nativeObjectPointer);
+        return withBorrowedNativeClassPointer(object, nativeObjectPointer);
     }
 
     // Build a native exception object with the full Throwable field layout so
@@ -1529,7 +1509,6 @@ private struct Walker {
     private Value nativeExceptionValue(
         in string message,
         in string className,
-        in const(void)* nativeObjectPointer,
     ) const {
         import quickbite.backends.interpreter.runtime_values: defaultValue;
         import quickbite.backends.interpreter.layout: classFields;
@@ -1537,12 +1516,12 @@ private struct Walker {
 
         auto class_ = ClassDeclaration.exception;
         if (class_ is null)
-            return withNativeExceptionObjectPointer(Value.classValue(
+            return Value.classValue(
                 className,
                 nativeExceptionTypeNames(className),
                 ["msg"],
                 [Value(message)],
-            ), nativeObjectPointer);
+            );
 
         string[] fieldNames;
         Value[] fields;
@@ -1551,18 +1530,15 @@ private struct Walker {
             fields ~= defaultValue(field.type);
         }
 
-        return withNativeExceptionObjectPointer(
-            AggregateValue.withClassFieldNamed(
-                Value.classValue(
-                    className,
-                    nativeExceptionTypeNames(className),
-                    fieldNames,
-                    fields,
-                ),
-                "msg",
-                Value(message),
+        return AggregateValue.withClassFieldNamed(
+            Value.classValue(
+                className,
+                nativeExceptionTypeNames(className),
+                fieldNames,
+                fields,
             ),
-            nativeObjectPointer,
+            "msg",
+            Value(message),
         );
     }
 
@@ -1570,7 +1546,7 @@ private struct Walker {
         imported!"dmd.statement".Catch catch_,
         in Value object,
     ) {
-        if (!AggregateValue.hasClassFieldNamed(object, nativeExceptionObjectPointerField))
+        if (borrowedNativeClassPointer(object) is null)
             return object;
 
         auto classType = catch_.type.toBasetype.isTypeClass;
@@ -1586,16 +1562,11 @@ private struct Walker {
     ) {
         import quickbite.backends.interpreter.layout: classFields;
 
-        if (!AggregateValue.hasClassFieldNamed(object, nativeExceptionObjectPointerField))
+        auto nativePointer = borrowedNativeClassPointer(object);
+        if (nativePointer is null)
             return object;
 
-        const pointerValue = AggregateValue.classFieldNamed(
-            object,
-            nativeExceptionObjectPointerField,
-        );
-        const pointer = pointerValue.isNativeAggregate
-            ? AggregateValue.nativeClassBodyAddress(pointerValue)
-            : pointerValue.pointerAddress;
+        const pointer = *nativePointer;
         string[] fieldNames;
         Value[] fields;
         foreach (field; classFields(class_)) {
@@ -1607,12 +1578,13 @@ private struct Walker {
                 : nativeClassFieldValue(field, pointer);
         }
 
-        return withNativeExceptionObjectPointer(Value.classValue(
+        return Value.classValue(
             AggregateValue.classTypeName(object),
             AggregateValue.classTypeNames(object),
             fieldNames,
             fields,
-        ), pointer);
+            AggregateValue.classIdentity(object),
+        );
     }
 
     // Delete this once class/object storage is fully native-layout backed.
@@ -1638,25 +1610,29 @@ private struct Walker {
         );
     }
 
-    private Value withNativeExceptionObjectPointer(
+    private Value withBorrowedNativeClassPointer(
         in Value object,
         in const(void)* nativeObjectPointer,
-    ) const {
+    ) {
         if (nativeObjectPointer is null)
             return object;
 
-        if (AggregateValue.hasClassFieldNamed(object, nativeExceptionObjectPointerField))
-            return AggregateValue.withClassFieldNamed(
-                object,
-                nativeExceptionObjectPointerField,
-                Value.pointerValue(cast(void*) nativeObjectPointer),
-            );
+        const existingIdentity = AggregateValue.classIdentity(object);
+        const identity = existingIdentity == 0
+            ? ++nextClassObjectId
+            : existingIdentity;
+        const identified = existingIdentity == 0
+            ? object.withClassIdentity(identity)
+            : object;
+        borrowedNativeClassPointers[identity] = cast(void*) nativeObjectPointer;
+        return identified;
+    }
 
-        return AggregateValue.withAppendedClassField(
-            object,
-            nativeExceptionObjectPointerField,
-            Value.pointerValue(cast(void*) nativeObjectPointer),
-        );
+    private void** borrowedNativeClassPointer(in Value object) {
+        if (!AggregateValue.isClass(object) || object.isNativeAggregate)
+            return null;
+        const identity = AggregateValue.classIdentity(object);
+        return identity == 0 ? null : identity in borrowedNativeClassPointers;
     }
 
     private Value chainExceptionObject(in Value thrown, in Value next) const {
@@ -3211,6 +3187,7 @@ private struct Walker {
         child.nativeClassTypes = nativeClassTypes.dup;
         child.nativeClassOwners = nativeClassOwners.dup;
         child.nativeExceptionMetadata = nativeExceptionMetadata.dup;
+        child.borrowedNativeClassPointers = borrowedNativeClassPointers.dup;
         child.nativeDelegateSlots = nativeDelegateSlots.dup;
         child.lazyArgumentExpressions = lazyArgumentExpressions.dup;
         child.lazyArgumentLocals = lazyArgumentLocals.dup;
@@ -4646,14 +4623,8 @@ private struct Walker {
             return AggregateValue.nativeClassBodyAddress(value);
         if (value.isPointer)
             return value.pointerAddress;
-        if (AggregateValue.hasClassFieldNamed(
-            value,
-            nativeExceptionObjectPointerField,
-        ))
-            return AggregateValue.classFieldNamed(
-                value,
-                nativeExceptionObjectPointerField,
-            ).pointerAddress;
+        if (auto pointer = borrowedNativeClassPointer(value))
+            return *pointer;
         return cast(void*) AggregateValue.classIdentity(value);
     }
 
@@ -6424,6 +6395,7 @@ private struct Walker {
         nativeClassTypes = child.nativeClassTypes;
         nativeClassOwners = child.nativeClassOwners;
         nativeExceptionMetadata = child.nativeExceptionMetadata;
+        borrowedNativeClassPointers = child.borrowedNativeClassPointers;
         nativeDelegateSlots = child.nativeDelegateSlots;
         nativeFunctionPointerSlots = child.nativeFunctionPointerSlots;
         nativeTypeInfoSlots = child.nativeTypeInfoSlots;
@@ -6449,6 +6421,7 @@ private struct Walker {
         nativeClassTypes = child.nativeClassTypes;
         nativeClassOwners = child.nativeClassOwners;
         nativeExceptionMetadata = child.nativeExceptionMetadata;
+        borrowedNativeClassPointers = child.borrowedNativeClassPointers;
         nativeDelegateSlots = child.nativeDelegateSlots;
         nativeFunctionPointerSlots = child.nativeFunctionPointerSlots;
         nativeTypeInfoSlots = child.nativeTypeInfoSlots;
@@ -11795,6 +11768,7 @@ private struct Walker {
         nativeClassTypes = child.nativeClassTypes;
         nativeClassOwners = child.nativeClassOwners;
         nativeExceptionMetadata = child.nativeExceptionMetadata;
+        borrowedNativeClassPointers = child.borrowedNativeClassPointers;
     }
 
     // `new T(args)` where T's constructor is a body-less native leaf: construct
@@ -11907,6 +11881,7 @@ private struct Walker {
         nativeClassTypes = child.nativeClassTypes;
         nativeClassOwners = child.nativeClassOwners;
         nativeExceptionMetadata = child.nativeExceptionMetadata;
+        borrowedNativeClassPointers = child.borrowedNativeClassPointers;
         nativeDelegateSlots = child.nativeDelegateSlots;
         nativeFunctionPointerSlots = child.nativeFunctionPointerSlots;
         nativeTypeInfoSlots = child.nativeTypeInfoSlots;
@@ -12308,17 +12283,8 @@ private struct Walker {
     }
 
     private Value preservedNativeClassIdentity(in Value value) {
-        if (
-            AggregateValue.isClass(value) &&
-            AggregateValue.hasClassFieldNamed(
-                value,
-                nativeExceptionObjectPointerField,
-            )
-        )
-            return AggregateValue.classFieldNamed(
-                value,
-                nativeExceptionObjectPointerField,
-            );
+        if (auto pointer = borrowedNativeClassPointer(value))
+            return Value.pointerValue(*pointer);
 
         return value;
     }

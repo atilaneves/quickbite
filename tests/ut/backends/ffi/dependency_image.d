@@ -2768,6 +2768,104 @@ unittest {
     }
 }
 
+// A class field name is ordinary guest data and cannot change which object a
+// native function receives.
+@("dependencyImage.classFieldNameDoesNotChangeNativeIdentity." ~ backend.stringof)
+@Tags(backend.stringof)
+unittest {
+    import quickbite.frontend.compiler: parseSnippetWithCheckActionContext;
+    import std.path: buildPath;
+
+    const sandbox = immutable Sandbox();
+    with(sandbox) {
+        const importPath = "imports";
+        const depPath = buildPath(importPath,
+            "dep_image_class_field_identity_fixture_" ~ backend.stringof ~ ".d");
+        writeFile(depPath, q{
+            module dep_image_class_field_identity_fixture;
+
+            class Ordinary: Exception {
+                int __quickbiteNativeThrowableObjectPointer;
+                int payload;
+
+                this(int first, int second) {
+                    super("ordinary");
+                    __quickbiteNativeThrowableObjectPointer = first;
+                    payload = second;
+                }
+            }
+
+            void throwOrdinary() {
+                throw new Ordinary(17, 25);
+            }
+
+            int inspect(Ordinary value) {
+                return value.__quickbiteNativeThrowableObjectPointer + value.payload;
+            }
+        }.uniqueDepModule("dep_image_class_field_identity_fixture", backend.stringof));
+
+        const imagePath = buildSharedLibrary(
+            sandbox,
+            "dep_image_class_field_identity_fixture_" ~ backend.stringof,
+            [depPath],
+        );
+
+        writeFile(depPath, q{
+            module dep_image_class_field_identity_fixture;
+
+            class Ordinary: Exception {
+                int __quickbiteNativeThrowableObjectPointer;
+                int payload;
+
+                this(int first, int second);
+            }
+
+            void throwOrdinary();
+            int inspect(Ordinary value);
+        }.uniqueDepModule("dep_image_class_field_identity_fixture", backend.stringof));
+
+        auto moduleResult = parseSnippetWithCheckActionContext(
+            q{
+                import dep_image_class_field_identity_fixture;
+
+                unittest {
+                    try {
+                        throwOrdinary();
+                        assert(false);
+                    } catch (Ordinary value) {
+                        assert(value.__quickbiteNativeThrowableObjectPointer == 17);
+                        assert(value.payload == 25);
+                        Throwable base = value;
+                        assert((cast(Ordinary) base)
+                            .__quickbiteNativeThrowableObjectPointer == 17);
+                        auto recovered = cast(Ordinary) base;
+                        assert(recovered.__quickbiteNativeThrowableObjectPointer == 17);
+                        assert(recovered.payload == 25);
+                        assert(inspect(recovered) == 42);
+                    }
+                }
+            }.uniqueDepModule(
+                "dep_image_class_field_identity_fixture", backend.stringof),
+            [inSandboxPath(importPath)],
+        );
+
+        const oracle = (new SystemLinker(
+            [imagePath],
+            [inSandboxPath(importPath)],
+        )).runTests(moduleResult.module_);
+        oracle.length.should == 1;
+        oracle[0].passed.should == true;
+
+        const actual = runDependencyImage!backend(
+            [imagePath],
+            [inSandboxPath(importPath)],
+            moduleResult.module_,
+        );
+        actual.length.should == 1;
+        actual[0].passed.should == true;
+    }
+}
+
 // A scoped delegate is contractually consumed within this native call, so it
 // remains on the call-scoped reverse bridge (ffi.md §34.16).
 @("dependencyImage.externDScopedVoidDelegateCallback." ~ backend.stringof)
