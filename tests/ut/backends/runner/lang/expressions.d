@@ -11580,3 +11580,102 @@ static foreach (backend; Matrix!()) {
         });
     }
 }
+
+// A struct method call whose receiver is a side-effecting index expression
+// NESTED under another index (`m[i++][1].bump()`, `m[i++]` itself an
+// `IndexExp` composing a further `IndexExp`) evaluates `i++` twice and
+// mutates the wrong element, instead of once. `runCallExpression`'s
+// `DotVarExp` receiver arm composes the receiver address once via
+// `addressOfExpression(dot.e1, EXP.address)` (the fix behind
+// `struct.methodCallThroughIndexedReceiverEvaluatesIndexOnce` above), but
+// `arrayPointer`'s own nested-`IndexExp` arm (`index.e1.isIndexExp`)
+// unconditionally evaluates `index.e1` once for its own `arrayValue`/
+// length-var bookkeeping, then independently recurses into
+// `arrayPointer(index.e1, outerOffset, op)` to compose the element
+// address -- re-running any side effect nested inside `index.e1` a second
+// time. The single-level `arr[i++].method()` fix does not cover this
+// doubly-nested shape. Pre-existing gap, confirmed red on master too;
+// `ai/plans/value.md` item 4. SystemLinker is the oracle.
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.diverges,
+        "Ctfe runs the unittest body through DMD's own CTFE interpreter, " ~
+        "which cannot read the mutable module-scope variable `m`/`i` at " ~
+        "compile time"),
+    Omit!(Bytecode, Because.unconfirmed,
+        "\"Unsupported struct value in bytecode core: m[cast(ulong)i++][1]\" " ~
+        "-- independent, unconfirmed gap in the bytecode core"),
+    Omit!(Interpreter, Because.unconfirmed,
+        "`arrayPointer`'s nested-`IndexExp` arm re-evaluates the inner " ~
+        "index's side effect a second time when composing the rebind " ~
+        "address for a doubly-nested indexed receiver: `i++` runs twice " ~
+        "(i == 2 instead of 1) and `m[1][1]` gets bumped instead of " ~
+        "`m[0][1]`"),
+)) {
+    @("struct.methodCallThroughDoublyNestedIndexedReceiverEvaluatesIndexOnce." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct P {
+                int x;
+                void bump() { x++; }
+            }
+            P[2][3] m;
+            int i;
+            unittest {
+                m[i++][1].bump();
+                assert(i == 1);
+                assert(m[0][1].x == 1);
+                assert(m[1][1].x == 0);
+            }
+        });
+    }
+}
+
+// `&s.inner.a[i]` -- an address-of through a NESTED `DotVarExp` receiver
+// (`s.inner` is itself a struct, `.a` is that inner struct's static-array
+// field) with a runtime index -- loses the write. `arrayPointer`'s
+// `IndexExp` arm's `DotVarExp` receiver branch guards on
+// `field.e1.isVarExp !is null` (i.e. only a direct `s.a[i]` shape, one
+// level of field access, per `pointer.addressOfFinalNonZeroIndexOfDotVarDynamicArrayRow`
+// above); a doubly-nested receiver like `s.inner.a[i]` (`field.e1` is
+// itself a `DotVarExp`, not a `VarExp`) falls through to a native-
+// aggregate fallback that composes the address from a detached copy of
+// `runExpression`'s result rather than the real backing storage inside
+// `s`. Pre-existing gap, confirmed red on master too; `ai/plans/value.md`
+// item 4. SystemLinker is the oracle.
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.diverges,
+        "Ctfe runs the unittest body through DMD's own CTFE interpreter, " ~
+        "which cannot read the mutable module-scope variable `s` at " ~
+        "compile time"),
+    Omit!(Bytecode, Because.unconfirmed,
+        "no support yet for address-of through a doubly-nested `DotVarExp` " ~
+        "receiver in the bytecode core; reads back 0 instead of 9"),
+    Omit!(Interpreter, Because.unconfirmed,
+        "`arrayPointer`'s `DotVarExp` receiver arm only recognizes a " ~
+        "single level of field access (`field.e1.isVarExp`); a doubly-" ~
+        "nested receiver (`s.inner.a[i]`) falls through to a detached-" ~
+        "copy fallback and the write is lost (reads back 0 instead of 9)"),
+    Omit!(LLVMJit, Because.unconfirmed,
+        "independent, unconfirmed gap: address-of through a doubly-nested " ~
+        "`DotVarExp` receiver reads back 0 instead of 9 in the JIT backend " ~
+        "too"),
+)) {
+    @("pointer.addressOfDoublyNestedDotVarStaticArrayElement." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct Inner { int[4] a; }
+            struct Outer { Inner inner; }
+            Outer s;
+            int i = 2;
+            unittest {
+                auto p = &s.inner.a[i];
+                *p = 9;
+                assert(s.inner.a[2] == 9);
+            }
+        });
+    }
+}

@@ -697,6 +697,32 @@ static archive at all (see the fixtures' `Omit` notes for the confirmed
 specifics) — a new native symbol-resolution source belongs to `ffi.md`, not
 this track.
 
+A struct method call through a side-effecting index receiver that is itself
+nested under another index (`m[i++][1].bump()`) evaluates `i++` twice and
+mutates the wrong element. `runCallExpression`'s `DotVarExp` arm composes the
+receiver address once via `addressOfExpression(dot.e1, EXP.address)` (the
+fix behind `struct.methodCallThroughIndexedReceiverEvaluatesIndexOnce`), but
+`arrayPointer`'s own nested-`IndexExp` arm (`index.e1.isIndexExp`) evaluates
+`index.e1` once for its `arrayValue`/length-var bookkeeping and then
+independently recurses into `arrayPointer(index.e1, outerOffset, op)` to
+compose the element address, re-running any side effect inside `index.e1` a
+second time. The single-level `arr[i++].method()` fix does not cover this
+doubly-nested shape (fixture:
+`struct.methodCallThroughDoublyNestedIndexedReceiverEvaluatesIndexOnce`).
+
+`arrayPointer`'s `IndexExp` arm's `DotVarExp` receiver branch only recognizes
+a single level of field access (`field.e1.isVarExp !is null`, i.e.
+`s.a[i]`); a doubly-nested receiver like `s.inner.a[i]` (`field.e1` is
+itself a `DotVarExp`) falls through to the generic `arrayValue` fallback,
+which composes the address from `runExpression(index.e1)`'s detached copy
+of the static array rather than `s`'s real backing storage, so the write is
+lost (fixture: `pointer.addressOfDoublyNestedDotVarStaticArrayElement`).
+Separately, `&s.a.ptr` on a zero-length dynamic-array field throws
+`"Place.index: index out of range for slice place"` instead of yielding
+`null`, via the same `pointerCastValue`/`arrayPointer(cast_.e1, 0, op)`
+fallback reaching `.field().index(0)` on an empty slice; confirmed on both
+master and this branch, not yet an oracle-backed fixture.
+
 ### Item 5 — Delete Interpreter FFI marshalling fallbacks
 
 Finish decision 18 after the language-surface critical path. Normal outbound
