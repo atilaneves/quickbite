@@ -78,10 +78,9 @@ static foreach (backend; Matrix!(
     }
 }
 
-// A struct method under an archive import path: `SystemLinker`/`LLVMJit`
-// link and call the archive's real method normally, proven (as above) by
-// poisoning the on-disk source after the archive is built. `Bytecode`'s own
-// safety-net test below covers why it is omitted here.
+// A struct method under an archive import path: `SystemLinker`/`LLVMJit`/
+// `Bytecode` link and call the archive's real method normally, proven (as
+// above) by poisoning the on-disk source after the archive is built.
 static foreach (backend; Matrix!(
     Omit!(Ctfe, Because.inexpressible, "archive linking is a runtime linking mechanism; Ctfe wraps dmd.dinterpret and cannot express it"),
     Omit!(Interpreter, Because.unconfirmed,
@@ -289,8 +288,7 @@ unittest {
 }
 
 // A delegate of an archive-backed struct method (`&s.add`): `SystemLinker`/
-// `LLVMJit` call through it normally. `Bytecode`'s own safety-net test below
-// covers why it is omitted here.
+// `LLVMJit`/`Bytecode` call through it normally.
 static foreach (backend; Matrix!(
     Omit!(Ctfe, Because.inexpressible, "archive linking is a runtime linking mechanism; Ctfe wraps dmd.dinterpret and cannot express it"),
     Omit!(Interpreter, Because.unconfirmed,
@@ -361,67 +359,9 @@ static foreach (backend; Matrix!(
     }
 }
 
-// `Bytecode`-specific archive bridge check. Taking a delegate of an
-// archive-backed struct method reaches `registerFunction`/`compileFunctionBody`
-// directly rather than `compileCall`; the rewritten source returns zero, so a
-// passing run proves the indirect call reached the archive body.
-@("runTests.archiveBackedDelegate.Bytecode")
-@Tags(Bytecode.stringof)
-unittest {
-    import quickbite.frontend.compiler: parseSnippetWithCheckActionContext;
-    import std.conv: text;
-    import std.path: buildPath;
-    import std.process: execute;
-
-    with(immutable Sandbox()) {
-        const importPath = "imports";
-        enum depModule = "dep_archive_delegate_method";
-        const depPath = buildPath(importPath, depModule ~ ".d");
-        writeFile(depPath, text(
-            "module ", depModule, ";\n",
-            "struct S { int base; int add(int x) { return base + x; } }\n",
-        ));
-        const archivePath = inSandboxPath("lib" ~ depModule ~ ".a");
-        const build = execute([
-            "dmd",
-            "-lib",
-            "-fPIC",
-            "-of=" ~ archivePath,
-            inSandboxPath(depPath),
-        ]);
-        build.status.should == 0;
-
-        writeFile(depPath, text(
-            "module ", depModule, ";\n",
-            "struct S { int base; int add(int x) { return 0; } }\n",
-        ));
-
-        auto moduleResult = parseSnippetWithCheckActionContext(
-            text(
-                "import ", depModule, ";\n",
-                "unittest {\n",
-                "    S s;\n",
-                "    s.base = 40;\n",
-                "    auto dg = &s.add;\n",
-                "    assert(dg(2) == 42);\n",
-                "}\n",
-            ),
-            [inSandboxPath(importPath)],
-        );
-        auto runner = new Bytecode(
-            [archivePath],
-            [inSandboxPath(importPath)],
-        );
-        const results = runner.runTests(moduleResult.module_);
-
-        results.length.should == 1;
-        results[0].passed.should == true;
-    }
-}
-
 // A function pointer to an archive-backed free function (`&theAnswer`, no
-// receiver at all): `SystemLinker`/`LLVMJit` call through it normally.
-// `Bytecode`'s own safety-net test below covers why it is omitted here.
+// receiver at all): `SystemLinker`/`LLVMJit`/`Bytecode` call through it
+// normally.
 static foreach (backend; Matrix!(
     Omit!(Ctfe, Because.inexpressible, "archive linking is a runtime linking mechanism; Ctfe wraps dmd.dinterpret and cannot express it"),
     Omit!(Interpreter, Because.unconfirmed,
@@ -487,60 +427,5 @@ static foreach (backend; Matrix!(
             results.length.should == 1;
             results[0].passed.should == true;
         }
-    }
-}
-
-// `Bytecode`-specific safety net: a function pointer to an archive-backed
-// free function reaches its native forwarding wrapper by address, whereas a
-// direct call uses `compileCall`'s native-leaf path.
-@("runTests.archiveBackedFunctionPointerBytecodeSafetyNet")
-@Tags(Bytecode.stringof)
-unittest {
-    import quickbite.frontend.compiler: parseSnippetWithCheckActionContext;
-    import std.conv: text;
-    import std.path: buildPath;
-    import std.process: execute;
-
-    with(immutable Sandbox()) {
-        const importPath = "imports";
-        enum depModule = "dep_archive_function_pointer";
-        const depPath = buildPath(importPath, depModule ~ ".d");
-        writeFile(depPath, text(
-            "module ", depModule, ";\n",
-            "int theAnswer() { return 42; }\n",
-        ));
-        const archivePath = inSandboxPath("lib" ~ depModule ~ ".a");
-        const build = execute([
-            "dmd",
-            "-lib",
-            "-fPIC",
-            "-of=" ~ archivePath,
-            inSandboxPath(depPath),
-        ]);
-        build.status.should == 0;
-
-        writeFile(depPath, text(
-            "module ", depModule, ";\n",
-            "int theAnswer() { return 0; }\n",
-        ));
-
-        auto moduleResult = parseSnippetWithCheckActionContext(
-            text(
-                "import ", depModule, ";\n",
-                "unittest {\n",
-                "    auto fp = &theAnswer;\n",
-                "    assert(fp() == 42);\n",
-                "}\n",
-            ),
-            [inSandboxPath(importPath)],
-        );
-        auto runner = new Bytecode(
-            [archivePath],
-            [inSandboxPath(importPath)],
-        );
-        const results = runner.runTests(moduleResult.module_);
-
-        results.length.should == 1;
-        results[0].passed.should == true;
     }
 }
