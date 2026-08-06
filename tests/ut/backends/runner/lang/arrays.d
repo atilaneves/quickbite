@@ -2351,6 +2351,29 @@ static foreach (backend; Matrix!(
     }
 }
 
+// A class reference loaded from a dynamic-array element remains a class
+// receiver, rather than an untyped scalar word: `values[0].greet()` must
+// dispatch through the same object created before the append.
+static foreach (backend; Matrix!()) {
+    @("dynamicArray.classElementMethodCall." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            class English {
+                string greet() {
+                    return "hello";
+                }
+            }
+
+            unittest {
+                English[] values;
+                values ~= new English;
+                assert(values[0].greet == "hello");
+            }
+        });
+    }
+}
+
 // A row-range assignment (`arr[lo .. hi] = otherRows[];`) into a `T[N][]`
 // destination, where the rhs is itself a range of rows rather than a single
 // broadcast row (the sibling test above): each destination row already has
@@ -5324,9 +5347,7 @@ static foreach (backend; Matrix!(
 
 // A `ref` parameter forwarded to `mulu` must preserve the caller's native
 // bool address through the imported/template-instantiated native call.
-// Bytecode native-ref plumbing remains on the bytecode-track backlog.
 static foreach (backend; Matrix!(
-    Omit!(Bytecode, Because.unconfirmed),
     Omit!(Ctfe, Because.inexpressible,
         "core.checkedint.mulu has inline assembly that CTFE cannot execute"),
 )) {
@@ -5344,6 +5365,28 @@ static foreach (backend; Matrix!(
                 bool overflow;
                 assert(multiply(overflow, size_t.max, 2) == size_t.max - 1);
                 assert(overflow);
+            }
+        });
+    }
+}
+
+// DRuntime's 64-bit `atomicFetchAdd` takes the locked `xadd` inline-asm path
+// on x86_64. Its return is the value before the update, not the new value.
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.inexpressible,
+        "core.internal.atomic.atomicFetchAdd has inline assembly that CTFE " ~
+        "cannot execute"),
+)) {
+    @("atomic.fetchAddUlongReturnsPreviousValue." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            import core.internal.atomic : atomicFetchAdd;
+
+            unittest {
+                ulong value = 41;
+                assert(atomicFetchAdd(&value, 1UL) == 41);
+                assert(value == 42);
             }
         });
     }
@@ -7194,22 +7237,11 @@ static foreach (backend; Matrix!(
 // static array (`s[0 .. 2]` where `s` is `int[3][3]`), not another genuine
 // `T[N][]` array (the
 // `rowRangeAssignmentIntoStaticArrayRowsCopiesEachRowIndependently` sibling
-// test above): `s`'s rows are contiguous inline bytes in a throwaway heap
-// copy (`dynamicArrayDescriptorOrNull`'s static-array-view branch), not
-// the separately heap-allocated row *pointers* `Op.rowRangeCopy` assumes.
-// `Bytecode` is omitted rather than characterized as diverging: it declines
-// this shape at compile time (proven separately below) rather than
-// reading a row's own inline bytes as if they were a heap pointer and
-// dereferencing them, a crash before this fix.
+// test above): `s`'s rows are contiguous inline bytes in a static-array
+// view, while the destination rows remain separately heap-allocated.
 static foreach (backend; Matrix!(
     Omit!(Ctfe, Because.unconfirmed),
     Omit!(Interpreter, Because.unconfirmed),
-    Omit!(Bytecode, Because.inexpressible,
-        "the rhs range's rows are contiguous inline bytes (a static-array " ~
-        "view), not the separately heap-allocated row pointers " ~
-        "`Op.rowRangeCopy` assumes; declines with \"Unsupported " ~
-        "slice-assignment source in bytecode core: s[0..2]\" rather than " ~
-        "reading row bytes as a pointer and dereferencing them"),
     Omit!(LLVMJit, Because.unconfirmed),
 )) {
     @("dynamicArray.rowRangeAssignmentFromStaticArrayViewSource." ~
@@ -7235,25 +7267,6 @@ static foreach (backend; Matrix!(
     }
 }
 
-// `Bytecode`'s own clean-decline counterpart of the sibling test above:
-// proves the row-range assignment fails at *compile* time with a
-// diagnostic (this fix) rather than crashing.
-@("dynamicArray.rowRangeAssignmentFromStaticArrayViewSourceDeclinesOnBytecode")
-@Tags("Bytecode")
-unittest {
-    runBackendSourceFixtureTests!Bytecode(q{
-        unittest {
-            int[3][] values = new int[3][](3);
-            int[3][3] s;
-            s[0][0] = 7;
-            s[1][2] = 9;
-            values[0 .. 2] = s[0 .. 2];
-        }
-    }).shouldThrowWithMessage(
-        "Unsupported slice-assignment source in bytecode core: s[0..2]",
-    );
-}
-
 // The broadcast-fill counterpart of the row-range test above: a broadcast
 // fill (`arr[lo .. hi] = row;`) into a `T[N][]` destination (the same shape
 // as `broadcastFillIntoStaticArrayRowsWritesEachRowIndependently` above),
@@ -7262,20 +7275,9 @@ unittest {
 // type (`int[3]`) matches the destination's row type, but the compiled
 // read is a 16-byte row *descriptor* (a pointer into `src[0]`'s own
 // separately heap-allocated block), not the row's inline bytes.
-// `Bytecode` is omitted rather than characterized as diverging: it declines
-// this shape at compile time (proven separately below) rather than
-// broadcasting the descriptor's pointer word (plus neighbouring bytes)
-// into every destination row as if it were row data, a silent wrong
-// result before this fix.
 static foreach (backend; Matrix!(
     Omit!(Ctfe, Because.unconfirmed),
     Omit!(Interpreter, Because.unconfirmed),
-    Omit!(Bytecode, Because.inexpressible,
-        "the rhs row is read out of another genuine `T[N][]` array, so " ~
-        "the compiled read is a 16-byte row descriptor rather than the " ~
-        "row's own inline bytes; declines with \"Unsupported " ~
-        "slice-assignment source in bytecode core: src[0]\" rather than " ~
-        "broadcasting the descriptor's bytes as if they were row data"),
     Omit!(LLVMJit, Because.unconfirmed),
 )) {
     @("dynamicArray.broadcastFillFromDynamicArrayRowElementCopiesIndependently." ~
@@ -7307,22 +7309,4 @@ static foreach (backend; Matrix!(
             }
         });
     }
-}
-
-// `Bytecode`'s own clean-decline counterpart of the sibling test above:
-// proves the broadcast fill fails at *compile* time with a diagnostic
-// (this fix) rather than silently filling every row with garbage.
-@("dynamicArray.broadcastFillFromDynamicArrayRowElementDeclinesOnBytecode")
-@Tags("Bytecode")
-unittest {
-    runBackendSourceFixtureTests!Bytecode(q{
-        unittest {
-            int[3][] values = new int[3][](3);
-            int[3][] src = new int[3][](1);
-            src[0][0] = 7; src[0][1] = 8; src[0][2] = 9;
-            values[0 .. 2] = src[0];
-        }
-    }).shouldThrowWithMessage(
-        "Unsupported slice-assignment source in bytecode core: src[0]",
-    );
 }

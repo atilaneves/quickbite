@@ -330,6 +330,16 @@ package(quickbite.backends.bytecode) RunResult run(
                 ++ip;
                 break;
 
+            case rowRangeCopyInline:
+                copyInlineRowRange(
+                    stack,
+                    base + instruction.a,
+                    base + instruction.b,
+                    instruction.c,
+                );
+                ++ip;
+                break;
+
             case sliceFill1:
                 fillSlice1(stack, base + instruction.a, base + instruction.b);
                 ++ip;
@@ -450,6 +460,21 @@ package(quickbite.backends.bytecode) RunResult run(
                 ++ip;
                 break;
 
+            case atomicLoad4:
+                const atomicLoadAddress =
+                    scalarValue!size_t(stack, base + instruction.b) +
+                    scalarValue!size_t(stack, base + instruction.c) *
+                        uint.sizeof;
+                const ubyte[uint.sizeof] atomicLoadValue = scalarBytes(
+                    atomicLoadDword(cast(const(ubyte)*) atomicLoadAddress),
+                );
+                stack[
+                    base + instruction.a
+                    .. base + instruction.a + uint.sizeof
+                ] = atomicLoadValue;
+                ++ip;
+                break;
+
             case atomicLoad8:
                 const atomicLoadAddress =
                     scalarValue!size_t(stack, base + instruction.b) +
@@ -462,6 +487,66 @@ package(quickbite.backends.bytecode) RunResult run(
                     base + instruction.a
                     .. base + instruction.a + ulong.sizeof
                 ] = atomicLoadValue;
+                ++ip;
+                break;
+
+            case atomicExchange4:
+                const atomicExchangeAddress = scalarValue!size_t(
+                    stack, base + instruction.b,
+                );
+                const atomicExchangeValue = scalarValue!uint(
+                    stack, base + instruction.c,
+                );
+                const ubyte[uint.sizeof] atomicExchangeResult = scalarBytes(
+                    atomicExchangeDword(
+                        cast(ubyte*) atomicExchangeAddress,
+                        atomicExchangeValue,
+                    ),
+                );
+                stack[
+                    base + instruction.a
+                    .. base + instruction.a + uint.sizeof
+                ] = atomicExchangeResult;
+                ++ip;
+                break;
+
+            case atomicFetchAdd4:
+                const atomicFetchAddAddress = scalarValue!size_t(
+                    stack, base + instruction.b,
+                );
+                const atomicFetchAddValue = scalarValue!uint(
+                    stack, base + instruction.c,
+                );
+                const ubyte[uint.sizeof] atomicFetchAddResult = scalarBytes(
+                    atomicFetchAddDword(
+                        cast(ubyte*) atomicFetchAddAddress,
+                        atomicFetchAddValue,
+                    ),
+                );
+                stack[
+                    base + instruction.a
+                    .. base + instruction.a + uint.sizeof
+                ] = atomicFetchAddResult;
+                ++ip;
+                break;
+
+            case atomicFetchAdd8:
+                const atomicFetchAddAddress = scalarValue!size_t(
+                    stack, base + instruction.b,
+                );
+                const atomicFetchAddValue = scalarValue!ulong(
+                    stack, base + instruction.c,
+                );
+                const ubyte[ulong.sizeof] atomicFetchAddResult = scalarBytes(
+                    atomicFetchAddWord(
+                        cast(ubyte*) atomicFetchAddAddress,
+                        atomicFetchAddValue,
+                    ),
+                );
+                stack[
+                    base + instruction.a
+                    .. base + instruction.a + ulong.sizeof
+                ] = atomicFetchAddResult;
                 ++ip;
                 break;
 
@@ -591,8 +676,9 @@ package(quickbite.backends.bytecode) RunResult run(
                 writeFrameAddress(
                     stack,
                     base + instruction.a,
-                    base +
-                        refParameterIdentitySlot(frames[$ - 1], instruction.b),
+                    base + refParameterIdentitySlot(
+                        frames[$ - 1], instruction.b,
+                    ),
                 );
                 ++ip;
                 break;
@@ -1667,8 +1753,10 @@ package(quickbite.backends.bytecode) RunResult run(
                 RefWriteback[] refWritebacks;
                 foreach (refParameter; callee.refParameters) {
                     const valueSize = refParameter.valueSize;
-                    const callerOffset = base + scalarValue!uint(
-                        stack, calleeBase + refParameter.offset,
+                    const callerOffset = cast(size_t) (
+                        cast(ptrdiff_t) base + scalarValue!int(
+                            stack, calleeBase + refParameter.offset,
+                        )
                     );
                     refWritebacks ~= RefWriteback(
                         callerOffset, refParameter.offset, valueSize,
@@ -1696,7 +1784,8 @@ package(quickbite.backends.bytecode) RunResult run(
             case nativeCall:
                 import quickbite.frontend.dmd.functions:
                     noAvailableSourceMessage;
-                import quickbite.ffi: callNative, callNativeClassMember;
+                import quickbite.ffi:
+                    callNative, callNativeClassMember, callNativeMember;
 
                 auto native = program.nativeCalls[instruction.a];
                 auto marshaller = new BytecodeNativeMarshaller(
@@ -1706,22 +1795,29 @@ package(quickbite.backends.bytecode) RunResult run(
                     base,
                     native.outParameterOffsets,
                     native.nativeClassReceiverOffset,
+                    native.nativeStructReceiverOffset,
                 );
                 bool[] addressOfLocalArguments;
                 addressOfLocalArguments.length = native.outParameterOffsets.length;
                 foreach (index, offset; native.outParameterOffsets)
                     addressOfLocalArguments[index] =
                         offset != noOutParameterOffset;
-                const called = native.nativeClassReceiverType is null
-                    ? callNative(
-                        native.function_, marshaller, native.argumentTypes,
+                const called = native.nativeStructReceiverType !is null
+                    ? callNativeMember(
+                        native.function_, native.nativeStructReceiverType,
+                        marshaller, native.argumentTypes,
                         addressOfLocalArguments,
                     )
-                    : callNativeClassMember(
+                    : native.nativeClassReceiverType is null
+                        ? callNative(
+                            native.function_, marshaller, native.argumentTypes,
+                            addressOfLocalArguments,
+                        )
+                        : callNativeClassMember(
                         native.function_, native.nativeClassReceiverType,
                         marshaller, native.argumentTypes,
                         addressOfLocalArguments,
-                    );
+                        );
                 if (!called)
                     throw new Exception(noAvailableSourceMessage(
                         native.function_,
@@ -2852,6 +2948,44 @@ private void copyRowRange(
     }
 }
 
+// Copy contiguous inline source rows into each separately allocated `T[N][]`
+// destination row. A multidimensional static-array view supplies a normal
+// slice descriptor over its inline backing bytes, unlike `T[N][]` whose
+// source elements are row descriptors consumed by `copyRowRange`.
+// Trusted because compiler-validated descriptors and row width bound every
+// native slice formed below.
+private void copyInlineRowRange(
+    ref ubyte[] stack,
+    in size_t destinationOffset,
+    in size_t sourceOffset,
+    in uint rowByteSize,
+) @trusted {
+    import std.conv: text;
+    import quickbite.backends.bytecode.core.program: sliceDescriptorSize;
+
+    const destinationPointer = scalarValue!size_t(stack, destinationOffset);
+    const destinationLength =
+        scalarValue!size_t(stack, destinationOffset + size_t.sizeof);
+    const sourcePointer = scalarValue!size_t(stack, sourceOffset);
+    const sourceLength =
+        scalarValue!size_t(stack, sourceOffset + size_t.sizeof);
+
+    if (destinationLength != sourceLength)
+        throw new Exception(text(
+            "Array lengths don't match for copy: ",
+            sourceLength, " != ", destinationLength,
+        ));
+
+    foreach (i; 0 .. destinationLength) {
+        const destRowPointer = *cast(const(size_t)*)
+            (destinationPointer + i * sliceDescriptorSize);
+        auto destRow = (cast(ubyte*) destRowPointer)[0 .. rowByteSize];
+        const sourceRow = (cast(const(ubyte)*)
+            (sourcePointer + i * rowByteSize))[0 .. rowByteSize];
+        destRow[] = sourceRow[];
+    }
+}
+
 // The compiler supplies a valid native slice descriptor and a 1-byte scalar
 // slot; the trusted boundary only forms the corresponding typed host slice.
 private void fillSlice1(
@@ -2994,11 +3128,44 @@ private void readHeapElement(ubyte[] destination, in ubyte* element)
 
 // @trusted: `atomicLoad` reads exactly one aligned machine word from the raw
 // address produced by VM pointer operations; the recognised inline-asm source
-// has already restricted this use to an 8-byte atomic load.
+// has already restricted this use to a 4- or 8-byte atomic load.
+private uint atomicLoadDword(in const(ubyte)* address) @trusted {
+    import core.atomic: atomicLoad;
+
+    return atomicLoad(*cast(shared(uint)*) address);
+}
+
 private ulong atomicLoadWord(in const(ubyte)* address) @trusted {
     import core.atomic: atomicLoad;
 
     return cast(ulong) atomicLoad(*cast(shared(ulong)*) address);
+}
+
+// @trusted: `atomicExchange` reads and writes exactly one aligned 4-byte word
+// through the raw address produced by the validated DRuntime inline-asm
+// lowering.
+private uint atomicExchangeDword(ubyte* address, in uint value) @trusted {
+    import core.atomic: atomicExchange;
+
+    return atomicExchange(cast(shared(uint)*) address, value);
+}
+
+// @trusted: `atomicFetchAdd` reads and writes exactly one aligned 4-byte word
+// through the raw address produced by the validated DRuntime inline-asm
+// lowering.
+private uint atomicFetchAddDword(ubyte* address, in uint value) @trusted {
+    import core.atomic: atomicFetchAdd;
+
+    return atomicFetchAdd(*cast(shared(uint)*) address, value);
+}
+
+// @trusted: `atomicFetchAdd` reads and writes exactly one aligned 8-byte word
+// through the raw address produced by the validated DRuntime inline-asm
+// lowering.
+private ulong atomicFetchAddWord(ubyte* address, in ulong value) @trusted {
+    import core.atomic: atomicFetchAdd;
+
+    return atomicFetchAdd(*cast(shared(ulong)*) address, value);
 }
 
 private void writeHeapElement(ubyte* element, in ubyte[] source) @trusted {
@@ -3041,12 +3208,12 @@ private struct RefWriteback {
 }
 
 // The callee-frame-relative slot that stands for a scalar `ref` parameter's
-// identity: its own slot, unless it is grouped with other parameters
-// aliasing the same caller storage (`frame.refAliases`), in which case every
-// member of the group must report the group's first slot so `&first ==
-// &second` holds. Reads and writes still go through each parameter's own
-// slot; `synchronizeRefAliases` keeps the group's slots byte-identical
-// between instructions, so redirecting only the address is safe.
+// identity: its own slot, unless it is grouped with other parameters aliasing
+// the same caller storage (`frame.refAliases`), in which case every member of
+// the group must report the group's first slot so `&first == &second` holds.
+// Reads and writes still go through each parameter's own slot;
+// `synchronizeRefAliases` keeps the group's slots byte-identical between
+// instructions, so redirecting only the address is safe.
 private ushort refParameterIdentitySlot(
     in Frame frame,
     in ushort calleeOffset,
@@ -3595,7 +3762,8 @@ private bool descriptorContentEqual(
 }
 
 private final class BytecodeNativeMarshaller:
-    imported!"quickbite.ffi".NativeMarshaller
+    imported!"quickbite.ffi".NativeMarshaller,
+    imported!"quickbite.ffi".NativeReceiverAddressMarshaller
 {
     import dmd.mtype: Type;
     import quickbite.ffi: NativeMarshaller;
@@ -3606,6 +3774,7 @@ private final class BytecodeNativeMarshaller:
     private size_t _base;
     private const(ushort)[] _outParameterOffsets;
     private ushort _nativeClassReceiverOffset;
+    private ushort _nativeStructReceiverOffset;
 
     public this(
         ubyte[] stack,
@@ -3614,6 +3783,7 @@ private final class BytecodeNativeMarshaller:
         in size_t base,
         in ushort[] outParameterOffsets,
         in ushort nativeClassReceiverOffset,
+        in ushort nativeStructReceiverOffset,
     ) {
         _stack = stack;
         _argument = argument;
@@ -3621,6 +3791,7 @@ private final class BytecodeNativeMarshaller:
         _base = base;
         _outParameterOffsets = outParameterOffsets;
         _nativeClassReceiverOffset = nativeClassReceiverOffset;
+        _nativeStructReceiverOffset = nativeStructReceiverOffset;
     }
 
     public bool canRepresent(Type type, in NativeMarshaller.Direction direction) {
@@ -3628,11 +3799,8 @@ private final class BytecodeNativeMarshaller:
         const ty = type.toBasetype.ty;
         if (ty == TY.Tvoid)
             return direction == NativeMarshaller.Direction.fromNative;
-        // A by-value struct only crosses back out of a native call (the
-        // return value); the compiler emits no struct-by-value argument
-        // shape today.
         if (ty == TY.Tstruct)
-            return direction == NativeMarshaller.Direction.fromNative;
+            return true;
         return ty == TY.Tbool || ty == TY.Tint32 || ty == TY.Tuns32 ||
             ty == TY.Tint64 || ty == TY.Tuns64 || ty == TY.Tfloat64 ||
             ty == TY.Tpointer || ty == TY.Tclass || ty == TY.Tarray;
@@ -3833,6 +4001,14 @@ private final class BytecodeNativeMarshaller:
         return cast(const(void)*) scalarValue!size_t(
             _stack, _base + _nativeClassReceiverOffset,
         );
+    }
+
+    public void* receiverAddress(Type type) @trusted {
+        import quickbite.backends.bytecode.core.program: noOutParameterOffset;
+
+        return _nativeStructReceiverOffset == noOutParameterOffset
+            ? null
+            : &_stack[_base + _nativeStructReceiverOffset];
     }
 
     public void invokeClosure(in size_t argumentIndex, Type returnType,

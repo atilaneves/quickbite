@@ -16,19 +16,9 @@ private void runSse2BackendSourceFixtureTests(T)(in string moduleSource) {
 }
 
 
-// A `ref int[int]` local argument: the ref calling convention (see "Ref
-// calling convention" below) mirrors the argument into a fresh frame slot
-// and writes it back after the callee returns rather than binding the
-// callee to the caller's real storage. Bytecode's writeback does not
-// propagate the callee's AA mutation back to the caller's variable, so the
-// post-call `values[7]` lookup throws "Range violation" instead of seeing
-// key 7. Interpreter declines the same shape outright with "Expected
-// associative array." -- a separate, unconfirmed gap.
+// Interpreter declines this shape with "Expected associative array." -- a
+// separate, unconfirmed gap.
 static foreach (backend; Matrix!(
-    Omit!(Bytecode, Because.unconfirmed,
-        "ref calling convention mirror/writeback does not propagate an AA " ~
-        "mutation made through a `ref int[int]` local argument back to the " ~
-        "caller; post-call lookup throws \"Range violation\""),
     Omit!(Interpreter, Because.unconfirmed, "Expected associative array."),
 )) {
     @("associativeArray.directLocalRefArgumentMutatesSource." ~ backend.stringof)
@@ -2914,11 +2904,6 @@ static foreach (backend; Matrix!(
     Omit!(Interpreter, Because.unconfirmed,
         "the Interpreter does not yet promote a frame-escaping " ~
             "captured local to a heap closure either -- not yet promoted"),
-    Omit!(Bytecode, Because.refusal,
-        "a class-field write is not the escaping function's last act, so " ~
-            "`heapEscapingDelegateOperandOffset` cannot heap-box it the " ~
-            "way a `return` site can without risking a stale snapshot -- " ~
-            "see `delegate.classFieldEscapingCaptureDeclines` below"),
 )) {
     @("delegate.classFieldMutatedAfterCapturingWriteIsCallable." ~
         backend.stringof)
@@ -2943,33 +2928,6 @@ static foreach (backend; Matrix!(
     }
 }
 
-// Bytecode-only: `capturedLocalsMayBeMutatedInCurrentFunction`
-// (`compiler.d`) declines rather than silently freeze a stale snapshot for
-// the fixture above. The diagnostic itself is a Bytecode-specific mechanism,
-// not a language restriction other backends share.
-static foreach (backend; AliasSeq!(Bytecode)) {
-    @("delegate.classFieldEscapingCaptureDeclines." ~ backend.stringof)
-    @Tags(backend.stringof)
-    unittest {
-        runBackendSourceFixtureTests!backend(q{
-            class Counter { int delegate() next; }
-
-            Counter makeCounter() {
-                int total = 40;
-                auto c = new Counter();
-                c.next = () => total + 2;
-                total = 100;
-                return c;
-            }
-
-            unittest {
-                auto c = makeCounter();
-                assert(c.next() == 102);
-            }
-        }).shouldThrow();
-    }
-}
-
 // The array-element twin of the class-field fixture above:
 // `tryDynamicArrayElementAssign`'s `Tdelegate` branch shares the same
 // `heapEscapingDelegateOperandOffset` gate, so the same further-mutation
@@ -2982,11 +2940,6 @@ static foreach (backend; Matrix!(
     Omit!(Interpreter, Because.unconfirmed,
         "the Interpreter does not yet promote a frame-escaping " ~
             "captured local to a heap closure either -- not yet promoted"),
-    Omit!(Bytecode, Because.refusal,
-        "an array-element write is not the escaping function's last act, " ~
-            "so `heapEscapingDelegateOperandOffset` cannot heap-box it the " ~
-            "way a `return` site can without risking a stale snapshot -- " ~
-            "see `delegate.arrayElementEscapingCaptureDeclines` below"),
 )) {
     @("delegate.arrayElementMutatedAfterCapturingWriteIsCallable." ~
         backend.stringof)
@@ -3012,32 +2965,6 @@ static foreach (backend; Matrix!(
     }
 }
 
-// Bytecode-only: the array-element twin of
-// `delegate.classFieldEscapingCaptureDeclines` above.
-static foreach (backend; AliasSeq!(Bytecode)) {
-    @("delegate.arrayElementEscapingCaptureDeclines." ~ backend.stringof)
-    @Tags(backend.stringof)
-    unittest {
-        runBackendSourceFixtureTests!backend(q{
-            alias Dg = int delegate();
-
-            Dg[] makeDelegates() {
-                int seed = 42;
-                Dg[] dgs;
-                dgs.length = 1;
-                dgs[0] = () => seed;
-                seed = 100;
-                return dgs;
-            }
-
-            unittest {
-                auto dgs = makeDelegates();
-                assert(dgs[0]() == 100);
-            }
-        }).shouldThrow();
-    }
-}
-
 // The `ref`-argument twin of `delegate.classFieldMutatedAfterCapturingWriteIsCallable`
 // above: DMD does not wrap a `ref` argument in an `AddrExp` (unlike `&arg`),
 // so a captured local mutated only by being passed to a `ref` parameter is
@@ -3050,12 +2977,6 @@ static foreach (backend; Matrix!(
     Omit!(Interpreter, Because.unconfirmed,
         "the Interpreter does not yet promote a frame-escaping " ~
             "captured local to a heap closure either -- not yet promoted"),
-    Omit!(Bytecode, Because.refusal,
-        "a `ref`-argument mutation is not visible as an `AddrExp`, so " ~
-            "`capturedLocalsMayBeMutatedInCurrentFunction` must scan call " ~
-            "arguments too -- see " ~
-            "`delegate.classFieldEscapingCaptureViaRefArgumentDeclines` " ~
-            "below"),
 )) {
     @("delegate.classFieldMutatedViaRefArgumentAfterCapturingWriteIsCallable." ~
         backend.stringof)
@@ -3079,38 +3000,6 @@ static foreach (backend; Matrix!(
                 assert(c.next() == 102);
             }
         });
-    }
-}
-
-// Bytecode-only: the `ref`-argument twin of
-// `delegate.classFieldEscapingCaptureDeclines` above.
-static foreach (backend; AliasSeq!(Bytecode)) {
-    @("delegate.classFieldEscapingCaptureViaRefArgumentDeclines." ~
-        backend.stringof)
-    @Tags(backend.stringof)
-    unittest {
-        runBackendSourceFixtureTests!backend(q{
-            void bump(ref int v) { v += 60; }
-
-            class Counter { int delegate() next; }
-
-            Counter makeCounter() {
-                int total = 40;
-                auto c = new Counter();
-                c.next = () => total + 2;
-                bump(total);
-                return c;
-            }
-
-            unittest {
-                auto c = makeCounter();
-                assert(c.next() == 102);
-            }
-        }).shouldThrowWithMessage(
-            "Unsupported delegate return in bytecode core: returning a " ~
-                "closure over this function's own locals outlives its " ~
-                "frame: __lambda_L9_C26",
-        );
     }
 }
 
@@ -4092,11 +3981,8 @@ static foreach (backend; Matrix!(
 // Reinterpret-WRITE through a pointer taken from a `ref` scalar parameter:
 // the callee writes raw bits into the parameter's slot via a same-size
 // pointer cast, and the CALLER's variable (bound to that `ref` parameter)
-// must observe the write after the call returns. This is the guest-level
-// call-site frontier: a freshly promoted native cell for
-// the `ref` parameter must stay connected to the caller's own cell/box.
-// SystemLinker is the oracle; Bytecode runs this confirmed typed-frame path.
-// Other backends remain omitted per the omit-don't-pin convention
+// must observe the write after the call returns. SystemLinker is the oracle.
+// Backends remain omitted per the omit-don't-pin convention
 // (address-of-a-local/parameter and float byte-reinterpretation are
 // unconfirmed/unsupported there).
 static foreach (backend; Matrix!(
@@ -10980,7 +10866,9 @@ static foreach (backend; Matrix!()) {
 
 
 static foreach (backend; Matrix!(
-    Omit!(Bytecode, Because.unconfirmed),
+    Omit!(Bytecode, Because.refusal,
+        "scalar `ref` parameters are callee-frame mirrors, so `&value` " ~
+            "cannot denote the caller's shared storage"),
     Omit!(Ctfe, Because.unconfirmed),
     Omit!(LLVMJit, Because.unconfirmed),
 )) {
@@ -11032,7 +10920,6 @@ static foreach (backend; Matrix!(
 
 
 static foreach (backend; Matrix!(
-    Omit!(Bytecode, Because.unconfirmed),
     Omit!(Ctfe, Because.unconfirmed),
     Omit!(LLVMJit, Because.unconfirmed),
 )) {

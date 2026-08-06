@@ -389,55 +389,36 @@ row, not a guarantee. Reconfirm against the source before relying on it.
   and writes back only the bytes it touched. `Ctfe` cannot read or write
   dataseg storage at all; `Interpreter` has a separate pre-existing gap where a
   write through a pointer into dataseg storage does not mirror back.
+- Whole static-array values use `compileStaticArrayValueInto` at every
+  aggregate store boundary; do not route a `Tsarray` literal through the
+  struct-only operand resolver.
+- An ordinary scalar local's address is its native frame address, so a
+  same-sized pointer reinterpretation observes the local's raw bytes. This
+  does not make a scalar `ref` parameter's mirror into the caller's address.
+- The recognized 4- and 8-byte `core.internal.atomic.atomicLoad` inline-asm
+  sequence carries raw bits: retain the source pointer's signedness in its
+  result slot while using the width-specific atomic opcode. The host atomic
+  read itself is unsigned only as a raw-byte transport. Validate the source
+  pointee against that opcode width, but not the result pointer metadata: the
+  validated EAX/RAX store fixes its byte width.
+- The recognized 4- and 8-byte `core.internal.atomic.atomicFetchAdd`
+  inline-asm sequence returns the pre-addition raw bits. Validate the matching
+  EDI/EAX or RDI/RAX register pair and lower it to a width-specific host atomic
+  fetch-add rather than an ordinary load/add/store sequence. Resolve its named
+  `dest`/`value` operands from the function parameter list, never by
+  associative iteration over all locals: DMD can introduce other declarations
+  with the same spelling during semantic lowering.
+- Native calls pass `TypeInfo` arguments as their actual native class
+  references; `GC.malloc(int.sizeof, 0, typeid(int))` uses the host's
+  `TypeInfo!int` without display-value substitution.
 - Delegates and closures: see the Closures section.
 
-Known blocked rows, stated as the blocker rather than the symptom:
-
-- `concurrency.thisTid.Bytecode` (`sys/concurrency.d`). `Scheduler.thisInfo`'s
-  `atomicLoad(scheduler)` (an 8-byte reference) is usually the supported
-  `RDX`/`RAX` atomic-load inline-asm shape (`tryCompileAtomicLoadAsm`), but
-  order-dependently (seed 543485028) the same call site compiles to a second
-  shape using 32-bit `EDX`/`EAX` value registers. Why the same load takes
-  either shape is not characterized. Do not add a matching `EDX`/`EAX` opcode
-  without first confirming, against a disassembled `SystemLinker` build of this
-  exact fixture, that a 4-byte-wide atomic read is the correct oracle behaviour
-  here rather than a truncation of the real 8-byte reference.
-- `file.createWriteRead.Bytecode` (`sys/file.d`). `std.stdio.File`'s
-  refcounting is `shared`, and DMD's `core.atomic` lowers `atomicOp!"+="` on
-  this platform to inline x86 asm (`lock xchg` then a plain store) rather than
-  a compiler intrinsic; the bytecode core has no inline-asm support. Either
-  implement that specific `lock`-prefixed read-modify-write/store sequence, or
-  recognise `atomicOp`/`atomicLoad`/`atomicStore` by symbol (as the `std.math`
-  builtins already are) and lower them to dedicated VM atomic ops.
-- `refArgument.templateRefSharedParameterMutatesAndPreservesAddress` and
-  `refArgument.templateRefSharedForwardsThroughNestedFunction`
-  (`expressions.d`) assert `&value == expected` across a `ref` call boundary.
-  Both are blocked on the ref calling convention below, not on
-  template/`shared` specifics, so neither is a bounded single-commit row.
-- `associativeArray.directLocalRefArgumentMutatesSource` (`expressions.d`):
-  the same mirror/writeback also loses a `ref int[int]` local's callee-side
-  mutation entirely rather than merely diverging on `&value` -- the
-  caller's post-call lookup throws "Range violation" instead of seeing the
-  callee's write. Also blocked on the ref calling convention below.
-
-Ref calling convention -- the largest known correctness hazard in the current
-core, and the blocker for the rows above. A scalar `ref` argument is passed as
-a value mirrored into a fresh frame slot and written back after the callee
-returns, not as a pointer the callee dereferences. Every ref-argument kind
-that binds non-frame-resident storage (`emitModuleScalarRefArgument`,
-`emitStructPointerRefArgument`, `emitStructPointerFieldRefArgument`,
-`emitClassFieldRefArgument`, `emitRefLocalPointerArgument`,
-`emitPointerDereferenceRefArgument`) shares one hazard: if the callee also
-reaches that same storage by another path during the call, the post-call
-writeback clobbers the direct write regardless of program order. Real ABI
-`ref` has no such race. `referenceOffset`'s ordinary `_locals` path has it
-too, so `&value` inside a callee never equals the caller's `&value`.
-Reordering cannot fix it, because the callee never reaches the real address
-through the parameter at all. A real fix makes a scalar `ref` parameter a
-pointer the callee dereferences on every access, bound directly to the real
-address (e.g. via `Op.moduleAddress`), dropping the mirror/writeback pair
-entirely -- a change to the convention every ref-argument kind shares, not a
-narrow field-offset fix.
+Scalar `ref` parameters retain per-callee mirrors with return writeback. Their
+address identity is coherent only with other parameters bound to the same
+caller lvalue; `&refParameter` cannot expose the caller's storage without
+letting direct pointer writes race the final mirror writeback. A direct-place
+calling convention must replace the mirror/writeback pair before promoting
+shared caller-storage address identity.
 
 Live hazards and divergences to reconfirm against current source when a row
 reaches them:
@@ -445,13 +426,6 @@ reaches them:
 - A `T[N][]`'s rows are separately heap-allocated inner descriptors, so a
   pointer taken into one row (`&outer[i][j]`) is valid within that row, but a
   flat pointer walk across rows diverges from compiled D's contiguous layout.
-- A `T[N][]` destination's broadcast-fill and row-range slice assignment
-  (`tryDynamicArraySliceAssign`) write through each destination row's own
-  heap block only when the rhs itself supplies genuine row bytes: a
-  single-row rhs read out of another `T[N][]` array (`arr[i]`), and a
-  row-range rhs sliced from a static-array view (`s[0 .. 2]` where `s` is
-  `int[3][3]`), both decline with "Unsupported slice-assignment source in
-  bytecode core" rather than treating a row descriptor as row data.
 - `arr[0][0]` on a `T[N][]` throws "Unsupported static array access": the
   `Tarray`-gated `tryDynamicArrayIndex`/`indexedArrayDescriptor` decline a
   `Tsarray` sub-expression, so compilation falls through to the
@@ -484,11 +458,6 @@ reaches them:
   both entry points to decline still fails that row -- so do not remove or
   narrow it without a real fix backing it, and note that any change to how a
   delegate-typed store resolves can starve that fallback and break the row.
-- A dynamic array of class instances throws "Unsupported class method
-  receiver in bytecode core" on element method calls (`English[] gs; gs ~=
-  new English(); gs[0].greet();`): indexing a `Tarray` of `Tclass` elements
-  isn't wired into the class-pointer machinery
-  (`compileClassPointerDeclaration`, `compiler.d`).
 - A `throw`'s exception-chaining (`.next`) only threads through
   `_pendingFinallyExceptionMessageOffset` on the `emitThrowString` (string
   `new Exception(...)`) path. An object throw (`throw e;`, or any non-string-
@@ -505,18 +474,26 @@ reaches them:
   a `finally` between the throw site and wherever it's really caught can
   still be silently skipped.
 
-Next candidate. No named oracle-backed `Omit!(Bytecode, Because.unconfirmed)`
-row remains bounded and unblocked: the three survivors
-(`refArgument.templateRefSharedParameterMutatesAndPreservesAddress`,
-`refArgument.templateRefSharedForwardsThroughNestedFunction`,
-`associativeArray.directLocalRefArgumentMutatesSource`, all in
-`expressions.d`) are blocked on the ref calling convention above, not
-bounded single-commit fixes. Closure interactions with exceptions (a
-captured local mutated across
+Archive function pointers use a native forwarding wrapper only for a
+receiver-free zero-argument target; the function-table word remains an index,
+so the wrapper is needed before `callIndirect` can reach the native bridge.
+An archive-backed struct method accepts a direct local's native-layout frame
+block as its ABI `this` pointer; a materialised, pointer-based, or delegate
+receiver still needs a frame-independent representation and refuses. A
+delegate of that direct-local struct method uses a native forwarding wrapper
+too: it reuses the normal indirect-call receiver copy/writeback protocol, and
+repacks value scalar arguments for the bridge. Its arguments and result stay
+limited to the native scalar shapes the bridge represents; `ref`/aggregate
+shapes remain unsupported. An archive-backed class method also refuses: a VM
+class block begins with a Quickbite class index, while native virtual dispatch
+reads that word as a vtable pointer. Passing the VM reference to the native
+bridge can therefore segfault before the method body runs. Supporting it needs
+a real ABI class object (including vtable) and synchronised field storage.
+Closure interactions with exceptions (a captured local mutated across
 try/catch/finally) and class polymorphism/vtable dispatch (including
-`super.f()`) match `SystemLinker` under `bin/qb` probing -- not a lead. Find
-a fresh row through further `bin/qb` exploration, take the "One place
-resolver" item, or take an "Architecture work forced by the baseline" front.
+`super.f()`) match `SystemLinker` under `bin/qb` probing -- not a lead.
+Otherwise take the "One place resolver" item or an "Architecture work forced
+by the baseline" front.
 
 ### TDD and handoff discipline
 
@@ -586,12 +563,27 @@ place second.
    vs. a `{opcodeType, byteStride}` pair) across 30+ call sites, so take it as
    a bounded sub-piece (one call-site family, or one clearly-scoped shared
    helper) rather than attempting the whole merge in one commit.
-   `pointerElementMetadata`, `dereferencedArrayIndexElementMetadata`,
-   `dynamicArrayElementSize`, `storeStructPointerField`/
-   `storeClassPointerField`, and `refArgumentFieldWidth` now share their
-   aggregate-vs-scalar branch through one helper, `elementMetadataFor`;
-   remaining call sites (`staticArraySize`, `size(scalarType)`, ...) still
-   derive width independently.
+   `pointerElementMetadata`, `dereferencedArrayIndexElementMetadata`, and
+   `dynamicArrayElementSize` now share both the aggregate-vs-scalar branch
+   and the inline DMD-layout query through `elementMetadataFor`/
+   `inlineByteWidth`; `storeStructPointerField`/`storeClassPointerField` and
+   `refArgumentFieldWidth` share that classification and query.
+   The aggregate call-layout builder now uses `inlineByteWidth` for inline
+   struct/static-array parameter and receiver widths, including its
+   type-only fallback. Struct-method receivers materialised from a pointer,
+   pointer/class field, or dynamic-array element also use it for their inline
+   load/store blocks. By-value and captured struct/static-array values use it
+   for their inline copy widths. Struct field write-back through module data,
+   pointer-indexed struct materialisation, and heap `new S` allocation use it
+   for their inline blocks too, as do whole-struct assignments to a receiver,
+   local, or field. Static-array assignment and literal materialisation now
+   use `inlineByteWidth` for their inline copy, fill, and element-placement
+   widths; module static-array storage and static-array-to-dynamic-array
+   materialisation derive their element widths and counts from that same
+   authority. The remaining inline DMD-layout queries in the compiler --
+   static-array indexing and views, pointer/AA stores, equality, and result
+   metadata -- also go through `inlineByteWidth`; no direct
+   `staticArraySize` authority remains.
 
    Done: every width-suffixed opcode family (`indexLoad*`/`indexStore*`,
    `pointerLoad*`/`pointerStore*`/`pointerSlice*`, `subSlice*`,
@@ -608,16 +600,14 @@ place second.
    depth/element-width operands and keeps its own `emitNestedArrayEqual`
    construction site.
 
-2. **One place resolver.** Lvalue addressing is enumerated per shape: the
-   `emit*RefArgument` chain with its comment-encoded decline order,
-   `referenceOffsetOrNull`, the `*Offset`/`*Address` helpers, and three
-   writeback-mirror mechanisms (module, frame, pointer) with per-shape flush
-   loops. Consolidate on the compose-per-hop model that
-   `structBaseOffsetOrMaterialise`, `capturedFrameIndex`, and the
-   class/struct static-array chain plumbing already use: one place value
-   (base, hop chain, width, writeback rule) returned by one resolver,
-   consumed by emit sites and a single flush path. A new language-surface
-   shape extends the resolver, never adds a sibling emitter.
+2. **One place resolver.** A resolved `StructField` has exactly one
+   discriminated writeback target (frame, data segment, pointer, or none).
+   `structBaseOffsetOrMaterialise` and `structFieldAt` compose that target
+   through every field hop; a data-segment field derives its nested module
+   offset only through `moduleFieldOffset`. Heap struct-pointer and class
+   fields share `HeapField`/`heapFieldAddress`; runtime addresses otherwise go
+   through `addressOperand`. A new lvalue shape extends this resolver rather
+   than adding a sibling emitter or reconstructing storage from parallel state.
 
 Reviewed and declined (2026-08): a bytecode-core disassembler with
 instruction-level emission pins — not worth tackling; do not re-propose.
@@ -776,37 +766,32 @@ lifetime as the dependency bytecode cache.
   `heapClosureContextOrNull` (`compiler.d`) provides one for a narrow shape:
   one or two captured locals, each scalar- or pointer-typed, captured one level
   up from a non-`this`-receiving function, escaping either as a direct
-  `return dg;` (`compileDelegateReturn`) or as a top-level delegate field of a
-  directly returned struct literal (`structLiteralReturnOffset`). Each capture
-  gets a full machine-word slot regardless of its own narrower width, so the
-  `pointer + index * width` addressing divides exactly for every scalar width.
-  Everything outside that shape -- three or more captures, a
-  non-scalar/non-pointer capture, a multi-level capture, a capture combined
-  with `this` -- declines through `throwFrameEscapingDelegateDiagnostic`.
+  `return dg;` (`compileDelegateReturn`), as a top-level delegate field of a
+  directly returned struct literal (`structLiteralReturnOffset`), or by a
+  class-field/dynamic-array-element write. Each capture gets a full
+  machine-word slot regardless of its own narrower width, so the `pointer +
+  index * width` addressing divides exactly for every scalar width. Everything
+  outside that shape -- three or more captures, a non-scalar/non-pointer
+  capture, a multi-level capture, a capture combined with `this` -- declines
+  through `throwFrameEscapingDelegateDiagnostic`.
 
-  Soundness rests on the escape site being the last thing its function
-  executes, so the frame slots and the heap snapshot cannot diverge. That holds
-  for a `return`. It does NOT hold for a mid-function site, which is why an
-  `out`/`ref`-parameter assignment declines a capturing rhs unconditionally
-  (`refEscapingDelegateOperandOffset`) rather than heap-escaping it. Preserve
-  that invariant when widening: a new escape site must either be its function's
-  last act, or move the variable to the heap from declaration onward.
+  A later direct scalar/pointer assignment, or a completed `ref`/`out` call
+  that receives one of those frame locals, mirrors the new value into its heap
+  environment, so the delegate observes the enclosing function's final value.
+  `out`/`ref`-parameter assignment still declines a capturing rhs
+  unconditionally (`refEscapingDelegateOperandOffset`): it needs a closure
+  environment from declaration onward because writes through aliases are not
+  yet mirrored.
 
-  A capturing delegate assigned into a class field, a dynamic-array element,
-  or nested arbitrarily deep inside a directly returned struct literal now
-  gets the same heap-box-or-decline treatment `compileDelegateReturn` gives a
-  direct `return dg;`. Because that write is not itself the function's last
-  act, `heapEscapingDelegateOperandOffset` declines rather than risk
-  unsoundness whenever `capturedLocalsMayBeMutatedInCurrentFunction`
-  (`compiler.d`) finds a further same-function mutation of the captured
-  locals, including one passed as a call argument bound to a `ref`/`out`
-  parameter (or to an unresolvable callee, conservatively). Still open: that
-  scan is order-insensitive and whole-function, so
-  it over-declines two provably-safe shapes -- a mutation strictly before the
-  heap-box write, and a mutation inside the escaping lambda's own body.
-  Narrowing needs control-flow-sensitive write-site dataflow, or moving the
-  captured locals to the heap from declaration onward; neither is attempted
-  here.
+  Escaped captures are not yet coherent when a `ref`/`out` callee mutates its
+  argument and then throws to a handler in the declaring function: the local
+  has the post-call value while the heap mirror retains its old value, so the
+  delegate observes the stale value (`42` where compiled D observes `102`).
+  This is pre-existing escaping-delegate capability work: the master Bytecode
+  backend refuses the escaping delegate outright. The prerequisite is a
+  declaration-time closure environment whose captured storage is the target of
+  every aliasable write; no after-call mirror can establish the invariant on
+  exceptional control flow.
 
   The eventual right design point is DMD's own per-function `needsClosure()`/
   `closureVars` decision -- every closure-needing variable heap-allocated from

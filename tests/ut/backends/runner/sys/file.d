@@ -10,10 +10,10 @@ import std.conv: text;
 // source because the snippet runs under the backend, which cannot see the
 // host test's sandbox object.
 static foreach (backend; Matrix!(
-    Omit!(Ctfe, Because.inexpressible, "needs the host filesystem, which CTFE cannot access"),
     Omit!(Bytecode, Because.refusal,
-        "Unsupported inline asm instruction sequence: core.atomic's " ~
-        "lock-xchg atomicOp!\"+=\" lowering has no bytecode core support"),
+        "native File calls receive ref/native slice descriptors through " ~
+            "callee-frame mirrors instead of the compiled-D ABI layout"),
+    Omit!(Ctfe, Because.inexpressible, "needs the host filesystem, which CTFE cannot access"),
 )) {
     @("file.createWriteRead." ~ backend.stringof)
     @Tags(backend.stringof)
