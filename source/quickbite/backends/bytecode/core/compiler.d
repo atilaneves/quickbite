@@ -3599,7 +3599,7 @@ private struct Compiler {
 
         if (auto field = tryStructPointerField(dot))
             if (field.type.toBasetype.ty == TY.Tarray) {
-                const pointer = structFieldAddress(*field);
+                const pointer = heapFieldAddress(*field);
                 const offset =
                     allocateBytes(sliceDescriptorSize, size_t.sizeof);
                 emitPointerLoad(
@@ -3623,7 +3623,7 @@ private struct Compiler {
         // struct-pointer field.
         if (auto field = tryClassPointerField(dot))
             if (field.type.toBasetype.ty == TY.Tarray) {
-                const pointer = classFieldAddress(*field);
+                const pointer = heapFieldAddress(*field);
                 const offset =
                     allocateBytes(sliceDescriptorSize, size_t.sizeof);
                 emitPointerLoad(
@@ -3846,7 +3846,7 @@ private struct Compiler {
             const elementType = dynamicArrayElementType(expression.type);
             const elementIsArray = arrayElementIsArray(expression.type);
             const offset = allocateBytes(sliceDescriptorSize, size_t.sizeof);
-            const basePointer = classFieldAddress(*classField);
+            const basePointer = heapFieldAddress(*classField);
             compileClassStaticArrayAsDynamicInto(
                 offset, elementType, expression.type, basePointer,
             );
@@ -4459,7 +4459,7 @@ private struct Compiler {
             // array-element ref local already uses.
             if (variable.type.toBasetype.ty != TY.Tstruct)
                 if (auto field = tryClassPointerField(dot)) {
-                    _locals[variable] = classFieldAddress(*field);
+                    _locals[variable] = heapFieldAddress(*field);
                     _refLocalPointers[variable] = scalarType(field.type);
                     return true;
                 }
@@ -4797,7 +4797,7 @@ private struct Compiler {
             const destination =
                 allocateBytes(delegateValueSize, size_t.sizeof);
             emitPointerLoad(
-                destination, classFieldAddress(*classField),
+                destination, heapFieldAddress(*classField),
                 compileSizeConstant(0), delegateValueSize,
             );
             auto offset = new ushort;
@@ -4822,7 +4822,7 @@ private struct Compiler {
             const destination =
                 allocateBytes(delegateValueSize, size_t.sizeof);
             emitPointerLoad(
-                destination, structFieldAddress(*pointerField),
+                destination, heapFieldAddress(*pointerField),
                 compileSizeConstant(0), delegateValueSize,
             );
             auto offset = new ushort;
@@ -5447,7 +5447,7 @@ private struct Compiler {
         // `T[N] dest = c.arr`: the class-field counterpart of the frame-to-
         // frame copy above -- `arr`'s storage lives in the class's own heap
         // block, addressed through a real runtime pointer
-        // (`classFieldAddress`) rather than a frame offset, so the copy
+        // (`heapFieldAddress`) rather than a frame offset, so the copy
         // reads through that pointer instead. Limited to the sizes
         // `pointerLoadOp` supports, matching every other fixed-size
         // pointer-read block copy in this module.
@@ -5456,7 +5456,7 @@ private struct Compiler {
                 totalSize == 8 || totalSize == 16)
             {
                 emitPointerLoad(
-                    offset, classFieldAddress(*classField),
+                    offset, heapFieldAddress(*classField),
                     compileSizeConstant(0), totalSize,
                 );
                 return true;
@@ -6276,10 +6276,10 @@ private struct Compiler {
                         ushort address;
                         bool haveAddress;
                         if (auto pointerField = tryStructPointerField(fieldDot)) {
-                            address = structFieldAddress(*pointerField);
+                            address = heapFieldAddress(*pointerField);
                             haveAddress = true;
                         } else if (auto classField = tryClassPointerField(fieldDot)) {
-                            address = classFieldAddress(*classField);
+                            address = heapFieldAddress(*classField);
                             haveAddress = true;
                         }
                         if (haveAddress) {
@@ -7226,10 +7226,11 @@ private struct Compiler {
         return sourceIndex;
     }
 
-    // A field accessed through a struct pointer (`p.field` where `p` is a heap
-    // `S*`): the frame slot holding the raw `size_t` pointer, the field's byte
-    // offset within the block, and its type.
-    private static struct StructPointerField {
+    // A field located in native heap storage, whether its root is a struct
+    // pointer or a class reference. Both roots use the same `ptr + offset`
+    // address contract; their only distinction is the class null check at
+    // resolution time.
+    private static struct HeapField {
         ushort pointerSlot;
         ushort fieldOffset;
         Type type;
@@ -7238,7 +7239,7 @@ private struct Compiler {
     // Resolve `p.field` (a DotVarExp over a struct-pointer local) to the
     // pointer's frame slot, the field's byte offset, and its type, or null if
     // `p` is not a known struct-pointer local.
-    private StructPointerField* tryStructPointerField(DotVarExp dot) {
+    private HeapField* tryStructPointerField(DotVarExp dot) {
         auto field = dot.var.isVarDeclaration;
         if (field is null)
             return null;
@@ -7260,8 +7261,8 @@ private struct Compiler {
         if (!pointer.isPointer)
             return null;
 
-        auto result = new StructPointerField;
-        *result = StructPointerField(
+        auto result = new HeapField;
+        *result = HeapField(
             pointer.offset, cast(ushort) field.offset, field.type,
         );
         return result;
@@ -7270,7 +7271,7 @@ private struct Compiler {
     // Materialise the address `pointerSlot + fieldOffset` of a struct-pointer
     // field into a fresh pointer slot, so the existing `pointerLoad`/
     // `pointerStore` opcodes (index 0) read and write the heap field.
-    private ushort structFieldAddress(in StructPointerField field) {
+    private ushort heapFieldAddress(in HeapField field) {
         const fieldPointer =
             allocateBytes(cast(uint) size_t.sizeof, size_t.sizeof);
         const fieldOffset = compileSizeConstant(field.fieldOffset);
@@ -7282,14 +7283,14 @@ private struct Compiler {
 
     // `p.field`: read a scalar or dynamic-array field through the struct
     // pointer at `ptr + field.offset` into a fresh slot.
-    private Operand loadStructPointerField(StructPointerField field) {
+    private Operand loadStructPointerField(HeapField field) {
         import dmd.astenums: TY;
 
         if (field.type.toBasetype.ty == TY.Tarray) {
             const destination =
                 allocateBytes(sliceDescriptorSize, size_t.sizeof);
             emitPointerLoad(
-                destination, structFieldAddress(field), compileSizeConstant(0),
+                destination, heapFieldAddress(field), compileSizeConstant(0),
                 sliceDescriptorSize,
             );
             return Operand(destination, ScalarType.void_);
@@ -7306,7 +7307,7 @@ private struct Compiler {
         if (field.type.toBasetype.ty == TY.Tstruct ||
             field.type.toBasetype.ty == TY.Tsarray)
             return Operand(
-                structFieldAddress(field), ScalarType.ulong_, true,
+                heapFieldAddress(field), ScalarType.ulong_, true,
                 ScalarType.void_,
             );
 
@@ -7319,7 +7320,7 @@ private struct Compiler {
             const destination =
                 allocateBytes(delegateValueSize, size_t.sizeof);
             emitPointerLoad(
-                destination, structFieldAddress(field), compileSizeConstant(0),
+                destination, heapFieldAddress(field), compileSizeConstant(0),
                 delegateValueSize,
             );
             return Operand(destination, ScalarType.void_);
@@ -7327,7 +7328,7 @@ private struct Compiler {
 
         const fieldScalar = scalarType(field.type);
         const elementSize = size(fieldScalar);
-        const fieldPointer = structFieldAddress(field);
+        const fieldPointer = heapFieldAddress(field);
         const destination = allocateBytes(elementSize, elementSize);
         emitPointerLoad(
             destination, fieldPointer, compileSizeConstant(0), elementSize,
@@ -7356,7 +7357,7 @@ private struct Compiler {
     // dynamic-array field is written by the caller's own `Tarray` branch
     // before this ever runs, and a field cannot itself be `Tfunction`).
     private void storeStructPointerField(
-        StructPointerField field,
+        HeapField field,
         in ushort valueSlot,
     ) {
         const metadata = elementMetadataFor(
@@ -7365,19 +7366,13 @@ private struct Compiler {
         const elementSize = metadata.opcodeType == ScalarType.void_
             ? metadata.byteStride
             : size(scalarType(field.type));
-        const fieldPointer = structFieldAddress(field);
+        const fieldPointer = heapFieldAddress(field);
         emitPointerStore(
             valueSlot, fieldPointer, compileSizeConstant(0), elementSize,
         );
     }
 
-    private static struct ClassPointerField {
-        ushort pointerSlot;
-        ushort fieldOffset;
-        Type type;
-    }
-
-    private ClassPointerField* tryClassPointerField(DotVarExp dot) {
+    private HeapField* tryClassPointerField(DotVarExp dot) {
         import std.conv: text;
 
         auto field = dot.var.isVarDeclaration;
@@ -7395,21 +7390,21 @@ private struct Compiler {
                 "` is `null` and cannot be dereferenced",
             ),
         );
-        auto result = new ClassPointerField;
-        *result = ClassPointerField(
+        auto result = new HeapField;
+        *result = HeapField(
             receiver.offset, cast(ushort) field.offset, field.type,
         );
         return result;
     }
 
-    private Operand loadClassPointerField(ClassPointerField field) {
+    private Operand loadClassPointerField(HeapField field) {
         import dmd.astenums: TY;
 
         if (field.type.toBasetype.ty == TY.Tarray) {
             const destination =
                 allocateBytes(sliceDescriptorSize, size_t.sizeof);
             emitPointerLoad(
-                destination, classFieldAddress(field), compileSizeConstant(0),
+                destination, heapFieldAddress(field), compileSizeConstant(0),
                 sliceDescriptorSize,
             );
             return Operand(destination, ScalarType.void_);
@@ -7422,7 +7417,7 @@ private struct Compiler {
         // hop (`this.m_proxy.link`) resolves against it.
         if (field.type.toBasetype.ty == TY.Tstruct)
             return Operand(
-                classFieldAddress(field), ScalarType.ulong_, true,
+                heapFieldAddress(field), ScalarType.ulong_, true,
                 ScalarType.void_,
             );
 
@@ -7433,7 +7428,7 @@ private struct Compiler {
             const destination =
                 allocateBytes(delegateValueSize, size_t.sizeof);
             emitPointerLoad(
-                destination, classFieldAddress(field), compileSizeConstant(0),
+                destination, heapFieldAddress(field), compileSizeConstant(0),
                 delegateValueSize,
             );
             return Operand(destination, ScalarType.void_);
@@ -7441,7 +7436,7 @@ private struct Compiler {
 
         const fieldScalar = scalarType(field.type);
         const elementSize = size(fieldScalar);
-        const fieldPointer = classFieldAddress(field);
+        const fieldPointer = heapFieldAddress(field);
         const destination = allocateBytes(elementSize, elementSize);
         emitPointerLoad(
             destination, fieldPointer, compileSizeConstant(0), elementSize,
@@ -7464,16 +7459,6 @@ private struct Compiler {
         return Operand(destination, fieldScalar);
     }
 
-    private ushort classFieldAddress(in ClassPointerField field) {
-        const fieldPointer =
-            allocateBytes(cast(uint) size_t.sizeof, size_t.sizeof);
-        const fieldOffset = compileSizeConstant(field.fieldOffset);
-        _code ~= Instruction(
-            Op.addInt8, fieldPointer, field.pointerSlot, fieldOffset,
-        );
-        return fieldPointer;
-    }
-
     // `box.field = value`: write `value` (already in a frame slot) through the
     // class pointer at `ptr + field.offset`. A `Tstruct`/`Tsarray` field lives
     // inline at that address, so it needs its own real byte width from
@@ -7481,7 +7466,7 @@ private struct Compiler {
     // `storeStructPointerField`'s identical widening -- including its reuse
     // of `elementMetadataFor`'s shared classification.
     private void storeClassPointerField(
-        ClassPointerField field,
+        HeapField field,
         in ushort valueSlot,
     ) {
         const metadata = elementMetadataFor(
@@ -7490,7 +7475,7 @@ private struct Compiler {
         const elementSize = metadata.opcodeType == ScalarType.void_
             ? metadata.byteStride
             : size(scalarType(field.type));
-        const fieldPointer = classFieldAddress(field);
+        const fieldPointer = heapFieldAddress(field);
         emitPointerStore(
             valueSlot, fieldPointer, compileSizeConstant(0), elementSize,
         );
@@ -8002,7 +7987,7 @@ private struct Compiler {
             _dynamicArrayLocals[variable].isStaticArrayView = true;
             _dynamicArrayLocals[variable].staticArrayViewIsClassField = true;
             _dynamicArrayLocals[variable].staticArrayOffset =
-                classFieldAddress(*classField);
+                heapFieldAddress(*classField);
         }
         compileDynamicArrayInto(
             offset, elementType, source, elementIsArray);
@@ -8495,7 +8480,7 @@ private struct Compiler {
 
     // The class-field counterpart of `compileStaticArrayAsDynamicInto`:
     // builds the same throwaway heap copy, but reads each element through
-    // `basePointer` (a real runtime pointer, `classFieldAddress`) with
+    // `basePointer` (a real runtime pointer, `heapFieldAddress`) with
     // `Op.pointerLoad*` instead of a folded frame offset with `Op.copy`,
     // since the source field's storage lives in the class's own heap block.
     private void compileClassStaticArrayAsDynamicInto(
@@ -9209,7 +9194,7 @@ private struct Compiler {
 
         // `&c.arr[i]`: the class-field counterpart of the `indexesStaticArray`
         // branch above -- the field's storage lives in the class's own heap
-        // block, addressed via `classFieldAddress` (a real runtime pointer)
+        // block, addressed via `heapFieldAddress` (a real runtime pointer)
         // instead of a folded frame offset.
         if (index.e1.isDotVarExp !is null &&
             index.type.toBasetype.ty != TY.Tsarray &&
@@ -9304,7 +9289,7 @@ private struct Compiler {
     // (`__r[i]` inside `foreach (ref e; arr) ...`'s lowered loop): a local's
     // or struct field's base is a frame offset, resolved via
     // `Op.frameAddress` (`staticArrayElementPointer`); a class field's base
-    // is already a runtime pointer (`classFieldAddress`), used directly.
+    // is already a runtime pointer (`heapFieldAddress`), used directly.
     private Operand staticArrayViewElementPointer(
         in DynamicArrayLocal descriptor,
         Expression indexExpression,
@@ -9507,7 +9492,7 @@ private struct Compiler {
         return result;
     }
 
-    // `c.arr[i]`'s element address: `classFieldAddress(field) + i *
+    // `c.arr[i]`'s element address: `heapFieldAddress(field) + i *
     // elementSize`, computed at runtime since the field's storage lives in
     // the class's own heap block rather than an inline frame offset (unlike
     // the analogous struct-field case `tryStaticArrayElement`/
@@ -9525,7 +9510,7 @@ private struct Compiler {
         auto result = new Operand;
         *result = advanceStaticArrayPointer(
             Operand(
-                classFieldAddress(*field), ScalarType.ulong_, true,
+                heapFieldAddress(*field), ScalarType.ulong_, true,
                 ScalarType.void_,
             ),
             index.e2, index.type,
@@ -9574,7 +9559,7 @@ private struct Compiler {
     // the slice-field counterpart of `tryClassStaticArrayElementPointer`.
     // Unlike a static-array field, whose element storage lives inline in the
     // class's own heap block, a slice field's element storage lives wherever
-    // its own `.ptr` word (loaded through `classFieldAddress`) already
+    // its own `.ptr` word (loaded through `heapFieldAddress`) already
     // points, so that pointer is loaded first and then advanced by `i *
     // elementSize` the same way. Null if `index.e1` is not a class
     // slice-field access.
@@ -9593,7 +9578,7 @@ private struct Compiler {
 
         const descriptor = allocateBytes(sliceDescriptorSize, size_t.sizeof);
         emitPointerLoad(
-            descriptor, classFieldAddress(*field), compileSizeConstant(0),
+            descriptor, heapFieldAddress(*field), compileSizeConstant(0),
             sliceDescriptorSize,
         );
         const basePointer =
@@ -10165,7 +10150,7 @@ private struct Compiler {
             } else if (auto field = tryClassPointerField(dot)) {
                 auto result = new Operand;
                 *result = Operand(
-                    classFieldAddress(*field),
+                    heapFieldAddress(*field),
                     ScalarType.ulong_,
                     true,
                     pointerElementScalar(address.type),
@@ -12115,7 +12100,7 @@ private struct Compiler {
                         arrayElementIsArray(field.type),
                     );
                     emitPointerStore(
-                        destination, structFieldAddress(*field),
+                        destination, heapFieldAddress(*field),
                         compileSizeConstant(0), sliceDescriptorSize,
                     );
                     return Operand(destination, ScalarType.void_);
@@ -12180,7 +12165,7 @@ private struct Compiler {
                         arrayElementIsArray(field.type),
                     );
                     emitPointerStore(
-                        destination, classFieldAddress(*field),
+                        destination, heapFieldAddress(*field),
                         compileSizeConstant(0), sliceDescriptorSize,
                     );
                     return Operand(destination, ScalarType.void_);
@@ -15848,12 +15833,12 @@ private struct Compiler {
     // one. Unlike a struct's static-array field (an inline frame offset
     // `staticArrayOffsetOf` folds at compile time), the field's storage
     // lives in the class's own heap block, so callers address it through
-    // `classFieldAddress` (a real runtime pointer) instead; an intermediate
+    // `heapFieldAddress` (a real runtime pointer) instead; an intermediate
     // struct-field hop resolves through that same real-pointer plumbing
     // (`tryClassPointerField`'s generic pointer-receiver mechanism, per
     // `loadClassPointerField`'s `Tstruct` branch), so no materialised copy
     // or writeback is ever needed for the struct hop itself.
-    private ClassPointerField* classStaticArrayFieldOf(Expression expression) {
+    private HeapField* classStaticArrayFieldOf(Expression expression) {
         import dmd.astenums: TY;
 
         if (auto cast_ = expression.isCastExp)
@@ -15876,7 +15861,7 @@ private struct Compiler {
         return null;
     }
 
-    private ClassPointerField* classStaticArrayViewFieldOf(
+    private HeapField* classStaticArrayViewFieldOf(
         Expression expression,
     ) {
         if (auto cast_ = expression.isCastExp)
@@ -18341,7 +18326,7 @@ private struct Compiler {
             return false;
 
         // A struct or static-array field lives inline in the class block
-        // (`classFieldAddress` is already its own address, not a further
+        // (`heapFieldAddress` is already its own address, not a further
         // pointer to dereference), so it needs its own real byte width
         // rather than the scalar-only 1/2/4/8 gate below -- the aggregate
         // counterpart of `emitStructPointerFieldRefArgument`.
@@ -18363,7 +18348,7 @@ private struct Compiler {
             }
 
         const valueOffset = allocateBytes(valueSize, valueAlign);
-        const addressOffset = classFieldAddress(*field);
+        const addressOffset = heapFieldAddress(*field);
         emitPointerLoad(
             valueOffset, addressOffset, compileSizeConstant(0), valueSize,
         );
@@ -18446,7 +18431,7 @@ private struct Compiler {
             }
 
         const valueOffset = allocateBytes(valueSize, valueAlign);
-        const addressOffset = structFieldAddress(*field);
+        const addressOffset = heapFieldAddress(*field);
         emitPointerLoad(
             valueOffset, addressOffset, compileSizeConstant(0), valueSize,
         );
@@ -21996,7 +21981,7 @@ private struct DynamicArrayLocal {
     ushort staticArrayOffset;
     // When set, `staticArrayOffset` is not a frame-relative array offset
     // (resolved via `Op.frameAddress`) but a frame slot already holding a
-    // real runtime pointer (`classFieldAddress`) to the view's first
+    // real runtime pointer (`heapFieldAddress`) to the view's first
     // element, because the underlying static array is a class field living
     // in the class's own heap block rather than inline in this frame.
     bool staticArrayViewIsClassField;

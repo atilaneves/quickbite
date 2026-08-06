@@ -604,9 +604,10 @@ place second.
    discriminated writeback target (frame, data segment, pointer, or none).
    `structBaseOffsetOrMaterialise` and `structFieldAt` compose that target
    through every field hop; a data-segment field derives its nested module
-   offset only through `moduleFieldOffset`. Runtime addresses go through
-   `addressOperand`. A new lvalue shape extends this resolver rather than
-   adding a sibling emitter or reconstructing storage from parallel state.
+   offset only through `moduleFieldOffset`. Heap struct-pointer and class
+   fields share `HeapField`/`heapFieldAddress`; runtime addresses otherwise go
+   through `addressOperand`. A new lvalue shape extends this resolver rather
+   than adding a sibling emitter or reconstructing storage from parallel state.
 
 Reviewed and declined (2026-08): a bytecode-core disassembler with
 instruction-level emission pins — not worth tackling; do not re-propose.
