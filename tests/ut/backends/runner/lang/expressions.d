@@ -4674,6 +4674,42 @@ static foreach (backend; Matrix!(
     }
 }
 
+// A module-level delegate variable assigned from one function and called
+// from another. `callIt()`'s own first touch of `quickbiteTempDg2`
+// (materializeDatasegInitializer's `moduleTable.has(variable)` branch)
+// adopts the block ESTABLISHED BY `setIt()`'s own call into `callIt()`'s
+// fresh activation's `locals`/`mirrorEstablished` bookkeeping. A delegate
+// never writes its bytes into the dataseg block at all -- `setLocal`'s
+// `Tdelegate` arm stores it out-of-band in `nativeDelegateSlots`, keyed by
+// the block's address, leaving the block's bytes zeroed -- so routing a
+// `readValue`-reconstructed value back through `setLocal` (as the adoption
+// step used to, unconditionally) reads the zeroed block back as
+// `Value.null_` and then overwrites `nativeDelegateSlots[address]` with it,
+// destroying the delegate `setIt()` legitimately registered there:
+// `callIt()` throws "Unsupported eval call." instead of returning `43`.
+// SystemLinker is the oracle.
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.inexpressible,
+        "CTFE cannot read or write dataseg (__gshared/static) storage"),
+)) {
+    @("dataseg.delegateAssignedInOneFunctionSurvivesAdoptionInAnother." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            __gshared int delegate() quickbiteTempDg2;
+
+            void setIt() { quickbiteTempDg2 = () => 43; }
+            int callIt() { return quickbiteTempDg2(); }
+
+            unittest {
+                setIt();
+                assert(callIt() == 43);
+            }
+        });
+    }
+}
+
 // A module-level `cdouble` variable (`__gshared cdouble c;`) --
 // `moduleScalarVariableOrNull` used to decline every `Tcomplex64` dataseg
 // declaration outright ("Module-level complex-double dataseg variables

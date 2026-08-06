@@ -3820,8 +3820,32 @@ private struct Walker {
         // block (observed: three `bump()` calls each resetting a `__gshared
         // int counter = 5;` back to `5` before incrementing, so the final
         // read saw `5` instead of `8`).
+        //
+        // A `Tdelegate`-typed variable is the one shape this round trip
+        // itself destroys: a delegate never writes its bytes into the
+        // dataseg block at all (`setLocal`'s `Tdelegate` arm stores it
+        // out-of-band in `nativeDelegateSlots`, keyed by the block's
+        // address, leaving the block's bytes zeroed), so `readValue` on the
+        // block reads back `Value.null_`, and routing that through
+        // `setLocal` would overwrite `nativeDelegateSlots[address]` with
+        // `null` -- destroying a delegate a sibling/prior activation
+        // legitimately registered there (observed: a delegate assigned by
+        // one function and called from another read back "Unsupported eval
+        // call" because adopting the caller's own dataseg mirror nulled the
+        // callee's freshly-assigned delegate). Note this activation's
+        // bookkeeping directly from the out-of-band slot instead, without
+        // routing through `setLocal`'s destructive side effect.
         if (moduleTable.has(variable)) {
+            import dmd.astenums: TY;
             import quickbite.backends.interpreter.place_value: readValue;
+
+            if (variable.type.toBasetype.ty == TY.Tdelegate) {
+                locals[variable] = nativeDelegateSlots.get(
+                    bindingPlace(variable).address, Value.null_,
+                );
+                mirrorEstablished[variable] = true;
+                return;
+            }
 
             setLocal(variable, readValue(bindingPlace(variable)));
             return;
