@@ -89,7 +89,7 @@ in this repo unless instructed otherwise.
 
 ## Testing
 
-Run tests after every edit you make.
+Run tests after every code edit you make. Plan documents are not code.
 
 Prefer to run focussed tests instead of the whole test suite by passing
 the relevant test names to `bin/ut`.

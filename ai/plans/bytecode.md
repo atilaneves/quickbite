@@ -325,7 +325,92 @@ The current `Bytecode` backend is the typed-frame, native-layout VM. Extend
 that backend directly. There is no narrow promotion frontier: the product
 target is arbitrary D code reached from real unittest blocks.
 
-### Immediate gate: complete the existing Bytecode baseline
+### Immediate gate: one compositional lowering pipeline
+
+Declaration classification is smeared over parallel per-type-kind side
+tables in `compiler.d` (`_locals`, `_staticArrayLocals`,
+`_dynamicArrayLocals`, `_pointerLocals`, `_structLocals`, `_delegateLocals`,
+the `_module*Variables` family, and kin). Emit sites repeatedly cross four
+independent concerns: semantic operation, lvalue AST shape, storage kind, and
+value representation. Each operator family therefore re-derives "what is
+this declaration?" by probing tables in its own ad-hoc order, and each lvalue
+operation is copied per storage kind (`compilePostIncrement` carries an arm
+per storage kind; plain assignment probes a sibling `try*Assign` helper per
+storage kind for the one shape `a[i] = v`; `/=` reaches fewer storage kinds
+than `+=` for no semantic reason).
+
+Duplication is an architectural failure, including duplicated decisions
+rather than only copied lines: repeated declaration classification, width or
+opcode selection, storage arms, access-shape gates, evaluation-once logic,
+materialisation, writeback, and diagnostics all mean the composition boundary
+is wrong. Stop feature work and establish the missing shared abstraction when
+two sites encode the same decision. A green matrix does not justify the
+duplication. This consolidation is the serial bytecode track's sole work until
+the pipeline below owns all existing pairings; the row-driven baseline gate is
+paused and resumes on top of it.
+
+Target state:
+
+- Declaration classification happens once. One classifier replaces the
+  parallel tables and the per-kind `module<Kind>VariableOrNull` and
+  initializer-byte resolver families, and supplies a root place plus the
+  type/layout facts lowering needs (opcode tag, byte width, aggregate layout).
+  The same width authority serves declaration-rooted values,
+  `dynamicArrayElementSize`, `pointerElementMetadata`, and raw
+  `size(...)`-at-emit-site consumers. `ScalarType.void_`'s zero size must not
+  act as an aggregate sentinel; an omitted width must fail compilation rather
+  than become a zero-byte copy.
+- Every lvalue-capable expression resolves through one place path. Using it as
+  an rvalue loads that place; assignment stores it; taking its address asks the
+  same place for its address. Non-lvalue expressions produce values directly.
+  A place composes a storage locator with an access path (field, index,
+  dereference, slice, or returned reference), evaluates every contributing
+  expression once, and supplies the primitive load, store, and address
+  operations for the value's true storage.
+- Semantic emitters consume values and places. They do not inspect lvalue AST
+  shapes, probe declaration tables, select storage kinds, or implement
+  materialisation and writeback. Assignment stores once; compound and
+  prefix/postfix operations compose load/operation/store; address-of and
+  `ref`/`out` consume the place's address. Method receivers and calls returning
+  `ref` use the same path.
+- The axes remain independent. A new semantic operation is implemented once
+  for every compatible place; a new lvalue shape resolves once for every
+  compatible operation; a new storage kind implements its primitives once;
+  and a new value representation supplies its type/layout behaviour once.
+  Adding any one of them must not modify the pairings with the others.
+- Places exist only while the compiler emits bytecode. They add no runtime
+  boxing, polymorphism, or generic place opcode.
+- An unclassifiable declaration or unsupported lvalue shape is declined by
+  the resolver, in one place, with the usual explicit diagnostic.
+- Scalar `ref` parameters end as real pointers into caller storage resolved
+  through the same place pipeline, replacing the per-callee
+  mirror/return-writeback convention and its address-identity,
+  exceptional-control-flow, and aliasing incoherences. The support-boundary
+  text below describing mirrors stays accurate until that final migration
+  stage lands.
+
+Sequencing: establish declaration/type facts, place resolution, and the
+primitive operations first. Then migrate one consumer family per commit,
+with the enabled matrix green after each commit: assignment, all compound and
+prefix/postfix operations, field/index/slice/dereference access, address-of,
+`ref`/`out`, method receivers, and calls returning `ref`. A migrated emitter
+must become storage- and lvalue-shape-agnostic; delete each side table, probe,
+special writeback, and per-pair helper when its last consumer disappears.
+Finish the one-width-authority work through the same type facts, then replace
+scalar-`ref` mirrors through place addresses. Row promotions resume only when
+all existing consumers use the pipeline and pre-PR review finds no duplicated
+classification, access, width, materialisation, or writeback decision.
+
+The two omitted module-scalar rows in
+`tests/ut/backends/runner/lang/expressions.d`
+(`methodCallThroughReturnedPointerEvaluatesReceiverOnce`,
+`methodCallThroughIndexedReceiverEvaluatesIndexOnce`) are pipeline work: close
+them through the shared primitives, never with new per-operator storage arms.
+The first additionally needs `&s` on a module-scope struct, which the resolver
+should classify like any other declaration rather than decline as a special
+case.
+
+### Paused until the pipeline lands: complete the existing Bytecode baseline
 
 Before looking for gaps in an external project, make every applicable existing
 in-repo `SystemLinker`-oracle test include `Bytecode` and pass. In particular:
@@ -478,6 +563,14 @@ Otherwise take an "Architecture work forced by the baseline" front.
 
 ### TDD and handoff discipline
 
+- Before a feature change, ask whether a refactor would make it easy. If so,
+  land the behaviour-preserving refactor first with the enabled matrix green,
+  then make the easy change on top. A preparatory refactor too large for the
+  PR is one structural cause, never a list of per-site work items; the change
+  waits for or routes through it.
+- A deliberately dumb TDD green step may expose duplication, but the cycle and
+  commit are not complete until it is removed under the immediate-gate rule.
+  A gap observed at two sites is one missing abstraction, not two work items.
 - Promote one named existing oracle-backed row, or one tightly related family,
   at a time. A new test or a change to test behaviour still requires approval
   before editing the test.
@@ -523,21 +616,6 @@ These are implementation areas, not reasons to postpone a promoted row. A
 broad row may require several prerequisite commits, each ending with a green
 enabled matrix and a forward-looking next-row update.
 
-### Structural consolidation queue
-
-Approved deepening work, distinct from the row-driven queue: each item lands
-as a bounded, behaviour-preserving ride-along commit on the serial bytecode
-track, with the enabled matrix green after the commit.
-
-1. **One width authority.** Every inline aggregate and element-width
-   computation must go through one compiler authority. `ScalarType.void_`'s
-   zero size must not act as an aggregate sentinel: an omitted width must fail
-   compilation rather than becoming a zero-byte copy. Still open: generalise
-   `dynamicArrayElementSize` and `pointerElementMetadata` so that each emit
-   site obtains its width from that authority. Their signatures and return
-   shapes differ, so make this a bounded sub-piece (one call-site family or a
-   clearly-scoped shared helper), not a mechanical whole-compiler rename.
-
 Reviewed and declined (2026-08): a bytecode-core disassembler with
 instruction-level emission pins — not worth tackling; do not re-propose.
 
@@ -545,7 +623,7 @@ instruction-level emission pins — not worth tackling; do not re-propose.
 
 `tests/ut/bin/repl.d` is parity work against the existing interactive backend
 behaviour and currently has no `SystemLinker` rows. It does not take precedence
-over the baseline gate above.
+over the lowering-pipeline and baseline gates above.
 
 Rendered-value REPL rows are earned by executing
 `__quickbiteFormat` (`quickbite.repl_prelude`) as ordinary D, not by extending
@@ -603,17 +681,18 @@ and Cerealed gate no longer expose earlier gaps.
 
 ## Performance
 
-- Correctness and baseline stability precede optimization.
-- Measure post-parse execution against `SystemLinker` and the project
-  benchmarks at meaningful semantic checkpoints.
-- Optional bytecode peephole optimization is the first optimization candidate
-  after measurement justifies it. Keep it runtime-togglable so the same body
-  of D code can compare optimized and unoptimized bytecode.
-- Do not seal or hash emitted bytecode before an optional optimization pass can
-  run.
-- Keep the interpreter dispatch compatible with a measurement-driven switch
-  from `final switch` to direct threading without requiring a bytecode-format
-  rewrite.
+- Simplicity first: do the simplest thing that satisfies the compiled-D
+  oracle. No optimisation work, and no optimisation-motivated complexity,
+  until the VM can run arbitrary D code; then profile against `SystemLinker`
+  and the project benchmarks and let the numbers choose the work.
+- Premature optimisation is the root of all evil, but belated pessimisation
+  is the leaf of no good: all things being equal, prefer the likely more
+  performant choice. Never buy speed with complexity before profiling, and
+  never write gratuitous slowness that simplicity did not require.
+- Two door-openers that cost nothing now: do not seal or hash emitted
+  bytecode in a way that would preclude a later optimisation pass, and keep
+  dispatch swappable from `final switch` to direct threading without a
+  bytecode-format rewrite.
 
 ## Builtins and Native Calls
 
