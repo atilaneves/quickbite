@@ -2920,7 +2920,7 @@ private struct Walker {
                 return Value.pointerValue(placeOfLvalue(
                     dot,
                     (variable) @safe => addressableBindingBase(variable),
-                    (expression) @trusted => cast(size_t)
+                    (expression) @system => cast(size_t)
                         runExpression(expression).asLong,
                 ).address);
             } catch (Exception exception) {
@@ -3216,6 +3216,38 @@ private struct Walker {
         return false;
     }
 
+    // Compose this index expression from its receiver's already-resolved
+    // place. Both nested-index and nested-field receivers take this route:
+    // keeping the `$` binding, outer-index evaluation, and final-offset
+    // composition together ensures each expression is evaluated once.
+    private Value nestedIndexPointer(
+        Expression expression,
+        Place receiverPlace,
+        in long offset,
+        in bool selfAddress,
+    ) {
+        import quickbite.backends.interpreter.place_value: readValue;
+
+        auto index = expression.isIndexExp;
+        assert(index !is null);
+        if (index.lengthVar !is null)
+            setLocal(
+                index.lengthVar,
+                Value(AggregateValue.length(readValue(receiverPlace))),
+            );
+        const outerOffset = runExpression(index.e2).asLong;
+        const pointer = Value.pointerValue(
+            receiverPlace.index(cast(size_t) outerOffset).address,
+        );
+        if (selfAddress)
+            return pointer;
+        return Value.pointerValue(
+            Place(cast(void*) pointer.pointerAddress, expression.type)
+                .index(cast(size_t) offset)
+                .address,
+        );
+    }
+
     private Value arrayPointer(
         imported!"dmd.expression".Expression array,
         in long offset,
@@ -3262,6 +3294,55 @@ private struct Walker {
             if (auto index = array.isIndexExp) {
                 import quickbite.backends.interpreter.layout: typeByteSize;
 
+                // A nested index receiver (`m[i++][j]`) must compose its
+                // address before reading its value. Reading `m[i++]` here
+                // and recursively composing its address below would run the
+                // inner index twice.
+                if (auto inner = index.e1.isIndexExp) {
+                    if (inner.e1.isVarExp !is null) {
+                        import quickbite.backends.interpreter.lvalue_place:
+                            placeOfLvalue;
+                        import quickbite.backends.interpreter.place:
+                            Place, IndexOutOfBoundsException;
+                        import quickbite.backends.interpreter.place_value:
+                            readValue;
+
+                        try {
+                            auto innerPlace = placeOfLvalue(
+                                inner,
+                                (variable) @safe =>
+                                    addressableBindingBase(variable),
+                                (expression) @system =>
+                                    cast(size_t) runExpression(expression).asLong,
+                                // @trusted: `setLocal` is @system because it is
+                                // part of the interpreter's general storage
+                                // machinery. Here it only binds the `$` length
+                                // variable belonging to the index being walked.
+                                (chainIndex, base) @trusted {
+                                    if (chainIndex.lengthVar !is null)
+                                        setLocal(
+                                            chainIndex.lengthVar,
+                                            Value(
+                                                AggregateValue.length(readValue(base)),
+                                            ),
+                                        );
+                                },
+                            );
+                            return nestedIndexPointer(
+                                array,
+                                innerPlace,
+                                offset,
+                                selfAddress,
+                            );
+                        } catch (IndexOutOfBoundsException exception) {
+                            // The composed `Place.index` call observes bounds
+                            // only after `i++` has committed. Translate its
+                            // host exception without retrying the receiver.
+                            throwRangeError(exception.msg);
+                        }
+                    }
+                }
+
                 // A doubly (or more) nested `DotVarExp` receiver whose own
                 // chain runs through an `IndexExp` somewhere
                 // (`arr[i++].mid.a[j]`, `s.a[i++].mid.b[j]`, ...) must be
@@ -3307,21 +3388,7 @@ private struct Walker {
                             auto fieldPlace = placeOfLvalue(
                                 nestedField,
                                 (variable) @safe => addressableBindingBase(variable),
-                                // @trusted: `runExpression` itself carries no
-                                // attribute (defaults to `@system`) as the
-                                // top-level AST dispatch over every
-                                // expression kind, several of which are
-                                // `@system` for reasons already justified at
-                                // their own boundaries deeper in this class.
-                                // Evaluating a chain index to a plain
-                                // `size_t` is the identical call the
-                                // ordinary eager path already makes for the
-                                // same purpose a few lines below
-                                // (`runExpression(index.e2).asLong`); this
-                                // closure only exists to offer that same
-                                // call through `placeOfLvalue`'s `@safe`
-                                // delegate signature.
-                                (expression) @trusted =>
+                                (expression) @system =>
                                     cast(size_t) runExpression(expression).asLong,
                                 // `$` inside a CHAIN `IndexExp`'s own index
                                 // (e.g. `arr[$ - 1]` inside
@@ -3353,31 +3420,11 @@ private struct Walker {
                                         );
                                 },
                             );
-                            // `$` inside the OUTER `index.e2` is bound to
-                            // `index.lengthVar`, and must see `nestedField`'s
-                            // (the composed field's) own current length --
-                            // the same length the skipped eager
-                            // `runExpression(index.e1)` used to provide via
-                            // `AggregateValue.length` of the receiver it
-                            // read. Bind it from `fieldPlace` before
-                            // evaluating `index.e2`, the same order the
-                            // ordinary eager path below already uses for the
-                            // identical binding.
-                            if (index.lengthVar !is null)
-                                setLocal(
-                                    index.lengthVar,
-                                    Value(AggregateValue.length(readValue(fieldPlace))),
-                                );
-                            const outerOffset = runExpression(index.e2).asLong;
-                            const pointer = Value.pointerValue(
-                                fieldPlace.index(cast(size_t) outerOffset).address,
-                            );
-                            if (selfAddress)
-                                return pointer;
-                            return Value.pointerValue(
-                                Place(cast(void*) pointer.pointerAddress, array.type)
-                                    .index(cast(size_t) offset)
-                                    .address,
+                            return nestedIndexPointer(
+                                array,
+                                fieldPlace,
+                                offset,
+                                selfAddress,
                             );
                         } catch (UnsupportedLvalueShapeException) {
                             // Fall through to the eager path below for a
@@ -3512,20 +3559,7 @@ private struct Walker {
                             auto fieldPlace = placeOfLvalue(
                                 field,
                                 (variable) @safe => addressableBindingBase(variable),
-                                // @trusted: `runExpression` itself carries
-                                // no attribute (defaults to `@system`) as
-                                // the top-level AST dispatch over every
-                                // expression kind, several of which are
-                                // `@system` for reasons already justified at
-                                // their own boundaries deeper in this class.
-                                // Evaluating an index subexpression to a
-                                // plain `size_t` here is the same call the
-                                // ordinary eager path already makes for the
-                                // same purpose (`outerOffset` above); this
-                                // closure only exists to offer that same
-                                // call through `placeOfLvalue`'s `@safe`
-                                // delegate signature.
-                                (expression) @trusted =>
+                                (expression) @system =>
                                     cast(size_t) runExpression(expression).asLong,
                             );
                             const pointer = Value.pointerValue(

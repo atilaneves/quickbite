@@ -66,12 +66,12 @@ private:
 public imported!"quickbite.backends.interpreter.place".Place placeOfLvalue(
     imported!"dmd.expression".Expression expr,
     void* delegate(imported!"dmd.declaration".VarDeclaration) @safe resolveBase,
-    size_t delegate(imported!"dmd.expression".Expression) @safe evalIndex,
+    size_t delegate(imported!"dmd.expression".Expression) @system evalIndex,
     void delegate(
         imported!"dmd.expression".IndexExp,
         imported!"quickbite.backends.interpreter.place".Place,
     ) @safe onIndexBase = null,
-) @safe {
+) @system {
     import quickbite.backends.interpreter.place: Place;
     import quickbite.backends.interpreter.layout: declaredType;
 

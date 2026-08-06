@@ -11201,6 +11201,33 @@ static foreach (backend; Matrix!(
     }
 }
 
+// The dynamic-array counterpart of the nested static-array receiver above:
+// `m[i++][1].bump()` must evaluate its outer index once and mutate the
+// selected row's backing storage, rather than a detached dynamic-array row.
+// SystemLinker is the oracle.
+static foreach (backend; Matrix!()) {
+    @("struct.methodCallThroughNestedDynamicArrayIndexedReceiverEvaluatesIndexOnceAndMutatesBackingStorage." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct P {
+                int x;
+                void bump() { x++; }
+            }
+
+            unittest {
+                P[][] m = [[P(0), P(0)], [P(0), P(0)]];
+                int i;
+                m[i++][1].bump();
+                assert(i == 1);
+                assert(m[0][1].x == 1);
+                assert(m[1][1].x == 0);
+            }
+        });
+    }
+}
+
 // `&a[0][1]` on `int[][] a` (a dynamic array of dynamic arrays): the
 // address of an element inside a row that is itself a dynamic array must
 // land on the row's actual data, not inside the row's own
@@ -11389,12 +11416,6 @@ static foreach (backend; Matrix!(
     Omit!(Bytecode, Because.unconfirmed,
         "\"Unsupported struct value in bytecode core: m[cast(ulong)i++][1]\" " ~
         "-- independent, unconfirmed gap in the bytecode core"),
-    Omit!(Interpreter, Because.unconfirmed,
-        "`arrayPointer`'s nested-`IndexExp` arm re-evaluates the inner " ~
-        "index's side effect a second time when composing the rebind " ~
-        "address for a doubly-nested indexed receiver: `i++` runs twice " ~
-        "(i == 2 instead of 1) and `m[1][1]` gets bumped instead of " ~
-        "`m[0][1]`"),
 )) {
     @("struct.methodCallThroughDoublyNestedIndexedReceiverEvaluatesIndexOnce." ~
         backend.stringof)
@@ -11412,6 +11433,89 @@ static foreach (backend; Matrix!(
                 assert(i == 1);
                 assert(m[0][1].x == 1);
                 assert(m[1][1].x == 0);
+            }
+        });
+    }
+}
+
+// In `m[$ - rowIndex()][$ - columnIndex()]`, the inner index selects a row
+// from `m`, so its `$` is `m.length`; the outer index selects from that row,
+// so its `$` is the row's length. The calls make repeat evaluation observable.
+static foreach (backend; Matrix!(
+    Omit!(Bytecode, Because.unconfirmed,
+        "Unsupported struct value in bytecode core: m[$ - rowIndex()][...]" ~
+        " -- independent, unconfirmed gap in the bytecode core"),
+)) {
+    @("struct.methodCallThroughDoublyNestedIndexedReceiverDollarBindsAtEachLevelAndEvaluatesIndicesOnce." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct P {
+                int x;
+                void bump() { x++; }
+            }
+
+            unittest {
+                P[2][3] m;
+                int rowCalls;
+                int columnCalls;
+
+                size_t rowIndex() {
+                    rowCalls++;
+                    return 1;
+                }
+
+                size_t columnIndex() {
+                    columnCalls++;
+                    return 1;
+                }
+
+                m[$ - rowIndex()][$ - columnIndex()].bump();
+                assert(rowCalls == 1);
+                assert(columnCalls == 1);
+                assert(m[2][1].x == 1);
+                assert(m[1][1].x == 0);
+            }
+        });
+    }
+}
+
+// The out-of-bounds sibling of the nested indexed-receiver test above:
+// compiled D increments `i` once, then raises a guest-catchable `RangeError`
+// before invoking the method. SystemLinker is the oracle.
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.diverges,
+        "static variable `m` cannot be read at compile time"),
+    Omit!(Bytecode, Because.refusal,
+        "Unsupported struct value in bytecode core: m[cast(ulong)i++][1]"),
+    Omit!(LLVMJit, Because.diverges,
+        "the guest `RangeError` does not reach the catch block (`false != true`)"),
+)) {
+    @("struct.methodCallThroughDoublyNestedOutOfBoundsIndexedReceiverThrowsRangeErrorOnce." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            import core.exception: RangeError;
+
+            struct P {
+                int x;
+                void bump() { x++; }
+            }
+
+            P[2][3] m;
+            int i = 3;
+
+            unittest {
+                bool caught;
+                try {
+                    m[i++][1].bump();
+                } catch (RangeError) {
+                    caught = true;
+                }
+                assert(caught);
+                assert(i == 4);
             }
         });
     }

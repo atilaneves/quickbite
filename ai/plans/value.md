@@ -659,6 +659,12 @@ An indexed array-of-arrays element is its own addressed slice header. Slice
 assignment through that element writes the row's native elements in place;
 rebuilding the enclosing array would reintroduce boxed storage authority.
 
+A method call through `m[outerIndex()][innerIndex()]` must evaluate the valid
+inner index once before the out-of-range outer index once, then make the bounds
+failure catchable as guest `RangeError`, matching `SystemLinker`. The
+Interpreter does not yet meet this contract on `master`; keep this
+language-surface fix separate from PR 460's regression coverage.
+
 The temporary `std.conv.text` character-array path reads the authoritative
 native slice header, including its retained backing address, rather than a
 transient aggregate handle. This is slice execution, not a formatter-specific
@@ -684,19 +690,6 @@ language-surface gap: the Interpreter has no symbol-resolution source for a
 static archive at all (see the fixtures' `Omit` notes for the confirmed
 specifics) — a new native symbol-resolution source belongs to `ffi.md`, not
 this track.
-
-A struct method call through a side-effecting index receiver that is itself
-nested under another index (`m[i++][1].bump()`) evaluates `i++` twice and
-mutates the wrong element. `runCallExpression`'s `DotVarExp` arm composes the
-receiver address once via `addressOfExpression(dot.e1, EXP.address)` (the
-fix behind `struct.methodCallThroughIndexedReceiverEvaluatesIndexOnce`), but
-`arrayPointer`'s own nested-`IndexExp` arm (`index.e1.isIndexExp`) evaluates
-`index.e1` once for its `arrayValue`/length-var bookkeeping and then
-independently recurses into `arrayPointer(index.e1, outerOffset, op)` to
-compose the element address, re-running any side effect inside `index.e1` a
-second time. The single-level `arr[i++].method()` fix does not cover this
-doubly-nested shape (fixture:
-`struct.methodCallThroughDoublyNestedIndexedReceiverEvaluatesIndexOnce`).
 
 A method call chained off an assign/construct/blit whose target is itself a
 side-effecting `PtrExp`/`IndexExp` (`(*next() = value).bump()`) has no
