@@ -2,6 +2,8 @@ module ut.ffi.ffi;
 
 
 import dmd.astenums: LINK;
+import dmd.arraytypes: Dsymbols;
+import dmd.func: FuncDeclaration;
 import dmd.mtype:
     ParameterList, Type, TypeDArray, TypeDelegate, TypeFunction, TypeStruct;
 import quickbite.ffi.ffi: Callable, CompilerAbi, TypedAddress, call;
@@ -15,7 +17,11 @@ unittest {
     int result;
 
     call(
-        Callable(cast(void*) &encodeArguments, LINK.c, CompilerAbi.dmd),
+        Callable(
+            cast(void*) &encodeArguments,
+            functionSignature(Type.tint32, [Type.tint32, Type.tint32], LINK.c),
+            CompilerAbi.dmd,
+        ),
         [
             TypedAddress(Type.tint32, &lhs),
             TypedAddress(Type.tint32, &rhs),
@@ -56,7 +62,11 @@ unittest {
     void* pointer;
 
     call(
-        Callable(cast(void*) &free, LINK.c, CompilerAbi.dmd),
+        Callable(
+            cast(void*) &free,
+            functionSignature(Type.tvoid, [Type.tvoidptr], LINK.c),
+            CompilerAbi.dmd,
+        ),
         [TypedAddress(Type.tvoidptr, &pointer)],
         TypedAddress(Type.tvoid, null),
     ).should == true;
@@ -103,7 +113,11 @@ unittest {
     auto arrayType = new TypeDArray(Type.tint32);
 
     call(
-        Callable(cast(void*) &preserveArray, LINK.c, CompilerAbi.dmd),
+        Callable(
+            cast(void*) &preserveArray,
+            functionSignature(arrayType, [arrayType], LINK.c),
+            CompilerAbi.dmd,
+        ),
         [TypedAddress(arrayType, &array)],
         TypedAddress(arrayType, &arrayResult),
     ).should == true;
@@ -129,7 +143,11 @@ unittest {
     ));
 
     call(
-        Callable(cast(void*) &preserveDelegate, LINK.c, CompilerAbi.dmd),
+        Callable(
+            cast(void*) &preserveDelegate,
+            functionSignature(delegateType, [delegateType], LINK.c),
+            CompilerAbi.dmd,
+        ),
         [TypedAddress(delegateType, &delegate_)],
         TypedAddress(delegateType, &delegateResult),
     ).should == true;
@@ -157,7 +175,11 @@ unittest {
     const mixedExpected = transformMixed(mixed);
 
     call(
-        Callable(cast(void*) &transformMixed, LINK.c, CompilerAbi.dmd),
+        Callable(
+            cast(void*) &transformMixed,
+            functionSignature(mixedType, [mixedType], LINK.c),
+            CompilerAbi.dmd,
+        ),
         [TypedAddress(mixedType, &mixed)],
         TypedAddress(mixedType, &mixedResult),
     ).should == true;
@@ -176,12 +198,59 @@ unittest {
     const largeExpected = transformLarge(large);
 
     call(
-        Callable(cast(void*) &transformLarge, LINK.c, CompilerAbi.dmd),
+        Callable(
+            cast(void*) &transformLarge,
+            functionSignature(largeType, [largeType], LINK.c),
+            CompilerAbi.dmd,
+        ),
         [TypedAddress(largeType, &large)],
         TypedAddress(largeType, &largeResult),
     ).should == true;
 
     largeResult.values.should == largeExpected.values;
+}
+
+
+@("ffi.referenceArgumentsAndReturnUseAuthoritativeStorage")
+unittest {
+    auto signature = functionSignature(q{
+        extern(C) ref int referenceCall(
+            ref int value,
+            out int assigned,
+            int* pointer,
+        );
+    }, "referenceCall");
+    int value = 11;
+    int assigned = -1;
+    int pointedTo = 5;
+    int* pointer = &pointedTo;
+    int* returned;
+
+    call(
+        Callable(cast(void*) &referenceCall, signature, CompilerAbi.dmd),
+        [
+            TypedAddress(Type.tint32, &value),
+            TypedAddress(Type.tint32, &assigned),
+            TypedAddress(signature.parameterList[2].type, &pointer),
+        ],
+        TypedAddress(Type.tint32, &returned),
+    ).should == true;
+
+    value.should == 16;
+    assigned.should == 32;
+    pointedTo.should == 5;
+    assert(returned is &value);
+}
+
+
+private extern(C) ref int referenceCall(
+    ref int value,
+    out int assigned,
+    int* pointer,
+) {
+    value += *pointer;
+    assigned = value * 2;
+    return value;
 }
 
 
@@ -238,12 +307,72 @@ private TypeStruct structType(in string source, in string name) {
 }
 
 
+private TypeFunction functionSignature(in string source, in string name) {
+    import quickbite.frontend.compiler: parseSnippet;
+
+    // DMD owns mutable semantic state and type nodes.
+    auto moduleResult = parseSnippet(source);
+    auto function_ = findFunction(moduleResult.module_.members, name);
+    if (function_ !is null) {
+        auto type = function_.type.isTypeFunction;
+        assert(type !is null);
+        return type;
+    }
+
+    assert(false, "function not found");
+}
+
+
+private FuncDeclaration findFunction(Dsymbols* members, in string name) {
+    if (members is null)
+        return null;
+
+    foreach (member; *members) {
+        if (auto function_ = member.isFuncDeclaration)
+            if (function_.ident !is null && function_.ident.toString == name)
+                return function_;
+        if (auto attributes = member.isAttribDeclaration)
+            if (auto function_ = findFunction(attributes.decl, name))
+                return function_;
+    }
+    return null;
+}
+
+
+private TypeFunction functionSignature(
+    Type returnType,
+    Type[] parameterTypes,
+    in LINK linkage,
+) {
+    import dmd.arraytypes: Parameters;
+    import dmd.astenums: STC;
+    import dmd.location: Loc;
+    import dmd.mtype: Parameter;
+
+    auto parameters = new Parameters;
+    foreach (parameterType; parameterTypes)
+        parameters.push(new Parameter(
+            Loc.initial,
+            STC.none,
+            parameterType,
+            null,
+            null,
+            null,
+        ));
+    return new TypeFunction(ParameterList(parameters), returnType, linkage);
+}
+
+
 private void assertFloatingPointCall(T)(T argument, Type type) {
     T result;
     const expected = floatingPointOracle(argument);
 
     call(
-        Callable(cast(void*) &floatingPointOracle!T, LINK.c, CompilerAbi.dmd),
+        Callable(
+            cast(void*) &floatingPointOracle!T,
+            functionSignature(type, [type], LINK.c),
+            CompilerAbi.dmd,
+        ),
         [TypedAddress(type, &argument)],
         TypedAddress(type, &result),
     ).should == true;
@@ -268,7 +397,11 @@ private void assertScalarRoundTrip(T)(T expected, Type type) {
     T result;
 
     call(
-        Callable(cast(void*) &identity!T, LINK.c, CompilerAbi.dmd),
+        Callable(
+            cast(void*) &identity!T,
+            functionSignature(type, [type], LINK.c),
+            CompilerAbi.dmd,
+        ),
         [TypedAddress(type, &argument)],
         TypedAddress(type, &result),
     ).should == true;
@@ -292,7 +425,11 @@ private int callEncoding(
     int result;
 
     assert(call(
-        Callable(cast(void*) functionAddress, linkage, compilerAbi),
+        Callable(
+            cast(void*) functionAddress,
+            functionSignature(Type.tint32, [Type.tint32, Type.tint32], linkage),
+            compilerAbi,
+        ),
         [
             TypedAddress(Type.tint32, &lhs),
             TypedAddress(Type.tint32, &rhs),

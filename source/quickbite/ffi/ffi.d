@@ -11,7 +11,7 @@ public enum CompilerAbi {
 
 public struct Callable {
     public void* address;
-    public imported!"dmd.astenums".LINK linkage;
+    public imported!"dmd.mtype".TypeFunction signature;
     public CompilerAbi compilerAbi;
 }
 
@@ -23,37 +23,68 @@ public struct TypedAddress {
 
 
 public bool call(
-    in Callable callable,
+    Callable callable,
     TypedAddress[] arguments,
     TypedAddress result,
+    TypedAddress* receiver = null,
 ) {
     import quickbite.ffi.libffi:
         ffi_arg, ffi_cif, ffi_call, ffi_prep_cif, ffi_status, ffi_type,
-        FFI_DEFAULT_ABI;
-    import dmd.astenums: LINK, TY;
+        ffi_type_pointer, FFI_DEFAULT_ABI;
+    import dmd.astenums: LINK, TY, VarArg;
 
-    if (callable.address is null ||
-        (callable.linkage != LINK.c && callable.linkage != LINK.d))
+    if (callable.address is null || callable.signature is null ||
+        callable.signature.next is null ||
+        receiver !is null ||
+        (callable.signature.linkage != LINK.c &&
+            callable.signature.linkage != LINK.d) ||
+        callable.signature.parameterList.varargs != VarArg.none ||
+        callable.signature.parameterList.length != arguments.length)
         return false;
 
-    auto resultMetadata = ffiTypeFor(result.type);
+    auto returnType = callable.signature.next.toBasetype;
+    if (result.type is null ||
+        !result.type.toBasetype.equals(returnType))
+        return false;
+
+    const returnsReference = callable.signature.isRef;
+    auto resultMetadata = returnsReference
+        ? FfiType(&ffi_type_pointer)
+        : ffiTypeFor(returnType);
     if (resultMetadata.type is null)
         return false;
 
-    const resultTy = result.type.toBasetype.ty;
-    if (resultTy != TY.Tvoid && result.address is null)
+    const resultTy = returnType.ty;
+    if ((returnsReference || resultTy != TY.Tvoid) && result.address is null)
         return false;
 
     auto argumentTypes = new ffi_type*[](arguments.length);
     auto argumentAddresses = new void*[](arguments.length);
     auto argumentMetadata = new FfiType[](arguments.length);
+    // A ref/out ABI argument is a pointer value. Only that pointer value is
+    // temporary: its cell lives through ffi_call and points directly at the
+    // caller's authoritative storage; no pointee bytes are copied.
+    auto referenceCells = new void*[](arguments.length);
     foreach (index, argument; arguments) {
-        const abiIndex = abiArgumentIndex(callable, index, arguments.length);
-        argumentMetadata[abiIndex] = ffiTypeFor(argument.type);
-        argumentTypes[abiIndex] = argumentMetadata[abiIndex].type;
-        if (argumentTypes[abiIndex] is null || argument.address is null)
+        auto parameter = callable.signature.parameterList[index];
+        if (argument.type is null ||
+            !argument.type.toBasetype.equals(parameter.type.toBasetype) ||
+            argument.address is null)
             return false;
-        argumentAddresses[abiIndex] = argument.address;
+
+        const abiIndex = abiArgumentIndex(callable, index, arguments.length);
+        const isReference = isReferenceParameter(parameter);
+        argumentMetadata[abiIndex] = isReference
+            ? FfiType(&ffi_type_pointer)
+            : ffiTypeFor(parameter.type);
+        argumentTypes[abiIndex] = argumentMetadata[abiIndex].type;
+        if (argumentTypes[abiIndex] is null)
+            return false;
+        if (isReference) {
+            referenceCells[index] = argument.address;
+            argumentAddresses[abiIndex] = &referenceCells[index];
+        } else
+            argumentAddresses[abiIndex] = argument.address;
     }
 
     ffi_cif cif;
@@ -66,26 +97,31 @@ public bool call(
     );
     if (prepStatus != ffi_status.FFI_OK)
         return false;
-    if (!layoutMatches(result.type, resultMetadata))
+    if (!returnsReference && !layoutMatches(returnType, resultMetadata))
         return false;
-    foreach (index, argument; arguments)
-        if (!layoutMatches(
-            argument.type,
-            argumentMetadata[abiArgumentIndex(
-                callable,
-                index,
-                arguments.length,
-            )],
-        ))
+    foreach (index; 0 .. arguments.length) {
+        auto parameter = callable.signature.parameterList[index];
+        if (!isReferenceParameter(parameter) &&
+            !layoutMatches(
+                parameter.type,
+                argumentMetadata[abiArgumentIndex(
+                    callable,
+                    index,
+                    arguments.length,
+                )],
+            ))
             return false;
+    }
 
     // libffi requires narrow integer returns to use an ffi_arg-wide slot.
     // Copy only the static type's native width into the caller's storage.
     ffi_arg resultScratch;
     const resultCopySize = narrowIntegerResultSize(resultTy);
-    void* resultAddress = resultTy == TY.Tvoid
+    void* resultAddress = resultTy == TY.Tvoid && !returnsReference
         ? null
-        : resultCopySize == 0 ? result.address : &resultScratch;
+        : returnsReference || resultCopySize == 0
+            ? result.address
+            : &resultScratch;
     alias CFunction = extern(C) void function();
     ffi_call(
         &cif,
@@ -94,11 +130,20 @@ public bool call(
         argumentAddresses.ptr,
     );
 
-    if (resultCopySize != 0) {
+    if (!returnsReference && resultCopySize != 0) {
         import core.stdc.string: memcpy;
         memcpy(result.address, &resultScratch, resultCopySize);
     }
     return true;
+}
+
+
+private bool isReferenceParameter(
+    imported!"dmd.mtype".Parameter parameter,
+) @safe @nogc nothrow pure {
+    import dmd.astenums: STC;
+
+    return (parameter.storageClass & (STC.ref_ | STC.out_)) != STC.none;
 }
 
 
@@ -109,7 +154,7 @@ private size_t abiArgumentIndex(
 ) @safe @nogc nothrow pure {
     import dmd.astenums: LINK;
 
-    return callable.linkage == LINK.d &&
+    return callable.signature.linkage == LINK.d &&
             callable.compilerAbi == CompilerAbi.dmd
         ? numArguments - sourceIndex - 1
         : sourceIndex;

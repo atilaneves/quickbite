@@ -40,7 +40,8 @@ own.
 Conceptually, one invocation supplies:
 
 ```text
-callable:       native address, linkage, and compiler-ABI provenance
+callable:       native address, semantic TypeFunction,
+                and compiler-ABI provenance
 arguments:      source-order static types and addresses of native values
 receiver:       optional native hidden-argument value address
 result:         static type and writable native destination address
@@ -51,6 +52,12 @@ functions that supports the first Bytecode call. Do not introduce a class,
 backend interface, visitor, marshaller, or callback registry in anticipation
 of later call shapes.
 
+The callable's semantically analysed DMD `TypeFunction` is the authoritative
+signature. The bridge derives linkage, return type, fixed parameter types,
+`ref`/`out` policy, ref-return policy, and variadic shape from it rather than
+duplicating those properties in flags or parallel arrays. The supplied typed
+addresses are checked against that signature before calling native code.
+
 The boundary obeys these invariants:
 
 - Every supplied address already points at the value's native D
@@ -60,7 +67,11 @@ The boundary obeys these invariants:
 - A struct, static array, class reference, pointer, delegate, and scalar cross
   in their ordinary native representation.
 - A `ref` or `out` argument designates the caller's authoritative storage.
-  Native writes require no cell reconstruction or post-call writeback.
+  The libffi pointer-value cell is private call metadata; it points directly
+  at that storage, so native writes require no pointee copy or post-call
+  writeback.
+- A ref return writes the returned native pointer into caller-provided
+  pointer-sized storage. The bridge does not copy the referenced value.
 - A result is written directly into storage allocated for its static D type.
 - An rvalue without an existing address is first evaluated into a typed
   backend temporary. Creating that ordinary value is backend evaluation, not
