@@ -157,6 +157,61 @@ unittest {
 }
 
 
+@("ffi.addressOnlyImaginaryAndComplexCallsUseNativeScalarStorage")
+unittest {
+    ifloat imaginaryFloat = -2.5fi;
+    assertAddressOnlyCall(
+        cast(void*) &imaginaryFloatOracle,
+        Type.timaginary32,
+        imaginaryFloat,
+        imaginaryFloatOracle(imaginaryFloat),
+    );
+
+    idouble imaginaryDouble = 3.25i;
+    assertAddressOnlyCall(
+        cast(void*) &imaginaryDoubleOracle,
+        Type.timaginary64,
+        imaginaryDouble,
+        imaginaryDoubleOracle(imaginaryDouble),
+    );
+
+    ireal imaginaryReal = -(real.max / 8) * 1.0Li;
+    assertAddressOnlyCall(
+        cast(void*) &imaginaryRealOracle,
+        Type.timaginary80,
+        imaginaryReal,
+        imaginaryRealOracle(imaginaryReal),
+    );
+
+    cfloat complexFloat = 1.25f - 2.5fi;
+    assertAddressOnlyCall(
+        cast(void*) &complexFloatOracle,
+        Type.tcomplex32,
+        complexFloat,
+        complexFloatOracle(complexFloat),
+    );
+
+    cdouble complexDouble = -3.5 + 6.25i;
+    assertAddressOnlyCall(
+        cast(void*) &complexDoubleOracle,
+        Type.tcomplex64,
+        complexDouble,
+        complexDoubleOracle(complexDouble),
+    );
+
+    creal complexReal = real.max / 8 - (real.max / 16) * 1.0Li;
+    const complexRealExpected = complexRealOracle(complexReal);
+    assert(complexRealExpected.re > double.max);
+    assert(complexRealExpected.im < -double.max);
+    assertAddressOnlyCall(
+        cast(void*) &complexRealOracle,
+        Type.tcomplex80,
+        complexReal,
+        complexRealExpected,
+    );
+}
+
+
 @("ffi.addressOnlyNativeDescriptorsPassUntouched")
 unittest {
     int[] array = [3, 5, 7];
@@ -683,6 +738,58 @@ private void assertFloatingPointCall(T)(T argument, Type type) {
 
 private extern(C) T floatingPointOracle(T)(T value) {
     return value * cast(T) 1.5 + cast(T) 0.25;
+}
+
+
+private void assertAddressOnlyCall(T)(
+    void* functionAddress,
+    Type type,
+    T argument,
+    T expected,
+) {
+    T result;
+
+    call(
+        Callable(
+            functionAddress,
+            functionSignature(type, [type], LINK.c),
+            CompilerAbi.dmd,
+        ),
+        [TypedAddress(type, &argument)],
+        TypedAddress(type, &result),
+    ).should == true;
+
+    result.should == expected;
+}
+
+
+private extern(C) ifloat imaginaryFloatOracle(ifloat value) {
+    return value * 1.5f + 0.25fi;
+}
+
+
+private extern(C) idouble imaginaryDoubleOracle(idouble value) {
+    return value * 1.5 + 0.25i;
+}
+
+
+private extern(C) ireal imaginaryRealOracle(ireal value) {
+    return value / 2.0L + 0.25Li;
+}
+
+
+private extern(C) cfloat complexFloatOracle(cfloat value) {
+    return value * 1.5f + (0.5f - 0.75fi);
+}
+
+
+private extern(C) cdouble complexDoubleOracle(cdouble value) {
+    return value * 1.5 + (0.5 - 0.75i);
+}
+
+
+private extern(C) creal complexRealOracle(creal value) {
+    return value / 2.0L + (0.5L - 0.75Li);
 }
 
 

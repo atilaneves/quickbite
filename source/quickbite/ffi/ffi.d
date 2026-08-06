@@ -268,10 +268,11 @@ private FfiType ffiTypeFor(
     imported!"dmd.mtype".Type type,
 ) {
     import quickbite.ffi.libffi:
-        ffi_type_double, ffi_type_float, ffi_type_longdouble, ffi_type_pointer,
-        ffi_type_sint8, ffi_type_sint16, ffi_type_sint32, ffi_type_sint64,
-        ffi_type_uint8, ffi_type_uint16, ffi_type_uint32, ffi_type_uint64,
-        ffi_type_void;
+        ffi_type_complex_double, ffi_type_complex_float,
+        ffi_type_complex_longdouble, ffi_type_double, ffi_type_float,
+        ffi_type_longdouble, ffi_type_pointer, ffi_type_sint8, ffi_type_sint16,
+        ffi_type_sint32, ffi_type_sint64, ffi_type_uint8, ffi_type_uint16,
+        ffi_type_uint32, ffi_type_uint64, ffi_type_void;
     import dmd.astenums: TY;
 
     if (type is null)
@@ -289,9 +290,15 @@ private FfiType ffiTypeFor(
         case Tint32: return FfiType(&ffi_type_sint32);
         case Tuns64: return FfiType(&ffi_type_uint64);
         case Tint64: return FfiType(&ffi_type_sint64);
-        case Tfloat32: return FfiType(&ffi_type_float);
-        case Tfloat64: return FfiType(&ffi_type_double);
-        case Tfloat80: return FfiType(&ffi_type_longdouble);
+        // An imaginary scalar has the same one-component native storage as
+        // its real counterpart. Complex descriptors express the two-component
+        // ABI directly; neither path reads or reconstructs the value.
+        case Tfloat32, Timaginary32: return FfiType(&ffi_type_float);
+        case Tfloat64, Timaginary64: return FfiType(&ffi_type_double);
+        case Tfloat80, Timaginary80: return FfiType(&ffi_type_longdouble);
+        case Tcomplex32: return FfiType(&ffi_type_complex_float);
+        case Tcomplex64: return FfiType(&ffi_type_complex_double);
+        case Tcomplex80: return FfiType(&ffi_type_complex_longdouble);
         case Tpointer, Tclass, Taarray: return FfiType(&ffi_type_pointer);
         case Tarray:
             // A native D dynamic array is `{length, ptr}` in word order.

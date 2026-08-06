@@ -126,4 +126,7 @@ extern __gshared {
     ffi_type ffi_type_double;
     ffi_type ffi_type_pointer;
     ffi_type ffi_type_longdouble;
+    ffi_type ffi_type_complex_float;
+    ffi_type ffi_type_complex_double;
+    ffi_type ffi_type_complex_longdouble;
 }
