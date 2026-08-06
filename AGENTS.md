@@ -44,53 +44,6 @@ the same as their branch, e.g. worktree named "foo" →
 `./worktrees/foo` at repo root. Always use the `worktrees` directory
 in this repo unless instructed otherwise.
 
-## TDD
-
-Strict TDD: failing test → dumbest passing code → green suite. No refactoring
-until all tests pass. Ask for feedback after the refactoring step.
-
-Stop and wait for approval before adding or modifying any test for new
-functionality. Tests that you write exposing a bug do not need
-approval. `SystemLinker` (compiled D) is the single behaviour oracle
-for every backend except `Ctfe`
-(`ai/plans/single-oracle.md`). Promoting an already-existing
-backend-matrix test to another backend is pre-approved when the test
-is backed by that oracle.  `lang/` holds the hermetic language
-surface: behaviour that needs nothing from the host. `sys/` holds
-behaviour that needs the runtime environment (libc/OS — today
-`cstdlib`, `file`, `random`, `concurrency`). The directory criterion
-is what the behaviour *needs from the host*, never whether `Ctfe` can
-execute it: CTFE-expressibility is a per-backend capability that
-belongs in the fixture's matrix, not the directory. Every backend
-except `Ctfe` is a promotion candidate. Adding a new test or changing
-test behaviour still requires approval.
-
-A fixture's backend list is `Matrix!(...)` (`tests/ut/backends/package.d`).
-`lang/` blocks default to every mature backend via `Matrix!()` (=
-`LangBackends`); `sys/` blocks have no automatic default and instead omit
-`Ctfe` explicitly with `Omit!(Ctfe, ...)` since host-env behaviour isn't
-CTFE-evaluable, and `SysBackends` names the resulting set (`LangBackends`
-minus `Ctfe`). A mature backend opts out with a reason: `Matrix!(Omit!(B,
-Because.inexpressible, "..."))`, `Because.diverges`, or `Because.refusal`
-(see `ai/plans/interpreter.md` §8) — each carries a required `note`
-explaining why except `Because.unconfirmed`, which marks the promotion
-backlog. Promoting a backend is deleting its `Omit!(B, Because.unconfirmed)`.
-Hand-written `AliasSeq!(...)` is reserved for characterization pins that
-never carry a `SystemLinker`-oracle expectation (e.g. pinning `Ctfe`'s
-actual, divergent behaviour). Backend-mechanism tests (native JIT internals,
-FFI dependency images, ORC/ELF plumbing) live with their subsystem, not
-under `runner/`.
-
-Test behaviours, not implementations.
-
-Language-surface tests must match D's compiled-code behaviour, with
-`SystemLinker` as the oracle (`ai/plans/single-oracle.md`). If a backend
-disagrees with `SystemLinker`, the backend or test is wrong. `Ctfe` is not an
-oracle: where it diverges from `SystemLinker`, pin `Ctfe`'s actual behaviour as
-a characterization test (with a comment naming the divergence) rather than
-treating it as truth. `Ctfe` is still a convenient real-D fixture source — a
-fixture written for it is real D — but it never arbitrates correctness.
-
 ## Style
 
 ### General
@@ -134,14 +87,7 @@ fixture written for it is real D — but it never arbitrates correctness.
 - Use package modules liberally to avoid imports in test modules - see
   `import ut;` for a good example.
 
-## Code organisation
-
-* Backends must not import each other: nothing in one backend's package
-  may import another backend's package, and vice versa. Within a single
-  backend package, modules can and should import each other, including
-  package-private code.
-
-# Testing
+## Testing
 
 Run tests after every edit you make.
 
@@ -170,6 +116,39 @@ identify why and come up with a D language feature unit test that
 exposes the flaw in that backend's implementation.
 
 Never delete test code to make tests pass.
+
+Test behaviours, not implementations.
+
+Language-surface tests must match D's compiled-code behaviour, with
+`SystemLinker` as the oracle (`ai/plans/single-oracle.md`). If a backend
+disagrees with `SystemLinker`, the backend or test is wrong. `Ctfe` is not an
+oracle: where it diverges from `SystemLinker`, pin `Ctfe`'s actual behaviour as
+a characterization test (with a comment naming the divergence) rather than
+treating it as truth. `Ctfe` is still a convenient real-D fixture source — a
+fixture written for it is real D — but it never arbitrates correctness.
+
+Promoting an already-existing backend-matrix test to another backend
+is pre-approved when the test is backed by that oracle.
+
+## TDD
+
+Strict TDD for implementing new features or fixing bugs: failing test
+→ dumbest passing code → green suite → refactor.
+
+Stop and wait for approval before adding or modifying any test for new
+functionality. Tests that you write exposing a bug do not need
+approval, but you do have to first run the test to make sure it fails
+as intended. Always run bug-exposing tests on all backends when
+determining its redness, do not pre-emptively add `Omit`.
+
+
+## Code organisation
+
+* Backends must not import each other: nothing in one backend's package
+  may import another backend's package, and vice versa. Within a single
+  backend package, modules can and should import each other, including
+  package-private code.
+
 
 # Do nots
 
@@ -204,84 +183,3 @@ Never delete test code to make tests pass.
 
 Present review findings one by one for discussion and approval. This
 applies to reviewing code or plans.
-
-# General LLM Coding Guidelines inspired by Andrej Karpathy
-
-## Source
-
-<https://github.com/multica-ai/andrej-karpathy-skills>
-
-# CLAUDE.md
-
-Behavioral guidelines to reduce common LLM coding mistakes. Merge with
-project-specific instructions as needed.
-
-**Tradeoff:** These guidelines bias toward caution over speed. For
-trivial tasks, use judgment.
-
-## 1. Think Before Coding
-
-**Don't assume. Don't hide confusion. Surface tradeoffs.**
-
-Before implementing:
-- State your assumptions explicitly. If uncertain, ask.
-- If multiple interpretations exist, present them - don't pick
-  silently.
-- If a simpler approach exists, say so. Push back when warranted.
-- If something is unclear, stop. Name what's confusing. Ask.
-
-## 2. Simplicity First
-
-**Minimum code that solves the problem. Nothing speculative.**
-
-- No features beyond what was asked.
-- No abstractions for single-use code.
-- No "flexibility" or "configurability" that wasn't requested.
-- No error handling for impossible scenarios.
-- If you write 200 lines and it could be 50, rewrite it.
-
-Ask yourself: "Would a senior engineer say this is overcomplicated?"
-If yes, simplify.
-
-## 3. Surgical Changes
-
-**Touch only what you must. Clean up only your own mess.**
-
-When editing existing code:
-- Don't "improve" adjacent code, comments, or formatting.
-- Don't refactor things that aren't broken.
-- Match existing style, even if you'd do it differently.
-- If you notice unrelated dead code, mention it - don't delete it.
-
-When your changes create orphans:
-- Remove imports/variables/functions that YOUR changes made unused.
-- Don't remove pre-existing dead code unless asked.
-
-The test: Every changed line should trace directly to the user's
-request.
-
-## 4. Goal-Driven Execution
-
-**Define success criteria. Loop until verified.**
-
-Transform tasks into verifiable goals:
-- "Add validation" → "Write tests for invalid inputs, then make them
-  pass"
-- "Fix the bug" → "Write a test that reproduces it, then make it pass"
-- "Refactor X" → "Ensure tests pass before and after"
-
-For multi-step tasks, state a brief plan:
-```
-1. [Step] → verify: [check]
-2. [Step] → verify: [check]
-3. [Step] → verify: [check]
-```
-
-Strong success criteria let you loop independently. Weak criteria
-("make it work") require constant clarification.
-
----
-
-**These guidelines are working if:** fewer unnecessary changes in
-diffs, fewer rewrites due to overcomplication, and clarifying
-questions come before implementation rather than after mistakes.
