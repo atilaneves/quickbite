@@ -11745,17 +11745,59 @@ static foreach (backend; Matrix!(
     }
 }
 
-// `&arr[0].mid.a[$ - 1]` -- the same doubly-nested `DotVarExp`-receiver,
-// side-effecting-index-chain shape as
+// Same nested side-effecting-index shape as
+// `pointer.addressOfDoublyNestedDotVarStaticArrayElementThroughSideEffectingIndex`
+// above, but `i` starts out of bounds for `arr[i++]` rather than in bounds:
+// the out-of-range access must raise the same `RangeError` real D raises,
+// with `i` incremented exactly once -- not silently succeed against a
+// stale, already-incremented index as if nothing were wrong. SystemLinker
+// is the oracle.
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.diverges,
+        "Ctfe runs the unittest body through DMD's own CTFE interpreter, " ~
+        "which cannot read the mutable module-scope variables `arr`/`i`/" ~
+        "`j` at compile time"),
+    Omit!(Bytecode, Because.unconfirmed,
+        "no support yet for address-of through a doubly-nested `DotVarExp` " ~
+        "receiver in the bytecode core, same gap as " ~
+        "addressOfDoublyNestedDotVarStaticArrayElement above"),
+    Omit!(LLVMJit, Because.unconfirmed,
+        "independent, unconfirmed gap: address-of through a doubly-nested " ~
+        "`DotVarExp` receiver in the JIT backend, same gap as " ~
+        "addressOfDoublyNestedDotVarStaticArrayElement above"),
+)) {
+    @("pointer.addressOfDoublyNestedDotVarStaticArrayElementThroughOutOfBoundsSideEffectingIndex." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            import core.exception: RangeError;
+            struct Mid { int[3] a; }
+            struct Outer { Mid mid; }
+            Outer[2] arr;
+            int i = -1;
+            int j = 1;
+            unittest {
+                arr[0].mid.a = [10, 20, 30];
+                arr[1].mid.a = [40, 50, 60];
+                bool caught = false;
+                try {
+                    auto p = &arr[i++].mid.a[j];
+                } catch (RangeError) {
+                    caught = true;
+                }
+                assert(caught);
+                assert(i == 0);
+            }
+        });
+    }
+}
+
+// `&arr[0].mid.a[$ - 1]` -- the same nested address-of shape as
 // `pointer.addressOfDoublyNestedDotVarStaticArrayElementThroughSideEffectingIndex`
 // above, but exercising `$` at the OUTERMOST index position (`a[$ - 1]`,
-// where `a` is a dynamic array). The new `arrayPointer` branch that
-// resolves the whole address through a single `lvalue_place.placeOfLvalue`
-// walk skips the ordinary eager `runExpression(index.e1)` -- the only thing
-// that used to bind `index.lengthVar` from the receiver's length before
-// `$` is evaluated. Left unbound, `$` reads back 0, so `$ - 1` wraps to
-// `size_t.max` and `Place.index` throws "index out of range for slice
-// place" instead of resolving element 2. SystemLinker is the oracle.
+// where `a` is a dynamic array): `$` must bind to that array's real length.
+// SystemLinker is the oracle.
 static foreach (backend; Matrix!(
     Omit!(Bytecode, Because.unconfirmed,
         "no support yet for address-of through a doubly-nested `DotVarExp` " ~
