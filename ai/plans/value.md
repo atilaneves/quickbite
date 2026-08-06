@@ -659,11 +659,14 @@ An indexed array-of-arrays element is its own addressed slice header. Slice
 assignment through that element writes the row's native elements in place;
 rebuilding the enclosing array would reintroduce boxed storage authority.
 
-A method call through `m[outerIndex()][innerIndex()]` must evaluate the valid
-inner index once before the out-of-range outer index once, then make the bounds
-failure catchable as guest `RangeError`, matching `SystemLinker`. The
-Interpreter does not yet meet this contract on `master`; keep this
-language-surface fix separate from PR 460's regression coverage.
+A doubly-indexed receiver's evaluation-order contract only covers a static-
+array row (`m[outer][inner]` where `m[outer]`'s type is a fixed-size array,
+e.g. `P[2][3]`). A dynamic-array row (e.g. `int[][3] m`) is a distinct,
+unimplemented case, not just the pre-existing fallback order: confirmed
+against `SystemLinker` (`bin/qb` probe, both a struct method-call receiver
+and a plain scalar read), compiled D calls the first bracket's index
+expression *twice* while still calling the second bracket's once, first.
+Neither this fix's fast path nor the old fallback reproduces that.
 
 The temporary `std.conv.text` character-array path reads the authoritative
 native slice header, including its retained backing address, rather than a

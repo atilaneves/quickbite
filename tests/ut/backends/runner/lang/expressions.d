@@ -11521,6 +11521,161 @@ static foreach (backend; Matrix!(
     }
 }
 
+// A second out-of-bounds sibling of the nested indexed-receiver test above,
+// but with an independent function call as each bracket's index rather than
+// sharing one `i++`: compiled D evaluates the SECOND bracket's index and
+// bounds-checks it against the row's statically known length before ever
+// calling the FIRST bracket's index function, so an out-of-range first
+// bracket still lets the second bracket's call run exactly once, in that
+// order, before the `RangeError`. SystemLinker is the oracle.
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.diverges,
+        "static variable `m` cannot be read at compile time"),
+    Omit!(Bytecode, Because.refusal,
+        "Unsupported struct value in bytecode core: " ~
+        "m[cast(ulong)outerIndex()][cast(ulong)innerIndex()]"),
+)) {
+    @("struct.methodCallThroughDoublyNestedOutOfBoundsIndexedReceiverEvaluatesSecondBracketIndexFirst." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            import core.exception: RangeError;
+
+            struct P {
+                int x;
+                void bump() { x++; }
+            }
+
+            P[2][3] m;
+            int outerCalls;
+            int innerCalls;
+            int firstCaller;
+
+            int outerIndex() {
+                outerCalls++;
+                if (firstCaller == 0) firstCaller = 1;
+                return 5;
+            }
+
+            int innerIndex() {
+                innerCalls++;
+                if (firstCaller == 0) firstCaller = 2;
+                return 0;
+            }
+
+            unittest {
+                bool caught;
+                try {
+                    m[outerIndex()][innerIndex()].bump();
+                } catch (RangeError) {
+                    caught = true;
+                }
+                assert(caught);
+                assert(outerCalls == 1);
+                assert(innerCalls == 1);
+                assert(firstCaller == 2);
+            }
+        });
+    }
+}
+
+// When BOTH brackets are out of range, compiled D's second-bracket-first
+// order means the first bracket's index function never runs at all: the
+// second bracket's own bounds check against the row's statically known
+// length already fails, so there is nothing left to resolve the first
+// bracket's row from. SystemLinker is the oracle.
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.diverges,
+        "static variable `m` cannot be read at compile time"),
+    Omit!(Bytecode, Because.refusal,
+        "Unsupported struct value in bytecode core: " ~
+        "m[cast(ulong)outerIndex()][cast(ulong)innerIndex()]"),
+)) {
+    @("struct.methodCallThroughDoublyNestedOutOfBoundsIndexedReceiverNeverCallsFirstBracketWhenBothAreOutOfRange." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            import core.exception: RangeError;
+
+            struct P {
+                int x;
+                void bump() { x++; }
+            }
+
+            P[2][3] m;
+            int outerCalls;
+            int innerCalls;
+
+            int outerIndex() {
+                outerCalls++;
+                return 5;
+            }
+
+            int innerIndex() {
+                innerCalls++;
+                return 9;
+            }
+
+            unittest {
+                bool caught;
+                try {
+                    m[outerIndex()][innerIndex()].bump();
+                } catch (RangeError) {
+                    caught = true;
+                }
+                assert(caught);
+                assert(outerCalls == 0);
+                assert(innerCalls == 1);
+            }
+        });
+    }
+}
+
+// The in-range sibling of the two out-of-bounds tests above: compiled D
+// still calls the SECOND bracket's index function before the FIRST
+// bracket's, even when both indices are valid and the call succeeds.
+// SystemLinker is the oracle.
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.diverges,
+        "static variable `m` cannot be read at compile time"),
+    Omit!(Bytecode, Because.refusal,
+        "Unsupported struct value in bytecode core: " ~
+        "m[cast(ulong)outerIndex()][cast(ulong)innerIndex()]"),
+)) {
+    @("struct.methodCallThroughDoublyNestedIndexedReceiverEvaluatesSecondBracketIndexFirstWhenBothInRange." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct P {
+                int x;
+                void bump() { x++; }
+            }
+
+            P[2][3] m;
+            int firstCaller;
+
+            int outerIndex() {
+                if (firstCaller == 0) firstCaller = 1;
+                return 1;
+            }
+
+            int innerIndex() {
+                if (firstCaller == 0) firstCaller = 2;
+                return 1;
+            }
+
+            unittest {
+                m[outerIndex()][innerIndex()].bump();
+                assert(firstCaller == 2);
+                assert(m[1][1].x == 1);
+            }
+        });
+    }
+}
+
 // `&s.inner.a[i]` -- an address-of through a NESTED field access (`s.inner`
 // is itself a struct, `.a` is that inner struct's static-array field) with
 // a runtime index must land on the real backing storage inside `s`, not a
