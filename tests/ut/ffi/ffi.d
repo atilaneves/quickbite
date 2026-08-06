@@ -930,15 +930,21 @@ unittest {
 
 @("ffi.addressOnlyExternCppCallsUseNativeAbi")
 unittest {
-    auto freeSignature = functionSignature(q{
+    auto freeDeclaration = functionDeclaration(q{
         extern(C++) int cppEncode(int lhs, int rhs);
     }, "cppEncode");
+    auto freeSignature = freeDeclaration.type.isTypeFunction;
     int lhs = 4;
     int rhs = 7;
     int result;
 
     call(
-        Callable(cast(void*) &cppEncode, freeSignature, CompilerAbi.dmd),
+        Callable(
+            cast(void*) &cppEncode,
+            freeSignature,
+            CompilerAbi.dmd,
+            freeDeclaration,
+        ),
         [
             TypedAddress(Type.tint32, &lhs),
             TypedAddress(Type.tint32, &rhs),
@@ -947,23 +953,63 @@ unittest {
     ).should == true;
     result.should == cppEncode(lhs, rhs);
 
-    auto memberSignature = functionSignature(q{
-        extern(C++) struct Receiver {
-            int combine(int lhs, int rhs);
-        }
-    }, "combine");
-    auto memberReceiverType = structType(q{
+    CppReceiver unexpectedReceiver;
+    auto unexpectedReceiverType = structType(q{
         extern(C++) struct Receiver {
             int bias;
         }
     }, "Receiver");
+    auto receiver = TypedAddress(
+        unexpectedReceiverType,
+        &unexpectedReceiver,
+    );
+    call(
+        Callable(
+            cast(void*) &cppEncode,
+            freeSignature,
+            CompilerAbi.dmd,
+            freeDeclaration,
+        ),
+        [
+            TypedAddress(Type.tint32, &lhs),
+            TypedAddress(Type.tint32, &rhs),
+        ],
+        TypedAddress(Type.tint32, &result),
+        &receiver,
+    ).should == false;
+
+    auto memberDeclaration = functionDeclaration(q{
+        extern(C++) struct Receiver {
+            int combine(int lhs, int rhs);
+        }
+    }, "combine");
+    auto memberSignature = memberDeclaration.type.isTypeFunction;
     CppReceiver cppReceiver = CppReceiver(3);
     auto member = &cppReceiver.combine;
-    auto receiver = TypedAddress(memberReceiverType, &cppReceiver);
+    receiver = TypedAddress(memberDeclaration.isThis.type, &cppReceiver);
     result = 0;
 
     call(
-        Callable(cast(void*) member.funcptr, memberSignature, CompilerAbi.dmd),
+        Callable(
+            cast(void*) member.funcptr,
+            memberSignature,
+            CompilerAbi.dmd,
+            memberDeclaration,
+        ),
+        [
+            TypedAddress(Type.tint32, &lhs),
+            TypedAddress(Type.tint32, &rhs),
+        ],
+        TypedAddress(Type.tint32, &result),
+    ).should == false;
+
+    call(
+        Callable(
+            cast(void*) member.funcptr,
+            memberSignature,
+            CompilerAbi.dmd,
+            memberDeclaration,
+        ),
         [
             TypedAddress(Type.tint32, &lhs),
             TypedAddress(Type.tint32, &rhs),
@@ -1105,6 +1151,20 @@ unittest {
             TypedAddress(Type.tint32, &rhs),
         ],
         TypedAddress(constructor.type.isTypeFunction.next, null),
+    ).should == false;
+
+    call(
+        Callable(
+            cast(void*) &cppConstructorOracle,
+            constructor.type.isTypeFunction,
+            CompilerAbi.dmd,
+            constructor,
+        ),
+        [
+            TypedAddress(Type.tint32, &lhs),
+            TypedAddress(Type.tint32, &rhs),
+        ],
+        TypedAddress(constructor.type.isTypeFunction.next, null),
         &receiver,
     ).should == false;
 
@@ -1149,6 +1209,17 @@ unittest {
             ~this();
         }
     }, false);
+    call(
+        Callable(
+            cast(void*) &cppDestructorOracle,
+            destructor.type.isTypeFunction,
+            CompilerAbi.dmd,
+            destructor,
+        ),
+        [],
+        TypedAddress(destructor.type.isTypeFunction.next, null),
+    ).should == false;
+
     call(
         Callable(
             cast(void*) &cppDestructorOracle,
@@ -2543,15 +2614,19 @@ private TypeClass classType(in string source, in string name) {
 
 
 private TypeFunction functionSignature(in string source, in string name) {
+    return functionDeclaration(source, name).type.isTypeFunction;
+}
+
+
+private FuncDeclaration functionDeclaration(in string source, in string name) {
     import quickbite.frontend.compiler: parseSnippet;
 
     // DMD owns mutable semantic state and type nodes.
     auto moduleResult = parseSnippet(source);
     auto function_ = findFunction(moduleResult.module_.members, name);
     if (function_ !is null) {
-        auto type = function_.type.isTypeFunction;
-        assert(type !is null);
-        return type;
+        assert(function_.type.isTypeFunction !is null);
+        return function_;
     }
 
     assert(false, "function not found");

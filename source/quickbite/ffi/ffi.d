@@ -221,13 +221,14 @@ private PhysicalCall physicalCallFor(
     if (callable.declaration !is null &&
         !callable.declaration.type.toBasetype.equals(callable.signature))
         return physical;
+    if (!hasValidCppReceiverPresence(callable, receiver))
+        return physical;
     const isCppConstructor = callable.declaration !is null &&
         callable.declaration.isCtorDeclaration !is null;
     const isCppSpecialMember = isCppConstructor ||
         callable.declaration !is null &&
         callable.declaration.isDtorDeclaration !is null;
-    if (isCppSpecialMember &&
-        (callable.signature.linkage != LINK.cpp || receiver is null))
+    if (isCppSpecialMember && callable.signature.linkage != LINK.cpp)
         return physical;
 
     const isCKRVariadic = hasKRVariadicArguments(callable.signature);
@@ -376,6 +377,21 @@ private PhysicalCall physicalCallFor(
         : numPassedFixedArguments + hasReceiver;
     physical.valid = true;
     return physical;
+}
+
+
+private bool hasValidCppReceiverPresence(
+    Callable callable,
+    TypedAddress* receiver,
+) {
+    import dmd.astenums: LINK;
+
+    if (callable.declaration is null ||
+        callable.signature.linkage != LINK.cpp)
+        return true;
+    const declarationHasReceiver = callable.declaration.isThis !is null ||
+        callable.declaration.needThis;
+    return (receiver !is null) == declarationHasReceiver;
 }
 
 
