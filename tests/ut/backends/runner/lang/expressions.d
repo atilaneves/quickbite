@@ -11679,3 +11679,59 @@ static foreach (backend; Matrix!(
         });
     }
 }
+
+// `(*next() = P(10)).bump()` -- a method call chained off an assignment
+// whose own target is a side-effecting `PtrExp` (`*next()`, `next()`
+// advancing `calls` and returning a fresh element each time). `bump()`'s
+// receiver expression is the assignment itself; resolving `this`'s address
+// by peeling the assignment's target (`impl.d`'s `assignmentTarget`) and
+// re-deriving its address via `addressOfExpression` would re-run `next()` a
+// second time -- corrupting state silently (`calls` reads back 2, and
+// `bump()` lands on `arr[1]` instead of `arr[0]`). Unlike the `this.payload
+// = args` shape `assignmentTarget` exists for, there is no
+// `precomputedReceiverPointerAddress` for a target recovered by peeling (that
+// precompute only covers a bare `PtrExp`/`IndexExp` *receiver expression
+// itself*), so `runMemberFunction` refuses this shape outright with a clear
+// exception rather than risk the double evaluation. SystemLinker is the
+// oracle.
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.diverges,
+        "Ctfe runs the unittest body through DMD's own CTFE interpreter, " ~
+        "which cannot read the mutable module-scope variables `arr`/" ~
+        "`calls` at compile time"),
+    Omit!(Interpreter, Because.unconfirmed,
+        "a pointer/index assignment-chain receiver (`(*next() = value)." ~
+        "method()`) would need `next()`'s side effect evaluated exactly " ~
+        "once when resolving the method's `this` address, which the " ~
+        "current architecture can't guarantee without duplicating it; " ~
+        "`runMemberFunction` refuses the shape with \"Unsupported eval " ~
+        "expression: chained postblit/method call receiver's assignment " ~
+        "target is a pointer/index expression...\" rather than risk the " ~
+        "double evaluation"),
+    Omit!(Bytecode, Because.unconfirmed,
+        "independent, unconfirmed gap: \"Unsupported struct value in " ~
+        "bytecode core: *next() = P(10)\" -- the bytecode core doesn't " ~
+        "support an assignment expression as a struct value in this " ~
+        "position at all"),
+)) {
+    @("struct.methodCallThroughAssignmentChainedPtrExpReceiverEvaluatesOnce." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct P {
+                int x;
+                void bump() { x++; }
+            }
+            P[2] arr;
+            int calls;
+            P* next() { return &arr[calls++]; }
+            unittest {
+                (*next() = P(10)).bump();
+                assert(calls == 1);
+                assert(arr[1].x == 0);
+                assert(arr[0].x == 11);
+            }
+        });
+    }
+}

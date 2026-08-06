@@ -723,6 +723,19 @@ Separately, `&s.a.ptr` on a zero-length dynamic-array field throws
 fallback reaching `.field().index(0)` on an empty slice; confirmed on both
 master and this branch, not yet an oracle-backed fixture.
 
+A method call chained off an assign/construct/blit whose target is itself a
+side-effecting `PtrExp`/`IndexExp` (`(*next() = value).bump()`) has no
+address to rebind `this` to without re-running that side effect a second
+time: `assignmentTarget`'s peel only trusts a `VarExp` or a `this`-rooted
+`DotVarExp` chain as safe to re-address, so `runMemberFunction` refuses the
+`PtrExp`/`IndexExp` shape outright (fixture:
+`struct.methodCallThroughAssignmentChainedPtrExpReceiverEvaluatesOnce`).
+Lifting the refusal needs the assignment's own write to hand back the
+address it used, the same way the receiver-level
+`precomputedReceiverPointerAddress` precompute does for a bare
+`PtrExp`/`IndexExp` *receiver* -- not yet threaded through for a target
+recovered by peeling.
+
 ### Item 5 — Delete Interpreter FFI marshalling fallbacks
 
 Finish decision 18 after the language-surface critical path. Normal outbound

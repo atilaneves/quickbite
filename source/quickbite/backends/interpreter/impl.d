@@ -5805,6 +5805,21 @@ private struct Walker {
             // the assignment); resolve the writable address from `place`
             // itself rather than re-evaluating the assignment a second time.
             auto placeExpression = assignmentTarget(receiverExpression);
+            if (placeExpression !is null && !isPeelableAssignmentTarget(placeExpression))
+                // `place` is a `PtrExp`/`IndexExp` (e.g. `(*next() = value).
+                // bump()`, `(arr[i++] = value).bump()`): it may embed a
+                // side-effecting operand, and there is no precomputed
+                // address for it to reuse (that precompute only exists for
+                // a bare `PtrExp`/`IndexExp` *receiver expression itself*,
+                // not one recovered by peeling an assignment) -- refuse
+                // outright rather than re-evaluate that operand a second
+                // time via `addressOfExpression` below.
+                throw new Exception(
+                    "Unsupported eval expression: chained postblit/method " ~
+                    "call receiver's assignment target is a pointer/index " ~
+                    "expression that cannot be re-addressed without " ~
+                    "evaluating a side-effecting operand twice",
+                );
             if (placeExpression is null)
                 placeExpression = receiverExpression;
 
@@ -6054,6 +6069,30 @@ private struct Walker {
         if (auto blit = expression.isBlitExp)
             return blit.e1;
         return null;
+    }
+
+    // Whether `expression` -- a target recovered from an assign/construct/
+    // blit chain by `assignmentTarget` -- is safe to resolve an address from
+    // directly, i.e. carries no side-effecting operand that a second
+    // evaluation could re-run. Only a plain local variable or a `this`-
+    // rooted field-access chain qualify: the only shapes the commit's actual
+    // use case (`emplaceRef`'s `(this.payload = args).__postblit()`-style
+    // lowerings) ever produces. A `PtrExp`/`IndexExp` target (e.g.
+    // `(*next() = value).bump()`, `(arr[i++] = value).bump()`) may embed an
+    // arbitrary side-effecting operand; the receiver-level
+    // `precomputedReceiverPointerAddress` precompute that protects a bare
+    // `PtrExp`/`IndexExp` *receiver* doesn't reach a target recovered by
+    // peeling, so re-deriving its address via `addressOfExpression` would
+    // silently re-run that side effect a second time -- callers must refuse
+    // that shape outright instead (see `runMemberFunction`).
+    private static bool isPeelableAssignmentTarget(
+        imported!"dmd.expression".Expression expression,
+    ) {
+        if (expression.isVarExp !is null || expression.isThisExp !is null)
+            return true;
+        if (auto dotVar = expression.isDotVarExp)
+            return isPeelableAssignmentTarget(dotVar.e1);
+        return false;
     }
 
     private bool isWritableLocation(
