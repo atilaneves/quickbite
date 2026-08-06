@@ -698,12 +698,6 @@ second time. The single-level `arr[i++].method()` fix does not cover this
 doubly-nested shape (fixture:
 `struct.methodCallThroughDoublyNestedIndexedReceiverEvaluatesIndexOnce`).
 
-`&s.a.ptr` on a zero-length dynamic-array field throws `"Place.index: index
-out of range for slice place"` instead of yielding `null`, via the
-`pointerCastValue`/`arrayPointer(cast_.e1, 0, op)` fallback reaching
-`.field().index(0)` on an empty slice; confirmed on master, not yet an
-oracle-backed fixture.
-
 A method call chained off an assign/construct/blit whose target is itself a
 side-effecting `PtrExp`/`IndexExp` (`(*next() = value).bump()`) has no
 address to rebind `this` to without re-running that side effect a second

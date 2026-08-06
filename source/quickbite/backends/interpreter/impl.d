@@ -9935,8 +9935,21 @@ private struct Walker {
             if (value.isNativeAggregate) {
                 import quickbite.backends.interpreter.aggregate_value: AggregateValue;
 
-                if (auto address = AggregateValue.nativeArrayAddress(value))
-                    return Value.pointerValue(cast(void*) address);
+                // `nativeArrayAddress` returning null is ambiguous: it
+                // means either "not a dynamic array" or "a dynamic array
+                // whose stored `ptr` is legitimately null" (a zero-length
+                // slice). Checking the aggregate's own type first, rather
+                // than the returned address's truthiness, tells those
+                // apart -- a null `ptr` is `.ptr`'s correct answer here,
+                // not a signal to fall through to the checked, throwing
+                // `arrayPointer` index route below.
+                auto aggregate = AggregateValue.native(value);
+                if (aggregate.type.toBasetype.isTypeDArray !is null) {
+                    const address = AggregateValue.nativeArrayAddress(value);
+                    return address is null
+                        ? Value.null_
+                        : Value.pointerValue(cast(void*) address);
+                }
             }
             return arrayPointer(cast_.e1, 0, cast_.op);
         }

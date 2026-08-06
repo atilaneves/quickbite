@@ -4414,3 +4414,34 @@ static foreach (backend; Matrix!()) {
         });
     }
 }
+
+
+// `.ptr` of a default-initialized (zero-length) dynamic-array FIELD must
+// yield `null`, matching a zero-length array's own `.ptr` -- reading it
+// through a struct field, rather than a plain local, went through
+// `pointerCastValue`'s `runExpression`/`nativeArrayAddress` fallback, whose
+// null-address result was indistinguishable from "not a dynamic array" and
+// fell through into `arrayPointer`'s checked, throwing element-index route.
+static foreach (backend; Matrix!()) {
+    @("struct.dynamicArrayFieldPtrOfEmptySliceIsNull." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct S {
+                int[] a;
+            }
+
+            S make() {
+                return S.init;
+            }
+
+            unittest {
+                S s = make();
+                assert(s.a.ptr is null);
+
+                s.a = [1, 2, 3];
+                assert(s.a.ptr is &s.a[0]);
+            }
+        });
+    }
+}
