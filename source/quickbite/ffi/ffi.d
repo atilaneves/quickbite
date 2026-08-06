@@ -29,8 +29,8 @@ public bool call(
     TypedAddress* receiver = null,
 ) {
     import quickbite.ffi.libffi:
-        ffi_arg, ffi_cif, ffi_call, ffi_prep_cif, ffi_status, ffi_type,
-        ffi_type_pointer, FFI_DEFAULT_ABI;
+        ffi_arg, ffi_cif, ffi_call, ffi_prep_cif, ffi_prep_cif_var,
+        ffi_status, ffi_type, ffi_type_pointer, FFI_DEFAULT_ABI;
     import dmd.astenums: LINK, TY, VarArg;
 
     if (callable.address is null || callable.signature is null ||
@@ -38,8 +38,17 @@ public bool call(
         (callable.signature.linkage != LINK.c &&
             callable.signature.linkage != LINK.d) ||
         (receiver !is null && callable.signature.linkage != LINK.d) ||
-        callable.signature.parameterList.varargs != VarArg.none ||
-        callable.signature.parameterList.length != arguments.length)
+        (callable.signature.parameterList.varargs != VarArg.none &&
+            (callable.signature.linkage != LINK.c ||
+                callable.signature.parameterList.varargs != VarArg.variadic)))
+        return false;
+
+    const numFixedArguments = callable.signature.parameterList.length;
+    const isVariadic = callable.signature.parameterList.varargs ==
+        VarArg.variadic;
+    if (isVariadic
+            ? arguments.length < numFixedArguments
+            : arguments.length != numFixedArguments)
         return false;
 
     const hasReceiver = receiver !is null;
@@ -94,11 +103,18 @@ public bool call(
     // temporary: its cell lives through ffi_call and points directly at the
     // caller's authoritative storage; no pointee bytes are copied.
     auto referenceCells = new void*[](arguments.length);
+    auto argumentIsReference = new bool[](arguments.length);
     foreach (index, argument; arguments) {
-        auto parameter = callable.signature.parameterList[index];
-        if (argument.type is null ||
-            !argument.type.toBasetype.equals(parameter.type.toBasetype) ||
-            argument.address is null)
+        if (argument.type is null || argument.address is null)
+            return false;
+
+        const isFixedArgument = index < numFixedArguments;
+        if (isFixedArgument) {
+            auto parameter = callable.signature.parameterList[index];
+            if (!argument.type.toBasetype.equals(parameter.type.toBasetype))
+                return false;
+            argumentIsReference[index] = isReferenceParameter(parameter);
+        } else if (!isPromotedVariadicType(argument.type))
             return false;
 
         const abiIndex = abiArgumentIndex(
@@ -107,14 +123,13 @@ public bool call(
             arguments.length,
             hasReceiver,
         );
-        const isReference = isReferenceParameter(parameter);
-        argumentMetadata[abiIndex] = isReference
+        argumentMetadata[abiIndex] = argumentIsReference[index]
             ? FfiType(&ffi_type_pointer)
-            : ffiTypeFor(parameter.type);
+            : ffiTypeFor(argument.type);
         argumentTypes[abiIndex] = argumentMetadata[abiIndex].type;
         if (argumentTypes[abiIndex] is null)
             return false;
-        if (isReference) {
+        if (argumentIsReference[index]) {
             referenceCells[index] = argument.address;
             argumentAddresses[abiIndex] = &referenceCells[index];
         } else
@@ -122,22 +137,30 @@ public bool call(
     }
 
     ffi_cif cif;
-    const prepStatus = ffi_prep_cif(
-        &cif,
-        FFI_DEFAULT_ABI,
-        cast(uint) numAbiArguments,
-        resultMetadata.type,
-        argumentTypes.ptr,
-    );
+    const prepStatus = isVariadic
+        ? ffi_prep_cif_var(
+            &cif,
+            FFI_DEFAULT_ABI,
+            cast(uint) numFixedArguments,
+            cast(uint) numAbiArguments,
+            resultMetadata.type,
+            argumentTypes.ptr,
+        )
+        : ffi_prep_cif(
+            &cif,
+            FFI_DEFAULT_ABI,
+            cast(uint) numAbiArguments,
+            resultMetadata.type,
+            argumentTypes.ptr,
+        );
     if (prepStatus != ffi_status.FFI_OK)
         return false;
     if (!returnsReference && !layoutMatches(returnType, resultMetadata))
         return false;
     foreach (index; 0 .. arguments.length) {
-        auto parameter = callable.signature.parameterList[index];
-        if (!isReferenceParameter(parameter) &&
+        if (!argumentIsReference[index] &&
             !layoutMatches(
-                parameter.type,
+                arguments[index].type,
                 argumentMetadata[abiArgumentIndex(
                     callable,
                     index,
@@ -170,6 +193,20 @@ public bool call(
         memcpy(result.address, &resultScratch, resultCopySize);
     }
     return true;
+}
+
+
+private bool isPromotedVariadicType(
+    imported!"dmd.mtype".Type type,
+) {
+    import dmd.astenums: TY;
+
+    switch (type.toBasetype.ty) with (TY) {
+        case Tbool, Tint8, Tuns8, Tchar, Tint16, Tuns16, Twchar, Tfloat32:
+            return false;
+        default:
+            return true;
+    }
 }
 
 

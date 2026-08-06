@@ -74,6 +74,60 @@ unittest {
 }
 
 
+@("ffi.addressOnlyExternCVariadicCall")
+unittest {
+    import core.stdc.stdio: snprintf;
+
+    auto signature = functionSignature(q{
+        extern(C) int snprintf(char*, size_t, const(char)*, ...);
+    }, "snprintf");
+    char[32] actual;
+    char[32] expected;
+    char* actualPointer = actual.ptr;
+    size_t actualLength = actual.length;
+    const(char)* format = "%d %.1f".ptr;
+    int integer = 17;
+    double floating = 2.5;
+    const expectedLength = snprintf(
+        expected.ptr,
+        expected.length,
+        format,
+        integer,
+        floating,
+    );
+    int actualLengthWritten;
+
+    call(
+        Callable(cast(void*) &snprintf, signature, CompilerAbi.dmd),
+        [
+            TypedAddress(signature.parameterList[0].type, &actualPointer),
+            TypedAddress(signature.parameterList[1].type, &actualLength),
+            TypedAddress(signature.parameterList[2].type, &format),
+            TypedAddress(Type.tint32, &integer),
+            TypedAddress(Type.tfloat64, &floating),
+        ],
+        TypedAddress(Type.tint32, &actualLengthWritten),
+    ).should == true;
+
+    actualLengthWritten.should == expectedLength;
+    actual[0 .. actualLengthWritten + 1]
+        .should == expected[0 .. expectedLength + 1];
+
+    float unpromoted = 2.5;
+    call(
+        Callable(cast(void*) &snprintf, signature, CompilerAbi.dmd),
+        [
+            TypedAddress(signature.parameterList[0].type, &actualPointer),
+            TypedAddress(signature.parameterList[1].type, &actualLength),
+            TypedAddress(signature.parameterList[2].type, &format),
+            TypedAddress(Type.tint32, &integer),
+            TypedAddress(Type.tfloat32, &unpromoted),
+        ],
+        TypedAddress(Type.tint32, &actualLengthWritten),
+    ).should == false;
+}
+
+
 @("ffi.addressOnlyIntegralAndCharacterCalls")
 unittest {
     assertScalarRoundTrip(true, Type.tbool);
