@@ -6,10 +6,156 @@ import dmd.arraytypes: Dsymbols;
 import dmd.func: FuncDeclaration;
 import dmd.mtype:
     ParameterList, Type, TypeClass, TypeDArray, TypeDelegate, TypeFunction,
-    TypeReference, TypeStruct;
+    TypeReference, TypeStruct, TypeVector;
+import dmd.typesem: merge, sarrayOf;
 import quickbite.ffi.ffi:
     Callable, CompilerAbi, DVariadicMetadata, TypedAddress, call;
 import unit_threaded;
+
+
+@("ffi.addressOnlySysVVectorCalls")
+unittest {
+    Type vectorType = new TypeVector(Type.tfloat32.sarrayOf(4));
+    vectorType = vectorType.merge;
+    auto signature = functionSignature(
+        vectorType,
+        [Type.tint32, vectorType, Type.tint32],
+        LINK.c,
+    );
+    int bias = 3;
+    int scale = 2;
+    Float4 value = [1.0f, 2.0f, 4.0f, 8.0f];
+    Float4 result;
+
+    call(
+        Callable(
+            cast(void*) &transformVector,
+            signature,
+            CompilerAbi.dmd,
+        ),
+        [
+            TypedAddress(Type.tint32, &bias),
+            TypedAddress(signature.parameterList[1].type, &value),
+            TypedAddress(Type.tint32, &scale),
+        ],
+        TypedAddress(signature.next, &result),
+    ).should == true;
+
+    result.array.should == transformVector(bias, value, scale).array;
+
+    double[8] occupied = [1, 2, 3, 4, 5, 6, 7, 8];
+    result = Float4.init;
+    call(
+        Callable(
+            cast(void*) &transformExhaustedVector,
+            functionSignature(
+                vectorType,
+                [
+                    Type.tfloat64,
+                    Type.tfloat64,
+                    Type.tfloat64,
+                    Type.tfloat64,
+                    Type.tfloat64,
+                    Type.tfloat64,
+                    Type.tfloat64,
+                    Type.tfloat64,
+                    vectorType,
+                    Type.tint32,
+                ],
+                LINK.c,
+            ),
+            CompilerAbi.dmd,
+        ),
+        [
+            TypedAddress(Type.tfloat64, &occupied[0]),
+            TypedAddress(Type.tfloat64, &occupied[1]),
+            TypedAddress(Type.tfloat64, &occupied[2]),
+            TypedAddress(Type.tfloat64, &occupied[3]),
+            TypedAddress(Type.tfloat64, &occupied[4]),
+            TypedAddress(Type.tfloat64, &occupied[5]),
+            TypedAddress(Type.tfloat64, &occupied[6]),
+            TypedAddress(Type.tfloat64, &occupied[7]),
+            TypedAddress(vectorType, &value),
+            TypedAddress(Type.tint32, &scale),
+        ],
+        TypedAddress(vectorType, &result),
+    ).should == true;
+    result.array.should == transformExhaustedVector(
+        occupied[0],
+        occupied[1],
+        occupied[2],
+        occupied[3],
+        occupied[4],
+        occupied[5],
+        occupied[6],
+        occupied[7],
+        value,
+        scale,
+    ).array;
+
+    auto aggregateType = vectorType.sarrayOf(2);
+    auto aggregateSignature = functionSignature(
+        aggregateType,
+        [aggregateType, Type.tint32],
+        LINK.c,
+    );
+    Float4[2] aggregate = [value, value * 2];
+    Float4[2] aggregateResult;
+    call(
+        Callable(
+            cast(void*) &transformVectorAggregate,
+            aggregateSignature,
+            CompilerAbi.dmd,
+        ),
+        [
+            TypedAddress(aggregateType, &aggregate),
+            TypedAddress(Type.tint32, &scale),
+        ],
+        TypedAddress(aggregateType, &aggregateResult),
+    ).should == true;
+    const expectedAggregate = transformVectorAggregate(aggregate, scale);
+    aggregateResult[0].array.should == expectedAggregate[0].array;
+    aggregateResult[1].array.should == expectedAggregate[1].array;
+
+    auto variadicSignature = functionSignature(q{
+        extern(C) ubyte vectorVariadicSseCount(int marker, ...);
+    }, "vectorVariadicSseCount");
+    int marker = 1;
+    double tail = 2.5;
+    ubyte sseCount;
+    call(
+        Callable(
+            cast(void*) &vectorVariadicSseCount,
+            variadicSignature,
+            CompilerAbi.dmd,
+        ),
+        [
+            TypedAddress(Type.tint32, &marker),
+            TypedAddress(vectorType, &value),
+            TypedAddress(Type.tfloat64, &tail),
+        ],
+        TypedAddress(Type.tuns8, &sseCount),
+    ).should == true;
+    sseCount.should == 2;
+
+    bool caught;
+    try {
+        call(
+            Callable(
+                cast(void*) &throwVector,
+                functionSignature(vectorType, [vectorType], LINK.c),
+                CompilerAbi.dmd,
+            ),
+            [TypedAddress(vectorType, &value)],
+            TypedAddress(vectorType, &result),
+        );
+        assert(false, "throwing vector call returned");
+    } catch (Exception exception) {
+        exception.msg.should == "vector failure";
+        caught = true;
+    }
+    caught.should == true;
+}
 
 
 @("ffi.addressOnlyExternCScalarCall")
@@ -1704,6 +1850,60 @@ private void assertScalarRoundTrip(T)(T expected, Type type) {
 
 private extern(C) T identity(T)(T value) {
     return value;
+}
+
+
+private alias Float4 = __vector(float[4]);
+
+
+private extern(C) Float4 transformVector(int bias, Float4 value, int scale) {
+    Float4 factor = scale;
+    Float4 offset = bias;
+    return value * factor + offset;
+}
+
+
+private extern(C) Float4 transformExhaustedVector(
+    double first,
+    double second,
+    double third,
+    double fourth,
+    double fifth,
+    double sixth,
+    double seventh,
+    double eighth,
+    Float4 value,
+    int scale,
+) {
+    Float4 factor = scale;
+    Float4 offset = cast(float) (
+        first + second + third + fourth + fifth + sixth + seventh + eighth
+    );
+    return value * factor + offset;
+}
+
+
+private extern(C) Float4[2] transformVectorAggregate(
+    Float4[2] aggregate,
+    int scale,
+) {
+    aggregate[0] *= scale;
+    aggregate[1] += scale;
+    return aggregate;
+}
+
+
+pragma(inline, false)
+private extern(C) ubyte vectorVariadicSseCount(int marker, ...) {
+    asm pure nothrow @nogc {
+        naked;
+        ret;
+    }
+}
+
+
+private extern(C) Float4 throwVector(Float4 value) {
+    throw new Exception("vector failure");
 }
 
 
