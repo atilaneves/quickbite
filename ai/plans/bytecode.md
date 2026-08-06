@@ -787,6 +787,16 @@ lifetime as the dependency bytecode cache.
   environment from declaration onward because writes through aliases are not
   yet mirrored.
 
+  Escaped captures are not yet coherent when a `ref`/`out` callee mutates its
+  argument and then throws to a handler in the declaring function: the local
+  has the post-call value while the heap mirror retains its old value, so the
+  delegate observes the stale value (`42` where compiled D observes `102`).
+  This is pre-existing escaping-delegate capability work: the master Bytecode
+  backend refuses the escaping delegate outright. The prerequisite is a
+  declaration-time closure environment whose captured storage is the target of
+  every aliasable write; no after-call mirror can establish the invariant on
+  exceptional control flow.
+
   The eventual right design point is DMD's own per-function `needsClosure()`/
   `closureVars` decision -- every closure-needing variable heap-allocated from
   declaration onward, since `needsClosure()` is typically true for any lambda
