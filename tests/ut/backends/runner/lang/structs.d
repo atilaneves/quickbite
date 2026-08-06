@@ -4418,10 +4418,8 @@ static foreach (backend; Matrix!()) {
 
 // `.ptr` of a default-initialized (zero-length) dynamic-array FIELD must
 // yield `null`, matching a zero-length array's own `.ptr` -- reading it
-// through a struct field, rather than a plain local, went through
-// `pointerCastValue`'s `runExpression`/`nativeArrayAddress` fallback, whose
-// null-address result was indistinguishable from "not a dynamic array" and
-// fell through into `arrayPointer`'s checked, throwing element-index route.
+// through a struct field, rather than a plain local, must not be treated
+// as an error.
 static foreach (backend; Matrix!()) {
     @("struct.dynamicArrayFieldPtrOfEmptySliceIsNull." ~ backend.stringof)
     @Tags(backend.stringof)

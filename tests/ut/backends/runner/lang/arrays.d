@@ -7143,11 +7143,10 @@ static foreach (backend; Matrix!()) {
 // passing `arrayElementIsArray(expression.type)` both to
 // `compileDynamicArrayInto` and into the resulting `DynamicArrayLocal`.
 //
-// DMD's `-checkaction=context` lowering hoists an `assert`'s LHS operand into
-// a synthetic `ref int __assertOpN = matrixMaker()[1][2];`, which exercises
-// `runDeclarationExpression`'s `isArrayElementAlias` branch and, through it,
-// `arrayPointer`'s `IndexExp` arm composing an address for a non-`VarExp`
-// inner receiver (`matrixMaker()[1]`).
+// DMD's `-checkaction=context` lowering hoists an `assert`'s LHS operand
+// into a synthetic `ref int __assertOpN = matrixMaker()[1][2];` -- a `ref`
+// binding to an element reached by indexing twice into a call's own return
+// value, rather than into a named array variable.
 static foreach (backend; Matrix!()) {
     @("dynamicArray.arrayOfArraysReturningCallResultIndexing." ~
         backend.stringof)
