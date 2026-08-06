@@ -129,14 +129,11 @@ but it does not expand the call API or erase the image's ABI provenance.
 
 ## Work order
 
-1. Implement one address-only outbound call sufficient for the first existing
-   Bytecode native-call behavior. Support only the linkage and value shapes
-   that behavior requires.
-2. Carry compiler-ABI provenance through symbol resolution, explicit-argument
-   address ordering, and CIF cache identity. Exercise both DMD- and LDC-defined
-   D callables rather than selecting one compiler globally.
-3. Add another call shape only when an enabled, `SystemLinker`-backed Bytecode
-   behavior requires it. Keep each addition address-only.
+Exercise both DMD- and LDC-defined D callables. When symbol resolution or CIF
+caching is added, preserve the callable's compiler-ABI provenance through it.
+
+Add another call shape only when an enabled, `SystemLinker`-backed Bytecode
+behavior requires it. Keep each addition address-only.
 
 Backend migration is not work in this plan. `bytecode.md` owns Bytecode's
 native-layout correction, legacy-marshaller deletion, and switch to the new
