@@ -262,6 +262,7 @@ private struct Compiler {
             module_,
             pointer,
             dynamicIndex,
+            assocIndex,
         }
 
         Kind kind;
@@ -276,6 +277,8 @@ private struct Compiler {
         Type valueType;
         bool heapEscapingDelegate;
         bool declinesCapturingDelegate;
+        ushort keyMeta;
+        Place* container;
 
         this(
             in Kind kind,
@@ -3055,6 +3058,8 @@ private struct Compiler {
     private Place* resolvePlace(Expression expression, in TypeFacts facts) {
         if (auto cast_ = expression.isCastExp)
             return placeOrNull(cast_.e1);
+        if (auto vectorArray = expression.isVectorArrayExp)
+            return placeOrNull(vectorArray.e1);
         if (auto conditional = expression.isCondExp) {
             const condition = compileBoolCondition(conditional.econd);
             const pointer = allocateBytes(
@@ -3169,6 +3174,11 @@ private struct Compiler {
                     return new Place(
                         Place.Kind.frame, expression.type, local.offset,
                     );
+                if (record.complexDoubleOrNull !is null)
+                    if (auto slot = record.scalarOrNull)
+                        return new Place(
+                            Place.Kind.frame, expression.type, *slot,
+                        );
                 // DeclarationRecord's typed accessors return mutable pointers.
                 auto module_ = moduleDeclarationRecord(declaration);
                 if (auto value = module_.moduleStructOrNull)
@@ -3187,13 +3197,22 @@ private struct Compiler {
                     return new Place(
                         Place.Kind.module_, expression.type, value.offset,
                     );
+                if (auto value = module_.moduleComplexOrNull)
+                    return new Place(
+                        Place.Kind.module_, expression.type, value.offset,
+                    );
                 if (auto local = record.delegate_OrNull)
                     return new Place(
                         Place.Kind.frame, expression.type, local.offset,
+                        0, StructField.init, false, false,
+                        declaration,
                     );
                 if (auto local = record.delegateParameterOrNull)
                     return new Place(
                         Place.Kind.frame, expression.type, *local,
+                        0, StructField.init, false, false,
+                        declaration,
+                        declaration.isReference && declaration.isParameter,
                     );
                 if (_hasNestedContext)
                     if (auto captured = declaration in _capturedOffsets) {
@@ -3420,6 +3439,22 @@ private struct Compiler {
             import dmd.astenums: TY;
 
             if (index.e1.type !is null &&
+                index.e1.type.toBasetype.ty == TY.Taarray)
+                if (auto container = placeOrNull(index.e1)) {
+                    const handle = loadPlace(*container);
+                    auto aaType = index.e1.type.toBasetype;
+                    auto result = new Place(
+                        Place.Kind.assocIndex,
+                        index.type,
+                        handle.offset,
+                        assocArrayKeyOffset(index.e2, aaType),
+                    );
+                    result.keyMeta = assocArrayKeyMeta(aaType);
+                    result.container = container;
+                    return result;
+                }
+
+            if (index.e1.type !is null &&
                 index.e1.type.toBasetype.ty == TY.Tsarray)
                 if (auto base = placeOrNull(index.e1)) {
                     const address = addressOfPlace(*base);
@@ -3621,11 +3656,29 @@ private struct Compiler {
                     result, place.offset, place.indexOffset, width,
                 );
                 return Operand(result, operandType);
+            case assocIndex:
+                const pointer = allocateBytes(
+                    cast(uint) size_t.sizeof, size_t.sizeof,
+                );
+                _code ~= Instruction(
+                    Op.aaGetRvalue, pointer, place.offset, place.indexOffset,
+                    cast(ushort) width, place.keyMeta,
+                );
+                const result = aggregate
+                    ? allocateBytes(width, staticArrayAlign(place.valueType))
+                    : allocate(place.type);
+                emitPointerLoad(
+                    result, pointer, compileSizeConstant(0), width,
+                );
+                return Operand(result, operandType);
         }
     }
 
     private Operand loadPlaceValue(Place place) {
         const value = loadPlace(place);
+        if (place.valueType !is null &&
+            isComplexDoubleType(place.valueType))
+            return complexDoubleOperand(value.offset);
         return place.isPointerValue
             ? Operand(
                 value.offset, value.type, true, place.pointerElement,
@@ -3690,6 +3743,17 @@ private struct Compiler {
                     width,
                 );
                 return;
+            case assocIndex:
+                _code ~= Instruction(
+                    Op.aaInsert, place.offset, place.indexOffset, value.offset,
+                    cast(ushort) width, place.keyMeta,
+                );
+                if (place.container !is null)
+                    storePlace(
+                        *place.container,
+                        Operand(place.offset, ScalarType.ulong_),
+                    );
+                return;
         }
     }
 
@@ -3738,6 +3802,31 @@ private struct Compiler {
                 );
                 return pointerPlaceAddress(
                     pointer, place.indexOffset, width, operandType,
+                );
+            case assocIndex:
+                const placeholder = allocateBytes(width, width);
+                _code ~= Instruction(
+                    Op.aaGetOrInsert,
+                    place.offset,
+                    place.indexOffset,
+                    placeholder,
+                    cast(ushort) width,
+                    place.keyMeta,
+                );
+                if (place.container !is null)
+                    storePlace(
+                        *place.container,
+                        Operand(place.offset, ScalarType.ulong_),
+                    );
+                const pointer = allocateBytes(
+                    cast(uint) size_t.sizeof, size_t.sizeof,
+                );
+                _code ~= Instruction(
+                    Op.aaIn, pointer, place.offset, place.indexOffset,
+                    cast(ushort) width, place.keyMeta,
+                );
+                return Operand(
+                    pointer, ScalarType.ulong_, true, operandType,
                 );
         }
     }
@@ -3832,7 +3921,16 @@ private struct Compiler {
                 place.valueType, rhs, place.heapEscapingDelegate,
             );
         storePlace(place, Operand(source, ScalarType.void_));
-        return Operand(source, ScalarType.void_);
+        if (place.declaration !is null &&
+            declarationRecordView(place.declaration).delegate_OrNull !is null) {
+            registerDeclaration(place.declaration).representation =
+                DeclarationRepresentation.delegateParameter;
+            registerDeclaration(place.declaration).delegateParameter =
+                place.offset;
+        }
+        return isComplexDoubleType(place.valueType)
+            ? complexDoubleOperand(source)
+            : Operand(source, ScalarType.void_);
     }
 
     private Operand* placeAddressOrNull(Expression expression) {
@@ -3851,6 +3949,21 @@ private struct Compiler {
     ) {
         import dmd.astenums: TY;
         import std.conv: text;
+
+        // DMD exposes `vector.array` as a struct-typed view over the vector's
+        // inline bytes. Its value emitter already returns that backing block;
+        // it needs no struct reconstruction.
+        if (rhs.isVectorArrayExp !is null)
+            if (auto place = placeOrNull(rhs))
+                return loadPlace(*place).offset;
+        if (rhs.type.toBasetype.ty == TY.Tsarray &&
+            type.toBasetype.ty != TY.Tsarray) {
+            const result = allocateBytes(
+                inlineByteWidth(type), staticArrayAlign(type),
+            );
+            if (compileStaticArrayValueInto(result, rhs.type, rhs))
+                return result;
+        }
 
         switch (type.toBasetype.ty) with (TY) {
             case Tstruct:
@@ -3885,6 +3998,8 @@ private struct Compiler {
                     ? heapEscapingDelegateOperandOffset(rhs)
                     : delegateOperandOffset(rhs);
             default:
+                if (isComplexDoubleType(type))
+                    return compileComplexDoubleOperand(rhs).offset;
                 throw new Exception(text(
                     "Unsupported aggregate assignment in bytecode core: ",
                     expressionChars(rhs),
@@ -10539,24 +10654,6 @@ private struct Compiler {
     // destination being the lvalue's slot. Scoped to integer local-variable
     // lvalues; anything else is unsupported.
     private Operand compileAddAssignExpression(AddAssignExp addAssign) {
-        import std.conv: text;
-
-        // DMD pre-scales a pointer increment to a byte offset. Preserve the
-        // resolved place's pointer metadata while updating its storage.
-        if (auto place = placeOrNull(addAssign.e1))
-            if (place.isPointerValue) {
-                const rhs = compileExpression(addAssign.e2);
-                const value = loadPlace(*place);
-                _code ~= Instruction(
-                    Op.addInt8, value.offset, value.offset, rhs.offset,
-                );
-                storePlace(*place, value);
-                return Operand(
-                    value.offset, ScalarType.ulong_, true,
-                    place.pointerElement,
-                );
-            }
-
         // `++x`/`x += n` on an integer local: 4-byte and 8-byte integer widths
         // (size_t is ulong on x86-64, so `++len` lands here) share the lvalue's
         // own slot as the destination. Narrow integer locals promote for the
@@ -10579,11 +10676,30 @@ private struct Compiler {
 
         const rhs = compileExpression(assign.e2);
         auto place = placeOrNull(assign.e1);
-        if (place is null || place.isPointerValue)
+        if (place is null)
             throw new Exception(text(
                 unsupportedMessage,
                 expressionChars(assign),
             ));
+
+        if (place.isPointerValue) {
+            if (op4 != Op.addInt4 || op8 != Op.addInt8)
+                throw new Exception(text(
+                    unsupportedMessage,
+                    expressionChars(assign),
+                ));
+            const lhs = loadPlace(*place);
+            const destination = allocate(ScalarType.ulong_);
+            _code ~= Instruction(
+                Op.addInt8, destination, lhs.offset, rhs.offset,
+            );
+            const value = Operand(destination, ScalarType.ulong_);
+            storePlace(*place, value);
+            return Operand(
+                destination, ScalarType.ulong_, true,
+                place.pointerElement,
+            );
+        }
 
         return compileScalarIntegerCompoundAssign(
             *place, rhs, assign, op4, op8, unsupportedMessage,
@@ -10664,10 +10780,9 @@ private struct Compiler {
         return extend(operand, operationType);
     }
 
-    // `local = expr` for a scalar local lvalue (including a `ref` parameter's
-    // slot): evaluate the right-hand side and copy it into the local's slot,
-    // yielding the local as the assignment's result. Scoped to local-variable
-    // lvalues with a matching scalar type; anything else is unsupported.
+    // Assignment resolves its destination once. Slice assignment has its own
+    // multi-element place; every scalar or whole-value lvalue uses one Place
+    // and one store regardless of its storage or access shape.
     private Operand compileAssignExpression(AssignExp assign) {
         import std.conv: text;
 
@@ -10680,290 +10795,28 @@ private struct Compiler {
         if (auto length = assign.e1.isArrayLengthExp)
             return compileArrayLengthAssign(length, assign.e2);
 
-        if (!typeFacts(assign.e1.type).isAggregate)
-            if (auto place = placeOrNull(assign.e1)) {
-                const rhs = compileExpression(assign.e2);
-                if (rhs.type != place.type)
-                    throw new Exception(text(
-                        "Unsupported assignment in bytecode core: ",
-                        expressionChars(assign),
-                    ));
-                storePlace(*place, rhs);
-                const result = loadPlace(*place);
-                return place.isPointerValue
-                    ? Operand(
-                        result.offset, result.type, true,
-                        place.pointerElement,
-                    )
-                    : result;
-            }
-
-        if (typeFacts(assign.e1.type).isAggregate &&
-            assign.e1.isSliceExp is null)
-            if (auto place = placeOrNull(assign.e1))
-                return storeExpressionIntoPlace(*place, assign.e2);
-
         if (auto place = slicePlaceOrNull(assign.e1))
             return storeSlicePlace(*place, assign.e2);
-
-        // `m[k] = v` for an associative array: insert or overwrite the entry in
-        // the VM-owned map.
-        if (auto index = assign.e1.isIndexExp)
-            if (auto store = tryAssocArrayElementAssign(index, assign.e2))
-                return *store;
-
-        // `arr = rhs;` for a whole module-level static-array variable
-        // (`int[3] arr; arr = [1, 2, 3];`): block-copy the new value into a
-        // fresh frame slot the same way the plain-local branch below does,
-        // then copy the whole materialised block back to `arr`'s own
-        // dataseg storage via `Op.storeModule`. Checked first (and ahead of
-        // `staticArrayOffsetOf`, which does not resolve a module variable at
-        // all): a plain local's own frame slot already *is* its real
-        // storage, so only the module case needs this extra writeback.
-        if (assign.e1.isVarExp !is null)
-            if (auto declaration = assign.e1.isVarExp.var.isVarDeclaration)
-                if (auto moduleVariable =
-                        moduleDeclarationRecord(declaration).moduleStaticArrayOrNull) {
-                    const offset = allocateStructBlock(assign.e1.type);
-                    if (compileStaticArrayValueInto(
-                            offset, assign.e1.type, assign.e2)) {
-                        _code ~= Instruction(
-                            Op.storeModule, offset, moduleVariable.offset,
-                            moduleVariable.size,
-                        );
-                        return Operand(offset, ScalarType.void_);
-                    }
-                }
-
-        // `dg = rhs;` for a whole module-level delegate variable (`int
-        // delegate() dg; dg = () => 42;`): the delegate counterpart of the
-        // module static-array whole-value assignment above -- resolve the
-        // rhs's own 16-byte `{functionIndex, context}` pair the same way
-        // any other delegate assignment does (`delegateOperandOffset`),
-        // then copy the whole block back to `dg`'s own dataseg storage via
-        // `Op.storeModule`.
-        if (assign.e1.isVarExp !is null)
-            if (auto declaration = assign.e1.isVarExp.var.isVarDeclaration)
-                if (auto moduleVariable =
-                        moduleDeclarationRecord(declaration).moduleDelegateOrNull) {
-                    const source = delegateOperandOffset(assign.e2);
-                    _code ~= Instruction(
-                        Op.storeModule, source, moduleVariable.offset,
-                        cast(ushort) delegateValueSize,
-                    );
-                    return Operand(source, ScalarType.void_);
-                }
-
-        // `dg = rhs;` for a whole plain (non-module, non-field) delegate-typed
-        // LOCAL or `ref`/`out` PARAMETER (`int delegate() dg = () => 1; dg =
-        // () => 2;`): the plain-local/parameter counterpart of the module
-        // delegate whole-value assignment above. Resolve the rhs's own
-        // 16-byte `{functionIndex, context}` pair and copy it into the
-        // local's own frame slot -- writing THROUGH the existing slot rather
-        // than rebinding it, the same way the static-array whole-value
-        // assignment above does, so a `ref`/`out` alias of this same storage
-        // observes the new value too.
-        //
-        // Static delegate metadata is read elsewhere as the
-        // CURRENT statically-known callee for direct call-site dispatch
-        // (`returnedDelegateFunctionOrNull`, `delegateLocalOf`); reassigning
-        // a new value makes that recorded callee stale, so this demotes the
-        // local into dynamic delegate metadata at the point of assignment
-        // onward --
-        // every read/call site already falls back correctly to dynamic
-        // dispatch once a declaration has no static delegate metadata
-        // (`delegateOperandOffset`, `returnedDelegateFunctionOrNull`,
-        // `delegateLocalOf`/`delegateParameterOffsetOf`), so no other site
-        // needs to change. This does give up the static-callee optimization
-        // for such a local from here on (its calls now dispatch through
-        // `compileDynamicDelegateCall` instead of `compileDelegateCall`),
-        // which -- like every other dynamically classified delegate -- does
-        // not model a struct-method receiver context; a local reassigned to
-        // a struct-method-bound delegate remains an unsupported shape, same
-        // as passing one through a parameter or field already is.
-        //
-        // When the target is a `ref`/`out` PARAMETER, its place addresses the
-        // caller's own storage directly,
-        // so a capturing rhs lambda/nested-function delegate is a THIRD
-        // frame-escape site alongside `compileDelegateReturn`'s two
-        // (`return dg;`, and a struct literal's top-level delegate field as
-        // the direct `return` expression) -- but unlike those two, this one
-        // is not sound to give the SAME heap-closure treatment to:
-        // `heapClosureContextOrNull`'s soundness argument depends on the
-        // escape site being the LAST thing the function ever does, so the
-        // frame slots it snapshots from never diverge from the heap copy it
-        // makes. A `ref`/`out`-parameter assignment can happen mid-function,
-        // with further statements -- including further writes to the same
-        // captured variables through the still-live frame -- still to come
-        // before this function actually returns; a heap snapshot taken here
-        // would freeze a stale copy that then silently diverges from
-        // whatever the frame goes on to do. So `refEscapingDelegateOperandOffset`
-        // resolves such an rhs through the same shared frame-escape
-        // diagnostic (`throwFrameEscapingDelegateDiagnostic`) `compileDelegateReturn`
-        // raises for a shape it can't safely heap-box either, but
-        // UNCONDITIONALLY -- it never attempts `heapClosureContextOrNull` at
-        // all for this site, regardless of capture shape -- instead of a
-        // frame-relative context that would silently read as garbage (or, if
-        // heap-boxed anyway, silently diverge from the live frame) once this
-        // function returns and its frame is reused. A plain (non-escaping)
-        // local/parameter never needs this: its own frame lives exactly as
-        // long as any capture resolved against it could still be read back
-        // through it, so `refEscapingDelegateOperandOffset` degrades to
-        // plain `delegateOperandOffset` for it anyway
-        // (`returnedDelegateFunctionOrNull` only recognises a
-        // statically-known callee at all; any other rhs shape -- a
-        // parameter/field/call-result copy -- has no captures to protect and
-        // takes the same plain path regardless).
-        if (assign.e1.isVarExp !is null)
-            if (auto declaration = assign.e1.isVarExp.var.isVarDeclaration) {
-                auto delegateLocal = declarationRecordView(declaration).delegate_OrNull;
-                auto delegateParameter = declarationRecordView(declaration).delegateParameterOrNull;
-                if (delegateLocal !is null || delegateParameter !is null) {
-                    const offset = delegateLocal !is null
-                        ? delegateLocal.offset : *delegateParameter;
-                    const escapes =
-                        declaration.isReference && declaration.isParameter;
-                    const source = escapes
-                        ? refEscapingDelegateOperandOffset(assign.e2)
-                        : delegateOperandOffset(assign.e2);
-                    _code ~= Instruction(
-                        Op.copy, offset, source, cast(ushort) delegateValueSize,
-                    );
-                    if (delegateLocal !is null) {
-                        registerDeclaration(declaration).representation =
-                            DeclarationRepresentation.delegateParameter;
-                        registerDeclaration(declaration).delegateParameter = offset;
-                    }
-                    return Operand(offset, ScalarType.void_);
-                }
-            }
-
-        // `c = rhs;` for a whole module-level `cdouble` variable (`cdouble
-        // c; c = 1.0 + 2.0i;`): the complex counterpart of the module
-        // delegate whole-value assignment above -- resolve the rhs's own
-        // 16-byte `{re, im}` pair the same way any other `cdouble`
-        // expression does (`compileComplexDoubleOperand`, which also
-        // widens a plain real/integer rhs to a zero-imaginary complex
-        // value), then copy the whole block back to `c`'s own dataseg
-        // storage via `Op.storeModule`.
-        if (assign.e1.isVarExp !is null)
-            if (auto declaration = assign.e1.isVarExp.var.isVarDeclaration)
-                if (auto moduleVariable =
-                        moduleDeclarationRecord(declaration).moduleComplexOrNull) {
-                    const value = compileComplexDoubleOperand(assign.e2);
-                    _code ~= Instruction(
-                        Op.storeModule, value.offset, moduleVariable.offset,
-                        cast(ushort) complexDoubleSize,
-                    );
-                    return value;
-                }
-
-        // `arr = rhs;` for a whole static-array-typed local -- including a
-        // ref local aliased to one (`staticArrayOffsetOf` resolves both the
-        // same way, per its aggregate metadata): block-copy the new value into
-        // the local's own frame storage rather than rebinding it. This is
-        // the assignment counterpart of `compileStaticArrayDeclaration`'s
-        // initializer handling.
-        if (assign.e1.isVarExp !is null)
-            if (auto offset = staticArrayOffsetOf(assign.e1))
-                if (compileStaticArrayValueInto(
-                        *offset, assign.e1.type, assign.e2))
-                    return Operand(*offset, ScalarType.void_);
-
-        // `this = rhs;` inside a struct method -- e.g. the compiler-
-        // synthesized `opAssign` a postblit-typed struct's whole-local
-        // reassignment lowers through (`this = p; return this;`), or plain
-        // user code such as `void reset() { this = S.init; }` -- assigns
-        // the method's whole receiver block, the value-type block copy the
-        // plain struct-local assignment performs, targeting
-        // `_thisLocal.offset` instead of ordinary struct metadata.
-        if (_hasThis && assign.e1.isThisExp !is null) {
-            if (auto integer = assign.e2.isIntegerExp)
-                if (integer.toInteger == 0) {
-                    zeroFrameBlock(
-                        _thisLocal.offset,
-                        inlineByteWidth(assign.e1.type),
-                    );
-                    return Operand(_thisLocal.offset, ScalarType.void_);
-                }
-
-            if (auto source = structBaseOffsetOrMaterialise(assign.e2)) {
-                _code ~= Instruction(
-                    Op.copy,
-                    _thisLocal.offset,
-                    source.offset,
-                    cast(ushort) inlineByteWidth(assign.e1.type),
-                );
-                return Operand(_thisLocal.offset, ScalarType.void_);
-            }
-        }
-
-        auto variable = assign.e1.isVarExp;
-        auto declaration =
-            variable is null ? null : variable.var.isVarDeclaration;
-        if (_hasNestedContext && declaration !is null)
-            if (auto captured = declaration in _capturedOffsets) {
-                import dmd.astenums: TY;
-
-                const ty = declaration.type.toBasetype.ty;
-                if (ty == TY.Tstruct || ty == TY.Tsarray)
-                    return compileCapturedAggregateAssign(
-                        declaration, *captured, assign,
-                    );
-            }
-        if (declaration !is null)
-            if (auto destination = declarationRecordView(declaration).struct_OrNull) {
-                // DMD's zero-init blit marker (an `IntegerExp(0)` retyped to
-                // the struct type, e.g. an `out` parameter's synthesized
-                // entry zero-init) is not a struct value to read through
-                // `structBaseOffsetOrMaterialise` -- it means "zero this
-                // block", the same meaning `compileStructDeclaration` already
-                // gives it for a fresh local's own initializer.
-                if (auto integer = assign.e2.isIntegerExp)
-                    if (integer.toInteger == 0) {
-                        zeroFrameBlock(
-                            destination.offset,
-                            inlineByteWidth(declaration.type),
-                        );
-                        return Operand(destination.offset, ScalarType.void_);
-                    }
-
-                if (auto source = structBaseOffsetOrMaterialise(assign.e2)) {
-                    _code ~= Instruction(
-                        Op.copy,
-                        destination.offset,
-                        source.offset,
-                        cast(ushort) inlineByteWidth(declaration.type),
-                    );
-                    return Operand(destination.offset, ScalarType.void_);
-                }
-            }
-        if (declaration !is null)
-            if (auto slot = declarationRecordView(declaration).scalarOrNull)
-                if (auto element = declarationRecordView(declaration).refPointerOrNull)
-                    if (*element == ScalarType.void_)
-                        return storeThroughPointer(
-                            Operand(
-                                *slot, ScalarType.ulong_, true, *element,
-                            ),
-                            compileSizeConstant(0),
-                            assign.e2,
-                        );
-        const rhs = compileExpression(assign.e2);
         auto place = placeOrNull(assign.e1);
-        if (place is null || rhs.type != place.type)
+        if (place is null)
             throw new Exception(text(
                 "Unsupported assignment in bytecode core: ",
                 expressionChars(assign),
             ));
 
+        if (place.valueType !is null)
+            return storeExpressionIntoPlace(*place, assign.e2);
+
+        const rhs = compileExpression(assign.e2);
+        if (rhs.type != place.type)
+            throw new Exception(text(
+                "Unsupported assignment in bytecode core: ",
+                expressionChars(assign),
+            ));
         storePlace(*place, rhs);
-        const result = loadPlace(*place);
         return place.isPointerValue
-            ? Operand(
-                result.offset, result.type, true, place.pointerElement,
-            )
-            : result;
+            ? Operand(rhs.offset, rhs.type, true, place.pointerElement)
+            : rhs;
     }
 
     private size_t* parameterIndex(
@@ -11020,34 +10873,6 @@ private struct Compiler {
         }
 
         return null;
-    }
-
-    private Operand compileCapturedAggregateAssign(
-        VarDeclaration declaration,
-        in ushort capturedOffset,
-        AssignExp assign,
-    ) {
-        import dmd.astenums: TY;
-        import std.conv: text;
-
-        if (declaration.type.toBasetype.ty == TY.Tsarray) {
-            const destination = allocateStructBlock(declaration.type);
-            if (!compileStaticArrayValueInto(
-                    destination, declaration.type, assign.e2))
-                throw new Exception(text(
-                    "Unsupported assignment in bytecode core: ",
-                    expressionChars(assign),
-                ));
-            storeCapturedLocal(
-                declaration, capturedOffset,
-                Operand(destination, ScalarType.void_),
-            );
-            return loadCapturedLocal(declaration, capturedOffset);
-        }
-
-        const rhs = compileExpression(assign.e2);
-        storeCapturedLocal(declaration, capturedOffset, rhs);
-        return loadCapturedLocal(declaration, capturedOffset);
     }
 
     private DeclarationRecord* moduleDeclarationRecord(
@@ -11672,13 +11497,10 @@ private struct Compiler {
     // implicit default (NaN) initializer is handled; any other initializer
     // declines registration, falling through to the pre-existing
     // "Unsupported variable in bytecode core" error, matching every other
-    // module-variable-kind decline elsewhere in this file. Read
-    // (`compileExpression`'s new module branch) and whole-value write
-    // (`c = someExpression;`, `compileAssignExpression`'s new module branch)
-    // each materialise the current 16-byte value into a fresh frame slot via
-    // `Op.loadModule`/write it back via `Op.storeModule`, the same pattern
-    // already used for a module pointer/AA/struct/static-array/delegate
-    // variable.
+    // module-variable-kind decline elsewhere in this file. The shared module
+    // place materialises the current 16-byte value via `Op.loadModule` and
+    // writes it back via `Op.storeModule`, the same primitives used for every
+    // other module value.
     private ModuleComplexVariable* allocateModuleComplexVariable(
         VarDeclaration declaration,
     ) {
@@ -12202,79 +12024,6 @@ private struct Compiler {
             DynamicArrayLocal(inner, outer.elementType),
         );
         return result;
-    }
-
-    // `m[k] = v` for an associative array: insert or overwrite the entry in the
-    // VM-owned map. Null if `index.e1` is not a known AA local.
-    private Operand* tryAssocArrayElementAssign(
-        IndexExp index,
-        Expression rhs,
-    ) {
-        auto variable = index.e1.isVarExp;
-        auto declaration =
-            variable is null ? null : variable.var.isVarDeclaration;
-        if (declaration is null ||
-            declarationRecordView(declaration).assocArrayOrNull
-                is null)
-            return null;
-
-        const handle = (declarationRecordView(declaration).scalarOrNull);
-        const width = assocArrayValueWidth(index.e1.type.toBasetype);
-        const keyMeta = assocArrayKeyMeta(index.e1.type.toBasetype);
-        const keyOffset =
-            assocArrayKeyOffset(index.e2, index.e1.type.toBasetype);
-        const value = compileExpression(rhs);
-        _code ~= Instruction(
-            Op.aaInsert, *handle, keyOffset, value.offset,
-            cast(ushort) width, keyMeta,
-        );
-
-        auto result = new Operand;
-        *result = Operand(value.offset, value.type);
-        return result;
-    }
-
-    // `p[i] = rhs` through a pointer: write the scalar rhs at `p + i * size`.
-    // Null if `p` is not a pointer.
-    private Operand storeThroughPointer(
-        in Operand pointer,
-        in ushort indexSlot,
-        Expression rhs,
-    ) {
-        import dmd.astenums: TY;
-
-        // A struct-typed rhs that is itself an existing lvalue (a local, a
-        // field, or another struct value reached through a pointer/AA-value
-        // -- as opposed to a literal or constructor-call rvalue, which
-        // `compileExpression` already materialises directly) has no scalar
-        // Operand of its own; it lives at its own inline frame block, the
-        // same storage `structOperandOffset` resolves for every other
-        // struct-value read. This is the write-side counterpart of that:
-        // `m[k] = existingStruct;` (DMD's `_d_aaGetY` slot-pointer lowering
-        // for an associative-array value UPDATE, as opposed to an initial
-        // insert) reaches here with exactly this rhs shape.
-        //
-        // A delegate-typed rhs (`m[k] = someDg;`, `m[k] = &fn;`) has the same
-        // problem one level down: the generic `compileExpression` dispatch
-        // has no case for a bare delegate-typed `VarExp`/`DelegateExp`/
-        // `AddrExp`-of-function rhs (it throws "Unsupported
-        // variable"/"Unsupported expression"), because ordinary delegate
-        // reads never go through `compileExpression` at all -- every other
-        // delegate-typed rhs shape (a local/parameter, a
-        // field, a literal, an AA/array index) already resolves through
-        // `delegateOperandOffset` instead. Route here the same way, mirroring
-        // the `Tstruct` branch above.
-        const valueOffset = rhs.type !is null &&
-                rhs.type.toBasetype.ty == TY.Tstruct
-            ? structOperandOffset(rhs)
-            : rhs.type !is null && rhs.type.toBasetype.ty == TY.Tdelegate
-                ? delegateOperandOffset(rhs)
-                : compileExpression(rhs).offset;
-        const elementSize = pointer.pointerElement == ScalarType.void_
-            ? inlineByteWidth(rhs.type)
-            : size(pointer.pointerElement);
-        emitPointerStore(valueOffset, pointer.offset, indexSlot, elementSize);
-        return Operand(valueOffset, pointer.pointerElement);
     }
 
     private static struct StaticArrayElement {
@@ -18372,7 +18121,9 @@ private struct Compiler {
         if (isComplexDoubleType(declaration.type))
             return DeclarationRepresentation.complexDouble;
         switch (type) with (TY) {
-            case Tsarray: return DeclarationRepresentation.staticArray;
+            case Tsarray:
+            case Tvector:
+                return DeclarationRepresentation.staticArray;
             case Tarray: return DeclarationRepresentation.dynamicArray;
             case Tstruct: return DeclarationRepresentation.struct_;
             case Tdelegate:
