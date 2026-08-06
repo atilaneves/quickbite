@@ -5799,15 +5799,24 @@ private struct Walker {
                 NativeAggregate;
             import quickbite.backends.interpreter.native_block: NativeBlock;
 
+            // An assign/construct/blit receiver (`(place = value).method()`)
+            // already wrote `value` into `place` when `receiver` above was
+            // computed (evaluating this call's own receiver expression runs
+            // the assignment); resolve the writable address from `place`
+            // itself rather than re-evaluating the assignment a second time.
+            auto placeExpression = assignmentTarget(receiverExpression);
+            if (placeExpression is null)
+                placeExpression = receiverExpression;
+
             Value address;
             if (
-                receiverExpression.isThisExp !is null &&
+                placeExpression.isThisExp !is null &&
                 currentFunction !is null && currentFunction.vthis !is null
             ) {
                 address = bindingPointerValue(currentFunction.vthis);
             } else if (
-                receiverExpression.isDotVarExp !is null &&
-                receiverExpression.isDotVarExp.e1.isThisExp !is null &&
+                placeExpression.isDotVarExp !is null &&
+                placeExpression.isDotVarExp.e1.isThisExp !is null &&
                 currentFunction !is null && currentFunction.vthis !is null
             ) {
                 import quickbite.backends.interpreter.place: Place;
@@ -5816,17 +5825,17 @@ private struct Walker {
                 address = Value.pointerValue(Place(
                     base.pointerAddress,
                     currentFunction.vthis.type,
-                ).field(receiverExpression.isDotVarExp.var.isVarDeclaration).address);
+                ).field(placeExpression.isDotVarExp.var.isVarDeclaration).address);
             } else if (
                 (
-                    receiverExpression.isPtrExp !is null ||
-                    receiverExpression.isIndexExp !is null
+                    placeExpression.isPtrExp !is null ||
+                    placeExpression.isIndexExp !is null
                 ) &&
                 precomputedReceiverPointerAddress !is null
             ) {
                 address = *precomputedReceiverPointerAddress;
             } else {
-                address = addressOfExpression(receiverExpression, EXP.address);
+                address = addressOfExpression(placeExpression, EXP.address);
             }
             if (address.isPointer) {
                 child.nativeRefLocalAddresses[function_.vthis] =
@@ -6028,11 +6037,37 @@ private struct Walker {
         return result;
     }
 
+    // `assign`/`construct`/`blit` (`=`, its DMD-synthesized construction
+    // form, and its DMD-synthesized zero-init/copy form) all share the
+    // `BinExp`-derived `.e1` target shape; DMD's own "assign, then mutate the
+    // target in place" lowering (e.g. `emplaceRef`'s generated
+    // `(this.payload = args).__postblit()`) chains a postblit/method call
+    // straight off one of these. Returns the assignment's target expression,
+    // or `null` if `expression` is none of the three.
+    private static imported!"dmd.expression".Expression assignmentTarget(
+        imported!"dmd.expression".Expression expression,
+    ) {
+        if (auto assign = expression.isAssignExp)
+            return assign.e1;
+        if (auto construct = expression.isConstructExp)
+            return construct.e1;
+        if (auto blit = expression.isBlitExp)
+            return blit.e1;
+        return null;
+    }
+
     private bool isWritableLocation(
         imported!"dmd.expression".Expression expression,
     ) {
         if (expression is null)
             return false;
+
+        // By the time a chained postblit/method call's receiver expression
+        // is evaluated, the assignment/construction/blit has already written
+        // its value into the target place -- the call's receiver is
+        // writable exactly when that place is.
+        if (auto target = assignmentTarget(expression))
+            return isWritableLocation(target);
 
         return
             expression.isVarExp !is null ||
