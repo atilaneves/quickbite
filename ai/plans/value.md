@@ -645,18 +645,6 @@ Native storage and calls remain the ordinary execution path; do not restore
 marshalling, cell families, alias maps, or name-based representation shims.
 `interpreter.md` §8 triage remains the partition.
 
-An initialized dataseg variable's `_init !is null` arm in
-`materializeDatasegInitializer` (`backends/interpreter/impl.d`) re-runs the
-initializer expression on every fresh call activation whose own
-`mirrorEstablished` map has not yet cached the variable, clobbering the
-shared module block's already-mutated value (fixture:
-`lang/expressions.d`'s `dataseg.initializedModuleScalarSurvivesRepeatedCalls`).
-The sibling `_init is null` arm already gates its write on
-`moduleTable.has(variable)` instead of `mirrorEstablished` for exactly this
-reason (`mirrorEstablished` is per-activation and never merged back from a
-forked child `Walker` into its caller); the initializer-present arm needs
-the same gate.
-
 Pointer-slice formation past an allocation remains unchecked when its result is
 not dereferenced: this is compiled D's contract and the Interpreter's
 native-pointer path matches it. The allocated-block diagnostic is a CTFE-only
