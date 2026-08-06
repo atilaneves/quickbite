@@ -68,12 +68,10 @@ public bool call(
     // libffi requires narrow integer returns to use an ffi_arg-wide slot.
     // Copy only the static type's native width into the caller's storage.
     ffi_arg resultScratch;
-    void* resultAddress = result.address;
-    switch (resultTy) with (TY) {
-        case Tvoid: resultAddress = null; break;
-        case Tint32: resultAddress = &resultScratch; break;
-        default: break;
-    }
+    const resultCopySize = narrowIntegerResultSize(resultTy);
+    void* resultAddress = resultTy == TY.Tvoid
+        ? null
+        : resultCopySize == 0 ? result.address : &resultScratch;
     alias CFunction = extern(C) void function();
     ffi_call(
         &cif,
@@ -82,9 +80,9 @@ public bool call(
         argumentAddresses.ptr,
     );
 
-    if (resultTy == TY.Tint32) {
+    if (resultCopySize != 0) {
         import core.stdc.string: memcpy;
-        memcpy(result.address, &resultScratch, int.sizeof);
+        memcpy(result.address, &resultScratch, resultCopySize);
     }
     return true;
 }
@@ -104,11 +102,27 @@ private size_t abiArgumentIndex(
 }
 
 
+private size_t narrowIntegerResultSize(
+    in imported!"dmd.astenums".TY type,
+) @safe @nogc nothrow pure {
+    import dmd.astenums: TY;
+
+    switch (type) with (TY) {
+        case Tbool, Tint8, Tuns8, Tchar: return byte.sizeof;
+        case Tint16, Tuns16, Twchar: return short.sizeof;
+        case Tint32, Tuns32, Tdchar: return int.sizeof;
+        default: return 0;
+    }
+}
+
+
 private imported!"quickbite.ffi.libffi".ffi_type* ffiTypeFor(
     imported!"dmd.mtype".Type type,
 ) {
     import quickbite.ffi.libffi:
-        ffi_type_pointer, ffi_type_sint32, ffi_type_void;
+        ffi_type_pointer, ffi_type_sint8, ffi_type_sint16, ffi_type_sint32,
+        ffi_type_sint64, ffi_type_uint8, ffi_type_uint16, ffi_type_uint32,
+        ffi_type_uint64, ffi_type_void;
     import dmd.astenums: TY;
 
     if (type is null)
@@ -116,7 +130,14 @@ private imported!"quickbite.ffi.libffi".ffi_type* ffiTypeFor(
 
     switch (type.toBasetype.ty) with (TY) {
         case Tvoid: return &ffi_type_void;
+        case Tbool, Tuns8, Tchar: return &ffi_type_uint8;
+        case Tint8: return &ffi_type_sint8;
+        case Tuns16, Twchar: return &ffi_type_uint16;
+        case Tint16: return &ffi_type_sint16;
+        case Tuns32, Tdchar: return &ffi_type_uint32;
         case Tint32: return &ffi_type_sint32;
+        case Tuns64: return &ffi_type_uint64;
+        case Tint64: return &ffi_type_sint64;
         case Tpointer, Tclass: return &ffi_type_pointer;
         default: return null;
     }
