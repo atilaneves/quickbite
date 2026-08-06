@@ -7,6 +7,7 @@ public enum SysVResultKind : ubyte {
     none,
     registers,
     x87,
+    x87Pair,
 }
 
 
@@ -23,7 +24,7 @@ public struct SysVCallFrame {
     public ubyte[32][8] vector;
     public ulong[2] resultGpr;
     public ubyte[32][2] resultVector;
-    public ubyte[16] resultX87;
+    public ubyte[16][2] resultX87;
 }
 
 
@@ -103,8 +104,14 @@ public extern(C) void invokeSysV(SysVCallFrame* frame) {
         db 0xC5, 0xF8, 0x77;
     vectorsStored:
         cmp byte ptr [R12 + 25], SysVResultKind.x87;
+        je storeX87;
+        cmp byte ptr [R12 + 25], SysVResultKind.x87Pair;
         jne resultStored;
+    storeX87:
         fstp real ptr [R12 + 416];
+        cmp byte ptr [R12 + 25], SysVResultKind.x87Pair;
+        jne resultStored;
+        fstp real ptr [R12 + 432];
     resultStored:
         mov RSP, R13;
     }

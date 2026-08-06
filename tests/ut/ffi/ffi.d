@@ -1,7 +1,7 @@
 module ut.ffi.ffi;
 
 
-import dmd.astenums: LINK;
+import dmd.astenums: LINK, STC, VarArg;
 import dmd.arraytypes: Dsymbols;
 import dmd.func: FuncDeclaration;
 import dmd.mtype:
@@ -276,6 +276,495 @@ unittest {
         caught = true;
     }
     caught.should == true;
+}
+
+
+@("ffi.addressOnlyExternCppVectorCalls")
+unittest {
+    Type vectorType = new TypeVector(Type.tfloat32.sarrayOf(4));
+    vectorType = vectorType.merge;
+    int bias = 3;
+    Float4 value = [1.0f, 2.0f, 4.0f, 8.0f];
+    Float4 result;
+
+    call(
+        Callable(
+            cast(void*) &transformCppVector,
+            functionSignature(
+                vectorType,
+                [Type.tint32, vectorType],
+                LINK.cpp,
+            ),
+            CompilerAbi.dmd,
+        ),
+        [
+            TypedAddress(Type.tint32, &bias),
+            TypedAddress(vectorType, &value),
+        ],
+        TypedAddress(vectorType, &result),
+    ).should == true;
+    result.array.should == transformCppVector(bias, value).array;
+
+    auto memberSignature = functionSignature(
+        vectorType,
+        [Type.tint32, vectorType],
+        LINK.cpp,
+    );
+    auto receiverType = structType(q{
+        extern(C++) struct Receiver {
+            int scale;
+        }
+    }, "Receiver");
+    CppVectorReceiver receiverValue = CppVectorReceiver(2);
+    auto method = &receiverValue.combine;
+    auto receiver = TypedAddress(receiverType, &receiverValue);
+    result = Float4.init;
+    call(
+        Callable(
+            cast(void*) method.funcptr,
+            memberSignature,
+            CompilerAbi.dmd,
+        ),
+        [
+            TypedAddress(Type.tint32, &bias),
+            TypedAddress(vectorType, &value),
+        ],
+        TypedAddress(vectorType, &result),
+        &receiver,
+    ).should == true;
+    result.array.should == receiverValue.combine(bias, value).array;
+
+    auto variadicSignature = functionSignatureWithStorageClasses(
+        Type.tuns8,
+        [Type.tint32],
+        [STC.none],
+        LINK.cpp,
+        VarArg.variadic,
+    );
+    ubyte sseCount;
+    call(
+        Callable(
+            cast(void*) &cppVectorVariadicSseCount,
+            variadicSignature,
+            CompilerAbi.dmd,
+        ),
+        [
+            TypedAddress(Type.tint32, &bias),
+            TypedAddress(vectorType, &value),
+        ],
+        TypedAddress(Type.tuns8, &sseCount),
+    ).should == true;
+    sseCount.should == 1;
+}
+
+
+@("ffi.addressOnlyVectorCallsReuseIndirectStorage")
+unittest {
+    Type vectorType = new TypeVector(Type.tfloat32.sarrayOf(4));
+    vectorType = vectorType.merge;
+    auto vectorReferenceSignature = functionSignatureWithStorageClasses(
+        vectorType,
+        [vectorType, Type.tint32, vectorType],
+        [STC.ref_, STC.out_, STC.none],
+        LINK.c,
+        VarArg.none,
+        true,
+    );
+    Float4 value = [1.0f, 2.0f, 4.0f, 8.0f];
+    Float4 increment = [8.0f, 4.0f, 2.0f, 1.0f];
+    int visits = -1;
+    Float4* returnedVector;
+
+    call(
+        Callable(
+            cast(void*) &updateVectorReference,
+            vectorReferenceSignature,
+            CompilerAbi.dmd,
+        ),
+        [
+            TypedAddress(vectorType, &value),
+            TypedAddress(Type.tint32, &visits),
+            TypedAddress(vectorType, &increment),
+        ],
+        TypedAddress(vectorType, &returnedVector),
+    ).should == true;
+    visits.should == 1;
+    assert(returnedVector is &value);
+    value.array.should == (Float4([9.0f, 6.0f, 6.0f, 9.0f])).array;
+
+    auto scalarReferenceSignature = functionSignatureWithStorageClasses(
+        Type.tint32,
+        [Type.tint32, vectorType],
+        [STC.ref_, STC.none],
+        LINK.c,
+        VarArg.none,
+        true,
+    );
+    int scalar = 41;
+    int* returnedScalar;
+    call(
+        Callable(
+            cast(void*) &selectScalarReference,
+            scalarReferenceSignature,
+            CompilerAbi.dmd,
+        ),
+        [
+            TypedAddress(Type.tint32, &scalar),
+            TypedAddress(vectorType, &value),
+        ],
+        TypedAddress(Type.tint32, &returnedScalar),
+    ).should == true;
+    assert(returnedScalar is &scalar);
+}
+
+
+@("ffi.addressOnlyDVectorDescriptorCalls")
+unittest {
+    version (LDC)
+        enum hostCompilerAbi = CompilerAbi.ldc;
+    else
+        enum hostCompilerAbi = CompilerAbi.dmd;
+
+    Type vectorType = new TypeVector(Type.tfloat32.sarrayOf(4));
+    vectorType = vectorType.merge;
+    Float4 value = [1.0f, 2.0f, 4.0f, 8.0f];
+    Float4 result;
+
+    Float4 delegate() thunk = () => vectorThunk;
+    auto thunkType = new TypeDelegate(new TypeFunction(
+        ParameterList(null),
+        vectorType,
+        LINK.d,
+    ));
+    auto lazySignature = functionSignatureWithStorageClasses(
+        vectorType,
+        [vectorType, vectorType],
+        [STC.none, STC.lazy_],
+        LINK.d,
+    );
+    call(
+        Callable(
+            cast(void*) &evaluateLazyVector,
+            lazySignature,
+            hostCompilerAbi,
+        ),
+        [
+            TypedAddress(vectorType, &value),
+            TypedAddress(thunkType, &thunk),
+        ],
+        TypedAddress(vectorType, &result),
+    ).should == true;
+    result.array.should == evaluateLazyVector(value, vectorThunk).array;
+
+    auto restType = new TypeDArray(vectorType);
+    auto typesafeSignature = functionSignatureWithStorageClasses(
+        vectorType,
+        [vectorType, restType],
+        [STC.none, STC.none],
+        LINK.d,
+        VarArg.typesafe,
+    );
+    Float4[] rest = [Float4([2.0f, 3.0f, 5.0f, 7.0f])];
+    result = Float4.init;
+    call(
+        Callable(
+            cast(void*) &sumTypesafeVectors,
+            typesafeSignature,
+            hostCompilerAbi,
+        ),
+        [
+            TypedAddress(vectorType, &value),
+            TypedAddress(typesafeSignature.parameterList[1].type, &rest),
+        ],
+        TypedAddress(vectorType, &result),
+    ).should == true;
+    result.array.should == sumTypesafeVectors(value, rest).array;
+}
+
+
+@("ffi.addressOnlyVectorCallsReturnX87Values")
+unittest {
+    Type vectorType = new TypeVector(Type.tfloat32.sarrayOf(4));
+    vectorType = vectorType.merge;
+    Float4 value = [1.0f, 2.0f, 4.0f, 8.0f];
+    real result;
+
+    call(
+        Callable(
+            cast(void*) &vectorToReal,
+            functionSignature(Type.tfloat80, [vectorType], LINK.c),
+            CompilerAbi.dmd,
+        ),
+        [TypedAddress(vectorType, &value)],
+        TypedAddress(Type.tfloat80, &result),
+    ).should == true;
+    result.should == vectorToReal(value);
+
+    creal complexResult;
+    call(
+        Callable(
+            cast(void*) &vectorToComplexReal,
+            functionSignature(Type.tcomplex80, [vectorType], LINK.c),
+            CompilerAbi.dmd,
+        ),
+        [TypedAddress(vectorType, &value)],
+        TypedAddress(Type.tcomplex80, &complexResult),
+    ).should == true;
+    complexResult.should == vectorToComplexReal(value);
+}
+
+
+@("ffi.addressOnlyVectorCallsComposeHiddenResults")
+unittest {
+    version (LDC)
+        enum hostCompilerAbi = CompilerAbi.ldc;
+    else
+        enum hostCompilerAbi = CompilerAbi.dmd;
+
+    Type vectorType = new TypeVector(Type.tfloat32.sarrayOf(4));
+    vectorType = vectorType.merge;
+    auto aggregateType = vectorType.sarrayOf(2);
+    Float4 value = [1.0f, 2.0f, 4.0f, 8.0f];
+    Float4[2] aggregateResult;
+    DVectorSretReceiver dReceiver = DVectorSretReceiver(3);
+    auto dMethod = &dReceiver.combine;
+    auto dReceiverType = structType(q{
+        struct Receiver {
+            int bias;
+        }
+    }, "Receiver");
+    auto receiver = TypedAddress(dReceiverType, &dReceiver);
+    call(
+        Callable(
+            cast(void*) dMethod.funcptr,
+            functionSignature(aggregateType, [vectorType], LINK.d),
+            hostCompilerAbi,
+        ),
+        [TypedAddress(vectorType, &value)],
+        TypedAddress(aggregateType, &aggregateResult),
+        &receiver,
+    ).should == true;
+    const expectedAggregate = dReceiver.combine(value);
+    aggregateResult[0].array.should == expectedAggregate[0].array;
+    aggregateResult[1].array.should == expectedAggregate[1].array;
+
+    foreach (compilerAbi; [CompilerAbi.dmd, CompilerAbi.ldc]) {
+        aggregateResult = Float4[2].init;
+        call(
+            Callable(
+                compilerAbi == CompilerAbi.dmd
+                    ? cast(void*) &dmdVectorSretOrderOracle
+                    : cast(void*) &ldcVectorSretOrderOracle,
+                functionSignature(aggregateType, [vectorType], LINK.d),
+                compilerAbi,
+            ),
+            [TypedAddress(vectorType, &value)],
+            TypedAddress(aggregateType, &aggregateResult),
+            &receiver,
+        ).should == true;
+        aggregateResult[0].array.should == expectedAggregate[0].array;
+        aggregateResult[1].array.should == expectedAggregate[1].array;
+    }
+
+    auto nonPodType = functionSignature(q{
+        extern(C++) {
+            struct NonPod {
+                int value;
+                ~this();
+            }
+            NonPod make(NonPod value);
+        }
+    }, "make").next;
+    auto nonPodSignature = functionSignature(
+        nonPodType,
+        [nonPodType, vectorType],
+        LINK.cpp,
+    );
+    CppNonPod nonPod = CppNonPod(11);
+    CppNonPod nonPodResult;
+    const expectedNonPod = transformCppNonPodVector(nonPod, value);
+    call(
+        Callable(
+            cast(void*) &transformCppNonPodVector,
+            nonPodSignature,
+            CompilerAbi.dmd,
+        ),
+        [
+            TypedAddress(nonPodType, &nonPod),
+            TypedAddress(vectorType, &value),
+        ],
+        TypedAddress(nonPodType, &nonPodResult),
+    ).should == true;
+    nonPodResult.value.should == expectedNonPod.value;
+
+    CppVectorNonPodFactory factory = CppVectorNonPodFactory(5);
+    auto cppMethod = &factory.make;
+    auto cppReceiverType = structType(q{
+        extern(C++) struct Factory {
+            int bias;
+        }
+    }, "Factory");
+    receiver = TypedAddress(cppReceiverType, &factory);
+    nonPodResult.value = 0;
+    call(
+        Callable(
+            cast(void*) cppMethod.funcptr,
+            functionSignature(nonPodType, [vectorType], LINK.cpp),
+            CompilerAbi.dmd,
+        ),
+        [TypedAddress(vectorType, &value)],
+        TypedAddress(nonPodType, &nonPodResult),
+        &receiver,
+    ).should == true;
+    nonPodResult.value.should == factory.make(value).value;
+
+    auto constructor = specialFunctionDeclaration(q{
+        extern(C++) struct Lifetime {
+            int value;
+            this(int placeholder);
+        }
+    }, true);
+    constructor.type.isTypeFunction.parameterList[0].type = vectorType;
+    CppVectorLifetime lifetime;
+    receiver = TypedAddress(constructor.isThis.type, &lifetime);
+    call(
+        Callable(
+            cast(void*) &cppVectorConstructorOracle,
+            constructor.type.isTypeFunction,
+            CompilerAbi.dmd,
+            constructor,
+        ),
+        [TypedAddress(vectorType, &value)],
+        TypedAddress(constructor.type.isTypeFunction.next, null),
+        &receiver,
+    ).should == true;
+    lifetime.value.should == 18;
+}
+
+
+@("ffi.addressOnlyVectorCallsComposeRegisterPressure")
+unittest {
+    version (LDC)
+        enum hostCompilerAbi = CompilerAbi.ldc;
+    else
+        enum hostCompilerAbi = CompilerAbi.dmd;
+
+    Type vectorType = new TypeVector(Type.tfloat32.sarrayOf(4));
+    vectorType = vectorType.merge;
+    Float4 vector = [1.0f, 2.0f, 4.0f, 8.0f];
+
+    UInt128Abi integer = UInt128Abi(11, 17);
+    UInt128Abi integerResult;
+    call(
+        Callable(
+            cast(void*) &transformUInt128Vector,
+            functionSignature(
+                Type.tuns128,
+                [Type.tuns128, vectorType],
+                LINK.c,
+            ),
+            CompilerAbi.dmd,
+        ),
+        [
+            TypedAddress(Type.tuns128, &integer),
+            TypedAddress(vectorType, &vector),
+        ],
+        TypedAddress(Type.tuns128, &integerResult),
+    ).should == true;
+    integerResult.should == transformUInt128Vector(integer, vector);
+
+    auto emptyType = structType(q{
+        struct Empty {
+        }
+    }, "Empty");
+    EmptyVectorArgument empty;
+    Float4 vectorResult;
+    call(
+        Callable(
+            cast(void*) &ignoreEmptyVectorArgument,
+            functionSignature(
+                vectorType,
+                [emptyType, vectorType],
+                LINK.c,
+            ),
+            CompilerAbi.dmd,
+        ),
+        [
+            TypedAddress(emptyType, &empty),
+            TypedAddress(vectorType, &vector),
+        ],
+        TypedAddress(vectorType, &vectorResult),
+    ).should == true;
+    vectorResult.array.should == ignoreEmptyVectorArgument(
+        empty,
+        vector,
+    ).array;
+
+    auto aggregateType = vectorType.sarrayOf(2);
+    auto signature = variadicFunctionSignature(
+        aggregateType,
+        [Type.tint32, Type.tint32, Type.tint32, Type.tint32],
+        LINK.d,
+    );
+    DVariadicVectorSretReceiver receiverValue =
+        DVariadicVectorSretReceiver(3);
+    auto method = &receiverValue.combine;
+    auto receiverType = structType(q{
+        struct Receiver {
+            int bias;
+        }
+    }, "Receiver");
+    auto receiver = TypedAddress(receiverType, &receiverValue);
+    int first = 1;
+    int second = 2;
+    int third = 4;
+    int fourth = 8;
+    DVariadicMetadata variadicMetadata;
+    version (LDC) {
+        TypeInfo[] metadata = [typeid(Float4)];
+        auto metadataType = functionSignature(q{
+            void metadata(TypeInfo[]);
+        }, "metadata").parameterList[0].type;
+        variadicMetadata = DVariadicMetadata(
+            TypedAddress(metadataType, &metadata),
+        );
+    } else {
+        TypeInfo_Tuple metadata = new TypeInfo_Tuple;
+        metadata.elements = [typeid(Float4)];
+        auto metadataType = functionSignature(q{
+            void metadata(TypeInfo_Tuple);
+        }, "metadata").parameterList[0].type;
+        variadicMetadata = DVariadicMetadata(
+            TypedAddress(metadataType, &metadata),
+        );
+    }
+    Float4[2] aggregateResult;
+    call(
+        Callable(
+            cast(void*) method.funcptr,
+            signature,
+            hostCompilerAbi,
+        ),
+        [
+            TypedAddress(Type.tint32, &first),
+            TypedAddress(Type.tint32, &second),
+            TypedAddress(Type.tint32, &third),
+            TypedAddress(Type.tint32, &fourth),
+            TypedAddress(vectorType, &vector),
+        ],
+        TypedAddress(aggregateType, &aggregateResult),
+        &receiver,
+        &variadicMetadata,
+    ).should == true;
+    const expectedAggregate = receiverValue.combine(
+        first,
+        second,
+        third,
+        fourth,
+        vector,
+    );
+    aggregateResult[0].array.should == expectedAggregate[0].array;
+    aggregateResult[1].array.should == expectedAggregate[1].array;
 }
 
 
@@ -2007,6 +2496,39 @@ private TypeFunction functionSignature(
 }
 
 
+private TypeFunction functionSignatureWithStorageClasses(
+    Type returnType,
+    Type[] parameterTypes,
+    STC[] storageClasses,
+    in LINK linkage,
+    in VarArg varargs = VarArg.none,
+    in bool refResult = false,
+) {
+    import dmd.arraytypes: Parameters;
+    import dmd.location: Loc;
+    import dmd.mtype: Parameter;
+
+    assert(parameterTypes.length == storageClasses.length);
+    auto parameters = new Parameters;
+    foreach (index, parameterType; parameterTypes)
+        parameters.push(new Parameter(
+            Loc.initial,
+            storageClasses[index],
+            parameterType,
+            null,
+            null,
+            null,
+        ));
+    auto signature = new TypeFunction(
+        ParameterList(parameters, varargs),
+        returnType,
+        linkage,
+    );
+    signature.isRef = refResult;
+    return signature;
+}
+
+
 private TypeFunction variadicFunctionSignature(
     Type returnType,
     Type[] parameterTypes,
@@ -2223,6 +2745,186 @@ private extern(C) Float4 transformVector(int bias, Float4 value, int scale) {
     Float4 factor = scale;
     Float4 offset = bias;
     return value * factor + offset;
+}
+
+
+private extern(C++) Float4 transformCppVector(int bias, Float4 value) {
+    Float4 offset = bias;
+    return value + offset;
+}
+
+
+private extern(C++) struct CppVectorReceiver {
+    private int scale;
+
+    private Float4 combine(int bias, Float4 value) {
+        Float4 factor = scale;
+        Float4 offset = bias;
+        return value * factor + offset;
+    }
+}
+
+
+pragma(inline, false)
+private extern(C++) ubyte cppVectorVariadicSseCount(int marker, ...) {
+    asm pure nothrow @nogc {
+        naked;
+        ret;
+    }
+}
+
+
+private extern(C) ref Float4 updateVectorReference(
+    ref Float4 value,
+    out int visits,
+    Float4 increment,
+) {
+    value += increment;
+    visits = 1;
+    return value;
+}
+
+
+private extern(C) ref int selectScalarReference(
+    ref int value,
+    Float4 ignored,
+) {
+    return value;
+}
+
+
+private Float4 vectorThunk() {
+    return Float4([0.5f, 1.0f, 1.5f, 2.0f]);
+}
+
+
+private Float4 evaluateLazyVector(Float4 value, lazy Float4 increment) {
+    return value + increment;
+}
+
+
+private Float4 sumTypesafeVectors(Float4 seed, Float4[] rest...) {
+    foreach (value; rest)
+        seed += value;
+    return seed;
+}
+
+
+private extern(C) real vectorToReal(Float4 value) {
+    return cast(real) value.array[0] * 10 + value.array[3];
+}
+
+
+private extern(C) creal vectorToComplexReal(Float4 value) {
+    return cast(real) value.array[0] * 10 +
+        cast(real) value.array[3] * 1.0Li;
+}
+
+
+private struct DVectorSretReceiver {
+    private int bias;
+
+    private Float4[2] combine(Float4 value) {
+        Float4 offset = bias;
+        return [value + offset, value * offset];
+    }
+}
+
+
+private extern(C) void dmdVectorSretOrderOracle(
+    DVectorSretReceiver* receiver,
+    Float4[2]* result,
+    Float4 value,
+) {
+    *result = receiver.combine(value);
+}
+
+
+private extern(C) void ldcVectorSretOrderOracle(
+    Float4[2]* result,
+    DVectorSretReceiver* receiver,
+    Float4 value,
+) {
+    *result = receiver.combine(value);
+}
+
+
+private extern(C++) CppNonPod transformCppNonPodVector(
+    CppNonPod value,
+    Float4 vector,
+) {
+    value.value += cast(int) vector.array[0] * 10 +
+        cast(int) vector.array[3];
+    return value;
+}
+
+
+private extern(C++) struct CppVectorNonPodFactory {
+    private int bias;
+
+    private CppNonPod make(Float4 vector) {
+        return CppNonPod(
+            bias + cast(int) vector.array[0] * 10 +
+                cast(int) vector.array[3],
+        );
+    }
+}
+
+
+private struct CppVectorLifetime {
+    private int value;
+}
+
+
+private extern(C++) void cppVectorConstructorOracle(
+    CppVectorLifetime* receiver,
+    Float4 vector,
+) {
+    receiver.value = cast(int) vector.array[0] * 10 +
+        cast(int) vector.array[3];
+}
+
+
+private extern(C) UInt128Abi transformUInt128Vector(
+    UInt128Abi value,
+    Float4 vector,
+) {
+    value.low += cast(ulong) vector.array[0];
+    value.high += cast(ulong) vector.array[3];
+    return value;
+}
+
+
+private struct EmptyVectorArgument {
+}
+
+
+private extern(C) Float4 ignoreEmptyVectorArgument(
+    EmptyVectorArgument empty,
+    Float4 vector,
+) {
+    return vector + 1;
+}
+
+
+private struct DVariadicVectorSretReceiver {
+    private int bias;
+
+    private Float4[2] combine(
+        int first,
+        int second,
+        int third,
+        int fourth,
+        ...
+    ) {
+        import core.vararg: va_arg;
+
+        assert(_arguments.length == 1);
+        assert(_arguments[0] is typeid(Float4));
+        const vector = va_arg!Float4(_argptr);
+        Float4 offset = bias + first + second + third + fourth;
+        return [vector + offset, vector * offset];
+    }
 }
 
 

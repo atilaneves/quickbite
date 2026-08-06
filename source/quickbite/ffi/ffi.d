@@ -52,6 +52,7 @@ private struct PhysicalCall {
     private void*[] pointerCells;
     private size_t cFixedArgumentCount;
     private bool cVariadic;
+    private size_t receiverArgumentIndex = size_t.max;
 }
 
 
@@ -295,6 +296,7 @@ private PhysicalCall physicalCallFor(
             default:
                 return PhysicalCall.init;
         }
+        physical.receiverArgumentIndex = nextPhysicalIndex;
         physical.arguments[nextPhysicalIndex++] = PhysicalArgument(
             receiver.type,
             receiverAddress,
@@ -414,7 +416,8 @@ private bool callSysVVector(
             return false;
     }
     if (callable.signature.linkage != LINK.c &&
-        callable.signature.linkage != LINK.d)
+        callable.signature.linkage != LINK.d &&
+        callable.signature.linkage != LINK.cpp)
         return false;
 
     SysVCallFrame frame;
@@ -422,46 +425,62 @@ private bool callSysVVector(
     frame.stackAlignment = 16;
     ubyte[] stackBytes;
     auto returnType = semanticStorageType(physical.returnType);
-    auto returnTuple = toArgTypes_sysv_x64(returnType);
+    auto returnTuple = physical.returnPolicy == PhysicalReturn.cppConstructor
+        ? null
+        : toArgTypes_sysv_x64(returnType);
     if (physical.returnPolicy == PhysicalReturn.reference)
         returnTuple = toArgTypes_sysv_x64(Type.tvoidptr);
-    const returnsInMemory = returnTuple !is null &&
-        returnTuple.arguments.length == 0;
-    if (returnTuple !is null && result.address is null)
+    const returnsX87 = physical.returnPolicy == PhysicalReturn.value &&
+        (returnType.ty == TY.Tfloat80 ||
+            returnType.ty == TY.Timaginary80 ||
+            returnType.ty == TY.Tcomplex80);
+    const returnsInMemory =
+        physical.returnPolicy == PhysicalReturn.cppNonPod ||
+        physical.returnPolicy == PhysicalReturn.value &&
+            returnTuple !is null && returnTuple.arguments.length == 0;
+    if ((returnTuple !is null || returnsX87) && result.address is null)
         return false;
-    size_t nextGpr = returnsInMemory;
-    if (returnsInMemory)
-        frame.gpr[0] = cast(size_t) result.address;
+    const receiverPrecedesResult = returnsInMemory &&
+        callable.signature.linkage == LINK.d &&
+        callable.compilerAbi == CompilerAbi.dmd &&
+        physical.receiverArgumentIndex != size_t.max;
+    size_t nextGpr;
+    if (returnsInMemory && !receiverPrecedesResult)
+        frame.gpr[nextGpr++] = cast(size_t) result.address;
     size_t nextXmm;
-    foreach (argument; physical.arguments) {
-        if (argument.pointer) {
-            if (nextGpr == frame.gpr.length)
-                appendSysVPointerStackArgument(stackBytes, argument.address);
-            else
-                memcpy(
-                    &frame.gpr[nextGpr++],
-                    argument.address,
-                    void*.sizeof,
-                );
-            continue;
-        }
-        if (!placeSysVArgument(
-            frame,
-            stackBytes,
-            nextGpr,
-            nextXmm,
-            TypedAddress(argument.type, argument.address),
-        ))
-            return false;
+    foreach (argumentIndex, argument; physical.arguments) {
+        if (argument.pointer)
+            placeSysVPointerArgument(
+                frame,
+                stackBytes,
+                nextGpr,
+                argument.address,
+            );
+        else if (!placeSysVArgument(
+                frame,
+                stackBytes,
+                nextGpr,
+                nextXmm,
+                TypedAddress(argument.type, argument.address),
+            ))
+                return false;
+        if (receiverPrecedesResult &&
+            argumentIndex == physical.receiverArgumentIndex)
+            frame.gpr[nextGpr++] = cast(size_t) result.address;
     }
     frame.sseCount = cast(ubyte) nextXmm;
     stackBytes.length = alignedTo(stackBytes.length, frame.stackAlignment);
     frame.stackAddress = stackBytes.ptr;
     frame.stackSize = stackBytes.length;
 
-    if (returnTuple is null) {
+    if (returnsX87) {
+        frame.resultKind = returnType.ty == TY.Tcomplex80
+            ? SysVResultKind.x87Pair
+            : SysVResultKind.x87;
+    } else if (returnTuple is null) {
         frame.resultKind = SysVResultKind.none;
     } else if (!returnsInMemory) {
+        frame.resultKind = SysVResultKind.registers;
         foreach (part; *returnTuple.arguments)
             if (isSysVVectorPart(part.type)) {
                 const partSize = cast(size_t) size(part.type);
@@ -470,12 +489,14 @@ private bool callSysVVector(
                 if (partSize == 32)
                     frame.usesAvx = true;
             }
-        frame.resultKind = SysVResultKind.registers;
     }
 
     invokeSysV(&frame);
 
-    if (returnTuple !is null && !returnsInMemory) {
+    if (returnsX87) {
+        memcpy(result.address, frame.resultX87.ptr,
+            cast(size_t) size(returnType));
+    } else if (returnTuple !is null && !returnsInMemory) {
         size_t nextResultGpr;
         size_t nextResultXmm;
         foreach (partIndex, part; *returnTuple.arguments) {
@@ -493,6 +514,21 @@ private bool callSysVVector(
         }
     }
     return true;
+}
+
+
+private void placeSysVPointerArgument(
+    ref imported!"quickbite.ffi.sysv_call".SysVCallFrame frame,
+    ref ubyte[] stackBytes,
+    ref size_t nextGpr,
+    const void* address,
+) {
+    import core.stdc.string: memcpy;
+
+    if (nextGpr == frame.gpr.length)
+        appendSysVPointerStackArgument(stackBytes, address);
+    else
+        memcpy(&frame.gpr[nextGpr++], address, void*.sizeof);
 }
 
 
