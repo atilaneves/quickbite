@@ -11411,6 +11411,46 @@ static foreach (backend; Matrix!(
     }
 }
 
+// The out-of-bounds sibling of the nested indexed-receiver test above:
+// compiled D increments `i` once, then raises a guest-catchable `RangeError`
+// before invoking the method. SystemLinker is the oracle.
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.diverges,
+        "static variable `m` cannot be read at compile time"),
+    Omit!(Bytecode, Because.refusal,
+        "Unsupported struct value in bytecode core: m[cast(ulong)i++][1]"),
+    Omit!(LLVMJit, Because.diverges,
+        "the guest `RangeError` does not reach the catch block (`false != true`)"),
+)) {
+    @("struct.methodCallThroughDoublyNestedOutOfBoundsIndexedReceiverThrowsRangeErrorOnce." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            import core.exception: RangeError;
+
+            struct P {
+                int x;
+                void bump() { x++; }
+            }
+
+            P[2][3] m;
+            int i = 3;
+
+            unittest {
+                bool caught;
+                try {
+                    m[i++][1].bump();
+                } catch (RangeError) {
+                    caught = true;
+                }
+                assert(caught);
+                assert(i == 4);
+            }
+        });
+    }
+}
+
 // `&s.inner.a[i]` -- an address-of through a NESTED field access (`s.inner`
 // is itself a struct, `.a` is that inner struct's static-array field) with
 // a runtime index must land on the real backing storage inside `s`, not a
