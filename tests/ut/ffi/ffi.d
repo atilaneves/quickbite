@@ -7,7 +7,7 @@ import dmd.func: FuncDeclaration;
 import dmd.mtype:
     ParameterList, Type, TypeClass, TypeDArray, TypeDelegate, TypeFunction,
     TypeReference, TypeStruct, TypeVector;
-import dmd.typesem: constOf, merge, sarrayOf;
+import dmd.typesem: arrayOf, constOf, merge, sarrayOf;
 import quickbite.ffi.ffi:
     Callable, CompilerAbi, DVariadicMetadata, TypedAddress, call;
 import unit_threaded;
@@ -1392,6 +1392,53 @@ unittest {
 }
 
 
+@("ffi.rejectsWrongExternDVariadicMetadataType")
+unittest {
+    auto signature = variadicFunctionSignature(
+        Type.tint32,
+        [Type.tint32],
+        LINK.d,
+    );
+    int fixed = 4;
+    int result;
+
+    TypeInfo dmdMetadata = typeid(int);
+    auto wrongDmdMetadata = DVariadicMetadata(TypedAddress(
+        Type.dtypeinfo.type,
+        &dmdMetadata,
+    ));
+    const dmdAccepted = call(
+        Callable(
+            cast(void*) &wrongDmdMetadataOracle,
+            signature,
+            CompilerAbi.dmd,
+        ),
+        [TypedAddress(Type.tint32, &fixed)],
+        TypedAddress(Type.tint32, &result),
+        null,
+        &wrongDmdMetadata,
+    );
+
+    int[] ldcMetadata;
+    auto wrongLdcMetadata = DVariadicMetadata(TypedAddress(
+        Type.tint32.arrayOf,
+        &ldcMetadata,
+    ));
+    const ldcAccepted = call(
+        Callable(
+            cast(void*) &wrongLdcMetadataOracle,
+            signature,
+            CompilerAbi.ldc,
+        ),
+        [TypedAddress(Type.tint32, &fixed)],
+        TypedAddress(Type.tint32, &result),
+        null,
+        &wrongLdcMetadata,
+    );
+    [dmdAccepted, ldcAccepted].should == [false, false];
+}
+
+
 @("ffi.addressOnlyTypesafeExternDVariadicCall")
 unittest {
     version (LDC)
@@ -2659,6 +2706,22 @@ private TypeFunction variadicFunctionSignature(
         returnType,
         linkage,
     );
+}
+
+
+private extern(C) int wrongDmdMetadataOracle(
+    TypeInfo,
+    int fixed,
+) {
+    return fixed;
+}
+
+
+private extern(C) int wrongLdcMetadataOracle(
+    int[] metadata,
+    int fixed,
+) {
+    return fixed + cast(int) metadata.length;
 }
 
 

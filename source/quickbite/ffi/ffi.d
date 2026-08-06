@@ -303,12 +303,13 @@ private PhysicalCall physicalCallFor(
         ))
         return physical;
     if (isDVariadic) {
-        const expectedType = callable.compilerAbi == CompilerAbi.dmd
-            ? TY.Tclass
-            : TY.Tarray;
-        if (variadicMetadata.value.type is null ||
-            variadicMetadata.value.address is null ||
-            variadicMetadata.value.type.toBasetype.ty != expectedType)
+        // DMD's qualifier transforms require mutable type nodes.
+        auto expectedType = dVariadicMetadataType(callable.compilerAbi);
+        if (variadicMetadata.value.address is null ||
+            !isSameUnqualifiedType(
+                variadicMetadata.value.type,
+                expectedType,
+            ))
             return physical;
     }
     size_t numPassedArguments;
@@ -382,8 +383,37 @@ private bool isMatchingReceiverType(
     imported!"dmd.mtype".Type actual,
     imported!"dmd.mtype".Type expected,
 ) {
+    return isSameUnqualifiedType(actual, expected);
+}
+
+
+private imported!"dmd.mtype".Type dVariadicMetadataType(
+    in CompilerAbi compilerAbi,
+) {
+    import dmd.mtype: Type;
+    import dmd.typesem: arrayOf;
+
+    final switch (compilerAbi) with (CompilerAbi) {
+        case dmd:
+            return Type.typeinfotypelist is null
+                ? null
+                : Type.typeinfotypelist.type;
+        case ldc:
+            return Type.dtypeinfo is null
+                ? null
+                : Type.dtypeinfo.type.arrayOf;
+    }
+}
+
+
+private bool isSameUnqualifiedType(
+    imported!"dmd.mtype".Type actual,
+    imported!"dmd.mtype".Type expected,
+) {
     import dmd.typesem: mutableOf, unSharedOf;
 
+    if (actual is null || expected is null)
+        return false;
     // DMD's qualifier transforms require mutable type nodes.
     auto actualBase = actual.toBasetype;
     auto expectedBase = expected.toBasetype;
