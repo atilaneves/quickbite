@@ -4,6 +4,15 @@ module quickbite.backends.interpreter.place;
 private:
 
 
+// Distinguishes an index's guest-visible bounds violation from other host
+// failures while composing a `Place`.
+public class IndexOutOfBoundsException: Exception {
+    public this(string message, string file = __FILE__, size_t line = __LINE__) pure nothrow @safe {
+        super(message, file, line);
+    }
+}
+
+
 // An addressable location: a host address plus the static DMD `Type` at
 // that address, nothing more. `field`/`index` below compute another
 // `Place` by address arithmetic over DMD's own offsets/strides, read
@@ -84,7 +93,7 @@ public struct Place {
         if (auto slice = _type.isTypeDArray) {
             auto header = readSliceHeaderBytes(placeBytes(_address, NativeArray.sliceHeaderByteLength));
             if (i >= header.length)
-                throw new Exception(
+                throw new IndexOutOfBoundsException(
                     "quickbite.backends.interpreter.place.Place.index: "
                     ~ "index out of range for slice place",
                 );
@@ -102,7 +111,7 @@ public struct Place {
             );
 
         if (i >= staticArrayLength(array))
-            throw new Exception(
+            throw new IndexOutOfBoundsException(
                 "quickbite.backends.interpreter.place.Place.index: "
                 ~ "index out of range for static array place",
             );

@@ -3270,7 +3270,8 @@ private struct Walker {
                     if (inner.e1.isVarExp !is null) {
                         import quickbite.backends.interpreter.lvalue_place:
                             placeOfLvalue;
-                        import quickbite.backends.interpreter.place: Place;
+                        import quickbite.backends.interpreter.place:
+                            Place, IndexOutOfBoundsException;
                         import quickbite.backends.interpreter.place_value:
                             readValue;
 
@@ -3316,9 +3317,7 @@ private struct Walker {
                                     .index(cast(size_t) offset)
                                     .address,
                             );
-                        } catch (InterpretedException exception) {
-                            throw exception;
-                        } catch (Exception exception) {
+                        } catch (IndexOutOfBoundsException exception) {
                             // The composed `Place.index` call observes bounds
                             // only after `i++` has committed. Translate its
                             // host exception without retrying the receiver.
