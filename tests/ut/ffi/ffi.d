@@ -5,7 +5,8 @@ import dmd.astenums: LINK;
 import dmd.arraytypes: Dsymbols;
 import dmd.func: FuncDeclaration;
 import dmd.mtype:
-    ParameterList, Type, TypeDArray, TypeDelegate, TypeFunction, TypeStruct;
+    ParameterList, Type, TypeClass, TypeDArray, TypeDelegate, TypeFunction,
+    TypeStruct;
 import quickbite.ffi.ffi: Callable, CompilerAbi, TypedAddress, call;
 import unit_threaded;
 
@@ -243,6 +244,144 @@ unittest {
 }
 
 
+@("ffi.hiddenReceiversUseCallableCompilerAbiAndExistingStorage")
+unittest {
+    version (LDC)
+        enum hostCompilerAbi = CompilerAbi.ldc;
+    else
+        enum hostCompilerAbi = CompilerAbi.dmd;
+
+    // A D method's semantic function type contains only its explicit
+    // parameters; `this` is the separate hidden receiver supplied below.
+    auto structSignature = functionSignature(q{
+        struct Receiver {
+            int combine(int lhs, int rhs);
+        }
+    }, "combine");
+    auto structReceiverType = structType(q{
+        struct Receiver {
+            int value;
+        }
+    }, "Receiver");
+    ReceiverStruct structReceiver = ReceiverStruct(3);
+    auto structMethod = &structReceiver.combine;
+    int lhs = 4;
+    int rhs = 7;
+    int result;
+    auto receiver = TypedAddress(structReceiverType, &structReceiver);
+
+    call(
+        Callable(
+            cast(void*) structMethod.funcptr,
+            structSignature,
+            hostCompilerAbi,
+        ),
+        [
+            TypedAddress(Type.tint32, &lhs),
+            TypedAddress(Type.tint32, &rhs),
+        ],
+        TypedAddress(Type.tint32, &result),
+        &receiver,
+    ).should == true;
+
+    result.should == 1_047;
+    structReceiver.value.should == 10;
+
+    auto classSignature = functionSignature(q{
+        class Receiver {
+            final int combine(int lhs, int rhs);
+        }
+    }, "combine");
+    auto classReceiverType = classType(q{
+        class Receiver {
+            int value;
+        }
+    }, "Receiver");
+    auto classReceiver = new ReceiverClass(5);
+    auto classMethod = &classReceiver.combine;
+    receiver = TypedAddress(classReceiverType, &classReceiver);
+    result = 0;
+
+    call(
+        Callable(
+            cast(void*) classMethod.funcptr,
+            classSignature,
+            hostCompilerAbi,
+        ),
+        [
+            TypedAddress(Type.tint32, &lhs),
+            TypedAddress(Type.tint32, &rhs),
+        ],
+        TypedAddress(Type.tint32, &result),
+        &receiver,
+    ).should == true;
+
+    result.should == 1_247;
+    classReceiver.value.should == 12;
+
+    int captured = 6;
+    int nested(int first, int second) {
+        captured += second;
+        return captured * 100 + first * 10 + second;
+    }
+    auto nestedDelegate = &nested;
+    void* context = nestedDelegate.ptr;
+    receiver = TypedAddress(Type.tvoidptr, &context);
+    result = 0;
+
+    call(
+        Callable(
+            cast(void*) nestedDelegate.funcptr,
+            functionSignature(q{
+                int nested(int first, int second);
+            }, "nested"),
+            hostCompilerAbi,
+        ),
+        [
+            TypedAddress(Type.tint32, &lhs),
+            TypedAddress(Type.tint32, &rhs),
+        ],
+        TypedAddress(Type.tint32, &result),
+        &receiver,
+    ).should == true;
+
+    result.should == 1_347;
+    captured.should == 13;
+
+    auto invalidReceiver = TypedAddress(Type.tint32, &lhs);
+    call(
+        Callable(
+            cast(void*) structMethod.funcptr,
+            structSignature,
+            hostCompilerAbi,
+        ),
+        [
+            TypedAddress(Type.tint32, &lhs),
+            TypedAddress(Type.tint32, &rhs),
+        ],
+        TypedAddress(Type.tint32, &result),
+        &invalidReceiver,
+    ).should == false;
+
+    invalidReceiver = TypedAddress(Type.tvoidptr, null);
+    call(
+        Callable(
+            cast(void*) nestedDelegate.funcptr,
+            functionSignature(q{
+                int nested(int first, int second);
+            }, "nested"),
+            hostCompilerAbi,
+        ),
+        [
+            TypedAddress(Type.tint32, &lhs),
+            TypedAddress(Type.tint32, &rhs),
+        ],
+        TypedAddress(Type.tint32, &result),
+        &invalidReceiver,
+    ).should == false;
+}
+
+
 private extern(C) ref int referenceCall(
     ref int value,
     out int assigned,
@@ -251,6 +390,30 @@ private extern(C) ref int referenceCall(
     value += *pointer;
     assigned = value * 2;
     return value;
+}
+
+
+private struct ReceiverStruct {
+    private int value;
+
+    private int combine(int lhs, int rhs) {
+        value += rhs;
+        return value * 100 + lhs * 10 + rhs;
+    }
+}
+
+
+private class ReceiverClass {
+    private int value;
+
+    private this(int value) {
+        this.value = value;
+    }
+
+    private final int combine(int lhs, int rhs) {
+        value += rhs;
+        return value * 100 + lhs * 10 + rhs;
+    }
 }
 
 
@@ -307,6 +470,23 @@ private TypeStruct structType(in string source, in string name) {
 }
 
 
+private TypeClass classType(in string source, in string name) {
+    import quickbite.frontend.compiler: parseSnippet;
+
+    // DMD owns mutable semantic state and type nodes.
+    auto moduleResult = parseSnippet(source);
+    foreach (member; *moduleResult.module_.members)
+        if (auto class_ = member.isClassDeclaration)
+            if (class_.ident.toString == name) {
+                auto type = class_.type.isTypeClass;
+                assert(type !is null);
+                return type;
+            }
+
+    assert(false, "class not found");
+}
+
+
 private TypeFunction functionSignature(in string source, in string name) {
     import quickbite.frontend.compiler: parseSnippet;
 
@@ -333,6 +513,9 @@ private FuncDeclaration findFunction(Dsymbols* members, in string name) {
                 return function_;
         if (auto attributes = member.isAttribDeclaration)
             if (auto function_ = findFunction(attributes.decl, name))
+                return function_;
+        if (auto aggregate = member.isAggregateDeclaration)
+            if (auto function_ = findFunction(aggregate.members, name))
                 return function_;
     }
     return null;

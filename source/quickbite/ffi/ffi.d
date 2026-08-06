@@ -35,12 +35,35 @@ public bool call(
 
     if (callable.address is null || callable.signature is null ||
         callable.signature.next is null ||
-        receiver !is null ||
         (callable.signature.linkage != LINK.c &&
             callable.signature.linkage != LINK.d) ||
+        (receiver !is null && callable.signature.linkage != LINK.d) ||
         callable.signature.parameterList.varargs != VarArg.none ||
         callable.signature.parameterList.length != arguments.length)
         return false;
+
+    const hasReceiver = receiver !is null;
+    FfiType receiverMetadata;
+    void* structReceiverCell;
+    void* receiverAddress;
+    if (hasReceiver) {
+        if (receiver.type is null || receiver.address is null)
+            return false;
+
+        switch (receiver.type.toBasetype.ty) with (TY) {
+            case Tstruct:
+                receiverMetadata = FfiType(&ffi_type_pointer);
+                structReceiverCell = receiver.address;
+                receiverAddress = &structReceiverCell;
+                break;
+            case Tclass, Tpointer:
+                receiverMetadata = FfiType(&ffi_type_pointer);
+                receiverAddress = receiver.address;
+                break;
+            default:
+                return false;
+        }
+    }
 
     auto returnType = callable.signature.next.toBasetype;
     if (result.type is null ||
@@ -58,9 +81,15 @@ public bool call(
     if ((returnsReference || resultTy != TY.Tvoid) && result.address is null)
         return false;
 
-    auto argumentTypes = new ffi_type*[](arguments.length);
-    auto argumentAddresses = new void*[](arguments.length);
-    auto argumentMetadata = new FfiType[](arguments.length);
+    const numAbiArguments = arguments.length + hasReceiver;
+    auto argumentTypes = new ffi_type*[](numAbiArguments);
+    auto argumentAddresses = new void*[](numAbiArguments);
+    auto argumentMetadata = new FfiType[](numAbiArguments);
+    if (hasReceiver) {
+        argumentMetadata[0] = receiverMetadata;
+        argumentTypes[0] = receiverMetadata.type;
+        argumentAddresses[0] = receiverAddress;
+    }
     // A ref/out ABI argument is a pointer value. Only that pointer value is
     // temporary: its cell lives through ffi_call and points directly at the
     // caller's authoritative storage; no pointee bytes are copied.
@@ -72,7 +101,12 @@ public bool call(
             argument.address is null)
             return false;
 
-        const abiIndex = abiArgumentIndex(callable, index, arguments.length);
+        const abiIndex = abiArgumentIndex(
+            callable,
+            index,
+            arguments.length,
+            hasReceiver,
+        );
         const isReference = isReferenceParameter(parameter);
         argumentMetadata[abiIndex] = isReference
             ? FfiType(&ffi_type_pointer)
@@ -91,7 +125,7 @@ public bool call(
     const prepStatus = ffi_prep_cif(
         &cif,
         FFI_DEFAULT_ABI,
-        cast(uint) arguments.length,
+        cast(uint) numAbiArguments,
         resultMetadata.type,
         argumentTypes.ptr,
     );
@@ -108,6 +142,7 @@ public bool call(
                     callable,
                     index,
                     arguments.length,
+                    hasReceiver,
                 )],
             ))
             return false;
@@ -151,13 +186,17 @@ private size_t abiArgumentIndex(
     in Callable callable,
     in size_t sourceIndex,
     in size_t numArguments,
+    in bool hasReceiver = false,
 ) @safe @nogc nothrow pure {
     import dmd.astenums: LINK;
 
-    return callable.signature.linkage == LINK.d &&
+    const explicitIndex = callable.signature.linkage == LINK.d &&
             callable.compilerAbi == CompilerAbi.dmd
         ? numArguments - sourceIndex - 1
         : sourceIndex;
+    // D's hidden receiver/context leads the explicit arguments for both
+    // compiler ABIs; provenance controls only the explicit argument order.
+    return explicitIndex + hasReceiver;
 }
 
 
