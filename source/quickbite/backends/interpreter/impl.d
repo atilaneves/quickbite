@@ -11334,9 +11334,14 @@ private struct Walker {
     }
 
     private void throwRangeError(in string message) {
+        import core.exception: RangeError;
+
+        auto native = new RangeError;
+        native.msg = message;
         throw new InterpretedException(nativeExceptionBaseObject(
             message,
-            "core.exception.RangeError",
+            native.classinfo.name,
+            cast(void*) native,
         ));
     }
 

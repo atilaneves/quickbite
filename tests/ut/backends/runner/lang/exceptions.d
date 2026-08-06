@@ -144,6 +144,34 @@ static foreach (backend; Matrix!()) {
     }
 }
 
+// A runtime bounds failure creates a RangeError object whose reference remains
+// an ordinary class value when passed to native code. The native function must
+// receive the same object pointer that compiled D passes.
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.inexpressible, "CTFE cannot call body-less _d_print_throwable"),
+    Omit!(Bytecode, Because.refusal, "index [0] is out of bounds for array of length 0"),
+)) {
+    @("exception.nativeFunctionAcceptsCaughtRangeError." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            import core.exception: RangeError;
+
+            extern(C) void _d_print_throwable(Throwable);
+
+            unittest {
+                int[] values;
+
+                try {
+                    auto ignored = values[0];
+                } catch (RangeError error) {
+                    _d_print_throwable(error);
+                }
+            }
+        });
+    }
+}
+
 static foreach (backend; Matrix!()) {
     @("exception.catchBindingIdentityMatchesPointerDereference." ~ backend.stringof)
     @Tags(backend.stringof)
