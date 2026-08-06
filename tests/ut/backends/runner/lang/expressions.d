@@ -725,6 +725,60 @@ static foreach (backend; Matrix!()) {
     }
 }
 
+// Struct equality compares the TypeInfo identity stored in each field, while
+// an ordinary value copy remains equal to its source.
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.diverges,
+        "DMD CTFE cannot read these TypeInfo objects at compile time"),
+    Omit!(Bytecode, Because.unconfirmed,
+        "Bytecode child segfaults (signal 11) on TypeInfo struct equality; " ~
+        "independent of the Interpreter-only fix this fixture targets"),
+)) {
+    @("typeid.structEqualityUsesStoredReferenceIdentity." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            class First {}
+            class Second {}
+
+            struct Observation {
+                TypeInfo type;
+            }
+
+            unittest {
+                auto first = Observation(typeid(First));
+                auto copy = first;
+                auto second = Observation(typeid(Second));
+
+                assert(first != second);
+                assert(first == copy);
+            }
+        });
+    }
+}
+
+// Dynamic-array equality compares each stored TypeInfo reference, including
+// equal identities held in separate array allocations.
+static foreach (backend; Matrix!()) {
+    @("typeid.arrayEqualityUsesStoredReferenceIdentity." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            class First {}
+            class Second {}
+
+            unittest {
+                auto first = [typeid(First)];
+                auto copy = [typeid(First)];
+                auto second = [typeid(Second)];
+
+                assert(first != second);
+                assert(first == copy);
+            }
+        });
+    }
+}
+
 // Field assignment stores a TypeInfo reference in an already-addressable
 // aggregate just as aggregate construction does.
 static foreach (backend; Matrix!()) {

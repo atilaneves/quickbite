@@ -4966,6 +4966,18 @@ private struct Walker {
                 );
 
             if (call.f !is null && call.f.needThis) {
+                // An interpreted-only TypeInfo has symbolic identity but no
+                // resident class body on which druntime's member can run.
+                // TypeInfo.opEquals defines equality by that identity (and
+                // accepts null), so answer it before native object dispatch.
+                if (
+                    receiver.isTypeName &&
+                    functionName(call.f) == "opEquals" &&
+                    arguments.length == 1 &&
+                    (arguments[0].isTypeName || arguments[0] == Value.null_)
+                )
+                    return Value(receiver == arguments[0]);
+
                 import quickbite.frontend.dmd.functions:
                     hasNoAvailableSource, noAvailableSourceMessage;
                 import quickbite.ffi.oldffi: unsupportedNativeTypeMessage;
@@ -7489,12 +7501,24 @@ private struct Walker {
 
         foreach (index; 0 .. AggregateValue.length(left))
             if (!equalValues(
-                AggregateValue.elementAt(left, index),
-                AggregateValue.elementAt(right, index),
+                arrayElementForEquality(left, index),
+                arrayElementForEquality(right, index),
             ))
                 return false;
 
         return true;
+    }
+
+    private Value arrayElementForEquality(in Value value, in size_t index) {
+        import quickbite.backends.interpreter.place: Place;
+
+        if (!value.isNativeAggregate)
+            return AggregateValue.elementAt(value, index);
+
+        auto aggregate = AggregateValue.native(value);
+        return readStoredValue(
+            Place(aggregate.address, aggregate.type).index(index),
+        );
     }
 
     // A struct field written by anything other than an enum-typed literal
@@ -7513,12 +7537,26 @@ private struct Walker {
 
         foreach (index; 0 .. count)
             if (!equalValues(
-                AggregateValue.fieldAt(left, index),
-                AggregateValue.fieldAt(right, index),
+                structFieldForEquality(left, index),
+                structFieldForEquality(right, index),
             ))
                 return false;
 
         return true;
+    }
+
+    private Value structFieldForEquality(in Value value, in size_t index) {
+        import quickbite.backends.interpreter.layout: structFields;
+        import quickbite.backends.interpreter.place: Place;
+
+        if (!value.isNativeAggregate)
+            return AggregateValue.fieldAt(value, index);
+
+        auto aggregate = AggregateValue.native(value);
+        auto fields = structFields(aggregate.type.toBasetype.isTypeStruct);
+        return readStoredValue(
+            Place(aggregate.address, aggregate.type).field(fields[index]),
+        );
     }
 
     private bool equalAssocArrayValues(in Value left, in Value right) {
