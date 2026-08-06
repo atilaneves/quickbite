@@ -412,3 +412,20 @@
   the completed item, preserve the durable contract the implementation
   established, and name the next concrete item explicitly; otherwise the
   next agent can reasonably repeat work that git already contains.
+
+- An interface extracted from a boxed backend is not backend-neutral merely
+  because backend conversion is injected through virtual methods. Requiring a
+  native-layout backend to implement a marshaller preserves the boxed
+  backend's abstraction and invites conversion paths. Design the native-layout
+  call boundary independently around typed addresses.
+
+- `LINK.d` identifies D linkage, not the compiler ABI of a callable. DMD and
+  LDC order explicit `extern(D)` arguments differently. Carry the defining
+  compiler's ABI with every resolved D callable and use it to order the
+  argument-address array; never hard-code either ordering globally.
+
+- Never repair a backend representation violation at an FFI boundary. If a VM
+  stores a D slice as `{ptr, length}` instead of native `{length, ptr}`, fix
+  every VM reader and writer and delete the compensating swaps. A boundary
+  conversion hides bad pointers nested inside structs or passed by reference
+  and turns temporary migration code into permanent architecture.

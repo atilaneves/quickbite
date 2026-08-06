@@ -6,30 +6,32 @@ statement and expression DMD hands it — so the package's unittests run under t
 interpreter and agree, byte for byte, with the `SystemLinker` oracle. It is the
 prerequisite no other plan owns.
 
-**Why this plan exists.** `ai/plans/ffi.md` (§34) declared the FFI ladder done,
-with the one-sentence terminal goal (§34.1): "*a backend executes project source
-while every compiled dependency leaf is called natively, so a real dub project
-'just' runs under it*". The first clause — **"executes project source"** — is
-assumed, not built. `ai/plans/value.md` (Track B) likewise assumes execution
-works and concerns itself only with how values are *represented*; it states (its
-own words) that "we cannot measure until FFI works, because measuring means
-running real dub projects' unittests." Both plans lean on an interpreter that
-can run arbitrary project code. It cannot yet. This plan is that missing half.
+This is the project's first priority. Cerealed is the driving integration
+workload because it exercises a useful ordinary-D subset, not because the
+Interpreter may know anything about that package. Production code must not
+special-case Cerealed names, modules, paths, types, or behavior. Every failure
+class becomes a standalone D semantic supported independently of the package.
 
-The gap was found concretely: `bin/bench.sh -b interpreter --dub cerealed`
-does not run. The surface error blamed `realloc` and CTFE; §5 shows that was a
-masking artifact and the real failure is the interpreter hitting project
-constructs it does not implement.
+The acceptance command is the default LDC-hosted benchmark:
+
+```text
+./bin/bench.sh -w 0 -r 1 -b interpreter --dub cerealed
+```
+
+A DMD-hosted run is a useful diagnostic control, but it is not the acceptance
+or performance target: `bench.sh` uses LDC because DMD's optimiser makes the
+benchmark result unrepresentative.
 
 ## 1. Goal
 
 `Interpreter` executes the full statement/expression surface a real dub package
 (driving fixture: **cerealed**) puts in front of it, so that
 `runTests(Interpreter, modules)` produces the same per-unittest results as
-`SystemLinker`. Native dependency leaves are out of this plan — they are
-`ai/plans/ffi.md`'s job, and that path already works (§4). This plan covers only
-the code the interpreter must execute *itself* to reach those leaves with the
-right values.
+`SystemLinker`. This includes reaching and correctly calling the body-less
+native leaves encountered along the way. The Interpreter temporarily uses
+`quickbite.ffi.oldffi`; correctness fixes required by this gate belong to the
+priority even though the later deletion of that package is owned by
+`value.md`.
 
 The unittest execution boundary returns success or a diagnostic directly. It
 does not format the final interpreter result: display is a separate REPL
@@ -38,10 +40,10 @@ function returns inside a unittest still produce interpreter-private runtime
 results; separating the top-level contracts does not turn expression execution
 into a `void` operation.
 
-The measure of done is empirical and external: a real package's unittest suite
-runs green on `Interpreter` against the `SystemLinker` oracle. That same gate is
-the prerequisite `value.md` needs before it can measure any representation, so
-this plan unblocks the representation track as well as the FFI terminal goal.
+The measure of done is empirical and external: Cerealed's whole unittest suite
+runs green on `Interpreter` against the `SystemLinker` oracle in the default
+LDC host. That gate precedes the Interpreter representation/FFI deletion,
+formatter migration, and broader Interpreter surface work.
 
 **Ordering correction (2026-07-09).** The paragraph above holds only for
 `value.md`'s *latency measurement*. Its representation *decision* is no longer
@@ -54,12 +56,14 @@ track instead of being shimmed here. See the triage rule in §8.
 ## 2. Non-goals
 
 ```text
-- native dependency calls (body-less leaves): owned by ai/plans/ffi.md §34;
+- redesign of native calls: the new Bytecode bridge belongs to `ffi.md`, while
+  deleting the Interpreter's legacy bridge belongs to `value.md`;
 - the Bytecode/IR backends' execution (ai/plans/bytecode.md);
 - value representation choice (boxed vs native layout): ai/plans/value.md;
 - new language features DMD does not lower for us (we execute DMD's AST, not
   raw source — templates and `static foreach` arrive pre-lowered);
-- performance of the interpreter (correctness first; latency is value.md's axis).
+- performance of the interpreter (correctness first; latency is `value.md`'s
+  axis).
 ```
 
 ## 3. Oracle
@@ -73,16 +77,21 @@ DMD CTFE's diagnostic as if it were authoritative (§5).
 
 Per `AGENTS.md`: adding or changing a test needs approval first; promoting an
 existing oracle-backed matrix fixture to `Interpreter` is pre-approved. Fixtures
-live in `tests/ut/backends/runner/lang/` (pure interpretation) and `sys/` (runtime
-/ FFI). This plan's fixtures are almost all `lang/` — they exercise interpreter
-execution, not the native boundary.
+live in `tests/ut/backends/runner/lang/` (pure interpretation) and `sys/`
+(runtime / FFI). This plan's fixtures are almost all `lang/` — they exercise
+interpreter execution, not the native boundary.
 
 ## 4. Relationship to the FFI and representation plans
 
 ```text
-ffi.md §34     calls body-less native leaves. DONE and not on this plan's path
-               for the failures in §7 (verified §5: the FFI chokepoint is never
-               reached — the interpreter fails earlier, executing source).
+quickbite.ffi.oldffi
+               temporary Interpreter native-call implementation. Correctness
+               fixes demanded by the Cerealed gate are in scope here; new
+               architecture and speculative features are not.
+quickbite.ffi.ffi
+               pristine address-only bridge built for native-layout Bytecode.
+               It is not derived from oldffi and does not wait for Interpreter
+               compatibility.
 value.md       how the interpreter represents runtime results and addressable
                storage. Assumes
                execution works; this plan delivers that assumption FOR THE
@@ -104,11 +113,28 @@ value.md       how the interpreter represents runtime results and addressable
 bytecode.md    a different backend; native-layout execution. Out of scope.
 ```
 
-This plan does not duplicate or modify FFI work. Where a cerealed failure turns
-out to need a native leaf (e.g. a sourceless Phobos function), that rung defers
-to `ffi.md` rather than reimplementing it.
+The current default-host failure may cross the native boundary. `LINK.d` alone
+does not identify the callable's ABI: DMD and LDC order explicit D arguments
+differently. A legacy-bridge fix must use the defining callable's compiler ABI,
+not hard-code DMD or LDC globally. Once the gate is green, ordinary Interpreter
+calls migrate to the new typed-address contract and
+`quickbite.ffi.oldffi` is deleted under `value.md`.
 
-### 4.1 Unittest execution is not REPL evaluation
+Pointer slicing is ordinary D semantics and stays in this plan. Constructing
+`ptr[lower .. upper]` creates a view at the adjusted address and length; it
+must not eagerly read, unmarshal, or reconstruct the pointed-to elements.
+
+### 4.1 Immediate work order
+
+1. Make native calls in the default LDC host obey the actual callable's ABI.
+2. Make pointer slicing construct a native-backed view without reading its
+   elements.
+3. Re-run the full Cerealed suite and classify the first remaining mismatch.
+4. Distil each newly exposed class into a standalone, package-independent D
+   behavior, then implement that behavior against `SystemLinker`.
+5. Repeat until the default command reports every Cerealed unittest passing.
+
+### 4.2 Unittest execution is not REPL evaluation
 
 The current `TreeNodeBackend` bridge implements `runUnitTest` by calling
 `Evaluator.eval(FuncDeclaration)`. `Interpreter.eval` then renders
@@ -311,8 +337,8 @@ BytecodeNewCore stays red and is omitted). automem re-measure: the 10×
 `assignment target: call` mismatches **remain** — located diagnostics
 show all ten are `fakePureErrno() = errnosave` (druntime
 core/memory.d:1062/:1070), a **native** ref-returning body-less
-function, i.e. a different root cause: `callViaLibffi`
-(source/quickbite/ffi/core.d:353) marshals the return as
+function, i.e. a different root cause: the legacy `callViaLibffi` marshals the
+return as
 `type.next.toBasetype` and never consults `isref`, so a native ref
 return's ABI pointer is read as if it were the value — the read at
 memory.d:1060 yields the low bits of the errno address (a latent
@@ -325,8 +351,8 @@ fixtures against a body-less `ref`-returning libc accessor.
 is folded into its owning plans and deleted; the "item 3" / "follow-on"
 citations above refer to that document's work items (PRs #352–#356 plus
 the two rungs above), now git history. Its surviving content lands here,
-in `ffi.md` §35.9 (the native ref-return defect above, now a tracked FFI
-work item), in `bench.md` (tardy run-executor crash; `bin/bench` build
+in the legacy bridge's native-ref-return behavior, in `bench.md` (tardy
+run-executor crash; `bin/bench` build
 misconfiguration; crash-containment motivation for fork-per-package),
 and in `ai/plans/link-set-pollution.md` (the template-instance pollution
 flake).
@@ -344,12 +370,12 @@ tardy, backend error). Deduplicated inventories:
 automem  14/14 prepared, 111 mismatching tests (was 14 before #359/#363
          — the fixes let tests run much deeper, fanning out onto the
          common theAllocator initialization path):
-   48  pthread_mutexattr_init no available source     ffi.md §35.10
+   48  pthread_mutexattr_init no available source     legacy FFI
    26  Unsupported eval expression: cast_             triage
    18  cannot read uninitialized variable
        `.trustedMoveImpl.result` in ctfe              triage
    10  Unsupported interpreter assignment target:
-       call (all fakePureErrno)                       ffi.md §35.9
+       call (all fakePureErrno)                       legacy FFI
     3  Unsupported eval call.                         Rung 6 family
     2  Unsupported eval statement: Error in
        test_allocator.TestAllocator.deallocate        NEW class, triage
@@ -360,7 +386,7 @@ automem  14/14 prepared, 111 mismatching tests (was 14 before #359/#363
 
 fearless  7/7 prepared, 8 mismatching tests — address of dotVariable
           GONE (cleared by PR #359):
-    3  pthread_mutexattr_init no available source     ffi.md §35.10
+    3  pthread_mutexattr_init no available source     legacy FFI
     3  cannot read uninitialized variable
        `.trustedMoveImpl.result` in ctfe              triage
     2  Unsupported eval expression: cast_             triage
@@ -392,14 +418,14 @@ tardy  by path: 22/22 prepared, frontend row prints; the system-linker
        (`ut/polymorphic.d(24,12): scope variable ...`)
 ```
 
-**2026-07-08 (post-#373 automem re-measure, master ce8b5851).** The ffi
-native-ref-return fix (PR #373, `ffi.md` §35.9) retires the 10×
+**2026-07-08 (post-#373 automem re-measure, master ce8b5851).** The legacy FFI
+native-ref-return fix (PR #373) retires the 10×
 `Unsupported interpreter assignment target: call` class; the same ten
 tests now proceed deeper and fail as 10× `Expected struct.` — a NEW
 automem class (Rung 2 was cerealed-scoped and closed; this is a fresh
 site), needs triage and a standalone fixture per §8. automem total
 unchanged at 111; all other classes byte-identical to the 2026-07-07
-table above. `pthread_mutexattr_init` (48×, `ffi.md` §35.10) remains
+table above. `pthread_mutexattr_init` (48×, legacy FFI) remains
 the dominant class.
 
 **2026-07-08 (interpreter-rung-triage, master 8633929d).** Re-measure
@@ -545,8 +571,8 @@ in §7's own triage.
 gap-fixture-and-wait treatment applies to a class whose root fix needs new
 boxed FFI marshalling (`ffi_marshal.d` rungs — new argument, out-parameter,
 or struct shapes; e.g. the automem `pthread_mutexattr_init` class if it
-needs one): the `ffi.md` §34.3 `B*` ladder is cancelled and the boxed
-marshaller is life support. The tie-breaker is decided — a blocked package
+needs one): the boxed marshaller is life support and receives no new shape.
+The tie-breaker is decided — a blocked package
 waits and re-earns its rows at the authority switch; do not re-decide it
 mid-triage. Ordinary language-surface correctness fixes to boxed machinery
 remain always in order: working first.
@@ -894,8 +920,8 @@ class gone from §7.
 
 **Contract.** The call shapes in `classes.d`/`encode.d` the dispatcher rejects
 (`impl.d` ~1837). Determine per-site whether it is an interpretable source call
-the dispatcher misses, or a native leaf that should route to `ffi.md` — the
-latter is deferred, not built here.
+the dispatcher misses, or a native leaf that should route to the legacy bridge
+while it remains — the latter is not a language-surface workaround.
 
 **2026-07-08 follow-up: lazy assertion thunks.** After the GC array-capacity
 hook slice, the package re-measure discovered:
@@ -931,7 +957,7 @@ Re-measure: the `Unsupported eval call.` frontier is gone. The package advances
 to the pre-existing corrupted/garbage failure-message class tracked under Rung
 7; this is the next visible interpreter blocker.
 
-**Done.** Each site either interprets, or is documented as an `ffi.md` rung.
+**Done.** Each site either interprets or is a native-boundary case.
 
 ### 9.7 Rung 7 — correctness bugs in existing paths
 
@@ -2244,12 +2270,11 @@ seed read.
 
 **Out of scope.** The entropy *call chain* past the initializer (open/
 read of /dev/urandom) — that already routes through the existing FFI
-path; if a deeper marshalling gap surfaces once the initializer
-resolves, it is documented against `ffi.md`, not fixed here (seam-carve
-lane owns `backends/ffi.d` and the marshalling files).
+path; if a deeper marshalling gap surfaces once the initializer resolves, it
+belongs to the legacy bridge until the Interpreter address migration.
 
 **Done (2026-07-08) — fix landed; Interpreter fixture blocked
-downstream by an ffi.md gap.** `resolveNonRootInitializer` (impl.d, near
+downstream by a legacy-FFI gap.** `resolveNonRootInitializer` (impl.d, near
 `runExpression`) runs `semantic2` on the dataseg variable in its own
 module's global scope on demand — the semantic2 analogue of the
 `functionSemantic3` calls that resolve imported function bodies — before
@@ -2263,20 +2288,19 @@ anticipated. On the standalone `unpredictableSeed` repro the Interpreter
 leg now stops one step later, in the entropy read chain, with
 `Expected pointer` — `getEntropy(&buffer, buffer.sizeof, …)` slices a
 scalar local's address as a `void[]` byte buffer to be filled by the
-`getrandom` syscall. That is a full FFI feature (scalar-local byte view +
-`getrandom` fill + byte writeback), handed off to `ffi.md` §35.11, not
-fixed here.
+`getrandom` syscall. That is a native-boundary feature (scalar-local byte view
++ `getrandom` fill + byte writeback), not a source-language workaround.
 
 The exposing fixture landed as `sys/random.d`
 `random.unpredictableSeedReadsNonRootInitializer` on the widest **green**
 matrix — `SystemLinker` + `LLVMJit` — with `Interpreter` **omitted** per
-§8 (the omission is the documentation; no pinned refusal), pending
-`ffi.md` §35.11. `Ctfe` (no getrandom source) and `BytecodeNewCore` are
+§8 (the omission is the documentation; no pinned refusal), pending the
+Interpreter native-boundary fix. `Ctfe` (no getrandom source) and Bytecode are
 likewise omitted. The Rung 9 fix's own evidence is the standalone-repro
 progression (`identifier` → `Expected pointer` at the identical entropy
 site); the cerealed 21× `identifier` class converts to the same
-getrandom FFI class rather than disappearing, so it is `ffi.md` §35.11
-that finally clears it from the §7 inventory.
+getrandom FFI class rather than disappearing, so the native-boundary fix
+finally clears it from the §7 inventory.
 
 ### 9.10 Known `signbit` interception defect
 
@@ -2315,7 +2339,7 @@ call stack (confirmed: a first fixture that threw a dependency-image `Error`
 subclass directly crashed the whole `bin/ut` process with a native
 backtrace, not a graceful `TestResult` failure — a real but separate,
 out-of-scope bug). The reachable route is `nativeCallExceptionFrom`'s
-`.next`-chain recursion (`ffi.md` §34.13), which follows `.next` regardless
+`.next`-chain recursion in the legacy bridge, which follows `.next` regardless
 of its dynamic type: a native `Exception` (caught normally) chained to an
 `Error` via `.next` carries that `Error`'s `classinfo.name` into
 `nativeExceptionBaseObject` when the interpreted code reads and rethrows
@@ -2733,33 +2757,28 @@ back into its `SystemLinker`-oracle matrix after fixing the named red behavior:
 ## 10. Completion criteria
 
 ```text
-- Phase 0 (§5) landed: the interpreter's real error surfaces; no CTFE-as-truth.
 - Make the §7 inventory for cerealed empty: every cerealed unittest runs on
-  Interpreter and agrees with SystemLinker. The signed-byte/value frontier
-  above is still open and belongs to value.md's native-layout track.
-- Make `bin/bench.sh -b interpreter --dub cerealed` produce a post-parse row for
-  the interpreter (no skip), with bin/ut --random green.
-- Leave an approved oracle-backed lang/ fixture for each rung, with no lang/ or sys/
-  regression.
+  Interpreter and agrees with SystemLinker.
+- Make the default LDC-hosted
+  `./bin/bench.sh -w 0 -r 1 -b interpreter --dub cerealed` produce a passing
+  post-parse row for the interpreter rather than a crash or skip.
+- Leave an approved oracle-backed, package-independent fixture for each
+  semantic rung, with no language or system regression.
+- Keep production code free of Cerealed-specific names and behavior.
 ```
 
-At that point the FFI terminal goal (`ffi.md` §34.1) is actually reachable for
-cerealed, and `value.md` has the running package suite it needs to measure
-representations.
+At that point priority 2 begins: migrate the Interpreter away from
+`quickbite.ffi.oldffi` and delete its obsolete value and FFI conversion paths
+under `value.md`.
 
 ## 11. Beyond cerealed
 
-cerealed is the first driving package, not the finish line. Once it is green,
-repeat §6/§8 against a second, less struct-centric package (one exercising
-ranges, AAs, classes, or `ref` slice writeback) to surface the next gap tier.
-The architecture survey flagged the likely next blockers: GC array growth
-(`assumeSafeAppend`/`reserve`/capacity — already in cerealed's §7 inventory
-via `gc_getArrayUsed`, so it lands before "beyond"), `ref ubyte[]` writeback
-fidelity across the FFI marshalling seam, sourceless-Phobos coverage (routes
-to `ffi.md`), and
-captured/`scope`/`lazy` delegates (where a first-class delegate `Value` kind
-meets `value.md`). Each gets its own rung under this plan when a real package
-forces it — same loop: measure, distil, approve, red → green.
+Cerealed is the first driving package, not the finish line. Broader language
+expansion is priority 4: it starts only after the Interpreter FFI/value cleanup
+and shared formatter work. Then repeat the same measure, distil, approve,
+red-to-green loop against a second package that exercises a different ordinary
+D surface. Do not preserve legacy marshalling or value machinery merely to
+start that next package sooner.
 
 ## 12. Structural maintenance queue
 
