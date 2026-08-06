@@ -72,7 +72,7 @@ public bool call(
     );
 
     import core.stdc.string: memcpy;
-    memcpy(result.address, &resultScratch, nativeSize(result.type));
+    memcpy(result.address, &resultScratch, int.sizeof);
     return true;
 }
 
@@ -87,12 +87,4 @@ private imported!"quickbite.ffi.libffi".ffi_type* ffiTypeFor(
     return type !is null && type.toBasetype.ty == TY.Tint32
         ? &ffi_type_sint32
         : null;
-}
-
-
-private size_t nativeSize(imported!"dmd.mtype".Type type) {
-    import dmd.astenums: TY;
-
-    assert(type !is null && type.toBasetype.ty == TY.Tint32);
-    return int.sizeof;
 }
