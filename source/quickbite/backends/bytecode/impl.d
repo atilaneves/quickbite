@@ -13,7 +13,7 @@ public class Bytecode: imported!"quickbite.backends".TreeNodeBackend {
     }
 
     public this(const string[] dependencyImages) {
-        import quickbite.ffi: loadDependencyImages;
+        import quickbite.ffi.oldffi: loadDependencyImages;
 
         loadDependencyImages(dependencyImages);
     }

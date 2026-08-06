@@ -15,7 +15,7 @@ public class LLVMJit:
 {
     import quickbite.backends.evaluator: Evaluator, EvalResult;
     import quickbite.backends.runner: TestResult;
-    import quickbite.ffi: loadDependencyImages, verifyDependencyImages;
+    import quickbite.ffi.oldffi: loadDependencyImages, verifyDependencyImages;
     import dmd.dmodule: Module;
     import dmd.func: FuncDeclaration;
 

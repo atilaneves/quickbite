@@ -1774,7 +1774,7 @@ package(quickbite.backends.bytecode) RunResult run(
             case nativeCall:
                 import quickbite.frontend.dmd.functions:
                     noAvailableSourceMessage;
-                import quickbite.ffi:
+                import quickbite.ffi.oldffi:
                     callNative, callNativeClassMember, callNativeMember;
 
                 auto native = program.nativeCalls[instruction.a];
@@ -3727,7 +3727,7 @@ private final class BytecodeNativeMarshaller:
     imported!"quickbite.ffi".NativeReceiverAddressMarshaller
 {
     import dmd.mtype: Type;
-    import quickbite.ffi: NativeMarshaller;
+    import quickbite.ffi.oldffi: NativeMarshaller;
 
     private ubyte[] _stack;
     private size_t _argument;
@@ -3811,7 +3811,7 @@ private final class BytecodeNativeMarshaller:
     // @trusted: the stack reserve at run start prevents reallocation while the
     // native call is active, so these frame-slot pointers stay valid for
     // libffi. The compiler allocates one in-frame, word-aligned fixed-stride
-    // slot per native argument, and ffi/core.d supplies only its corresponding
+    // slot per native argument, and ffi/oldffi.d supplies only its corresponding
     // index, so `slot` is within that layout. Out parameters point directly at
     // the target local; ordinary arguments point at their argument slot.
     public const(void)* argumentAddress(in size_t index, Type type) @trusted {
@@ -3838,7 +3838,7 @@ private final class BytecodeNativeMarshaller:
     public void readResult(Type type, in ubyte[] buffer) {
         import dmd.astenums: TY;
 
-        // The FFI slice layout (`ffiSliceType`, ffi/core.d) is
+        // The FFI slice layout (`ffiSliceType`, ffi/oldffi.d) is
         // {length, pointer}; the VM's own slice descriptor
         // (`writeSliceDescriptor`, machine.d) is {pointer, length}. Swap the
         // two words instead of a straight copy, matching `fillArgument`'s
@@ -3889,7 +3889,7 @@ private final class BytecodeNativeMarshaller:
         import dmd.astenums: TY;
         switch (type.toBasetype.ty) with (TY) {
             case Tvoid:
-                // `callNativeImpl` (ffi/core.d) calls `readResult` even for a
+                // `callNativeImpl` (ffi/oldffi.d) calls `readResult` even for a
                 // void-returning callee; there is no result to copy back.
                 return 0;
             case Tbool:

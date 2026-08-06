@@ -1,4 +1,4 @@
-module quickbite.ffi.core;
+module quickbite.ffi.oldffi;
 
 private:
 

@@ -9,10 +9,11 @@ writes the result into caller-provided typed storage. It never converts a
 backend value representation into an ABI representation because there is only
 one representation.
 
-The existing marshaller-based implementation is not the starting point for
-this design. Move it to `quickbite.ffi.oldffi` so the Interpreter and its other
-current consumers remain operational during migration. Do not copy its
-interfaces, work order, or supported-shape taxonomy into the new package.
+The existing marshaller-based implementation lives in
+`quickbite.ffi.oldffi` so the Interpreter and its other current consumers
+remain operational during migration. It is not the starting point for this
+design. Do not copy its interfaces, work order, or supported-shape taxonomy
+into the new package.
 
 ## Module boundary
 
@@ -128,19 +129,13 @@ but it does not expand the call API or erase the image's ABI provenance.
 
 ## Work order
 
-1. Mechanically move the current package API and core to
-   `quickbite.ffi.oldffi`.
-   Keep `quickbite.ffi.libffi` declaration-only and in place, create the
-   `quickbite.ffi.ffi` module boundary, and temporarily have the package facade
-   re-export `oldffi` so existing imports remain green. This bootstrap lands
-   before parallel implementation begins and changes no behavior.
-2. Implement one address-only outbound call sufficient for the first existing
+1. Implement one address-only outbound call sufficient for the first existing
    Bytecode native-call behavior. Support only the linkage and value shapes
    that behavior requires.
-3. Carry compiler-ABI provenance through symbol resolution, explicit-argument
+2. Carry compiler-ABI provenance through symbol resolution, explicit-argument
    address ordering, and CIF cache identity. Exercise both DMD- and LDC-defined
    D callables rather than selecting one compiler globally.
-4. Add another call shape only when an enabled, `SystemLinker`-backed Bytecode
+3. Add another call shape only when an enabled, `SystemLinker`-backed Bytecode
    behavior requires it. Keep each addition address-only.
 
 Backend migration is not work in this plan. `bytecode.md` owns Bytecode's

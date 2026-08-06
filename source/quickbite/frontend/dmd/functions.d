@@ -64,9 +64,18 @@ public struct InlineAsmToken {
 private InlineAsmToken[][][
     imported!"dmd.statement".CompoundAsmStatement
 ] _inlineAsmInstructions;
+private imported!"dmd.func".FuncDeclaration[
+    imported!"dmd.statement".CompoundAsmStatement
+] _inlineAsmOwners;
 
 public void snapshotInlineAsmInstructions() {
     import dmd.dmodule: Module;
+
+    // Parsed fixtures do not share an AST lifetime. DMD may reuse a reclaimed
+    // statement's address in a later fixture, so retaining pointer-keyed
+    // snapshots would let the new statement inherit the old statement's asm.
+    _inlineAsmInstructions = null;
+    _inlineAsmOwners = null;
 
     bool[imported!"dmd.dsymbol".Dsymbol] visited;
     foreach (index; 0 .. Module.amodules.length) {
@@ -79,6 +88,14 @@ public const(InlineAsmToken[][]) inlineAsmInstructions(
     imported!"dmd.statement".CompoundAsmStatement statement,
 ) {
     const saved = statement in _inlineAsmInstructions;
+    return saved is null ? null : *saved;
+}
+
+public imported!"dmd.func".FuncDeclaration inlineAsmOwner(
+    imported!"dmd.statement".CompoundAsmStatement statement,
+) {
+    // `const` would qualify the DMD class reference and make it unreturnable.
+    auto saved = statement in _inlineAsmOwners;
     return saved is null ? null : *saved;
 }
 
@@ -95,7 +112,7 @@ private void snapshotSymbols(
         visited[symbol] = true;
 
         if (auto function_ = symbol.isFuncDeclaration)
-            snapshotStatement(function_.fbody);
+            snapshotStatement(function_.fbody, function_);
 
         if (auto attributes = symbol.isAttribDeclaration)
             snapshotSymbols(attributes.decl, visited);
@@ -105,7 +122,10 @@ private void snapshotSymbols(
     }
 }
 
-private void snapshotStatement(imported!"dmd.statement".Statement statement) {
+private void snapshotStatement(
+    imported!"dmd.statement".Statement statement,
+    imported!"dmd.func".FuncDeclaration owner,
+) {
     if (statement is null)
         return;
 
@@ -123,67 +143,69 @@ private void snapshotStatement(imported!"dmd.statement".Statement statement) {
                 instruction ~= inlineAsmToken(*token);
             instructions ~= instruction;
         }
-        if (instructions.length != 0)
+        if (instructions.length != 0) {
             _inlineAsmInstructions[asm_] = instructions;
+            _inlineAsmOwners[asm_] = owner;
+        }
         return;
     }
 
     if (auto scope_ = statement.isScopeStatement) {
-        snapshotStatement(scope_.statement);
+        snapshotStatement(scope_.statement, owner);
         return;
     }
     if (auto compound = statement.isCompoundStatement) {
         foreach (child; *compound.statements)
-            snapshotStatement(child);
+            snapshotStatement(child, owner);
         return;
     }
     if (auto if_ = statement.isIfStatement) {
-        snapshotStatement(if_.ifbody);
-        snapshotStatement(if_.elsebody);
+        snapshotStatement(if_.ifbody, owner);
+        snapshotStatement(if_.elsebody, owner);
         return;
     }
     if (auto for_ = statement.isForStatement) {
-        snapshotStatement(for_._init);
-        snapshotStatement(for_._body);
+        snapshotStatement(for_._init, owner);
+        snapshotStatement(for_._body, owner);
         return;
     }
     if (auto do_ = statement.isDoStatement) {
-        snapshotStatement(do_._body);
+        snapshotStatement(do_._body, owner);
         return;
     }
     if (auto while_ = statement.isWhileStatement) {
-        snapshotStatement(while_._body);
+        snapshotStatement(while_._body, owner);
         return;
     }
     if (auto tryFinally = statement.isTryFinallyStatement) {
-        snapshotStatement(tryFinally._body);
-        snapshotStatement(tryFinally.finalbody);
+        snapshotStatement(tryFinally._body, owner);
+        snapshotStatement(tryFinally.finalbody, owner);
         return;
     }
     if (auto tryCatch = statement.isTryCatchStatement) {
-        snapshotStatement(tryCatch._body);
+        snapshotStatement(tryCatch._body, owner);
         foreach (catch_; *tryCatch.catches)
-            snapshotStatement(catch_.handler);
+            snapshotStatement(catch_.handler, owner);
         return;
     }
     if (auto with_ = statement.isWithStatement) {
-        snapshotStatement(with_._body);
+        snapshotStatement(with_._body, owner);
         return;
     }
     if (auto label = statement.isLabelStatement) {
-        snapshotStatement(label.statement);
+        snapshotStatement(label.statement, owner);
         return;
     }
     if (auto switch_ = statement.isSwitchStatement) {
-        snapshotStatement(switch_._body);
+        snapshotStatement(switch_._body, owner);
         return;
     }
     if (auto case_ = statement.isCaseStatement) {
-        snapshotStatement(case_.statement);
+        snapshotStatement(case_.statement, owner);
         return;
     }
     if (auto default_ = statement.isDefaultStatement)
-        snapshotStatement(default_.statement);
+        snapshotStatement(default_.statement, owner);
 }
 
 private InlineAsmToken inlineAsmToken(
