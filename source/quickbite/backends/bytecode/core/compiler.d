@@ -6957,9 +6957,8 @@ private struct Compiler {
     }
 
     // A data-segment target owns the materialised struct's complete module
-    // location. Derive a nested field's location only from that one target,
-    // so field writeback and `ref` mirrors cannot reconstruct different
-    // module offsets.
+    // location. Derive a nested field's location only from that one target so
+    // every field write uses the same module offset.
     private ushort moduleFieldOffset(in StructField field) {
         assert(field.writeBack == StructField.WriteBack.dataSegment);
         return cast(ushort) (field.target.dataSegment.moduleOffset +
@@ -17223,9 +17222,10 @@ private struct Compiler {
         return _zeroRealConstantIndex;
     }
 
-    // Appends one type-driven parameter entry to `layout`: a dynamic array,
-    // struct/static array, delegate, or scalar occupies its own inline slot
-    // at its natural alignment. Shared between `parameterLayout`'s
+    // Appends one type-driven parameter entry to `layout`. A direct reference
+    // always occupies one native-address slot; a by-value dynamic array,
+    // struct/static array, delegate, or scalar occupies its own inline slot at
+    // its natural alignment. Shared between `parameterLayout`'s
     // no-bound-`VarDeclaration` fallback (an extern signature known only by
     // type) and a call through a delegate-typed parameter, where the callee
     // is likewise known only by its declared type.
@@ -17235,6 +17235,16 @@ private struct Compiler {
         in bool isReference,
     ) {
         import dmd.astenums: TY;
+
+        if (isReference) {
+            enum pointerAlign = cast(uint) size_t.sizeof;
+            layout.blockSize = (layout.blockSize +
+                pointerAlign - 1) & ~(pointerAlign - 1);
+            layout.offsets ~= cast(ushort) layout.blockSize;
+            layout.isReference ~= true;
+            layout.blockSize += pointerAlign;
+            return;
+        }
 
         if (type.toBasetype.ty == TY.Tarray) {
             enum descriptorAlign = cast(uint) size_t.sizeof;
@@ -17253,8 +17263,7 @@ private struct Compiler {
                 aggregateAlign - 1) & ~(aggregateAlign - 1);
             layout.offsets ~= cast(ushort) layout.blockSize;
             layout.isReference ~= isReference;
-            layout.blockSize += isReference && aggregateBytes < size_t.sizeof
-                ? cast(uint) size_t.sizeof : aggregateBytes;
+            layout.blockSize += aggregateBytes;
             return;
         }
 
@@ -17269,9 +17278,7 @@ private struct Compiler {
         }
 
         const scalar = scalarType(type);
-        const argumentSize = isReference
-            ? referenceScalarSlotSize(size(scalar))
-            : size(scalar);
+        const argumentSize = size(scalar);
         layout.blockSize = (layout.blockSize +
             argumentSize - 1) & ~(argumentSize - 1);
         layout.offsets ~= cast(ushort) layout.blockSize;
@@ -17279,29 +17286,17 @@ private struct Compiler {
         layout.blockSize += argumentSize;
     }
 
-    // Every `ref`/`out` argument-area slot carries one native address.
-    private uint referenceScalarSlotSize(in uint valueSize) @safe @nogc nothrow pure {
-        return cast(uint) size_t.sizeof;
-    }
-
     private ParameterLayout parameterLayout(FuncDeclaration function_) {
-        import dmd.astenums: TY;
-
         ParameterLayout layout;
 
-        // A struct method takes its receiver's address as hidden `this`.
-        if (auto structDeclaration = thisStructDeclaration(function_)) {
-            auto thisType = structDeclaration.type;
-            const structAlign = staticArrayAlign(thisType);
-            const structBytes = inlineByteWidth(thisType);
-            const argumentBytes = structBytes < size_t.sizeof
-                ? cast(uint) size_t.sizeof
-                : structBytes;
+        // A struct method takes its receiver's native address as hidden `this`.
+        if (thisStructDeclaration(function_) !is null) {
+            enum pointerAlign = cast(uint) size_t.sizeof;
             layout.blockSize =
-                (layout.blockSize + structAlign - 1) & ~(structAlign - 1);
+                (layout.blockSize + pointerAlign - 1) & ~(pointerAlign - 1);
             layout.hasThis = true;
             layout.thisOffset = cast(ushort) layout.blockSize;
-            layout.blockSize += argumentBytes;
+            layout.blockSize += pointerAlign;
         }
 
         if (thisClassDeclaration(function_) !is null) {
@@ -17354,88 +17349,9 @@ private struct Compiler {
                 continue;
             }
 
-            // A dynamic-array `T[]` parameter (`string` included) holds a
-            // 16-byte slice descriptor in the callee frame. By value the
-            // caller copies the descriptor in; a `ref T[]` instead passes the
-            // caller-frame offset and writes the (possibly reallocated)
-            // descriptor back on return, so an append inside the callee is
-            // visible to the caller.
-            if (parameter.type.toBasetype.ty == TY.Tarray) {
-                enum descriptorAlign = cast(uint) size_t.sizeof;
-                layout.blockSize =
-                    (layout.blockSize + descriptorAlign - 1) & ~(descriptorAlign - 1);
-                layout.offsets ~= cast(ushort) layout.blockSize;
-                layout.isReference ~= parameter.isReference;
-                layout.blockSize += sliceDescriptorSize;
-                continue;
-            }
-
-            // A by-value struct `S` parameter is a block of `Type.size()` bytes
-            // at its DMD alignment in the argument area; the caller block-copies
-            // its struct in, so the callee mutates only its private copy.
-            if (parameter.type.toBasetype.ty == TY.Tstruct) {
-                const structAlign = staticArrayAlign(parameter.type);
-                const structBytes = inlineByteWidth(parameter.type);
-                layout.blockSize =
-                    (layout.blockSize + structAlign - 1) & ~(structAlign - 1);
-                layout.offsets ~= cast(ushort) layout.blockSize;
-                layout.isReference ~= parameter.isReference;
-                layout.blockSize += parameter.isReference &&
-                    structBytes < size_t.sizeof
-                    ? cast(uint) size_t.sizeof : structBytes;
-                continue;
-            }
-
-            // A static-array parameter is an inline block in the argument area,
-            // tracked like a static-array local so indexing and block-copy paths
-            // resolve against its base offset. A `ref` parameter receives the
-            // caller slot offset and writes the completed block back on return.
-            if (parameter.type.toBasetype.ty == TY.Tsarray) {
-                const arrayAlign = staticArrayAlign(parameter.type);
-                const arrayBytes = inlineByteWidth(parameter.type);
-                layout.blockSize =
-                    (layout.blockSize + arrayAlign - 1) & ~(arrayAlign - 1);
-                layout.offsets ~= cast(ushort) layout.blockSize;
-                layout.isReference ~= parameter.isReference;
-                layout.blockSize += parameter.isReference &&
-                    arrayBytes < size_t.sizeof
-                    ? cast(uint) size_t.sizeof : arrayBytes;
-                continue;
-            }
-
-            if (parameter.type.toBasetype.ty == TY.Tclass) {
-                enum pointerAlign = cast(uint) size_t.sizeof;
-                layout.blockSize =
-                    (layout.blockSize + pointerAlign - 1) & ~(pointerAlign - 1);
-                layout.offsets ~= cast(ushort) layout.blockSize;
-                layout.isReference ~= parameter.isReference;
-                layout.blockSize += pointerAlign;
-                continue;
-            }
-
-            // A by-value delegate parameter is a 16-byte `{functionIndex,
-            // context}` pair copied into the callee frame, matching the same
-            // pair a delegate local or field holds.
-            if (parameter.type.toBasetype.ty == TY.Tdelegate) {
-                enum delegateAlign = cast(uint) size_t.sizeof;
-                layout.blockSize =
-                    (layout.blockSize + delegateAlign - 1) & ~(delegateAlign - 1);
-                layout.offsets ~= cast(ushort) layout.blockSize;
-                layout.isReference ~= parameter.isReference;
-                layout.blockSize += delegateValueSize;
-                continue;
-            }
-
-            // A scalar `ref` parameter's slot holds the caller address.
-            const type = scalarType(parameter.type);
-            const argumentSize = parameter.isReference
-                ? referenceScalarSlotSize(size(type))
-                : size(type);
-            layout.blockSize =
-                (layout.blockSize + argumentSize - 1) & ~(argumentSize - 1);
-            layout.offsets ~= cast(ushort) layout.blockSize;
-            layout.isReference ~= parameter.isReference;
-            layout.blockSize += argumentSize;
+            appendParameterLayoutEntry(
+                layout, parameter.type, parameter.isReference,
+            );
         }
 
         return layout;
@@ -17942,8 +17858,8 @@ private struct Compiler {
     // `(*p)[i]` where `p`'s pointee is itself a static array (`T[N]*`, e.g.
     // `int[2]* p; (*p)[i]`): indexing steps through the array's own element
     // `T` at `p + i * sizeof(T)`, not through the whole `T[N]` block
-    // `pointerElementMetadata` reports for a plain dereference or
-    // whole-object assignment/ref-argument mirror. Falls back to
+    // `pointerElementMetadata` reports for a plain dereference or whole-object
+    // assignment. Falls back to
     // `pointerElementMetadata` itself when `p`'s pointee is not a static
     // array (an ordinary `p[i]`/`(*pp)[i]` shape, unaffected by the
     // one-level unwrap this static-array case needs).

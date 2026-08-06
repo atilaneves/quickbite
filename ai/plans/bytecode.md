@@ -375,7 +375,8 @@ Target state:
   boxing, polymorphism, or generic place opcode.
 - An unclassifiable declaration or unsupported lvalue shape is declined by
   the resolver, in one place, with the usual explicit diagnostic.
-- Scalar `ref` parameters end as real pointers into caller storage resolved
+- Direct `ref`/`out` parameters of every value type occupy exactly one native
+  pointer-width argument slot and resolve as real pointers into caller storage
   through the same place pipeline, replacing the per-callee
   mirror/return-writeback convention and its address-identity,
   exceptional-control-flow, and aliasing incoherences.
@@ -462,8 +463,8 @@ row, not a guarantee. Reconfirm against the source before relying on it.
   aggregate store boundary; do not route a `Tsarray` literal through the
   struct-only operand resolver.
 - An ordinary scalar local's address is its native frame address, so a
-  same-sized pointer reinterpretation observes the local's raw bytes. This
-  does not make a scalar `ref` parameter's mirror into the caller's address.
+  same-sized pointer reinterpretation observes the local's raw bytes. A direct
+  `ref`/`out` parameter instead holds the real address of caller storage.
 - Inline asm has no general x86 contract. The supported atomic subset is the
   complete DRuntime `core.internal.atomic` lowering for 4-/8-byte load,
   fetch-add, and 4-byte exchange, each translated to its one corresponding
