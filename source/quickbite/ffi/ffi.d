@@ -120,9 +120,10 @@ private imported!"quickbite.ffi.libffi".ffi_type* ffiTypeFor(
     imported!"dmd.mtype".Type type,
 ) {
     import quickbite.ffi.libffi:
-        ffi_type_pointer, ffi_type_sint8, ffi_type_sint16, ffi_type_sint32,
-        ffi_type_sint64, ffi_type_uint8, ffi_type_uint16, ffi_type_uint32,
-        ffi_type_uint64, ffi_type_void;
+        ffi_type_double, ffi_type_float, ffi_type_longdouble, ffi_type_pointer,
+        ffi_type_sint8, ffi_type_sint16, ffi_type_sint32, ffi_type_sint64,
+        ffi_type_uint8, ffi_type_uint16, ffi_type_uint32, ffi_type_uint64,
+        ffi_type_void;
     import dmd.astenums: TY;
 
     if (type is null)
@@ -138,6 +139,9 @@ private imported!"quickbite.ffi.libffi".ffi_type* ffiTypeFor(
         case Tint32: return &ffi_type_sint32;
         case Tuns64: return &ffi_type_uint64;
         case Tint64: return &ffi_type_sint64;
+        case Tfloat32: return &ffi_type_float;
+        case Tfloat64: return &ffi_type_double;
+        case Tfloat80: return &ffi_type_longdouble;
         case Tpointer, Tclass: return &ffi_type_pointer;
         default: return null;
     }

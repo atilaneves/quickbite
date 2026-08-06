@@ -79,6 +79,43 @@ unittest {
 }
 
 
+@("ffi.addressOnlyFloatingPointCallsPreserveNativePrecision")
+unittest {
+    assertFloatingPointCall(cast(float) 1.25, Type.tfloat32);
+    assertFloatingPointCall(cast(double) 1.25, Type.tfloat64);
+
+    real extendedPrecision = real.max / 2;
+    const rounded = roundToDouble(extendedPrecision);
+    assert(extendedPrecision != cast(real) rounded);
+    assertFloatingPointCall(extendedPrecision, Type.tfloat80);
+}
+
+
+private void assertFloatingPointCall(T)(T argument, Type type) {
+    T result;
+    const expected = floatingPointOracle(argument);
+
+    call(
+        Callable(cast(void*) &floatingPointOracle!T, LINK.c, CompilerAbi.dmd),
+        [TypedAddress(type, &argument)],
+        TypedAddress(type, &result),
+    ).should == true;
+
+    result.should == expected;
+}
+
+
+private extern(C) T floatingPointOracle(T)(T value) {
+    return value * cast(T) 1.5 + cast(T) 0.25;
+}
+
+
+pragma(inline, false)
+private double roundToDouble(double value) {
+    return value;
+}
+
+
 private void assertScalarRoundTrip(T)(T expected, Type type) {
     T argument = expected;
     T result;
