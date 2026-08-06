@@ -5343,26 +5343,29 @@ static foreach (backend; Matrix!(
     }
 }
 
-// A `ref` parameter forwarded to `mulu` must preserve the caller's native
-// bool address through the imported/template-instantiated native call.
+// A body-less declaration for a process-resident extern(D) callable uses the
+// ABI of the compiler that built the host. Its trailing `ref` parameter makes
+// the two compiler ABIs observably different even though multiplication is
+// commutative.
 static foreach (backend; Matrix!(
     Omit!(Ctfe, Because.inexpressible,
         "core.checkedint.mulu has inline assembly that CTFE cannot execute"),
+    Omit!(Bytecode, Because.refusal,
+        "`residentMulu` cannot be interpreted at compile time, because it " ~
+        "has no available source code"),
 )) {
-    @("nativeRefArgument.muluReceivesForwardedReference." ~ backend.stringof)
+    @("nativeExternD.muluUsesResidentCompilerArgumentOrder." ~
+        backend.stringof)
     @Tags(backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
-            import core.checkedint : mulu;
-
-            size_t multiply(ref bool overflow, size_t x, size_t y) {
-                return mulu(x, y, overflow);
-            }
+            pragma(mangle, "_D4core10checkedint__T4muluZQgFNaNbNiNfmmKbZm")
+            ulong residentMulu(ulong left, ulong right, ref bool overflow);
 
             unittest {
                 bool overflow;
-                assert(multiply(overflow, size_t.max, 2) == size_t.max - 1);
-                assert(overflow);
+                assert(residentMulu(6, 7, overflow) == 42);
+                assert(!overflow);
             }
         });
     }
