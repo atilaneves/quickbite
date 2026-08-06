@@ -28,6 +28,33 @@ public struct DVariadicMetadata {
 }
 
 
+private enum PhysicalReturn {
+    value,
+    reference,
+    cppNonPod,
+    cppConstructor,
+}
+
+
+private struct PhysicalArgument {
+    private imported!"dmd.mtype".Type type;
+    private void* address;
+    private size_t sourceIndex = size_t.max;
+    private bool pointer;
+}
+
+
+private struct PhysicalCall {
+    private bool valid;
+    private imported!"dmd.mtype".Type returnType;
+    private PhysicalReturn returnPolicy;
+    private PhysicalArgument[] arguments;
+    private void*[] pointerCells;
+    private size_t cFixedArgumentCount;
+    private bool cVariadic;
+}
+
+
 public bool call(
     Callable callable,
     TypedAddress[] arguments,
@@ -39,186 +66,57 @@ public bool call(
         ffi_arg, ffi_cif, ffi_call, ffi_prep_cif, ffi_prep_cif_var,
         ffi_status, ffi_type, ffi_type_pointer, ffi_type_void,
         FFI_DEFAULT_ABI;
-    import dmd.astenums: LINK, TY, VarArg;
+    import dmd.astenums: TY;
 
-    if (callable.address is null || callable.signature is null ||
-        callable.signature.next is null ||
-        (callable.signature.linkage != LINK.c &&
-            callable.signature.linkage != LINK.d &&
-            callable.signature.linkage != LINK.cpp) ||
-        (receiver !is null && callable.signature.linkage != LINK.d &&
-            callable.signature.linkage != LINK.cpp) ||
-        !hasSupportedVarArgs(callable.signature))
-        return false;
-    if (callable.declaration !is null &&
-        !callable.declaration.type.toBasetype.equals(callable.signature))
-        return false;
-    const isCppConstructor = callable.declaration !is null &&
-        callable.declaration.isCtorDeclaration !is null;
-    const isCppSpecialMember = isCppConstructor ||
-        callable.declaration !is null &&
-        callable.declaration.isDtorDeclaration !is null;
-    if (isCppSpecialMember &&
-        (callable.signature.linkage != LINK.cpp || receiver is null))
-        return false;
-
-    const isCKRVariadic = hasKRVariadicArguments(callable.signature);
-    const numFixedArguments = isCKRVariadic
-        ? 0
-        : callable.signature.parameterList.length;
-    const hasCVariadicTail = hasCVariadicArguments(callable.signature);
-    const isDVariadic = callable.signature.linkage == LINK.d &&
-        callable.signature.parameterList.varargs == VarArg.variadic;
-    const hasArgumentTail = hasCVariadicTail || isDVariadic;
-    if (hasArgumentTail && arguments.length < numFixedArguments ||
-        !hasArgumentTail && arguments.length != numFixedArguments)
-        return false;
-    if (isDVariadic != (variadicMetadata !is null))
+    auto physical = physicalCallFor(
+        callable,
+        arguments,
+        result,
+        receiver,
+        variadicMetadata,
+    );
+    if (!physical.valid)
         return false;
 
     if (signatureContainsVector(callable.signature) ||
         argumentsContainVector(arguments))
-        return callSysVVector(
-            callable,
-            arguments,
-            result,
-            receiver,
-            variadicMetadata,
-        );
+        return callSysVVector(callable, physical, result);
 
-    const hasReceiver = receiver !is null;
-    FfiType receiverMetadata;
-    void* receiverCell;
-    void* receiverAddress;
-    if (hasReceiver) {
-        receiverAddress = receiverArgumentAddress(receiver, receiverCell);
-        if (receiverAddress is null)
-            return false;
-        receiverMetadata = FfiType(&ffi_type_pointer);
-    }
-
-    auto returnType = callable.signature.next.toBasetype;
-    if (result.type is null ||
-        !result.type.toBasetype.equals(returnType))
-        return false;
-
-    const returnsReference = !isCppConstructor && callable.signature.isRef;
-    const returnsCppNonPod = callable.signature.linkage == LINK.cpp &&
-        isCppInvisibleReference(returnType);
-    auto resultMetadata = isCppConstructor
+    auto resultMetadata = physical.returnPolicy == PhysicalReturn.cppConstructor
         ? FfiType(&ffi_type_void)
-        : returnsReference
+        : physical.returnPolicy == PhysicalReturn.reference
         ? FfiType(&ffi_type_pointer)
-        : returnsCppNonPod
-            ? cppNonPodReturnFfiType(returnType)
-            : ffiTypeFor(returnType, true);
+        : physical.returnPolicy == PhysicalReturn.cppNonPod
+            ? cppNonPodReturnFfiType(physical.returnType)
+            : ffiTypeFor(physical.returnType, true);
     if (resultMetadata.type is null)
         return false;
 
-    const resultTy = semanticStorageType(returnType).ty;
-    const returnsVoid = isCppConstructor || resultTy == TY.Tvoid ||
+    const resultTy = semanticStorageType(physical.returnType).ty;
+    const returnsVoid =
+        physical.returnPolicy == PhysicalReturn.cppConstructor ||
+        resultTy == TY.Tvoid ||
         resultTy == TY.Tnoreturn;
-    if ((returnsReference || !returnsVoid) && result.address is null)
-        return false;
-
-    FfiType variadicMetadataType;
-    if (isDVariadic) {
-        if (variadicMetadata.value.type is null ||
-            variadicMetadata.value.address is null)
-            return false;
-        const expectedType = callable.compilerAbi == CompilerAbi.dmd
-            ? TY.Tclass
-            : TY.Tarray;
-        if (variadicMetadata.value.type.toBasetype.ty != expectedType)
-            return false;
-        variadicMetadataType = ffiTypeFor(variadicMetadata.value.type);
-        if (variadicMetadataType.type is null)
-            return false;
-    }
-
-    auto argumentIsIndirect = new bool[](arguments.length);
-    auto argumentIsIgnored = new bool[](arguments.length);
-    foreach (index, argument; arguments) {
-        if (argument.type is null || argument.address is null)
-            return false;
-
-        const isFixedArgument = index < numFixedArguments;
-        if (isFixedArgument) {
-            auto parameter = callable.signature.parameterList[index];
-            if (isLazyParameter(parameter)) {
-                if (!isMatchingLazyDelegate(argument.type, parameter.type))
-                    return false;
-            } else if (!argument.type.toBasetype.equals(
-                parameter.type.toBasetype,
-            ))
-                return false;
-            argumentIsIndirect[index] = isReferenceParameter(parameter) ||
-                callable.signature.linkage == LINK.cpp &&
-                (argument.type.toBasetype.ty == TY.Treference ||
-                    isCppInvisibleReference(argument.type));
-        } else if (hasCVariadicTail &&
-            !isPromotedVariadicType(argument.type))
-            return false;
-        argumentIsIgnored[index] = !argumentIsIndirect[index] &&
-            isIgnoredSysVArgument(argument.type);
-    }
-
-    size_t numPassedArguments;
-    foreach (ignored; argumentIsIgnored)
-        numPassedArguments += !ignored;
-    const numAbiArguments = numPassedArguments + hasReceiver + isDVariadic;
+    const numAbiArguments = physical.arguments.length;
     auto argumentTypes = new ffi_type*[](numAbiArguments);
     auto argumentAddresses = new void*[](numAbiArguments);
     auto argumentMetadata = new FfiType[](numAbiArguments);
-    auto argumentAbiIndices = new size_t[](arguments.length);
-    size_t nextAbiIndex = hasReceiver + isDVariadic;
-    const reversesArguments = callable.signature.linkage == LINK.d &&
-        callable.compilerAbi == CompilerAbi.dmd && !isDVariadic;
-    foreach (offset; 0 .. arguments.length) {
-        const sourceIndex = reversesArguments
-            ? arguments.length - offset - 1
-            : offset;
-        if (!argumentIsIgnored[sourceIndex])
-            argumentAbiIndices[sourceIndex] = nextAbiIndex++;
-    }
-    if (hasReceiver) {
-        argumentMetadata[0] = receiverMetadata;
-        argumentTypes[0] = receiverMetadata.type;
-        argumentAddresses[0] = receiverAddress;
-    }
-    if (isDVariadic) {
-        const metadataIndex = hasReceiver;
-        argumentMetadata[metadataIndex] = variadicMetadataType;
-        argumentTypes[metadataIndex] = variadicMetadataType.type;
-        argumentAddresses[metadataIndex] = variadicMetadata.value.address;
-    }
-    // Language references and C++ invisible-reference values are pointer ABI
-    // arguments. Only each pointer cell is temporary: it points directly at
-    // the caller's authoritative storage; no pointee bytes are copied.
-    auto indirectCells = new void*[](arguments.length);
-    foreach (index, argument; arguments) {
-        if (argumentIsIgnored[index])
-            continue;
-        const abiIndex = argumentAbiIndices[index];
-        argumentMetadata[abiIndex] = argumentIsIndirect[index]
+    foreach (index, argument; physical.arguments) {
+        argumentMetadata[index] = argument.pointer
             ? FfiType(&ffi_type_pointer)
             : ffiTypeFor(argument.type);
-        argumentTypes[abiIndex] = argumentMetadata[abiIndex].type;
-        if (argumentTypes[abiIndex] is null)
+        argumentTypes[index] = argumentMetadata[index].type;
+        if (argumentTypes[index] is null)
             return false;
-        if (argumentIsIndirect[index]) {
-            indirectCells[index] = argument.address;
-            argumentAddresses[abiIndex] = &indirectCells[index];
-        } else
-            argumentAddresses[abiIndex] = argument.address;
+        argumentAddresses[index] = argument.address;
     }
 
     ffi_cif cif;
-    const prepStatus = hasCVariadicTail
+    const prepStatus = physical.cVariadic
         ? ffi_prep_cif_var(
             &cif,
             FFI_DEFAULT_ABI,
-            cast(uint) numFixedArguments,
+            cast(uint) physical.cFixedArgumentCount,
             cast(uint) numAbiArguments,
             resultMetadata.type,
             argumentTypes.ptr,
@@ -233,26 +131,23 @@ public bool call(
     if (prepStatus != ffi_status.FFI_OK)
         return false;
     resultMetadata.restoreNativeLayout;
-    if (!isCppConstructor && !returnsReference &&
-        !layoutMatches(returnType, resultMetadata))
+    if (physical.returnPolicy == PhysicalReturn.value &&
+        !layoutMatches(physical.returnType, resultMetadata))
         return false;
-    foreach (index; 0 .. arguments.length) {
-        if (!argumentIsIndirect[index] &&
-            !argumentIsIgnored[index] &&
-            !layoutMatches(
-                arguments[index].type,
-                argumentMetadata[argumentAbiIndices[index]],
-            ))
+    foreach (index, argument; physical.arguments)
+        if (!argument.pointer && argument.sourceIndex != size_t.max &&
+            !layoutMatches(argument.type, argumentMetadata[index]))
             return false;
-    }
 
     // libffi requires narrow integer returns to use an ffi_arg-wide slot.
     // Copy only the static type's native width into the caller's storage.
     ffi_arg resultScratch;
     const resultCopySize = narrowIntegerResultSize(resultTy);
-    void* resultAddress = returnsVoid && !returnsReference
+    void* resultAddress = returnsVoid &&
+        physical.returnPolicy != PhysicalReturn.reference
         ? null
-        : returnsReference || resultCopySize == 0
+        : physical.returnPolicy == PhysicalReturn.reference ||
+            resultCopySize == 0
             ? result.address
             : &resultScratch;
     alias CFunction = extern(C) void function();
@@ -263,11 +158,182 @@ public bool call(
         argumentAddresses.ptr,
     );
 
-    if (!returnsReference && resultCopySize != 0) {
+    if (physical.returnPolicy != PhysicalReturn.reference &&
+        resultCopySize != 0) {
         import core.stdc.string: memcpy;
         memcpy(result.address, &resultScratch, resultCopySize);
     }
     return true;
+}
+
+
+private PhysicalCall physicalCallFor(
+    Callable callable,
+    TypedAddress[] arguments,
+    TypedAddress result,
+    TypedAddress* receiver,
+    DVariadicMetadata* variadicMetadata,
+) {
+    import dmd.astenums: LINK, TY, VarArg;
+
+    PhysicalCall physical;
+    if (callable.address is null || callable.signature is null ||
+        callable.signature.next is null ||
+        (callable.signature.linkage != LINK.c &&
+            callable.signature.linkage != LINK.d &&
+            callable.signature.linkage != LINK.cpp) ||
+        (receiver !is null && callable.signature.linkage != LINK.d &&
+            callable.signature.linkage != LINK.cpp) ||
+        !hasSupportedVarArgs(callable.signature))
+        return physical;
+    if (callable.declaration !is null &&
+        !callable.declaration.type.toBasetype.equals(callable.signature))
+        return physical;
+    const isCppConstructor = callable.declaration !is null &&
+        callable.declaration.isCtorDeclaration !is null;
+    const isCppSpecialMember = isCppConstructor ||
+        callable.declaration !is null &&
+        callable.declaration.isDtorDeclaration !is null;
+    if (isCppSpecialMember &&
+        (callable.signature.linkage != LINK.cpp || receiver is null))
+        return physical;
+
+    const isCKRVariadic = hasKRVariadicArguments(callable.signature);
+    const numFixedArguments = isCKRVariadic
+        ? 0
+        : callable.signature.parameterList.length;
+    const hasCVariadicTail = hasCVariadicArguments(callable.signature);
+    const isDVariadic = callable.signature.linkage == LINK.d &&
+        callable.signature.parameterList.varargs == VarArg.variadic;
+    const hasArgumentTail = hasCVariadicTail || isDVariadic;
+    if (hasArgumentTail && arguments.length < numFixedArguments ||
+        !hasArgumentTail && arguments.length != numFixedArguments ||
+        isDVariadic != (variadicMetadata !is null))
+        return physical;
+
+    physical.returnType = callable.signature.next.toBasetype;
+    if (result.type is null ||
+        !result.type.toBasetype.equals(physical.returnType))
+        return physical;
+    physical.returnPolicy = isCppConstructor
+        ? PhysicalReturn.cppConstructor
+        : callable.signature.isRef
+            ? PhysicalReturn.reference
+            : callable.signature.linkage == LINK.cpp &&
+                isCppInvisibleReference(physical.returnType)
+                ? PhysicalReturn.cppNonPod
+                : PhysicalReturn.value;
+    const resultTy = semanticStorageType(physical.returnType).ty;
+    const returnsVoid = physical.returnPolicy ==
+        PhysicalReturn.cppConstructor || resultTy == TY.Tvoid ||
+        resultTy == TY.Tnoreturn;
+    if ((physical.returnPolicy == PhysicalReturn.reference || !returnsVoid) &&
+        result.address is null)
+        return physical;
+
+    auto argumentIsIndirect = new bool[](arguments.length);
+    auto argumentIsIgnored = new bool[](arguments.length);
+    size_t numPassedFixedArguments;
+    foreach (index, argument; arguments) {
+        if (argument.type is null || argument.address is null)
+            return physical;
+        if (index < numFixedArguments) {
+            auto parameter = callable.signature.parameterList[index];
+            if (isLazyParameter(parameter)) {
+                if (!isMatchingLazyDelegate(argument.type, parameter.type))
+                    return physical;
+            } else if (!argument.type.toBasetype.equals(
+                parameter.type.toBasetype,
+            ))
+                return physical;
+            argumentIsIndirect[index] = isReferenceParameter(parameter) ||
+                callable.signature.linkage == LINK.cpp &&
+                (argument.type.toBasetype.ty == TY.Treference ||
+                    isCppInvisibleReference(argument.type));
+        } else if (hasCVariadicTail &&
+            !isPromotedVariadicType(argument.type))
+            return physical;
+        argumentIsIgnored[index] = !argumentIsIndirect[index] &&
+            isIgnoredSysVArgument(argument.type);
+        if (index < numFixedArguments && !argumentIsIgnored[index])
+            ++numPassedFixedArguments;
+    }
+
+    const hasReceiver = receiver !is null;
+    if (hasReceiver && (receiver.type is null || receiver.address is null))
+        return physical;
+    if (isDVariadic) {
+        const expectedType = callable.compilerAbi == CompilerAbi.dmd
+            ? TY.Tclass
+            : TY.Tarray;
+        if (variadicMetadata.value.type is null ||
+            variadicMetadata.value.address is null ||
+            variadicMetadata.value.type.toBasetype.ty != expectedType)
+            return physical;
+    }
+    size_t numPassedArguments;
+    foreach (ignored; argumentIsIgnored)
+        numPassedArguments += !ignored;
+    physical.arguments = new PhysicalArgument[](
+        numPassedArguments + hasReceiver + isDVariadic,
+    );
+    physical.pointerCells = new void*[](
+        arguments.length + hasReceiver,
+    );
+    size_t nextPhysicalIndex;
+    size_t nextPointerCell;
+    if (hasReceiver) {
+        void* receiverAddress;
+        switch (receiver.type.toBasetype.ty) with (TY) {
+            case Tstruct:
+                physical.pointerCells[nextPointerCell] = receiver.address;
+                receiverAddress = &physical.pointerCells[nextPointerCell++];
+                break;
+            case Tclass, Tpointer:
+                receiverAddress = receiver.address;
+                break;
+            default:
+                return PhysicalCall.init;
+        }
+        physical.arguments[nextPhysicalIndex++] = PhysicalArgument(
+            receiver.type,
+            receiverAddress,
+            size_t.max,
+            true,
+        );
+    }
+    if (isDVariadic)
+        physical.arguments[nextPhysicalIndex++] = PhysicalArgument(
+            variadicMetadata.value.type,
+            variadicMetadata.value.address,
+        );
+
+    const reversesArguments = callable.signature.linkage == LINK.d &&
+        callable.compilerAbi == CompilerAbi.dmd && !isDVariadic;
+    foreach (offset; 0 .. arguments.length) {
+        const sourceIndex = reversesArguments
+            ? arguments.length - offset - 1
+            : offset;
+        if (argumentIsIgnored[sourceIndex])
+            continue;
+        auto address = arguments[sourceIndex].address;
+        if (argumentIsIndirect[sourceIndex]) {
+            physical.pointerCells[nextPointerCell] = address;
+            address = &physical.pointerCells[nextPointerCell++];
+        }
+        physical.arguments[nextPhysicalIndex++] = PhysicalArgument(
+            arguments[sourceIndex].type,
+            address,
+            sourceIndex,
+            argumentIsIndirect[sourceIndex],
+        );
+    }
+    physical.cVariadic = hasCVariadicTail;
+    physical.cFixedArgumentCount = isCKRVariadic
+        ? hasReceiver
+        : numPassedFixedArguments + hasReceiver;
+    physical.valid = true;
+    return physical;
 }
 
 
@@ -328,50 +394,37 @@ private bool containsWideVector(imported!"dmd.mtype".Type type) {
 
 private bool callSysVVector(
     Callable callable,
-    TypedAddress[] arguments,
+    ref PhysicalCall physical,
     TypedAddress result,
-    TypedAddress* receiver,
-    DVariadicMetadata* variadicMetadata,
 ) {
     import quickbite.ffi.sysv_call:
         SysVCallFrame, SysVResultKind, invokeSysV;
     import dmd.argtypes_sysv_x64: toArgTypes_sysv_x64;
-    import dmd.astenums: LINK, TY, VarArg;
+    import dmd.astenums: LINK, TY;
+    import dmd.mtype: Type;
     import dmd.typesem: size;
     import core.stdc.string: memcpy;
 
-    const hasCVariadicTail = hasCVariadicArguments(callable.signature);
-    const isDVariadic = callable.signature.linkage == LINK.d &&
-        callable.signature.parameterList.varargs == VarArg.variadic;
-    const hasVariadicTail = hasCVariadicTail || isDVariadic;
-    const numFixedArguments = callable.signature.parameterList.length;
-    bool needsAvx = containsWideVector(callable.signature.next);
-    foreach (argument; arguments)
+    bool needsAvx = containsWideVector(physical.returnType);
+    foreach (argument; physical.arguments)
         needsAvx = needsAvx || containsWideVector(argument.type);
     if (needsAvx) {
         import core.cpuid: avx;
         if (!avx)
             return false;
     }
-    if ((callable.signature.linkage != LINK.c &&
-            callable.signature.linkage != LINK.d) ||
-        (receiver !is null && callable.signature.linkage != LINK.d) ||
-        (!hasVariadicTail &&
-            callable.signature.parameterList.varargs != VarArg.none) ||
-        (hasVariadicTail
-            ? arguments.length < numFixedArguments
-            : arguments.length != numFixedArguments) ||
-        result.type is null ||
-        !result.type.toBasetype.equals(callable.signature.next.toBasetype) ||
-        isDVariadic != (variadicMetadata !is null))
+    if (callable.signature.linkage != LINK.c &&
+        callable.signature.linkage != LINK.d)
         return false;
 
     SysVCallFrame frame;
     frame.target = callable.address;
     frame.stackAlignment = 16;
     ubyte[] stackBytes;
-    auto returnType = semanticStorageType(callable.signature.next);
+    auto returnType = semanticStorageType(physical.returnType);
     auto returnTuple = toArgTypes_sysv_x64(returnType);
+    if (physical.returnPolicy == PhysicalReturn.reference)
+        returnTuple = toArgTypes_sysv_x64(Type.tvoidptr);
     const returnsInMemory = returnTuple !is null &&
         returnTuple.arguments.length == 0;
     if (returnTuple !is null && result.address is null)
@@ -380,55 +433,24 @@ private bool callSysVVector(
     if (returnsInMemory)
         frame.gpr[0] = cast(size_t) result.address;
     size_t nextXmm;
-    if (receiver !is null) {
-        void* receiverCell;
-        const receiverAddress = receiverArgumentAddress(
-            receiver,
-            receiverCell,
-        );
-        if (receiverAddress is null || nextGpr == frame.gpr.length)
-            return false;
-        memcpy(&frame.gpr[nextGpr++], receiverAddress, void*.sizeof);
-    }
-    if (isDVariadic) {
-        const expectedType = callable.compilerAbi == CompilerAbi.dmd
-            ? TY.Tclass
-            : TY.Tarray;
-        auto metadata = variadicMetadata.value;
-        if (metadata.type is null || metadata.address is null ||
-            metadata.type.toBasetype.ty != expectedType)
-            return false;
+    foreach (argument; physical.arguments) {
+        if (argument.pointer) {
+            if (nextGpr == frame.gpr.length)
+                appendSysVPointerStackArgument(stackBytes, argument.address);
+            else
+                memcpy(
+                    &frame.gpr[nextGpr++],
+                    argument.address,
+                    void*.sizeof,
+                );
+            continue;
+        }
         if (!placeSysVArgument(
             frame,
             stackBytes,
             nextGpr,
             nextXmm,
-            metadata,
-        ))
-            return false;
-    }
-    const reversesArguments = callable.signature.linkage == LINK.d &&
-        callable.compilerAbi == CompilerAbi.dmd && !isDVariadic;
-    foreach (position; 0 .. arguments.length) {
-        const index = reversesArguments
-            ? arguments.length - position - 1
-            : position;
-        auto argument = arguments[index];
-        if (argument.type is null || argument.address is null)
-            return false;
-        if (index < numFixedArguments) {
-            auto parameterType = callable.signature.parameterList[index].type;
-            if (!argument.type.toBasetype.equals(parameterType.toBasetype))
-                return false;
-        } else if (hasCVariadicTail &&
-            !isPromotedVariadicType(argument.type))
-            return false;
-        if (!placeSysVArgument(
-            frame,
-            stackBytes,
-            nextGpr,
-            nextXmm,
-            argument,
+            TypedAddress(argument.type, argument.address),
         ))
             return false;
     }
@@ -542,26 +564,6 @@ private bool placeSysVArgument(
 }
 
 
-private void* receiverArgumentAddress(
-    TypedAddress* receiver,
-    ref void* pointerCell,
-) {
-    import dmd.astenums: TY;
-
-    if (receiver is null || receiver.type is null || receiver.address is null)
-        return null;
-    switch (receiver.type.toBasetype.ty) with (TY) {
-        case Tstruct:
-            pointerCell = receiver.address;
-            return &pointerCell;
-        case Tclass, Tpointer:
-            return receiver.address;
-        default:
-            return null;
-    }
-}
-
-
 private bool isSysVVectorPart(imported!"dmd.mtype".Type type) {
     import dmd.astenums: TY;
 
@@ -584,6 +586,18 @@ private void appendSysVStackArgument(
     const offset = alignedTo(stackBytes.length, alignment);
     stackBytes.length = offset + alignedTo(nativeSize, 8);
     memcpy(stackBytes.ptr + offset, argument.address, nativeSize);
+}
+
+
+private void appendSysVPointerStackArgument(
+    ref ubyte[] stackBytes,
+    const void* address,
+) {
+    import core.stdc.string: memcpy;
+
+    const offset = alignedTo(stackBytes.length, void*.alignof);
+    stackBytes.length = offset + void*.sizeof;
+    memcpy(stackBytes.ptr + offset, address, void*.sizeof);
 }
 
 
