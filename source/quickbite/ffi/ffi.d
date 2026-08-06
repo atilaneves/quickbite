@@ -32,7 +32,8 @@ public bool call(
         FFI_DEFAULT_ABI;
     import dmd.astenums: LINK;
 
-    if (callable.address is null || callable.linkage != LINK.c ||
+    if (callable.address is null ||
+        (callable.linkage != LINK.c && callable.linkage != LINK.d) ||
         result.address is null)
         return false;
 
@@ -43,10 +44,11 @@ public bool call(
     auto argumentTypes = new ffi_type*[](arguments.length);
     auto argumentAddresses = new void*[](arguments.length);
     foreach (index, argument; arguments) {
-        argumentTypes[index] = ffiTypeFor(argument.type);
-        if (argumentTypes[index] is null || argument.address is null)
+        const abiIndex = abiArgumentIndex(callable, index, arguments.length);
+        argumentTypes[abiIndex] = ffiTypeFor(argument.type);
+        if (argumentTypes[abiIndex] is null || argument.address is null)
             return false;
-        argumentAddresses[index] = argument.address;
+        argumentAddresses[abiIndex] = argument.address;
     }
 
     ffi_cif cif;
@@ -74,6 +76,20 @@ public bool call(
     import core.stdc.string: memcpy;
     memcpy(result.address, &resultScratch, int.sizeof);
     return true;
+}
+
+
+private size_t abiArgumentIndex(
+    in Callable callable,
+    in size_t sourceIndex,
+    in size_t numArguments,
+) @safe @nogc nothrow pure {
+    import dmd.astenums: LINK;
+
+    return callable.linkage == LINK.d &&
+            callable.compilerAbi == CompilerAbi.dmd
+        ? numArguments - sourceIndex - 1
+        : sourceIndex;
 }
 
 
