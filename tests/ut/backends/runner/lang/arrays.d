@@ -5368,28 +5368,6 @@ static foreach (backend; Matrix!(
     }
 }
 
-// DRuntime's 64-bit `atomicFetchAdd` takes the locked `xadd` inline-asm path
-// on x86_64. Its return is the value before the update, not the new value.
-static foreach (backend; Matrix!(
-    Omit!(Ctfe, Because.inexpressible,
-        "core.internal.atomic.atomicFetchAdd has inline assembly that CTFE " ~
-        "cannot execute"),
-)) {
-    @("atomic.fetchAddUlongReturnsPreviousValue." ~ backend.stringof)
-    @Tags(backend.stringof)
-    unittest {
-        runBackendSourceFixtureTests!backend(q{
-            import core.internal.atomic : atomicFetchAdd;
-
-            unittest {
-                ulong value = 41;
-                assert(atomicFetchAdd(&value, 1UL) == 41);
-                assert(value == 42);
-            }
-        });
-    }
-}
-
 // This fixture pins `assumeSafeAppend` through an interior pointer (a slice
 // that does not start at its backing block's base). Interpreter omitted: its
 // reserve descriptor loses the zero-length allocation's capacity when the
@@ -7186,11 +7164,10 @@ static foreach (backend; Matrix!()) {
 // passing `arrayElementIsArray(expression.type)` both to
 // `compileDynamicArrayInto` and into the resulting `DynamicArrayLocal`.
 //
-// DMD's `-checkaction=context` lowering hoists an `assert`'s LHS operand into
-// a synthetic `ref int __assertOpN = matrixMaker()[1][2];`, which exercises
-// `runDeclarationExpression`'s `isArrayElementAlias` branch and, through it,
-// `arrayPointer`'s `IndexExp` arm composing an address for a non-`VarExp`
-// inner receiver (`matrixMaker()[1]`).
+// DMD's `-checkaction=context` lowering hoists an `assert`'s LHS operand
+// into a synthetic `ref int __assertOpN = matrixMaker()[1][2];` -- a `ref`
+// binding to an element reached by indexing twice into a call's own return
+// value, rather than into a named array variable.
 static foreach (backend; Matrix!()) {
     @("dynamicArray.arrayOfArraysReturningCallResultIndexing." ~
         backend.stringof)

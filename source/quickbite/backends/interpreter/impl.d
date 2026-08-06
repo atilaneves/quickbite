@@ -1136,17 +1136,13 @@ private struct Walker {
     // DMD declaration inspection is `@system`; the returned address is still
     // restricted to storage owned by the frame/module/native binding tables.
     //
-    // Every other caller that hands out a dataseg variable's address
-    // (`symbolOffsetLocalValue`, `bindingPointerValue`, the ordinary `VarExp`
-    // address-of arm) calls `materializeDatasegInitializer` first, so a
-    // never-touched module-table block never gets its address taken as raw
-    // zeroed bytes. This is the shared `resolveBase` callback `placeOfLvalue`
-    // calls for the base variable of an lvalue chain (a doubly-nested
-    // `DotVarExp`/`IndexExp` receiver among them) -- the same guarantee must
-    // hold here, or a chain whose base resolves straight through this
-    // function without any other code path having materialized it first
-    // hands out an address into never-initialized storage. A no-op for a
-    // true local and for a dataseg variable already materialized.
+    // Calls `materializeDatasegInitializer` before composing the address: a
+    // never-touched dataseg variable's module-table block is raw zeroed
+    // bytes, not its declared default value, and this is `placeOfLvalue`'s
+    // `resolveBase` callback for an lvalue chain's base (a doubly-nested
+    // `DotVarExp`/`IndexExp` receiver among them), which would otherwise
+    // hand out an address into that never-initialized storage. A no-op for
+    // a true local and for a dataseg variable already materialized.
     private void* addressableBindingBase(VarDeclaration variable) @trusted {
         if (auto address = variable in nativeRefLocalAddresses)
             return *address;
@@ -3289,7 +3285,8 @@ private struct Walker {
                         nestedField.e1.isDotVarExp !is null &&
                         lvalueChainHasIndexExp(nestedField)
                     ) {
-                        import quickbite.backends.interpreter.lvalue_place: placeOfLvalue;
+                        import quickbite.backends.interpreter.lvalue_place:
+                            placeOfLvalue, UnsupportedLvalueShapeException;
                         import quickbite.backends.interpreter.place: Place;
                         import quickbite.backends.interpreter.place_value: readValue;
 
@@ -3310,6 +3307,20 @@ private struct Walker {
                             auto fieldPlace = placeOfLvalue(
                                 nestedField,
                                 (variable) @safe => addressableBindingBase(variable),
+                                // @trusted: `runExpression` itself carries no
+                                // attribute (defaults to `@system`) as the
+                                // top-level AST dispatch over every
+                                // expression kind, several of which are
+                                // `@system` for reasons already justified at
+                                // their own boundaries deeper in this class.
+                                // Evaluating a chain index to a plain
+                                // `size_t` is the identical call the
+                                // ordinary eager path already makes for the
+                                // same purpose a few lines below
+                                // (`runExpression(index.e2).asLong`); this
+                                // closure only exists to offer that same
+                                // call through `placeOfLvalue`'s `@safe`
+                                // delegate signature.
                                 (expression) @trusted =>
                                     cast(size_t) runExpression(expression).asLong,
                                 // `$` inside a CHAIN `IndexExp`'s own index
@@ -3326,6 +3337,14 @@ private struct Walker {
                                 // before evaluating the index itself, so
                                 // binding it here needs no separate,
                                 // potentially-double-evaluating pre-walk.
+                                // @trusted: `setLocal` itself carries no
+                                // attribute (defaults to `@system`); this is
+                                // the same local-binding write every
+                                // ordinary `$` binding elsewhere in this
+                                // class already performs (`index.lengthVar`
+                                // a few lines below), called here only to
+                                // make `$` visible to the chain index
+                                // subexpression it names.
                                 (chainIndex, base) @trusted {
                                     if (chainIndex.lengthVar !is null)
                                         setLocal(
@@ -3360,12 +3379,32 @@ private struct Walker {
                                     .index(cast(size_t) offset)
                                     .address,
                             );
-                        } catch (Exception) {
+                        } catch (UnsupportedLvalueShapeException) {
                             // Fall through to the eager path below for a
                             // receiver shape `placeOfLvalue` does not (yet)
                             // support -- safe refusal is preferable to
                             // inventing a copied pointee, same reasoning as
-                            // the neighbouring branch's own catch.
+                            // the neighbouring branch's own catch. A guest
+                            // exception raised while composing the receiver
+                            // (a bounds failure from a side-effecting chain
+                            // index, in particular) is a different type and
+                            // does not land here.
+                        } catch (InterpretedException exception) {
+                            // Already the guest's own exception object --
+                            // propagate it unchanged rather than reaching
+                            // the generic `Exception` arm below.
+                            throw exception;
+                        } catch (Exception exception) {
+                            // Every step composed above (`placeOfLvalue`
+                            // past the shape-refusal arm, `fieldPlace.
+                            // index`/`Place.index`) only ever raises a bare
+                            // host `Exception` for an out-of-range index --
+                            // the receiver's shape is already known-good by
+                            // this point, so this is a real guest bounds
+                            // violation on already-committed side effects
+                            // (`i++`'s increment stands), not something
+                            // safe to retry from scratch.
+                            throwRangeError(exception.msg);
                         }
                     }
                 }
@@ -3465,13 +3504,27 @@ private struct Walker {
                         // for `field`'s own place, then compose the
                         // `outerOffset`'th element the same way the `VarExp`
                         // fast path above does.
-                        import quickbite.backends.interpreter.lvalue_place: placeOfLvalue;
+                        import quickbite.backends.interpreter.lvalue_place:
+                            placeOfLvalue, UnsupportedLvalueShapeException;
                         import quickbite.backends.interpreter.place: Place;
 
                         try {
                             auto fieldPlace = placeOfLvalue(
                                 field,
                                 (variable) @safe => addressableBindingBase(variable),
+                                // @trusted: `runExpression` itself carries
+                                // no attribute (defaults to `@system`) as
+                                // the top-level AST dispatch over every
+                                // expression kind, several of which are
+                                // `@system` for reasons already justified at
+                                // their own boundaries deeper in this class.
+                                // Evaluating an index subexpression to a
+                                // plain `size_t` here is the same call the
+                                // ordinary eager path already makes for the
+                                // same purpose (`outerOffset` above); this
+                                // closure only exists to offer that same
+                                // call through `placeOfLvalue`'s `@safe`
+                                // delegate signature.
                                 (expression) @trusted =>
                                     cast(size_t) runExpression(expression).asLong,
                             );
@@ -3486,11 +3539,27 @@ private struct Walker {
                                     .index(cast(size_t) offset)
                                     .address,
                             );
-                        } catch (Exception) {
+                        } catch (UnsupportedLvalueShapeException) {
                             // Fall through to the detached-copy fallback
                             // below for a receiver shape `placeOfLvalue`
                             // does not (yet) support -- safe refusal is
-                            // preferable to inventing a copied pointee.
+                            // preferable to inventing a copied pointee. A
+                            // guest exception raised while composing the
+                            // receiver does not land here.
+                        } catch (InterpretedException exception) {
+                            // Already the guest's own exception object --
+                            // propagate it unchanged rather than reaching
+                            // the generic `Exception` arm below.
+                            throw exception;
+                        } catch (Exception exception) {
+                            // `fieldPlace.index`/`Place.index` above only
+                            // ever raise a bare host `Exception` for an
+                            // out-of-range `outerOffset` -- the receiver's
+                            // shape is already known-good by this point, so
+                            // this is a real guest bounds violation, not
+                            // something the detached-copy fallback below
+                            // should silently paper over.
+                            throwRangeError(exception.msg);
                         }
                     }
                 }

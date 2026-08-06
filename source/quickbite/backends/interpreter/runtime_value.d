@@ -544,6 +544,14 @@ public struct RuntimeValue {
                     // Throwable chaining (object.d, dip1008 scope-catch-var
                     // destructor lowering) reads `_nextInChainPtr` through
                     // this exact cast to test/clear its refcount tag bit.
+                    //
+                    // @trusted: a pointer-to-integer cast is `@system` only
+                    // because the result COULD later be cast back to a
+                    // pointer and dereferenced; this operation itself reads
+                    // no memory through `value.address` -- it reinterprets
+                    // an already-held address value as a same-width integer
+                    // and stops there, with no dereference on either side of
+                    // the cast.
                     return () @trusted {
                         return Value(cast(T) cast(size_t) value.address);
                     }();

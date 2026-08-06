@@ -2877,21 +2877,11 @@ static foreach (backend; Matrix!(
     }
 }
 
-// The open soundness question `ai/plans/bytecode.md`'s Closures section
-// flagged for the two fixtures above: unlike `compileDelegateReturn`'s
-// `return`-based escape sites, a class-field/array-element write is not
-// itself the function's last act, so a further same-function mutation of the
-// captured local between the write and the aggregate's actual escape can
-// diverge from `heapClosureContextOrNull`'s heap snapshot, taken at the
-// write. SystemLinker reflects the later write (102: `40 + 2`, then
-// `total = 100` makes the read-back-through-the-delegate value `100 + 2`);
-// before `heapEscapingDelegateOperandOffset` gained the
-// `capturedLocalsMayBeMutatedInCurrentFunction` gate below, Bytecode silently
-// returned the frozen pre-mutation snapshot (42) instead -- the same
-// silent-wrong-answer shape `delegate.outParameterEscapingCaptureDeclines`
-// documents for the `ref`/`out`-parameter escape site. `Bytecode` now
-// declines this shape outright (`delegate.classFieldEscapingCaptureDeclines`
-// below) rather than risk it.
+// Unlike a direct delegate return, a class-field write is not the function's
+// last act. For the supported narrow scalar/pointer capture shape, a later
+// direct assignment mirrors into the same heap environment, so the escaped
+// delegate observes the enclosing function's final value. SystemLinker is
+// the oracle.
 static foreach (backend; Matrix!(
     Omit!(Ctfe, Because.inexpressible,
         "Ctfe wraps dmd.dinterpret, whose CTFE engine refuses the "
@@ -2924,10 +2914,9 @@ static foreach (backend; Matrix!(
     }
 }
 
-// The array-element twin of the class-field fixture above:
-// `tryDynamicArrayElementAssign`'s `Tdelegate` branch shares the same
-// `heapEscapingDelegateOperandOffset` gate, so the same further-mutation
-// shape declines the same way.
+// The array-element twin of the class-field fixture above: its supported
+// narrow scalar/pointer capture uses the same heap environment, so a later
+// direct assignment remains visible through the escaped delegate.
 static foreach (backend; Matrix!(
     Omit!(Ctfe, Because.inexpressible,
         "Ctfe wraps dmd.dinterpret, whose CTFE engine refuses the "
@@ -2962,9 +2951,8 @@ static foreach (backend; Matrix!(
 }
 
 // The `ref`-argument twin of `delegate.classFieldMutatedAfterCapturingWriteIsCallable`
-// above: DMD does not wrap a `ref` argument in an `AddrExp` (unlike `&arg`),
-// so a captured local mutated only by being passed to a `ref` parameter is
-// just as unsound a heap-box input as a direct `total = 100;` reassignment.
+// above: after the `ref` call completes, its writeback likewise mirrors the
+// captured local's final value into the supported narrow heap environment.
 static foreach (backend; Matrix!(
     Omit!(Ctfe, Because.inexpressible,
         "Ctfe wraps dmd.dinterpret, whose CTFE engine refuses the "
@@ -3460,17 +3448,6 @@ static foreach (backend; Matrix!()) {
     }
 }
 
-// `core.lifetime.emplace`'s scalar path (`core.internal.lifetime.emplaceRef`)
-// picks its non-CTFE branch now that runtime `__ctfe` correctly reads false
-// (see the `identifier.ctfeIsFalseAtRuntime` fixture above), which calls
-// `p.__ctor(args)` through `S* p = cast(S*) &chunk` -- a struct pointer
-// reinterpret-cast of a differently-typed address. Root cause: DMD lowers
-// this receiver to `PtrExp(p)` (an implicit deref), and `runMemberFunction`'s
-// `isWritableLocation` gate -- which decides whether `this` rebinds to the
-// receiver's own address rather than a disconnected copy -- omitted
-// `PtrExp`, even though `addressOfExpression` already recovers a `PtrExp`
-// receiver's address correctly (it evaluates the pointer operand). Fixed by
-// adding `expression.isPtrExp !is null` to `isWritableLocation`.
 static foreach (backend; Matrix!()) {
     @("cast.arrayFieldPtrSliceElementAddressWritesValue." ~ backend.stringof)
     @Tags(backend.stringof)
@@ -4302,13 +4279,10 @@ static foreach (backend; Matrix!(
     }
 }
 
-// An INITIALIZED dataseg variable (`_init !is null`) must survive repeated
-// calls that mutate it from fresh function-call activations: each `bump()`
-// call forks a child `Walker` whose own `mirrorEstablished` map starts
-// empty, so `materializeDatasegInitializer` must gate its initializer
-// re-run on `moduleTable.has(variable)` (shared across forks), not
-// `mirrorEstablished` (per-activation). `Ctfe` cannot read or write
-// dataseg storage at all.
+// A module-scope variable with an explicit initializer (`__gshared int
+// counter = 5;`) must keep accumulating mutations across repeated calls
+// from separate function activations, the same as a real global. `Ctfe`
+// cannot read or write dataseg storage at all.
 static foreach (backend; Matrix!(
     Omit!(Ctfe, Because.inexpressible,
         "CTFE cannot read or write dataseg (__gshared/static) storage"),
@@ -4560,20 +4534,9 @@ static foreach (backend; Matrix!(
     }
 }
 
-// A module-level delegate variable assigned from one function and called
-// from another. `callIt()`'s own first touch of `quickbiteTempDg2`
-// (materializeDatasegInitializer's `moduleTable.has(variable)` branch)
-// adopts the block ESTABLISHED BY `setIt()`'s own call into `callIt()`'s
-// fresh activation's `locals`/`mirrorEstablished` bookkeeping. A delegate
-// never writes its bytes into the dataseg block at all -- `setLocal`'s
-// `Tdelegate` arm stores it out-of-band in `nativeDelegateSlots`, keyed by
-// the block's address, leaving the block's bytes zeroed -- so routing a
-// `readValue`-reconstructed value back through `setLocal` (as the adoption
-// step used to, unconditionally) reads the zeroed block back as
-// `Value.null_` and then overwrites `nativeDelegateSlots[address]` with it,
-// destroying the delegate `setIt()` legitimately registered there:
-// `callIt()` throws "Unsupported eval call." instead of returning `43`.
-// SystemLinker is the oracle.
+// A module-level delegate variable assigned from one function must be
+// callable from another: the value `setIt()` stores into the shared
+// global must be the exact value `callIt()` reads back and invokes.
 static foreach (backend; Matrix!(
     Omit!(Ctfe, Because.inexpressible,
         "CTFE cannot read or write dataseg (__gshared/static) storage"),
@@ -11023,16 +10986,8 @@ static foreach (backend; Matrix!(
 
 // The magic `__ctfe` flag observes the *engine*, not source shape: only
 // `Ctfe` genuinely runs through DMD's own CTFE interpreter, so only `Ctfe`
-// legitimately reads `true` here (`ai/plans/value.md` item 4). Every other
-// backend executes as compiled D would and must read `false`, matching
-// `SystemLinker`. Confirmed empirically that DMD's semantic pass resolves
-// `__ctfe` to a `VarExp` before any backend ever walks a fully-semantic'd
-// module -- even through the `-preview=dip1008` scope-catch-var destructor
-// lowering (`statementsem.d`'s synthesized `if (!__ctfe) _d_delThrowable(var)`,
-// whose own subsequent `statementSemantic` call resolves the identifier) --
-// so this single runtime-call fixture covers every frontend shape that can
-// reach a backend; the walker's `IdentifierExp` arm for `__ctfe` is
-// defensive dead code, not a second live shape to pin separately.
+// legitimately reads `true` here. Every other backend executes as compiled
+// D would and must read `false`, matching `SystemLinker`.
 static foreach (backend; Matrix!(
     Omit!(Ctfe, Because.diverges,
         "Ctfe runs the unittest body through DMD's own CTFE interpreter, " ~
@@ -11052,24 +11007,30 @@ static foreach (backend; Matrix!(
     }
 }
 
+// The other half of the same invariant: `__ctfe` reads `true` when actually
+// evaluated at compile time. `static assert` forces DMD's own frontend to
+// evaluate `f()` via genuine CTFE regardless of which backend later
+// executes the rest of the module, so this fixture needs no `Ctfe`
+// omission -- unlike the runtime half above, it holds identically for
+// every backend.
+static foreach (backend; Matrix!()) {
+    @("identifier.ctfeIsTrueAtCompileTime." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            unittest {
+                bool f() {
+                    return __ctfe;
+                }
+                static assert(f() == true);
+            }
+        });
+    }
+}
+
 // A struct method call whose receiver is an implicit dereference of a
-// pointer-returning call (`p().get()`, DMD shape `DotVarExp(PtrExp(CallExp),
-// get)`) must evaluate the side-effecting `p()` operand exactly once.
-// `runMemberFunction` rebinds `this` to the receiver's address for a
-// writable-location receiver (commit b8b0e42f's `isWritableLocation` PtrExp
-// arm, needed by the opAssign/opOpAssign-through-pointer and emplace-scalar
-// fixtures above); that rebind used to call `addressOfExpression`, whose own
-// `PtrExp` arm independently re-ran `runExpression(pointer.e1)`, running
-// `p()` a second time after the call site's own receiver evaluation already
-// ran it once.
-//
-// Ctfe, Bytecode, and LLVMJit are omitted here for reasons independent of
-// that Interpreter-only fix: Ctfe cannot read a mutable module-scope
-// variable at compile time (the same model mismatch as the
-// `ctfeIsFalseAtRuntime` fixture just above); Bytecode's core does not yet
-// support `++` on a module-scope variable ("Unsupported post-increment in
-// bytecode core"); LLVMJit returns a stale `0` for `calls`, a pre-existing,
-// unconfirmed gap in that backend's codegen for this shape.
+// pointer-returning call (`p().get()`) must evaluate the side-effecting
+// `p()` operand exactly once, matching real D's evaluation-order guarantee.
 static foreach (backend; Matrix!(
     Omit!(Ctfe, Because.diverges,
         "Ctfe runs the unittest body through DMD's own CTFE interpreter, " ~
@@ -11102,15 +11063,9 @@ static foreach (backend; Matrix!(
 }
 
 // A struct method call whose receiver is a side-effecting index expression
-// (`a[i++].method()`, DMD shape `DotVarExp(IndexExp(VarExp, PostExp), method)`)
-// must evaluate `i++` exactly once. `runMemberFunction`'s `isWritableLocation`
-// `IndexExp` arm rebinds `this` by calling `addressOfExpression` on the
-// receiver, which used to re-run `index.e2` (`arrayPointer`'s `IndexExp`
-// branch) independently of the call site's own receiver evaluation -- the
-// same double-evaluation hazard
-// `methodCallThroughReturnedPointerEvaluatesReceiverOnce` above fixed for a
-// `PtrExp` receiver (`ai/plans/value.md` item 4). Fixed by composing the
-// element's address once at the call site and reusing it for the rebind.
+// (`a[i++].method()`) must evaluate `i++` exactly once -- the same
+// evaluation-order guarantee as the pointer-returning-call receiver above,
+// for an indexed receiver instead.
 static foreach (backend; Matrix!(
     Omit!(Ctfe, Because.diverges,
         "Ctfe runs the unittest body through DMD's own CTFE interpreter, " ~
@@ -11145,15 +11100,9 @@ static foreach (backend; Matrix!(
 }
 
 // The static-array counterpart of the fixture above, with no explicit
-// initializer (`S[2] arr;`): a module-scope dataseg variable never runs
-// `storeBinding` (and so never populates `locals`) until something reads or
-// writes it, but `arrayPointer`'s `VarExp` fallback required a `locals`
-// entry before it would even consider `hasMirrorSlot`'s dataseg/owning-slot
-// address -- so the very first address-taking index into an
-// un-read/-written static array (`arr[i++].method()`'s receiver rebind)
-// threw "Unsupported eval expression: address" instead of composing the
-// module-table element address that already exists. Fixed by checking
-// `hasMirrorSlot` before requiring a `locals` entry.
+// initializer (`S[2] arr;`): the very first read, write, or address-taking
+// index into a never-touched module-scope static array must still resolve
+// to real storage, not fail merely because nothing has touched it yet.
 static foreach (backend; Matrix!(
     Omit!(Ctfe, Because.diverges,
         "Ctfe runs the unittest body through DMD's own CTFE interpreter, " ~
@@ -11186,19 +11135,8 @@ static foreach (backend; Matrix!(
 
 // The same first-touch, uninitialized module-scope static array as the
 // fixture above, but with an element type whose `.init` pattern is non-zero
-// (`int x = 7;` rather than `int x;`). Fixed on Interpreter:
-// `materializeDatasegInitializer` (`impl.d`) used the hand-rolled
-// `defaultValue` free function, which recurses on each struct field's own
-// TYPE default and silently drops a field's own default initializer; DMD's
-// own `defaultInitLiteral` is now the source (it already walks
-// `VarDeclaration._init` per field), and the write is gated on
-// `moduleTable.has(variable)` -- the one fact that stays correct across a
-// function call's forked child `Walker` -- rather than the per-activation
-// `mirrorEstablished` map, which does not merge back into the caller and
-// would otherwise re-clobber an already-mutated dataseg block on every
-// later call. LLVMJit still fails the same fixture, with its own garbage
-// value (`458753 != 8`) rather than a zero-filled default -- an
-// independent, unconfirmed default-static-initialization gap.
+// (`int x = 7;` rather than `int x;`): the untouched element must read back
+// its declared default, not zeroed memory.
 static foreach (backend; Matrix!(
     Omit!(Ctfe, Because.diverges,
         "Ctfe runs the unittest body through DMD's own CTFE interpreter, " ~
@@ -11235,15 +11173,7 @@ static foreach (backend; Matrix!(
 
 // A struct method call through a receiver that is itself a nested/
 // multi-dimensional static-array index (`m[i][j].inc()` on `S[2][2] m`)
-// used to lose the mutation -- it landed on a detached row copy rather than
-// the real backing storage, because `arrayPointer` (`interpreter/impl.d`)
-// had no case recursing into a nested `IndexExp` receiver and instead
-// composed the element address from `runExpression(index.e1)`'s value --
-// a copy, per `place_value.readValue`'s array arm. Fixed by recursing
-// through `arrayPointer` for an `IndexExp` receiver exactly as the
-// existing `VarExp`/`DotVarExp` cases do. The idempotent index variant
-// below (`m[0][0]`, run once, no side-effecting subscript) is enough to
-// exercise it.
+// must mutate the real backing storage, not a detached copy of the row.
 static foreach (backend; Matrix!(
     Omit!(Ctfe, Because.diverges,
         "Ctfe runs the unittest body through DMD's own CTFE interpreter, " ~
@@ -11272,18 +11202,9 @@ static foreach (backend; Matrix!(
 }
 
 // `&a[0][1]` on `int[][] a` (a dynamic array of dynamic arrays): the
-// `IndexExp` receiver arm added for
-// `methodCallThroughNestedStaticArrayIndexedReceiverMutatesBackingStorage`
-// above recurses `arrayPointer(a[0], 1)`, whose own `VarExp` arm composes
-// `element` as the address of `a[0]`'s *slice header* (`a[0]` is itself a
-// dynamic array, `{length, ptr}`), then applied a raw
-// `element.pointerOffsetBy(offset * elemSize)` -- landing inside that
-// 16-byte header instead of the row's actual data. Both the `VarExp` arm
-// and the `IndexExp` arm now compose through
-// `Place(element.pointerAddress, array.type).index(offset)` instead, which
-// dereferences a dynamic row's slice header before striding (exactly what
-// the pre-existing `arrayValue` fallthrough a few lines down already did,
-// per its own neighbouring comment). SystemLinker is the oracle.
+// address of an element inside a row that is itself a dynamic array must
+// land on the row's actual data, not inside the row's own
+// `{length, ptr}` slice header. SystemLinker is the oracle.
 static foreach (backend; Matrix!()) {
     @("pointer.addressOfElementOfDynamicArrayRowOfDynamicArrayOfArrays." ~
         backend.stringof)
@@ -11301,21 +11222,11 @@ static foreach (backend; Matrix!()) {
     }
 }
 
-// bbf236db fixed the composition when the FINAL index applied is non-zero
-// (`&a[0][1]` above), by routing through `Place(...).index(offset)` instead
-// of a raw byte offset -- but left an `if (offset == 0) return element;`
-// early return in place in the very same `VarExp`/`IndexExp` receiver arms.
-// `element` there is `index.e1[outerOffset]`'s own address; for a
-// dynamic-array row that is the row's `{length, ptr}` slice header address,
-// NOT its element-0 data address, so a caller wanting "address of this
-// element" (every recursive `arrayPointer` caller) got the header's address
-// back whenever the final index of a nested chain happened to be `0`,
-// landing a write inside the row's own length/ptr fields instead of its
-// data. `arrayPointer` now takes an explicit `selfAddress` flag: `true` only
-// for the single top-level `&expr[i]` entry point (where "the address of
-// `element`" and "the address of this whole expression" really do coincide,
-// by definition), `false` (always index through `element`, even at offset
-// 0) everywhere else. SystemLinker is the oracle for both fixtures below.
+// The same shape as the fixture above, but the FINAL index applied is `0`
+// (`&a[0][0]`): element 0's address must still be the row's actual data,
+// not the row's own slice-header address, even though "index 0" can look
+// like "no offset needed." SystemLinker is the oracle for both fixtures
+// below.
 static foreach (backend; Matrix!()) {
     @("pointer.addressOfFinalZeroIndexOfDynamicArrayRowOfDynamicArray." ~
         backend.stringof)
@@ -11336,10 +11247,7 @@ static foreach (backend; Matrix!()) {
 }
 
 // Same shape one level deeper (`a[0][1][0]`, the FINAL index of a
-// triple-nested chain is `0`). Independent, unconfirmed gap: the bytecode
-// core has no support at all yet for address-of through two levels of
-// `IndexExp` receiver recursion (`"Unsupported expression in bytecode
-// core: &a[0][1][0]"`), unrelated to the Interpreter fix above.
+// triple-nested chain is `0`).
 static foreach (backend; Matrix!(
     Omit!(Bytecode, Because.unconfirmed,
         "\"Unsupported expression in bytecode core: &a[0][1][0]\" -- no " ~
@@ -11365,14 +11273,10 @@ static foreach (backend; Matrix!(
     }
 }
 
-// Well-behaved neighbour of the fix above, proving `selfAddress` did not
-// regress the case it must keep working: `&a[0]` itself on a dynamic array
-// of dynamic arrays. The top-level entry point's `selfAddress = true` must
-// still return `a[0]`'s own slice-header address (a pointer-to-`int[]`),
-// not drill one level further into `a[0][0]`. Independent, unconfirmed gap:
-// the bytecode core does not yet compose this address correctly either
-// (`(*p)[0]` reads back `0` instead of `1`), unrelated to the Interpreter
-// fix above.
+// A well-behaved neighbour of the fixtures above: `&a[0]` itself on a
+// dynamic array of dynamic arrays must yield `a[0]`'s own slice-header
+// address (a pointer-to-`int[]`), not drill one level further into
+// `a[0][0]`.
 static foreach (backend; Matrix!(
     Omit!(Bytecode, Because.unconfirmed,
         "`&a[0]` on a dynamic array of dynamic arrays does not yet compose " ~
@@ -11403,12 +11307,7 @@ static foreach (backend; Matrix!(
 // (`int[3][2]`) has no slice header to dereference at any level, so
 // `selfAddress` vs. always-`.index` makes no observable difference there;
 // this pins that indexing through a fully static chain, including a final
-// zero index, still lands on the right byte. `Ctfe` can never run this one:
-// DMD's own CTFE engine permanently refuses to reinterpret a nested
-// static-array element's address as a pointer (confirmed independently of
-// quickbite -- `dmd -unittest` on the equivalent `enum` gives "Error:
-// reinterpreting cast from `int[3][2]` to `int*` is not supported in
-// CTFE").
+// zero index, still lands on the right byte.
 static foreach (backend; Matrix!(
     Omit!(Ctfe, Because.inexpressible,
         "DMD's own CTFE engine refuses to reinterpret a nested " ~
@@ -11432,15 +11331,10 @@ static foreach (backend; Matrix!(
     }
 }
 
-// `arrayPointer`'s `array.isIndexExp` arm has a `DotVarExp` receiver branch
-// (`s.a[i]`, `s` a struct local, `a` a dynamic-array field) that was never
-// updated by 655eec7a's `selfAddress` split alongside its `VarExp` and
-// `IndexExp` sibling arms right above it: it returned `field`'s own address
-// (i.e. `s.a[outerOffset]`'s own address, one level short of the real
-// element for a row that is itself a dynamic array) unconditionally,
-// ignoring both `selfAddress` and `offset`. A non-zero final index landed
-// the write inside the row's own `{length, ptr}` slice-header bytes instead
-// of its data. SystemLinker is the oracle.
+// The same slice-header-vs-data-address hazard as the fixtures above, but
+// for a dynamic-array row reached through a struct field (`s.a[i]`) rather
+// than a plain local. A non-zero final index must land the write on the
+// row's actual data. SystemLinker is the oracle.
 static foreach (backend; Matrix!()) {
     @("pointer.addressOfFinalNonZeroIndexOfDotVarDynamicArrayRow." ~
         backend.stringof)
@@ -11461,10 +11355,8 @@ static foreach (backend; Matrix!()) {
     }
 }
 
-// Same `DotVarExp` receiver arm, final index `0` -- the same
-// final-index-zero hazard 655eec7a fixed for the `VarExp`/`IndexExp` arms:
-// `field`'s own address (the row's slice-header address) must not be
-// returned as element 0's data address.
+// Same field-reached row, final index `0`: element 0's data address must
+// not be conflated with the row's own slice-header address.
 static foreach (backend; Matrix!()) {
     @("pointer.addressOfFinalZeroIndexOfDotVarDynamicArrayRow." ~
         backend.stringof)
@@ -11485,21 +11377,10 @@ static foreach (backend; Matrix!()) {
     }
 }
 
-// A struct method call whose receiver is a side-effecting index expression
-// NESTED under another index (`m[i++][1].bump()`, `m[i++]` itself an
-// `IndexExp` composing a further `IndexExp`) evaluates `i++` twice and
-// mutates the wrong element, instead of once. `runCallExpression`'s
-// `DotVarExp` receiver arm composes the receiver address once via
-// `addressOfExpression(dot.e1, EXP.address)` (the fix behind
-// `struct.methodCallThroughIndexedReceiverEvaluatesIndexOnce` above), but
-// `arrayPointer`'s own nested-`IndexExp` arm (`index.e1.isIndexExp`)
-// unconditionally evaluates `index.e1` once for its own `arrayValue`/
-// length-var bookkeeping, then independently recurses into
-// `arrayPointer(index.e1, outerOffset, op)` to compose the element
-// address -- re-running any side effect nested inside `index.e1` a second
-// time. The single-level `arr[i++].method()` fix does not cover this
-// doubly-nested shape. Pre-existing gap, confirmed red on master too;
-// `ai/plans/value.md` item 4. SystemLinker is the oracle.
+// The same "evaluate a side-effecting index exactly once" guarantee as
+// `struct.methodCallThroughIndexedReceiverEvaluatesIndexOnce` above, but
+// for an index NESTED under another index (`m[i++][1].bump()`). SystemLinker
+// is the oracle.
 static foreach (backend; Matrix!(
     Omit!(Ctfe, Because.diverges,
         "Ctfe runs the unittest body through DMD's own CTFE interpreter, " ~
@@ -11536,20 +11417,10 @@ static foreach (backend; Matrix!(
     }
 }
 
-// `&s.inner.a[i]` -- an address-of through a NESTED `DotVarExp` receiver
-// (`s.inner` is itself a struct, `.a` is that inner struct's static-array
-// field) with a runtime index. `arrayPointer`'s `IndexExp` arm's `DotVarExp`
-// receiver branch used to guard on `field.e1.isVarExp !is null` (i.e. only a
-// direct `s.a[i]` shape, one level of field access, per
-// `pointer.addressOfFinalNonZeroIndexOfDotVarDynamicArrayRow` above); a
-// doubly-nested receiver like `s.inner.a[i]` (`field.e1` is itself a
-// `DotVarExp`, not a `VarExp`) fell through to a native-aggregate fallback
-// that composed the address from a detached copy of `runExpression`'s
-// result rather than the real backing storage inside `s`. Fixed on the
-// Interpreter by delegating that shape to `lvalue_place.placeOfLvalue`,
-// which already recurses through an arbitrarily nested `DotVarExp`/`VarExp`
-// chain without re-evaluating any side effect. `ai/plans/value.md` item 4.
-// SystemLinker is the oracle.
+// `&s.inner.a[i]` -- an address-of through a NESTED field access (`s.inner`
+// is itself a struct, `.a` is that inner struct's static-array field) with
+// a runtime index must land on the real backing storage inside `s`, not a
+// detached copy. SystemLinker is the oracle.
 static foreach (backend; Matrix!(
     Omit!(Ctfe, Because.diverges,
         "Ctfe runs the unittest body through DMD's own CTFE interpreter, " ~
@@ -11581,22 +11452,11 @@ static foreach (backend; Matrix!(
     }
 }
 
-// `&arr[i++].mid.a[j]` -- the same doubly-nested `DotVarExp` receiver as
-// `pointer.addressOfDoublyNestedDotVarStaticArrayElement` above, but this
-// time the receiver's OWN chain runs through an `IndexExp` with a
-// side-effecting index (`arr[i++]`). `arrayPointer`'s `IndexExp` arm
-// unconditionally evaluates its whole receiver early
-// (`runExpression(index.e1)`, needed for `$` support and a native-aggregate
-// fallback) before ever reaching the doubly-nested-`DotVarExp` branch that
-// delegates to `lvalue_place.placeOfLvalue` to compose the address --  and
-// `placeOfLvalue` evaluates that same `i++` a second time while resolving
-// the chain's address, since it has no way to know the receiver was already
-// evaluated once. `i` reads back 2 instead of 1, and the composed pointer
-// targets `arr[1]` instead of `arr[0]`. Fixed by detecting -- from syntax
-// alone, before evaluating anything -- whether the doubly-nested receiver's
-// chain contains an `IndexExp`, and if so resolving the whole address
-// through a single `placeOfLvalue` walk instead of evaluating the receiver
-// twice. SystemLinker is the oracle.
+// `&arr[i++].mid.a[j]` -- the same nested-field address-of as
+// `pointer.addressOfDoublyNestedDotVarStaticArrayElement` above, but the
+// receiver's OWN chain contains a side-effecting index (`arr[i++]`), which
+// must still be evaluated exactly once when composing the address.
+// SystemLinker is the oracle.
 static foreach (backend; Matrix!(
     Omit!(Ctfe, Because.diverges,
         "Ctfe runs the unittest body through DMD's own CTFE interpreter, " ~
@@ -11632,17 +11492,59 @@ static foreach (backend; Matrix!(
     }
 }
 
-// `&arr[0].mid.a[$ - 1]` -- the same doubly-nested `DotVarExp`-receiver,
-// side-effecting-index-chain shape as
+// Same nested side-effecting-index shape as
+// `pointer.addressOfDoublyNestedDotVarStaticArrayElementThroughSideEffectingIndex`
+// above, but `i` starts out of bounds for `arr[i++]` rather than in bounds:
+// the out-of-range access must raise the same `RangeError` real D raises,
+// with `i` incremented exactly once -- not silently succeed against a
+// stale, already-incremented index as if nothing were wrong. SystemLinker
+// is the oracle.
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.diverges,
+        "Ctfe runs the unittest body through DMD's own CTFE interpreter, " ~
+        "which cannot read the mutable module-scope variables `arr`/`i`/" ~
+        "`j` at compile time"),
+    Omit!(Bytecode, Because.unconfirmed,
+        "no support yet for address-of through a doubly-nested `DotVarExp` " ~
+        "receiver in the bytecode core, same gap as " ~
+        "addressOfDoublyNestedDotVarStaticArrayElement above"),
+    Omit!(LLVMJit, Because.unconfirmed,
+        "independent, unconfirmed gap: address-of through a doubly-nested " ~
+        "`DotVarExp` receiver in the JIT backend, same gap as " ~
+        "addressOfDoublyNestedDotVarStaticArrayElement above"),
+)) {
+    @("pointer.addressOfDoublyNestedDotVarStaticArrayElementThroughOutOfBoundsSideEffectingIndex." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            import core.exception: RangeError;
+            struct Mid { int[3] a; }
+            struct Outer { Mid mid; }
+            Outer[2] arr;
+            int i = -1;
+            int j = 1;
+            unittest {
+                arr[0].mid.a = [10, 20, 30];
+                arr[1].mid.a = [40, 50, 60];
+                bool caught = false;
+                try {
+                    auto p = &arr[i++].mid.a[j];
+                } catch (RangeError) {
+                    caught = true;
+                }
+                assert(caught);
+                assert(i == 0);
+            }
+        });
+    }
+}
+
+// `&arr[0].mid.a[$ - 1]` -- the same nested address-of shape as
 // `pointer.addressOfDoublyNestedDotVarStaticArrayElementThroughSideEffectingIndex`
 // above, but exercising `$` at the OUTERMOST index position (`a[$ - 1]`,
-// where `a` is a dynamic array). The new `arrayPointer` branch that
-// resolves the whole address through a single `lvalue_place.placeOfLvalue`
-// walk skips the ordinary eager `runExpression(index.e1)` -- the only thing
-// that used to bind `index.lengthVar` from the receiver's length before
-// `$` is evaluated. Left unbound, `$` reads back 0, so `$ - 1` wraps to
-// `size_t.max` and `Place.index` throws "index out of range for slice
-// place" instead of resolving element 2. SystemLinker is the oracle.
+// where `a` is a dynamic array): `$` must bind to that array's real length.
+// SystemLinker is the oracle.
 static foreach (backend; Matrix!(
     Omit!(Bytecode, Because.unconfirmed,
         "no support yet for address-of through a doubly-nested `DotVarExp` " ~
@@ -11670,15 +11572,10 @@ static foreach (backend; Matrix!(
     }
 }
 
-// `&arr[$ - 1].mid.a[0]` -- `$` bound inside a CHAIN `IndexExp` (`arr[$ - 1]`)
-// that `arrayPointer`'s new side-effecting-index branch itself resolves
-// through `lvalue_place.placeOfLvalue`'s own recursion (as opposed to the
-// OUTER index position the fixture above exercises). `placeOfLvalue`'s
-// `evalIndex` callback evaluates `arr[$ - 1]`'s own `$ - 1` the same way it
-// evaluates a side-effecting chain index -- with `index.lengthVar` never
-// bound to `arr`'s length first, since the ordinary eager
-// `runExpression(index.e1)` that used to provide it is skipped for this
-// shape. SystemLinker is the oracle.
+// `&arr[$ - 1].mid.a[0]` -- `$` bound inside the receiver's OWN index
+// (`arr[$ - 1]`, as opposed to the outer index position the fixture above
+// exercises) must still bind to `arr`'s real length. SystemLinker is the
+// oracle.
 static foreach (backend; Matrix!(
     Omit!(Bytecode, Because.unconfirmed,
         "no support yet for address-of through a doubly-nested `DotVarExp` " ~
@@ -11707,15 +11604,9 @@ static foreach (backend; Matrix!(
     }
 }
 
-// `&arr[$ - 1].mid.a` -- `$` bound inside a CHAIN `IndexExp` (`arr[$ - 1]`,
-// not the outermost index) of a doubly-nested `DotVarExp` receiver whose
-// last leg (`.a`, a scalar field) is not itself an `IndexExp`, so this
-// reaches `addressOfExpression`'s own doubly-nested-`DotVarExp` special
-// case (its `dot.e1.isIndexExp` arm) rather than `arrayPointer`'s `IndexExp`
-// arm directly -- the same missing-`$`-binding pattern one level up:
-// `elementIndex = runExpression(index.e2).asLong` there evaluates `$ - 1`
-// with `index.lengthVar` never bound to `arr`'s length first. SystemLinker
-// is the oracle.
+// `&arr[$ - 1].mid.a` -- the same receiver-index `$`-binding as above, but
+// the chain's last leg (`.a`, a scalar field) is not itself indexed.
+// SystemLinker is the oracle.
 static foreach (backend; Matrix!(
     Omit!(Bytecode, Because.unconfirmed,
         "no support yet for address-of through a doubly-nested `DotVarExp` " ~
@@ -11744,17 +11635,10 @@ static foreach (backend; Matrix!(
     }
 }
 
-// `makeHolder().arr[1].mid.a[1].doubled()` -- a method call whose receiver
-// is a doubly-nested `DotVarExp`/`IndexExp` chain (`arrayPointer`'s new
-// side-effecting-index branch's own shape) rooted in a `CallExp`
-// (`makeHolder()`), a receiver shape `lvalue_place.placeOfLvalue` does not
-// support: its `DotVarExp` arm refuses once its own receiver recursion
-// bottoms out at the `CallExp`, before evaluating any index. The
-// pre-existing neighbouring doubly-nested-`DotVarExp` branch (no
-// side-effecting index) wraps its own `placeOfLvalue` call in try/catch and
-// falls through to the old eager native-aggregate route for exactly this
-// reason; the new branch must do the same rather than let the refusal
-// propagate as an uncaught exception. SystemLinker is the oracle.
+// `makeHolder().arr[1].mid.a[1].doubled()` -- the same nested indexed-field
+// method-call receiver as the fixtures above, but rooted in a function
+// call's return value rather than a named variable. SystemLinker is the
+// oracle.
 static foreach (backend; Matrix!(
     Omit!(Bytecode, Because.unconfirmed,
         "no support yet for address-of through a doubly-nested `DotVarExp` " ~
@@ -11790,26 +11674,10 @@ static foreach (backend; Matrix!(
 }
 
 // `&arr[k].mid.a[1]` where `arr` is a MODULE-SCOPE (`__gshared`/static)
-// dataseg variable whose declared array-literal initializer
-// (`Outer[2] arr = [Outer(Mid([10, 20, 30])), Outer(Mid([40, 50, 60]))];`)
-// has never been touched before this expression runs -- the FIRST-EVER
-// touch of `arr` is through `arrayPointer`'s own new side-effecting-index-
-// chain branch above (the same branch
-// `addressOfDoublyNestedDotVarStaticArrayElementThroughSideEffectingIndex`
-// exercises, but that fixture writes `arr[0].mid.a`/`arr[1].mid.a` first,
-// which already establishes `arr`'s module-table block through the
-// ordinary write path before the address-of ever runs). That branch's
-// `placeOfLvalue` call resolved its base address through
-// `addressableBindingBase`, which went straight to `bindingPlace` ->
-// `ModuleTable.storageFor` and lazily allocated `arr`'s module-table block
-// as raw zeroed bytes, WITHOUT ever running `materializeDatasegInitializer`
-// first -- unlike the ordinary `VarExp` address-of arm
-// (`symbolOffsetLocalValue`), which always materializes before
-// reading/addressing a dataseg variable. `*p` read back `0` instead of
-// `20`, silently, with no exception. Fixed by having `addressableBindingBase`
-// itself materialize a dataseg variable's declared initializer before
-// handing out its address, mirroring the pattern every other address-of
-// caller already follows. SystemLinker is the oracle.
+// variable with a declared array-literal initializer, and this
+// address-of expression is the FIRST-EVER touch of `arr`: the element
+// must read back its declared initial value, not zeroed memory.
+// SystemLinker is the oracle.
 static foreach (backend; Matrix!(
     Omit!(Ctfe, Because.diverges,
         "Ctfe runs the unittest body through DMD's own CTFE interpreter, " ~
@@ -11842,22 +11710,10 @@ static foreach (backend; Matrix!(
 }
 
 // The dynamic-array sibling of the fixture above (`int[] a` instead of
-// `int[3] a`): the same never-materialized module-table block is raw
-// zeroed bytes, so the slice header `arr[k].mid.a` reads back as a
-// zero-length null slice instead of its declared `[10, 20, 30]` contents,
-// and `Place.index`'s bounds check on that zeroed header throws "index out
-// of range for slice place" instead of resolving element 1 -- a different
-// symptom (a spurious exception rather than a silently wrong value) from
-// the exact same root cause. The `arrayPointer` branch's own try/catch
-// then falls back to the old eager path, but by then `arr`'s block has
-// ALREADY been allocated (as zeroed bytes) by the failed attempt, so
-// `materializeDatasegInitializer`'s `moduleTable.has(variable)` adoption
-// branch would treat "block exists" as "already correctly initialized" and
-// adopt the zeroes instead of running the real initializer -- the fallback
-// path would read back `0` too, not throw. Fixed by the same
-// `addressableBindingBase` change as the fixture above, which materializes
-// before any allocation-without-materialization can happen, mooting both
-// the bounds throw and the adoption follow-on. SystemLinker is the oracle.
+// `int[3] a`): the same first-touch guarantee, but for a slice-typed field,
+// where an uninitialized read would surface as a zero-length null slice
+// (and a bounds exception on indexing it) rather than a silently wrong
+// scalar. SystemLinker is the oracle.
 static foreach (backend; Matrix!(
     Omit!(Ctfe, Because.diverges,
         "Ctfe runs the unittest body through DMD's own CTFE interpreter, " ~
@@ -11890,19 +11746,10 @@ static foreach (backend; Matrix!(
 }
 
 // `(*next() = P(10)).bump()` -- a method call chained off an assignment
-// whose own target is a side-effecting `PtrExp` (`*next()`, `next()`
-// advancing `calls` and returning a fresh element each time). `bump()`'s
-// receiver expression is the assignment itself; resolving `this`'s address
-// by peeling the assignment's target (`impl.d`'s `assignmentTarget`) and
-// re-deriving its address via `addressOfExpression` would re-run `next()` a
-// second time -- corrupting state silently (`calls` reads back 2, and
-// `bump()` lands on `arr[1]` instead of `arr[0]`). Unlike the `this.payload
-// = args` shape `assignmentTarget` exists for, there is no
-// `precomputedReceiverPointerAddress` for a target recovered by peeling (that
-// precompute only covers a bare `PtrExp`/`IndexExp` *receiver expression
-// itself*), so `runMemberFunction` refuses this shape outright with a clear
-// exception rather than risk the double evaluation. SystemLinker is the
-// oracle.
+// whose own target is a side-effecting pointer dereference (`*next()`,
+// `next()` advancing `calls` and returning a fresh element each time) must
+// evaluate `next()` exactly once, matching real D's evaluation-order
+// guarantee. SystemLinker is the oracle.
 static foreach (backend; Matrix!(
     Omit!(Ctfe, Because.diverges,
         "Ctfe runs the unittest body through DMD's own CTFE interpreter, " ~

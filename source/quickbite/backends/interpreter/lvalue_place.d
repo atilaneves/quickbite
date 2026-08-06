@@ -1,6 +1,21 @@
 module quickbite.backends.interpreter.lvalue_place;
 
 
+// Thrown only for an lvalue shape `placeOfLvalue` itself does not support --
+// never for a failure raised while evaluating a subexpression it walks
+// through (`resolveBase`, `evalIndex`, `onIndexBase` can all raise their own
+// exceptions, guest `InterpretedException` included, and those must propagate
+// untouched). A caller that falls back to another resolution path on
+// "unsupported shape" needs to catch exactly this type, not `Exception` --
+// catching the latter would also swallow a real guest error (e.g. a bounds
+// violation) raised mid-walk by one of those delegates.
+public class UnsupportedLvalueShapeException: Exception {
+    this(string message, string file = __FILE__, size_t line = __LINE__) pure nothrow @safe {
+        super(message, file, line);
+    }
+}
+
+
 private:
 
 
@@ -63,7 +78,7 @@ public imported!"quickbite.backends.interpreter.place".Place placeOfLvalue(
     if (auto var = expr.isVarExp) {
         auto variable = varExpDeclaration(var).isVarDeclaration;
         if (variable is null)
-            throw new Exception(
+            throw new UnsupportedLvalueShapeException(
                 "quickbite.backends.interpreter.lvalue_place.placeOfLvalue: "
                 ~ "VarExp does not resolve to a variable",
             );
@@ -89,7 +104,7 @@ public imported!"quickbite.backends.interpreter.place".Place placeOfLvalue(
     if (auto this_ = expr.isThisExp) {
         auto variable = thisExpDeclaration(this_);
         if (variable is null)
-            throw new Exception(
+            throw new UnsupportedLvalueShapeException(
                 "quickbite.backends.interpreter.lvalue_place.placeOfLvalue: "
                 ~ "ThisExp has no `this` variable",
             );
@@ -120,7 +135,7 @@ public imported!"quickbite.backends.interpreter.place".Place placeOfLvalue(
     if (auto dot = expr.isDotVarExp) {
         auto field = dotVarExpDeclaration(dot).isVarDeclaration;
         if (field is null)
-            throw new Exception(
+            throw new UnsupportedLvalueShapeException(
                 "quickbite.backends.interpreter.lvalue_place.placeOfLvalue: "
                 ~ "DotVarExp does not resolve to a field variable",
             );
@@ -131,7 +146,7 @@ public imported!"quickbite.backends.interpreter.place".Place placeOfLvalue(
         if (receiver.type.isTypeClass !is null)
             return receiver.deref.field(field);
 
-        throw new Exception(
+        throw new UnsupportedLvalueShapeException(
             "quickbite.backends.interpreter.lvalue_place.placeOfLvalue: "
             ~ "DotVarExp receiver is not a struct- or class-typed place",
         );
@@ -159,7 +174,7 @@ public imported!"quickbite.backends.interpreter.place".Place placeOfLvalue(
     if (auto cast_ = expr.isCastExp)
         return placeOfLvalue(castExpOperand(cast_), resolveBase, evalIndex, onIndexBase);
 
-    throw new Exception(
+    throw new UnsupportedLvalueShapeException(
         "quickbite.backends.interpreter.lvalue_place.placeOfLvalue: "
         ~ "unsupported lvalue expression",
     );
@@ -186,14 +201,14 @@ private imported!"quickbite.backends.interpreter.place".Place symOffTarget(
 
     auto variable = symOffExpDeclaration(symbol).isVarDeclaration;
     if (variable is null)
-        throw new Exception(
+        throw new UnsupportedLvalueShapeException(
             "quickbite.backends.interpreter.lvalue_place.symOffTarget: "
             ~ "SymOffExp does not resolve to a variable",
         );
 
     auto pointer = symOffExpType(symbol).isTypePointer;
     if (pointer is null)
-        throw new Exception(
+        throw new UnsupportedLvalueShapeException(
             "quickbite.backends.interpreter.lvalue_place.symOffTarget: "
             ~ "SymOffExp's own type is not a pointer to its pointee",
         );
