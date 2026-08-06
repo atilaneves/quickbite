@@ -389,6 +389,23 @@ row, not a guarantee. Reconfirm against the source before relying on it.
   and writes back only the bytes it touched. `Ctfe` cannot read or write
   dataseg storage at all; `Interpreter` has a separate pre-existing gap where a
   write through a pointer into dataseg storage does not mirror back.
+  Compound assignment (`+=`, `-=`, and every other operator sharing
+  `compileLocalIntegerCompoundAssign`) has no module-scalar fallback:
+  `compoundAssignLocalSlot` only resolves `_locals`. Since DMD desugars
+  `++x`/`--x` to `x += 1`/`x -= 1`, pre-increment/decrement on a module-scope
+  scalar shares this gap (post-increment/decrement, `x++`/`x--`, does not).
+  Next candidate: give `compileLocalIntegerCompoundAssign` the same
+  module-scalar fallback `compilePostIncrement` already has.
+- A module-scope static array of structs has no runtime-index element
+  resolution for reads: `staticArrayOffsetOf` only checks `_staticArrayLocals`
+  and struct fields, so `arr[i++].method()` on a module-scope `S[2] arr`
+  throws "Unsupported struct value in bytecode core: arr[cast(ulong)i++]"
+  regardless of the index expression itself
+  (`struct.methodCallThroughIndexedReceiverIntoUninitializedStaticArray`,
+  `...WithNonZeroInit`). Taking the address of a module-scope struct (`&s`)
+  is a separate, related gap -- `tryAddressOfSymbol`'s
+  `moduleScalarVariableOrNull` declines `Tstruct`
+  (`struct.methodCallThroughReturnedPointerEvaluatesReceiverOnce`).
 - Whole static-array values use `compileStaticArrayValueInto` at every
   aggregate store boundary; do not route a `Tsarray` literal through the
   struct-only operand resolver.

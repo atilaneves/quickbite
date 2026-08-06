@@ -11037,7 +11037,9 @@ static foreach (backend; Matrix!(
         "which cannot read the mutable module-scope variable `calls` at " ~
         "compile time"),
     Omit!(Bytecode, Because.unconfirmed,
-        "bytecode core does not yet support `++` on a module-scope variable"),
+        "\"Unsupported expression in bytecode core: & s\" -- taking the " ~
+        "address of a module-scope struct variable is unsupported; " ~
+        "independent of `calls++`, which bytecode core now handles"),
     Omit!(LLVMJit, Because.unconfirmed,
         "returns a stale 0 for `calls`; root cause not investigated, " ~
         "independent of the Interpreter-only fix this fixture targets"),
@@ -11071,8 +11073,6 @@ static foreach (backend; Matrix!(
         "Ctfe runs the unittest body through DMD's own CTFE interpreter, " ~
         "which cannot read the mutable module-scope variable `i` at " ~
         "compile time"),
-    Omit!(Bytecode, Because.unconfirmed,
-        "bytecode core does not yet support `++` on a module-scope variable"),
     Omit!(LLVMJit, Because.unconfirmed,
         "JIT child segfaults (signal 11) on this shape; root cause not " ~
         "investigated, independent of the Interpreter-only fix this " ~

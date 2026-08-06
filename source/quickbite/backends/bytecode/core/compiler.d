@@ -3070,6 +3070,51 @@ private struct Compiler {
             if (auto result = tryMemberRefIndexPostIncrement(call, post))
                 return *result;
 
+        // `x++` where `x` is a module-scope (`__gshared`/`static`) scalar:
+        // its storage lives in `moduleData`, not this function's frame, so
+        // the read-modify-write has to go through `Op.loadModule`/
+        // `Op.storeModule` (the same pair `VarExp`'s read path and plain
+        // `=` assignment already use for a module scalar) instead of the
+        // plain in-place local-slot update below.
+        if (auto variable = post.e1.isVarExp)
+            if (auto declaration = variable.var.isVarDeclaration)
+                if (declaration !in _locals)
+                    if (auto moduleVariable = moduleScalarVariableOrNull(declaration)) {
+                        if (!isIntegerScalar(moduleVariable.type))
+                            throw new Exception(text(
+                                "Unsupported post-increment in bytecode core: ",
+                                expressionChars(post),
+                            ));
+
+                        const lvalueType = moduleVariable.type;
+                        const loaded = allocate(lvalueType);
+                        _code ~= Instruction(
+                            Op.loadModule,
+                            loaded,
+                            moduleVariable.offset,
+                            cast(ushort) size(lvalueType),
+                        );
+                        const result = allocate(lvalueType);
+                        _code ~= Instruction(
+                            Op.copy, result, loaded, cast(ushort) size(lvalueType),
+                        );
+
+                        const increment = compileExpression(post.e2);
+                        const eightByte = lvalueType == ScalarType.long_ ||
+                            lvalueType == ScalarType.ulong_;
+                        const stepOp = post.op == EXP.minusMinus
+                            ? (eightByte ? Op.subInt8 : Op.subInt4)
+                            : (eightByte ? Op.addInt8 : Op.addInt4);
+                        _code ~= Instruction(stepOp, loaded, loaded, increment.offset);
+                        _code ~= Instruction(
+                            Op.storeModule,
+                            loaded,
+                            moduleVariable.offset,
+                            cast(ushort) size(lvalueType),
+                        );
+                        return Operand(result, lvalueType);
+                    }
+
         ushort lvalueSlot;
         auto lvalueType = ScalarType.void_;
         StructField* lvalueField;
