@@ -45,11 +45,7 @@ static foreach (backend; Matrix!(
     operators are worth keeping here because the failure messages encode the
     negated operator.
 +/
-static foreach (backend; Matrix!(
-    Omit!(Bytecode, Because.unconfirmed,
-        "Unsupported struct value in bytecode core: m[$ - rowIndex()][...]" ~
-        " -- independent, unconfirmed gap in the bytecode core"),
-)) {
+static foreach (backend; Matrix!()) {
     @("assertDiagnostic.lessThan." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -11445,7 +11441,11 @@ static foreach (backend; Matrix!(
 // In `m[$ - rowIndex()][$ - columnIndex()]`, the inner index selects a row
 // from `m`, so its `$` is `m.length`; the outer index selects from that row,
 // so its `$` is the row's length. The calls make repeat evaluation observable.
-static foreach (backend; Matrix!()) {
+static foreach (backend; Matrix!(
+    Omit!(Bytecode, Because.unconfirmed,
+        "Unsupported struct value in bytecode core: m[$ - rowIndex()][...]" ~
+        " -- independent, unconfirmed gap in the bytecode core"),
+)) {
     @("struct.methodCallThroughDoublyNestedIndexedReceiverDollarBindsAtEachLevelAndEvaluatesIndicesOnce." ~
         backend.stringof)
     @Tags(backend.stringof)
