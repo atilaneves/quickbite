@@ -79,37 +79,11 @@ private struct Compiler {
     // The one declaration authority. Every declaration is classified once and
     // carries its TypeFacts, storage owner, and representation-specific data.
     private DeclarationRecord[VarDeclaration] _declarations;
-    // Locals whose slot is a static array `T[N]` stored inline in the frame;
-    // the value records the slot offset for indexing and block copies.
-    // Locals whose slot holds a dynamic-array slice descriptor {ptr, length};
-    // the value records the slot offset and the element scalar type, giving the
-    // element size for indexing and heap allocation.
-    // Locals whose slot holds a raw `size_t` pointer value (`T* p`); the value
-    // records the pointed-at element scalar for opcode selection.
-    // `ref` locals whose slot holds a raw pointer to the aliased storage.
-    // Locals whose slot holds a `{double re, double im}` cdouble value.
-    // Locals whose slot holds an 8-byte associative-array handle (`int[int]`):
-    // a 1-based index into the machine's VM-owned map table, 0 until created.
-    // Locals (and by-value parameters) whose slot is a struct `S` stored inline
-    // in the frame at its DMD-computed size and alignment; the value records the
-    // base offset and the struct declaration, giving each field's offset and
-    // type for field access and whole-struct block copies.
-    // Delegate locals (`auto d = () => this.field;`): a 16-byte slot holding a
-    // `{functionIndex, context}` pair and the captured lambda, so `d()` reads
-    // the index and context back and dispatches indirectly.
-    // Lazy parameters are caller-supplied delegate pairs whose targets are
-    // known only at run time.
-    // A delegate-typed parameter's 16-byte `{functionIndex, context}` slot;
-    // unlike a statically classified delegate local, its target is a run-time
-    // value with no known
-    // `FuncDeclaration`, so calling through it uses the declared delegate
-    // type's parameter list rather than a specific callee's layout.
+    private DeclarationRecord _unavailableDeclaration;
+    // The function behind a compiler-generated static AA of delegate values is
+    // not a declaration-root storage decision, so it remains a separate cache.
     private FuncDeclaration[VarDeclaration] _staticDelegateAssocArrays;
     private FuncDeclaration _latestStaticDelegateAssocArrayFunction;
-    // Locals whose 8-byte slot holds a raw `size_t` pointer to a heap-allocated
-    // struct block (`S* p = new S(...)`); the value is the struct declaration,
-    // giving each field's offset and type so `p.field` resolves to a load/store
-    // through the pointer at `ptr + field.offset`.
     // Named catch variables for the narrow Exception/Throwable object surface:
     // each synthetic object exposes native {ptr, length} string descriptors
     // for `msg` and, when a finally throw chains a body exception, `next.msg`.
@@ -414,24 +388,28 @@ private struct Compiler {
                 registerCapturedOffset(parameter, offset);
 
                 if (parameterIsLazy(parameter)) {
-                    declarationValue!(DeclarationKind.lazyDelegate)(parameter) = offset;
-                    declarationValue!(DeclarationKind.lazyDeclaration)(parameter) = true;
+                    registerDeclaration(
+                        parameter, DeclarationRepresentation.lazyDelegate,
+                    ).lazyDelegate = offset;
+                    registerDeclaration(parameter).lazyDeclaration = true;
                     continue;
                 }
 
                 if (parameter.isReference &&
                     !typeFacts(parameter.type).isAggregate) {
-                    declarationValue!(DeclarationKind.scalar)(parameter) = offset;
-                    declarationValue!(DeclarationKind.refPointer)(parameter) =
+                    registerDeclaration(
+                        parameter, referenceRepresentation(parameter.type),
+                    ).scalar = offset;
+                    registerDeclaration(parameter).refPointer =
                         scalarType(parameter.type);
                     if (parameter.type.toBasetype.ty == TY.Tclass)
-                        declarationValue!(DeclarationKind.classPointer)(parameter) =
+                        registerDeclaration(parameter).classPointer =
                             parameter.type.toBasetype.isTypeClass.sym;
                     if (isPointerType(parameter.type))
-                        declarationValue!(DeclarationKind.pointer)(parameter) =
+                        registerDeclaration(parameter).pointer =
                             pointerElementScalar(parameter.type);
                     if (parameter.type.toBasetype.ty == TY.Taarray)
-                        declarationValue!(DeclarationKind.assocArray)(parameter) = true;
+                        registerDeclaration(parameter).assocArray = true;
                     continue;
                 }
 
@@ -450,7 +428,7 @@ private struct Compiler {
                 // passed as an argument keeps its authoritative row storage in
                 // the callee instead of falling back to a flat scalar stride.
                 if (parameter.type.toBasetype.ty == TY.Tarray) {
-                    declarationValue!(DeclarationKind.dynamicArray)(parameter) = DynamicArrayLocal(
+                    registerDeclaration(parameter).dynamicArray = DynamicArrayLocal(
                         offset, dynamicArrayElementType(parameter.type),
                         arrayElementIsArray(parameter.type),
                     );
@@ -460,7 +438,7 @@ private struct Compiler {
                 // A by-value struct parameter is an inline block, tracked like a
                 // struct local so field access resolves against its base offset.
                 if (parameter.type.toBasetype.ty == TY.Tstruct) {
-                    declarationValue!(DeclarationKind.struct_)(parameter) = StructLocal(
+                    registerDeclaration(parameter).struct_ = StructLocal(
                         offset, structDeclarationOf(parameter.type),
                     );
                     continue;
@@ -469,13 +447,13 @@ private struct Compiler {
                 // A by-value static-array parameter is an inline block, tracked
                 // like a static-array local so indexing resolves against it.
                 if (parameter.type.toBasetype.ty == TY.Tsarray) {
-                    declarationValue!(DeclarationKind.staticArray)(parameter) = offset;
+                    registerDeclaration(parameter).staticArray = offset;
                     continue;
                 }
 
                 if (parameter.type.toBasetype.ty == TY.Tclass) {
-                    declarationValue!(DeclarationKind.scalar)(parameter) = offset;
-                    declarationValue!(DeclarationKind.classPointer)(parameter) =
+                    registerDeclaration(parameter).scalar = offset;
+                    registerDeclaration(parameter).classPointer =
                         parameter.type.toBasetype.isTypeClass.sym;
                     continue;
                 }
@@ -486,15 +464,15 @@ private struct Compiler {
                 // pair's own function-index word rather than a statically
                 // known `FuncDeclaration`.
                 if (parameter.type.toBasetype.ty == TY.Tdelegate) {
-                    declarationValue!(DeclarationKind.delegateParameter)(parameter) = offset;
+                    registerDeclaration(parameter).delegateParameter = offset;
                     continue;
                 }
 
-                declarationValue!(DeclarationKind.scalar)(parameter) = offset;
+                registerDeclaration(parameter).scalar = offset;
                 if (parameter.type.toBasetype.ty == TY.Taarray)
-                    declarationValue!(DeclarationKind.assocArray)(parameter) = true;
+                    registerDeclaration(parameter).assocArray = true;
                 if (isPointerType(parameter.type))
-                    declarationValue!(DeclarationKind.pointer)(parameter) =
+                    registerDeclaration(parameter).pointer =
                         pointerElementScalar(parameter.type);
             }
 
@@ -1066,19 +1044,19 @@ private struct Compiler {
             foreach (parameter; *function_.parameters) {
                 if (parameter.ident is null || parameter.ident.toString != name)
                     continue;
-                if (auto element = declarationMetadata!(DeclarationKind.pointer)(parameter))
-                    return Operand(declarationValue!(DeclarationKind.scalar)(parameter), ScalarType.ulong_, true, *element);
+                if (auto element = declarationRecordView(parameter).pointerOrNull)
+                    return Operand(declarationRecord(parameter).scalar, ScalarType.ulong_, true, *element);
                 throw new Exception(text("Unsupported inline asm pointer operand: ", name));
             }
 
         foreach (declaration, record; _declarations) {
-            auto offset = record.metadata!(DeclarationKind.scalar);
+            auto offset = record.scalarOrNull;
             if (record.owner !is _currentFunction || offset is null)
                 continue;
             if (declaration.ident is null ||
                 declaration.ident.toString != name)
                 continue;
-            if (auto element = declarationMetadata!(DeclarationKind.pointer)(declaration))
+            if (auto element = declarationRecordView(declaration).pointerOrNull)
                 return Operand(*offset, ScalarType.ulong_, true, *element);
             throw new Exception(text("Unsupported inline asm pointer operand: ", name));
         }
@@ -1098,7 +1076,7 @@ private struct Compiler {
 
         foreach (declaration, record; _declarations) {
             if (record.owner !is _currentFunction ||
-                record.metadata!(DeclarationKind.scalar) is null)
+                record.scalarOrNull is null)
                 continue;
             if (declaration.ident !is null &&
                 declaration.ident.toString == name) {
@@ -1138,11 +1116,11 @@ private struct Compiler {
 
         const type = declaration.type.toBasetype.ty;
         if (type == TY.Tbool)
-            return Operand(declarationValue!(DeclarationKind.scalar)(declaration), ScalarType.bool_);
+            return Operand(declarationRecord(declaration).scalar, ScalarType.bool_);
         if (type == TY.Tuns32)
-            return Operand(declarationValue!(DeclarationKind.scalar)(declaration), ScalarType.uint_);
+            return Operand(declarationRecord(declaration).scalar, ScalarType.uint_);
         if (type == TY.Tuns64)
-            return Operand(declarationValue!(DeclarationKind.scalar)(declaration), ScalarType.ulong_);
+            return Operand(declarationRecord(declaration).scalar, ScalarType.ulong_);
         throw new Exception(text(
             "Unsupported inline asm operand type: ",
             typeChars(declaration.type),
@@ -1728,8 +1706,8 @@ private struct Compiler {
 
         auto classType = variable.type.toBasetype.isTypeClass;
         if (classType !is null && classType.sym !is null) {
-            declarationValue!(DeclarationKind.scalar)(variable) = objectOffset;
-            declarationValue!(DeclarationKind.classPointer)(variable) = classType.sym;
+            registerDeclaration(variable).scalar = objectOffset;
+            registerDeclaration(variable).classPointer = classType.sym;
         }
 
         auto object = ExceptionObjectLocal(
@@ -2389,15 +2367,15 @@ private struct Compiler {
                 }
 
             if (auto declaration = variable.var.isVarDeclaration)
-                if (auto existing = declarationMetadata!(DeclarationKind.scalar)(declaration)) {
-                    if (declarationMetadata!(DeclarationKind.structPointer)(declaration))
+                if (auto existing = declarationRecordView(declaration).scalarOrNull) {
+                    if (declarationRecordView(declaration).structPointerOrNull)
                         return Operand(
                             *existing,
                             ScalarType.ulong_,
                             true,
                             ScalarType.void_,
                         );
-                    if (auto element = declarationMetadata!(DeclarationKind.refPointer)(declaration))
+                    if (auto element = declarationRecordView(declaration).refPointerOrNull)
                         return loadThroughPointer(
                             Operand(
                                 *existing,
@@ -2407,7 +2385,7 @@ private struct Compiler {
                             ),
                             compileSizeConstant(0),
                         );
-                    if (declarationMetadata!(DeclarationKind.complexDouble)(declaration))
+                    if (declarationRecordView(declaration).complexDoubleOrNull)
                         return Operand(
                             *existing,
                             ScalarType.void_,
@@ -2415,21 +2393,21 @@ private struct Compiler {
                             ScalarType.void_,
                             true,
                         );
-                    if (declarationMetadata!(DeclarationKind.classPointer)(declaration))
+                    if (declarationRecordView(declaration).classPointerOrNull)
                         return Operand(
                             *existing,
                             ScalarType.ulong_,
                             true,
                             ScalarType.void_,
                         );
-                    if (auto element = declarationMetadata!(DeclarationKind.pointer)(declaration))
+                    if (auto element = declarationRecordView(declaration).pointerOrNull)
                         return Operand(
                             *existing, ScalarType.ulong_, true, *element,
                         );
                     return Operand(*existing, scalarType(declaration.type));
                 }
             if (auto declaration = variable.var.isVarDeclaration)
-                if (auto existing = declarationMetadata!(DeclarationKind.staticArray)(declaration))
+                if (auto existing = declarationRecordView(declaration).staticArrayOrNull)
                     return Operand(*existing, ScalarType.void_);
             if (auto descriptor = dynamicArrayDescriptorOrNull(expression))
                 return Operand(descriptor.offset, ScalarType.void_);
@@ -2444,7 +2422,7 @@ private struct Compiler {
 
             if (auto declaration = variable.var.isVarDeclaration)
                 if (auto moduleVariable =
-                        moduleDeclarationMetadata!(DeclarationKind.moduleScalar)(declaration)) {
+                        moduleDeclarationRecord(declaration).moduleScalarOrNull) {
                     const offset = allocate(moduleVariable.type);
                     _code ~= Instruction(
                         Op.loadModule,
@@ -2475,7 +2453,7 @@ private struct Compiler {
             // delegate read does (`Op.loadModule`).
             if (auto declaration = variable.var.isVarDeclaration)
                 if (auto moduleVariable =
-                        moduleDeclarationMetadata!(DeclarationKind.moduleComplex)(declaration)) {
+                        moduleDeclarationRecord(declaration).moduleComplexOrNull) {
                     const offset = allocateComplexDouble;
                     _code ~= Instruction(
                         Op.loadModule,
@@ -3134,8 +3112,8 @@ private struct Compiler {
                                 ? pointerElementScalar(declaration.type)
                                 : ScalarType.void_,
                         );
-            if (auto slot = declarationMetadata!(DeclarationKind.scalar)(declaration)) {
-                if (auto element = declarationMetadata!(DeclarationKind.refPointer)(declaration)) {
+            if (auto slot = declarationRecordView(declaration).scalarOrNull) {
+                if (auto element = declarationRecordView(declaration).refPointerOrNull) {
                     if (_hasNestedContext && declaration in _capturedOffsets &&
                         _capturedOwners[declaration] !is _currentFunction) {
                         const pointer = allocateBytes(
@@ -3176,7 +3154,7 @@ private struct Compiler {
                         compileSizeConstant(0),
                     );
                 }
-                auto pointerElement = declarationMetadata!(DeclarationKind.pointer)(declaration);
+                auto pointerElement = declarationRecordView(declaration).pointerOrNull;
                 return new ScalarPlace(
                     ScalarPlace.Kind.frame, scalarType(declaration.type), *slot,
                     declaration,
@@ -3227,7 +3205,7 @@ private struct Compiler {
                             : ScalarType.void_,
                     );
                 }
-            if (auto moduleVariable = moduleDeclarationMetadata!(DeclarationKind.moduleScalar)(declaration))
+            if (auto moduleVariable = moduleDeclarationRecord(declaration).moduleScalarOrNull)
                 return new ScalarPlace(
                     ScalarPlace.Kind.module_, moduleVariable.type,
                     moduleVariable.offset,
@@ -3698,47 +3676,47 @@ private struct Compiler {
                         null,
                         isDelegateValueType(expression.type),
                     );
-            if (auto slot = declarationMetadata!(DeclarationKind.scalar)(declaration))
-                if (declarationMetadata!(DeclarationKind.refPointer)(declaration)
+            if (auto slot = declarationRecordView(declaration).scalarOrNull)
+                if (declarationRecordView(declaration).refPointerOrNull
                         !is null)
                     return pointerAggregatePlace(*slot, expression.type);
-            if (auto local = declarationMetadata!(DeclarationKind.struct_)(declaration))
+            if (auto local = declarationRecordView(declaration).struct_OrNull)
                 return new AggregatePlace(
                     AggregatePlace.Kind.frame, expression.type, local.offset,
                 );
-            if (auto offset = declarationMetadata!(DeclarationKind.staticArray)(declaration))
+            if (auto offset = declarationRecordView(declaration).staticArrayOrNull)
                 return new AggregatePlace(
                     AggregatePlace.Kind.frame, expression.type, *offset,
                 );
-            if (auto local = declarationMetadata!(DeclarationKind.dynamicArray)(declaration))
+            if (auto local = declarationRecordView(declaration).dynamicArrayOrNull)
                 return new AggregatePlace(
                     AggregatePlace.Kind.frame, expression.type, local.offset,
                 );
-            if (auto module_ = moduleDeclarationMetadata!(DeclarationKind.moduleStruct)(declaration))
+            if (auto module_ = moduleDeclarationRecord(declaration).moduleStructOrNull)
                 return new AggregatePlace(
                     AggregatePlace.Kind.module_, expression.type,
                     module_.offset,
                 );
-            if (auto module_ = moduleDeclarationMetadata!(DeclarationKind.moduleStaticArray)(declaration))
+            if (auto module_ = moduleDeclarationRecord(declaration).moduleStaticArrayOrNull)
                 return new AggregatePlace(
                     AggregatePlace.Kind.module_, expression.type,
                     module_.offset,
                 );
-            if (auto module_ = moduleDeclarationMetadata!(DeclarationKind.moduleDynamicArray)(declaration))
+            if (auto module_ = moduleDeclarationRecord(declaration).moduleDynamicArrayOrNull)
                 return new AggregatePlace(
                     AggregatePlace.Kind.module_, expression.type,
                     module_.offset,
                 );
-            if (auto module_ = moduleDeclarationMetadata!(DeclarationKind.moduleDelegate)(declaration))
+            if (auto module_ = moduleDeclarationRecord(declaration).moduleDelegateOrNull)
                 return new AggregatePlace(
                     AggregatePlace.Kind.module_, expression.type,
                     module_.offset,
                 );
-            if (auto local = declarationMetadata!(DeclarationKind.delegate_)(declaration))
+            if (auto local = declarationRecordView(declaration).delegate_OrNull)
                 return new AggregatePlace(
                     AggregatePlace.Kind.frame, expression.type, local.offset,
                 );
-            if (auto local = declarationMetadata!(DeclarationKind.delegateParameter)(declaration))
+            if (auto local = declarationRecordView(declaration).delegateParameterOrNull)
                 return new AggregatePlace(
                     AggregatePlace.Kind.frame, expression.type, *local,
                 );
@@ -4536,9 +4514,9 @@ private struct Compiler {
             expression.isVarExp.var.isVarDeclaration.isReference;
         const refLocal = expression.isVarExp !is null &&
             expression.isVarExp.var.isVarDeclaration !is null &&
-            declarationMetadata!(DeclarationKind.refPointer)(
+            declarationRecordView(
                 expression.isVarExp.var.isVarDeclaration,
-            ) !is null;
+            ).refPointerOrNull !is null;
         if (expression.type !is null &&
             expression.type.toBasetype.ty == TY.Tarray &&
             (expression.isDotVarExp !is null || refParameter || refLocal))
@@ -4557,7 +4535,7 @@ private struct Compiler {
 
         if (auto variable = expression.isVarExp)
             if (auto declaration = variable.var.isVarDeclaration)
-                if (auto descriptor = declarationMetadata!(DeclarationKind.dynamicArray)(declaration))
+                if (auto descriptor = declarationRecordView(declaration).dynamicArrayOrNull)
                     return descriptor;
 
         // A module-level dynamic array (`byte[] a;`): materialise its
@@ -4568,7 +4546,7 @@ private struct Compiler {
         if (auto variable = expression.isVarExp)
             if (auto declaration = variable.var.isVarDeclaration)
                 if (auto moduleVariable =
-                        moduleDeclarationMetadata!(DeclarationKind.moduleDynamicArray)(declaration)) {
+                        moduleDeclarationRecord(declaration).moduleDynamicArrayOrNull) {
                     const offset =
                         allocateBytes(sliceDescriptorSize, size_t.sizeof);
                     _code ~= Instruction(
@@ -4777,7 +4755,7 @@ private struct Compiler {
 
         if (auto variable = index.e1.isVarExp)
             if (auto declaration = variable.var.isVarDeclaration)
-                if (auto local = declarationMetadata!(DeclarationKind.dynamicArray)(declaration))
+                if (auto local = declarationRecordView(declaration).dynamicArrayOrNull)
                     outer = local;
 
         // `captured[i]` where `captured` is an array-of-arrays local
@@ -5193,7 +5171,7 @@ private struct Compiler {
 
         const type = scalarType(variable.type);
         const offset = allocateBytes(size(type), size(type));
-        declarationValue!(DeclarationKind.scalar)(variable) = offset;
+        registerDeclaration(variable).scalar = offset;
         registerCapturedOffset(variable, offset);
 
         auto initializer =
@@ -5226,9 +5204,10 @@ private struct Compiler {
 
         auto expression = initializerExpression(initializer.exp);
         if (auto address = placeAddressOrNull(expression)) {
-            declarationValue!(DeclarationKind.scalar)(variable) =
-                address.offset;
-            declarationValue!(DeclarationKind.refPointer)(variable) =
+            registerDeclaration(
+                variable, referenceRepresentation(variable.type),
+            ).scalar = address.offset;
+            registerDeclaration(variable).refPointer =
                 typeFacts(variable.type).isAggregate
                     ? ScalarType.void_
                     : scalarType(variable.type);
@@ -5239,8 +5218,8 @@ private struct Compiler {
 
     private void compileComplexDoubleDeclaration(VarDeclaration variable) {
         const offset = allocateComplexDouble;
-        declarationValue!(DeclarationKind.scalar)(variable) = offset;
-        declarationValue!(DeclarationKind.complexDouble)(variable) = true;
+        registerDeclaration(variable).scalar = offset;
+        registerDeclaration(variable).complexDouble = true;
 
         auto initializer =
             variable._init is null ? null : variable._init.isExpInitializer;
@@ -5284,8 +5263,8 @@ private struct Compiler {
                 declarationChars(variable),
             ));
 
-        declarationValue!(DeclarationKind.scalar)(variable) = offset;
-        declarationValue!(DeclarationKind.classPointer)(variable) =
+        registerDeclaration(variable).scalar = offset;
+        registerDeclaration(variable).classPointer =
             variable.type.toBasetype.isTypeClass.sym;
         registerCapturedOffset(variable, offset);
         _code ~= Instruction(
@@ -5307,8 +5286,8 @@ private struct Compiler {
         // taking the element scalar from the declared type.
         if (initializer is null ||
             initializerExpression(initializer.exp).isNullExp !is null) {
-            declarationValue!(DeclarationKind.scalar)(variable) = offset;
-            declarationValue!(DeclarationKind.pointer)(variable) = pointerElementScalar(variable.type);
+            registerDeclaration(variable).scalar = offset;
+            registerDeclaration(variable).pointer = pointerElementScalar(variable.type);
             registerCapturedOffset(variable, offset);
             _code ~= Instruction(
                 Op.loadConstant,
@@ -5333,8 +5312,8 @@ private struct Compiler {
         // overwritten (with the same values, or a more precise one for the
         // delegate-pointee case) once the initializer finishes compiling
         // below.
-        declarationValue!(DeclarationKind.scalar)(variable) = offset;
-        declarationValue!(DeclarationKind.pointer)(variable) = pointerElementScalar(variable.type);
+        registerDeclaration(variable).scalar = offset;
+        registerDeclaration(variable).pointer = pointerElementScalar(variable.type);
         registerCapturedOffset(variable, offset);
 
         const pointer =
@@ -5345,9 +5324,9 @@ private struct Compiler {
                 declarationChars(variable),
             ));
 
-        declarationValue!(DeclarationKind.scalar)(variable) = offset;
+        registerDeclaration(variable).scalar = offset;
         auto declaredElement = variable.type.toBasetype.nextOf;
-        declarationValue!(DeclarationKind.pointer)(variable) =
+        registerDeclaration(variable).pointer =
             declaredElement !is null &&
             declaredElement.toBasetype.ty == TY.Tdelegate
             ? pointer.pointerElement
@@ -5356,7 +5335,7 @@ private struct Compiler {
         // A `S* p = new S(...)` pointer addresses a heap struct block; record the
         // struct declaration so `p.field` resolves through the pointer.
         if (auto structDeclaration = structPointerDeclaration(variable.type))
-            declarationValue!(DeclarationKind.structPointer)(variable) = structDeclaration;
+            registerDeclaration(variable).structPointer = structDeclaration;
         // The self-referential `CommaExp` initializer shape above (the
         // nested `variable = ...` assignment) already writes the pointer
         // value directly into `offset` -- skip the otherwise-redundant
@@ -5390,7 +5369,7 @@ private struct Compiler {
             emitDelegateValue(
                 offset, delegate_.function_, delegate_.contextOffset,
             );
-            declarationValue!(DeclarationKind.delegate_)(variable) = DelegateLocal(offset, delegate_.function_);
+            registerDeclaration(variable).delegate_ = DelegateLocal(offset, delegate_.function_);
             // A nested function reading `dg` sees only the captured-locals
             // environment, not current-function delegate metadata (reset per
             // compiled
@@ -5412,7 +5391,9 @@ private struct Compiler {
             _code ~= Instruction(
                 Op.copy, offset, source, cast(ushort) delegateValueSize,
             );
-            declarationValue!(DeclarationKind.delegateParameter)(variable) = offset;
+            registerDeclaration(variable).representation =
+                DeclarationRepresentation.delegateParameter;
+            registerDeclaration(variable).delegateParameter = offset;
             registerCapturedOffset(variable, offset);
             return;
         }
@@ -5580,9 +5561,9 @@ private struct Compiler {
 
         if (auto variable = argument.isVarExp)
             if (auto declaration = variable.var.isVarDeclaration) {
-                if (auto existing = declarationMetadata!(DeclarationKind.delegate_)(declaration))
+                if (auto existing = declarationRecordView(declaration).delegate_OrNull)
                     return existing.offset;
-                if (auto existing = declarationMetadata!(DeclarationKind.delegateParameter)(declaration))
+                if (auto existing = declarationRecordView(declaration).delegateParameterOrNull)
                     return *existing;
 
                 // A module-level (`__gshared`/`static`) delegate variable:
@@ -5590,7 +5571,7 @@ private struct Compiler {
                 // out of `moduleData` into a fresh frame slot, the same way
                 // a module pointer/AA read does (`Op.loadModule`).
                 if (auto moduleVariable =
-                        moduleDeclarationMetadata!(DeclarationKind.moduleDelegate)(declaration)) {
+                        moduleDeclarationRecord(declaration).moduleDelegateOrNull) {
                     const offset =
                         allocateBytes(delegateValueSize, size_t.sizeof);
                     _code ~= Instruction(
@@ -5720,7 +5701,7 @@ private struct Compiler {
 
         if (auto variable = source.isVarExp)
             if (auto declaration = variable.var.isVarDeclaration)
-                if (auto existing = declarationMetadata!(DeclarationKind.delegate_)(declaration))
+                if (auto existing = declarationRecordView(declaration).delegate_OrNull)
                     return existing.function_;
 
         return delegateInitializerFunctionOrNull(source);
@@ -6027,7 +6008,7 @@ private struct Compiler {
         if (declaration is null)
             return null;
 
-        auto delegateLocal = declarationMetadata!(DeclarationKind.delegate_)(declaration);
+        auto delegateLocal = declarationRecordView(declaration).delegate_OrNull;
         if (delegateLocal is null)
             return null;
 
@@ -6068,7 +6049,7 @@ private struct Compiler {
         // A static array has aggregate declaration metadata: scalar
         // VarExp/assignment paths must not treat its inline block as a scalar
         // slot.
-        declarationValue!(DeclarationKind.staticArray)(variable) = offset;
+        registerDeclaration(variable).staticArray = offset;
         registerCapturedOffset(variable, offset);
 
         if (totalSize == 0)
@@ -6168,7 +6149,7 @@ private struct Compiler {
         if (auto variable = source.isVarExp)
             if (auto declaration = variable.var.isVarDeclaration)
                 if (auto moduleVariable =
-                        moduleDeclarationMetadata!(DeclarationKind.moduleStaticArray)(declaration)) {
+                        moduleDeclarationRecord(declaration).moduleStaticArrayOrNull) {
                     const materialized = materializeModuleStaticArray(
                         declaration.type, *moduleVariable,
                     );
@@ -6279,7 +6260,7 @@ private struct Compiler {
         auto arrayType = vectorType.basetype; // DMD Type APIs are mutable.
         const totalSize = inlineByteWidth(arrayType);
         const offset = allocateBytes(totalSize, staticArrayAlign(arrayType));
-        declarationValue!(DeclarationKind.staticArray)(variable) = offset;
+        registerDeclaration(variable).staticArray = offset;
 
         auto initializer =
             variable._init is null ? null : variable._init.isExpInitializer;
@@ -6406,7 +6387,7 @@ private struct Compiler {
 
         const offset = allocateStructBlock(variable.type);
         auto declaration = structDeclarationOf(variable.type);
-        declarationValue!(DeclarationKind.struct_)(variable) = StructLocal(offset, declaration);
+        registerDeclaration(variable).struct_ = StructLocal(offset, declaration);
         registerCapturedOffset(variable, offset);
 
         zeroFrameBlock(offset, inlineByteWidth(variable.type));
@@ -6884,7 +6865,7 @@ private struct Compiler {
 
         if (auto variable = expression.isVarExp)
             if (auto declaration = variable.var.isVarDeclaration)
-                if (auto existing = declarationMetadata!(DeclarationKind.struct_)(declaration))
+                if (auto existing = declarationRecordView(declaration).struct_OrNull)
                     return &existing.offset;
 
         // Inside `with (subject)`, the body's unqualified fields appear as
@@ -6974,9 +6955,7 @@ private struct Compiler {
 
         if (auto variable = expression.isVarExp)
             if (auto declaration = variable.var.isVarDeclaration)
-                if (declarationMetadata!(DeclarationKind.refPointer)(
-                        declaration,
-                    ) !is null)
+                if (declarationRecordView(declaration).refPointerOrNull !is null)
                     if (auto place = aggregatePlaceOrNull(expression))
                         return loadAggregatePlace(*place).offset;
 
@@ -7144,7 +7123,7 @@ private struct Compiler {
         auto variable = dot.e1.isVarExp;
         if (variable is null)
             return false;
-        return moduleDeclarationMetadata!(DeclarationKind.moduleStruct)(variable.var.isVarDeclaration)
+        return moduleDeclarationRecord(variable.var.isVarDeclaration).moduleStructOrNull
             !is null;
     }
 
@@ -7177,9 +7156,7 @@ private struct Compiler {
         if (auto variable = expression.isVarExp)
             if (auto declaration = variable.var.isVarDeclaration)
                 if (declaration.type.toBasetype.ty == TY.Tstruct)
-                    if (declarationMetadata!(DeclarationKind.struct_)(
-                            declaration,
-                        ) is null)
+                    if (declarationRecordView(declaration).struct_OrNull is null)
                         return declaration;
 
         return null;
@@ -7340,7 +7317,7 @@ private struct Compiler {
         // including `go.field`, then composes through this one base place.
         if (auto variable = expression.isVarExp)
             if (auto declaration = variable.var.isVarDeclaration)
-                if (auto moduleVariable = moduleDeclarationMetadata!(DeclarationKind.moduleStruct)(declaration)) {
+                if (auto moduleVariable = moduleDeclarationRecord(declaration).moduleStructOrNull) {
                     const structOffset = allocateStructBlock(expression.type);
                     _code ~= Instruction(
                         Op.loadModule,
@@ -7722,7 +7699,7 @@ private struct Compiler {
             variable is null ? null : variable.var.isVarDeclaration;
         if (structPointerDeclaration(base.type) is null &&
             (declaration is null ||
-                declarationMetadata!(DeclarationKind.structPointer)(declaration)
+                declarationRecordView(declaration).structPointerOrNull
                     is null))
             return null;
 
@@ -8425,7 +8402,7 @@ private struct Compiler {
         const elementType = dynamicArrayElementType(variable.type);
         const elementIsArray = arrayElementIsArray(variable.type);
         const offset = allocateBytes(sliceDescriptorSize, size_t.sizeof);
-        declarationValue!(DeclarationKind.dynamicArray)(variable) =
+        registerDeclaration(variable).dynamicArray =
             DynamicArrayLocal(offset, elementType, elementIsArray);
         registerCapturedOffset(variable, offset);
 
@@ -8438,12 +8415,12 @@ private struct Compiler {
 
         auto source = initializerExpression(initializer.exp);
         if (auto staticArray = staticArrayViewOffset(source)) {
-            declarationValue!(DeclarationKind.dynamicArray)(variable).isStaticArrayView = true;
-            declarationValue!(DeclarationKind.dynamicArray)(variable).staticArrayOffset = *staticArray;
+            registerDeclaration(variable).dynamicArray.isStaticArrayView = true;
+            registerDeclaration(variable).dynamicArray.staticArrayOffset = *staticArray;
         } else if (auto classField = classStaticArrayViewFieldOf(source)) {
-            declarationValue!(DeclarationKind.dynamicArray)(variable).isStaticArrayView = true;
-            declarationValue!(DeclarationKind.dynamicArray)(variable).staticArrayViewIsClassField = true;
-            declarationValue!(DeclarationKind.dynamicArray)(variable).staticArrayOffset =
+            registerDeclaration(variable).dynamicArray.isStaticArrayView = true;
+            registerDeclaration(variable).dynamicArray.staticArrayViewIsClassField = true;
+            registerDeclaration(variable).dynamicArray.staticArrayOffset =
                 heapFieldAddress(*classField);
         }
         compileDynamicArrayInto(
@@ -8461,8 +8438,8 @@ private struct Compiler {
     // held the same null value.
     private void compileAssocArrayDeclaration(VarDeclaration variable) {
         const offset = allocateBytes(cast(uint) size_t.sizeof, size_t.sizeof);
-        declarationValue!(DeclarationKind.scalar)(variable) = offset;
-        declarationValue!(DeclarationKind.assocArray)(variable) = true;
+        registerDeclaration(variable).scalar = offset;
+        registerDeclaration(variable).assocArray = true;
 
         auto initializer =
             variable._init is null ? null : variable._init.isExpInitializer;
@@ -8501,8 +8478,8 @@ private struct Compiler {
         // on its own first insert.
         if (auto variable = source.isVarExp)
             if (auto declaration = variable.var.isVarDeclaration)
-                if (declarationMetadata!(DeclarationKind.assocArray)(declaration))
-                    if (auto handleOffset = declarationMetadata!(DeclarationKind.scalar)(declaration)) {
+                if (declarationRecordView(declaration).assocArrayOrNull)
+                    if (auto handleOffset = declarationRecordView(declaration).scalarOrNull) {
                         _code ~= Instruction(
                             Op.copy, destination, *handleOffset,
                             cast(ushort) size_t.sizeof,
@@ -9835,7 +9812,7 @@ private struct Compiler {
 
         if (auto variable = expression.isVarExp)
             if (auto declaration = variable.var.isVarDeclaration)
-                if (auto offset = declarationMetadata!(DeclarationKind.staticArray)(declaration))
+                if (auto offset = declarationRecordView(declaration).staticArrayOrNull)
                     return frameAddressOperand(*offset);
 
         // A module-level static-array variable: unlike the whole-block
@@ -9848,7 +9825,7 @@ private struct Compiler {
         if (auto variable = expression.isVarExp)
             if (auto declaration = variable.var.isVarDeclaration)
                 if (auto moduleVariable =
-                        moduleDeclarationMetadata!(DeclarationKind.moduleStaticArray)(declaration))
+                        moduleDeclarationRecord(declaration).moduleStaticArrayOrNull)
                     return moduleAddressOperand(moduleVariable.offset);
 
         if (auto dot = expression.isDotVarExp)
@@ -10288,14 +10265,12 @@ private struct Compiler {
         auto declaration = symOff.var.isVarDeclaration;
         if (declaration is null)
             return null;
-        auto existing = declarationMetadata!(DeclarationKind.scalar)(declaration);
-        auto dynamicArray = declarationMetadata!(DeclarationKind.dynamicArray)(declaration);
-        auto staticArray = declarationMetadata!(DeclarationKind.staticArray)(declaration);
-        auto struct_ = declarationMetadata!(DeclarationKind.struct_)(declaration);
+        auto existing = declarationRecordView(declaration).scalarOrNull;
+        auto dynamicArray = declarationRecordView(declaration).dynamicArrayOrNull;
+        auto staticArray = declarationRecordView(declaration).staticArrayOrNull;
+        auto struct_ = declarationRecordView(declaration).struct_OrNull;
         if (existing !is null)
-            if (auto element = declarationMetadata!(
-                    DeclarationKind.refPointer,
-                )(declaration)) {
+            if (auto element = declarationRecordView(declaration).refPointerOrNull) {
                 auto result = new Operand;
                 *result = pointerPlaceAddress(
                     *existing,
@@ -10310,7 +10285,7 @@ private struct Compiler {
             if (auto pointer = tryAddressOfCaptured(
                     declaration, symOff.type.toBasetype.nextOf))
                 return pointer;
-            if (auto moduleStruct = moduleDeclarationMetadata!(DeclarationKind.moduleStruct)(declaration)) {
+            if (auto moduleStruct = moduleDeclarationRecord(declaration).moduleStructOrNull) {
                 if (symOff.offset != 0)
                     return null;
                 return addressOperand(
@@ -10319,7 +10294,7 @@ private struct Compiler {
                     ScalarType.void_,
                 );
             }
-            auto moduleVariable = moduleDeclarationMetadata!(DeclarationKind.moduleScalar)(declaration);
+            auto moduleVariable = moduleDeclarationRecord(declaration).moduleScalarOrNull;
             if (moduleVariable is null || symOff.offset != 0)
                 return null;
             return addressOperand(
@@ -10393,17 +10368,17 @@ private struct Compiler {
             // callee's `refAliasGroups` and has no active call frame when
             // addressed at top level, so `refParameterAddress` must only
             // fire for an actual formal parameter.
-            if (auto descriptor = declarationMetadata!(DeclarationKind.dynamicArray)(declaration)) {
+            if (auto descriptor = declarationRecordView(declaration).dynamicArrayOrNull) {
                 slot = descriptor.offset;
                 pointedType = declaration.type;
             }
-            auto existing = declarationMetadata!(DeclarationKind.scalar)(declaration);
+            auto existing = declarationRecordView(declaration).scalarOrNull;
             // A ref local bound to a scalar class field (or array element)
             // stores the pointed-at storage's own runtime address in its
             // slot; that address IS `&variable`, so return it directly
             // rather than computing the address of the slot itself.
             if (existing !is null)
-                if (auto element = declarationMetadata!(DeclarationKind.refPointer)(declaration)) {
+                if (auto element = declarationRecordView(declaration).refPointerOrNull) {
                     auto result = new Operand;
                     *result = Operand(
                         *existing,
@@ -10414,25 +10389,25 @@ private struct Compiler {
                     return result;
                 }
             if (pointedType is null && existing is null) {
-                if (auto struct_ = declarationMetadata!(DeclarationKind.struct_)(declaration)) {
+                if (auto struct_ = declarationRecordView(declaration).struct_OrNull) {
                     slot = struct_.offset;
                     pointedType = declaration.type;
                 } else if (auto moduleStruct =
-                        moduleDeclarationMetadata!(DeclarationKind.moduleStruct)(declaration)) {
+                        moduleDeclarationRecord(declaration).moduleStructOrNull) {
                     return addressOperand(
                         Op.moduleAddress,
                         moduleStruct.offset,
                         ScalarType.void_,
                     );
                 } else if (auto moduleVariable =
-                        moduleDeclarationMetadata!(DeclarationKind.moduleScalar)(declaration)) {
+                        moduleDeclarationRecord(declaration).moduleScalarOrNull) {
                     return addressOperand(
                         Op.moduleAddress,
                         moduleVariable.offset,
                         moduleVariable.type,
                     );
                 } else {
-                    auto staticArray = declarationMetadata!(DeclarationKind.staticArray)(declaration);
+                    auto staticArray = declarationRecordView(declaration).staticArrayOrNull;
                     if (staticArray is null) {
                         return tryAddressOfCaptured(
                             declaration,
@@ -11431,7 +11406,7 @@ private struct Compiler {
         // arithmetic (see `compilePointerAdd`), so a plain 8-byte add into the
         // pointer's own slot advances it correctly.
         if (auto declaration = compoundAssignLocalDeclaration(addAssign.e1))
-            if (auto element = declarationMetadata!(DeclarationKind.pointer)(declaration))
+            if (auto element = declarationRecordView(declaration).pointerOrNull)
                 if (auto slot = compoundAssignLocalSlot(declaration)) {
                     const rhs = compileExpression(addAssign.e2);
                     _code ~= Instruction(Op.addInt8, *slot, *slot, rhs.offset);
@@ -11537,7 +11512,7 @@ private struct Compiler {
     private ushort* compoundAssignLocalSlot(VarDeclaration declaration) {
         if (declaration is null)
             return null;
-        if (auto slot = declarationMetadata!(DeclarationKind.scalar)(declaration))
+        if (auto slot = declarationRecordView(declaration).scalarOrNull)
             return slot;
 
         // Inline-asm semantic analysis can leave the surrounding expression
@@ -11547,9 +11522,9 @@ private struct Compiler {
         // two compiler-owned nodes by identifier.
         foreach (local, record; _declarations)
             if (record.owner is _currentFunction &&
-                record.metadata!(DeclarationKind.scalar) !is null)
+                record.scalarOrNull !is null)
             if (local.ident is declaration.ident)
-                return declarationMetadata!(DeclarationKind.scalar)(local);
+                return declarationRecordView(local).scalarOrNull;
         return null;
     }
 
@@ -11658,7 +11633,7 @@ private struct Compiler {
         if (assign.e1.isVarExp !is null)
             if (auto declaration = assign.e1.isVarExp.var.isVarDeclaration)
                 if (auto moduleVariable =
-                        moduleDeclarationMetadata!(DeclarationKind.moduleStaticArray)(declaration)) {
+                        moduleDeclarationRecord(declaration).moduleStaticArrayOrNull) {
                     const offset = allocateStructBlock(assign.e1.type);
                     if (compileStaticArrayValueInto(
                             offset, assign.e1.type, assign.e2)) {
@@ -11680,7 +11655,7 @@ private struct Compiler {
         if (assign.e1.isVarExp !is null)
             if (auto declaration = assign.e1.isVarExp.var.isVarDeclaration)
                 if (auto moduleVariable =
-                        moduleDeclarationMetadata!(DeclarationKind.moduleDelegate)(declaration)) {
+                        moduleDeclarationRecord(declaration).moduleDelegateOrNull) {
                     const source = delegateOperandOffset(assign.e2);
                     _code ~= Instruction(
                         Op.storeModule, source, moduleVariable.offset,
@@ -11751,8 +11726,8 @@ private struct Compiler {
         // takes the same plain path regardless).
         if (assign.e1.isVarExp !is null)
             if (auto declaration = assign.e1.isVarExp.var.isVarDeclaration) {
-                auto delegateLocal = declarationMetadata!(DeclarationKind.delegate_)(declaration);
-                auto delegateParameter = declarationMetadata!(DeclarationKind.delegateParameter)(declaration);
+                auto delegateLocal = declarationRecordView(declaration).delegate_OrNull;
+                auto delegateParameter = declarationRecordView(declaration).delegateParameterOrNull;
                 if (delegateLocal !is null || delegateParameter !is null) {
                     const offset = delegateLocal !is null
                         ? delegateLocal.offset : *delegateParameter;
@@ -11765,10 +11740,9 @@ private struct Compiler {
                         Op.copy, offset, source, cast(ushort) delegateValueSize,
                     );
                     if (delegateLocal !is null) {
-                        removeDeclarationMetadata!(DeclarationKind.delegate_)(
-                            declaration,
-                        );
-                        declarationValue!(DeclarationKind.delegateParameter)(declaration) = offset;
+                        registerDeclaration(declaration).representation =
+                            DeclarationRepresentation.delegateParameter;
+                        registerDeclaration(declaration).delegateParameter = offset;
                     }
                     return Operand(offset, ScalarType.void_);
                 }
@@ -11785,7 +11759,7 @@ private struct Compiler {
         if (assign.e1.isVarExp !is null)
             if (auto declaration = assign.e1.isVarExp.var.isVarDeclaration)
                 if (auto moduleVariable =
-                        moduleDeclarationMetadata!(DeclarationKind.moduleComplex)(declaration)) {
+                        moduleDeclarationRecord(declaration).moduleComplexOrNull) {
                     const value = compileComplexDoubleOperand(assign.e2);
                     _code ~= Instruction(
                         Op.storeModule, value.offset, moduleVariable.offset,
@@ -11848,7 +11822,7 @@ private struct Compiler {
                     );
             }
         if (declaration !is null)
-            if (auto destination = declarationMetadata!(DeclarationKind.struct_)(declaration)) {
+            if (auto destination = declarationRecordView(declaration).struct_OrNull) {
                 // DMD's zero-init blit marker (an `IntegerExp(0)` retyped to
                 // the struct type, e.g. an `out` parameter's synthesized
                 // entry zero-init) is not a struct value to read through
@@ -11875,8 +11849,8 @@ private struct Compiler {
                 }
             }
         if (declaration !is null)
-            if (auto slot = declarationMetadata!(DeclarationKind.scalar)(declaration))
-                if (auto element = declarationMetadata!(DeclarationKind.refPointer)(declaration))
+            if (auto slot = declarationRecordView(declaration).scalarOrNull)
+                if (auto element = declarationRecordView(declaration).refPointerOrNull)
                     if (*element == ScalarType.void_)
                         return storeThroughPointer(
                             Operand(
@@ -11986,17 +11960,17 @@ private struct Compiler {
         return loadCapturedLocal(declaration, capturedOffset);
     }
 
-    private auto moduleDeclarationMetadata(DeclarationKind kind)(
+    private DeclarationRecord* moduleDeclarationRecord(
         VarDeclaration declaration,
     ) {
         if (declaration is null)
-            return null;
+            return &_unavailableDeclaration;
         auto record = declarationRecord(declaration);
         if (!record.moduleClassificationAttempted) {
             record.moduleClassificationAttempted = true;
             classifyModuleDeclaration(declaration);
         }
-        return declarationMetadata!kind(declaration);
+        return record;
     }
 
     private void classifyModuleDeclaration(VarDeclaration declaration) {
@@ -12072,7 +12046,7 @@ private struct Compiler {
         // `assocArrayHandleOffset` (the AA hooks' own handle resolver)
         // reads and, for an insert that autovivifies a still-null handle,
         // writes back this storage; see its own comment.
-        if (auto existing = declarationMetadata!(DeclarationKind.moduleScalar)(declaration))
+        if (auto existing = declarationRecordView(declaration).moduleScalarOrNull)
             return existing;
 
         const isClassReference = declaration.type.toBasetype.ty == TY.Tclass;
@@ -12088,7 +12062,7 @@ private struct Compiler {
             ? null
             : moduleScalarInitializerBytes(declaration, type);
         const offset = allocateModuleBytes(size(type), size(type));
-        declarationValue!(DeclarationKind.moduleScalar)(declaration) = ModuleScalarVariable(
+        registerModuleDeclaration(declaration).moduleScalar = ModuleScalarVariable(
             offset,
             type,
             isClassReference,
@@ -12096,7 +12070,7 @@ private struct Compiler {
             isPointer ? pointerElementScalar(declaration.type) : ScalarType.void_,
         );
         _program.moduleData[offset .. offset + initializer.length] = initializer[];
-        return declarationMetadata!(DeclarationKind.moduleScalar)(declaration);
+        return declarationRecordView(declaration).moduleScalarOrNull;
     }
 
     // A module-level dynamic array (`byte[] a;`) reserves a plain 16-byte
@@ -12146,7 +12120,7 @@ private struct Compiler {
         if (declaration.type.toBasetype.ty != TY.Tarray)
             return null;
 
-        if (auto existing = declarationMetadata!(DeclarationKind.moduleDynamicArray)(declaration))
+        if (auto existing = declarationRecordView(declaration).moduleDynamicArrayOrNull)
             return existing;
 
         const elementType = dynamicArrayElementType(declaration.type);
@@ -12181,7 +12155,7 @@ private struct Compiler {
         }
 
         const offset = allocateModuleBytes(sliceDescriptorSize, size_t.sizeof);
-        declarationValue!(DeclarationKind.moduleDynamicArray)(declaration) = ModuleDynamicArrayVariable(
+        registerModuleDeclaration(declaration).moduleDynamicArray = ModuleDynamicArrayVariable(
             offset,
             elementType,
             elementIsArray,
@@ -12197,7 +12171,7 @@ private struct Compiler {
                 sliceDescriptorLengthOffset(offset) .. offset + sliceDescriptorSize
             ] = nativeToLittleEndian(cast(size_t) literalCount);
         }
-        return declarationMetadata!(DeclarationKind.moduleDynamicArray)(declaration);
+        return declarationRecordView(declaration).moduleDynamicArrayOrNull;
     }
 
     // Resolve a module-level dynamic array's initializer to a plain
@@ -12434,7 +12408,7 @@ private struct Compiler {
         if (declaration.type.toBasetype.ty != TY.Tstruct)
             return null;
 
-        if (auto existing = declarationMetadata!(DeclarationKind.moduleStruct)(declaration))
+        if (auto existing = declarationRecordView(declaration).moduleStructOrNull)
             return existing;
 
         const size = cast(ushort) inlineByteWidth(declaration.type);
@@ -12452,11 +12426,11 @@ private struct Compiler {
 
         const offset =
             allocateModuleBytes(size, staticArrayAlign(declaration.type));
-        declarationValue!(DeclarationKind.moduleStruct)(declaration) =
+        registerModuleDeclaration(declaration).moduleStruct =
             ModuleStructVariable(offset, size);
         if (!hasDefaultInitializer)
             _program.moduleData[offset .. offset + size] = literalBytes[];
-        return declarationMetadata!(DeclarationKind.moduleStruct)(declaration);
+        return declarationRecordView(declaration).moduleStructOrNull;
     }
 
     // A module-level fixed-size static array (`int[3] arr;`) reserves
@@ -12500,7 +12474,7 @@ private struct Compiler {
         if (isComplexDoubleType(elementType))
             return null;
 
-        if (auto existing = declarationMetadata!(DeclarationKind.moduleStaticArray)(declaration))
+        if (auto existing = declarationRecordView(declaration).moduleStaticArrayOrNull)
             return existing;
 
         const size = cast(ushort) inlineByteWidth(declaration.type);
@@ -12529,11 +12503,11 @@ private struct Compiler {
 
         const offset =
             allocateModuleBytes(size, staticArrayAlign(declaration.type));
-        declarationValue!(DeclarationKind.moduleStaticArray)(declaration) =
+        registerModuleDeclaration(declaration).moduleStaticArray =
             ModuleStaticArrayVariable(offset, size);
         if (!hasDefaultInitializer)
             _program.moduleData[offset .. offset + size] = literalBytes[];
-        return declarationMetadata!(DeclarationKind.moduleStaticArray)(declaration);
+        return declarationRecordView(declaration).moduleStaticArrayOrNull;
     }
 
     // A module-level delegate variable (`int delegate() dg;`) reserves a
@@ -12574,7 +12548,7 @@ private struct Compiler {
         if (declaration.type.toBasetype.ty != TY.Tdelegate)
             return null;
 
-        if (auto existing = declarationMetadata!(DeclarationKind.moduleDelegate)(declaration))
+        if (auto existing = declarationRecordView(declaration).moduleDelegateOrNull)
             return existing;
 
         if (!moduleVariableHasDefaultInitializer(declaration))
@@ -12582,9 +12556,9 @@ private struct Compiler {
 
         const offset =
             allocateModuleBytes(delegateValueSize, size_t.sizeof);
-        declarationValue!(DeclarationKind.moduleDelegate)(declaration) =
+        registerModuleDeclaration(declaration).moduleDelegate =
             ModuleDelegateVariable(offset);
-        return declarationMetadata!(DeclarationKind.moduleDelegate)(declaration);
+        return declarationRecordView(declaration).moduleDelegateOrNull;
     }
 
     // A module-level `cdouble` variable (`__gshared cdouble c;`) reserves a
@@ -12627,7 +12601,7 @@ private struct Compiler {
         if (!isComplexDoubleType(declaration.type))
             return null;
 
-        if (auto existing = declarationMetadata!(DeclarationKind.moduleComplex)(declaration))
+        if (auto existing = declarationRecordView(declaration).moduleComplexOrNull)
             return existing;
 
         if (!moduleVariableHasDefaultInitializer(declaration))
@@ -12642,9 +12616,9 @@ private struct Compiler {
         _program.moduleData[
             offset + double.sizeof .. offset + complexDoubleSize
         ] = nanBytes[];
-        declarationValue!(DeclarationKind.moduleComplex)(declaration) =
+        registerModuleDeclaration(declaration).moduleComplex =
             ModuleComplexVariable(offset);
-        return declarationMetadata!(DeclarationKind.moduleComplex)(declaration);
+        return declarationRecordView(declaration).moduleComplexOrNull;
     }
 
     // Compile-time bytes for a module-level static array's non-null,
@@ -13037,7 +13011,7 @@ private struct Compiler {
         auto variable = expression.isVarExp;
         if (variable is null)
             return false;
-        return moduleDeclarationMetadata!(DeclarationKind.moduleDynamicArray)(variable.var.isVarDeclaration)
+        return moduleDeclarationRecord(variable.var.isVarDeclaration).moduleDynamicArrayOrNull
             !is null;
     }
 
@@ -13051,9 +13025,9 @@ private struct Compiler {
         // real module storage first, mirroring `compileAppendElement`'s
         // identical fix for the single-element case.
         if (isModuleDynamicArrayVariable(concatenate.e1)) {
-            const moduleVariable = *moduleDeclarationMetadata!(DeclarationKind.moduleDynamicArray)(
+            const moduleVariable = *moduleDeclarationRecord(
                 concatenate.e1.isVarExp.var.isVarDeclaration,
-            );
+            ).moduleDynamicArrayOrNull;
             const right = arrayDescriptorOffset(
                 moduleVariable.elementType, concatenate.e2,
                 moduleVariable.elementIsArray,
@@ -13135,7 +13109,7 @@ private struct Compiler {
             variable is null ? null : variable.var.isVarDeclaration;
         auto outer = declaration is null
             ? null
-            : declarationMetadata!(DeclarationKind.dynamicArray)(declaration);
+            : declarationRecordView(declaration).dynamicArrayOrNull;
         if (outer is null || !outer.elementIsArray)
             return null;
 
@@ -13162,11 +13136,11 @@ private struct Compiler {
         auto declaration =
             variable is null ? null : variable.var.isVarDeclaration;
         if (declaration is null ||
-            declarationMetadata!(DeclarationKind.assocArray)(declaration)
+            declarationRecordView(declaration).assocArrayOrNull
                 is null)
             return null;
 
-        const handle = (declarationMetadata!(DeclarationKind.scalar)(declaration));
+        const handle = (declarationRecordView(declaration).scalarOrNull);
         const width = assocArrayValueWidth(index.e1.type.toBasetype);
         const keyMeta = assocArrayKeyMeta(index.e1.type.toBasetype);
         const keyOffset =
@@ -13285,7 +13259,7 @@ private struct Compiler {
 
         if (auto variable = expression.isVarExp)
             if (auto declaration = variable.var.isVarDeclaration)
-                if (auto existing = declarationMetadata!(DeclarationKind.staticArray)(declaration))
+                if (auto existing = declarationRecordView(declaration).staticArrayOrNull)
                     return *existing;
 
         // A module-level (`__gshared`/`static`) static-array variable
@@ -13300,7 +13274,7 @@ private struct Compiler {
         if (auto variable = expression.isVarExp)
             if (auto declaration = variable.var.isVarDeclaration)
                 if (auto moduleVariable =
-                        moduleDeclarationMetadata!(DeclarationKind.moduleStaticArray)(declaration)) {
+                        moduleDeclarationRecord(declaration).moduleStaticArrayOrNull) {
                     const structOffset = materializeModuleStaticArray(
                         declaration.type, *moduleVariable,
                     );
@@ -13417,16 +13391,14 @@ private struct Compiler {
 
         if (auto variable = expression.isVarExp)
             if (auto declaration = variable.var.isVarDeclaration) {
-                if (declarationMetadata!(DeclarationKind.staticArray)(declaration)
+                if (declarationRecordView(declaration).staticArrayOrNull
                         !is null ||
-                    moduleDeclarationMetadata!(DeclarationKind.moduleStaticArray)(declaration)
+                    moduleDeclarationRecord(declaration).moduleStaticArrayOrNull
                         !is null)
                     return true;
-                if (declarationMetadata!(DeclarationKind.scalar)(declaration)
+                if (declarationRecordView(declaration).scalarOrNull
                         !is null)
-                    if (auto element = declarationMetadata!(
-                            DeclarationKind.refPointer,
-                        )(declaration))
+                    if (auto element = declarationRecordView(declaration).refPointerOrNull)
                         return *element == ScalarType.void_ &&
                             expression.type.toBasetype.ty == TY.Tsarray;
             }
@@ -13493,7 +13465,7 @@ private struct Compiler {
         if (auto variable = expression.isVarExp)
             if (auto decl = variable.var.isVarDeclaration)
                 if (decl.type.toBasetype.ty == TY.Tsarray)
-                    if (declarationMetadata!(DeclarationKind.staticArray)(decl)
+                    if (declarationRecordView(decl).staticArrayOrNull
                             is null)
                         if (auto captured = decl in _capturedOffsets) {
                             declaration = decl;
@@ -14136,7 +14108,7 @@ private struct Compiler {
 
         if (auto variable = expression.isVarExp) {
             if (auto declaration = variable.var.isVarDeclaration) {
-                if (auto existing = declarationMetadata!(DeclarationKind.staticArray)(declaration))
+                if (auto existing = declarationRecordView(declaration).staticArrayOrNull)
                     return existing;
             }
         }
@@ -14868,7 +14840,7 @@ private struct Compiler {
                     ? null
                     : pointerVariable.var.isVarDeclaration;
                 if (pointerDeclaration !is null &&
-                    (declarationMetadata!(DeclarationKind.pointer)(pointerDeclaration)) !is null) {
+                    (declarationRecordView(pointerDeclaration).pointerOrNull) !is null) {
                     emitCallArgument(slot, false, argument);
                     continue;
                 }
@@ -14981,7 +14953,7 @@ private struct Compiler {
             if (symOff.offset != 0)
                 return null;
             auto declaration = symOff.var.isVarDeclaration;
-            return declaration is null ? null : declarationMetadata!(DeclarationKind.scalar)(declaration);
+            return declaration is null ? null : declarationRecordView(declaration).scalarOrNull;
         }
 
         auto address = target.isAddrExp;
@@ -14998,9 +14970,9 @@ private struct Compiler {
             : variable.var.isVarDeclaration;
         if (declaration is null)
             return null;
-        if (auto local = declarationMetadata!(DeclarationKind.scalar)(declaration))
+        if (auto local = declarationRecordView(declaration).scalarOrNull)
             return local;
-        if (auto struct_ = declarationMetadata!(DeclarationKind.struct_)(declaration))
+        if (auto struct_ = declarationRecordView(declaration).struct_OrNull)
             return &struct_.offset;
         return null;
     }
@@ -15158,7 +15130,7 @@ private struct Compiler {
         // to a fresh frame slot the body reads through the ordinary local path.
         auto parameter = (*literal.fd.parameters)[0];
         const variableSlot = allocateBytes(elementSize, elementSize);
-        declarationValue!(DeclarationKind.scalar)(parameter) = variableSlot;
+        registerDeclaration(parameter).scalar = variableSlot;
 
         // `for (i = 0; i < elements.length; ++i) { var = elements[i]; body }`.
         const index = compileSizeConstant(0);
@@ -15207,7 +15179,7 @@ private struct Compiler {
         auto declaration = variable.var.isVarDeclaration;
         if (declaration is null)
             return null;
-        return declarationMetadata!(DeclarationKind.delegate_)(declaration);
+        return declarationRecordView(declaration).delegate_OrNull;
     }
 
     // A call through a delegate-typed local declared in an enclosing
@@ -15261,7 +15233,7 @@ private struct Compiler {
             *result = loadAggregatePlace(*place).offset;
             return result;
         }
-        return declarationMetadata!(DeclarationKind.delegateParameter)(declaration);
+        return declarationRecordView(declaration).delegateParameterOrNull;
     }
 
     // The frame offset of a module-level (`__gshared`/`static`) delegate
@@ -15276,7 +15248,7 @@ private struct Compiler {
         if (variable is null)
             return null;
         auto declaration = variable.var.isVarDeclaration;
-        auto moduleVariable = moduleDeclarationMetadata!(DeclarationKind.moduleDelegate)(declaration);
+        auto moduleVariable = moduleDeclarationRecord(declaration).moduleDelegateOrNull;
         if (moduleVariable is null)
             return null;
 
@@ -15332,9 +15304,9 @@ private struct Compiler {
         auto declaration = variable.var.isVarDeclaration;
         if (declaration is null)
             return null;
-        if (auto existing = declarationMetadata!(DeclarationKind.lazyDelegate)(declaration))
+        if (auto existing = declarationRecordView(declaration).lazyDelegateOrNull)
             return new LazyDelegateSource(*existing);
-        if (declarationMetadata!(DeclarationKind.lazyDeclaration)(declaration)
+        if (declarationClassification(declaration).lazyDeclarationOrNull
                 is null)
             return null;
         if (auto captured = declaration in _capturedOffsets)
@@ -15399,14 +15371,14 @@ private struct Compiler {
 
         if (auto variable = argument.isVarExp)
             if (auto declaration = variable.var.isVarDeclaration) {
-                if (auto source = declarationMetadata!(DeclarationKind.lazyDelegate)(declaration)) {
+                if (auto source = declarationRecordView(declaration).lazyDelegateOrNull) {
                     _code ~= Instruction(
                         Op.copy, destination, *source,
                         cast(ushort) delegateValueSize,
                     );
                     return;
                 }
-                if (declarationMetadata!(DeclarationKind.lazyDeclaration)(declaration)) {
+                if (declarationClassification(declaration).lazyDeclarationOrNull) {
                     if (auto source = declaration in _capturedOffsets) {
                         _code ~= Instruction(
                             Op.frameLoad, destination,
@@ -16249,17 +16221,23 @@ private struct Compiler {
                 ? allocateBytes(keyElementSize, size_t.sizeof)
                 : allocate(scalarType(keyParameter.type));
         if (keyIsStruct)
-            declarationValue!(DeclarationKind.struct_)(keyParameter) = StructLocal(
+            registerDeclaration(
+                keyParameter, DeclarationRepresentation.struct_,
+            ).struct_ = StructLocal(
                 keySlot, structDeclarationOf(keyParameter.type),
             );
         else if (keyIsArray)
-            declarationValue!(DeclarationKind.dynamicArray)(keyParameter) = DynamicArrayLocal(
+            registerDeclaration(
+                keyParameter, DeclarationRepresentation.dynamicArray,
+            ).dynamicArray = DynamicArrayLocal(
                 keySlot,
                 dynamicArrayElementType(keyParameter.type),
                 arrayElementIsArray(keyParameter.type),
             );
         else
-            declarationValue!(DeclarationKind.scalar)(keyParameter) = keySlot;
+            registerDeclaration(
+                keyParameter, DeclarationRepresentation.scalar,
+            ).scalar = keySlot;
 
         const valueSlot = allocateBytes(
             valueElementSize,
@@ -16268,11 +16246,15 @@ private struct Compiler {
                 : valueElementSize,
         );
         if (valueParameter.type.toBasetype.ty == TY.Tstruct)
-            declarationValue!(DeclarationKind.struct_)(valueParameter) = StructLocal(
+            registerDeclaration(
+                valueParameter, DeclarationRepresentation.struct_,
+            ).struct_ = StructLocal(
                 valueSlot, structDeclarationOf(valueParameter.type),
             );
         else if (valueParameter.type.toBasetype.ty == TY.Tsarray)
-            declarationValue!(DeclarationKind.staticArray)(valueParameter) = valueSlot;
+            registerDeclaration(
+                valueParameter, DeclarationRepresentation.staticArray,
+            ).staticArray = valueSlot;
         else if (valueParameter.type.toBasetype.ty == TY.Tdelegate)
             // A per-entry delegate VALUE read out of `values` above (a
             // run-time `{functionIndex, context}` pair with no statically
@@ -16287,9 +16269,13 @@ private struct Compiler {
             // finds `valueParameter` in either delegate table and falls
             // through to its final "Unsupported delegate argument" throw
             // the moment the loop body calls through it (`v()`).
-            declarationValue!(DeclarationKind.delegateParameter)(valueParameter) = valueSlot;
+            registerDeclaration(
+                valueParameter, DeclarationRepresentation.delegateParameter,
+            ).delegateParameter = valueSlot;
         else
-            declarationValue!(DeclarationKind.scalar)(valueParameter) = valueSlot;
+            registerDeclaration(
+                valueParameter, DeclarationRepresentation.scalar,
+            ).scalar = valueSlot;
 
         const index = compileSizeConstant(0);
         const length = allocate(ScalarType.ulong_);
@@ -16369,7 +16355,7 @@ private struct Compiler {
         // freshly-created map rather than the stale null it started from.
         if (auto declaration =
                 moduleAssocArrayDeclarationOrNull((*call.arguments)[0]))
-            if (auto moduleVariable = moduleDeclarationMetadata!(DeclarationKind.moduleScalar)(declaration))
+            if (auto moduleVariable = moduleDeclarationRecord(declaration).moduleScalarOrNull)
                 _code ~= Instruction(
                     Op.storeModule, handle, moduleVariable.offset,
                     cast(ushort) size_t.sizeof,
@@ -16738,7 +16724,7 @@ private struct Compiler {
 
         if (auto variable = inner.isVarExp)
             if (auto declaration = variable.var.isVarDeclaration)
-                if (declarationMetadata!(DeclarationKind.assocArray)(declaration))
+                if (declarationRecordView(declaration).assocArrayOrNull)
                     if (auto place = scalarPlaceOrNull(inner)) {
                         const value = loadScalarPlace(*place);
                         return AssocArrayHandleResult(
@@ -16758,7 +16744,7 @@ private struct Compiler {
         // materialised copy going stale the moment the frame slot changes
         // is never observed by a later read.
         if (auto declaration = moduleAssocArrayDeclarationOrNull(expression))
-            if (auto moduleVariable = moduleDeclarationMetadata!(DeclarationKind.moduleScalar)(declaration)) {
+            if (auto moduleVariable = moduleDeclarationRecord(declaration).moduleScalarOrNull) {
                 const offset = allocate(ScalarType.ulong_);
                 _code ~= Instruction(
                     Op.loadModule, offset, moduleVariable.offset,
@@ -19214,48 +19200,125 @@ private struct Compiler {
         return TypeFacts(scalarType(type), byteWidth, false);
     }
 
-    private auto declarationMetadata(DeclarationKind kind)(
+    private DeclarationRecord* declarationRecordView(
         VarDeclaration declaration,
     ) {
         auto record = declaration in _declarations;
         if (record is null)
-            return null;
-
-        static if (kind < DeclarationKind.moduleScalar &&
-            kind != DeclarationKind.lazyDeclaration)
-        {
-            if (record.owner !is _currentFunction)
-                return null;
-        }
-
-        return record.metadata!kind();
+            return &_unavailableDeclaration;
+        if (record.representation < DeclarationRepresentation.moduleScalar &&
+            record.owner !is _currentFunction)
+            return &_unavailableDeclaration;
+        return record;
     }
 
-    private ref auto declarationValue(DeclarationKind kind)(
+    private DeclarationRecord* declarationClassification(
+        VarDeclaration declaration,
+    ) {
+        if (auto record = declaration in _declarations)
+            return record;
+        return &_unavailableDeclaration;
+    }
+
+    private DeclarationRecord* registerDeclaration(VarDeclaration declaration) {
+        auto record = declarationRecord(declaration);
+        record.storage = DeclarationStorage.frame;
+        record.owner = _currentFunction;
+        return record;
+    }
+
+    private DeclarationRecord* registerDeclaration(
+        VarDeclaration declaration,
+        in DeclarationRepresentation representation,
+    ) {
+        auto record = declarationRecord(declaration);
+        record.representation = representation;
+        record.storage = DeclarationStorage.frame;
+        record.owner = _currentFunction;
+        return record;
+    }
+
+    private DeclarationRecord* registerModuleDeclaration(
         VarDeclaration declaration,
     ) {
         auto record = declarationRecord(declaration);
-        static if (kind < DeclarationKind.moduleScalar &&
-            kind != DeclarationKind.lazyDeclaration)
-            record.owner = _currentFunction;
-        return record.value!kind();
+        record.storage = DeclarationStorage.module_;
+        record.owner = null;
+        return record;
     }
 
     private DeclarationRecord* declarationRecord(VarDeclaration declaration) {
+        import dmd.astenums: TY;
+
         if (auto existing = declaration in _declarations)
             return existing;
         DeclarationRecord created;
         created.facts = typeFacts(declaration.type);
-        created.hasFacts = true;
+        created.representation = declarationRepresentation(declaration);
+        if (declaration.type.toBasetype.ty == TY.Taarray)
+            created.aggregateRepresentation = AggregateRepresentation.assocArray;
+        if (created.representation == DeclarationRepresentation.pointer)
+            created.pointer = pointerElementScalar(declaration.type);
+        else if (created.representation == DeclarationRepresentation.refPointer ||
+            created.representation == DeclarationRepresentation.refRawPointer ||
+            created.representation == DeclarationRepresentation.refClassPointer) {
+            created.refPointer = created.facts.isAggregate
+                ? ScalarType.void_
+                : scalarType(declaration.type);
+            if (isPointerType(declaration.type))
+                created.pointer = pointerElementScalar(declaration.type);
+            if (declaration.type.toBasetype.ty == TY.Tclass)
+                created.classPointer = declaration.type.toBasetype.isTypeClass.sym;
+        } else if (created.representation == DeclarationRepresentation.classPointer)
+            created.classPointer = declaration.type.toBasetype.isTypeClass.sym;
         _declarations[declaration] = created;
         return declaration in _declarations;
     }
 
-    private void removeDeclarationMetadata(DeclarationKind kind)(
+    private DeclarationRepresentation declarationRepresentation(
         VarDeclaration declaration,
     ) {
-        if (auto record = declaration in _declarations)
-            record.present.remove(kind);
+        import dmd.astenums: TY;
+
+        const type = declaration.type.toBasetype.ty;
+        if (declaration.isDataseg && !declaration.isImmutable) {
+            if (isComplexDoubleType(declaration.type))
+                return DeclarationRepresentation.moduleComplex;
+            switch (type) with (TY) {
+                case Tarray: return DeclarationRepresentation.moduleDynamicArray;
+                case Tsarray: return DeclarationRepresentation.moduleStaticArray;
+                case Tstruct: return DeclarationRepresentation.moduleStruct;
+                case Tdelegate: return DeclarationRepresentation.moduleDelegate;
+                default: return DeclarationRepresentation.moduleScalar;
+            }
+        }
+        if (parameterIsLazy(declaration))
+            return DeclarationRepresentation.lazyDelegate;
+        if (isComplexDoubleType(declaration.type))
+            return DeclarationRepresentation.complexDouble;
+        switch (type) with (TY) {
+            case Tsarray: return DeclarationRepresentation.staticArray;
+            case Tarray: return DeclarationRepresentation.dynamicArray;
+            case Tstruct: return DeclarationRepresentation.struct_;
+            case Tdelegate:
+                return declaration.isParameter
+                    ? DeclarationRepresentation.delegateParameter
+                    : DeclarationRepresentation.delegate_;
+            case Tclass: return DeclarationRepresentation.classPointer;
+            case Taarray: return DeclarationRepresentation.scalar;
+            case Tpointer: return DeclarationRepresentation.pointer;
+            default: return DeclarationRepresentation.scalar;
+        }
+    }
+
+    private DeclarationRepresentation referenceRepresentation(Type type) {
+        import dmd.astenums: TY;
+
+        switch (type.toBasetype.ty) with (TY) {
+            case Tpointer: return DeclarationRepresentation.refRawPointer;
+            case Tclass: return DeclarationRepresentation.refClassPointer;
+            default: return DeclarationRepresentation.refPointer;
+        }
     }
 
     private void clearLocalDeclarations() {
@@ -19326,7 +19389,8 @@ private struct TypeFacts {
     }
 }
 
-private enum DeclarationKind {
+private enum DeclarationRepresentation {
+    unavailable,
     scalar,
     staticArray,
     dynamicArray,
@@ -19334,12 +19398,11 @@ private enum DeclarationKind {
     struct_,
     delegate_,
     refPointer,
+    refRawPointer,
+    refClassPointer,
     complexDouble,
-    assocArray,
     lazyDelegate,
-    lazyDeclaration,
     delegateParameter,
-    structPointer,
     classPointer,
     moduleScalar,
     moduleDynamicArray,
@@ -19349,10 +19412,20 @@ private enum DeclarationKind {
     moduleComplex,
 }
 
+private enum AggregateRepresentation {
+    none,
+    assocArray,
+}
+
+private enum DeclarationStorage {
+    unavailable,
+    frame,
+    module_,
+}
+
 private struct DeclarationRecord {
     private imported!"dmd.func".FuncDeclaration owner;
     private TypeFacts facts;
-    private bool hasFacts;
     private ushort scalar;
     private ushort staticArray;
     private DynamicArrayLocal dynamicArray;
@@ -19374,64 +19447,74 @@ private struct DeclarationRecord {
     private ModuleStaticArrayVariable moduleStaticArray;
     private ModuleDelegateVariable moduleDelegate;
     private ModuleComplexVariable moduleComplex;
-    private bool[DeclarationKind] present;
     private bool moduleClassificationAttempted;
+    private DeclarationStorage storage;
+    private AggregateRepresentation aggregateRepresentation;
 
-    private auto metadata(DeclarationKind kind)() {
-        if (kind !in present)
-            return null;
-        return &(value!kind());
+    private DeclarationRepresentation representation;
+
+    private bool represents(in DeclarationRepresentation expected) const {
+        const storageAvailable = expected >= DeclarationRepresentation.moduleScalar
+            ? storage == DeclarationStorage.module_
+            : storage == DeclarationStorage.frame;
+        if (storageAvailable && representation == expected)
+            return true;
+        if (storage == DeclarationStorage.frame &&
+            expected == DeclarationRepresentation.scalar)
+            switch (representation) with (DeclarationRepresentation) {
+                case scalar:
+                case pointer:
+                case refPointer:
+                case refRawPointer:
+                case refClassPointer:
+                case complexDouble:
+                case classPointer:
+                case moduleScalar:
+                    return true;
+                default:
+                    return false;
+            }
+        if (storage == DeclarationStorage.frame &&
+            expected == DeclarationRepresentation.pointer)
+            return representation == DeclarationRepresentation.refRawPointer &&
+                pointer != imported!"quickbite.backends.bytecode.core.program"
+                    .ScalarType.void_;
+        if (storage == DeclarationStorage.frame &&
+            expected == DeclarationRepresentation.classPointer)
+            return representation == DeclarationRepresentation.refClassPointer &&
+                classPointer !is null;
+        if (storage == DeclarationStorage.frame &&
+            expected == DeclarationRepresentation.refPointer)
+            return representation == DeclarationRepresentation.refRawPointer ||
+                representation == DeclarationRepresentation.refClassPointer;
+        return false;
     }
 
-    private ref auto value(DeclarationKind kind)() {
-        present[kind] = true;
-        static if (kind == DeclarationKind.scalar)
-            return scalar;
-        else static if (kind == DeclarationKind.staticArray)
-            return staticArray;
-        else static if (kind == DeclarationKind.dynamicArray)
-            return dynamicArray;
-        else static if (kind == DeclarationKind.pointer)
-            return pointer;
-        else static if (kind == DeclarationKind.struct_)
-            return struct_;
-        else static if (kind == DeclarationKind.delegate_)
-            return delegate_;
-        else static if (kind == DeclarationKind.refPointer)
-            return refPointer;
-        else static if (kind == DeclarationKind.complexDouble)
-            return complexDouble;
-        else static if (kind == DeclarationKind.assocArray)
-            return assocArray;
-        else static if (kind == DeclarationKind.lazyDelegate)
-            return lazyDelegate;
-        else static if (kind == DeclarationKind.lazyDeclaration)
-            return lazyDeclaration;
-        else static if (kind == DeclarationKind.delegateParameter)
-            return delegateParameter;
-        else static if (kind == DeclarationKind.structPointer)
-            return structPointer;
-        else static if (kind == DeclarationKind.classPointer)
-            return classPointer;
-        else static if (kind == DeclarationKind.moduleScalar)
-            return moduleScalar;
-        else static if (kind == DeclarationKind.moduleDynamicArray)
-            return moduleDynamicArray;
-        else static if (kind == DeclarationKind.moduleStruct)
-            return moduleStruct;
-        else static if (kind == DeclarationKind.moduleStaticArray)
-            return moduleStaticArray;
-        else static if (kind == DeclarationKind.moduleDelegate)
-            return moduleDelegate;
-        else
-            return moduleComplex;
-    }
+    private auto scalarOrNull() { return represents(DeclarationRepresentation.scalar) ? &scalar : null; }
+    private auto staticArrayOrNull() { return represents(DeclarationRepresentation.staticArray) ? &staticArray : null; }
+    private auto dynamicArrayOrNull() { return represents(DeclarationRepresentation.dynamicArray) ? &dynamicArray : null; }
+    private auto pointerOrNull() { return represents(DeclarationRepresentation.pointer) ? &pointer : null; }
+    private auto struct_OrNull() { return represents(DeclarationRepresentation.struct_) ? &struct_ : null; }
+    private auto delegate_OrNull() { return represents(DeclarationRepresentation.delegate_) ? &delegate_ : null; }
+    private auto refPointerOrNull() { return represents(DeclarationRepresentation.refPointer) ? &refPointer : null; }
+    private auto complexDoubleOrNull() { return represents(DeclarationRepresentation.complexDouble) ? &complexDouble : null; }
+    private auto assocArrayOrNull() { return storage == DeclarationStorage.frame && aggregateRepresentation == AggregateRepresentation.assocArray ? &assocArray : null; }
+    private auto lazyDelegateOrNull() { return represents(DeclarationRepresentation.lazyDelegate) ? &lazyDelegate : null; }
+    private auto lazyDeclarationOrNull() { return representation == DeclarationRepresentation.lazyDelegate ? &lazyDeclaration : null; }
+    private auto delegateParameterOrNull() { return represents(DeclarationRepresentation.delegateParameter) ? &delegateParameter : null; }
+    private auto structPointerOrNull() { return storage == DeclarationStorage.frame && representation == DeclarationRepresentation.pointer && structPointer !is null ? &structPointer : null; }
+    private auto classPointerOrNull() { return represents(DeclarationRepresentation.classPointer) ? &classPointer : null; }
+    private auto moduleScalarOrNull() { return represents(DeclarationRepresentation.moduleScalar) ? &moduleScalar : null; }
+    private auto moduleDynamicArrayOrNull() { return represents(DeclarationRepresentation.moduleDynamicArray) ? &moduleDynamicArray : null; }
+    private auto moduleStructOrNull() { return represents(DeclarationRepresentation.moduleStruct) ? &moduleStruct : null; }
+    private auto moduleStaticArrayOrNull() { return represents(DeclarationRepresentation.moduleStaticArray) ? &moduleStaticArray : null; }
+    private auto moduleDelegateOrNull() { return represents(DeclarationRepresentation.moduleDelegate) ? &moduleDelegate : null; }
+    private auto moduleComplexOrNull() { return represents(DeclarationRepresentation.moduleComplex) ? &moduleComplex : null; }
 
     private void clearLocal() {
-        foreach (kind; DeclarationKind.scalar .. DeclarationKind.moduleScalar)
-            if (kind != DeclarationKind.lazyDeclaration)
-                present.remove(kind);
         owner = null;
+        if (storage == DeclarationStorage.frame)
+            storage = DeclarationStorage.unavailable;
     }
 }
 

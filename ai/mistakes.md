@@ -213,6 +213,9 @@
 - Do not amend an existing commit unless the user explicitly asks for an
   amend. Make a new commit for follow-up changes.
 
+- Do not use Python scripts to rewrite repository files. Use `apply_patch` for
+  semantic edits and reserve dedicated formatters for bulk formatting.
+
 - For unit-threaded substring assertions, prefer
   `"expected".should.be in actual` over `actual.canFind("expected").should ==
   true`.
