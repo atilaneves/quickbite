@@ -11205,6 +11205,33 @@ static foreach (backend; Matrix!(
     }
 }
 
+// The dynamic-array counterpart of the nested static-array receiver above:
+// `m[i++][1].bump()` must evaluate its outer index once and mutate the
+// selected row's backing storage, rather than a detached dynamic-array row.
+// SystemLinker is the oracle.
+static foreach (backend; Matrix!()) {
+    @("struct.methodCallThroughNestedDynamicArrayIndexedReceiverEvaluatesIndexOnceAndMutatesBackingStorage." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct P {
+                int x;
+                void bump() { x++; }
+            }
+
+            unittest {
+                P[][] m = [[P(0), P(0)], [P(0), P(0)]];
+                int i;
+                m[i++][1].bump();
+                assert(i == 1);
+                assert(m[0][1].x == 1);
+                assert(m[1][1].x == 0);
+            }
+        });
+    }
+}
+
 // `&a[0][1]` on `int[][] a` (a dynamic array of dynamic arrays): the
 // address of an element inside a row that is itself a dynamic array must
 // land on the row's actual data, not inside the row's own
