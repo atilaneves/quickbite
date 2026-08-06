@@ -392,6 +392,16 @@ private struct Compiler {
         ushort valueSize;
     }
 
+    // A frame-local captured scalar passed to a `ref`/`out` parameter. The
+    // machine writes the callee's mirror back to `localOffset` when the call
+    // returns; the heap closure environment needs the same final value.
+    private static struct HeapEscapingClosureRefWriteBack {
+        ushort localOffset;
+        ushort heapPointer;
+        ushort heapOffset;
+        ushort valueSize;
+    }
+
     private static struct MethodReceiver {
         ushort offset;
         ushort writeBackFrameIndex;
@@ -16379,6 +16389,7 @@ private struct Compiler {
         ModuleScalarRefWriteBack[] moduleScalarRefWriteBacks;
         RefLocalPointerRefWriteBack[] refLocalPointerRefWriteBacks;
         PointerDereferenceRefWriteBack[] pointerDereferenceRefWriteBacks;
+        HeapEscapingClosureRefWriteBack[] heapEscapingClosureRefWriteBacks;
         if (call.arguments !is null &&
             nextArgumentIndex + call.arguments.length > layout.offsets.length)
             throw new Exception(text(
@@ -16484,6 +16495,12 @@ private struct Compiler {
                         (*call.arguments)[argumentIndex],
                     ))
                         continue;
+                if (layout.isReference[nextArgumentIndex + argumentIndex])
+                    if (auto writeBack =
+                            heapEscapingClosureRefWriteBackOrNull(
+                                (*call.arguments)[argumentIndex],
+                            ))
+                        heapEscapingClosureRefWriteBacks ~= *writeBack;
                 emitCallArgument(
                     slot,
                     layout.isReference[nextArgumentIndex + argumentIndex],
@@ -16555,6 +16572,15 @@ private struct Compiler {
                 Op.storeModule,
                 writeBack.valueOffset,
                 writeBack.moduleOffset,
+                writeBack.valueSize,
+            );
+        foreach (writeBack; heapEscapingClosureRefWriteBacks)
+            emitPointerStore(
+                writeBack.localOffset,
+                writeBack.heapPointer,
+                compileSizeConstant(
+                    writeBack.heapOffset / writeBack.valueSize,
+                ),
                 writeBack.valueSize,
             );
         if (hasStructReceiver && structReceiver.writeBackSize != 0)
@@ -17768,6 +17794,35 @@ private struct Compiler {
         _code ~= Instruction(Op.frameBaseIndex, currentBase);
         _code ~= Instruction(Op.subInt4, slot, sourceIndex, currentBase);
         return true;
+    }
+
+    // The normal ref-argument convention writes through the caller's frame
+    // only. When that frame local also has an escaping-closure heap mirror,
+    // copy the completed ref value to the heap immediately after the call so
+    // the delegate observes the same mutation as direct assignment does.
+    private HeapEscapingClosureRefWriteBack*
+    heapEscapingClosureRefWriteBackOrNull(Expression argument) {
+        auto variable = argument.isVarExp;
+        if (variable is null)
+            return null;
+
+        auto declaration = variable.var.isVarDeclaration;
+        if (declaration is null)
+            return null;
+
+        auto localOffset = declaration in _locals;
+        auto heapPointer = declaration in _heapEscapingClosurePointers;
+        if (localOffset is null || heapPointer is null)
+            return null;
+
+        auto result = new HeapEscapingClosureRefWriteBack;
+        *result = HeapEscapingClosureRefWriteBack(
+            *localOffset,
+            *heapPointer,
+            _heapEscapingClosureOffsets[declaration],
+            cast(ushort) size(scalarType(declaration.type)),
+        );
+        return result;
     }
 
     // Emit a single call argument into `slot` of the argument area: a `ref`

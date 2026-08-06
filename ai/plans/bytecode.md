@@ -494,9 +494,6 @@ class block begins with a Quickbite class index, while native virtual dispatch
 reads that word as a vtable pointer. Passing the VM reference to the native
 bridge can therefore segfault before the method body runs. Supporting it needs
 a real ABI class object (including vtable) and synchronised field storage.
-Next candidate: promote the existing escaping-delegate dynamic-array-element
-row (`expressions.d`); it exercises the same non-return closure environment
-through the array-store path.
 Closure interactions with exceptions (a captured local mutated across
 try/catch/finally) and class polymorphism/vtable dispatch (including
 `super.f()`) match `SystemLinker` under `bin/qb` probing -- not a lead.
@@ -782,12 +779,13 @@ lifetime as the dependency bytecode cache.
   capture, a multi-level capture, a capture combined with `this` -- declines
   through `throwFrameEscapingDelegateDiagnostic`.
 
-  A later direct scalar/pointer assignment to a heap-boxed capture mirrors the
-  new value into its heap environment, so the delegate observes the enclosing
-  function's final value. `out`/`ref`-parameter assignment still declines a
-  capturing rhs unconditionally (`refEscapingDelegateOperandOffset`): it needs
-  a closure environment from declaration onward because writes through aliases
-  are not yet mirrored.
+  A later direct scalar/pointer assignment, or a completed `ref`/`out` call
+  that receives one of those frame locals, mirrors the new value into its heap
+  environment, so the delegate observes the enclosing function's final value.
+  `out`/`ref`-parameter assignment still declines a capturing rhs
+  unconditionally (`refEscapingDelegateOperandOffset`): it needs a closure
+  environment from declaration onward because writes through aliases are not
+  yet mirrored.
 
   The eventual right design point is DMD's own per-function `needsClosure()`/
   `closureVars` decision -- every closure-needing variable heap-allocated from
