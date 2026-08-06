@@ -45,7 +45,11 @@ static foreach (backend; Matrix!(
     operators are worth keeping here because the failure messages encode the
     negated operator.
 +/
-static foreach (backend; Matrix!()) {
+static foreach (backend; Matrix!(
+    Omit!(Bytecode, Because.unconfirmed,
+        "Unsupported struct value in bytecode core: m[$ - rowIndex()][...]" ~
+        " -- independent, unconfirmed gap in the bytecode core"),
+)) {
     @("assertDiagnostic.lessThan." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -11405,6 +11409,45 @@ static foreach (backend; Matrix!(
                 m[i++][1].bump();
                 assert(i == 1);
                 assert(m[0][1].x == 1);
+                assert(m[1][1].x == 0);
+            }
+        });
+    }
+}
+
+// In `m[$ - rowIndex()][$ - columnIndex()]`, the inner index selects a row
+// from `m`, so its `$` is `m.length`; the outer index selects from that row,
+// so its `$` is the row's length. The calls make repeat evaluation observable.
+static foreach (backend; Matrix!()) {
+    @("struct.methodCallThroughDoublyNestedIndexedReceiverDollarBindsAtEachLevelAndEvaluatesIndicesOnce." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct P {
+                int x;
+                void bump() { x++; }
+            }
+
+            unittest {
+                P[2][3] m;
+                int rowCalls;
+                int columnCalls;
+
+                size_t rowIndex() {
+                    rowCalls++;
+                    return 1;
+                }
+
+                size_t columnIndex() {
+                    columnCalls++;
+                    return 1;
+                }
+
+                m[$ - rowIndex()][$ - columnIndex()].bump();
+                assert(rowCalls == 1);
+                assert(columnCalls == 1);
+                assert(m[2][1].x == 1);
                 assert(m[1][1].x == 0);
             }
         });
