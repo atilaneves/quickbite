@@ -28,6 +28,14 @@ public class Interpreter: imported!"quickbite.backends".TreeNodeBackend {
         loadDependencyImages(dependencyImages);
     }
 
+    public this(
+        const imported!"quickbite.ffi.oldffi".DependencyImage[] dependencyImages,
+    ) {
+        import quickbite.ffi.oldffi: loadDependencyImages;
+
+        loadDependencyImages(dependencyImages);
+    }
+
     public override bool supportsReplPreludeFormatter() const
     @safe @nogc nothrow pure {
         return true;

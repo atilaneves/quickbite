@@ -242,6 +242,77 @@ unittest {
         actual[0].passed.should == true;
     }
 }
+
+static if (is(backend == Interpreter)) {
+@("dependencyImage.ldcExternDCompilerAbi")
+@Tags(Interpreter.stringof)
+unittest {
+    import quickbite.ffi.oldffi: CompilerAbi, DependencyImage;
+    import quickbite.frontend.compiler: parseSnippetWithCheckActionContext;
+    import std.path: buildPath;
+    import std.process: execute;
+
+    const sandbox = immutable Sandbox();
+    with(sandbox) {
+        const importPath = "imports";
+        const depPath = buildPath(importPath, "dep_image_ldc_order_fixture.d");
+        writeFile(depPath, q{
+            module dep_image_ldc_order_fixture;
+
+            int dependencyDifference(int left, int right) {
+                return left - right;
+            }
+        });
+
+        const dmdImagePath = buildSharedLibrary(
+            sandbox,
+            "dep_image_dmd_order_oracle",
+            [depPath],
+        );
+        const ldcImagePath = inSandboxPath("libdep_image_ldc_order_fixture.so");
+        const ldcBuild = execute([
+            "ldc2",
+            "-shared",
+            "-relocation-model=pic",
+            "-link-defaultlib-shared",
+            "-of=" ~ ldcImagePath,
+            inSandboxPath(depPath),
+        ]);
+        ldcBuild.status.should == 0;
+
+        writeFile(depPath, q{
+            module dep_image_ldc_order_fixture;
+
+            int dependencyDifference(int left, int right);
+        });
+        auto moduleResult = parseSnippetWithCheckActionContext(
+            q{
+                import dep_image_ldc_order_fixture;
+
+                unittest {
+                    int left = 10;
+                    int right = 3;
+                    assert(dependencyDifference(left, right) == 7);
+                }
+            },
+            [inSandboxPath(importPath)],
+        );
+
+        const oracle = (new SystemLinker(
+            [dmdImagePath],
+            [inSandboxPath(importPath)],
+        )).runTests(moduleResult.module_);
+        oracle.length.should == 1;
+        oracle[0].passed.should == true;
+
+        const actual = (new Interpreter([
+            DependencyImage(ldcImagePath, CompilerAbi.ldc),
+        ])).runTests(moduleResult.module_);
+        actual.length.should == 1;
+        actual[0].passed.should == true;
+    }
+}
+}
 @("dependencyImage.externDStringArgumentFunction." ~ backend.stringof)
 @Tags(backend.stringof)
 unittest {
