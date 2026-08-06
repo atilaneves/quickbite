@@ -388,9 +388,8 @@ Target state:
   text below describing mirrors stays accurate until that final migration
   stage lands.
 
-Sequencing: next replace the parallel declaration tables with one classifier
-that attaches the existing `TypeFacts` to a root place, then establish place
-resolution and its primitive operations. Migrate one consumer family per
+Sequencing: establish place resolution and its primitive operations on the
+declaration registry's classified roots. Migrate one consumer family per
 commit, with the enabled matrix green after each commit: assignment, all
 compound and prefix/postfix operations, field/index/slice/dereference access,
 address-of, `ref`/`out`, method receivers, and calls returning `ref`. A
