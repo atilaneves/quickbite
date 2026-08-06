@@ -2763,6 +2763,28 @@ private struct Walker {
                 import quickbite.backends.interpreter.layout: fieldByteOffset;
 
                 if (auto field = dot.var.isVarDeclaration) {
+                    // `$` inside `index.e2` (a `DollarExp`) is bound to
+                    // `index.lengthVar`; the ordinary eager path binds it
+                    // from `runExpression(index.e1)`'s length before
+                    // evaluating the index, but this branch exists
+                    // specifically to avoid evaluating `index.e1` a second,
+                    // independent way -- `arrayPointer` below already
+                    // resolves it once. A bare variable receiver
+                    // (`arr[$ - 1].mid.x`) has no side effect of its own to
+                    // duplicate: reading it again here to bind `lengthVar`
+                    // is exactly as safe as `arrayPointer`'s own upcoming
+                    // resolution of the same variable, so do so before
+                    // `index.e2` runs. A receiver with a side effect of its
+                    // own (a further nested `IndexExp`, a `CallExp`, ...) is
+                    // left as the pre-existing gap it already was --
+                    // re-evaluating it here would reintroduce exactly the
+                    // double-evaluation hazard this branch exists to avoid.
+                    if (index.lengthVar !is null)
+                        if (auto receiverVar = index.e1.isVarExp)
+                            setLocal(
+                                index.lengthVar,
+                                Value(AggregateValue.length(runExpression(receiverVar))),
+                            );
                     const elementIndex = runExpression(index.e2).asLong;
                     const elementPointer = arrayPointer(index.e1, elementIndex, op);
                     if (elementPointer.isPointer)
@@ -3174,6 +3196,14 @@ private struct Walker {
             return lvalueChainHasIndexExp(dot.e1);
         if (auto ptr = expression.isPtrExp)
             return lvalueChainHasIndexExp(ptr.e1);
+        // `lvalue_place.placeOfLvalue` itself walks straight through a
+        // `CastExp` (its own `CastExp` arm recurses on the operand
+        // unchanged); mirror that here so a cast-carrying chain
+        // (`(cast(Outer[]) arr)[i++].mid.a[j]`) is detected from syntax
+        // alone exactly like an uncast one, rather than silently taking the
+        // old double-evaluating path below.
+        if (auto cast_ = expression.isCastExp)
+            return lvalueChainHasIndexExp(cast_.e1);
         return false;
     }
 
@@ -3248,24 +3278,82 @@ private struct Walker {
                     ) {
                         import quickbite.backends.interpreter.lvalue_place: placeOfLvalue;
                         import quickbite.backends.interpreter.place: Place;
+                        import quickbite.backends.interpreter.place_value: readValue;
 
-                        auto fieldPlace = placeOfLvalue(
-                            nestedField,
-                            (variable) @safe => addressableBindingBase(variable),
-                            (expression) @trusted =>
-                                cast(size_t) runExpression(expression).asLong,
-                        );
-                        const outerOffset = runExpression(index.e2).asLong;
-                        const pointer = Value.pointerValue(
-                            fieldPlace.index(cast(size_t) outerOffset).address,
-                        );
-                        if (selfAddress)
-                            return pointer;
-                        return Value.pointerValue(
-                            Place(cast(void*) pointer.pointerAddress, array.type)
-                                .index(cast(size_t) offset)
-                                .address,
-                        );
+                        // `placeOfLvalue` refuses a receiver shape it does
+                        // not support (e.g. a `CallExp` base,
+                        // `makeHolder().arr[1].mid.a[1]`) by throwing --
+                        // same contract the neighbouring doubly-nested-
+                        // `DotVarExp`-without-side-effecting-index branch
+                        // below already relies on. `placeOfLvalue` always
+                        // resolves a chain's BASE before evaluating its own
+                        // index, so a refusal here always throws before any
+                        // index side effect in the chain has run; falling
+                        // through to the eager path below to re-resolve the
+                        // whole receiver from scratch is therefore safe,
+                        // exactly as safe as it is for that neighbouring
+                        // branch.
+                        try {
+                            auto fieldPlace = placeOfLvalue(
+                                nestedField,
+                                (variable) @safe => addressableBindingBase(variable),
+                                (expression) @trusted =>
+                                    cast(size_t) runExpression(expression).asLong,
+                                // `$` inside a CHAIN `IndexExp`'s own index
+                                // (e.g. `arr[$ - 1]` inside
+                                // `arr[$ - 1].mid.a[j]`) is bound to THAT
+                                // `IndexExp`'s own `lengthVar` from ITS OWN
+                                // receiver's length -- exactly what
+                                // `runIndexExpression` binds as a side
+                                // effect of evaluating an `IndexExp` on the
+                                // ordinary eager path this branch skips.
+                                // `placeOfLvalue` calls this once per
+                                // `IndexExp` it resolves, with that
+                                // `IndexExp` and its own base's `Place`,
+                                // before evaluating the index itself, so
+                                // binding it here needs no separate,
+                                // potentially-double-evaluating pre-walk.
+                                (chainIndex, base) @trusted {
+                                    if (chainIndex.lengthVar !is null)
+                                        setLocal(
+                                            chainIndex.lengthVar,
+                                            Value(AggregateValue.length(readValue(base))),
+                                        );
+                                },
+                            );
+                            // `$` inside the OUTER `index.e2` is bound to
+                            // `index.lengthVar`, and must see `nestedField`'s
+                            // (the composed field's) own current length --
+                            // the same length the skipped eager
+                            // `runExpression(index.e1)` used to provide via
+                            // `AggregateValue.length` of the receiver it
+                            // read. Bind it from `fieldPlace` before
+                            // evaluating `index.e2`, the same order the
+                            // ordinary eager path below already uses for the
+                            // identical binding.
+                            if (index.lengthVar !is null)
+                                setLocal(
+                                    index.lengthVar,
+                                    Value(AggregateValue.length(readValue(fieldPlace))),
+                                );
+                            const outerOffset = runExpression(index.e2).asLong;
+                            const pointer = Value.pointerValue(
+                                fieldPlace.index(cast(size_t) outerOffset).address,
+                            );
+                            if (selfAddress)
+                                return pointer;
+                            return Value.pointerValue(
+                                Place(cast(void*) pointer.pointerAddress, array.type)
+                                    .index(cast(size_t) offset)
+                                    .address,
+                            );
+                        } catch (Exception) {
+                            // Fall through to the eager path below for a
+                            // receiver shape `placeOfLvalue` does not (yet)
+                            // support -- safe refusal is preferable to
+                            // inventing a copied pointee, same reasoning as
+                            // the neighbouring branch's own catch.
+                        }
                     }
                 }
 

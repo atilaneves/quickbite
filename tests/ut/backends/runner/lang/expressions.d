@@ -11745,6 +11745,163 @@ static foreach (backend; Matrix!(
     }
 }
 
+// `&arr[0].mid.a[$ - 1]` -- the same doubly-nested `DotVarExp`-receiver,
+// side-effecting-index-chain shape as
+// `pointer.addressOfDoublyNestedDotVarStaticArrayElementThroughSideEffectingIndex`
+// above, but exercising `$` at the OUTERMOST index position (`a[$ - 1]`,
+// where `a` is a dynamic array). The new `arrayPointer` branch that
+// resolves the whole address through a single `lvalue_place.placeOfLvalue`
+// walk skips the ordinary eager `runExpression(index.e1)` -- the only thing
+// that used to bind `index.lengthVar` from the receiver's length before
+// `$` is evaluated. Left unbound, `$` reads back 0, so `$ - 1` wraps to
+// `size_t.max` and `Place.index` throws "index out of range for slice
+// place" instead of resolving element 2. SystemLinker is the oracle.
+static foreach (backend; Matrix!(
+    Omit!(Bytecode, Because.unconfirmed,
+        "no support yet for address-of through a doubly-nested `DotVarExp` " ~
+        "receiver in the bytecode core, same gap as " ~
+        "addressOfDoublyNestedDotVarStaticArrayElement above"),
+    Omit!(LLVMJit, Because.unconfirmed,
+        "independent, unconfirmed gap: address-of through a doubly-nested " ~
+        "`DotVarExp` receiver in the JIT backend, same gap as " ~
+        "addressOfDoublyNestedDotVarStaticArrayElement above"),
+)) {
+    @("pointer.addressOfDoublyNestedDotVarDynamicArrayElementThroughDollarAtOuterIndex." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            unittest {
+                struct Mid { int[] a; }
+                struct Outer { Mid mid; }
+                Outer[] arr;
+                arr ~= Outer(Mid([10, 20, 30]));
+                auto p = &arr[0].mid.a[$ - 1];
+                assert(*p == 30);
+            }
+        });
+    }
+}
+
+// `&arr[$ - 1].mid.a[0]` -- `$` bound inside a CHAIN `IndexExp` (`arr[$ - 1]`)
+// that `arrayPointer`'s new side-effecting-index branch itself resolves
+// through `lvalue_place.placeOfLvalue`'s own recursion (as opposed to the
+// OUTER index position the fixture above exercises). `placeOfLvalue`'s
+// `evalIndex` callback evaluates `arr[$ - 1]`'s own `$ - 1` the same way it
+// evaluates a side-effecting chain index -- with `index.lengthVar` never
+// bound to `arr`'s length first, since the ordinary eager
+// `runExpression(index.e1)` that used to provide it is skipped for this
+// shape. SystemLinker is the oracle.
+static foreach (backend; Matrix!(
+    Omit!(Bytecode, Because.unconfirmed,
+        "no support yet for address-of through a doubly-nested `DotVarExp` " ~
+        "receiver in the bytecode core, same gap as " ~
+        "addressOfDoublyNestedDotVarStaticArrayElement above"),
+    Omit!(LLVMJit, Because.unconfirmed,
+        "independent, unconfirmed gap: address-of through a doubly-nested " ~
+        "`DotVarExp` receiver in the JIT backend, same gap as " ~
+        "addressOfDoublyNestedDotVarStaticArrayElement above"),
+)) {
+    @("pointer.addressOfDoublyNestedDotVarStaticArrayElementThroughDollarInChainIndex." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            unittest {
+                struct Mid { int[3] a; }
+                struct Outer { Mid mid; }
+                Outer[] arr;
+                arr ~= Outer(Mid([10, 20, 30]));
+                arr ~= Outer(Mid([40, 50, 60]));
+                auto p = &arr[$ - 1].mid.a[0];
+                assert(*p == 40);
+            }
+        });
+    }
+}
+
+// `&arr[$ - 1].mid.a` -- `$` bound inside a CHAIN `IndexExp` (`arr[$ - 1]`,
+// not the outermost index) of a doubly-nested `DotVarExp` receiver whose
+// last leg (`.a`, a scalar field) is not itself an `IndexExp`, so this
+// reaches `addressOfExpression`'s own doubly-nested-`DotVarExp` special
+// case (its `dot.e1.isIndexExp` arm) rather than `arrayPointer`'s `IndexExp`
+// arm directly -- the same missing-`$`-binding pattern one level up:
+// `elementIndex = runExpression(index.e2).asLong` there evaluates `$ - 1`
+// with `index.lengthVar` never bound to `arr`'s length first. SystemLinker
+// is the oracle.
+static foreach (backend; Matrix!(
+    Omit!(Bytecode, Because.unconfirmed,
+        "no support yet for address-of through a doubly-nested `DotVarExp` " ~
+        "receiver in the bytecode core, same gap as " ~
+        "addressOfDoublyNestedDotVarStaticArrayElement above"),
+    Omit!(LLVMJit, Because.unconfirmed,
+        "independent, unconfirmed gap: address-of through a doubly-nested " ~
+        "`DotVarExp` receiver in the JIT backend, same gap as " ~
+        "addressOfDoublyNestedDotVarStaticArrayElement above"),
+)) {
+    @("pointer.addressOfDoublyNestedDotVarFieldThroughDollarInChainIndex." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            unittest {
+                struct Mid { int a; }
+                struct Outer { Mid mid; }
+                Outer[] arr;
+                arr ~= Outer(Mid(7));
+                arr ~= Outer(Mid(8));
+                auto p = &arr[$ - 1].mid.a;
+                assert(*p == 8);
+            }
+        });
+    }
+}
+
+// `makeHolder().arr[1].mid.a[1].doubled()` -- a method call whose receiver
+// is a doubly-nested `DotVarExp`/`IndexExp` chain (`arrayPointer`'s new
+// side-effecting-index branch's own shape) rooted in a `CallExp`
+// (`makeHolder()`), a receiver shape `lvalue_place.placeOfLvalue` does not
+// support: its `DotVarExp` arm refuses once its own receiver recursion
+// bottoms out at the `CallExp`, before evaluating any index. The
+// pre-existing neighbouring doubly-nested-`DotVarExp` branch (no
+// side-effecting index) wraps its own `placeOfLvalue` call in try/catch and
+// falls through to the old eager native-aggregate route for exactly this
+// reason; the new branch must do the same rather than let the refusal
+// propagate as an uncaught exception. SystemLinker is the oracle.
+static foreach (backend; Matrix!(
+    Omit!(Bytecode, Because.unconfirmed,
+        "no support yet for address-of through a doubly-nested `DotVarExp` " ~
+        "receiver in the bytecode core, same gap as " ~
+        "addressOfDoublyNestedDotVarStaticArrayElement above"),
+    Omit!(LLVMJit, Because.unconfirmed,
+        "independent, unconfirmed gap: address-of through a doubly-nested " ~
+        "`DotVarExp` receiver in the JIT backend, same gap as " ~
+        "addressOfDoublyNestedDotVarStaticArrayElement above"),
+)) {
+    @("pointer.addressOfDoublyNestedDotVarElementThroughIndexChainWithCallExpBase." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct Elem {
+                int val;
+                int doubled() { return val * 2; }
+            }
+            struct Mid { Elem[3] a; }
+            struct Outer { Mid mid; }
+            struct Holder { Outer[3] arr; }
+            Holder makeHolder() {
+                Holder h;
+                h.arr[1].mid.a[1] = Elem(21);
+                return h;
+            }
+            unittest {
+                assert(makeHolder().arr[1].mid.a[1].doubled() == 42);
+            }
+        });
+    }
+}
+
 // `(*next() = P(10)).bump()` -- a method call chained off an assignment
 // whose own target is a side-effecting `PtrExp` (`*next()`, `next()`
 // advancing `calls` and returning a fresh element each time). `bump()`'s
