@@ -216,6 +216,85 @@ unittest {
 }
 
 
+@("ffi.addressOnlyExternDVariadicVectorCalls")
+unittest {
+    version (LDC)
+        enum hostCompilerAbi = CompilerAbi.ldc;
+    else
+        enum hostCompilerAbi = CompilerAbi.dmd;
+
+    Type vectorType = new TypeVector(Type.tfloat32.sarrayOf(4));
+    vectorType = vectorType.merge;
+    auto signature = variadicFunctionSignature(
+        vectorType,
+        [Type.tint32],
+        LINK.d,
+    );
+    DVariadicVectorReceiver receiver = DVariadicVectorReceiver(3);
+    auto method = &receiver.combine;
+    int fixed = 4;
+    float unpromoted = 2.5;
+    Float4 vector = [1.0f, 2.0f, 4.0f, 8.0f];
+    Float4 result;
+    auto receiverType = structType(q{
+        struct Receiver {
+            int bias;
+        }
+    }, "Receiver");
+    auto receiverAddress = TypedAddress(receiverType, &receiver);
+    DVariadicMetadata variadicMetadata;
+
+    version (LDC) {
+        TypeInfo[] metadata = [typeid(float), typeid(Float4)];
+        auto metadataType = functionSignature(q{
+            void metadata(TypeInfo[]);
+        }, "metadata").parameterList[0].type;
+        variadicMetadata = DVariadicMetadata(
+            TypedAddress(metadataType, &metadata),
+        );
+    } else {
+        TypeInfo_Tuple metadata = new TypeInfo_Tuple;
+        metadata.elements = [typeid(float), typeid(Float4)];
+        auto metadataType = functionSignature(q{
+            void metadata(TypeInfo_Tuple);
+        }, "metadata").parameterList[0].type;
+        variadicMetadata = DVariadicMetadata(
+            TypedAddress(metadataType, &metadata),
+        );
+    }
+
+    const expected = receiver.combine(fixed, unpromoted, vector);
+    call(
+        Callable(cast(void*) method.funcptr, signature, hostCompilerAbi),
+        [
+            TypedAddress(Type.tint32, &fixed),
+            TypedAddress(Type.tfloat32, &unpromoted),
+            TypedAddress(vectorType, &vector),
+        ],
+        TypedAddress(vectorType, &result),
+        &receiverAddress,
+        &variadicMetadata,
+    ).should == true;
+
+    result.array.should == expected.array;
+
+    enum otherCompilerAbi = hostCompilerAbi == CompilerAbi.dmd
+        ? CompilerAbi.ldc
+        : CompilerAbi.dmd;
+    call(
+        Callable(cast(void*) method.funcptr, signature, otherCompilerAbi),
+        [
+            TypedAddress(Type.tint32, &fixed),
+            TypedAddress(Type.tfloat32, &unpromoted),
+            TypedAddress(vectorType, &vector),
+        ],
+        TypedAddress(vectorType, &result),
+        &receiverAddress,
+        &variadicMetadata,
+    ).should == false;
+}
+
+
 @("ffi.addressOnlyExternCScalarCall")
 unittest {
     int lhs = 4;
@@ -1807,6 +1886,34 @@ private TypeFunction functionSignature(
 }
 
 
+private TypeFunction variadicFunctionSignature(
+    Type returnType,
+    Type[] parameterTypes,
+    in LINK linkage,
+) {
+    import dmd.arraytypes: Parameters;
+    import dmd.astenums: STC, VarArg;
+    import dmd.location: Loc;
+    import dmd.mtype: Parameter;
+
+    auto parameters = new Parameters;
+    foreach (parameterType; parameterTypes)
+        parameters.push(new Parameter(
+            Loc.initial,
+            STC.none,
+            parameterType,
+            null,
+            null,
+            null,
+        ));
+    return new TypeFunction(
+        ParameterList(parameters, VarArg.variadic),
+        returnType,
+        linkage,
+    );
+}
+
+
 private void assertFloatingPointCall(T)(T argument, Type type) {
     T result;
     const expected = floatingPointOracle(argument);
@@ -1921,6 +2028,23 @@ private struct DVectorReceiver {
         Float4 factor = head;
         Float4 offset = bias * 10 + tail;
         return value * factor + offset;
+    }
+}
+
+
+private struct DVariadicVectorReceiver {
+    private int bias;
+
+    private Float4 combine(int fixed, ...) {
+        import core.vararg: va_arg;
+
+        assert(_arguments.length == 2);
+        assert(_arguments[0] is typeid(float));
+        assert(_arguments[1] is typeid(Float4));
+        const floating = va_arg!float(_argptr);
+        const vector = va_arg!Float4(_argptr);
+        Float4 offset = bias * 100 + fixed * 10 + floating;
+        return vector + offset;
     }
 }
 

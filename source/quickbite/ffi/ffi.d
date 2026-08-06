@@ -78,7 +78,13 @@ public bool call(
 
     if (signatureContainsVector(callable.signature) ||
         argumentsContainVector(arguments))
-        return callSysVVector(callable, arguments, result, receiver);
+        return callSysVVector(
+            callable,
+            arguments,
+            result,
+            receiver,
+            variadicMetadata,
+        );
 
     const hasReceiver = receiver !is null;
     FfiType receiverMetadata;
@@ -307,6 +313,7 @@ private bool callSysVVector(
     TypedAddress[] arguments,
     TypedAddress result,
     TypedAddress* receiver,
+    DVariadicMetadata* variadicMetadata,
 ) {
     import quickbite.ffi.sysv_call:
         SysVCallFrame, SysVResultKind, invokeSysV;
@@ -315,7 +322,10 @@ private bool callSysVVector(
     import dmd.typesem: size;
     import core.stdc.string: memcpy;
 
-    const hasVariadicTail = hasCVariadicArguments(callable.signature);
+    const hasCVariadicTail = hasCVariadicArguments(callable.signature);
+    const isDVariadic = callable.signature.linkage == LINK.d &&
+        callable.signature.parameterList.varargs == VarArg.variadic;
+    const hasVariadicTail = hasCVariadicTail || isDVariadic;
     const numFixedArguments = callable.signature.parameterList.length;
     if ((callable.signature.linkage != LINK.c &&
             callable.signature.linkage != LINK.d) ||
@@ -326,7 +336,8 @@ private bool callSysVVector(
             ? arguments.length < numFixedArguments
             : arguments.length != numFixedArguments) ||
         result.type is null ||
-        !result.type.toBasetype.equals(callable.signature.next.toBasetype))
+        !result.type.toBasetype.equals(callable.signature.next.toBasetype) ||
+        isDVariadic != (variadicMetadata !is null))
         return false;
 
     SysVCallFrame frame;
@@ -352,8 +363,25 @@ private bool callSysVVector(
             return false;
         memcpy(&frame.gpr[nextGpr++], receiverAddress, void*.sizeof);
     }
+    if (isDVariadic) {
+        const expectedType = callable.compilerAbi == CompilerAbi.dmd
+            ? TY.Tclass
+            : TY.Tarray;
+        auto metadata = variadicMetadata.value;
+        if (metadata.type is null || metadata.address is null ||
+            metadata.type.toBasetype.ty != expectedType)
+            return false;
+        if (!placeSysVArgument(
+            frame,
+            stackBytes,
+            nextGpr,
+            nextXmm,
+            metadata,
+        ))
+            return false;
+    }
     const reversesArguments = callable.signature.linkage == LINK.d &&
-        callable.compilerAbi == CompilerAbi.dmd;
+        callable.compilerAbi == CompilerAbi.dmd && !isDVariadic;
     foreach (position; 0 .. arguments.length) {
         const index = reversesArguments
             ? arguments.length - position - 1
@@ -365,51 +393,17 @@ private bool callSysVVector(
             auto parameterType = callable.signature.parameterList[index].type;
             if (!argument.type.toBasetype.equals(parameterType.toBasetype))
                 return false;
-        } else if (!isPromotedVariadicType(argument.type))
+        } else if (hasCVariadicTail &&
+            !isPromotedVariadicType(argument.type))
             return false;
-        auto tuple = toArgTypes_sysv_x64(semanticStorageType(argument.type));
-        if (tuple is null)
-            continue;
-        size_t neededGpr;
-        size_t neededXmm;
-        bool mustUseStack = tuple.arguments.length == 0;
-        foreach (part; *tuple.arguments) {
-            if (part.type.toBasetype.ty == TY.Tfloat80)
-                mustUseStack = true;
-            else if (isSysVVectorPart(part.type)) {
-                if (size(part.type) != frame.xmm[0].length)
-                    return false;
-                ++neededXmm;
-            } else if (isSysVSseType(part.type))
-                ++neededXmm;
-            else
-                ++neededGpr;
-        }
-        mustUseStack = mustUseStack ||
-            nextGpr + neededGpr > frame.gpr.length ||
-            nextXmm + neededXmm > frame.xmm.length;
-        if (mustUseStack) {
-            appendSysVStackArgument(stackBytes, argument);
-            continue;
-        }
-
-        foreach (partIndex, part; *tuple.arguments) {
-            const offset = partIndex * ulong.sizeof;
-            const partSize = cast(size_t) size(part.type);
-            if (isSysVVectorPart(part.type) || isSysVSseType(part.type)) {
-                if (partSize > frame.xmm[nextXmm].length)
-                    return false;
-                memcpy(frame.xmm[nextXmm].ptr,
-                    cast(ubyte*) argument.address + offset, partSize);
-                ++nextXmm;
-            } else {
-                if (partSize > ulong.sizeof)
-                    return false;
-                memcpy(&frame.gpr[nextGpr],
-                    cast(ubyte*) argument.address + offset, partSize);
-                ++nextGpr;
-            }
-        }
+        if (!placeSysVArgument(
+            frame,
+            stackBytes,
+            nextGpr,
+            nextXmm,
+            argument,
+        ))
+            return false;
     }
     frame.sseCount = cast(ubyte) nextXmm;
     stackBytes.length = alignedTo(stackBytes.length, 16);
@@ -443,6 +437,69 @@ private bool callSysVVector(
                     &frame.resultGpr[nextResultGpr], partSize);
                 ++nextResultGpr;
             }
+        }
+    }
+    return true;
+}
+
+
+private bool placeSysVArgument(
+    ref imported!"quickbite.ffi.sysv_call".SysVCallFrame frame,
+    ref ubyte[] stackBytes,
+    ref size_t nextGpr,
+    ref size_t nextXmm,
+    TypedAddress argument,
+) {
+    import dmd.argtypes_sysv_x64: toArgTypes_sysv_x64;
+    import dmd.astenums: TY;
+    import dmd.typesem: size;
+    import core.stdc.string: memcpy;
+
+    auto tuple = toArgTypes_sysv_x64(semanticStorageType(argument.type));
+    if (tuple is null)
+        return true;
+    size_t neededGpr;
+    size_t neededXmm;
+    bool mustUseStack = tuple.arguments.length == 0;
+    foreach (part; *tuple.arguments) {
+        if (part.type.toBasetype.ty == TY.Tfloat80)
+            mustUseStack = true;
+        else if (isSysVVectorPart(part.type)) {
+            if (size(part.type) != frame.xmm[0].length)
+                return false;
+            ++neededXmm;
+        } else if (isSysVSseType(part.type))
+            ++neededXmm;
+        else
+            ++neededGpr;
+    }
+    mustUseStack = mustUseStack ||
+        nextGpr + neededGpr > frame.gpr.length ||
+        nextXmm + neededXmm > frame.xmm.length;
+    if (mustUseStack) {
+        appendSysVStackArgument(stackBytes, argument);
+        return true;
+    }
+
+    foreach (partIndex, part; *tuple.arguments) {
+        const offset = partIndex * ulong.sizeof;
+        const partSize = cast(size_t) size(part.type);
+        if (isSysVVectorPart(part.type) || isSysVSseType(part.type)) {
+            if (partSize > frame.xmm[nextXmm].length)
+                return false;
+            memcpy(
+                frame.xmm[nextXmm++].ptr,
+                cast(ubyte*) argument.address + offset,
+                partSize,
+            );
+        } else {
+            if (partSize > ulong.sizeof)
+                return false;
+            memcpy(
+                &frame.gpr[nextGpr++],
+                cast(ubyte*) argument.address + offset,
+                partSize,
+            );
         }
     }
     return true;
