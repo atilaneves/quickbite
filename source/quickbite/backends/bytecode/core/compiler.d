@@ -3505,6 +3505,8 @@ private struct Compiler {
         auto result = new Operand;
         *result = isAggregateElement || elementIsArray
             ? Operand(offset, ScalarType.void_)
+            : resultType.toBasetype.ty == TY.Tclass
+            ? Operand(offset, ScalarType.ulong_, true, ScalarType.void_)
             : isPointerType(resultType)
             ? Operand(
                 offset, ScalarType.ulong_, true,

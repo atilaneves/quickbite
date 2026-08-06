@@ -2351,6 +2351,29 @@ static foreach (backend; Matrix!(
     }
 }
 
+// A class reference loaded from a dynamic-array element remains a class
+// receiver, rather than an untyped scalar word: `values[0].greet()` must
+// dispatch through the same object created before the append.
+static foreach (backend; Matrix!()) {
+    @("dynamicArray.classElementMethodCall." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            class English {
+                string greet() {
+                    return "hello";
+                }
+            }
+
+            unittest {
+                English[] values;
+                values ~= new English;
+                assert(values[0].greet == "hello");
+            }
+        });
+    }
+}
+
 // A row-range assignment (`arr[lo .. hi] = otherRows[];`) into a `T[N][]`
 // destination, where the rhs is itself a range of rows rather than a single
 // broadcast row (the sibling test above): each destination row already has

@@ -458,11 +458,6 @@ reaches them:
   both entry points to decline still fails that row -- so do not remove or
   narrow it without a real fix backing it, and note that any change to how a
   delegate-typed store resolves can starve that fallback and break the row.
-- A dynamic array of class instances throws "Unsupported class method
-  receiver in bytecode core" on element method calls (`English[] gs; gs ~=
-  new English(); gs[0].greet();`): indexing a `Tarray` of `Tclass` elements
-  isn't wired into the class-pointer machinery
-  (`compileClassPointerDeclaration`, `compiler.d`).
 - A `throw`'s exception-chaining (`.next`) only threads through
   `_pendingFinallyExceptionMessageOffset` on the `emitThrowString` (string
   `new Exception(...)`) path. An object throw (`throw e;`, or any non-string-
