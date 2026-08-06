@@ -559,8 +559,8 @@ reaches them:
 - A nested `try { try {...} catch (Exception) {...} } catch (Error e) {...}`
   around an out-of-bounds array index (`RangeError`) diverges from
   `SystemLinker`: the `Error` fails to reach the outer handler on `Bytecode`
-  (`Interpreter` matches the oracle). Found via `tests/example.d`
-  (`ai/plans/example-corpus.md`); no matrix fixture pins it yet.
+  (`Interpreter` matches the oracle). Found via `tests/example.d`; no
+  matrix fixture pins it yet.
 
 Closure interactions with exceptions (a captured local mutated across
 try/catch/finally) and class polymorphism/vtable dispatch (including
