@@ -1,15 +1,37 @@
+// Example corpus, not a quickbite behaviour test: `bin/bench.sh`'s default
+// fixture. Adding or changing unittests here needs no approval and no
+// ci.sh run; the only check is `./bin/bench.sh -b interpreter -b bytecode`
+// succeeding (add `-b system-linker` for a correctness check against the
+// oracle before dropping back to the timed two-backend run).
+
 void encode(T)(T val, ref ubyte[] output) {
-    static foreach(i; 0 .. T.sizeof)
-        output ~= cast(ubyte)(val >> (i * 8));
+    static if (is(T == float))
+        encode(*cast(uint*) &val, output);
+    else static if (is(T == double))
+        encode(*cast(ulong*) &val, output);
+    else
+        static foreach(i; 0 .. T.sizeof)
+            output ~= cast(ubyte)(val >> (i * 8));
 }
 
 T decode(T)(in ubyte[] input, ref size_t pos) {
-    T result = 0;
+    static if (is(T == float)) {
+        uint bits = decode!uint(input, pos);
+        return *cast(float*) &bits;
+    } else static if (is(T == double)) {
+        ulong bits = decode!ulong(input, pos);
+        return *cast(double*) &bits;
+    } else {
+        if (pos + T.sizeof > input.length)
+            throw new OutOfBytesError("Minicereal.decode: not enough bytes");
 
-    static foreach(i; 0 .. T.sizeof)
-        result |= cast(T)(input[pos++]) << (i * 8);
+        T result = 0;
 
-    return result;
+        static foreach(i; 0 .. T.sizeof)
+            result |= cast(T)(input[pos++]) << (i * 8);
+
+        return result;
+    }
 }
 
 struct Minicereal {
@@ -22,6 +44,121 @@ struct Minicereal {
     T get(T)(ref size_t pos) {
         return decode!T(bytes, pos);
     }
+}
+
+class MinicerealError : Exception {
+    this(string msg) {
+        super(msg);
+    }
+}
+
+class OutOfBytesError : MinicerealError {
+    this(string msg) {
+        super(msg);
+    }
+}
+
+unittest {
+    ubyte[] input;
+    size_t pos = 0;
+    bool caught;
+
+    try {
+        decode!uint(input, pos);
+    } catch (MinicerealError e) {
+        caught = true;
+    }
+
+    assert(caught);
+}
+
+unittest {
+    ubyte[] input;
+    size_t pos = 0;
+    string message;
+
+    try {
+        decode!ulong(input, pos);
+    } catch (MinicerealError e) {
+        auto specific = cast(OutOfBytesError) e;
+        message = specific.msg;
+    }
+
+    assert(message == "Minicereal.decode: not enough bytes");
+}
+
+unittest {
+    ubyte[] input;
+    size_t pos = 0;
+    bool caught;
+    bool finallyRan;
+
+    try {
+        decode!int(input, pos);
+    } catch (Exception e) {
+        caught = true;
+    } finally {
+        finallyRan = true;
+    }
+
+    assert(caught);
+    assert(finallyRan);
+}
+
+unittest {
+    ubyte[] input = [0x2au];
+    size_t pos = 0;
+    bool finallyRan;
+    ubyte value;
+
+    try {
+        value = decode!ubyte(input, pos);
+    } finally {
+        finallyRan = true;
+    }
+
+    assert(value == 0x2au);
+    assert(finallyRan);
+}
+
+unittest {
+    string caughtAs;
+
+    void attempt(ubyte[] input) {
+        size_t pos = 0;
+        try {
+            decode!uint(input, pos);
+        } catch (OutOfBytesError e) {
+            caughtAs = "outOfBytes";
+        } catch (MinicerealError e) {
+            caughtAs = "minicereal";
+        }
+    }
+
+    attempt([]);
+    assert(caughtAs == "outOfBytes");
+}
+
+unittest {
+    bool outerCaught;
+
+    void inner(ubyte[] input, ref size_t pos) {
+        try {
+            decode!int(input, pos);
+        } catch (MinicerealError e) {
+            throw e;
+        }
+    }
+
+    ubyte[] input;
+    size_t pos = 0;
+    try {
+        inner(input, pos);
+    } catch (MinicerealError e) {
+        outerCaught = true;
+    }
+
+    assert(outerCaught);
 }
 
 unittest {
@@ -242,6 +379,62 @@ unittest {
     size_t pos = 0;
     assert(decode!long(buf, pos) == value);
     assert(pos == 8);
+}
+
+unittest {
+    ubyte[] buf;
+    encode!float(1.5f, buf);
+    ubyte[] expected = [0x00u, 0x00u, 0xc0u, 0x3fu];
+    assert(buf == expected);
+}
+
+unittest {
+    ubyte[] input = [0x00u, 0x00u, 0xc0u, 0x3fu];
+    size_t pos = 0;
+    assert(decode!float(input, pos) == 1.5f);
+    assert(pos == 4);
+}
+
+unittest {
+    float value = -2.25f;
+    ubyte[] buf;
+    encode(value, buf);
+    size_t pos = 0;
+    assert(decode!float(buf, pos) == value);
+    assert(pos == 4);
+}
+
+unittest {
+    ubyte[] buf;
+    encode!double(1.5, buf);
+    ubyte[] expected = [0x00u, 0x00u, 0x00u, 0x00u, 0x00u, 0x00u, 0xf8u, 0x3fu];
+    assert(buf == expected);
+}
+
+unittest {
+    ubyte[] input = [0x00u, 0x00u, 0x00u, 0x00u, 0x00u, 0x00u, 0xf8u, 0x3fu];
+    size_t pos = 0;
+    assert(decode!double(input, pos) == 1.5);
+    assert(pos == 8);
+}
+
+unittest {
+    double value = -2.25;
+    ubyte[] buf;
+    encode(value, buf);
+    size_t pos = 0;
+    assert(decode!double(buf, pos) == value);
+    assert(pos == 8);
+}
+
+unittest {
+    Minicereal cereal;
+    cereal.put!double(3.5);
+    cereal.put!float(-1.25f);
+    size_t pos = 0;
+    assert(cereal.get!double(pos) == 3.5);
+    assert(cereal.get!float(pos) == -1.25f);
+    assert(pos == cereal.bytes.length);
 }
 
 unittest {
@@ -485,4 +678,406 @@ unittest {
     assert(signedWord == cast(short) -3841);
 
     assert(cast(ubyte) ~narrowedByte == 0xf0u);
+}
+
+class Header {
+    int magic = 0x2a;
+}
+
+class VersionedHeader : Header {
+    int schema = 1;
+    int length = 0;
+
+    this(int len) {
+        length = len;
+    }
+}
+
+unittest {
+    auto plain = new Header;
+    assert(plain.magic == 0x2a);
+
+    auto versioned = new VersionedHeader(16);
+    assert(versioned.magic == 0x2a);
+    assert(versioned.schema == 1);
+    assert(versioned.length == 16);
+}
+
+class Counter {
+    int value;
+}
+
+void setTo(ref int x, int value) {
+    x = value;
+}
+
+unittest {
+    auto counter = new Counter;
+    setTo(counter.value, 88);
+    assert(counter.value == 88);
+}
+
+interface Codec {
+    int transform();
+}
+
+class DoublingCodec : Codec {
+    int val_;
+
+    this(int val) {
+        val_ = val;
+    }
+
+    int transform() {
+        return val_ * 2;
+    }
+}
+
+class IncrementingCodec : Codec {
+    int val_;
+
+    this(int val) {
+        val_ = val;
+    }
+
+    int transform() {
+        return val_ + 1;
+    }
+}
+
+int runDoubling(int val) {
+    Codec doubler = new DoublingCodec(val);
+    return doubler.transform();
+}
+
+int runIncrementing(int val) {
+    Codec incrementer = new IncrementingCodec(val);
+    return incrementer.transform();
+}
+
+unittest {
+    assert(runDoubling(20) == 40);
+}
+
+unittest {
+    assert(runIncrementing(20) == 21);
+}
+
+int accumulate(int seed) {
+    int total = seed + 2;
+
+    int add(int amount) {
+        total += amount;
+        return total;
+    }
+
+    int delegate(int) adder = &add;
+
+    return adder(5) + adder(1);
+}
+
+unittest {
+    assert(accumulate(3) == 21);
+}
+
+int weightedTotal(int base) {
+    int total = base;
+
+    int scaleBy(int factor) {
+        total = total * factor;
+        return total;
+    }
+
+    int delegate(int) scaler = &scaleBy;
+
+    scaler(2);
+    scaler(3);
+
+    return total;
+}
+
+unittest {
+    assert(weightedTotal(5) == 30);
+}
+
+struct Cursor {
+    size_t offset;
+
+    size_t readOffset() {
+        auto nested = () => offset;
+        return nested();
+    }
+}
+
+unittest {
+    auto cursor = Cursor(7);
+    assert(cursor.readOffset() == 7);
+}
+
+struct Tag {
+    int code;
+
+    int readCode() {
+        return (() => code)();
+    }
+}
+
+unittest {
+    auto tag = Tag(9);
+    assert(tag.readCode() == 9);
+}
+
+unittest {
+    int[string] fieldOffsets;
+    fieldOffsets["magic"] = 0;
+    fieldOffsets["schema"] = 4;
+
+    int offsetSum;
+    int nameLengthSum;
+    foreach (name, offset; fieldOffsets) {
+        assert(fieldOffsets[name] == offset);
+        offsetSum += offset;
+        nameLengthSum += cast(int) name.length;
+    }
+    assert(offsetSum == 4);
+    assert(nameLengthSum == 11);
+}
+
+struct FieldId {
+    int recordId;
+    int fieldIndex;
+}
+
+unittest {
+    int[FieldId] widths;
+    widths[FieldId(1, 0)] = 4;
+
+    FieldId id = FieldId(1, 1);
+    widths[id] = 8;
+
+    assert((FieldId(1, 0) in widths) !is null);
+    assert(widths[FieldId(1, 0)] == 4);
+    assert(widths[id] == 8);
+    assert(widths.length == 2);
+
+    int sum;
+    foreach (k, v; widths)
+        sum += k.recordId + k.fieldIndex + v;
+    assert(sum == 15);
+}
+
+unittest {
+    int[int] table = [1: 10, 2: 20, 3: 30];
+    int keySum;
+    int valueSum;
+
+    foreach (key; table.keys)
+        keySum += key;
+
+    foreach (value; table.values)
+        valueSum += value;
+
+    assert(keySum == 6);
+    assert(valueSum == 60);
+}
+
+struct Span {
+    int offset;
+    int length;
+
+    int grow() {
+        return length += 1;
+    }
+}
+
+unittest {
+    Span[string] spans;
+    spans["header"] = Span(0, 4);
+    assert(spans["header"].offset == 0);
+
+    spans["header"].offset = 8;
+    assert(spans["header"].offset == 8);
+    assert(spans["header"].length == 4);
+
+    spans["header"].grow();
+    assert(spans["header"].length == 5);
+}
+
+unittest {
+    int i;
+    int sum;
+
+    do {
+        ++i;
+
+        if (i == 2)
+            continue;
+
+        if (i == 5)
+            break;
+
+        sum += i;
+    } while (i < 6);
+
+    assert(sum == 8);
+}
+
+unittest {
+    int outerLimit = 1;
+    ++outerLimit;
+    int innerLimit = 2;
+    ++innerLimit;
+    int count;
+
+outer:
+    for (int i = 0; i < outerLimit; ++i) {
+        for (int j = 0; j < innerLimit; ++j) {
+            ++count;
+
+            if (i == 0 && j == 1)
+                break outer;
+        }
+    }
+
+    assert(count == 2);
+}
+
+int loopBound(int value) {
+    return value;
+}
+
+unittest {
+    int count;
+
+outer:
+    for (int i = 0; i < loopBound(3); ++i) {
+        for (int j = 0; j < loopBound(4); ++j) {
+            if (j == i + 1)
+                continue outer;
+
+            ++count;
+        }
+
+        count += loopBound(10);
+    }
+
+    assert(count == 6);
+}
+
+unittest {
+    int value = 1;
+    int result;
+
+    switch (value) {
+        case 1:
+            result += 10;
+            goto case 2;
+
+        case 2:
+            result += 20;
+            break;
+
+        default:
+            result += 30;
+            break;
+    }
+
+    assert(result == 30);
+}
+
+unittest {
+    int value = 1;
+    int result;
+
+    switch (value) {
+        case 1:
+            result += 10;
+            goto default;
+
+        case 2:
+            result += 20;
+            break;
+
+        default:
+            result += 30;
+            break;
+    }
+
+    assert(result == 40);
+}
+
+string paletteName(int n) {
+    return n == 1 ? "red" : "green";
+}
+
+int paletteScore(string s) {
+    switch (s) {
+        case "red":
+            return 10;
+
+        case "green":
+            return 20;
+
+        default:
+            return 0;
+    }
+}
+
+unittest {
+    assert(paletteScore(paletteName(1)) == 10);
+    assert(paletteScore(paletteName(2)) == 20);
+}
+
+enum Shade {
+    red,
+    green,
+    blue,
+}
+
+Shade shadeFor(int n) {
+    return n == 0 ? Shade.red : n == 1 ? Shade.green : Shade.blue;
+}
+
+int weightOf(Shade shade) {
+    final switch (shade) {
+        case Shade.red:
+            return 10;
+
+        case Shade.green:
+            return 20;
+
+        case Shade.blue:
+            return 30;
+    }
+}
+
+unittest {
+    assert(weightOf(shadeFor(0)) == 10);
+    assert(weightOf(shadeFor(1)) == 20);
+    assert(weightOf(shadeFor(2)) == 30);
+}
+
+int bucket(int n) {
+    return n;
+}
+
+int classifyBucket(int n) {
+    switch (n) {
+        case 0: .. case 3:
+            return 10;
+
+        case 5, 7:
+            return 20;
+
+        default:
+            return 30;
+    }
+}
+
+unittest {
+    assert(classifyBucket(bucket(0)) == 10);
+    assert(classifyBucket(bucket(3)) == 10);
+    assert(classifyBucket(bucket(5)) == 20);
+    assert(classifyBucket(bucket(7)) == 20);
+    assert(classifyBucket(bucket(4)) == 30);
 }
