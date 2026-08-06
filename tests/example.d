@@ -756,3 +756,67 @@ unittest {
 unittest {
     assert(runIncrementing(20) == 21);
 }
+
+int accumulate(int seed) {
+    int total = seed + 2;
+
+    int add(int amount) {
+        total += amount;
+        return total;
+    }
+
+    int delegate(int) adder = &add;
+
+    return adder(5) + adder(1);
+}
+
+unittest {
+    assert(accumulate(3) == 21);
+}
+
+int weightedTotal(int base) {
+    int total = base;
+
+    int scaleBy(int factor) {
+        total = total * factor;
+        return total;
+    }
+
+    int delegate(int) scaler = &scaleBy;
+
+    scaler(2);
+    scaler(3);
+
+    return total;
+}
+
+unittest {
+    assert(weightedTotal(5) == 30);
+}
+
+struct Cursor {
+    size_t offset;
+
+    size_t readOffset() {
+        auto nested = () => offset;
+        return nested();
+    }
+}
+
+unittest {
+    auto cursor = Cursor(7);
+    assert(cursor.readOffset() == 7);
+}
+
+struct Tag {
+    int code;
+
+    int readCode() {
+        return (() => code)();
+    }
+}
+
+unittest {
+    auto tag = Tag(9);
+    assert(tag.readCode() == 9);
+}

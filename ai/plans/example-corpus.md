@@ -24,10 +24,12 @@ is no production change. The only check is `./bin/bench.sh -b interpreter
 (`~=`, slicing, `$`, assignment), `foreach`/`for`/`switch` control flow,
 short-circuit `&&`/`||`, bitwise ops, and exceptions (`throw`/`catch`/
 `finally`, catch-by-base, multi-catch, rethrow — via a
-`decode`/`Minicereal.get` bounds check), and classes/interfaces (field
+`decode`/`Minicereal.get` bounds check), classes/interfaces (field
 defaults, inheritance, a class field as a `ref` argument, interface
-virtual dispatch across two implementations). It has no
-delegates/closures or associative arrays.
+virtual dispatch across two implementations), and delegates/closures
+(capture-by-reference through a returned delegate, a nested lambda/IIFE
+reading an enclosing struct method's `this` field). It has no
+associative arrays.
 
 ## Constraint and method
 
@@ -41,12 +43,10 @@ never mine it for new features.
 
 ## Queue
 
-1. Delegates / closures / nested functions — capture-by-reference, a
-   nested function or IIFE reading an enclosing local or `this` field.
-2. Associative arrays — scalar/string/struct keys, nested `AA[AA]`,
+1. Associative arrays — scalar/string/struct keys, nested `AA[AA]`,
    iteration. Avoid AA passed as a `ref` parameter (Interpreter-only
    omit, `tests/ut/backends/runner/lang/arrays.d`).
-3. Remaining control flow: `do`/`while`, labeled `break`/`continue`
+2. Remaining control flow: `do`/`while`, labeled `break`/`continue`
    across nested loops, `switch` `goto case`/`goto default`, case
    ranges/multi-value cases, `final switch` on an enum, string-typed
    switch cases, ternary `?:`.
