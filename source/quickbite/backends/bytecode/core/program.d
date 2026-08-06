@@ -529,11 +529,14 @@ package(quickbite.backends.bytecode) enum Op: ubyte {
     // Write the native address of the absolute stack index held in frame slot b
     // into frame slot a. Backs `.ptr` of a captured static array.
     frameIndexAddress,
-    // Write the native address of a scalar `ref` parameter's caller storage
-    // as a raw `size_t` pointer word into frame offset a; b is the parameter's
-    // own frame offset (`RefParameter.offset`). The call-frame writeback
-    // record resolves the callee-frame mirror to the caller slot, preserving
-    // compiled-D address identity.
+    // Write the native address of a scalar `ref` parameter's identity slot as
+    // a raw `size_t` pointer word into frame offset a; b is the parameter's
+    // own frame offset (`RefParameter.offset`). When the currently executing
+    // call groups this parameter with others aliasing the same caller
+    // storage, the identity slot is the group's first parameter's frame
+    // offset instead of its own, so `&first == &second` holds for two `ref`
+    // parameters bound to the same lvalue even though each keeps its own
+    // frame slot for reads and writes.
     refParameterAddress,
     signExtend1to2, // a: destination frame offset, b: source frame offset
     zeroExtend1to2, // a: destination frame offset, b: source frame offset

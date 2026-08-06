@@ -413,6 +413,13 @@ row, not a guarantee. Reconfirm against the source before relying on it.
   `TypeInfo!int` without display-value substitution.
 - Delegates and closures: see the Closures section.
 
+Scalar `ref` parameters retain per-callee mirrors with return writeback. Their
+address identity is coherent only with other parameters bound to the same
+caller lvalue; `&refParameter` cannot expose the caller's storage without
+letting direct pointer writes race the final mirror writeback. A direct-place
+calling convention must replace the mirror/writeback pair before promoting
+shared caller-storage address identity.
+
 Live hazards and divergences to reconfirm against current source when a row
 reaches them:
 
