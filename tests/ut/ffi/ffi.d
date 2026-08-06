@@ -532,6 +532,49 @@ unittest {
 }
 
 
+@("ffi.addressOnlyEmptyAndZeroSizedAggregatesUseNativeAbi")
+unittest {
+    auto emptySignature = functionSignature(q{
+        struct Empty {}
+        extern(C) int placeEmpty(int, Empty, int);
+    }, "placeEmpty");
+    auto emptyType = emptySignature.parameterList[1].type;
+    Empty empty;
+    int lhs = 4;
+    int rhs = 7;
+    int placement;
+
+    call(
+        Callable(cast(void*) &placeEmpty, emptySignature, CompilerAbi.dmd),
+        [
+            TypedAddress(Type.tint32, &lhs),
+            TypedAddress(emptyType, &empty),
+            TypedAddress(Type.tint32, &rhs),
+        ],
+        TypedAddress(Type.tint32, &placement),
+    ).should == true;
+    placement.should == 47;
+
+    auto zeroSignature = functionSignature(q{
+        extern(C) int placeZero(int, int[0], int);
+    }, "placeZero");
+    auto zeroType = zeroSignature.parameterList[1].type;
+    int[0] zero;
+    placement = 0;
+
+    call(
+        Callable(cast(void*) &placeZero, zeroSignature, CompilerAbi.dmd),
+        [
+            TypedAddress(Type.tint32, &lhs),
+            TypedAddress(zeroType, &zero),
+            TypedAddress(Type.tint32, &rhs),
+        ],
+        TypedAddress(Type.tint32, &placement),
+    ).should == true;
+    placement.should == 47;
+}
+
+
 @("ffi.addressOnlySysVUnionsAndIrregularAggregatesUseNativeLayout")
 unittest {
     auto integerOrDoubleType = structType(q{
@@ -967,6 +1010,20 @@ private extern(C) Large transformLarge(Large value) {
         value.values[1] + 2,
         value.values[0] + 3,
     ]);
+}
+
+
+private struct Empty {
+}
+
+
+private extern(C) int placeEmpty(int lhs, Empty, int rhs) {
+    return lhs * 10 + rhs;
+}
+
+
+private extern(C) int placeZero(int lhs, int[0], int rhs) {
+    return lhs * 10 + rhs;
 }
 
 

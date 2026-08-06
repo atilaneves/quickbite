@@ -115,27 +115,8 @@ public bool call(
             return false;
     }
 
-    const numAbiArguments = arguments.length + hasReceiver +
-        isDVariadic;
-    auto argumentTypes = new ffi_type*[](numAbiArguments);
-    auto argumentAddresses = new void*[](numAbiArguments);
-    auto argumentMetadata = new FfiType[](numAbiArguments);
-    if (hasReceiver) {
-        argumentMetadata[0] = receiverMetadata;
-        argumentTypes[0] = receiverMetadata.type;
-        argumentAddresses[0] = receiverAddress;
-    }
-    if (isDVariadic) {
-        const metadataIndex = hasReceiver;
-        argumentMetadata[metadataIndex] = variadicMetadataType;
-        argumentTypes[metadataIndex] = variadicMetadataType.type;
-        argumentAddresses[metadataIndex] = variadicMetadata.value.address;
-    }
-    // A ref/out ABI argument is a pointer value. Only that pointer value is
-    // temporary: its cell lives through ffi_call and points directly at the
-    // caller's authoritative storage; no pointee bytes are copied.
-    auto referenceCells = new void*[](arguments.length);
     auto argumentIsReference = new bool[](arguments.length);
+    auto argumentIsIgnored = new bool[](arguments.length);
     foreach (index, argument; arguments) {
         if (argument.type is null || argument.address is null)
             return false;
@@ -154,14 +135,47 @@ public bool call(
         } else if (hasCVariadicTail &&
             !isPromotedVariadicType(argument.type))
             return false;
+        argumentIsIgnored[index] = !argumentIsReference[index] &&
+            isIgnoredSysVArgument(argument.type);
+    }
 
-        const abiIndex = abiArgumentIndex(
-            callable,
-            index,
-            arguments.length,
-            hasReceiver,
-            isDVariadic,
-        );
+    size_t numPassedArguments;
+    foreach (ignored; argumentIsIgnored)
+        numPassedArguments += !ignored;
+    const numAbiArguments = numPassedArguments + hasReceiver + isDVariadic;
+    auto argumentTypes = new ffi_type*[](numAbiArguments);
+    auto argumentAddresses = new void*[](numAbiArguments);
+    auto argumentMetadata = new FfiType[](numAbiArguments);
+    auto argumentAbiIndices = new size_t[](arguments.length);
+    size_t nextAbiIndex = hasReceiver + isDVariadic;
+    const reversesArguments = callable.signature.linkage == LINK.d &&
+        callable.compilerAbi == CompilerAbi.dmd && !isDVariadic;
+    foreach (offset; 0 .. arguments.length) {
+        const sourceIndex = reversesArguments
+            ? arguments.length - offset - 1
+            : offset;
+        if (!argumentIsIgnored[sourceIndex])
+            argumentAbiIndices[sourceIndex] = nextAbiIndex++;
+    }
+    if (hasReceiver) {
+        argumentMetadata[0] = receiverMetadata;
+        argumentTypes[0] = receiverMetadata.type;
+        argumentAddresses[0] = receiverAddress;
+    }
+    if (isDVariadic) {
+        const metadataIndex = hasReceiver;
+        argumentMetadata[metadataIndex] = variadicMetadataType;
+        argumentTypes[metadataIndex] = variadicMetadataType.type;
+        argumentAddresses[metadataIndex] = variadicMetadata.value.address;
+    }
+    // A ref/out ABI argument is a pointer value. Only that pointer value is
+    // temporary: its cell lives through ffi_call and points directly at the
+    // caller's authoritative storage; no pointee bytes are copied.
+    auto referenceCells = new void*[](arguments.length);
+    foreach (index, argument; arguments) {
+        if (argumentIsIgnored[index])
+            continue;
+        const abiIndex = argumentAbiIndices[index];
         argumentMetadata[abiIndex] = argumentIsReference[index]
             ? FfiType(&ffi_type_pointer)
             : ffiTypeFor(argument.type);
@@ -199,15 +213,10 @@ public bool call(
         return false;
     foreach (index; 0 .. arguments.length) {
         if (!argumentIsReference[index] &&
+            !argumentIsIgnored[index] &&
             !layoutMatches(
                 arguments[index].type,
-                argumentMetadata[abiArgumentIndex(
-                    callable,
-                    index,
-                    arguments.length,
-                    hasReceiver,
-                    isDVariadic,
-                )],
+                argumentMetadata[argumentAbiIndices[index]],
             ))
             return false;
     }
@@ -319,23 +328,16 @@ private bool isReferenceParameter(
 }
 
 
-private size_t abiArgumentIndex(
-    in Callable callable,
-    in size_t sourceIndex,
-    in size_t numArguments,
-    in bool hasReceiver = false,
-    in bool hasDVariadicMetadata = false,
-) @safe @nogc nothrow pure {
-    import dmd.astenums: LINK;
+private bool isIgnoredSysVArgument(imported!"dmd.mtype".Type type) {
+    import dmd.astenums: TY;
 
-    const explicitIndex = callable.signature.linkage == LINK.d &&
-            callable.compilerAbi == CompilerAbi.dmd &&
-            !hasDVariadicMetadata
-        ? numArguments - sourceIndex - 1
-        : sourceIndex;
-    // True D variadics use source order. Both compiler ABIs place hidden ABI
-    // operands before explicit arguments: receiver, then variadic metadata.
-    return explicitIndex + hasReceiver + hasDVariadicMetadata;
+    auto storageType = semanticStorageType(type);
+    if (storageType.ty != TY.Tsarray && storageType.ty != TY.Tstruct)
+        return false;
+
+    SysVClass[2] classes;
+    return classifySysV(storageType, 0, classes) &&
+        classes == [SysVClass.none, SysVClass.none];
 }
 
 
