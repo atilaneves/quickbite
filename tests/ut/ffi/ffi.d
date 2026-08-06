@@ -75,6 +75,34 @@ unittest {
 }
 
 
+@("ffi.nativeNoreturnExceptionPropagatesUntouched")
+unittest {
+    auto signature = functionSignature(q{
+        noreturn throwNative(Exception);
+    }, "throwNative");
+    auto expected = new Exception("native failure");
+    bool caught;
+
+    try {
+        call(
+            Callable(
+                cast(void*) &throwNative,
+                signature,
+                CompilerAbi.dmd,
+            ),
+            [TypedAddress(signature.parameterList[0].type, &expected)],
+            TypedAddress(signature.next, null),
+        );
+        assert(false, "noreturn native call returned");
+    } catch (Exception actual) {
+        assert(actual is expected);
+        caught = true;
+    }
+
+    caught.should == true;
+}
+
+
 @("ffi.addressOnlyFunctionAndNullPointerCalls")
 unittest {
     auto functionPointerSignature = functionSignature(q{
@@ -1360,6 +1388,11 @@ private extern(C) int callFunctionPointer(CUnary function_, int value) {
 
 private extern(C) bool isNull(typeof(null) value) {
     return value is null;
+}
+
+
+private extern(D) noreturn throwNative(Exception exception) {
+    throw exception;
 }
 
 

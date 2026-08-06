@@ -97,7 +97,8 @@ public bool call(
         return false;
 
     const resultTy = semanticStorageType(returnType).ty;
-    if ((returnsReference || resultTy != TY.Tvoid) && result.address is null)
+    const returnsVoid = resultTy == TY.Tvoid || resultTy == TY.Tnoreturn;
+    if ((returnsReference || !returnsVoid) && result.address is null)
         return false;
 
     FfiType variadicMetadataType;
@@ -225,7 +226,7 @@ public bool call(
     // Copy only the static type's native width into the caller's storage.
     ffi_arg resultScratch;
     const resultCopySize = narrowIntegerResultSize(resultTy);
-    void* resultAddress = resultTy == TY.Tvoid && !returnsReference
+    void* resultAddress = returnsVoid && !returnsReference
         ? null
         : returnsReference || resultCopySize == 0
             ? result.address
@@ -395,7 +396,7 @@ private FfiType ffiTypeFor(
     // DMD owns mutable semantic type nodes.
     auto storageType = semanticStorageType(type);
     switch (storageType.ty) with (TY) {
-        case Tvoid: return FfiType(&ffi_type_void);
+        case Tvoid, Tnoreturn: return FfiType(&ffi_type_void);
         case Tbool, Tuns8, Tchar: return FfiType(&ffi_type_uint8);
         case Tint8: return FfiType(&ffi_type_sint8);
         case Tuns16, Twchar: return FfiType(&ffi_type_uint16);
