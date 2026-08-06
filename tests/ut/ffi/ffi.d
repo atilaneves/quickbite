@@ -2,7 +2,8 @@ module ut.ffi.ffi;
 
 
 import dmd.astenums: LINK;
-import dmd.mtype: ParameterList, Type, TypeDArray, TypeDelegate, TypeFunction;
+import dmd.mtype:
+    ParameterList, Type, TypeDArray, TypeDelegate, TypeFunction, TypeStruct;
 import quickbite.ffi.ffi: Callable, CompilerAbi, TypedAddress, call;
 import unit_threaded;
 
@@ -142,6 +143,48 @@ unittest {
 }
 
 
+@("ffi.addressOnlyAggregatesUseNativeLayout")
+unittest {
+    // DMD owns mutable semantic type nodes.
+    auto mixedType = structType(q{
+        struct Mixed {
+            long integer;
+            double floating;
+        }
+    }, "Mixed");
+    Mixed mixed = Mixed(11, 2.5);
+    Mixed mixedResult;
+    const mixedExpected = transformMixed(mixed);
+
+    call(
+        Callable(cast(void*) &transformMixed, LINK.c, CompilerAbi.dmd),
+        [TypedAddress(mixedType, &mixed)],
+        TypedAddress(mixedType, &mixedResult),
+    ).should == true;
+
+    mixedResult.integer.should == mixedExpected.integer;
+    mixedResult.floating.should == mixedExpected.floating;
+
+    // DMD owns mutable semantic type nodes.
+    auto largeType = structType(q{
+        struct Large {
+            long[3] values;
+        }
+    }, "Large");
+    Large large = Large([13, 17, 19]);
+    Large largeResult;
+    const largeExpected = transformLarge(large);
+
+    call(
+        Callable(cast(void*) &transformLarge, LINK.c, CompilerAbi.dmd),
+        [TypedAddress(largeType, &large)],
+        TypedAddress(largeType, &largeResult),
+    ).should == true;
+
+    largeResult.values.should == largeExpected.values;
+}
+
+
 private extern(C) int[] preserveArray(int[] value) {
     value[1] *= 10;
     return value;
@@ -150,6 +193,48 @@ private extern(C) int[] preserveArray(int[] value) {
 
 private extern(C) int delegate(int) preserveDelegate(int delegate(int) value) {
     return value;
+}
+
+
+private struct Mixed {
+    private long integer;
+    private double floating;
+}
+
+
+private extern(C) Mixed transformMixed(Mixed value) {
+    return Mixed(value.integer * 3, value.floating + 0.75);
+}
+
+
+private struct Large {
+    private long[3] values;
+}
+
+
+private extern(C) Large transformLarge(Large value) {
+    return Large([
+        value.values[2] + 1,
+        value.values[1] + 2,
+        value.values[0] + 3,
+    ]);
+}
+
+
+private TypeStruct structType(in string source, in string name) {
+    import quickbite.frontend.compiler: parseSnippet;
+
+    // DMD owns mutable semantic state and type nodes.
+    auto moduleResult = parseSnippet(source);
+    foreach (member; *moduleResult.module_.members)
+        if (auto struct_ = member.isStructDeclaration)
+            if (struct_.ident.toString == name) {
+                auto type = struct_.type.isTypeStruct;
+                assert(type !is null);
+                return type;
+            }
+
+    assert(false, "struct not found");
 }
 
 

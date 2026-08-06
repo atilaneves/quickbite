@@ -66,6 +66,18 @@ public bool call(
     );
     if (prepStatus != ffi_status.FFI_OK)
         return false;
+    if (!layoutMatches(result.type, resultMetadata))
+        return false;
+    foreach (index, argument; arguments)
+        if (!layoutMatches(
+            argument.type,
+            argumentMetadata[abiArgumentIndex(
+                callable,
+                index,
+                arguments.length,
+            )],
+        ))
+            return false;
 
     // libffi requires narrow integer returns to use an ffi_arg-wide slot.
     // Copy only the static type's native width into the caller's storage.
@@ -170,8 +182,58 @@ private FfiType ffiTypeFor(
                 FfiType(&ffi_type_pointer),
                 FfiType(&ffi_type_pointer),
             ]);
+        case Tsarray: return staticArrayFfiType(type.toBasetype.isTypeSArray);
+        case Tstruct: return structFfiType(type.toBasetype.isTypeStruct);
         default: return FfiType.init;
     }
+}
+
+
+private FfiType staticArrayFfiType(
+    imported!"dmd.mtype".TypeSArray type,
+) {
+    auto element = ffiTypeFor(type.next);
+    if (element.type is null)
+        return FfiType.init;
+
+    const length = cast(size_t) type.dim.toInteger;
+    auto elements = new FfiType[](length);
+    foreach (ref member; elements)
+        member = element;
+    return aggregateFfiType(elements);
+}
+
+
+private FfiType structFfiType(
+    imported!"dmd.mtype".TypeStruct type,
+) {
+    if (type.sym.isUnionDeclaration !is null)
+        return FfiType.init;
+
+    auto fields = new FfiType[](type.sym.fields.length);
+    foreach (index, field; type.sym.fields) {
+        fields[index] = ffiTypeFor(field.type);
+        if (fields[index].type is null)
+            return FfiType.init;
+    }
+    return aggregateFfiType(fields);
+}
+
+
+private bool layoutMatches(
+    imported!"dmd.mtype".Type type,
+    ref FfiType metadata,
+) {
+    import dmd.astenums: TY;
+    import dmd.typesem: size;
+
+    // DMD's layout queries require its mutable semantic type node.
+    auto baseType = type.toBasetype;
+    if (baseType.ty != TY.Tsarray && baseType.ty != TY.Tstruct)
+        return true;
+
+    return metadata.type.size == size(baseType) &&
+        metadata.type.alignment == baseType.alignsize;
 }
 
 
@@ -186,5 +248,6 @@ private FfiType aggregateFfiType(
         elements[index] = member.type;
     elements[$ - 1] = null;
     ownedTypes[0] = ffi_type(0, 0, FFI_TYPE_STRUCT, elements.ptr);
+    // Keep every recursive descriptor and element array alive until ffi_call.
     return FfiType(&ownedTypes[0], ownedTypes, elements, members);
 }
