@@ -673,3 +673,86 @@ unittest {
 
     assert(cast(ubyte) ~narrowedByte == 0xf0u);
 }
+
+class Header {
+    int magic = 0x2a;
+}
+
+class VersionedHeader : Header {
+    int schema = 1;
+    int length = 0;
+
+    this(int len) {
+        length = len;
+    }
+}
+
+unittest {
+    auto plain = new Header;
+    assert(plain.magic == 0x2a);
+
+    auto versioned = new VersionedHeader(16);
+    assert(versioned.magic == 0x2a);
+    assert(versioned.schema == 1);
+    assert(versioned.length == 16);
+}
+
+class Counter {
+    int value;
+}
+
+void setTo(ref int x, int value) {
+    x = value;
+}
+
+unittest {
+    auto counter = new Counter;
+    setTo(counter.value, 88);
+    assert(counter.value == 88);
+}
+
+interface Codec {
+    int transform();
+}
+
+class DoublingCodec : Codec {
+    int val_;
+
+    this(int val) {
+        val_ = val;
+    }
+
+    int transform() {
+        return val_ * 2;
+    }
+}
+
+class IncrementingCodec : Codec {
+    int val_;
+
+    this(int val) {
+        val_ = val;
+    }
+
+    int transform() {
+        return val_ + 1;
+    }
+}
+
+int runDoubling(int val) {
+    Codec doubler = new DoublingCodec(val);
+    return doubler.transform();
+}
+
+int runIncrementing(int val) {
+    Codec incrementer = new IncrementingCodec(val);
+    return incrementer.transform();
+}
+
+unittest {
+    assert(runDoubling(20) == 40);
+}
+
+unittest {
+    assert(runIncrementing(20) == 21);
+}

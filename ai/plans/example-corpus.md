@@ -24,8 +24,10 @@ is no production change. The only check is `./bin/bench.sh -b interpreter
 (`~=`, slicing, `$`, assignment), `foreach`/`for`/`switch` control flow,
 short-circuit `&&`/`||`, bitwise ops, and exceptions (`throw`/`catch`/
 `finally`, catch-by-base, multi-catch, rethrow — via a
-`decode`/`Minicereal.get` bounds check). It has no classes/interfaces,
-delegates/closures, or associative arrays.
+`decode`/`Minicereal.get` bounds check), and classes/interfaces (field
+defaults, inheritance, a class field as a `ref` argument, interface
+virtual dispatch across two implementations). It has no
+delegates/closures or associative arrays.
 
 ## Constraint and method
 
@@ -39,15 +41,12 @@ never mine it for new features.
 
 ## Queue
 
-1. Classes + interfaces + virtual dispatch — fields, inheritance, default
-   field initializers, an interface with runtime-dispatched
-   implementations.
-2. Delegates / closures / nested functions — capture-by-reference, a
+1. Delegates / closures / nested functions — capture-by-reference, a
    nested function or IIFE reading an enclosing local or `this` field.
-3. Associative arrays — scalar/string/struct keys, nested `AA[AA]`,
+2. Associative arrays — scalar/string/struct keys, nested `AA[AA]`,
    iteration. Avoid AA passed as a `ref` parameter (Interpreter-only
    omit, `tests/ut/backends/runner/lang/arrays.d`).
-4. Remaining control flow: `do`/`while`, labeled `break`/`continue`
+3. Remaining control flow: `do`/`while`, labeled `break`/`continue`
    across nested loops, `switch` `goto case`/`goto default`, case
    ranges/multi-value cases, `final switch` on an enum, string-typed
    switch cases, ternary `?:`.
@@ -66,6 +65,21 @@ never mine it for new features.
   diverges from `SystemLinker` (Bytecode fails the assertion that the
   `Error` reaches the outer handler; `Interpreter` matches the oracle).
   Route a minimal fixture to `bytecode.md` before re-adding this shape.
+- An interface method taking a parameter (`interface Codec { int
+  transform(int); }`), called through an interface-typed variable:
+  confirmed Interpreter-only failure, "Unsupported interpreter call
+  arguments." Only zero-arg interface methods are proven
+  (`tests/ut/backends/runner/lang/expressions.d`'s `Speaker.score()`).
+  Route a minimal fixture to `interpreter.md` before re-adding a
+  parameterized interface method.
+- A zero-arg interface method called through an interface-typed variable
+  constructed directly inside a `unittest { }` block (rather than inside
+  an ordinary function, as every proven matrix fixture does): confirmed
+  Interpreter-only wrong result, no diagnostic. Wrapping the
+  construction and call in a free function avoids it. Route a minimal
+  fixture to `interpreter.md`; until fixed, always call a
+  freshly-constructed polymorphic object through a wrapper function in
+  this corpus, never directly in a `unittest` body.
 
 ## Process per rung
 
