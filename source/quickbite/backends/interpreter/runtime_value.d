@@ -703,6 +703,7 @@ public struct RuntimeValue {
                         return true;
                 return false;
             },
+            (const(Null)) => false,
             (_) {
                 throw new Exception("Expected associative array.");
                 return false;

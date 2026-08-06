@@ -3450,6 +3450,28 @@ static foreach (backend; Matrix!()) {
     }
 }
 
+// Membership in a default-initialized associative array observes an empty
+// mapping, including when the null handle crosses a function boundary.
+static foreach (backend; Matrix!()) {
+    @("assocArray.inMissingFromNullArray." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            int[int] emptyValues() {
+                int[int] values;
+                return values;
+            }
+
+            unittest {
+                int key = 10;
+                auto values = emptyValues;
+
+                assert((key in values) is null);
+            }
+        });
+    }
+}
+
 // A key wider than 4 bytes (`long`) must compare its full width, not just
 // its low 32 bits.
 static foreach (backend; Matrix!()) {
