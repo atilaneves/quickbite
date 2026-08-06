@@ -193,8 +193,9 @@ Never delete test code to make tests pass.
 - Check for local worktrees before using `gh` to look at diffs etc.
 - When you create or update a PR, check to see if it can be merged and
   fix any conflicts, don't wait to be told to do so.
-- When you create or update a PR, check to see if CI is green. If it
-  isn't, fix it.
+- When you create or update a PR, monitor CI status until the CI run
+  completes. If it's red once done, loop spawning fixer subagents
+  until it's green.
 
 ## Reviews
 
