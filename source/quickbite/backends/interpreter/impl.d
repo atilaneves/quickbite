@@ -1135,9 +1135,22 @@ private struct Walker {
 
     // DMD declaration inspection is `@system`; the returned address is still
     // restricted to storage owned by the frame/module/native binding tables.
+    //
+    // Every other caller that hands out a dataseg variable's address
+    // (`symbolOffsetLocalValue`, `bindingPointerValue`, the ordinary `VarExp`
+    // address-of arm) calls `materializeDatasegInitializer` first, so a
+    // never-touched module-table block never gets its address taken as raw
+    // zeroed bytes. This is the shared `resolveBase` callback `placeOfLvalue`
+    // calls for the base variable of an lvalue chain (a doubly-nested
+    // `DotVarExp`/`IndexExp` receiver among them) -- the same guarantee must
+    // hold here, or a chain whose base resolves straight through this
+    // function without any other code path having materialized it first
+    // hands out an address into never-initialized storage. A no-op for a
+    // true local and for a dataseg variable already materialized.
     private void* addressableBindingBase(VarDeclaration variable) @trusted {
         if (auto address = variable in nativeRefLocalAddresses)
             return *address;
+        materializeDatasegInitializer(variable);
         return bindingPlace(variable).address;
     }
 

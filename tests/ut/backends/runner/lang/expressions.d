@@ -11902,6 +11902,106 @@ static foreach (backend; Matrix!(
     }
 }
 
+// `&arr[k].mid.a[1]` where `arr` is a MODULE-SCOPE (`__gshared`/static)
+// dataseg variable whose declared array-literal initializer
+// (`Outer[2] arr = [Outer(Mid([10, 20, 30])), Outer(Mid([40, 50, 60]))];`)
+// has never been touched before this expression runs -- the FIRST-EVER
+// touch of `arr` is through `arrayPointer`'s own new side-effecting-index-
+// chain branch above (the same branch
+// `addressOfDoublyNestedDotVarStaticArrayElementThroughSideEffectingIndex`
+// exercises, but that fixture writes `arr[0].mid.a`/`arr[1].mid.a` first,
+// which already establishes `arr`'s module-table block through the
+// ordinary write path before the address-of ever runs). That branch's
+// `placeOfLvalue` call resolved its base address through
+// `addressableBindingBase`, which went straight to `bindingPlace` ->
+// `ModuleTable.storageFor` and lazily allocated `arr`'s module-table block
+// as raw zeroed bytes, WITHOUT ever running `materializeDatasegInitializer`
+// first -- unlike the ordinary `VarExp` address-of arm
+// (`symbolOffsetLocalValue`), which always materializes before
+// reading/addressing a dataseg variable. `*p` read back `0` instead of
+// `20`, silently, with no exception. Fixed by having `addressableBindingBase`
+// itself materialize a dataseg variable's declared initializer before
+// handing out its address, mirroring the pattern every other address-of
+// caller already follows. SystemLinker is the oracle.
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.diverges,
+        "Ctfe runs the unittest body through DMD's own CTFE interpreter, " ~
+        "which cannot read the mutable module-scope variables `arr`/`k` " ~
+        "at compile time"),
+    Omit!(Bytecode, Because.unconfirmed,
+        "no support yet for address-of through a doubly-nested `DotVarExp` " ~
+        "receiver in the bytecode core, same gap as " ~
+        "addressOfDoublyNestedDotVarStaticArrayElement above"),
+    Omit!(LLVMJit, Because.unconfirmed,
+        "independent, unconfirmed gap: address-of through a doubly-nested " ~
+        "`DotVarExp` receiver in the JIT backend, same gap as " ~
+        "addressOfDoublyNestedDotVarStaticArrayElement above"),
+)) {
+    @("pointer.addressOfDoublyNestedDotVarStaticArrayElementFirstTouchMaterializesDatasegInitializer." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct Mid { int[3] a; }
+            struct Outer { Mid mid; }
+            Outer[2] arr = [Outer(Mid([10, 20, 30])), Outer(Mid([40, 50, 60]))];
+            int k = 0;
+            unittest {
+                auto p = &arr[k].mid.a[1];
+                assert(*p == 20);
+            }
+        });
+    }
+}
+
+// The dynamic-array sibling of the fixture above (`int[] a` instead of
+// `int[3] a`): the same never-materialized module-table block is raw
+// zeroed bytes, so the slice header `arr[k].mid.a` reads back as a
+// zero-length null slice instead of its declared `[10, 20, 30]` contents,
+// and `Place.index`'s bounds check on that zeroed header throws "index out
+// of range for slice place" instead of resolving element 1 -- a different
+// symptom (a spurious exception rather than a silently wrong value) from
+// the exact same root cause. The `arrayPointer` branch's own try/catch
+// then falls back to the old eager path, but by then `arr`'s block has
+// ALREADY been allocated (as zeroed bytes) by the failed attempt, so
+// `materializeDatasegInitializer`'s `moduleTable.has(variable)` adoption
+// branch would treat "block exists" as "already correctly initialized" and
+// adopt the zeroes instead of running the real initializer -- the fallback
+// path would read back `0` too, not throw. Fixed by the same
+// `addressableBindingBase` change as the fixture above, which materializes
+// before any allocation-without-materialization can happen, mooting both
+// the bounds throw and the adoption follow-on. SystemLinker is the oracle.
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.diverges,
+        "Ctfe runs the unittest body through DMD's own CTFE interpreter, " ~
+        "which cannot read the mutable module-scope variables `arr`/`k` " ~
+        "at compile time"),
+    Omit!(Bytecode, Because.unconfirmed,
+        "no support yet for address-of through a doubly-nested `DotVarExp` " ~
+        "receiver in the bytecode core, same gap as " ~
+        "addressOfDoublyNestedDotVarStaticArrayElement above"),
+    Omit!(LLVMJit, Because.unconfirmed,
+        "independent, unconfirmed gap: address-of through a doubly-nested " ~
+        "`DotVarExp` receiver in the JIT backend, same gap as " ~
+        "addressOfDoublyNestedDotVarStaticArrayElement above"),
+)) {
+    @("pointer.addressOfDoublyNestedDotVarDynamicArrayElementFirstTouchMaterializesDatasegInitializer." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct Mid { int[] a; }
+            struct Outer { Mid mid; }
+            Outer[] arr = [Outer(Mid([10, 20, 30]))];
+            int k = 0;
+            unittest {
+                auto p = &arr[k].mid.a[1];
+                assert(*p == 20);
+            }
+        });
+    }
+}
+
 // `(*next() = P(10)).bump()` -- a method call chained off an assignment
 // whose own target is a side-effecting `PtrExp` (`*next()`, `next()`
 // advancing `calls` and returning a fresh element each time). `bump()`'s
