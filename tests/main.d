@@ -39,7 +39,6 @@ int main(string[] args) {
         "ut.backends.runner.lang.structs",
         "ut.backends.runner.lang.cerealed",
         "ut.backends.runner.lang.pollution",
-        "ut.backends.runner.lang.archive",
         "ut.backends.runner.lang.imports",
         "ut.backends.runner.sys.concurrency",
         "ut.backends.runner.sys.cstdlib",

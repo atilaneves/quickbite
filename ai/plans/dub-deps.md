@@ -21,12 +21,10 @@ first-class, unavoidable concept. The native dependency image (one
 shared form that concept takes. It is no longer deferred: LLVMJit cannot
 benchmark any real dub package without it.
 
-Caching addresses lowering/compiling only, never execution. Whether
-dependencies "live" as .a/.so libraries or as cached bytecode is per
-backend: the native family has no alternative to the dependency image;
-for the VM backends FFI and interpreted bytecode must both be tried and
-measured. FFI is needed regardless for `fbody is null` leaves (C/C++/Rust,
-closed source) — see ffi.md §21.
+Caching addresses lowering/compiling only, never execution. The sole binary
+dependency contract is the dependency image; VM backends continue to execute
+available D source and use it only for `fbody is null` leaves. FFI is needed
+regardless for C/C++/Rust or closed-source leaves — see ffi.md §21.
 
 ## The build model: cold dependency image, hot project
 
@@ -107,11 +105,11 @@ image.
 
 ### Hot step: codegen the whole project is the existing path
 
-`emitObjectFilesForLink(rootModules, dir, CodegenInputs(archiveImportPaths))`
+`emitObjectFilesForLink(rootModules, dir, CodegenInputs(dependencyImportPaths))`
 already *is* the whole-project codegen API. Its classification does the
-right thing: `archiveImportPathsUnder(importPaths, packageRoot)` splits
+right thing: `dependencyImportPathsOutside(importPaths, packageRoot)` splits
 imports so that paths **under the package root are codegen'd fresh** (the
-whole project) and paths **outside are archive imports** (the deps, now
+whole project) and paths **outside are dependency imports** (the deps, now
 the one `.so`); `userImportedModules` transitively pulls in every project
 module the roots reach. "Codegen for a whole dub project" is therefore
 only a matter of feeding it the **whole-project root set** — every package
@@ -130,9 +128,8 @@ const objs = emitObjectFilesForLink(
 
 ### Changes to existing types
 
-- `SystemLinkerInputs.linkFiles` carries the single `lib<pkg>_dub_deps.so`
-  instead of the `.a` list. `linkSharedLibrary` then drops the
-  `--start-group`/`--end-group` wrap (one `.so`, transitively resolved),
+- `SystemLinkerInputs.dependencyImages` carries the single
+  `lib<pkg>_dub_deps.so`. `linkSharedLibrary` appends that image directly,
   directly shrinking the link inputs `dmd-backend.md` lesson 14 flagged as
   SystemLinker's dominant cost.
 - LLVMJit gains a session-level step: `dlopen(lib<pkg>_dub_deps.so)` once

@@ -15,6 +15,7 @@ public class LLVMJit:
 {
     import quickbite.backends.evaluator: Evaluator, EvalResult;
     import quickbite.backends.runner: TestResult;
+    import quickbite.ffi: loadDependencyImages, verifyDependencyImages;
     import dmd.dmodule: Module;
     import dmd.func: FuncDeclaration;
 
@@ -29,22 +30,22 @@ public class LLVMJit:
     }
 
     public this(
-        const string[] linkFiles,
+        const string[] dependencyImages,
         const string[] importPaths,
     ) {
         this(
             LLVMJitInputs(
                 importPaths,
-                sharedLibraries(linkFiles),
-                staticLibraries(linkFiles),
+                dependencyImages,
             ),
         );
+        verifyDependencyImages(_inputs.dependencyImages);
         version (LDC) {}
         else loadDependencyImages(_inputs.dependencyImages);
     }
 
     public this(
-        const string[] linkFiles,
+        const string[] dependencyImages,
         const string[] importPaths,
         in string packageRoot,
         in imported!"quickbite.frontend.compiler".FrontendFlags frontendFlags =
@@ -53,17 +54,17 @@ public class LLVMJit:
             imported!"quickbite.backends.native.system_linker".DubPackage.no,
     ) {
         import quickbite.frontend.compiler: FrontendFlags;
-        import quickbite.backends.native.link_files: archiveImportPathsUnder;
+        import quickbite.backends.native.link_files: dependencyImportPathsOutside;
 
         this(
             LLVMJitInputs(
-                archiveImportPathsUnder(importPaths, packageRoot),
-                sharedLibraries(linkFiles),
-                staticLibraries(linkFiles),
+                dependencyImportPathsOutside(importPaths, packageRoot),
+                dependencyImages,
                 FrontendFlags(frontendFlags.compilerArguments.dup),
                 dubPackage,
             ),
         );
+        verifyDependencyImages(_inputs.dependencyImages);
         version (LDC) {}
         else loadDependencyImages(_inputs.dependencyImages);
     }
@@ -338,66 +339,21 @@ private void closeAndReapChild(ref int readFd, int pid) @nogc nothrow {
 }
 
 public struct LLVMJitInputs {
-    // Modules under archive import paths are defined by prebuilt libraries and
+    // Modules under dependency import paths are defined by prebuilt images and
     // must not be codegen'd again. Whether default imports are traversed for
     // template-instance codegen is derived from the modules themselves by the
     // shared codegen path, not from a caller flag.
-    public const string[] archiveImportPaths;
+    public const string[] dependencyImportPaths;
     // Cold dub dependency images are dlopen'd with RTLD_GLOBAL before ORC asks
     // the process-symbol generator to resolve dependency symbols.
     public const string[] dependencyImages;
-    // Static libraries are searched by ORC and their members are linked only
-    // when the hot objects reference a symbol they define.
-    public const string[] staticLibraries;
     public imported!"quickbite.frontend.compiler".FrontendFlags frontendFlags =
         imported!"quickbite.frontend.compiler".FrontendFlags.init;
     public imported!"quickbite.backends.native.system_linker".DubPackage dubPackage;
 }
 
-private string[] sharedLibraries(in string[] linkFiles) @safe pure {
-    import quickbite.backends.native.link_files: isSharedLibraryPath;
-    import std.algorithm.iteration: filter, map;
-    import std.array: array;
-
-    return linkFiles
-        .filter!(linkFile => linkFile.isSharedLibraryPath)
-        .map!(linkFile => linkFile.idup)
-        .array;
-}
-
-private string[] staticLibraries(in string[] linkFiles) @safe pure {
-    import quickbite.backends.native.link_files: isSharedLibraryPath;
-    import std.algorithm.iteration: filter, map;
-    import std.array: array;
-
-    return linkFiles
-        .filter!(linkFile => !linkFile.isSharedLibraryPath)
-        .map!(linkFile => linkFile.idup)
-        .array;
-}
-
-private void loadDependencyImages(in string[] dependencyImages) {
-    foreach (dependencyImage; dependencyImages)
-        loadDependencyImage(dependencyImage);
-}
-
-private void loadDependencyImage(in string dependencyImage) {
-    import core.sys.posix.dlfcn: dlerror, dlopen, RTLD_GLOBAL, RTLD_NOW;
-    import std.conv: text;
-    import std.string: fromStringz, toStringz;
-
-    if (dlopen(dependencyImage.toStringz, RTLD_NOW | RTLD_GLOBAL) is null) {
-        auto err = dlerror();
-        throw new Exception(text(
-            "failed to load dependency image: ",
-            dependencyImage,
-            err is null ? "" : text(" :: ", err.fromStringz),
-        ));
-    }
-}
-
 // The LDC host emits DMD objects but cannot execute them in-process. Hand the
-// objects, cold dependency images, archive paths, and discovered symbols to
+// objects, cold dependency images, and discovered symbols to
 // the DMD-built executor, which performs the ORC link and test calls.
 version (LDC)
 private imported!"quickbite.backends.runner".TestResult[] runTestsViaExecutor(
@@ -442,7 +398,6 @@ private imported!"quickbite.backends.runner".TestResult[] runTestsViaExecutor(
         "",
         inputs.dependencyImages.dup,
         objectFiles,
-        inputs.staticLibraries.dup,
         symbols,
     )));
     runExecutor(requestFile, resultsFile);
@@ -478,7 +433,7 @@ private imported!"orc.bindings".LLVMOrcLLJITRef jitForObjects(
 
     const objPaths = emitObjects(modules, dir, inputs);
 
-    return createJit(objPaths, inputs.staticLibraries);
+    return createJit(objPaths);
 }
 
 private string[] emitObjects(
@@ -496,7 +451,7 @@ private string[] emitObjects(
             modules,
             dir,
             CodegenInputs(
-                inputs.archiveImportPaths,
+                inputs.dependencyImportPaths,
                 FrontendFlags(inputs.frontendFlags.compilerArguments.dup),
                 inputs.dubPackage == DubPackage.yes,
             ),
@@ -698,15 +653,6 @@ unittest {
 
     writeResults(fds[1], [TestResult(true, "t", "loc", "")])
         .shouldThrowWithMessage("write to result pipe failed");
-}
-
-@("archiveImportPathsUnder.emptyPackageRootClassifiesNothing")
-unittest {
-    import quickbite.backends.native.link_files: archiveImportPathsUnder;
-    import ut;
-
-    string[] expected;
-    archiveImportPathsUnder(["/somewhere/else/src"], "").should == expected;
 }
 
 private __gshared uint _jitCounter;

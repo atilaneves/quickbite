@@ -16,10 +16,8 @@ package(quickbite.backends.bytecode) struct Compilation {
 // core that sees DMD types.
 package(quickbite.backends.bytecode) Compilation compile(
     imported!"dmd.func".FuncDeclaration entry,
-    in string[] archiveImportPaths = null,
 ) {
     auto compiler = new Compiler;
-    compiler._archiveImportPaths = archiveImportPaths;
     compiler.registerFunction(entry);
     // A literal-false assert directly in a unittest body must throw
     // "unittest failure" (DMD's _d_unittest hook); the same assert in a
@@ -64,13 +62,6 @@ private struct Compiler {
     import dmd.statement: Catch, Statement;
 
     private Program* _program;
-    // Import paths whose modules are defined by a separately compiled
-    // archive already loaded into the process: a function declared under one
-    // of these is compiled as a native call regardless of its parsed body
-    // (see `isArchiveBackedFunction`), since that body is a source-rewrite
-    // artifact and the archive's own compiled definition is the one that
-    // actually runs.
-    private const(string)[] _archiveImportPaths;
     private FuncDeclaration[] _functions;
     private size_t[FuncDeclaration] _functionIndices;
     private ushort[imported!"dmd.dclass".ClassDeclaration] _classIndices;
@@ -587,11 +578,6 @@ private struct Compiler {
                         pointerElementScalar(parameter.type);
             }
 
-        if (isArchiveBackedFunction(function_)) {
-            compileArchiveFunctionPointerTarget(index, function_, layout);
-            return;
-        }
-
         // A function with a named `out(result)` contract gets a synthesized
         // `result` local (DMD's `vresult`): every `return expr;` in `fbody`
         // is rewritten to `result = expr; goto Lresult;`, with the ensure
@@ -608,150 +594,6 @@ private struct Compiler {
 
         _program.functions[index].code = _code;
         _program.functions[index].frameSize = (_peakFrameOffset + 15) & ~15u;
-    }
-
-    // An archive function reached through `&function_` still needs a VM
-    // function-table entry for `callIndirect`. Compile that entry as a native
-    // forwarding wrapper rather than interpreting the rewritten import source,
-    // whose body is deliberately stale in archive fixtures.
-    private void compileArchiveFunctionPointerTarget(
-        in size_t index,
-        FuncDeclaration function_,
-        in ParameterLayout layout,
-    ) {
-        import std.conv: text;
-
-        if (layout.hasThis && !layout.hasClassThis) {
-            compileArchiveStructMethodDelegateTarget(index, function_, layout);
-            return;
-        }
-
-        if (layout.hasClassThis ||
-            (function_.parameters !is null && function_.parameters.length != 0))
-            throw new Exception(text(
-                "`",
-                function_.ident is null
-                    ? text(function_.toPrettyChars)
-                    : function_.ident.toString,
-                "` is an archive-backed function reached by address: ",
-                "only a receiver-free zero-argument native forwarding ",
-                "wrapper is supported",
-            ));
-
-        const result = emitNativeCall(
-            function_,
-            null,
-            allocateNativeArgumentArea(0),
-            null,
-        );
-        _code ~= _currentReturnType.isStruct || _currentReturnType.isArray ||
-            _currentReturnType.isDelegate ||
-            _currentReturnType.scalar != ScalarType.void_
-            ? Instruction(Op.ret, result.offset)
-            : Instruction(Op.ret);
-        _program.functions[index].code = _code;
-        _program.functions[index].frameSize = (_peakFrameOffset + 15) & ~15u;
-    }
-
-    // A delegate of an archive-backed struct method stores its receiver as a
-    // caller-frame offset. The ordinary indirect-call entry protocol copies
-    // that block into this wrapper's hidden `this` slot and writes it back on
-    // return, so the native bridge can safely receive the wrapper slot's real
-    // address. The explicit scalar arguments need only be repacked from the
-    // bytecode call layout into the bridge's fixed-stride slots.
-    private void compileArchiveStructMethodDelegateTarget(
-        in size_t index,
-        FuncDeclaration function_,
-        in ParameterLayout layout,
-    ) {
-        import dmd.astenums: TY;
-        import std.conv: text;
-
-        auto receiver = thisStructDeclaration(function_);
-        if (receiver is null)
-            throw new Exception("Missing archive struct-method receiver");
-        auto receiverType = receiver.type.toBasetype.isTypeStruct;
-        if (receiverType is null)
-            throw new Exception("Missing archive struct-method receiver type");
-
-        const parameterCount = function_.parameters is null
-            ? 0 : function_.parameters.length;
-        auto argumentTypes = new Type[parameterCount];
-        auto outParameterOffsets = new ushort[parameterCount];
-        foreach (ref offset; outParameterOffsets)
-            offset = noOutParameterOffset;
-        const argumentArea = allocateNativeArgumentArea(parameterCount);
-        foreach (parameterIndex; 0 .. parameterCount) {
-            auto parameter = (*function_.parameters)[parameterIndex];
-            // DMD's basetype query is mutable, so this cannot be `const`.
-            auto type = parameter.type.toBasetype;
-            if (layout.isReference[parameterIndex] ||
-                !archiveDelegateNativeScalar(type))
-                throw new Exception(text(
-                    "`",
-                    function_.ident is null
-                        ? text(function_.toPrettyChars)
-                        : function_.ident.toString,
-                    "` is an archive-backed function reached by address: ",
-                    "only value scalar native forwarding arguments are supported",
-                ));
-            argumentTypes[parameterIndex] = type;
-            _code ~= Instruction(
-                Op.copy,
-                cast(ushort) (argumentArea +
-                    parameterIndex * nativeArgumentSlotSize),
-                layout.offsets[parameterIndex],
-                cast(ushort) size(scalarType(type)),
-            );
-        }
-
-        // DMD's basetype query is mutable, so this cannot be `const`.
-        auto returnType = function_.type.toBasetype.nextOf.toBasetype;
-        if (returnType.ty != TY.Tvoid &&
-            !archiveDelegateNativeResult(returnType))
-            throw new Exception(text(
-                "`",
-                function_.ident is null
-                    ? text(function_.toPrettyChars)
-                    : function_.ident.toString,
-                "` is an archive-backed function reached by address: ",
-                "only scalar native forwarding results are supported",
-            ));
-
-        const result = emitNativeCall(
-            function_, argumentTypes, argumentArea, outParameterOffsets,
-            noOutParameterOffset, null, layout.thisOffset, receiverType,
-        );
-        _code ~= returnType.ty == TY.Tvoid
-            ? Instruction(Op.ret)
-            : Instruction(Op.ret, result.offset);
-        _program.functions[index].code = _code;
-        _program.functions[index].frameSize = (_peakFrameOffset + 15) & ~15u;
-    }
-
-    private bool archiveDelegateNativeScalar(Type type) {
-        import dmd.astenums: TY;
-
-        switch (type.toBasetype.ty) with (TY) {
-            case Tbool:
-            case Tint32:
-            case Tuns32:
-            case Tint64:
-            case Tuns64:
-            case Tfloat64:
-            case Tpointer:
-                return true;
-            default:
-                return false;
-        }
-    }
-
-    private bool archiveDelegateNativeResult(Type type) {
-        import dmd.astenums: TY;
-
-        // `BytecodeNativeMarshaller.readResult` has no uint copy-out arm.
-        return type.toBasetype.ty != TY.Tuns32 &&
-            archiveDelegateNativeScalar(type);
     }
 
     private ushort registerFunction(FuncDeclaration function_) {
@@ -16285,33 +16127,7 @@ private struct Compiler {
             return *native;
 
         const layout = parameterLayout(function_);
-        const isArchiveBacked = isArchiveBackedFunction(function_);
-        // Neither path below is safe for a receiver-bearing archive-backed
-        // method: `tryCompileNativeCall` never resolves a receiver, so a
-        // struct method reaches the native call with no `this` argument at
-        // all, and a class method (`layout.hasClassThis`, which skips the
-        // native-call attempt below) falls through to `registerFunction`
-        // and compiles the archive module's stale rewritten source body --
-        // exactly what an archive-backed function's whole point is to never
-        // do. Decline loudly rather than crash or run the wrong body.
-        if (isArchiveBacked && layout.hasThis)
-            if (auto native = tryCompileArchiveStructMethodCall(
-                    call, function_, layout,
-                ))
-                return *native;
-
-        if (isArchiveBacked && (layout.hasThis || layout.hasClassThis))
-            throw new Exception(text(
-                "`",
-                function_.ident is null
-                    ? expressionChars(call)
-                    : function_.ident.toString,
-                "` is an archive-backed method: routing a receiver-bearing ",
-                "call through the native bridge or its stale rewritten ",
-                "source is unsupported",
-            ));
-
-        const isNativeLeaf = function_.fbody is null || isArchiveBacked;
+        const isNativeLeaf = function_.fbody is null;
         if (isNativeLeaf && !layout.hasClassThis)
             if (auto native = tryCompileNativeCall(call, function_, layout))
                 return *native;
@@ -16630,32 +16446,6 @@ private struct Compiler {
         return Operand(destination, returnType.scalar);
     }
 
-    // A function declared under an archive import path is defined by a
-    // separately compiled archive already loaded into the process: its
-    // parsed body (if any) is a source-rewrite artifact from parsing the
-    // snippet's on-disk import, not the definition that actually runs.
-    private bool isArchiveBackedFunction(FuncDeclaration function_) {
-        import std.algorithm.searching: any, startsWith;
-        import std.path: absolutePath, buildNormalizedPath, dirSeparator;
-
-        if (_archiveImportPaths.length == 0)
-            return false;
-
-        auto module_ = function_.getModule;
-        if (module_ is null)
-            return false;
-
-        const path =
-            module_.srcfile.toString.idup.absolutePath.buildNormalizedPath;
-        // Match whole path components: a bare prefix check would classify a
-        // sibling directory like <root>-extra/ as under <root>.
-        return _archiveImportPaths.any!((root) {
-            const normalised = root.absolutePath.buildNormalizedPath;
-            return path == normalised ||
-                path.startsWith(normalised ~ dirSeparator);
-        });
-    }
-
     // A null return always falls through to the call site's unconditional
     // no-available-source throw, never a different path, so it is safe to
     // emit earlier arguments before a later one turns out unsupported.
@@ -16764,34 +16554,6 @@ private struct Compiler {
             function_, argumentTypes, argumentArea, outParameterOffsets,
             noOutParameterOffset, null, nativeStructReceiverOffset,
             nativeStructReceiverType,
-        );
-    }
-
-    // A direct struct local already occupies native-layout VM stack storage,
-    // so an archive method can receive that block as its ABI `this` pointer.
-    // More elaborate receivers need the ordinary bytecode writeback path.
-    private Operand* tryCompileArchiveStructMethodCall(
-        CallExp call,
-        FuncDeclaration function_,
-        in ParameterLayout layout,
-    ) {
-        auto dot = call.e1.isDotVarExp;
-        if (dot is null)
-            return null;
-        auto receiver = dot.e1.isVarExp;
-        if (receiver is null)
-            return null;
-        auto declaration = receiver.var.isVarDeclaration;
-        if (declaration is null)
-            return null;
-        auto offset = declaration in _structLocals;
-        if (offset is null)
-            return null;
-        auto receiverType = dot.e1.type.toBasetype.isTypeStruct;
-        if (receiverType is null)
-            return null;
-        return tryCompileNativeCall(
-            call, function_, layout, offset.offset, receiverType,
         );
     }
 

@@ -74,13 +74,13 @@ private struct BenchmarkGroup {
     BenchmarkUnit[] units;
 }
 
-public void run(string[] args) {
+public int run(string[] args) {
     import quickbite.backends.native: DubPackage;
     import std.stdio: stderr, stdout, write, writefln, writeln;
 
     const opts = parseOptions(args);
     if (opts.helpWanted)
-        return;
+        return 0;
 
     const warmup    = opts.warmup;
     const runs      = opts.runs;
@@ -144,11 +144,11 @@ public void run(string[] args) {
     foreach (dubPkg; opts.dubPkgs) {
         auto dubInfo = resolveDubPkg(dubPkg);
         // The raw dub import paths, not the merged ones (which also carry CLI
-        // --import-path args): the backend derives the archive import paths from
+        // --import-path args): the backend derives dependency import paths from
         // these and the package root.
         auto env = BackendEnv(
             dubInfo.importPaths,
-            dubInfo.linkFiles,
+            dubInfo.dependencyImages,
             dubInfo.packageRoot,
             dubInfo.frontendFlags,
             DubPackage.yes,
@@ -171,12 +171,19 @@ public void run(string[] args) {
             );
     }
 
-    if (preparation.length > 0)
+    bool preparationFailed;
+    if (preparation.length > 0) {
         write(renderPreparationSection(preparation));
+        foreach (record; preparation)
+            if (record.prepared == 0) {
+                preparationFailed = true;
+                break;
+            }
         // A later backend crash must not eat the already-buffered preparation
         // report. Full containment rides on ai/plans/bench.md's
         // fork-per-package item.
         stdout.flush;
+    }
 
     // Flattened view for the per-unit sections (frontend rows, skip reporting);
     // the check and timing loops below use each group's own runners.
@@ -210,7 +217,7 @@ public void run(string[] args) {
                         name,
                         failure.firstLine,
                     );
-            }
+    }
     }
 
     if (units.length > 0) {
@@ -275,6 +282,8 @@ public void run(string[] args) {
                 writeln;
             }
         }
+
+    return preparationFailed ? 1 : 0;
 }
 
 string firstLine(in string message) {
@@ -505,7 +514,7 @@ private size_t runnableUnittestCount(BenchmarkUnit unit) {
 
 public struct DubInfo {
     string[] importPaths;
-    string[] linkFiles;
+    string[] dependencyImages;
     string packageRoot;
     string[] fixtures;
     FrontendFlags frontendFlags;
@@ -651,9 +660,9 @@ public DubInfo dubInfoFromDescribeData(
     if (fixtures.length == 0)
         throw new Exception("no source files reported by dub for " ~ packageName ~ " in " ~ pkgDir);
 
-    string[] linkFiles;
+    string[] dependencyImages;
     if (dependencyArchives.length != 0)
-        linkFiles = [
+        dependencyImages = [
             buildDependencyImage(
                 packageName,
                 dependencyArchives,
@@ -663,7 +672,7 @@ public DubInfo dubInfoFromDescribeData(
 
     return DubInfo(
         importPaths.dup,
-        linkFiles,
+        dependencyImages,
         pkgDir.idup,
         fixtures,
         FrontendFlags(frontendFlags.compilerArguments.dup),

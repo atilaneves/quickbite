@@ -2,11 +2,11 @@ module orc.loader;
 
 
 // The frontend-free half of the LLVMJit backend: everything after the object
-// files exist on disk — LLJIT creation, the process-symbol and static-library
-// generators, per-object ELF duplicate-UND normalization + host-symbol
+// files exist on disk — LLJIT creation, the process-symbol generator,
+// per-object ELF duplicate-UND normalization + host-symbol
 // interposition, object addition, lookup by mangled name, and execution.
-// Inputs are plain data only (object file paths, archive paths, mangled
-// symbol names) and no dmd.* import may appear anywhere under orc/: that is
+// Inputs are plain data only (object file paths and mangled symbol names) and
+// no dmd.* import may appear anywhere under orc/: that is
 // what lets the DMD-built bench-exec executor compile this package without
 // the dmd frontend (ai/plans/llvm-jit.md, SystemLinker-peer parity plan).
 // Codegen, unittest discovery/mangling and dependency-image dlopen stay with
@@ -17,12 +17,11 @@ private:
 
 // Stand up an LLJIT with every object added to the main JITDylib, a
 // process-symbol generator so druntime/phobos symbols resolve from the
-// running host, and a search generator per static library. The objects are
+// running host. The objects are
 // read into memory buffers before this returns, so the caller may delete the
 // files as soon as it does.
 public imported!"orc.bindings".LLVMOrcLLJITRef createJit(
     in string[] objectFiles,
-    in string[] staticLibraries,
 ) {
     import orc.bindings:
         LLVMOrcCreateLLJIT,
@@ -55,9 +54,6 @@ public imported!"orc.bindings".LLVMOrcLLJITRef createJit(
         "process-symbol generator",
     );
     LLVMOrcJITDylibAddGenerator(dylib, generator);
-
-    foreach (staticLibrary; staticLibraries)
-        addStaticLibraryGenerator(jit, dylib, staticLibrary);
 
     foreach (objectFile; objectFiles)
         addObjectFile(jit, dylib, objectFile);
@@ -106,31 +102,6 @@ public void* symbolAddress(
     );
 
     return cast(void*) address;
-}
-
-private void addStaticLibraryGenerator(
-    imported!"orc.bindings".LLVMOrcLLJITRef jit,
-    imported!"orc.bindings".LLVMOrcJITDylibRef dylib,
-    in string staticLibrary,
-) {
-    import orc.bindings:
-        LLVMOrcCreateStaticLibrarySearchGeneratorForPath,
-        LLVMOrcDefinitionGeneratorRef,
-        LLVMOrcJITDylibAddGenerator,
-        LLVMOrcLLJITGetObjLinkingLayer;
-    import std.conv: text;
-    import std.string: toStringz;
-
-    LLVMOrcDefinitionGeneratorRef generator;
-    throwOnError(
-        LLVMOrcCreateStaticLibrarySearchGeneratorForPath(
-            &generator,
-            LLVMOrcLLJITGetObjLinkingLayer(jit),
-            staticLibrary.toStringz,
-        ),
-        text("static library generator ", staticLibrary),
-    );
-    LLVMOrcJITDylibAddGenerator(dylib, generator);
 }
 
 // dmd emits many druntime/phobos template instances and TypeInfos into the rod

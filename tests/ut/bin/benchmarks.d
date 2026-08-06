@@ -383,7 +383,7 @@ unittest {
         },
     );
 
-    info.linkFiles.should == [imagePath];
+    info.dependencyImages.should == [imagePath];
     info.fixtures.should == sourceFiles;  // forwarded verbatim, in dub's order
 }
 

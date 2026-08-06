@@ -10,11 +10,11 @@ private:
 // share this object-production path and differ only in how they consume the
 // emitted objects.
 public struct CodegenInputs {
-    // Modules under archive import paths are defined by prebuilt libraries on
+    // Modules under dependency import paths are defined by prebuilt images on
     // the link line and must not be codegen'd again. Whether default imports
     // are traversed for template-instance codegen is derived from the modules
-    // themselves (see archiveCodegenImports), not from a caller flag.
-    public const string[] archiveImportPaths;
+    // themselves (see dependencyImageImports), not from a caller flag.
+    public const string[] dependencyImportPaths;
     // The compiler arguments dub used for the package under test (e.g.
     // -version, -preview, -I). Applied around codegen so the import modules'
     // semantic3 sees the same frontend configuration as the original parse.
@@ -68,7 +68,7 @@ public string[] emitObjectFilesForLink(
 // uses them.
 //
 // This deliberately omits the single-snippet apparatus that
-// emitObjectFilesForLink carries -- the lightning rod, the archive-gated
+// emitObjectFilesForLink carries -- the lightning rod, the dependency-image-gated
 // druntime codegen, and the foreign-member prune -- because none of it
 // applies once the package is its own root set: dependencies stay non-root
 // imports (DMD's inNonRoot skips emitting their bodies), so their symbols come
@@ -154,8 +154,8 @@ private string[] emitObjectFilesForLinkLocked(
 
     // Modules from user import paths are compiled into the link too: their
     // functions live in no other object, and dmd emits an imported module's
-    // function bodies only if it reached semantic3. Archive-backed modules
-    // are the exception: a prebuilt library on the link line already defines
+    // function bodies only if it reached semantic3. Dependency-image modules
+    // are the exception: a prebuilt image on the link line already defines
     // their symbols, so they get neither the root promotion (saving their
     // semantic3) nor an object of their own.
     // The non-default (user-path) imports are the same whether or not default
@@ -164,50 +164,50 @@ private string[] emitObjectFilesForLinkLocked(
     auto nonDefaultImports = userImportedModules(rootModules, false);
     auto userImports = nonDefaultImports
         .filter!(import_ =>
-            !isUnderImportPaths(import_, inputs.archiveImportPaths))
+            !isUnderImportPaths(import_, inputs.dependencyImportPaths))
         .array;
-    auto archiveImports = nonDefaultImports
+    auto dependencyImports = nonDefaultImports
         .filter!(import_ =>
-            isUnderImportPaths(import_, inputs.archiveImportPaths))
+            isUnderImportPaths(import_, inputs.dependencyImportPaths))
         .array;
-    auto archiveCodegenImports = archiveImports
+    auto dependencyImageImports = dependencyImports
         .filter!(import_ => import_.hasTemplateInstanceMember)
         .array;
     // Derive the need for druntime/phobos template-instance codegen from the
     // modules themselves rather than from how the caller was invoked. The
-    // signal is an archive-backed module that holds template-instance members:
-    // a prebuilt library defines its ordinary symbols, but the snippet's use
+    // signal is a dependency-image module that holds template-instance members:
+    // a prebuilt image defines its ordinary symbols, but the snippet's use
     // of its templates instantiates them here (often parameterized on the
     // snippet's or phobos' types), and emitting those instances pulls in the
     // druntime/phobos members they reference, so the default-path modules must
-    // join this link. A trivial archive dep with no templates instantiates
+    // join this link. A trivial image dependency with no templates instantiates
     // none, so root-promoting the default-path modules would only pollute
     // later links in this process; leave them out.
-    auto defaultImports = archiveCodegenImports.length != 0
+    auto defaultImports = dependencyImageImports.length != 0
         ? userImportedModules(rootModules, true)
             .filter!(import_ => isUnderDefaultImportPaths(import_))
             .array
         : null;
     prepareForCodegen(userImports);
-    prepareArchiveImportsForTemplateCodegen(archiveCodegenImports);
-    prepareArchiveImportsForTemplateCodegen(defaultImports);
+    prepareDependencyImageImportsForTemplateCodegen(dependencyImageImports);
+    prepareDependencyImageImportsForTemplateCodegen(defaultImports);
 
     // The snippet first and the rod last, like dmd compiling several root
     // modules at once: codegen of the snippet can still append late template
     // instances to the rod's members, and the rod must pick them up.
-    auto modules = rootModules ~ userImports ~ archiveCodegenImports
+    auto modules = rootModules ~ userImports ~ dependencyImageImports
         ~ defaultImports ~ [rod];
 
     throwOnInlineAsm(modules);
 
     // Everything the link may legitimately reference; the rod is pruned down
     // to members that only touch these modules (or druntime/phobos).
-    // Archive-backed modules belong here despite not being codegen'd: the
-    // prebuilt libraries define their symbols.
+    // Dependency-image modules belong here despite not being codegen'd: the
+    // prebuilt images define their symbols.
     bool[Module] linkSet;
-    foreach (linkModule; modules ~ archiveImports)
+    foreach (linkModule; modules ~ dependencyImports)
         linkSet[linkModule] = true;
-    foreach (userImport; userImports ~ archiveImports ~ defaultImports)
+    foreach (userImport; userImports ~ dependencyImports ~ defaultImports)
         linkSet[userImport] = true;
 
     string[] objPaths;
@@ -233,9 +233,9 @@ private string[] emitObjectFilesForLinkLocked(
         pruneForeignMembers(rod, context);
         foreach (userImport; userImports)
             pruneForeignMembers(userImport, context);
-        foreach (archiveImport; archiveCodegenImports) {
-            keepOnlyTemplateCodegenMembers(archiveImport);
-            pruneForeignMembers(archiveImport, context);
+        foreach (dependencyImageImport; dependencyImageImports) {
+            keepOnlyTemplateCodegenMembers(dependencyImageImport);
+            pruneForeignMembers(dependencyImageImport, context);
         }
         foreach (defaultImport; defaultImports) {
             keepOnlyTemplateCodegenMembers(defaultImport);
@@ -386,9 +386,9 @@ private void pruneForeignMembers(
     module_.members.setDim(numKept);
 }
 
-// Archive/default modules are in the codegen list only so DMD can emit the
+// Dependency-image/default modules are in the codegen list only so DMD can emit the
 // template instances and TypeInfos it appended to their members arrays. Their
-// ordinary declarations are already supplied by a prebuilt archive or
+// ordinary declarations are already supplied by a prebuilt image or
 // libphobos, so emitting them here would duplicate definitions.
 private void keepOnlyTemplateCodegenMembers(
     imported!"dmd.dmodule".Module module_,
@@ -734,7 +734,7 @@ private imported!"dmd.dmodule".Module[] userImportedModules(
 }
 
 // Whether any of these modules holds a template instance as a member. The
-// snippet's semantic pass appends an archive-backed module's instantiated
+// snippet's semantic pass appends a dependency-image module's instantiated
 // templates to that module's members, so a non-empty hit means this link will
 // emit instances that can reference druntime/phobos members.
 private bool hasTemplateInstanceMember(imported!"dmd.dmodule".Module module_) {
@@ -818,7 +818,7 @@ private void prepareForCodegen(imported!"dmd.dmodule".Module[] modules) {
         throw new Exception(diagnosticMessage);
 }
 
-private void prepareArchiveImportsForTemplateCodegen(
+private void prepareDependencyImageImportsForTemplateCodegen(
     imported!"dmd.dmodule".Module[] modules,
 ) {
     foreach (module_; modules)
