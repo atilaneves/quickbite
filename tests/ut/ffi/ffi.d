@@ -2031,6 +2031,73 @@ unittest {
 }
 
 
+@("ffi.memoryReturnsPlaceDmdReceiverBeforeResultStorage")
+unittest {
+    auto signature = functionSignature(q{
+        struct Receiver {
+            long[3] combine(int value);
+        }
+    }, "combine");
+    auto receiverType = structType(q{
+        struct Receiver {
+            long[3] storage;
+        }
+    }, "Receiver");
+    int value = 7;
+
+    DMemorySretReceiver dmdReceiver = DMemorySretReceiver([3, 0, 0]);
+    long[3] dmdResult;
+    auto receiver = TypedAddress(receiverType, &dmdReceiver);
+    call(
+        Callable(
+            cast(void*) &dmdMemorySretOrderOracle,
+            signature,
+            CompilerAbi.dmd,
+        ),
+        [TypedAddress(Type.tint32, &value)],
+        TypedAddress(signature.next, &dmdResult),
+        &receiver,
+    ).should == true;
+    dmdResult.should == [37L, 38L, 39L];
+    dmdReceiver.storage.should == [3L, 0L, 0L];
+
+    DMemorySretReceiver ldcReceiver = DMemorySretReceiver([5, 0, 0]);
+    long[3] ldcResult;
+    receiver = TypedAddress(receiverType, &ldcReceiver);
+    call(
+        Callable(
+            cast(void*) &ldcMemorySretOrderOracle,
+            signature,
+            CompilerAbi.ldc,
+        ),
+        [TypedAddress(Type.tint32, &value)],
+        TypedAddress(signature.next, &ldcResult),
+        &receiver,
+    ).should == true;
+    ldcResult.should == [57L, 58L, 59L];
+    ldcReceiver.storage.should == [5L, 0L, 0L];
+
+    version (DMD) {
+        DMemorySretReceiver nativeReceiver =
+            DMemorySretReceiver([11, 0, 0]);
+        auto method = &nativeReceiver.combine;
+        long[3] nativeResult;
+        receiver = TypedAddress(receiverType, &nativeReceiver);
+        call(
+            Callable(
+                cast(void*) method.funcptr,
+                signature,
+                CompilerAbi.dmd,
+            ),
+            [TypedAddress(Type.tint32, &value)],
+            TypedAddress(signature.next, &nativeResult),
+            &receiver,
+        ).should == true;
+        nativeResult.should == nativeReceiver.combine(value);
+    }
+}
+
+
 private extern(C) ref int referenceCall(
     ref int value,
     out int assigned,
@@ -2828,6 +2895,34 @@ private struct DVectorSretReceiver {
         Float4 offset = bias;
         return [value + offset, value * offset];
     }
+}
+
+
+private struct DMemorySretReceiver {
+    private long[3] storage;
+
+    private long[3] combine(int value) {
+        const base = storage[0] * 10 + value;
+        return [base, base + 1, base + 2];
+    }
+}
+
+
+private extern(C) void dmdMemorySretOrderOracle(
+    DMemorySretReceiver* receiver,
+    long[3]* result,
+    int value,
+) {
+    *result = receiver.combine(value);
+}
+
+
+private extern(C) void ldcMemorySretOrderOracle(
+    long[3]* result,
+    DMemorySretReceiver* receiver,
+    int value,
+) {
+    *result = receiver.combine(value);
 }
 
 

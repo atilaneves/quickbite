@@ -79,9 +79,8 @@ public bool call(
     if (!physical.valid)
         return false;
 
-    if (signatureContainsVector(callable.signature) ||
-        argumentsContainVector(arguments))
-        return callSysVVector(callable, physical, result);
+    if (requiresSysVTransport(callable, physical))
+        return callSysV(callable, physical, result);
 
     auto resultMetadata = physical.returnPolicy == PhysicalReturn.cppConstructor
         ? FfiType(&ffi_type_void)
@@ -165,6 +164,38 @@ public bool call(
         memcpy(result.address, &resultScratch, resultCopySize);
     }
     return true;
+}
+
+
+private bool requiresSysVTransport(
+    Callable callable,
+    ref PhysicalCall physical,
+) {
+    if (containsVector(physical.returnType))
+        return true;
+    foreach (argument; physical.arguments)
+        if (containsVector(argument.type))
+            return true;
+    return isDmdMemberMemoryReturn(callable, physical);
+}
+
+
+private bool isDmdMemberMemoryReturn(
+    Callable callable,
+    ref PhysicalCall physical,
+) {
+    import dmd.argtypes_sysv_x64: toArgTypes_sysv_x64;
+    import dmd.astenums: LINK;
+
+    if (callable.signature.linkage != LINK.d ||
+        callable.compilerAbi != CompilerAbi.dmd ||
+        physical.receiverArgumentIndex == size_t.max ||
+        physical.returnPolicy != PhysicalReturn.value)
+        return false;
+    const returnTuple = toArgTypes_sysv_x64(
+        semanticStorageType(physical.returnType),
+    );
+    return returnTuple !is null && returnTuple.arguments.length == 0;
 }
 
 
@@ -339,26 +370,6 @@ private PhysicalCall physicalCallFor(
 }
 
 
-private bool argumentsContainVector(TypedAddress[] arguments) {
-    foreach (argument; arguments)
-        if (argument.type !is null && containsVector(argument.type))
-            return true;
-    return false;
-}
-
-
-private bool signatureContainsVector(
-    imported!"dmd.mtype".TypeFunction signature,
-) {
-    if (containsVector(signature.next))
-        return true;
-    foreach (index; 0 .. signature.parameterList.length)
-        if (containsVector(signature.parameterList[index].type))
-            return true;
-    return false;
-}
-
-
 private bool containsVector(imported!"dmd.mtype".Type type) {
     import dmd.astenums: TY;
 
@@ -394,7 +405,7 @@ private bool containsWideVector(imported!"dmd.mtype".Type type) {
 }
 
 
-private bool callSysVVector(
+private bool callSysV(
     Callable callable,
     ref PhysicalCall physical,
     TypedAddress result,
