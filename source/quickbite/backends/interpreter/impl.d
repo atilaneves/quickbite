@@ -3262,6 +3262,62 @@ private struct Walker {
             if (auto index = array.isIndexExp) {
                 import quickbite.backends.interpreter.layout: typeByteSize;
 
+                // A nested index receiver (`m[i++][j]`) must compose its
+                // address before reading its value. Reading `m[i++]` here
+                // and recursively composing its address below would run the
+                // inner index twice.
+                if (auto inner = index.e1.isIndexExp) {
+                    if (inner.e1.isVarExp !is null) {
+                        import quickbite.backends.interpreter.lvalue_place:
+                            placeOfLvalue;
+                        import quickbite.backends.interpreter.place: Place;
+                        import quickbite.backends.interpreter.place_value:
+                            readValue;
+
+                        auto innerPlace = placeOfLvalue(
+                            inner,
+                            (variable) @safe =>
+                                addressableBindingBase(variable),
+                            // @trusted: `runExpression` is the interpreter's
+                            // @system AST dispatcher. This delegate only
+                            // converts the evaluated D index to `size_t` for
+                            // `placeOfLvalue`, as the ordinary path below
+                            // does directly.
+                            (expression) @trusted =>
+                                cast(size_t) runExpression(expression).asLong,
+                            // @trusted: `setLocal` is @system because it is
+                            // part of the interpreter's general storage
+                            // machinery. Here it only binds the `$` length
+                            // variable belonging to the index being walked.
+                            (chainIndex, base) @trusted {
+                                if (chainIndex.lengthVar !is null)
+                                    setLocal(
+                                        chainIndex.lengthVar,
+                                        Value(
+                                            AggregateValue.length(readValue(base)),
+                                        ),
+                                    );
+                            },
+                        );
+                        if (index.lengthVar !is null)
+                            setLocal(
+                                index.lengthVar,
+                                Value(AggregateValue.length(readValue(innerPlace))),
+                            );
+                        const outerOffset = runExpression(index.e2).asLong;
+                        const pointer = Value.pointerValue(
+                            innerPlace.index(cast(size_t) outerOffset).address,
+                        );
+                        if (selfAddress)
+                            return pointer;
+                        return Value.pointerValue(
+                            Place(cast(void*) pointer.pointerAddress, array.type)
+                                .index(cast(size_t) offset)
+                                .address,
+                        );
+                    }
+                }
+
                 // A doubly (or more) nested `DotVarExp` receiver whose own
                 // chain runs through an `IndexExp` somewhere
                 // (`arr[i++].mid.a[j]`, `s.a[i++].mid.b[j]`, ...) must be

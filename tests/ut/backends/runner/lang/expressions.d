@@ -11389,12 +11389,6 @@ static foreach (backend; Matrix!(
     Omit!(Bytecode, Because.unconfirmed,
         "\"Unsupported struct value in bytecode core: m[cast(ulong)i++][1]\" " ~
         "-- independent, unconfirmed gap in the bytecode core"),
-    Omit!(Interpreter, Because.unconfirmed,
-        "`arrayPointer`'s nested-`IndexExp` arm re-evaluates the inner " ~
-        "index's side effect a second time when composing the rebind " ~
-        "address for a doubly-nested indexed receiver: `i++` runs twice " ~
-        "(i == 2 instead of 1) and `m[1][1]` gets bumped instead of " ~
-        "`m[0][1]`"),
 )) {
     @("struct.methodCallThroughDoublyNestedIndexedReceiverEvaluatesIndexOnce." ~
         backend.stringof)

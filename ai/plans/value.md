@@ -685,19 +685,6 @@ static archive at all (see the fixtures' `Omit` notes for the confirmed
 specifics) — a new native symbol-resolution source belongs to `ffi.md`, not
 this track.
 
-A struct method call through a side-effecting index receiver that is itself
-nested under another index (`m[i++][1].bump()`) evaluates `i++` twice and
-mutates the wrong element. `runCallExpression`'s `DotVarExp` arm composes the
-receiver address once via `addressOfExpression(dot.e1, EXP.address)` (the
-fix behind `struct.methodCallThroughIndexedReceiverEvaluatesIndexOnce`), but
-`arrayPointer`'s own nested-`IndexExp` arm (`index.e1.isIndexExp`) evaluates
-`index.e1` once for its `arrayValue`/length-var bookkeeping and then
-independently recurses into `arrayPointer(index.e1, outerOffset, op)` to
-compose the element address, re-running any side effect inside `index.e1` a
-second time. The single-level `arr[i++].method()` fix does not cover this
-doubly-nested shape (fixture:
-`struct.methodCallThroughDoublyNestedIndexedReceiverEvaluatesIndexOnce`).
-
 A method call chained off an assign/construct/blit whose target is itself a
 side-effecting `PtrExp`/`IndexExp` (`(*next() = value).bump()`) has no
 address to rebind `this` to without re-running that side effect a second
