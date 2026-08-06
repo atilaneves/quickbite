@@ -450,6 +450,21 @@ package(quickbite.backends.bytecode) RunResult run(
                 ++ip;
                 break;
 
+            case atomicLoad4:
+                const atomicLoadAddress =
+                    scalarValue!size_t(stack, base + instruction.b) +
+                    scalarValue!size_t(stack, base + instruction.c) *
+                        uint.sizeof;
+                const ubyte[uint.sizeof] atomicLoadValue = scalarBytes(
+                    atomicLoadDword(cast(const(ubyte)*) atomicLoadAddress),
+                );
+                stack[
+                    base + instruction.a
+                    .. base + instruction.a + uint.sizeof
+                ] = atomicLoadValue;
+                ++ip;
+                break;
+
             case atomicLoad8:
                 const atomicLoadAddress =
                     scalarValue!size_t(stack, base + instruction.b) +
@@ -462,6 +477,66 @@ package(quickbite.backends.bytecode) RunResult run(
                     base + instruction.a
                     .. base + instruction.a + ulong.sizeof
                 ] = atomicLoadValue;
+                ++ip;
+                break;
+
+            case atomicExchange4:
+                const atomicExchangeAddress = scalarValue!size_t(
+                    stack, base + instruction.b,
+                );
+                const atomicExchangeValue = scalarValue!uint(
+                    stack, base + instruction.c,
+                );
+                const ubyte[uint.sizeof] atomicExchangeResult = scalarBytes(
+                    atomicExchangeDword(
+                        cast(ubyte*) atomicExchangeAddress,
+                        atomicExchangeValue,
+                    ),
+                );
+                stack[
+                    base + instruction.a
+                    .. base + instruction.a + uint.sizeof
+                ] = atomicExchangeResult;
+                ++ip;
+                break;
+
+            case atomicFetchAdd4:
+                const atomicFetchAddAddress = scalarValue!size_t(
+                    stack, base + instruction.b,
+                );
+                const atomicFetchAddValue = scalarValue!uint(
+                    stack, base + instruction.c,
+                );
+                const ubyte[uint.sizeof] atomicFetchAddResult = scalarBytes(
+                    atomicFetchAddDword(
+                        cast(ubyte*) atomicFetchAddAddress,
+                        atomicFetchAddValue,
+                    ),
+                );
+                stack[
+                    base + instruction.a
+                    .. base + instruction.a + uint.sizeof
+                ] = atomicFetchAddResult;
+                ++ip;
+                break;
+
+            case atomicFetchAdd8:
+                const atomicFetchAddAddress = scalarValue!size_t(
+                    stack, base + instruction.b,
+                );
+                const atomicFetchAddValue = scalarValue!ulong(
+                    stack, base + instruction.c,
+                );
+                const ubyte[ulong.sizeof] atomicFetchAddResult = scalarBytes(
+                    atomicFetchAddWord(
+                        cast(ubyte*) atomicFetchAddAddress,
+                        atomicFetchAddValue,
+                    ),
+                );
+                stack[
+                    base + instruction.a
+                    .. base + instruction.a + ulong.sizeof
+                ] = atomicFetchAddResult;
                 ++ip;
                 break;
 
@@ -591,8 +666,9 @@ package(quickbite.backends.bytecode) RunResult run(
                 writeFrameAddress(
                     stack,
                     base + instruction.a,
-                    base +
-                        refParameterIdentitySlot(frames[$ - 1], instruction.b),
+                    base + refParameterIdentitySlot(
+                        frames[$ - 1], instruction.b,
+                    ),
                 );
                 ++ip;
                 break;
@@ -1667,8 +1743,10 @@ package(quickbite.backends.bytecode) RunResult run(
                 RefWriteback[] refWritebacks;
                 foreach (refParameter; callee.refParameters) {
                     const valueSize = refParameter.valueSize;
-                    const callerOffset = base + scalarValue!uint(
-                        stack, calleeBase + refParameter.offset,
+                    const callerOffset = cast(size_t) (
+                        cast(ptrdiff_t) base + scalarValue!int(
+                            stack, calleeBase + refParameter.offset,
+                        )
                     );
                     refWritebacks ~= RefWriteback(
                         callerOffset, refParameter.offset, valueSize,
@@ -1696,7 +1774,8 @@ package(quickbite.backends.bytecode) RunResult run(
             case nativeCall:
                 import quickbite.frontend.dmd.functions:
                     noAvailableSourceMessage;
-                import quickbite.ffi: callNative, callNativeClassMember;
+                import quickbite.ffi:
+                    callNative, callNativeClassMember, callNativeMember;
 
                 auto native = program.nativeCalls[instruction.a];
                 auto marshaller = new BytecodeNativeMarshaller(
@@ -1706,22 +1785,29 @@ package(quickbite.backends.bytecode) RunResult run(
                     base,
                     native.outParameterOffsets,
                     native.nativeClassReceiverOffset,
+                    native.nativeStructReceiverOffset,
                 );
                 bool[] addressOfLocalArguments;
                 addressOfLocalArguments.length = native.outParameterOffsets.length;
                 foreach (index, offset; native.outParameterOffsets)
                     addressOfLocalArguments[index] =
                         offset != noOutParameterOffset;
-                const called = native.nativeClassReceiverType is null
-                    ? callNative(
-                        native.function_, marshaller, native.argumentTypes,
+                const called = native.nativeStructReceiverType !is null
+                    ? callNativeMember(
+                        native.function_, native.nativeStructReceiverType,
+                        marshaller, native.argumentTypes,
                         addressOfLocalArguments,
                     )
-                    : callNativeClassMember(
+                    : native.nativeClassReceiverType is null
+                        ? callNative(
+                            native.function_, marshaller, native.argumentTypes,
+                            addressOfLocalArguments,
+                        )
+                        : callNativeClassMember(
                         native.function_, native.nativeClassReceiverType,
                         marshaller, native.argumentTypes,
                         addressOfLocalArguments,
-                    );
+                        );
                 if (!called)
                     throw new Exception(noAvailableSourceMessage(
                         native.function_,
@@ -2994,11 +3080,53 @@ private void readHeapElement(ubyte[] destination, in ubyte* element)
 
 // @trusted: `atomicLoad` reads exactly one aligned machine word from the raw
 // address produced by VM pointer operations; the recognised inline-asm source
-// has already restricted this use to an 8-byte atomic load.
+// has already restricted this use to a 4- or 8-byte atomic load.
+private uint atomicLoadDword(in const(ubyte)* address) @trusted {
+    import core.atomic: atomicLoad;
+
+    return atomicLoad(*atomicAddress!uint(address));
+}
+
 private ulong atomicLoadWord(in const(ubyte)* address) @trusted {
     import core.atomic: atomicLoad;
 
-    return cast(ulong) atomicLoad(*cast(shared(ulong)*) address);
+    return cast(ulong) atomicLoad(*atomicAddress!ulong(address));
+}
+
+// @trusted: `atomicExchange` reads and writes exactly one aligned 4-byte word
+// through the raw address produced by the validated DRuntime inline-asm
+// lowering.
+private uint atomicExchangeDword(ubyte* address, in uint value) @trusted {
+    import core.atomic: atomicExchange;
+
+    return atomicExchange(atomicAddress!uint(address), value);
+}
+
+// @trusted: `atomicFetchAdd` reads and writes exactly one aligned 4-byte word
+// through the raw address produced by the validated DRuntime inline-asm
+// lowering.
+private uint atomicFetchAddDword(ubyte* address, in uint value) @trusted {
+    import core.atomic: atomicFetchAdd;
+
+    return atomicFetchAdd(*atomicAddress!uint(address), value);
+}
+
+// @trusted: `atomicFetchAdd` reads and writes exactly one aligned 8-byte word
+// through the raw address produced by the validated DRuntime inline-asm
+// lowering.
+private ulong atomicFetchAddWord(ubyte* address, in ulong value) @trusted {
+    import core.atomic: atomicFetchAdd;
+
+    return atomicFetchAdd(*atomicAddress!ulong(address), value);
+}
+
+// @trusted: the atomic opcode wrappers pass only aligned native addresses
+// produced by the validated DRuntime inline-asm lowering. Restricting the
+// cast here keeps raw pointer conversion out of the atomic operations.
+private shared(T)* atomicAddress(T)(in const(ubyte)* address) @trusted
+    if (is(T == uint) || is(T == ulong))
+{
+    return cast(shared(T)*) address;
 }
 
 private void writeHeapElement(ubyte* element, in ubyte[] source) @trusted {
@@ -3041,12 +3169,12 @@ private struct RefWriteback {
 }
 
 // The callee-frame-relative slot that stands for a scalar `ref` parameter's
-// identity: its own slot, unless it is grouped with other parameters
-// aliasing the same caller storage (`frame.refAliases`), in which case every
-// member of the group must report the group's first slot so `&first ==
-// &second` holds. Reads and writes still go through each parameter's own
-// slot; `synchronizeRefAliases` keeps the group's slots byte-identical
-// between instructions, so redirecting only the address is safe.
+// identity: its own slot, unless it is grouped with other parameters aliasing
+// the same caller storage (`frame.refAliases`), in which case every member of
+// the group must report the group's first slot so `&first == &second` holds.
+// Reads and writes still go through each parameter's own slot;
+// `synchronizeRefAliases` keeps the group's slots byte-identical between
+// instructions, so redirecting only the address is safe.
 private ushort refParameterIdentitySlot(
     in Frame frame,
     in ushort calleeOffset,
@@ -3595,7 +3723,8 @@ private bool descriptorContentEqual(
 }
 
 private final class BytecodeNativeMarshaller:
-    imported!"quickbite.ffi".NativeMarshaller
+    imported!"quickbite.ffi".NativeMarshaller,
+    imported!"quickbite.ffi".NativeReceiverAddressMarshaller
 {
     import dmd.mtype: Type;
     import quickbite.ffi: NativeMarshaller;
@@ -3606,6 +3735,7 @@ private final class BytecodeNativeMarshaller:
     private size_t _base;
     private const(ushort)[] _outParameterOffsets;
     private ushort _nativeClassReceiverOffset;
+    private ushort _nativeStructReceiverOffset;
 
     public this(
         ubyte[] stack,
@@ -3614,6 +3744,7 @@ private final class BytecodeNativeMarshaller:
         in size_t base,
         in ushort[] outParameterOffsets,
         in ushort nativeClassReceiverOffset,
+        in ushort nativeStructReceiverOffset,
     ) {
         _stack = stack;
         _argument = argument;
@@ -3621,6 +3752,7 @@ private final class BytecodeNativeMarshaller:
         _base = base;
         _outParameterOffsets = outParameterOffsets;
         _nativeClassReceiverOffset = nativeClassReceiverOffset;
+        _nativeStructReceiverOffset = nativeStructReceiverOffset;
     }
 
     public bool canRepresent(Type type, in NativeMarshaller.Direction direction) {
@@ -3628,11 +3760,8 @@ private final class BytecodeNativeMarshaller:
         const ty = type.toBasetype.ty;
         if (ty == TY.Tvoid)
             return direction == NativeMarshaller.Direction.fromNative;
-        // A by-value struct only crosses back out of a native call (the
-        // return value); the compiler emits no struct-by-value argument
-        // shape today.
         if (ty == TY.Tstruct)
-            return direction == NativeMarshaller.Direction.fromNative;
+            return true;
         return ty == TY.Tbool || ty == TY.Tint32 || ty == TY.Tuns32 ||
             ty == TY.Tint64 || ty == TY.Tuns64 || ty == TY.Tfloat64 ||
             ty == TY.Tpointer || ty == TY.Tclass || ty == TY.Tarray;
@@ -3681,8 +3810,10 @@ private final class BytecodeNativeMarshaller:
 
     // @trusted: the stack reserve at run start prevents reallocation while the
     // native call is active, so these frame-slot pointers stay valid for
-    // libffi. Out parameters point directly at the target local; ordinary
-    // arguments point at their fixed-stride argument slot.
+    // libffi. The compiler allocates one in-frame, word-aligned fixed-stride
+    // slot per native argument, and ffi/core.d supplies only its corresponding
+    // index, so `slot` is within that layout. Out parameters point directly at
+    // the target local; ordinary arguments point at their argument slot.
     public const(void)* argumentAddress(in size_t index, Type type) @trusted {
         import dmd.astenums: TY;
         import quickbite.backends.bytecode.core.program:
@@ -3765,6 +3896,8 @@ private final class BytecodeNativeMarshaller:
                 return bool.sizeof;
             case Tint32:
                 return int.sizeof;
+            case Tuns32:
+                return uint.sizeof;
             case Tint64:
                 return long.sizeof;
             case Tuns64:
@@ -3833,6 +3966,14 @@ private final class BytecodeNativeMarshaller:
         return cast(const(void)*) scalarValue!size_t(
             _stack, _base + _nativeClassReceiverOffset,
         );
+    }
+
+    public void* receiverAddress(Type type) @trusted {
+        import quickbite.backends.bytecode.core.program: noOutParameterOffset;
+
+        return _nativeStructReceiverOffset == noOutParameterOffset
+            ? null
+            : &_stack[_base + _nativeStructReceiverOffset];
     }
 
     public void invokeClosure(in size_t argumentIndex, Type returnType,

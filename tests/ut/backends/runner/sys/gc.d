@@ -38,7 +38,6 @@ static foreach (backend; Matrix!(
 // its address must not be replaced with the interpreter's display-only type.
 static foreach (backend; Matrix!(
     Omit!(Ctfe, Because.inexpressible, "CTFE cannot access the host environment (libc/OS)"),
-    Omit!(Bytecode, Because.unconfirmed),
     Omit!(LLVMJit, Because.unconfirmed),
 )) {
     @("malloc.typeInfoArgument." ~ backend.stringof)

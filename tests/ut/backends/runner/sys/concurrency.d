@@ -21,14 +21,6 @@ enum thisTidSource = q{
 static foreach (backend; Matrix!(
     Omit!(Ctfe, Because.inexpressible, "CTFE cannot run std.concurrency's thisTid (no host threads)"),
     Omit!(Interpreter, Because.diverges, "see sibling pin below (matches oracle or raises structured Unsupported diagnostic)"),
-    Omit!(Bytecode, Because.unconfirmed,
-        "order-dependent: std.concurrency's Scheduler.thisInfo path reaches " ~
-        "a second core.internal.atomic inline-asm atomic-load shape (EDX/EAX " ~
-        "32-bit value registers) distinct from the already-supported 8-byte " ~
-        "RDX/RAX shape, on a Scheduler-typed (8-byte reference) load whose " ~
-        "register width does not yet have a characterized explanation; only " ~
-        "reached when this row runs before whatever else in the suite " ~
-        "otherwise satisfies it first"),
 )) {
     @("concurrency.thisTid." ~ backend.stringof)
     @Tags(backend.stringof)
@@ -50,5 +42,27 @@ unittest {
             exception.msg.canFind("Unsupported") ||
             exception.msg.canFind("no available source");
         assert(structured, exception.msg);
+    }
+}
+
+// DRuntime's 64-bit `atomicFetchAdd` takes the locked `xadd` inline-asm path
+// on x86_64. Its return is the value before the update, not the new value.
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.inexpressible,
+        "core.internal.atomic.atomicFetchAdd has inline assembly that CTFE " ~
+        "cannot execute"),
+)) {
+    @("atomic.fetchAddUlongReturnsPreviousValue." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            import core.internal.atomic : atomicFetchAdd;
+
+            unittest {
+                ulong value = 41;
+                assert(atomicFetchAdd(&value, 1UL) == 41);
+                assert(value == 42);
+            }
+        });
     }
 }

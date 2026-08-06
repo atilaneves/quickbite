@@ -441,10 +441,21 @@ package(quickbite.backends.bytecode) enum Op: ubyte {
     // width is operand d instead of being implied by the opcode. Backs `*p`
     // and `p[i]` for such a pointee.
     pointerLoadN,
-    // Atomically read the 8-byte element at `[pointer + index * 8]` into the
-    // slot at frame offset a. The atomic-load inline-asm lowering uses this
-    // only after exact whole-sequence validation.
+    // Atomically read the 4- or 8-byte element at `[pointer + index * size]`
+    // into the slot at frame offset a. The atomic-load inline-asm lowering
+    // uses these only after exact whole-sequence validation.
+    atomicLoad4,
     atomicLoad8,
+    // Atomically exchange the 4-byte value at the pointer in slot b with the
+    // 4-byte value in slot c, writing the previous value to slot a. The
+    // exact `lock; xchg` inline-asm lowering uses this after validation.
+    atomicExchange4,
+    // Atomically add the 4-byte value in slot c to the word at the pointer in
+    // slot b, writing the pre-addition value to slot a. The exact `lock;
+    // xadd` inline-asm lowering uses this after validation.
+    atomicFetchAdd4,
+    // 8-byte counterpart of `atomicFetchAdd4`.
+    atomicFetchAdd8,
     // Write the 1- or 4-byte slot at frame offset a to `[pointer + index *
     // elementSize]`, where the raw `size_t` pointer value is at frame offset b
     // and the `size_t` index at frame offset c. Backs `*p = v` (index 0) and
@@ -1266,9 +1277,9 @@ package(quickbite.backends.bytecode) struct Instruction {
 
 // A pass-by-reference parameter: its slot in the callee frame holds the
 // referenced value (a scalar, or a 16-byte slice descriptor for a `ref T[]`),
-// but the matching word in the caller's argument area holds the caller-frame
-// offset of the argument. The machine dereferences that offset on entry and
-// writes the slot back to it on return.
+// but the matching word in the caller's argument area holds the signed offset
+// from the immediate caller frame to the argument. The machine dereferences
+// that offset on entry and writes the slot back to it on return.
 package(quickbite.backends.bytecode) struct RefParameter {
     ushort offset; // the parameter's frame offset (also its argument-area word)
     uint valueSize; // bytes of the referenced value, copied in and written back
@@ -1298,6 +1309,10 @@ package(quickbite.backends.bytecode) struct NativeCall {
     // `nativeClassReceiverType` is null for an ordinary native function call.
     ushort nativeClassReceiverOffset = noOutParameterOffset;
     imported!"dmd.mtype".TypeClass nativeClassReceiverType;
+    // A native struct method receives a pointer to the VM's inline receiver
+    // block as its hidden `this` argument.
+    ushort nativeStructReceiverOffset = noOutParameterOffset;
+    imported!"dmd.mtype".TypeStruct nativeStructReceiverType;
 }
 
 // Sentinel `NativeCall.outParameterOffsets` entry for an argument that is not
