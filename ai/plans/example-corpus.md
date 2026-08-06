@@ -28,9 +28,14 @@ short-circuit `&&`/`||`, bitwise ops, and exceptions (`throw`/`catch`/
 defaults, inheritance, a class field as a `ref` argument, interface
 virtual dispatch across two implementations), delegates/closures
 (capture-by-reference through a returned delegate, a nested lambda/IIFE
-reading an enclosing struct method's `this` field), and associative
-arrays (`string`/struct/`int` keys, `.keys`/`.values` iteration, a
-struct-valued AA's field write and mutating method call).
+reading an enclosing struct method's `this` field), associative arrays
+(`string`/struct/`int` keys, `.keys`/`.values` iteration, a struct-valued
+AA's field write and mutating method call), and the remaining control
+flow (`do`/`while`, labeled `break`/`continue` across nested loops,
+`switch` `goto case`/`goto default`, string-typed switch cases (plus a
+ternary in the case-selector helper), `final switch` on an enum, case
+ranges and multi-value cases). The original queue is fully landed; see
+Deferred below for what's still routed elsewhere.
 
 ## Constraint and method
 
@@ -42,14 +47,12 @@ outlier (330 rows, 23 Interpreter-only + 25 Bytecode-only omits, mostly
 `ref`/pointer edge cases) — consult it only to confirm a specific shape,
 never mine it for new features.
 
-## Queue
-
-1. Remaining control flow: `do`/`while`, labeled `break`/`continue`
-   across nested loops, `switch` `goto case`/`goto default`, case
-   ranges/multi-value cases, `final switch` on an enum, string-typed
-   switch cases, ternary `?:`.
-
 ## Deferred — no matrix evidence or active backend risk
+
+Nothing left in the original queue (`## Current coverage` above). What
+remains is routed backend work, not corpus work: each item below needs a
+minimal fixture in `bytecode.md` or `interpreter.md` before its
+construct can be re-added here.
 
 - `scope(exit/failure/success)`, `invariant(){}`, `in{}`/`out{}`
   contracts: no test evidence either way.

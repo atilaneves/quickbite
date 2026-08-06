@@ -896,3 +896,182 @@ unittest {
     spans["header"].grow();
     assert(spans["header"].length == 5);
 }
+
+unittest {
+    int i;
+    int sum;
+
+    do {
+        ++i;
+
+        if (i == 2)
+            continue;
+
+        if (i == 5)
+            break;
+
+        sum += i;
+    } while (i < 6);
+
+    assert(sum == 8);
+}
+
+unittest {
+    int outerLimit = 1;
+    ++outerLimit;
+    int innerLimit = 2;
+    ++innerLimit;
+    int count;
+
+outer:
+    for (int i = 0; i < outerLimit; ++i) {
+        for (int j = 0; j < innerLimit; ++j) {
+            ++count;
+
+            if (i == 0 && j == 1)
+                break outer;
+        }
+    }
+
+    assert(count == 2);
+}
+
+int loopBound(int value) {
+    return value;
+}
+
+unittest {
+    int count;
+
+outer:
+    for (int i = 0; i < loopBound(3); ++i) {
+        for (int j = 0; j < loopBound(4); ++j) {
+            if (j == i + 1)
+                continue outer;
+
+            ++count;
+        }
+
+        count += loopBound(10);
+    }
+
+    assert(count == 6);
+}
+
+unittest {
+    int value = 1;
+    int result;
+
+    switch (value) {
+        case 1:
+            result += 10;
+            goto case 2;
+
+        case 2:
+            result += 20;
+            break;
+
+        default:
+            result += 30;
+            break;
+    }
+
+    assert(result == 30);
+}
+
+unittest {
+    int value = 1;
+    int result;
+
+    switch (value) {
+        case 1:
+            result += 10;
+            goto default;
+
+        case 2:
+            result += 20;
+            break;
+
+        default:
+            result += 30;
+            break;
+    }
+
+    assert(result == 40);
+}
+
+string paletteName(int n) {
+    return n == 1 ? "red" : "green";
+}
+
+int paletteScore(string s) {
+    switch (s) {
+        case "red":
+            return 10;
+
+        case "green":
+            return 20;
+
+        default:
+            return 0;
+    }
+}
+
+unittest {
+    assert(paletteScore(paletteName(1)) == 10);
+    assert(paletteScore(paletteName(2)) == 20);
+}
+
+enum Shade {
+    red,
+    green,
+    blue,
+}
+
+Shade shadeFor(int n) {
+    return n == 0 ? Shade.red : n == 1 ? Shade.green : Shade.blue;
+}
+
+int weightOf(Shade shade) {
+    final switch (shade) {
+        case Shade.red:
+            return 10;
+
+        case Shade.green:
+            return 20;
+
+        case Shade.blue:
+            return 30;
+    }
+}
+
+unittest {
+    assert(weightOf(shadeFor(0)) == 10);
+    assert(weightOf(shadeFor(1)) == 20);
+    assert(weightOf(shadeFor(2)) == 30);
+}
+
+int bucket(int n) {
+    return n;
+}
+
+int classifyBucket(int n) {
+    switch (n) {
+        case 0: .. case 3:
+            return 10;
+
+        case 5, 7:
+            return 20;
+
+        default:
+            return 30;
+    }
+}
+
+unittest {
+    assert(classifyBucket(bucket(0)) == 10);
+    assert(classifyBucket(bucket(3)) == 10);
+    assert(classifyBucket(bucket(5)) == 20);
+    assert(classifyBucket(bucket(7)) == 20);
+    assert(classifyBucket(bucket(4)) == 30);
+}
