@@ -158,6 +158,64 @@ unittest {
 }
 
 
+@("ffi.addressOnlyExternDVectorCalls")
+unittest {
+    version (LDC)
+        enum hostCompilerAbi = CompilerAbi.ldc;
+    else
+        enum hostCompilerAbi = CompilerAbi.dmd;
+
+    Type vectorType = new TypeVector(Type.tfloat32.sarrayOf(4));
+    vectorType = vectorType.merge;
+    auto signature = functionSignature(
+        vectorType,
+        [Type.tint32, vectorType, Type.tint32],
+        LINK.d,
+    );
+    DVectorReceiver receiver = DVectorReceiver(3);
+    auto method = &receiver.combine;
+    int head = 4;
+    int tail = 7;
+    Float4 value = [1.0f, 2.0f, 4.0f, 8.0f];
+    Float4 result;
+    auto receiverType = structType(q{
+        struct Receiver {
+            int bias;
+        }
+    }, "Receiver");
+    auto receiverAddress = TypedAddress(receiverType, &receiver);
+
+    const expected = receiver.combine(head, value, tail);
+    call(
+        Callable(cast(void*) method.funcptr, signature, hostCompilerAbi),
+        [
+            TypedAddress(Type.tint32, &head),
+            TypedAddress(vectorType, &value),
+            TypedAddress(Type.tint32, &tail),
+        ],
+        TypedAddress(vectorType, &result),
+        &receiverAddress,
+    ).should == true;
+    result.array.should == expected.array;
+
+    result = Float4.init;
+    call(
+        Callable(
+            cast(void*) &dmdVectorOrderOracle,
+            signature,
+            CompilerAbi.dmd,
+        ),
+        [
+            TypedAddress(Type.tint32, &head),
+            TypedAddress(vectorType, &value),
+            TypedAddress(Type.tint32, &tail),
+        ],
+        TypedAddress(vectorType, &result),
+    ).should == true;
+    result.array.should == dmdVectorOrderOracle(tail, value, head).array;
+}
+
+
 @("ffi.addressOnlyExternCScalarCall")
 unittest {
     int lhs = 4;
@@ -1854,6 +1912,28 @@ private extern(C) T identity(T)(T value) {
 
 
 private alias Float4 = __vector(float[4]);
+
+
+private struct DVectorReceiver {
+    private int bias;
+
+    private Float4 combine(int head, Float4 value, int tail) {
+        Float4 factor = head;
+        Float4 offset = bias * 10 + tail;
+        return value * factor + offset;
+    }
+}
+
+
+private extern(C) Float4 dmdVectorOrderOracle(
+    int tail,
+    Float4 value,
+    int head,
+) {
+    Float4 factor = head;
+    Float4 offset = tail;
+    return value * factor + offset;
+}
 
 
 private extern(C) Float4 transformVector(int bias, Float4 value, int scale) {

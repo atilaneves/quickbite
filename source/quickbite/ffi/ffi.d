@@ -82,25 +82,13 @@ public bool call(
 
     const hasReceiver = receiver !is null;
     FfiType receiverMetadata;
-    void* structReceiverCell;
+    void* receiverCell;
     void* receiverAddress;
     if (hasReceiver) {
-        if (receiver.type is null || receiver.address is null)
+        receiverAddress = receiverArgumentAddress(receiver, receiverCell);
+        if (receiverAddress is null)
             return false;
-
-        switch (receiver.type.toBasetype.ty) with (TY) {
-            case Tstruct:
-                receiverMetadata = FfiType(&ffi_type_pointer);
-                structReceiverCell = receiver.address;
-                receiverAddress = &structReceiverCell;
-                break;
-            case Tclass, Tpointer:
-                receiverMetadata = FfiType(&ffi_type_pointer);
-                receiverAddress = receiver.address;
-                break;
-            default:
-                return false;
-        }
+        receiverMetadata = FfiType(&ffi_type_pointer);
     }
 
     auto returnType = callable.signature.next.toBasetype;
@@ -329,7 +317,9 @@ private bool callSysVVector(
 
     const hasVariadicTail = hasCVariadicArguments(callable.signature);
     const numFixedArguments = callable.signature.parameterList.length;
-    if (receiver !is null || callable.signature.linkage != LINK.c ||
+    if ((callable.signature.linkage != LINK.c &&
+            callable.signature.linkage != LINK.d) ||
+        (receiver !is null && callable.signature.linkage != LINK.d) ||
         (!hasVariadicTail &&
             callable.signature.parameterList.varargs != VarArg.none) ||
         (hasVariadicTail
@@ -352,7 +342,23 @@ private bool callSysVVector(
     if (returnsInMemory)
         frame.gpr[0] = cast(size_t) result.address;
     size_t nextXmm;
-    foreach (index, argument; arguments) {
+    if (receiver !is null) {
+        void* receiverCell;
+        const receiverAddress = receiverArgumentAddress(
+            receiver,
+            receiverCell,
+        );
+        if (receiverAddress is null || nextGpr == frame.gpr.length)
+            return false;
+        memcpy(&frame.gpr[nextGpr++], receiverAddress, void*.sizeof);
+    }
+    const reversesArguments = callable.signature.linkage == LINK.d &&
+        callable.compilerAbi == CompilerAbi.dmd;
+    foreach (position; 0 .. arguments.length) {
+        const index = reversesArguments
+            ? arguments.length - position - 1
+            : position;
+        auto argument = arguments[index];
         if (argument.type is null || argument.address is null)
             return false;
         if (index < numFixedArguments) {
@@ -440,6 +446,26 @@ private bool callSysVVector(
         }
     }
     return true;
+}
+
+
+private void* receiverArgumentAddress(
+    TypedAddress* receiver,
+    ref void* pointerCell,
+) {
+    import dmd.astenums: TY;
+
+    if (receiver is null || receiver.type is null || receiver.address is null)
+        return null;
+    switch (receiver.type.toBasetype.ty) with (TY) {
+        case Tstruct:
+            pointerCell = receiver.address;
+            return &pointerCell;
+        case Tclass, Tpointer:
+            return receiver.address;
+        default:
+            return null;
+    }
 }
 
 
