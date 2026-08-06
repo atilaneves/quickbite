@@ -10742,7 +10742,18 @@ private struct Walker {
         if (isPointerType(index.e1.type)) {
             arrayIndex = cast(size_t) cast(ulong) runExpression(index.e2).asLong;
             if (_evaluatedReferenceArgumentIndices !is null)
-                (*_evaluatedReferenceArgumentIndices)[cast(const(void)*) index] =
+                // Keyed by `index.e2` (the index subexpression), not the
+                // outer `IndexExp` itself: `lvalue_place.placeOfLvalue`'s
+                // `evalIndex` callback is invoked with `indexExpIndex(index)`
+                // (`index.e2`) when composing a `ref`-argument's address
+                // (`bindReferenceSlot`/`evaluatedIndex`), so a mismatched key
+                // here always missed the lookup -- silently, since
+                // `bindReferenceSlot` catches the resulting exception and
+                // declines to bind the reference slot at all. A `ref`
+                // parameter bound to `arr[runtimeVariable]` (as opposed to a
+                // constant index) therefore never wrote back to the caller's
+                // array: the callee mutated its own unbound local copy.
+                (*_evaluatedReferenceArgumentIndices)[cast(const(void)*) index.e2] =
                     arrayIndex;
 
             return loadNativePointerElement(index.e1.type, source, arrayIndex);
@@ -10757,7 +10768,9 @@ private struct Walker {
         // matches CTFE, which formats the index as unsigned
         arrayIndex = cast(size_t) cast(ulong) runExpression(index.e2).asLong;
         if (_evaluatedReferenceArgumentIndices !is null)
-            (*_evaluatedReferenceArgumentIndices)[cast(const(void)*) index] =
+            // See the `isPointerType` arm above: keyed by `index.e2`, matching
+            // `evaluatedIndex`'s lookup key.
+            (*_evaluatedReferenceArgumentIndices)[cast(const(void)*) index.e2] =
                 arrayIndex;
 
         if (AggregateValue.isArray(source) && arrayIndex >= sourceLength) {
