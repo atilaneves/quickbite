@@ -68,6 +68,26 @@ superseded implementation detail, not D language behavior.
 
 ## Contracts and invariants
 
+### Compiler ABI is part of image identity
+
+A dependency image that contains D code records the compiler ABI that produced
+it. That identity participates in preparation inputs, cache keys, backend
+loading decisions, and native symbol resolution. A resolved D callable is an
+address plus the defining image's ABI provenance; loading it into a DMD- or
+LDC-built host does not change that provenance. `LINK.d` alone is not enough.
+
+Boundary argument ordering cannot make an otherwise incompatible D image safe
+inside a host with a different druntime ABI. An in-process backend may load D
+code only when the image's compiler ABI and runtime requirements are compatible
+with that host; otherwise execution needs a matching process boundary or an
+image built for the host compiler. C symbols continue to use the platform C
+ABI and need no D-compiler ordering metadata.
+
+`quickbite.ffi.ffi` consumes this provenance and only orders addresses for the
+actual callable. It never rewrites the value layout. The temporary
+`quickbite.ffi.oldffi` must obey the same correctness fact while it remains in
+the Interpreter path.
+
 ### Dependency preparation owns archives
 
 The cold dependency-preparation layer:
@@ -287,9 +307,9 @@ references identify cold conversion or obsolete execution behavior.
 
 Delete construction/linking first, then compiler and VM paths made
 unreachable. Add the `dependencyImages` constructor and wire the benchmark
-registry to pass the image to Interpreter and Bytecode. After every edit, run focused Bytecode native-call, FFI,
-function-pointer, delegate, class, struct, and ref tests. Ordinary body-less
-native calls must remain green.
+registry to pass the image to Interpreter and Bytecode. After every edit, run
+focused Bytecode native-call, FFI, function-pointer, delegate, class, struct,
+and ref tests. Ordinary body-less native calls must remain green.
 
 ### 5. Remove LLVMJit archive behavior
 

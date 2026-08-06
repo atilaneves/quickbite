@@ -69,16 +69,15 @@ This is the load-bearing decision; everything else follows from it.
   stepping and slicing still use DMD's size of the immediate pointed-at type
   (`int[]*` advances by a slice descriptor and `S*` by `S.sizeof`). Never infer
   byte stride from the scalar opcode type.
-- Known native-layout violation to fix: the VM's slice descriptor
+- Required native-layout correction: the VM's slice descriptor
   (`writeSliceDescriptor`) is `{ptr, length}`, but compiled D lays a slice out
-  as `{length, ptr}` (length at offset 0). The FFI bridge already matches real
-  D and word-swaps at the boundary (`readResult`/`fillArgument`). Flip the VM
-  descriptor to native order and delete both swaps; until then, any pointer to
-  a descriptor crossing the bridge unswapped (`int[]*`, a struct with a slice
-  field passed by reference) reads ptr-as-length on the native side. The flip
-  touches every descriptor read/write site (`subSlice*`, `indexLoad*`, bounds
-  checks) and needs a bridge round-trip test of a struct containing a slice
-  field.
+  as `{length, ptr}` (length at offset 0). Flip every descriptor read and write
+  to native order before integrating `quickbite.ffi.ffi`. Delete the legacy
+  boundary swaps in the same representation change. The new bridge never sees
+  the old order and contains no swap or compatibility path; until the flip,
+  slice calls through it are unsupported. The flip touches every descriptor
+  read/write site (`subSlice*`, `indexLoad*`, bounds checks) and needs a bridge
+  round-trip test of a struct containing a slice field.
 - Heap: interpreted data structures are native data structures
   and the host GC owns the heap. The druntime lowering hooks are templates
   (`_d_newclassT!T`, `_d_arrayappendT`, `_d_aaGetY`) instantiated into the
@@ -240,13 +239,10 @@ rendering knowledge beyond "these bytes at this type".
   floor for the latency goal — ranges, capturing lambdas, classes, and
   exceptions arrive with the first `std.algorithm`-using test, regardless of
   slice order.
-- Reconciliation with `ffi.md`: that document prescribes wrapper thunks for
-  dependency calls, classifies mixed template instantiations as
-  backend-executed or separately cached, and lists direct extern(D) calls
-  as a non-goal. Native layout supersedes the wrapper position for this
-  backend — data crosses the boundary unchanged, so per-signature wrapper
-  codegen buys nothing. `ffi.md` §23 records this amendment; the wrapper
-  design stands for boxed-value backends only.
+- Bytecode eventually imports `quickbite.ffi.ffi`, never
+  `quickbite.ffi.oldffi`. The new module is designed from native-layout
+  requirements rather than adapted from the Interpreter bridge. Data crosses
+  unchanged, so per-signature conversion or wrapper codegen buys nothing.
 - Druntime lowering hooks (`_d_arrayappendT`, the AA runtime,
   `_d_newclassT`, ...) are templates whose bodies the VM executes; the
   native leaves they bottom out in require the runtime type metadata
@@ -258,13 +254,14 @@ rendering knowledge beyond "these bytes at this type".
   INTEGER/SSE struct classification, the hidden `sret` pointer for large
   returns, `real` via x87, variadics. The bridge builds libffi CIFs from
   DMD type signatures and caches them per bridge entry alongside symbol
-  resolution. "No marshalling layer" is scoped to data representation:
-  values cross unchanged; the call goes through a cached FFI descriptor.
+  resolution. There is no marshalling layer: values cross unchanged through
+  their existing typed addresses; the call goes through a cached FFI
+  descriptor.
   `real` in signatures is a known libffi hazard on x86_64 and gets explicit
   fixtures (matching the compiled oracle's `real` precision).
 - Native argument slot stride is an addressing contract only: it is wide
-  enough for the widest bridge value, but every emitter and marshaller reads
-  or writes the argument's actual ABI width. Scalar constant loads must never
+  enough for the widest bridge value, but every emitter reads or writes the
+  argument's actual ABI width. Scalar constant loads must never
   use the stride as their copy width; for example, a null pointer writes
   `size_t.sizeof` bytes while an array descriptor writes two native words.
 - Every outbound call carries an exception guard converting native
@@ -593,8 +590,9 @@ Otherwise take an "Architecture work forced by the baseline" front.
   the integration row in the commit that makes it green.
 - Work serially in `source/quickbite/backends/bytecode/core/**`; adjacent
   features converge on the compiler, machine, and program modules. Parallel
-  work belongs only to file-disjoint tracks such as `ai/plans/value.md` and
-  `ai/plans/ffi.md`.
+  work belongs only to file-disjoint tracks. This plan owns the eventual
+  `quickbite.ffi.ffi` integration and slice flip; `ffi.md` supplies the bridge
+  without editing Bytecode core.
 - After each editing session, run the repository-mandated
   `ninja bin/ut` and `bin/ut --random`. Replay a failing random order with its
   `--seed` before deciding whether the failure is related.
@@ -612,9 +610,9 @@ paths are expected to exercise these architectural fronts:
    native-layout storage and aliases.
 2. Execute available Phobos and druntime source, including templates,
    delegates, closures, classes, exceptions, and module initialization.
-3. Widen the outbound native bridge for body-less leaves, aggregate returns,
-   and host resources. Keep the bytecode-owned work in this
-   plan and coordinate shared FFI seam work through `ai/plans/ffi.md`.
+3. Integrate the address-only `quickbite.ffi.ffi` for body-less leaves,
+   aggregate returns, and host resources. Keep typed storage and address
+   selection in this plan; keep CIF and callable-ABI mechanics in `ffi.md`.
 4. Synthesize runtime type metadata and inbound VM entry thunks when druntime,
    callbacks, finalizers, associative-array methods, or virtual dispatch force
    them.
@@ -709,9 +707,10 @@ and Cerealed gate no longer expose earlier gaps.
   tied to DMD's builtin classification and is executed by the VM.
 - Druntime lowerings with available source execute as D bytecode. Body-less
   leaves use the native bridge.
-- Native-layout values cross the bridge unchanged. Cached libffi descriptors
-  perform the call; bridge entries cache typed signatures, CIFs, and symbol
-  resolution.
+- Native-layout values cross `quickbite.ffi.ffi` through typed addresses.
+  Cached libffi descriptors perform the call; bridge entries cache typed
+  signatures, callable ABI provenance, CIFs, and symbol resolution. The bridge
+  contains no conversion, reconstruction, writeback, or slice-word swapping.
 - Native `Throwable`s crossing the boundary are converted to VM unwinding, and
   VM exceptions crossing an inbound thunk become native unwinding.
 

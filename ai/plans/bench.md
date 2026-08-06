@@ -90,6 +90,33 @@ The cost of building the dependency image belongs in the preparation
 section, never folded into a timed row. If image construction fails, the
 package is a preparation failure (see item 4), not a backend skip.
 
+## Host Compiler And Native ABI
+
+`bin/bench.sh` builds the benchmark host with LDC by default. This is the
+benchmark target: DMD's optimiser is not good enough for its timings to
+represent the intended edit-test loop. The already-supported DMD-hosted build
+remains a correctness and diagnostic control, not the performance or
+acceptance configuration.
+
+Interpreter and Bytecode execute inside the LDC host. Their body-less native D
+calls must therefore use the ABI provenance of the code that defines each
+callable; `LINK.d` alone does not select DMD or LDC explicit-argument order.
+The legacy Interpreter path lives in `quickbite.ffi.oldffi`; Bytecode migrates
+to the address-only `quickbite.ffi.ffi` described by `ffi.md`.
+
+DMD-backend-generated code is different: its `extern(D)` calls use DMD's ABI,
+so the LDC benchmark host executes that code through the DMD-built executor.
+Do not move Interpreter or Bytecode execution into that executor merely to
+hide an LDC FFI bug; those backends are supposed to run in the optimised host.
+
+The Interpreter/Cerealed acceptance command is:
+
+```text
+./bin/bench.sh -w 0 -r 1 -b interpreter --dub cerealed
+```
+
+A passing DMD-hosted invocation does not satisfy that gate.
+
 ## Build Optimisation Of The Driver Itself
 
 A benchmark binary that is itself unoptimised measures the wrong thing. As of

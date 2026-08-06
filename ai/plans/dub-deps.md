@@ -23,8 +23,8 @@ benchmark any real dub package without it.
 
 Caching addresses lowering/compiling only, never execution. The sole binary
 dependency contract is the dependency image; VM backends continue to execute
-available D source and use it only for `fbody is null` leaves. FFI is needed
-regardless for C/C++/Rust or closed-source leaves — see ffi.md §21.
+available D source and use it only for `fbody is null` leaves. A native bridge
+is still required for C, C++, Rust, or closed-source leaves.
 
 ## The build model: cold dependency image, hot project
 
@@ -97,6 +97,19 @@ string buildDubDependencyImage(
     //   -L=--whole-archive <archives> -L=--no-whole-archive
     //   -of=<outDir>/lib<packageName>_dub_deps.so
 ```
+
+The conceptual result is not merely a path. It also carries the compiler ABI
+of the D objects linked into the image. That ABI is part of the cold build
+identity and cache key. A native resolver returning a D symbol from the image
+must return the same provenance with its address so `quickbite.ffi.ffi` can
+order argument addresses correctly. Do not infer it from `LINK.d`, the host
+compiler, or the compiler that happened to perform the final link.
+
+An image containing DMD objects is not generally safe to execute inside an LDC
+host merely because the outer call adapts its explicit argument order: the
+image's own calls into druntime still use DMD's ABI. Build a host-compatible
+image for in-process execution or use the existing matching-process boundary.
+Pure C leaves use the platform C ABI and do not carry this restriction.
 
 `--whole-archive` is load-bearing: nothing references the deps at this
 link, so without it the linker drops every member and the image is
@@ -424,18 +437,16 @@ a per-run `dlopen`). The leaves discussed here are the interpreter family's
 `fbody is null` surface, in three populations:
 
 1. Resident — libc, druntime, Phobos, already mapped into `bin/ut`;
-   resolved by `dlsym(RTLD_DEFAULT, mangleExact(f))` (ffi.md §21/§22).
-   cerealed bottoms out here and only here — its sole `extern(C)` leaves
-   are `mkdtemp`/`isatty` from libc — so it needs none of the below.
-   This is why cerealed is the right first target: it exercises the
-   whole dub-project path with zero native-loading work.
+   resolved by `dlsym(RTLD_DEFAULT, mangleExact(f))`. Cerealed bottoms out
+   here and only here: besides its libc leaves it reaches resident
+   `extern(D)` druntime helpers, so their callable ABI provenance matters.
+   It needs no non-resident native loading.
 2. Non-resident but installed — a package-manager `.so` a dep binds
    (sqlite3, ssl, pq, ...). Present on the system, absent from the
    process. The general case for real projects, but not cerealed.
-3. Static-only `.a` with no `.so` — rare in the popular ecosystem (the
-   common binders all ship `.so`s); deferred to the native-image track
-   (ffi.md §3-§20; `LLVMJit` already attaches static archives via the
-   ORC search generator, see llvm-jit.md).
+3. Static-only `.a` with no `.so` — consumed only by cold dependency-image
+   preparation; execution backends never accept archives directly
+   (`dependency-image-contract.md`).
 
 Anticipated mechanism for (2), not built until a corpus project needs
 it: the driver extracts each dep's `libs`/`lflags` from `dub describe`,
