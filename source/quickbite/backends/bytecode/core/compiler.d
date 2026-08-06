@@ -2814,7 +2814,11 @@ private struct Compiler {
             if (auto pointer = tryAddressOfLocal(address))
                 return *pointer;
             if (auto symbol = address.e1.isSymOffExp)
-                if (auto pointer = tryAddressOfSymbol(symbol))
+                if (auto pointer = symbolAddress(
+                        symbol.var.isVarDeclaration,
+                        symbol.offset,
+                        symbol.type,
+                    ))
                     return *pointer;
             // `&f` of a free or static nested function: the function-pointer
             // value is the callee's VM function index in a size_t slot.
@@ -2827,7 +2831,11 @@ private struct Compiler {
         // address of a scalar local's frame slot, yielding an `int*`-style
         // pointer operand.
         if (auto symOff = expression.isSymOffExp) {
-            if (auto pointer = tryAddressOfSymbol(symOff))
+            if (auto pointer = symbolAddress(
+                    symOff.var.isVarDeclaration,
+                    symOff.offset,
+                    symOff.type,
+                ))
                 return *pointer;
             // `&f` can also arrive as a `SymOffExp` over a function symbol;
             // the function-pointer value is its VM function index.
@@ -3091,8 +3099,6 @@ private struct Compiler {
 
     private Place* placeOrNull(Expression expression) {
         const facts = typeFacts(expression.type);
-        if (!facts.isAggregate && expression.isArrayLengthExp !is null)
-            return scalarPlaceCandidate(expression);
         if (auto conditional = expression.isCondExp) {
             const condition = compileBoolCondition(conditional.econd);
             const pointer = allocateBytes(
@@ -3120,43 +3126,23 @@ private struct Compiler {
             patchJump(endJump);
             return pointerPlace(pointer, expression.type);
         }
-        if (auto call = expression.isCallExp) {
-            auto function_ = callFunction(call);
-            if (facts.isAggregate && function_ !is null &&
-                function_.isCtorDeclaration !is null) {
-                const receiver = methodReceiver(call);
-                compileCall(call, &receiver);
-                return pointerPlace(receiver.offset, expression.type);
-            }
-            auto type = function_ is null ? null : function_.type.isTypeFunction;
-            if (type !is null && type.isRef)
-                return pointerPlace(
-                    compileCall(call).offset, expression.type,
-                );
-            return null;
-        }
-        if (expression.isVarExp !is null || expression.isThisExp !is null ||
-            expression.isSuperExp !is null ||
-            expression.isDotVarExp !is null ||
-            expression.isIndexExp !is null)
-            return facts.isAggregate
-                ? aggregatePlaceCandidate(expression)
-                : scalarPlaceCandidate(expression);
-        if (auto dereference = expression.isPtrExp) {
-            import dmd.astenums: TY;
-
-            if (!facts.isAggregate &&
-                dereference.type.toBasetype.ty == TY.Tfunction)
-                return null;
-            const pointer = compileExpression(dereference.e1);
-            if (!pointer.isPointer)
-                return null;
-            return pointerPlace(pointer.offset, expression.type);
-        }
-        return null;
+        return resolvePlace(expression, facts);
     }
 
-    private Place* scalarPlaceCandidate(Expression expression) {
+    private Place* resolvePlace(Expression expression, in TypeFacts facts) {
+        if (auto symbol = expression.isSymOffExp) {
+            // DMD type APIs return mutable class references.
+            auto pointee = symbol.type.toBasetype.nextOf;
+            if (pointee is null)
+                return null;
+            if (auto address = symbolAddress(
+                    symbol.var.isVarDeclaration,
+                    symbol.offset,
+                    symbol.type,
+                ))
+                return pointerPlace(address.offset, pointee);
+            return null;
+        }
         if (auto length = expression.isArrayLengthExp)
             if (auto descriptor = dynamicArrayDescriptorOrNull(length.e1)) {
                 Operand address;
@@ -3180,17 +3166,101 @@ private struct Compiler {
 
         if (auto call = expression.isCallExp) {
             auto function_ = callFunction(call);
-            auto type = function_ is null ? null : function_.type.isTypeFunction;
-            if (type !is null && type.isRef &&
-                !typeFacts(expression.type).isAggregate) {
-                const pointer = compileCall(call);
-                return pointerPlace(pointer.offset, expression.type);
+            if (facts.isAggregate && function_ !is null &&
+                function_.isCtorDeclaration !is null) {
+                const receiver = methodReceiver(call);
+                compileCall(call, &receiver);
+                return pointerPlace(receiver.offset, expression.type);
             }
+            auto type = function_ is null ? null : function_.type.isTypeFunction;
+            if (type !is null && type.isRef)
+                return pointerPlace(
+                    compileCall(call).offset, expression.type,
+                );
+            return null;
         }
         if (auto variable = expression.isVarExp) {
             auto declaration = variable.var.isVarDeclaration;
             if (declaration is null)
                 return null;
+            // DeclarationRecord's typed accessors return mutable pointers.
+            auto record = declarationRecordView(declaration);
+            if (facts.isAggregate) {
+                if (declaration.isParameter && declaration.isReference)
+                    if (auto offset = declaration in _capturedOffsets)
+                        return new Place(
+                            Place.Kind.pointer, expression.type,
+                            *offset, compileSizeConstant(0),
+                            StructField.init, false,
+                            isDelegateValueType(expression.type),
+                            null,
+                            isDelegateValueType(expression.type),
+                        );
+                if (auto slot = record.scalarOrNull)
+                    if (record.refPointerOrNull !is null)
+                        return pointerPlace(*slot, expression.type);
+                if (auto local = record.struct_OrNull)
+                    return new Place(
+                        Place.Kind.frame, expression.type, local.offset,
+                    );
+                if (auto offset = record.staticArrayOrNull)
+                    return new Place(
+                        Place.Kind.frame, expression.type, *offset,
+                    );
+                if (auto local = record.dynamicArrayOrNull)
+                    return new Place(
+                        Place.Kind.frame, expression.type, local.offset,
+                    );
+                // DeclarationRecord's typed accessors return mutable pointers.
+                auto module_ = moduleDeclarationRecord(declaration);
+                if (auto value = module_.moduleStructOrNull)
+                    return new Place(
+                        Place.Kind.module_, expression.type, value.offset,
+                    );
+                if (auto value = module_.moduleStaticArrayOrNull)
+                    return new Place(
+                        Place.Kind.module_, expression.type, value.offset,
+                    );
+                if (auto value = module_.moduleDynamicArrayOrNull)
+                    return new Place(
+                        Place.Kind.module_, expression.type, value.offset,
+                    );
+                if (auto value = module_.moduleDelegateOrNull)
+                    return new Place(
+                        Place.Kind.module_, expression.type, value.offset,
+                    );
+                if (auto local = record.delegate_OrNull)
+                    return new Place(
+                        Place.Kind.frame, expression.type, local.offset,
+                    );
+                if (auto local = record.delegateParameterOrNull)
+                    return new Place(
+                        Place.Kind.frame, expression.type, *local,
+                    );
+                if (_hasNestedContext)
+                    if (auto captured = declaration in _capturedOffsets) {
+                        if (declaration.isThisDeclaration !is null) {
+                            const pointer = loadCapturedLocal(
+                                declaration, *captured,
+                            );
+                            if (pointer.isPointer)
+                                return pointerPlace(
+                                    pointer.offset, expression.type,
+                                );
+                        }
+                        return new Place(
+                            Place.Kind.captured,
+                            expression.type,
+                            *captured,
+                            0,
+                            StructField.init,
+                            false,
+                            false,
+                            declaration,
+                        );
+                    }
+                return null;
+            }
             if (_hasNestedContext && !declaration.isReference)
                 if (auto offset = declaration in _capturedOffsets)
                     if (_capturedOwners[declaration] !is _currentFunction)
@@ -3205,8 +3275,8 @@ private struct Compiler {
                                 ? pointerElementScalar(declaration.type)
                                 : ScalarType.void_,
                         );
-            if (auto slot = declarationRecordView(declaration).scalarOrNull) {
-                if (auto element = declarationRecordView(declaration).refPointerOrNull) {
+            if (auto slot = record.scalarOrNull) {
+                if (auto element = record.refPointerOrNull) {
                     if (_hasNestedContext && declaration in _capturedOffsets &&
                         _capturedOwners[declaration] !is _currentFunction) {
                         const pointer = allocateBytes(
@@ -3247,7 +3317,7 @@ private struct Compiler {
                         compileSizeConstant(0),
                     );
                 }
-                auto pointerElement = declarationRecordView(declaration).pointerOrNull;
+                auto pointerElement = record.pointerOrNull;
                 return new Place(
                     Place.Kind.frame, scalarType(declaration.type), *slot,
                     declaration,
@@ -3305,6 +3375,28 @@ private struct Compiler {
                 );
             return null;
         }
+        if (facts.isAggregate &&
+            (expression.isThisExp !is null ||
+                expression.isSuperExp !is null) && _hasThis)
+            return new Place(
+                Place.Kind.pointer, expression.type,
+                _thisLocal.offset, compileSizeConstant(0),
+            );
+        if (facts.isAggregate && _hasNestedContext)
+            if (auto this_ = expression.isThisExp)
+                if (auto captured = this_.var in _capturedOffsets) {
+                    const pointer = allocateBytes(
+                        cast(uint) size_t.sizeof, size_t.sizeof,
+                    );
+                    _code ~= Instruction(
+                        Op.frameLoad, pointer,
+                        capturedFrameIndex(
+                            _capturedOwners[this_.var], *captured,
+                        ),
+                        cast(ushort) size_t.sizeof,
+                    );
+                    return pointerPlace(pointer, expression.type);
+                }
         if (auto dot = expression.isDotVarExp) {
             auto field = dot.var.isVarDeclaration;
             if (field !is null && dot.e1.type !is null &&
@@ -3315,7 +3407,9 @@ private struct Compiler {
                         address.offset,
                         compileSizeConstant(cast(size_t) field.offset),
                         1,
-                        scalarType(field.type),
+                        facts.isAggregate
+                            ? ScalarType.void_
+                            : facts.opcodeType,
                     );
                     return pointerPlace(
                         fieldAddress.offset, field.type,
@@ -3325,12 +3419,14 @@ private struct Compiler {
         if (auto dereference = expression.isPtrExp) {
             import dmd.astenums: TY;
 
-            if (typeFacts(dereference.type).isAggregate ||
+            if (!facts.isAggregate &&
                 dereference.type.toBasetype.ty == TY.Tfunction)
                 return null;
             const pointer = compileExpression(dereference.e1);
             if (!pointer.isPointer)
                 return null;
+            if (facts.isAggregate)
+                return pointerPlace(pointer.offset, expression.type);
             return new Place(
                 Place.Kind.pointer, pointer.pointerElement,
                 pointer.offset, null, StructField.init, false,
@@ -3343,22 +3439,20 @@ private struct Compiler {
         }
         if (auto dot = expression.isDotVarExp) {
             if (auto element = tryClassArrayFieldElementFieldPointer(dot))
-                return pointerPlace(element.pointer, element.type);
+                return pointerPlace(
+                    element.pointer, element.type, facts.isAggregate,
+                );
             if (auto element = tryStructSliceFieldElementFieldPointer(dot))
                 return pointerPlace(element.pointer, element.type);
             if (auto field = tryStructField(dot))
-                return new Place(
-                    Place.Kind.field, scalarType(field.type),
-                    field.offset, null, *field, true,
-                    isPointerType(field.type),
-                    isPointerType(field.type)
-                        ? pointerElementScalar(field.type)
-                        : ScalarType.void_,
-                );
+                return fieldPlace(*field, field.type, facts);
             if (auto field = tryStructPointerField(dot))
                 return pointerPlace(heapFieldAddress(*field), field.type);
             if (auto field = tryClassPointerField(dot))
-                return pointerPlace(heapFieldAddress(*field), field.type);
+                return pointerPlace(
+                    heapFieldAddress(*field), field.type,
+                    facts.isAggregate,
+                );
         }
         if (auto index = expression.isIndexExp) {
             import dmd.astenums: TY;
@@ -3367,25 +3461,21 @@ private struct Compiler {
                 index.e1.type.toBasetype.ty == TY.Tsarray)
                 if (auto base = placeOrNull(index.e1)) {
                     const address = addressOfPlace(*base);
-                    const facts = typeFacts(index.type);
-                    if (!facts.isAggregate) {
-                        const elementAddress = advanceStaticArrayPointer(
-                            address, index.e2, index.type,
-                            compileSizeConstant(
-                                staticArrayLength(index.e1.type),
-                            ),
-                        );
-                        return pointerPlace(
-                            elementAddress.offset, index.type,
-                        );
-                    }
+                    const elementAddress = advanceStaticArrayPointer(
+                        address, index.e2, index.type,
+                        compileSizeConstant(
+                            staticArrayLength(index.e1.type),
+                        ),
+                    );
+                    return pointerPlace(
+                        elementAddress.offset, index.type,
+                    );
                 }
             if (_hasNestedContext)
                 if (auto element = tryCapturedStaticArrayElement(index)) {
                     const base = _capturedOffsets[element.declaration];
-                    return new Place(
-                        Place.Kind.capturedElement,
-                        element.type,
+                    return capturedElementPlace(
+                        index.type,
                         cast(ushort) (base + element.relativeOffset),
                         element.declaration,
                     );
@@ -3399,37 +3489,16 @@ private struct Compiler {
                 const pointer = compileExpression(index.e1);
                 const indexValue = compileExpression(index.e2);
                 if (pointer.isPointer)
-                    return new Place(
-                        Place.Kind.pointer,
-                        scalarType(index.type),
-                        pointer.offset,
-                        null,
-                        StructField.init,
-                        false,
-                        isPointerType(index.type),
-                        isPointerType(index.type)
-                            ? pointerElementScalar(index.type)
-                            : ScalarType.void_,
-                        indexValue.offset,
+                    return pointerPlaceAt(
+                        pointer.offset, indexValue.offset, index.type,
                     );
             }
             if (auto dereference = index.e1.isPtrExp) {
                 const pointer = compileExpression(dereference.e1);
                 const indexValue = compileExpression(index.e2);
-                const facts = dereferencedArrayIndexElementMetadata(
-                    dereference.e1.type,
-                );
-                if (pointer.isPointer && !facts.isAggregate)
-                    return new Place(
-                        Place.Kind.pointer,
-                        facts.opcodeType,
-                        pointer.offset,
-                        null,
-                        StructField.init,
-                        false,
-                        false,
-                        ScalarType.void_,
-                        indexValue.offset,
+                if (pointer.isPointer)
+                    return pointerPlaceAt(
+                        pointer.offset, indexValue.offset, index.type,
                     );
             }
             if (indexesStaticArray(index.e1)) {
@@ -3437,38 +3506,38 @@ private struct Compiler {
                     if (auto pointer = tryStaticArrayRuntimeAddress(index))
                         return pointerPlace(pointer.offset, index.type);
                 if (auto element = tryStaticArrayElement(index))
-                    return new Place(
-                        Place.Kind.field, element.type, element.offset,
-                        null, element.writeback is null
-                            ? StructField.init : *element.writeback,
-                        element.writeback !is null,
+                    return staticArrayElementPlace(
+                        *element, index.type,
                     );
             }
             if (auto descriptor = dynamicArrayDescriptorOrNull(index.e1)) {
-                if (!descriptor.isStaticArrayView) {
-                    const savedDollarLength = _activeDollarLength;
-                    _activeDollarLength = sliceLengthSlot(*descriptor);
-                    const indexValue = compileExpression(index.e2);
-                    _activeDollarLength = savedDollarLength;
-                    const facts = typeFacts(index.type);
-                    if (!facts.isAggregate)
-                        return new Place(
-                            Place.Kind.dynamicIndex,
-                            facts.opcodeType,
-                            descriptor.offset,
-                            null,
-                            StructField.init,
-                            false,
-                            isPointerLikePlaceType(index.type),
-                            isPointerType(index.type)
-                                ? pointerElementScalar(index.type)
-                                : ScalarType.void_,
-                            indexValue.offset,
-                        );
+                if (descriptor.isStaticArrayView) {
+                    const pointer = staticArrayViewElementPointer(
+                        *descriptor, index.e2, index.type,
+                    );
+                    return pointerPlace(pointer.offset, index.type);
                 }
+                const savedDollarLength = _activeDollarLength;
+                _activeDollarLength = sliceLengthSlot(*descriptor);
+                const indexValue = compileExpression(index.e2);
+                _activeDollarLength = savedDollarLength;
+                if (facts.isAggregate && descriptor.elementIsArray &&
+                    index.type.toBasetype.ty == TY.Tsarray)
+                    return pointerPlace(
+                        innerArrayRowPointer(
+                            *descriptor, indexValue.offset,
+                        ),
+                        index.type,
+                    );
+                return dynamicIndexPlace(
+                    *descriptor, indexValue.offset, index.type,
+                );
             }
             if (auto pointer = tryPointerToElement(index))
                 return pointerPlace(pointer.offset, index.type);
+            if (facts.isAggregate)
+                if (auto pointer = tryClassStaticArrayElementPointer(index))
+                    return pointerPlace(pointer.offset, index.type, true);
         }
         return null;
     }
@@ -3499,6 +3568,108 @@ private struct Compiler {
             compileSizeConstant(0),
         );
         return result;
+    }
+
+    private Place* pointerPlaceAt(
+        in ushort pointer,
+        in ushort index,
+        Type type,
+    ) {
+        const facts = typeFacts(type);
+        if (facts.isAggregate)
+            return new Place(
+                Place.Kind.pointer, type, pointer, index,
+                StructField.init, false, isDelegateValueType(type),
+            );
+        return new Place(
+            Place.Kind.pointer, facts.opcodeType, pointer,
+            null, StructField.init, false,
+            isPointerType(type),
+            isPointerType(type)
+                ? pointerElementScalar(type)
+                : ScalarType.void_,
+            index,
+        );
+    }
+
+    private Place* dynamicIndexPlace(
+        in DynamicArrayLocal descriptor,
+        in ushort index,
+        Type type,
+    ) {
+        const facts = typeFacts(type);
+        if (facts.isAggregate)
+            return new Place(
+                Place.Kind.dynamicIndex, type,
+                descriptor.offset, index,
+                StructField.init, false, isDelegateValueType(type),
+            );
+        return new Place(
+            Place.Kind.dynamicIndex, facts.opcodeType,
+            descriptor.offset, null, StructField.init, false,
+            isPointerLikePlaceType(type),
+            isPointerType(type)
+                ? pointerElementScalar(type)
+                : ScalarType.void_,
+            index,
+        );
+    }
+
+    private Place* fieldPlace(
+        StructField field,
+        Type type,
+        in TypeFacts facts,
+    ) {
+        if (facts.isAggregate)
+            return new Place(
+                Place.Kind.field, type, field.offset, cast(ushort) 0,
+                field, true,
+            );
+        return new Place(
+            Place.Kind.field, facts.opcodeType,
+            field.offset, null, field, true,
+            isPointerType(type),
+            isPointerType(type)
+                ? pointerElementScalar(type)
+                : ScalarType.void_,
+        );
+    }
+
+    private Place* staticArrayElementPlace(
+        StaticArrayElement element,
+        Type type,
+    ) {
+        auto field = element.writeback is null
+            ? StructField.init
+            : *element.writeback;
+        const facts = typeFacts(type);
+        if (facts.isAggregate)
+            return new Place(
+                Place.Kind.field, type, element.offset, cast(ushort) 0,
+                field, element.writeback !is null,
+            );
+        return new Place(
+            Place.Kind.field, facts.opcodeType, element.offset,
+            null, field, element.writeback !is null,
+        );
+    }
+
+    private Place* capturedElementPlace(
+        Type type,
+        in ushort offset,
+        VarDeclaration declaration,
+    ) {
+        const facts = typeFacts(type);
+        if (facts.isAggregate)
+            return new Place(
+                Place.Kind.captured, type, offset, cast(ushort) 0,
+                StructField.init, false,
+                isDelegateValueType(type), declaration,
+            );
+        return new Place(
+            Place.Kind.capturedElement, facts.opcodeType,
+            offset, declaration,
+        );
     }
 
     private bool isPointerLikePlaceType(Type type) {
@@ -3778,299 +3949,6 @@ private struct Compiler {
         }
     }
 
-    private Place* aggregatePlaceCandidate(Expression expression) {
-        if (!typeFacts(expression.type).isAggregate)
-            return null;
-
-        if (auto call = expression.isCallExp) {
-            auto function_ = callFunction(call);
-            if (function_ !is null &&
-                function_.isCtorDeclaration !is null) {
-                const receiver = methodReceiver(call);
-                compileCall(call, &receiver);
-                return pointerPlace(receiver.offset, expression.type);
-            }
-            auto type = function_ is null ? null : function_.type.isTypeFunction;
-            if (type !is null && type.isRef)
-                return pointerPlace(
-                    compileCall(call).offset, expression.type,
-                );
-        }
-
-        if (auto variable = expression.isVarExp) {
-            auto declaration = variable.var.isVarDeclaration;
-            if (declaration is null)
-                return null;
-            if (declaration.isParameter && declaration.isReference)
-                if (auto offset = declaration in _capturedOffsets)
-                    return new Place(
-                        Place.Kind.pointer, expression.type,
-                        *offset, compileSizeConstant(0),
-                        StructField.init, false,
-                        isDelegateValueType(expression.type),
-                        null,
-                        isDelegateValueType(expression.type),
-                    );
-            if (auto slot = declarationRecordView(declaration).scalarOrNull)
-                if (declarationRecordView(declaration).refPointerOrNull
-                        !is null)
-                    return pointerPlace(*slot, expression.type);
-            if (auto local = declarationRecordView(declaration).struct_OrNull)
-                return new Place(
-                    Place.Kind.frame, expression.type, local.offset,
-                );
-            if (auto offset = declarationRecordView(declaration).staticArrayOrNull)
-                return new Place(
-                    Place.Kind.frame, expression.type, *offset,
-                );
-            if (auto local = declarationRecordView(declaration).dynamicArrayOrNull)
-                return new Place(
-                    Place.Kind.frame, expression.type, local.offset,
-                );
-            if (auto module_ = moduleDeclarationRecord(declaration).moduleStructOrNull)
-                return new Place(
-                    Place.Kind.module_, expression.type,
-                    module_.offset,
-                );
-            if (auto module_ = moduleDeclarationRecord(declaration).moduleStaticArrayOrNull)
-                return new Place(
-                    Place.Kind.module_, expression.type,
-                    module_.offset,
-                );
-            if (auto module_ = moduleDeclarationRecord(declaration).moduleDynamicArrayOrNull)
-                return new Place(
-                    Place.Kind.module_, expression.type,
-                    module_.offset,
-                );
-            if (auto module_ = moduleDeclarationRecord(declaration).moduleDelegateOrNull)
-                return new Place(
-                    Place.Kind.module_, expression.type,
-                    module_.offset,
-                );
-            if (auto local = declarationRecordView(declaration).delegate_OrNull)
-                return new Place(
-                    Place.Kind.frame, expression.type, local.offset,
-                );
-            if (auto local = declarationRecordView(declaration).delegateParameterOrNull)
-                return new Place(
-                    Place.Kind.frame, expression.type, *local,
-                );
-            if (_hasNestedContext)
-                if (auto captured = declaration in _capturedOffsets) {
-                    if (declaration.isThisDeclaration !is null) {
-                        const pointer = loadCapturedLocal(
-                            declaration, *captured,
-                        );
-                        if (pointer.isPointer)
-                            return pointerPlace(
-                                pointer.offset, expression.type,
-                            );
-                    }
-                    return new Place(
-                        Place.Kind.captured,
-                        expression.type,
-                        *captured,
-                        0,
-                        StructField.init,
-                        false,
-                        false,
-                        declaration,
-                    );
-                }
-            return null;
-        }
-
-        if ((expression.isThisExp !is null ||
-                expression.isSuperExp !is null) && _hasThis)
-            return new Place(
-                Place.Kind.pointer, expression.type,
-                _thisLocal.offset, compileSizeConstant(0),
-            );
-
-        if (_hasNestedContext)
-            if (auto this_ = expression.isThisExp) {
-                if (auto captured = this_.var in _capturedOffsets) {
-                    const pointer = allocateBytes(
-                        cast(uint) size_t.sizeof, size_t.sizeof,
-                    );
-                    _code ~= Instruction(
-                        Op.frameLoad, pointer,
-                        capturedFrameIndex(
-                            _capturedOwners[this_.var], *captured,
-                        ),
-                        cast(ushort) size_t.sizeof,
-                    );
-                    return pointerPlace(
-                        pointer, expression.type,
-                    );
-                }
-            }
-
-        if (auto dereference = expression.isPtrExp) {
-            const pointer = compileExpression(dereference.e1);
-            if (!pointer.isPointer)
-                return null;
-            return new Place(
-                Place.Kind.pointer, expression.type,
-                pointer.offset, compileSizeConstant(0),
-                StructField.init, false,
-                isDelegateValueType(expression.type),
-            );
-        }
-
-        if (auto dot = expression.isDotVarExp) {
-            auto declaration = dot.var.isVarDeclaration;
-            if (declaration !is null && dot.e1.type !is null &&
-                typeFacts(dot.e1.type).isAggregate)
-                if (auto base = placeOrNull(dot.e1)) {
-                    const address = addressOfPlace(*base);
-                    const fieldAddress = pointerPlaceAddress(
-                        address.offset,
-                        compileSizeConstant(cast(size_t) declaration.offset),
-                        1,
-                        ScalarType.void_,
-                    );
-                    return pointerPlace(
-                        fieldAddress.offset, expression.type,
-                    );
-                }
-            if (auto element = tryClassArrayFieldElementFieldPointer(dot))
-                return pointerPlace(
-                    element.pointer, element.type, true,
-                );
-            if (auto element = tryStructSliceFieldElementFieldPointer(dot))
-                return pointerPlace(element.pointer, element.type);
-            if (auto field = tryStructField(dot))
-                return new Place(
-                    Place.Kind.field, field.type, field.offset, 0,
-                    *field, true,
-                );
-            if (auto field = tryStructPointerField(dot))
-                return pointerPlace(
-                    heapFieldAddress(*field), field.type,
-                );
-            if (auto field = tryClassPointerField(dot))
-                return pointerPlace(
-                    heapFieldAddress(*field), field.type, true,
-                );
-        }
-
-        if (auto index = expression.isIndexExp) {
-            import dmd.astenums: TY;
-
-            if (index.e1.type !is null &&
-                index.e1.type.toBasetype.ty == TY.Tsarray)
-                if (auto base = placeOrNull(index.e1)) {
-                    const address = addressOfPlace(*base);
-                    const facts = typeFacts(index.type);
-                    if (facts.isAggregate) {
-                        const elementAddress = advanceStaticArrayPointer(
-                            address, index.e2, index.type,
-                            compileSizeConstant(
-                                staticArrayLength(index.e1.type),
-                            ),
-                        );
-                        return pointerPlace(
-                            elementAddress.offset, index.type,
-                        );
-                    }
-                }
-
-            if (_hasNestedContext)
-                if (auto element = tryCapturedStaticArrayElement(index)) {
-                    const base = _capturedOffsets[element.declaration];
-                    return new Place(
-                        Place.Kind.captured,
-                        index.type,
-                        cast(ushort) (base + element.relativeOffset),
-                        0,
-                        StructField.init,
-                        false,
-                        isDelegateValueType(index.type),
-                        element.declaration,
-                    );
-                }
-            if (auto base = arrayElementFieldPointer(index.e1))
-                if (auto pointer = advanceArrayElementFieldPointer(
-                        base, index.e2,
-                    ))
-                    return pointerPlace(
-                        pointer.offset, index.type,
-                    );
-
-            if (isPointerType(index.e1.type)) {
-                const pointer = compileExpression(index.e1);
-                const indexValue = compileExpression(index.e2);
-                if (pointer.isPointer)
-                    return new Place(
-                        Place.Kind.pointer, index.type,
-                        pointer.offset, indexValue.offset,
-                        StructField.init, false,
-                        isDelegateValueType(index.type),
-                    );
-            }
-            if (auto dereference = index.e1.isPtrExp) {
-                const pointer = compileExpression(dereference.e1);
-                const indexValue = compileExpression(index.e2);
-                if (pointer.isPointer)
-                    return new Place(
-                        Place.Kind.pointer, index.type,
-                        pointer.offset, indexValue.offset,
-                        StructField.init, false,
-                        isDelegateValueType(index.type),
-                    );
-            }
-
-            if (indexesStaticArray(index.e1)) {
-                if (staticArrayChainNeedsRuntimeAddress(index))
-                    if (auto pointer = tryStaticArrayRuntimeAddress(index))
-                        return pointerPlace(
-                            pointer.offset, index.type,
-                        );
-                if (auto element = tryStaticArrayElement(index))
-                    return new Place(
-                        Place.Kind.field, index.type,
-                        element.offset, 0,
-                        element.writeback is null
-                            ? StructField.init : *element.writeback,
-                        element.writeback !is null,
-                    );
-            }
-
-            if (auto descriptor = dynamicArrayDescriptorOrNull(index.e1)) {
-                if (descriptor.isStaticArrayView) {
-                    const pointer = staticArrayViewElementPointer(
-                        *descriptor, index.e2, index.type,
-                    );
-                    return pointerPlace(pointer.offset, index.type);
-                }
-                const savedDollarLength = _activeDollarLength;
-                _activeDollarLength = sliceLengthSlot(*descriptor);
-                const indexValue = compileExpression(index.e2);
-                _activeDollarLength = savedDollarLength;
-                if (descriptor.elementIsArray &&
-                    index.type.toBasetype.ty == TY.Tsarray)
-                    return pointerPlace(
-                        innerArrayRowPointer(
-                            *descriptor, indexValue.offset,
-                        ),
-                        index.type,
-                    );
-                return new Place(
-                    Place.Kind.dynamicIndex, index.type,
-                    descriptor.offset, indexValue.offset,
-                    StructField.init, false,
-                    isDelegateValueType(index.type),
-                );
-            }
-
-            if (auto pointer = tryClassStaticArrayElementPointer(index))
-                return pointerPlace(pointer.offset, index.type, true);
-        }
-
-        return null;
-    }
-
     private bool isDelegateValueType(Type type) {
         import dmd.astenums: TY;
 
@@ -4091,51 +3969,10 @@ private struct Compiler {
     }
 
     private Operand* placeAddressOrNull(Expression expression) {
-        if (auto conditional = expression.isCondExp) {
-            const condition = compileBoolCondition(conditional.econd);
-            const result = allocateBytes(
-                cast(uint) size_t.sizeof, size_t.sizeof,
-            );
-            const falseJump = emitJumpIfFalse(condition);
-            auto whenTrue = placeAddressOrNull(conditional.e1);
-            if (whenTrue is null)
-                return null;
-            _code ~= Instruction(
-                Op.copy, result, whenTrue.offset,
-                cast(ushort) size_t.sizeof,
-            );
-            const endJump = emitJump;
-            patchJump(falseJump);
-            auto whenFalse = placeAddressOrNull(conditional.e2);
-            if (whenFalse is null)
-                return null;
-            _code ~= Instruction(
-                Op.copy, result, whenFalse.offset,
-                cast(ushort) size_t.sizeof,
-            );
-            patchJump(endJump);
-            auto address = new Operand;
-            *address = Operand(
-                result, ScalarType.ulong_, true,
-                typeFacts(expression.type).isAggregate
-                    ? ScalarType.void_
-                    : scalarType(expression.type),
-            );
-            return address;
-        }
-
-        if (typeFacts(expression.type).isAggregate) {
-            if (auto aggregate = placeOrNull(expression)) {
-                auto result = new Operand;
-                *result = addressOfPlace(*aggregate);
-                return result;
-            }
-        } else {
-            if (auto scalar = placeOrNull(expression)) {
-                auto result = new Operand;
-                *result = addressOfPlace(*scalar);
-                return result;
-            }
+        if (auto place = placeOrNull(expression)) {
+            auto result = new Operand;
+            *result = addressOfPlace(*place);
+            return result;
         }
         return null;
     }
@@ -9833,7 +9670,7 @@ private struct Compiler {
         // materialise/writeback `staticArrayBaseOffset` uses for a
         // compile-time-constant index, a *runtime* index needs a real
         // address to read or write through directly -- `Op.moduleAddress`
-        // already gives one (the same opcode `tryAddressOfSymbol`/
+        // already gives one (the same opcode `symbolAddress`/
         // `tryAddressOfLocal` use for `&moduleScalar`), so this needs no
         // separate writeback bookkeeping at all.
         if (auto variable = expression.isVarExp)
@@ -10275,8 +10112,11 @@ private struct Compiler {
     // static- or dynamic-array-typed field reached through an array-element
     // pointer. Null if `index.e1` does not bottom out at such a field
     // reached through an array-element pointer.
-    private Operand* tryAddressOfSymbol(SymOffExp symOff) {
-        auto declaration = symOff.var.isVarDeclaration;
+    private Operand* symbolAddress(
+        VarDeclaration declaration,
+        in long offset,
+        Type pointerType,
+    ) {
         if (declaration is null)
             return null;
         auto existing = declarationRecordView(declaration).scalarOrNull;
@@ -10288,7 +10128,7 @@ private struct Compiler {
                 auto result = new Operand;
                 *result = pointerPlaceAddress(
                     *existing,
-                    compileSizeConstant(cast(size_t) symOff.offset),
+                    compileSizeConstant(cast(size_t) offset),
                     1,
                     *element,
                 );
@@ -10297,10 +10137,10 @@ private struct Compiler {
         if (existing is null && dynamicArray is null &&
             staticArray is null && struct_ is null) {
             if (auto pointer = tryAddressOfCaptured(
-                    declaration, symOff.type.toBasetype.nextOf))
+                    declaration, pointerType.toBasetype.nextOf))
                 return pointer;
             if (auto moduleStruct = moduleDeclarationRecord(declaration).moduleStructOrNull) {
-                if (symOff.offset != 0)
+                if (offset != 0)
                     return null;
                 return addressOperand(
                     Op.moduleAddress,
@@ -10309,7 +10149,7 @@ private struct Compiler {
                 );
             }
             auto moduleVariable = moduleDeclarationRecord(declaration).moduleScalarOrNull;
-            if (moduleVariable is null || symOff.offset != 0)
+            if (moduleVariable is null || offset != 0)
                 return null;
             return addressOperand(
                 Op.moduleAddress,
@@ -10325,7 +10165,7 @@ private struct Compiler {
                 : staticArray !is null
                     ? *staticArray
                     : struct_.offset;
-        const slot = cast(ushort) (base + symOff.offset);
+        const slot = cast(ushort) (base + offset);
         return addressOperand(
             Op.frameAddress,
             slot,
@@ -10339,7 +10179,7 @@ private struct Compiler {
                 // the array to its element's scalar type) rather than raw
                 // `scalarType`, which throws on the array type itself.
                 ? (existing is null
-                    ? pointerElementScalar(symOff.type)
+                    ? pointerElementScalar(pointerType)
                     : scalarType(declaration.type))
                 : ScalarType.void_,
         );
@@ -14885,7 +14725,7 @@ private struct Compiler {
                 continue;
             }
 
-            // `&local` out parameter: `SymOffExp` (as `tryAddressOfSymbol`
+            // `&local` out parameter: `SymOffExp` (as `symbolAddress`
             // also matches), zero offset, tracked pointer local. Slot is
             // never read (ffi.md §34.8: type is unconditionally an out
             // parameter); only the frame offset is recorded.
@@ -16004,9 +15844,6 @@ private struct Compiler {
         import std.conv: text;
 
         auto address = placeAddressOrNull(argument);
-        if (address is null)
-            if (auto symOff = argument.isSymOffExp)
-                address = tryAddressOfSymbol(symOff);
         if (address is null)
             throw new Exception(text(
                 "Unsupported ref argument in bytecode core: ",
