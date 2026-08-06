@@ -3472,6 +3472,27 @@ static foreach (backend; Matrix!()) {
     }
 }
 
+// A non-capturing lambda has a plain function-pointer type.  Storing it in an
+// associative-array entry must preserve that callable value when the entry is
+// read back; unlike a delegate, it has no context word.
+static foreach (backend; Matrix!()) {
+    @("assocArray.functionPointerValuePreservesCallable." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            unittest {
+                int function(int)[string] callbacks;
+                callbacks["increment"] = value => value + 1;
+
+                assert(callbacks["increment"](41) == 42);
+
+                callbacks["increment"] = null;
+                assert(callbacks["increment"] is null);
+            }
+        });
+    }
+}
+
 // A key wider than 4 bytes (`long`) must compare its full width, not just
 // its low 32 bits.
 static foreach (backend; Matrix!()) {

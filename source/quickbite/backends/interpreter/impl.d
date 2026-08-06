@@ -10893,6 +10893,22 @@ private struct Walker {
             nativeDelegateSlots[address] = value;
             return;
         }
+        // `TypeNext.nextOf` is mutable in DMD's API, so this cannot be const.
+        auto functionPointerType = elementType.isTypePointer;
+        if (
+            functionPointerType !is null &&
+            functionPointerType.nextOf.toBasetype.isTypeFunction !is null
+        ) {
+            if (value.isFunctionPointer) {
+                import quickbite.backends.interpreter.place: Place;
+
+                nativeFunctionPointerSlots[address] = value;
+                Place(address, elementType).storeReference(null);
+                clearUninitializedBindingAddress(pointer.pointerAddress);
+                return;
+            }
+            nativeFunctionPointerSlots.remove(address);
+        }
         marshalNative(
             elementType,
             address,
