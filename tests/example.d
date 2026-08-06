@@ -1,3 +1,9 @@
+// Example corpus, not a quickbite behaviour test: `bin/bench.sh`'s default
+// fixture. Adding or changing unittests here needs no approval and no
+// ci.sh run; the only check is `./bin/bench.sh -b interpreter -b bytecode`
+// succeeding (add `-b system-linker` for a correctness check against the
+// oracle before dropping back to the timed two-backend run).
+
 void encode(T)(T val, ref ubyte[] output) {
     static if (is(T == float))
         encode(*cast(uint*) &val, output);

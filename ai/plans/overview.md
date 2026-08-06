@@ -88,9 +88,6 @@ Live plans:
 - `coverage.md` — corpus semantic-density process; the generative
   mechanisms (mutation ledger, spec walk, dmd-suite mining) are not yet
   started.
-- `example-corpus.md` — widen `tests/example.d` (`bin/bench.sh`'s default
-  fixture) to exercise more of the D language surface both `Interpreter`
-  and `Bytecode` already support.
 - `single-oracle.md` — the testing constitution: `SystemLinker` is the
   single oracle; `ct/` vs `rt/` split; promotion rules.
 - `backend-test-modules-order.md` — shared module ordering for backend
@@ -98,9 +95,12 @@ Live plans:
 
 Deleted plans whose conclusions were folded into their owning plans:
 `dub-build-via-reggae.md` (superseded by the `dub describe` flag path;
-fallback argument folded into bench.md's template-emission section) and
+fallback argument folded into bench.md's template-emission section),
 `mini-linker.md` (rejected in favour of LLVM JITLink; decision folded
-into llvm-jit.md's Scope section).
+into llvm-jit.md's Scope section), and `example-corpus.md` (queue fully
+landed in `tests/example.d`; the policy note moved to a doc comment
+there, and the bugs found along the way folded into bytecode.md's and
+interpreter.md's own gap queues).
 
 ## Testing Rules
 
