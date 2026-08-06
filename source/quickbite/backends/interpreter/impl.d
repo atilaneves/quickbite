@@ -3062,8 +3062,10 @@ private struct Walker {
         const unsupported =
             text("Unsupported eval expression: ", op, " of ", call.op);
 
-        if (call.f is null || !returnsRef(call.f))
+        if (call.f is null)
             throw new Exception(unsupported);
+        if (!returnsRef(call.f))
+            return addressOfCallResultTemporary(call);
 
         functionSemantic3(call.f);
         if (call.f.needThis)
@@ -3141,6 +3143,28 @@ private struct Walker {
         mergeFunctionState(call.f, argumentExpressions, child, arguments);
 
         return returnedLvalueAddress(call.f, argumentExpressions, child);
+    }
+
+    // A `ref` foreach variable over an input range may bind to a `front`
+    // result returned by value. DMD represents its per-iteration temporary as
+    // `AddrExp(CallExp)`: evaluate the call once into typed native storage and
+    // return that ordinary temporary's address.
+    private Value addressOfCallResultTemporary(
+        imported!"dmd.expression".CallExp call,
+    ) {
+        import quickbite.backends.interpreter.layout:
+            typeByteSize, typeHasPointers;
+        import quickbite.backends.interpreter.place: Place;
+        import quickbite.backends.interpreter.place_value: writeValue;
+
+        const value = runCallExpression(call);
+        const scan = typeHasPointers(call.type)
+            ? NativeBlock.Scan.conservative
+            : NativeBlock.Scan.no;
+        auto temporary = NativeBlock.allocate(typeByteSize(call.type), scan);
+        writeValue(Place(temporary.address, call.type), value);
+        nativePointerRoots[temporary.address] = temporary;
+        return Value.pointerValue(temporary.address);
     }
 
     // Duplicates the complete per-frame cell-state maps -- scalar/array/

@@ -7544,6 +7544,43 @@ static foreach (backend; Matrix!()) {
     }
 }
 
+// A `ref` foreach variable over an input range whose `front` returns by value
+// aliases a temporary for that iteration. The compiler takes the address of
+// the `front` call result, so the ordinary value must occupy stable storage.
+static foreach (backend; Matrix!()) {
+    @("foreach.refInputRangeElementAliasesCallTemporary." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct Range {
+                bool consumed;
+
+                bool empty() const @property {
+                    return consumed;
+                }
+
+                ubyte front() inout pure nothrow @nogc @property @safe {
+                    return 42;
+                }
+
+                void popFront() {
+                    consumed = true;
+                }
+            }
+
+            unittest {
+                Range range;
+                int total;
+                foreach (ref value; range) {
+                    total += value;
+                    value = 7;
+                }
+                assert(total == 42);
+            }
+        });
+    }
+}
+
 // `&struct.field` is AddrExp(DotVarExp); until now only a static-array field
 // was handled (arrayPointer), so any other field type fell through to the
 // generic unsupported-expression throw.  cerealed's pointer roundtrip test
