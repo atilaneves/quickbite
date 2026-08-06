@@ -4515,12 +4515,19 @@ private struct Walker {
         const aggregateValues =
             AggregateValue.isStruct(left) && AggregateValue.isStruct(right) ||
             AggregateValue.isArray(left) && AggregateValue.isArray(right);
+        const nullPointerIdentity =
+            left.isPointer && left.pointerAddress is null &&
+                right == Value.null_ ||
+            right.isPointer && right.pointerAddress is null &&
+                left == Value.null_;
         const same =
             identity.e1.isTypeidExp is null && identity.e2.isTypeidExp is null &&
             identity.e1.type.toBasetype.isTypeClass !is null
             ? classIdentityAddress(left) == classIdentityAddress(right)
             : aggregateValues
             ? equalValues(left, right)
+            : nullPointerIdentity
+            ? true
             : left == right;
         if (identity.op == EXP.notIdentity)
             return Value(!same);

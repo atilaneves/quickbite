@@ -5371,6 +5371,30 @@ static foreach (backend; Matrix!(
     }
 }
 
+// A native function returning a null dynamic array produces the ordinary D
+// null-slice value. Its pointer property must therefore have null pointer
+// identity, just like the pointer of a default-initialised dynamic array.
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.refusal,
+        "`residentGetArrayUsed` has no source for compile-time evaluation"),
+)) {
+    @("nativeSliceReturn.nullPointerIsIdenticalToNull." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            extern(C) pragma(mangle, "gc_getArrayUsed")
+            void[] residentGetArrayUsed(void* pointer, bool atomic);
+
+            unittest {
+                const used = residentGetArrayUsed(null, false);
+
+                assert(used.length == 0);
+                assert(used.ptr is null);
+            }
+        });
+    }
+}
+
 // This fixture pins `assumeSafeAppend` through an interior pointer (a slice
 // that does not start at its backing block's base). Interpreter omitted: its
 // reserve descriptor loses the zero-length allocation's capacity when the
