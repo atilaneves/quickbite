@@ -429,3 +429,7 @@
   every VM reader and writer and delete the compensating swaps. A boundary
   conversion hides bad pointers nested inside structs or passed by reference
   and turns temporary migration code into permanent architecture.
+
+- A semantic DMD type used to describe a native-call fixture must use the same
+  alignment attributes as the compiled fixture type. Similar-looking `align`
+  placements can describe different offsets and therefore different ABIs.

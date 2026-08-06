@@ -118,6 +118,13 @@ caching must preserve that identity; see `dependency-image-contract.md` and
 ABI adaptation changes only libffi metadata and the ordering of pointers in
 the argument-address array. It never changes value layout.
 
+On x86-64 SysV, ordinary unions and irregular aggregates use pre-sized libffi
+classification witnesses. Their INTEGER, SSE, X87, and MEMORY classes are
+derived recursively from semantic member types at their DMD offsets and
+merged per eightbyte. Witness elements are metadata only: they neither select
+a dominant union member nor describe bytes to copy. Vector/SSEUP witnesses
+remain unsupported until a demanded call shape establishes their contract.
+
 ## Ownership
 
 `quickbite.ffi.ffi` owns only native-call mechanics:

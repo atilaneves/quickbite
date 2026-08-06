@@ -321,6 +321,119 @@ unittest {
 }
 
 
+@("ffi.addressOnlySysVUnionsAndIrregularAggregatesUseNativeLayout")
+unittest {
+    auto integerOrDoubleType = structType(q{
+        union IntegerOrDouble {
+            long integer;
+            double floating;
+        }
+    }, "IntegerOrDouble");
+    IntegerOrDouble integerOrDouble;
+    integerOrDouble.integer = 13;
+    IntegerOrDouble integerOrDoubleResult;
+    const integerOrDoubleExpected = transformIntegerOrDouble(integerOrDouble);
+    assertAggregateCall(
+        cast(void*) &transformIntegerOrDouble,
+        integerOrDoubleType,
+        integerOrDouble,
+        integerOrDoubleResult,
+    );
+    integerOrDoubleResult.integer.should == integerOrDoubleExpected.integer;
+
+    auto mirroredLanesType = structType(q{
+        union MirroredLanes {
+            struct IntegerSse {
+                long integer;
+                double floating;
+            }
+            struct SseInteger {
+                double floating;
+                long integer;
+            }
+            IntegerSse integerSse;
+            SseInteger sseInteger;
+        }
+    }, "MirroredLanes");
+    MirroredLanes mirroredLanes;
+    mirroredLanes.integerSse.integer = 17;
+    mirroredLanes.sseInteger.integer = 23;
+    MirroredLanes mirroredLanesResult;
+    const mirroredLanesExpected = transformMirroredLanes(mirroredLanes);
+    assertAggregateCall(
+        cast(void*) &transformMirroredLanes,
+        mirroredLanesType,
+        mirroredLanes,
+        mirroredLanesResult,
+    );
+    mirroredLanesResult.integerSse.integer.should ==
+        mirroredLanesExpected.integerSse.integer;
+    mirroredLanesResult.sseInteger.integer.should ==
+        mirroredLanesExpected.sseInteger.integer;
+
+    auto memoryUnionType = structType(q{
+        union MemoryUnion {
+            long[3] integers;
+            double[3] floating;
+        }
+    }, "MemoryUnion");
+    MemoryUnion memoryUnion;
+    memoryUnion.integers = [29, 31, 37];
+    MemoryUnion memoryUnionResult;
+    const memoryUnionExpected = transformMemoryUnion(memoryUnion);
+    assertAggregateCall(
+        cast(void*) &transformMemoryUnion,
+        memoryUnionType,
+        memoryUnion,
+        memoryUnionResult,
+    );
+    memoryUnionResult.integers.should == memoryUnionExpected.integers;
+
+    auto packedType = structType(q{
+        struct Packed {
+            align(1):
+            ubyte tag;
+            long integer;
+        }
+    }, "Packed");
+    Packed packed = Packed(41, 43);
+    Packed packedResult;
+    const packedExpected = transformPacked(packed);
+    assertAggregateCall(
+        cast(void*) &transformPacked,
+        packedType,
+        packed,
+        packedResult,
+    );
+    packedResult.tag.should == packedExpected.tag;
+    packedResult.integer.should == packedExpected.integer;
+
+    auto nestedType = structType(q{
+        struct NestedUnion {
+            union Payload {
+                long integer;
+                double floating;
+            }
+            Payload value;
+            double tail;
+        }
+    }, "NestedUnion");
+    NestedUnion nested;
+    nested.value.integer = 47;
+    nested.tail = 53.5;
+    NestedUnion nestedResult;
+    const nestedExpected = transformNestedUnion(nested);
+    assertAggregateCall(
+        cast(void*) &transformNestedUnion,
+        nestedType,
+        nested,
+        nestedResult,
+    );
+    nestedResult.value.integer.should == nestedExpected.value.integer;
+    nestedResult.tail.should == nestedExpected.tail;
+}
+
+
 @("ffi.addressOnlyEnumsAndAssociativeArraysUseNativeLayout")
 unittest {
     auto enumSignature = functionSignature(q{
@@ -606,6 +719,111 @@ private extern(C) Large transformLarge(Large value) {
         value.values[1] + 2,
         value.values[0] + 3,
     ]);
+}
+
+
+private union IntegerOrDouble {
+    private long integer;
+    private double floating;
+}
+
+
+private extern(C) IntegerOrDouble transformIntegerOrDouble(
+    IntegerOrDouble value,
+) {
+    IntegerOrDouble result;
+    result.integer = value.integer * 3 + 5;
+    return result;
+}
+
+
+private union MirroredLanes {
+    private struct IntegerSse {
+        private long integer;
+        private double floating;
+    }
+
+    private struct SseInteger {
+        private double floating;
+        private long integer;
+    }
+
+    private IntegerSse integerSse;
+    private SseInteger sseInteger;
+}
+
+
+private extern(C) MirroredLanes transformMirroredLanes(MirroredLanes value) {
+    MirroredLanes result;
+    result.integerSse.integer = value.integerSse.integer * 5 + 7;
+    result.sseInteger.integer = value.sseInteger.integer * 11 + 13;
+    return result;
+}
+
+
+private union MemoryUnion {
+    private long[3] integers;
+    private double[3] floating;
+}
+
+
+private extern(C) MemoryUnion transformMemoryUnion(MemoryUnion value) {
+    MemoryUnion result;
+    result.integers = [
+        value.integers[2] + 17,
+        value.integers[0] + 19,
+        value.integers[1] + 23,
+    ];
+    return result;
+}
+
+
+private struct Packed {
+    align(1):
+    private ubyte tag;
+    private long integer;
+}
+
+
+private extern(C) Packed transformPacked(Packed value) {
+    return Packed(cast(ubyte) (value.tag + 29), value.integer * 31 + 37);
+}
+
+
+private struct NestedUnion {
+    private union Payload {
+        private long integer;
+        private double floating;
+    }
+
+    private Payload value;
+    private double tail;
+}
+
+
+private extern(C) NestedUnion transformNestedUnion(NestedUnion value) {
+    NestedUnion result;
+    result.value.integer = value.value.integer * 41 + 43;
+    result.tail = value.tail * 2.0 + 0.25;
+    return result;
+}
+
+
+private void assertAggregateCall(T)(
+    void* functionAddress,
+    TypeStruct type,
+    T argument,
+    ref T result,
+) {
+    call(
+        Callable(
+            functionAddress,
+            functionSignature(type, [type], LINK.c),
+            CompilerAbi.dmd,
+        ),
+        [TypedAddress(type, &argument)],
+        TypedAddress(type, &result),
+    ).should == true;
 }
 
 

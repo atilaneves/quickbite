@@ -82,7 +82,7 @@ public bool call(
     const returnsReference = callable.signature.isRef;
     auto resultMetadata = returnsReference
         ? FfiType(&ffi_type_pointer)
-        : ffiTypeFor(returnType);
+        : ffiTypeFor(returnType, true);
     if (resultMetadata.type is null)
         return false;
 
@@ -155,6 +155,7 @@ public bool call(
         );
     if (prepStatus != ffi_status.FFI_OK)
         return false;
+    resultMetadata.restoreNativeLayout;
     if (!returnsReference && !layoutMatches(returnType, resultMetadata))
         return false;
     foreach (index; 0 .. arguments.length) {
@@ -256,16 +257,26 @@ private struct FfiType {
     private imported!"quickbite.ffi.libffi".ffi_type[] _ownedTypes;
     private imported!"quickbite.ffi.libffi".ffi_type*[] _ownedElements;
     private FfiType[] _members;
+    private size_t _nativeSize;
+    private ushort _nativeAlignment;
 
     private imported!"quickbite.ffi.libffi".ffi_type* type()
         @safe @nogc nothrow pure {
         return _type;
+    }
+
+    private void restoreNativeLayout() @safe @nogc nothrow pure {
+        if (_nativeSize == 0)
+            return;
+        _type.size = _nativeSize;
+        _type.alignment = _nativeAlignment;
     }
 }
 
 
 private FfiType ffiTypeFor(
     imported!"dmd.mtype".Type type,
+    in bool isReturn = false,
 ) {
     import quickbite.ffi.libffi:
         ffi_type_complex_double, ffi_type_complex_float,
@@ -313,7 +324,7 @@ private FfiType ffiTypeFor(
                 FfiType(&ffi_type_pointer),
             ]);
         case Tsarray: return staticArrayFfiType(storageType.isTypeSArray);
-        case Tstruct: return structFfiType(storageType.isTypeStruct);
+        case Tstruct: return structFfiType(storageType.isTypeStruct, isReturn);
         default: return FfiType.init;
     }
 }
@@ -349,9 +360,13 @@ private FfiType staticArrayFfiType(
 
 private FfiType structFfiType(
     imported!"dmd.mtype".TypeStruct type,
+    in bool isReturn,
 ) {
     if (type.sym.isUnionDeclaration !is null)
-        return FfiType.init;
+        return sysVClassificationWitness(type, isReturn);
+
+    if (!hasNaturalStructLayout(type))
+        return sysVClassificationWitness(type, isReturn);
 
     auto fields = new FfiType[](type.sym.fields.length);
     foreach (index, field; type.sym.fields) {
@@ -360,6 +375,263 @@ private FfiType structFfiType(
             return FfiType.init;
     }
     return aggregateFfiType(fields);
+}
+
+
+private bool hasNaturalStructLayout(
+    imported!"dmd.mtype".TypeStruct type,
+) {
+    import dmd.typesem: size;
+
+    size_t offset;
+    size_t alignment = 1;
+    foreach (field; type.sym.fields) {
+        const fieldAlignment = cast(size_t) field.type.alignsize;
+        offset = alignedTo(offset, fieldAlignment);
+        if (offset != cast(size_t) field.offset)
+            return false;
+        offset += cast(size_t) size(field.type);
+        if (fieldAlignment > alignment)
+            alignment = fieldAlignment;
+    }
+    return alignedTo(offset, alignment) == cast(size_t) size(type) &&
+        alignment == type.alignsize;
+}
+
+
+private size_t alignedTo(
+    in size_t offset,
+    in size_t alignment,
+) @safe @nogc nothrow pure {
+    return (offset + alignment - 1) / alignment * alignment;
+}
+
+
+private enum SysVClass {
+    none,
+    integer,
+    sse,
+    x87,
+    x87Up,
+    memory,
+}
+
+
+private FfiType sysVClassificationWitness(
+    imported!"dmd.mtype".Type type,
+    in bool isReturn,
+) {
+    import quickbite.ffi.libffi:
+        ffi_type_double, ffi_type_longdouble, ffi_type_uint64;
+    import dmd.typesem: size;
+
+    SysVClass[2] classes;
+    if (!classifySysV(type, 0, classes))
+        return FfiType.init;
+
+    // DMD owns mutable semantic type nodes.
+    auto storageType = semanticStorageType(type);
+    const nativeSize = cast(size_t) size(storageType);
+    const nativeAlignment = cast(ushort) storageType.alignsize;
+    if (classes[0] == SysVClass.memory || classes[1] == SysVClass.memory)
+        // A classification witness contains only libffi call metadata. It
+        // neither describes nor touches the native value's bytes.
+        return memoryClassificationWitness(
+            nativeSize,
+            nativeAlignment,
+            isReturn,
+        );
+    if (classes == [SysVClass.x87, SysVClass.x87Up])
+        return FfiType(&ffi_type_longdouble);
+
+    auto members = new FfiType[]((nativeSize + 7) / 8);
+    foreach (index, ref member; members) {
+        final switch (classes[index]) with (SysVClass) {
+            case sse: member = FfiType(&ffi_type_double); break;
+            case none, integer: member = FfiType(&ffi_type_uint64); break;
+            case x87, x87Up, memory: return FfiType.init;
+        }
+    }
+    return sizedAggregateFfiType(nativeSize, nativeAlignment, members);
+}
+
+
+private FfiType memoryClassificationWitness(
+    in size_t nativeSize,
+    in ushort nativeAlignment,
+    in bool isReturn,
+) {
+    import quickbite.ffi.libffi:
+        ffi_type, ffi_type_longdouble, ffi_type_uint8, ffi_type_uint64;
+
+    if (nativeSize > 16 || isReturn) {
+        // libffi records MEMORY return handling while preparing the CIF from
+        // this three-eightbyte size. Before ffi_call, the descriptor returns
+        // to DMD's native layout so the sret destination is used directly.
+        const preparedSize = nativeSize > 16
+            ? nativeSize
+            : 3 * ulong.sizeof;
+        auto result = sizedAggregateFfiType(
+            preparedSize,
+            nativeAlignment,
+            [
+                FfiType(&ffi_type_uint64),
+                FfiType(&ffi_type_uint64),
+                FfiType(&ffi_type_uint64),
+            ],
+        );
+        if (preparedSize != nativeSize) {
+            result._nativeSize = nativeSize;
+            result._nativeAlignment = nativeAlignment;
+        }
+        return result;
+    }
+
+    auto ownedTypes = new ffi_type[1];
+    // Mixing X87 and INTEGER makes libffi classify the argument as MEMORY.
+    // Shrinking the marker lets both classes fit inside the native outer size;
+    // it is metadata only and does not read an X87 value from storage.
+    ownedTypes[0] = ffi_type_longdouble;
+    ownedTypes[0].size = 1;
+    ownedTypes[0].alignment = 1;
+    auto x87Marker = FfiType(&ownedTypes[0], ownedTypes);
+    return sizedAggregateFfiType(
+        nativeSize,
+        nativeAlignment,
+        [
+            x87Marker,
+            FfiType(&ffi_type_uint8),
+        ],
+    );
+}
+
+
+private bool classifySysV(
+    imported!"dmd.mtype".Type type,
+    in size_t offset,
+    ref SysVClass[2] classes,
+) {
+    import dmd.astenums: TY;
+    import dmd.typesem: size;
+
+    // DMD owns mutable semantic type nodes.
+    auto storageType = semanticStorageType(type);
+    const nativeSize = cast(size_t) size(storageType);
+    if (offset == 0 && nativeSize > 16) {
+        classes[0] = SysVClass.memory;
+        return true;
+    }
+    if (storageType.alignsize > 1 && offset % storageType.alignsize != 0) {
+        classes[0] = SysVClass.memory;
+        return true;
+    }
+
+    switch (storageType.ty) with (TY) {
+        case Tbool, Tint8, Tuns8, Tchar, Tint16, Tuns16, Twchar,
+                Tint32, Tuns32, Tdchar, Tint64, Tuns64, Tpointer, Tclass,
+                Taarray:
+            return mergeSysVRange(classes, offset, nativeSize,
+                SysVClass.integer);
+        case Tint128, Tuns128:
+            return mergeSysVRange(classes, offset, nativeSize,
+                SysVClass.integer);
+        case Tarray, Tdelegate:
+            return mergeSysVRange(classes, offset, nativeSize,
+                SysVClass.integer);
+        case Tfloat32, Tfloat64, Timaginary32, Timaginary64, Tcomplex32,
+                Tcomplex64:
+            return mergeSysVRange(classes, offset, nativeSize, SysVClass.sse);
+        case Tfloat80, Timaginary80:
+            return mergeSysVLongDouble(classes, offset);
+        case Tcomplex80:
+            classes[0] = SysVClass.memory;
+            return true;
+        case Tvoid, Tnoreturn:
+            return true;
+        case Tsarray:
+            const length = cast(size_t) storageType.isTypeSArray.dim.toInteger;
+            const elementSize = cast(size_t) size(storageType.nextOf);
+            foreach (index; 0 .. length)
+                if (!classifySysV(
+                    storageType.nextOf,
+                    offset + index * elementSize,
+                    classes,
+                ))
+                    return false;
+            return true;
+        case Tstruct:
+            foreach (field; storageType.isTypeStruct.sym.fields)
+                if (!classifySysV(
+                    field.type,
+                    offset + cast(size_t) field.offset,
+                    classes,
+                ))
+                    return false;
+            return true;
+        case Tvector:
+            // Vector SSEUP classification needs a faithful libffi witness of
+            // its own; scalar SSE metadata must not stand in for it.
+            return false;
+        default:
+            return false;
+    }
+}
+
+
+private bool mergeSysVRange(
+    ref SysVClass[2] classes,
+    in size_t offset,
+    in size_t size,
+    in SysVClass incoming,
+) @safe @nogc nothrow pure {
+    if (size == 0)
+        return true;
+    const firstLane = offset / 8;
+    const lastLane = (offset + size - 1) / 8;
+    if (lastLane >= classes.length) {
+        classes[0] = SysVClass.memory;
+        return true;
+    }
+    foreach (lane; firstLane .. lastLane + 1)
+        classes[lane] = mergeSysV(classes[lane], incoming);
+    return true;
+}
+
+
+private bool mergeSysVLongDouble(
+    ref SysVClass[2] classes,
+    in size_t offset,
+) @safe @nogc nothrow pure {
+    if (offset != 0) {
+        classes[0] = SysVClass.memory;
+        return true;
+    }
+    classes[0] = mergeSysV(classes[0], SysVClass.x87);
+    classes[1] = mergeSysV(classes[1], SysVClass.x87Up);
+    if (classes[0] == SysVClass.memory || classes[1] == SysVClass.memory)
+        classes[0] = SysVClass.memory;
+    return true;
+}
+
+
+private SysVClass mergeSysV(
+    in SysVClass existing,
+    in SysVClass incoming,
+) @safe @nogc nothrow pure {
+    if (existing == SysVClass.none || existing == incoming)
+        return incoming;
+    if (incoming == SysVClass.none)
+        return existing;
+    if (existing == SysVClass.memory || incoming == SysVClass.memory)
+        return SysVClass.memory;
+    if (existing == SysVClass.x87 || existing == SysVClass.x87Up ||
+        incoming == SysVClass.x87 || incoming == SysVClass.x87Up)
+        return SysVClass.memory;
+    if (existing == SysVClass.integer || incoming == SysVClass.integer)
+        return SysVClass.integer;
+    if (existing == SysVClass.sse && incoming == SysVClass.sse)
+        return SysVClass.sse;
+    return SysVClass.memory;
 }
 
 
@@ -383,6 +655,15 @@ private bool layoutMatches(
 private FfiType aggregateFfiType(
     FfiType[] members,
 ) {
+    return sizedAggregateFfiType(0, 0, members);
+}
+
+
+private FfiType sizedAggregateFfiType(
+    in size_t size,
+    in ushort alignment,
+    FfiType[] members,
+) {
     import quickbite.ffi.libffi: ffi_type, FFI_TYPE_STRUCT;
 
     auto ownedTypes = new ffi_type[1];
@@ -390,7 +671,7 @@ private FfiType aggregateFfiType(
     foreach (index, ref member; members)
         elements[index] = member.type;
     elements[$ - 1] = null;
-    ownedTypes[0] = ffi_type(0, 0, FFI_TYPE_STRUCT, elements.ptr);
+    ownedTypes[0] = ffi_type(size, alignment, FFI_TYPE_STRUCT, elements.ptr);
     // Keep every recursive descriptor and element array alive until ffi_call.
     return FfiType(&ownedTypes[0], ownedTypes, elements, members);
 }
