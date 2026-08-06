@@ -12392,7 +12392,7 @@ private struct Walker {
         // field snapshot into a class-reference slot would invent a second
         // object representation.
         const nativeIdentity = preservedNativeClassIdentity(evaluated);
-        if (nativeIdentity.isPointer)
+        if (!evaluated.isPointer && nativeIdentity.isPointer)
             return nativeIdentity;
 
         auto var = expression.isVarExp;
