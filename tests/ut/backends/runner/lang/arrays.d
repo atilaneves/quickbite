@@ -4,6 +4,29 @@ module ut.backends.runner.lang.arrays;
 import ut.backends;
 
 
+// Qualifying the slice headers nested inside an outer dynamic array does not
+// change either level's native representation. D therefore permits a mutable
+// array of mutable rows to initialise an array whose row views are const.
+static foreach (backend; Matrix!()) {
+    @("dynamicArray.mutableRowsInitialiseConstRowViews." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            unittest {
+                int first = 10;
+                int[][] mutableRows = [[first, 20], [30]];
+                const(int[])[] rows = mutableRows;
+
+                assert(rows.length == 2);
+                assert(rows[0].length == 2);
+                assert(rows[0][1] == 20);
+                assert(rows[1][0] == 30);
+            }
+        });
+    }
+}
+
+
 /++
     Generic assert message coverage.
 
