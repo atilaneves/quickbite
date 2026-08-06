@@ -30,15 +30,18 @@ public bool call(
     import quickbite.ffi.libffi:
         ffi_arg, ffi_cif, ffi_call, ffi_prep_cif, ffi_status, ffi_type,
         FFI_DEFAULT_ABI;
-    import dmd.astenums: LINK;
+    import dmd.astenums: LINK, TY;
 
     if (callable.address is null ||
-        (callable.linkage != LINK.c && callable.linkage != LINK.d) ||
-        result.address is null)
+        (callable.linkage != LINK.c && callable.linkage != LINK.d))
         return false;
 
     auto resultFfiType = ffiTypeFor(result.type);
     if (resultFfiType is null)
+        return false;
+
+    const resultTy = result.type.toBasetype.ty;
+    if (resultTy != TY.Tvoid && result.address is null)
         return false;
 
     auto argumentTypes = new ffi_type*[](arguments.length);
@@ -65,16 +68,24 @@ public bool call(
     // libffi requires narrow integer returns to use an ffi_arg-wide slot.
     // Copy only the static type's native width into the caller's storage.
     ffi_arg resultScratch;
+    void* resultAddress = result.address;
+    switch (resultTy) with (TY) {
+        case Tvoid: resultAddress = null; break;
+        case Tint32: resultAddress = &resultScratch; break;
+        default: break;
+    }
     alias CFunction = extern(C) void function();
     ffi_call(
         &cif,
         cast(CFunction) callable.address,
-        &resultScratch,
+        resultAddress,
         argumentAddresses.ptr,
     );
 
-    import core.stdc.string: memcpy;
-    memcpy(result.address, &resultScratch, int.sizeof);
+    if (resultTy == TY.Tint32) {
+        import core.stdc.string: memcpy;
+        memcpy(result.address, &resultScratch, int.sizeof);
+    }
     return true;
 }
 
@@ -97,10 +108,16 @@ private imported!"quickbite.ffi.libffi".ffi_type* ffiTypeFor(
     imported!"dmd.mtype".Type type,
 ) {
     import quickbite.ffi.libffi:
-        ffi_type_sint32;
+        ffi_type_pointer, ffi_type_sint32, ffi_type_void;
     import dmd.astenums: TY;
 
-    return type !is null && type.toBasetype.ty == TY.Tint32
-        ? &ffi_type_sint32
-        : null;
+    if (type is null)
+        return null;
+
+    switch (type.toBasetype.ty) with (TY) {
+        case Tvoid: return &ffi_type_void;
+        case Tint32: return &ffi_type_sint32;
+        case Tpointer, Tclass: return &ffi_type_pointer;
+        default: return null;
+    }
 }

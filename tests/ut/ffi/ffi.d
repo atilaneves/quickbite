@@ -48,6 +48,20 @@ unittest {
 }
 
 
+@("ffi.addressOnlyVoidPointerCall")
+unittest {
+    import core.stdc.stdlib: free;
+
+    void* pointer;
+
+    call(
+        Callable(cast(void*) &free, LINK.c, CompilerAbi.dmd),
+        [TypedAddress(Type.tvoidptr, &pointer)],
+        TypedAddress(Type.tvoid, null),
+    ).should == true;
+}
+
+
 private int callEncoding(
     void* functionAddress,
     in LINK linkage,
