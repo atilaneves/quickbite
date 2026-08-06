@@ -820,3 +820,79 @@ unittest {
     auto tag = Tag(9);
     assert(tag.readCode() == 9);
 }
+
+unittest {
+    int[string] fieldOffsets;
+    fieldOffsets["magic"] = 0;
+    fieldOffsets["schema"] = 4;
+
+    int offsetSum;
+    int nameLengthSum;
+    foreach (name, offset; fieldOffsets) {
+        assert(fieldOffsets[name] == offset);
+        offsetSum += offset;
+        nameLengthSum += cast(int) name.length;
+    }
+    assert(offsetSum == 4);
+    assert(nameLengthSum == 11);
+}
+
+struct FieldId {
+    int recordId;
+    int fieldIndex;
+}
+
+unittest {
+    int[FieldId] widths;
+    widths[FieldId(1, 0)] = 4;
+
+    FieldId id = FieldId(1, 1);
+    widths[id] = 8;
+
+    assert((FieldId(1, 0) in widths) !is null);
+    assert(widths[FieldId(1, 0)] == 4);
+    assert(widths[id] == 8);
+    assert(widths.length == 2);
+
+    int sum;
+    foreach (k, v; widths)
+        sum += k.recordId + k.fieldIndex + v;
+    assert(sum == 15);
+}
+
+unittest {
+    int[int] table = [1: 10, 2: 20, 3: 30];
+    int keySum;
+    int valueSum;
+
+    foreach (key; table.keys)
+        keySum += key;
+
+    foreach (value; table.values)
+        valueSum += value;
+
+    assert(keySum == 6);
+    assert(valueSum == 60);
+}
+
+struct Span {
+    int offset;
+    int length;
+
+    int grow() {
+        return length += 1;
+    }
+}
+
+unittest {
+    Span[string] spans;
+    spans["header"] = Span(0, 4);
+    assert(spans["header"].offset == 0);
+
+    spans["header"].offset = 8;
+    assert(spans["header"].offset == 8);
+    assert(spans["header"].length == 4);
+
+    spans["header"].grow();
+    assert(spans["header"].length == 5);
+}

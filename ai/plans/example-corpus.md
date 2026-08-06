@@ -26,10 +26,11 @@ short-circuit `&&`/`||`, bitwise ops, and exceptions (`throw`/`catch`/
 `finally`, catch-by-base, multi-catch, rethrow — via a
 `decode`/`Minicereal.get` bounds check), classes/interfaces (field
 defaults, inheritance, a class field as a `ref` argument, interface
-virtual dispatch across two implementations), and delegates/closures
+virtual dispatch across two implementations), delegates/closures
 (capture-by-reference through a returned delegate, a nested lambda/IIFE
-reading an enclosing struct method's `this` field). It has no
-associative arrays.
+reading an enclosing struct method's `this` field), and associative
+arrays (`string`/struct/`int` keys, `.keys`/`.values` iteration, a
+struct-valued AA's field write and mutating method call).
 
 ## Constraint and method
 
@@ -43,10 +44,7 @@ never mine it for new features.
 
 ## Queue
 
-1. Associative arrays — scalar/string/struct keys, nested `AA[AA]`,
-   iteration. Avoid AA passed as a `ref` parameter (Interpreter-only
-   omit, `tests/ut/backends/runner/lang/arrays.d`).
-2. Remaining control flow: `do`/`while`, labeled `break`/`continue`
+1. Remaining control flow: `do`/`while`, labeled `break`/`continue`
    across nested loops, `switch` `goto case`/`goto default`, case
    ranges/multi-value cases, `final switch` on an enum, string-typed
    switch cases, ternary `?:`.
@@ -80,6 +78,15 @@ never mine it for new features.
   fixture to `interpreter.md`; until fixed, always call a
   freshly-constructed polymorphic object through a wrapper function in
   this corpus, never directly in a `unittest` body.
+- Nested-AA auto-vivification through plain index assignment
+  (`int[int][int] a; a[1][2] = 3;`): confirmed Interpreter-only failure,
+  "Associative-array lvalue needs a variable" — reproduced with the
+  verbatim `arrays.d` `nestedWriteAutoVivifiesBrandNewOuterKey` fixture
+  appended to this corpus unchanged, so the divergence is triggered by
+  combination with the rest of the file, not the construct itself
+  (`arrays.d`'s Interpreter omit is currently recorded only for the
+  compound-`+=` sibling shape). Route a minimal fixture to
+  `interpreter.md` before re-adding nested-AA writes here.
 
 ## Process per rung
 
