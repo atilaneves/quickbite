@@ -471,6 +471,11 @@ package(quickbite.backends.bytecode) enum Op: ubyte {
     // width is operand d instead of being implied by the opcode. Backs `*p
     // = v` and `p[i] = v` for such a pointee.
     pointerStoreN,
+    // Write `[pointer + index * elementSize]` as a raw native address into
+    // frame offset a. The pointer value lives at b, the size_t index at c,
+    // and d is the element byte width. This is the address primitive shared
+    // by pointer- and slice-backed compiler places.
+    pointerAddress,
     // Form a slice descriptor {pointer + lo * elementSize, hi - lo} at frame
     // offset a from the raw `size_t` pointer value at frame offset b and an
     // adjacent {lo, hi} pair of `size_t` bounds at frame offset c. Backs
@@ -525,15 +530,6 @@ package(quickbite.backends.bytecode) enum Op: ubyte {
     // Write the native address of the absolute stack index held in frame slot b
     // into frame slot a. Backs `.ptr` of a captured static array.
     frameIndexAddress,
-    // Write the native address of a scalar `ref` parameter's identity slot as
-    // a raw `size_t` pointer word into frame offset a; b is the parameter's
-    // own frame offset (`RefParameter.offset`). When the currently executing
-    // call groups this parameter with others aliasing the same caller
-    // storage, the identity slot is the group's first parameter's frame
-    // offset instead of its own, so `&first == &second` holds for two `ref`
-    // parameters bound to the same lvalue even though each keeps its own
-    // frame slot for reads and writes.
-    refParameterAddress,
     signExtend1to2, // a: destination frame offset, b: source frame offset
     zeroExtend1to2, // a: destination frame offset, b: source frame offset
     signExtend1to4, // a: destination frame offset, b: source frame offset
@@ -1275,26 +1271,11 @@ package(quickbite.backends.bytecode) struct Instruction {
     ushort e;
 }
 
-// A pass-by-reference parameter: its slot in the callee frame holds the
-// referenced value (a scalar, or a 16-byte slice descriptor for a `ref T[]`),
-// but the matching word in the caller's argument area holds the signed offset
-// from the immediate caller frame to the argument. The machine dereferences
-// that offset on entry and writes the slot back to it on return.
-package(quickbite.backends.bytecode) struct RefParameter {
-    ushort offset; // the parameter's frame offset (also its argument-area word)
-    uint valueSize; // bytes of the referenced value, copied in and written back
-}
-
 package(quickbite.backends.bytecode) struct CompiledFunction {
     Instruction[] code; // empty until the function is (lazily) compiled
     uint frameSize;
     uint parameterBytes;
     ResultType returnType;
-    RefParameter[] refParameters; // empty for functions with no ref parameters
-    // A struct method's hidden receiver occupies the argument area's first
-    // slot as a whole block (via `refParameters`), not a plain context word;
-    // `callIndirectDynamic` checks this before trusting a delegate-typed
-    // parameter's uniform pointer-sized context convention.
     bool hasThis;
 }
 

@@ -64,8 +64,6 @@ package(quickbite.backends.bytecode) RunResult run(
 
     while (true) {
         try {
-            if (frames.length != 0)
-                synchronizeRefAliases(stack, frames[$ - 1], base);
             const instruction = program.functions[functionIndex].code[ip];
             final switch (instruction.op) with (Op) {
             case loadConstant:
@@ -662,13 +660,17 @@ package(quickbite.backends.bytecode) RunResult run(
                 ++ip;
                 break;
 
-            case refParameterAddress:
-                writeFrameAddress(
+            case pointerAddress:
+                const pointer = scalarValue!size_t(
+                    stack, base + instruction.b,
+                );
+                const index = scalarValue!size_t(
+                    stack, base + instruction.c,
+                );
+                writeScalar(
                     stack,
                     base + instruction.a,
-                    base + refParameterIdentitySlot(
-                        frames[$ - 1], instruction.b,
-                    ),
+                    pointer + index * instruction.d,
                 );
                 ++ip;
                 break;
@@ -1736,35 +1738,8 @@ package(quickbite.backends.bytecode) RunResult run(
                         .. base + instruction.b + callee.parameterBytes
                     ];
 
-                // Each scalar `ref` parameter's slot currently holds the
-                // caller-frame offset of its argument (copied with the rest of
-                // the argument block). Record that offset for writeback on
-                // return, then replace the slot with the referenced value.
-                RefWriteback[] refWritebacks;
-                foreach (refParameter; callee.refParameters) {
-                    const valueSize = refParameter.valueSize;
-                    const callerOffset = cast(size_t) (
-                        cast(ptrdiff_t) base + scalarValue!int(
-                            stack, calleeBase + refParameter.offset,
-                        )
-                    );
-                    refWritebacks ~= RefWriteback(
-                        callerOffset, refParameter.offset, valueSize,
-                    );
-                    stack[
-                        calleeBase + refParameter.offset
-                        .. calleeBase + refParameter.offset + valueSize
-                    ] = stack[callerOffset .. callerOffset + valueSize];
-                }
-
-                // Mutable because execution advances each group's byte image.
-                auto refAliases = refAliasGroups(
-                    stack, refWritebacks, calleeBase,
-                );
-
                 frames ~= Frame(
                     functionIndex, ip + 1, base, instruction.c,
-                    refWritebacks, refAliases,
                 );
                 functionIndex = calleeIndex;
                 base = calleeBase;
@@ -2162,8 +2137,6 @@ package(quickbite.backends.bytecode) RunResult run(
                 const frame = frames[$ - 1];
                 frames.length -= 1;
 
-                writeBackRefParameters(stack, frame, base);
-
                 stack[
                     frame.base + frame.destination
                     .. frame.base + frame.destination + resultSize
@@ -2203,27 +2176,8 @@ private void writeBackUnwoundFrames(
     size_t base,
     in size_t frameDepth,
 ) {
-    size_t calleeBase = base;
-    while (frames.length > frameDepth) {
-        const frame = frames[$ - 1];
-        writeBackRefParameters(stack, frame, calleeBase);
+    while (frames.length > frameDepth)
         frames.length -= 1;
-        calleeBase = frame.base;
-    }
-}
-
-private void writeBackRefParameters(
-    ubyte[] stack,
-    in Frame frame,
-    in size_t calleeBase,
-) {
-    foreach (writeback; frame.refWritebacks)
-        stack[
-            writeback.callerOffset .. writeback.callerOffset + writeback.size
-        ] = stack[
-            calleeBase + writeback.calleeOffset
-            .. calleeBase + writeback.calleeOffset + writeback.size
-        ];
 }
 
 private SelectedHandler selectHandler(
@@ -3138,8 +3092,6 @@ private struct Frame {
     size_t ip;
     size_t base;
     ushort destination;
-    RefWriteback[] refWritebacks; // empty unless the callee has ref parameters
-    RefAlias[] refAliases;
 }
 
 // An active catch handler: where to resume (the catch body's instruction index
@@ -3157,97 +3109,6 @@ private struct SelectedHandler {
     bool matched;
     Handler handler;
     imported!"quickbite.backends.bytecode.core.program".CatchClause clause;
-}
-
-// A pending scalar `ref` writeback: copy `size` bytes from the callee
-// parameter slot (relative to the callee base) back to an absolute caller-frame
-// offset on return.
-private struct RefWriteback {
-    size_t callerOffset; // absolute stack offset of the referenced caller slot
-    ushort calleeOffset; // the parameter slot's offset within the callee frame
-    uint size;
-}
-
-// The callee-frame-relative slot that stands for a scalar `ref` parameter's
-// identity: its own slot, unless it is grouped with other parameters aliasing
-// the same caller storage (`frame.refAliases`), in which case every member of
-// the group must report the group's first slot so `&first == &second` holds.
-// Reads and writes still go through each parameter's own slot;
-// `synchronizeRefAliases` keeps the group's slots byte-identical between
-// instructions, so redirecting only the address is safe.
-private ushort refParameterIdentitySlot(
-    in Frame frame,
-    in ushort calleeOffset,
-) @safe pure {
-    foreach (group; frame.refAliases)
-        foreach (offset; group.calleeOffsets)
-            if (offset == calleeOffset)
-                return group.calleeOffsets[0];
-    return calleeOffset;
-}
-
-// Parameter slots that denote the same caller storage. The bytecode compiler
-// addresses parameters as frame slots, so keep aliased slots coherent between
-// instructions to give every parameter the identity of that shared storage.
-private struct RefAlias {
-    ushort[] calleeOffsets;
-    ubyte[] bytes;
-}
-
-private RefAlias[] refAliasGroups(
-    in ubyte[] stack,
-    in RefWriteback[] writebacks,
-    in size_t calleeBase,
-) {
-    RefAlias[] aliases;
-    foreach (writebackIndex, writeback; writebacks) {
-        ushort[] offsets;
-        foreach (candidateIndex, candidate; writebacks)
-            if (candidate.callerOffset == writeback.callerOffset &&
-                candidate.size == writeback.size &&
-                candidateIndex >= writebackIndex)
-                offsets ~= candidate.calleeOffset;
-        if (offsets.length < 2)
-            continue;
-
-        bool alreadyGrouped;
-        foreach (previousIndex; 0 .. writebackIndex)
-            if (writebacks[previousIndex].callerOffset ==
-                    writeback.callerOffset &&
-                writebacks[previousIndex].size == writeback.size)
-                alreadyGrouped = true;
-        if (alreadyGrouped)
-            continue;
-
-        aliases ~= RefAlias(
-            offsets,
-            stack[
-                calleeBase + writeback.calleeOffset
-                .. calleeBase + writeback.calleeOffset + writeback.size
-            ].dup,
-        );
-    }
-    return aliases;
-}
-
-private void synchronizeRefAliases(
-    ubyte[] stack,
-    ref Frame frame,
-    in size_t calleeBase,
-) {
-    foreach (ref group; frame.refAliases)
-        foreach (offset; group.calleeOffsets) {
-            const begin = calleeBase + offset;
-            if (stack[begin .. begin + group.bytes.length] == group.bytes)
-                continue;
-
-            group.bytes[] = stack[begin .. begin + group.bytes.length];
-            foreach (destination; group.calleeOffsets)
-                stack[
-                    calleeBase + destination
-                    .. calleeBase + destination + group.bytes.length
-                ] = group.bytes[];
-        }
 }
 
 private uint equalOperandSize(

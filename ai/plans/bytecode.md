@@ -322,19 +322,13 @@ The current `Bytecode` backend is the typed-frame, native-layout VM. Extend
 that backend directly. There is no narrow promotion frontier: the product
 target is arbitrary D code reached from real unittest blocks.
 
-### Immediate gate: one compositional lowering pipeline
+### One compositional lowering pipeline
 
-Declaration classification is smeared over parallel per-type-kind side
-tables in `compiler.d` (`_locals`, `_staticArrayLocals`,
-`_dynamicArrayLocals`, `_pointerLocals`, `_structLocals`, `_delegateLocals`,
-the `_module*Variables` family, and kin). Emit sites repeatedly cross four
-independent concerns: semantic operation, lvalue AST shape, storage kind, and
-value representation. Each operator family therefore re-derives "what is
-this declaration?" by probing tables in its own ad-hoc order, and each lvalue
-operation is copied per storage kind (`compilePostIncrement` carries an arm
-per storage kind; plain assignment probes a sibling `try*Assign` helper per
-storage kind for the one shape `a[i] = v`; `/=` reaches fewer storage kinds
-than `+=` for no semantic reason).
+Declaration classification, value representation, storage location, and
+lvalue access are separate concerns. `compiler.d` classifies each declaration
+once, attaches shared `TypeFacts`, and resolves lvalue expressions to places.
+Semantic emitters consume values and places without reconstructing those
+decisions from AST shapes or parallel per-type side tables.
 
 Duplication is an architectural failure, including duplicated decisions
 rather than only copied lines: repeated declaration classification, width or
@@ -384,22 +378,12 @@ Target state:
 - Scalar `ref` parameters end as real pointers into caller storage resolved
   through the same place pipeline, replacing the per-callee
   mirror/return-writeback convention and its address-identity,
-  exceptional-control-flow, and aliasing incoherences. The support-boundary
-  text below describing mirrors stays accurate until that final migration
-  stage lands.
+  exceptional-control-flow, and aliasing incoherences.
 
-Sequencing: establish place resolution and its primitive operations on the
-declaration registry's classified roots. Migrate one consumer family per
-commit, with the enabled matrix green after each commit: assignment, all
-compound and prefix/postfix operations, field/index/slice/dereference access,
-address-of, `ref`/`out`, method receivers, and calls returning `ref`. A
-migrated emitter must become storage- and lvalue-shape-agnostic; delete each
-side table, probe, special writeback, and per-pair helper when its last
-consumer disappears. Route remaining raw width choices through `TypeFacts`,
-then replace scalar-`ref` mirrors through place addresses. Row promotions
-resume only when all existing consumers use the pipeline and pre-PR review
-finds no duplicated classification, access, width, materialisation, or
-writeback decision.
+New lowering work extends the classified roots, access-path composition,
+place primitives, or semantic emitters independently. It must not reintroduce
+parallel declaration tables, shape-specific assignment/ref/receiver helpers,
+or call-return writeback mirrors.
 
 The two omitted module-scalar rows in
 `tests/ut/backends/runner/lang/expressions.d`
@@ -495,12 +479,10 @@ row, not a guarantee. Reconfirm against the source before relying on it.
   `TypeInfo!int` without display-value substitution.
 - Delegates and closures: see the Closures section.
 
-Scalar `ref` parameters retain per-callee mirrors with return writeback. Their
-address identity is coherent only with other parameters bound to the same
-caller lvalue; `&refParameter` cannot expose the caller's storage without
-letting direct pointer writes race the final mirror writeback. A direct-place
-calling convention must replace the mirror/writeback pair before promoting
-shared caller-storage address identity.
+Scalar and aggregate `ref` parameters hold pointers to caller storage. Loads,
+stores, address-of, forwarding, and returned references use that address
+directly, including exceptional exits and repeated arguments that alias the
+same caller place.
 
 Live hazards and divergences to reconfirm against current source when a row
 reaches them:
