@@ -274,6 +274,7 @@ private struct Compiler {
     // The function whose body is currently being compiled; `_capturedOwners`
     // entries recorded while compiling it are attributed to it.
     private FuncDeclaration _currentFunction;
+    private imported!"dmd.statement".CompoundAsmStatement _currentAsm;
     // The frame offset of the current method's hidden `this` block when it is a
     // nested struct whose first field (`vthis`) holds the enclosing-frame
     // context index; 0 otherwise. Set while compiling such a method.
@@ -737,6 +738,11 @@ private struct Compiler {
     private void compileInlineAsm(
         imported!"dmd.statement".CompoundAsmStatement compound,
     ) {
+        // `const` would qualify the DMD class reference and prevent restoring it.
+        auto previousAsm = _currentAsm;
+        _currentAsm = compound;
+        scope(exit) _currentAsm = previousAsm;
+
         if (tryCompileAtomicLoadAsm(compound))
             return;
         if (tryCompileAtomicFetchAddAsm(compound))
@@ -753,6 +759,7 @@ private struct Compiler {
         imported!"dmd.statement".CompoundAsmStatement compound,
     ) {
         import quickbite.frontend.dmd.functions: inlineAsmInstructions;
+        import std.conv: text;
 
         const instructions = inlineAsmInstructions(compound);
         if (instructions.length != 5 ||
@@ -778,17 +785,19 @@ private struct Compiler {
 
         const destination = asmPointerLocal("dest");
         const value = asmLocal("value");
-        const isDword = instructions[2][5].spelling == "EDI";
+        const isDword = destination.pointerElement == ScalarType.uint_;
         const type = isDword ? ScalarType.uint_ : ScalarType.ulong_;
-        if ((!isDword &&
-                (!isAsmIdentifier(instructions[3], 1, "RAX") ||
-                    !isAsmIdentifier(instructions[3], 3, "RDI"))) ||
-            (isDword &&
-                (!isAsmIdentifier(instructions[3], 1, "EAX") ||
-                    !isAsmIdentifier(instructions[3], 3, "EDI"))) ||
-            destination.pointerElement != type ||
-            value.type != type || _currentReturnType.scalar != type)
-            throw new Exception("Unsupported inline asm atomic-fetch-add operand.");
+        if (destination.pointerElement != type ||
+            value.type != type || functionResultType(asmOwner).scalar != type)
+            throw new Exception(text(
+                "Unsupported inline asm atomic-fetch-add operand: dest type=",
+                asmParameterTypeChars("dest"),
+                ", dest element=", destination.pointerElement,
+                ", value type=", asmParameterTypeChars("value"),
+                ", value element=", value.type,
+                ", return element=", functionResultType(asmOwner).scalar,
+                ".",
+            ));
 
         const result = allocate(type);
         _code ~= Instruction(
@@ -924,22 +933,11 @@ private struct Compiler {
 
         const source = asmPointerLocal("src");
         const result = asmPointerLocal("resultValuePtr");
-        const isDword = instructions[1][1].spelling == "EDX";
-        if ((isDword &&
-                (!isAsmIdentifier(instructions[2], 1, "EAX") ||
-                    !isAsmIdentifier(instructions[5], 5, "EDX") ||
-                    !isAsmIdentifier(instructions[8], 5, "EAX"))) ||
-            (!isDword &&
-                (!isAsmIdentifier(instructions[2], 1, "RAX") ||
-                    !isAsmIdentifier(instructions[5], 5, "RDX") ||
-                    !isAsmIdentifier(instructions[8], 5, "RAX"))))
-            return false;
-
+        const isDword = source.pointerElement == ScalarType.int_ ||
+            source.pointerElement == ScalarType.uint_;
         const width = isDword ? uint.sizeof : ulong.sizeof;
-        if ((isDword && source.pointerElement != ScalarType.int_ &&
-                source.pointerElement != ScalarType.uint_) ||
-            (!isDword && source.pointerElement != ScalarType.long_ &&
-                source.pointerElement != ScalarType.ulong_))
+        if (!isDword && source.pointerElement != ScalarType.long_ &&
+                source.pointerElement != ScalarType.ulong_)
             throw new Exception(text(
                 "Unsupported inline asm atomic-load operand: src type=",
                 asmParameterTypeChars("src"),
@@ -1074,8 +1072,10 @@ private struct Compiler {
         // those first: `_locals` also contains compiler-introduced variables,
         // and associative-array iteration does not provide a stable choice
         // when more than one declaration has the same identifier.
-        if (_currentFunction.parameters !is null)
-            foreach (parameter; *_currentFunction.parameters) {
+        // `const` would qualify the DMD class and its parameter declarations.
+        auto function_ = asmOwner;
+        if (function_.parameters !is null)
+            foreach (parameter; *function_.parameters) {
                 if (parameter.ident is null || parameter.ident.toString != name)
                     continue;
                 if (auto element = parameter in _pointerLocals)
@@ -1097,8 +1097,10 @@ private struct Compiler {
     private Operand asmLocal(in string name) {
         import std.conv: text;
 
-        if (_currentFunction.parameters !is null)
-            foreach (parameter; *_currentFunction.parameters) {
+        // `const` would qualify the DMD class and its parameter declarations.
+        auto function_ = asmOwner;
+        if (function_.parameters !is null)
+            foreach (parameter; *function_.parameters) {
                 if (parameter.ident !is null && parameter.ident.toString == name)
                     return asmOperand(parameter);
             }
@@ -1119,11 +1121,21 @@ private struct Compiler {
     private string asmParameterTypeChars(in string name) {
         import std.conv: text;
 
-        if (_currentFunction.parameters !is null)
-            foreach (parameter; *_currentFunction.parameters)
+        // `const` would qualify the DMD class and its parameter declarations.
+        auto function_ = asmOwner;
+        if (function_.parameters !is null)
+            foreach (parameter; *function_.parameters)
                 if (parameter.ident !is null && parameter.ident.toString == name)
                     return typeChars(parameter.type);
         return text("<missing parameter ", name, ">");
+    }
+
+    private imported!"dmd.func".FuncDeclaration asmOwner() {
+        import quickbite.frontend.dmd.functions: inlineAsmOwner;
+
+        // `const` would qualify the DMD class reference and make it unreturnable.
+        auto owner = inlineAsmOwner(_currentAsm);
+        return owner is null ? _currentFunction : owner;
     }
 
     private Operand asmOperand(VarDeclaration declaration) {

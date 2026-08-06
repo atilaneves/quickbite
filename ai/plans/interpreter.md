@@ -2751,6 +2751,24 @@ back into its `SystemLinker`-oracle matrix after fixing the named red behavior:
 - `struct.staticArrayCopyRunsPostblitAndDtors`: preserve pointer fields while
   copying static-array elements before their postblits run; the current
   postblit dereferences a null counter pointer and terminates the test process.
+- An interface method taking a parameter, called through an interface-typed
+  variable, fails with "Unsupported interpreter call arguments." Only
+  zero-arg interface methods are proven (`expressions.d`'s
+  `Speaker.score()`). Found via `tests/example.d`; no matrix fixture pins
+  it yet.
+- A zero-arg interface method called through an interface-typed variable
+  constructed directly inside a `unittest { }` block (rather than inside an
+  ordinary function, as every proven matrix fixture does) silently returns
+  the wrong value, with no diagnostic. Found via `tests/example.d`; no
+  matrix fixture pins it yet.
+- Nested-AA auto-vivification through plain index assignment
+  (`int[int][int] a; a[1][2] = 3;`) fails with "Associative-array lvalue
+  needs a variable" once combined with enough surrounding module content,
+  despite the identical `arrays.d`
+  `nestedWriteAutoVivifiesBrandNewOuterKey` fixture being `Matrix!()`-clean
+  in isolation (the matrix currently records an `Interpreter` omission only
+  for the compound-`+=` sibling shape). Found via `tests/example.d`; no
+  matrix fixture pins the combined-content trigger yet.
 
 ## 10. Completion criteria
 

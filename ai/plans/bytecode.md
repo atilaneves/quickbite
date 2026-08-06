@@ -556,6 +556,11 @@ reaches them:
   claim it; if that catch's declared type doesn't actually match at runtime,
   a `finally` between the throw site and wherever it's really caught can
   still be silently skipped.
+- A nested `try { try {...} catch (Exception) {...} } catch (Error e) {...}`
+  around an out-of-bounds array index (`RangeError`) diverges from
+  `SystemLinker`: the `Error` fails to reach the outer handler on `Bytecode`
+  (`Interpreter` matches the oracle). Found via `tests/example.d`; no
+  matrix fixture pins it yet.
 
 Closure interactions with exceptions (a captured local mutated across
 try/catch/finally) and class polymorphism/vtable dispatch (including
