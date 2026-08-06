@@ -251,10 +251,6 @@ private struct Compiler {
     // already treated as having run.
     private bool _functionHasLabels;
 
-    private static struct MethodReceiver {
-        ushort offset;
-    }
-
     private static struct Place {
         private enum Kind {
             frame,
@@ -3119,13 +3115,13 @@ private struct Compiler {
                         ScalarType.ulong_,
                     );
                 return pointerPlace(address.offset, expression.type);
-            }
+        }
 
         if (auto call = expression.isCallExp) {
             auto function_ = callFunction(call);
             if (facts.isAggregate && function_ !is null &&
                 function_.isCtorDeclaration !is null) {
-                const receiver = methodReceiver(call);
+                Operand receiver;
                 compileCall(call, &receiver);
                 return pointerPlace(receiver.offset, expression.type);
             }
@@ -6717,33 +6713,24 @@ private struct Compiler {
         return null;
     }
 
-    // The frame offset of the receiver struct block of a method call
-    // `receiver.method(args)`. The callee is a `DotVarExp` whose `e1` is the
-    // receiver (a struct local, by-value parameter, or the enclosing `this`).
-    private MethodReceiver methodReceiver(CallExp call) {
+    private Operand storageAddressOrValue(Expression expression) {
         import std.conv: text;
 
-        auto dot = call.e1.isDotVarExp;
-        if (dot is null && _hasThis)
-            return MethodReceiver(_thisLocal.offset);
-        if (dot !is null && isPointerType(dot.e1.type))
-            return MethodReceiver(compileExpression(dot.e1).offset);
-        auto place = dot is null ? null : placeOrNull(dot.e1);
-        if (place !is null)
-            return MethodReceiver(addressOfPlace(*place).offset);
-        if (dot !is null && dot.e1.type !is null &&
-            typeFacts(dot.e1.type).isAggregate) {
-            const value = compileExpression(dot.e1);
-            const address = addressOperand(
-                Op.frameAddress, value.offset, ScalarType.void_,
+        if (isPointerType(expression.type))
+            return compileExpression(expression);
+        if (auto address = placeAddressOrNull(expression))
+            return *address;
+        if (expression.type !is null &&
+            typeFacts(expression.type).isAggregate) {
+            const value = aggregateValueOffset(
+                expression.type, expression, false,
             );
-            return MethodReceiver(address.offset);
+            return *addressOperand(Op.frameAddress, value, ScalarType.void_);
         }
         throw new Exception(text(
-            "Unsupported method receiver in bytecode core: ",
-            expressionChars(call),
+            "Unsupported address or value in bytecode core: ",
+            expressionChars(expression),
         ));
-
     }
 
     // A struct receiver returned by `ref`, or through `&`, from one of the
@@ -7194,17 +7181,9 @@ private struct Compiler {
                 }
 
             if (auto call = expression.isCallExp) {
-                // `S(args)` through an explicit constructor: DMD types the
-                // `CallExp` itself as the constructed struct even though
-                // `__ctor` is declared `void`, so `compileCall`'s own
-                // destination (the shared void-call dummy slot) is not the
-                // constructed value. The value lives at the receiver's frame
-                // offset, the same location already passed as the call's
-                // hidden `this`; resolve it once and hand it to `compileCall`
-                // so the receiver is not evaluated a second time.
                 auto function_ = callFunction(call);
                 if (function_ !is null && function_.isCtorDeclaration !is null) {
-                    const receiver = methodReceiver(call);
+                    Operand receiver;
                     compileCall(call, &receiver);
                     const value = allocateStructBlock(expression.type);
                     emitPointerLoad(
@@ -13287,9 +13266,7 @@ private struct Compiler {
 
     private Operand compileCall(
         CallExp call,
-        const MethodReceiver* evaluatedMethodReceiver = null,
-        const size_t* evaluatedReferenceArgumentIndex = null,
-        const ushort* evaluatedReferenceArgumentOffset = null,
+        Operand* resolvedThisOperand = null,
     ) {
         import dmd.astenums: TY;
         import std.conv: text;
@@ -13453,8 +13430,7 @@ private struct Compiler {
         const argumentArea = allocateBytes(layout.blockSize, 8);
         Operand classReceiver;
         bool hasClassReceiver;
-        MethodReceiver structReceiver;
-        bool hasStructReceiver;
+        Operand structReceiver;
         // `super.f(...)` binds statically to the base class's own
         // implementation (`function_`/`index` already resolved to it via
         // DMD's `call.f`); dispatching it through the runtime receiver's
@@ -13465,13 +13441,23 @@ private struct Compiler {
 
         // A struct method call `receiver.method(args)` passes the receiver as
         // the hidden `this` block (by reference) at the start of the argument
-        // area: store the receiver's frame offset there, which the machine
-        // dereferences on entry and writes back on return.
+        // area: store the receiver's address there, which the machine
+        // dereferences on entry.
         if (layout.hasThis) {
-            structReceiver = evaluatedMethodReceiver is null
-                ? methodReceiver(call)
-                : *evaluatedMethodReceiver;
-            hasStructReceiver = true;
+            if (auto dot = call.e1.isDotVarExp)
+                structReceiver = storageAddressOrValue(dot.e1);
+            else if (_hasThis)
+                structReceiver = Operand(
+                    _thisLocal.offset, ScalarType.ulong_, true,
+                    ScalarType.void_,
+                );
+            else
+                throw new Exception(text(
+                    "Missing hidden `this` argument in bytecode core: ",
+                    expressionChars(call),
+                ));
+            if (resolvedThisOperand !is null)
+                *resolvedThisOperand = structReceiver;
             _code ~= Instruction(
                 Op.copy,
                 cast(ushort) (argumentArea + layout.thisOffset),
@@ -13531,18 +13517,6 @@ private struct Compiler {
                 if (functionParameterIsLazy(
                         function_, nextArgumentIndex + argumentIndex)) {
                     emitLazyCallArgument(slot, (*call.arguments)[argumentIndex]);
-                    continue;
-                }
-                if (layout.isReference[nextArgumentIndex + argumentIndex] &&
-                    evaluatedReferenceArgumentIndex !is null &&
-                    evaluatedReferenceArgumentOffset !is null &&
-                    argumentIndex == *evaluatedReferenceArgumentIndex) {
-                    _code ~= Instruction(
-                        Op.loadConstant,
-                        slot,
-                        constantIndex(*evaluatedReferenceArgumentOffset),
-                        cast(ushort) size(ScalarType.uint_),
-                    );
                     continue;
                 }
                 if (layout.isReference[nextArgumentIndex + argumentIndex]) {

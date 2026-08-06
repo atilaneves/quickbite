@@ -754,8 +754,8 @@ lifetime as the dependency bytecode cache.
   field after its declared fields (`AggregateDeclaration.isNested`) that this
   path's frame layout does not account for, so a function-nested struct falls
   back to the plain unsupported diagnostic. A direct unqualified call to such a
-  nested function gets a call-site receiver branch in `methodReceiverOffset`
-  for the plain `VarExp` callee shape. This is a `this`-receiver question, not
+  nested function passes the enclosing method's existing `this` storage as
+  its hidden argument. This is a `this`-receiver question, not
   captured-locals-environment work, and needs no closure environment.
 - Frame-escaping capture. A delegate that captures a local and outlives the
   declaring frame needs a real GC-heap environment, since the frame-relative
