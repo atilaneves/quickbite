@@ -1094,6 +1094,7 @@ private struct Compiler {
         imported!"dmd.statement".CompoundAsmStatement compound,
     ) {
         import quickbite.frontend.dmd.functions: inlineAsmInstructions;
+        import std.conv: text;
 
         const instructions = inlineAsmInstructions(compound);
         if (instructions.length != 10 ||
@@ -1166,7 +1167,16 @@ private struct Compiler {
                 source.pointerElement != ScalarType.uint_) ||
             (!isDword && source.pointerElement != ScalarType.long_ &&
                 source.pointerElement != ScalarType.ulong_))
-            throw new Exception("Unsupported inline asm atomic-load operand.");
+            throw new Exception(text(
+                "Unsupported inline asm atomic-load operand: src type=",
+                asmParameterTypeChars("src"),
+                ", src element=", source.pointerElement,
+                ", resultValuePtr type=",
+                asmParameterTypeChars("resultValuePtr"),
+                ", result element=", result.pointerElement,
+                ", instruction width=", width,
+                ".",
+            ));
 
         const loaded = allocate(source.pointerElement);
         const zero = compileSizeConstant(0);
@@ -1327,6 +1337,20 @@ private struct Compiler {
             }
         }
         throw new Exception(text("Unsupported inline asm operand: ", name));
+    }
+
+    // Error diagnostics for recognized DRuntime inline asm must identify the
+    // actual instantiated parameter types. Operand metadata alone loses type
+    // qualifiers and aliases, which is precisely what distinguishes a new
+    // atomic specialization from the supported signed/unsigned integer forms.
+    private string asmParameterTypeChars(in string name) {
+        import std.conv: text;
+
+        if (_currentFunction.parameters !is null)
+            foreach (parameter; *_currentFunction.parameters)
+                if (parameter.ident !is null && parameter.ident.toString == name)
+                    return typeChars(parameter.type);
+        return text("<missing parameter ", name, ">");
     }
 
     private Operand asmOperand(VarDeclaration declaration) {
