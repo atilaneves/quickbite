@@ -310,7 +310,8 @@ private FfiType ffiTypeFor(
         case Tcomplex32: return FfiType(&ffi_type_complex_float);
         case Tcomplex64: return FfiType(&ffi_type_complex_double);
         case Tcomplex80: return FfiType(&ffi_type_complex_longdouble);
-        case Tpointer, Tclass, Taarray: return FfiType(&ffi_type_pointer);
+        case Tpointer, Tclass, Taarray, Tnull:
+            return FfiType(&ffi_type_pointer);
         case Tarray:
             // A native D dynamic array is `{length, ptr}` in word order.
             return aggregateFfiType([

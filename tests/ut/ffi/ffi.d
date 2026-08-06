@@ -74,6 +74,49 @@ unittest {
 }
 
 
+@("ffi.addressOnlyFunctionAndNullPointerCalls")
+unittest {
+    auto functionPointerSignature = functionSignature(q{
+        extern(C) {
+            alias Unary = int function(int);
+            int callFunctionPointer(Unary, int);
+        }
+    }, "callFunctionPointer");
+    CUnary functionPointer = &addThree;
+    int argument = 39;
+    int functionResult;
+
+    call(
+        Callable(
+            cast(void*) &callFunctionPointer,
+            functionPointerSignature,
+            CompilerAbi.dmd,
+        ),
+        [
+            TypedAddress(
+                functionPointerSignature.parameterList[0].type,
+                &functionPointer,
+            ),
+            TypedAddress(Type.tint32, &argument),
+        ],
+        TypedAddress(Type.tint32, &functionResult),
+    ).should == true;
+    functionResult.should == 42;
+
+    auto nullSignature = functionSignature(q{
+        extern(C) bool isNull(typeof(null));
+    }, "isNull");
+    typeof(null) nullValue = null;
+    bool nullResult;
+    call(
+        Callable(cast(void*) &isNull, nullSignature, CompilerAbi.dmd),
+        [TypedAddress(nullSignature.parameterList[0].type, &nullValue)],
+        TypedAddress(Type.tbool, &nullResult),
+    ).should == true;
+    nullResult.should == true;
+}
+
+
 @("ffi.addressOnlyExternCVariadicCall")
 unittest {
     import core.stdc.stdio: snprintf;
@@ -1037,6 +1080,24 @@ private void assertScalarRoundTrip(T)(T expected, Type type) {
 
 private extern(C) T identity(T)(T value) {
     return value;
+}
+
+
+private extern(C) int addThree(int value) {
+    return value + 3;
+}
+
+
+private alias CUnary = extern(C) int function(int);
+
+
+private extern(C) int callFunctionPointer(CUnary function_, int value) {
+    return function_(value);
+}
+
+
+private extern(C) bool isNull(typeof(null) value) {
+    return value is null;
 }
 
 
