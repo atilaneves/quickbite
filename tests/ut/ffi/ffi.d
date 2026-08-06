@@ -2,7 +2,7 @@ module ut.ffi.ffi;
 
 
 import dmd.astenums: LINK;
-import dmd.mtype: Type;
+import dmd.mtype: ParameterList, Type, TypeDArray, TypeDelegate, TypeFunction;
 import quickbite.ffi.ffi: Callable, CompilerAbi, TypedAddress, call;
 import unit_threaded;
 
@@ -88,6 +88,68 @@ unittest {
     const rounded = roundToDouble(extendedPrecision);
     assert(extendedPrecision != cast(real) rounded);
     assertFloatingPointCall(extendedPrecision, Type.tfloat80);
+}
+
+
+@("ffi.addressOnlyNativeDescriptorsPassUntouched")
+unittest {
+    int[] array = [3, 5, 7];
+    const originalArrayLength = array.length;
+    // `const` would also qualify the pointed-to backing storage.
+    auto originalArrayPointer = array.ptr;
+    int[] arrayResult;
+    // TypedAddress intentionally retains DMD's mutable Type identity.
+    auto arrayType = new TypeDArray(Type.tint32);
+
+    call(
+        Callable(cast(void*) &preserveArray, LINK.c, CompilerAbi.dmd),
+        [TypedAddress(arrayType, &array)],
+        TypedAddress(arrayType, &arrayResult),
+    ).should == true;
+
+    array.length.should == originalArrayLength;
+    assert(array.ptr is originalArrayPointer);
+    arrayResult.length.should == originalArrayLength;
+    assert(arrayResult.ptr is originalArrayPointer);
+    array[1].should == 50;
+
+    int captured = 40;
+    int delegate(int) delegate_ = value => captured + value;
+    // `const` would change the two pointer types being identity-tested.
+    auto originalDelegateContext = delegate_.ptr;
+    auto originalDelegateFunction = delegate_.funcptr;
+    assert(originalDelegateContext !is null);
+    int delegate(int) delegateResult;
+    // TypedAddress intentionally retains DMD's mutable Type identity.
+    auto delegateType = new TypeDelegate(new TypeFunction(
+        ParameterList(null),
+        Type.tint32,
+        LINK.d,
+    ));
+
+    call(
+        Callable(cast(void*) &preserveDelegate, LINK.c, CompilerAbi.dmd),
+        [TypedAddress(delegateType, &delegate_)],
+        TypedAddress(delegateType, &delegateResult),
+    ).should == true;
+
+    assert(delegate_.ptr is originalDelegateContext);
+    assert(delegate_.funcptr is originalDelegateFunction);
+    assert(delegateResult.ptr is originalDelegateContext);
+    assert(delegateResult.funcptr is originalDelegateFunction);
+    (delegateResult == delegate_).should == true;
+    delegateResult(2).should == 42;
+}
+
+
+private extern(C) int[] preserveArray(int[] value) {
+    value[1] *= 10;
+    return value;
+}
+
+
+private extern(C) int delegate(int) preserveDelegate(int delegate(int) value) {
+    return value;
 }
 
 

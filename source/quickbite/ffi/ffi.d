@@ -36,8 +36,8 @@ public bool call(
         (callable.linkage != LINK.c && callable.linkage != LINK.d))
         return false;
 
-    auto resultFfiType = ffiTypeFor(result.type);
-    if (resultFfiType is null)
+    auto resultMetadata = ffiTypeFor(result.type);
+    if (resultMetadata.type is null)
         return false;
 
     const resultTy = result.type.toBasetype.ty;
@@ -46,9 +46,11 @@ public bool call(
 
     auto argumentTypes = new ffi_type*[](arguments.length);
     auto argumentAddresses = new void*[](arguments.length);
+    auto argumentMetadata = new FfiType[](arguments.length);
     foreach (index, argument; arguments) {
         const abiIndex = abiArgumentIndex(callable, index, arguments.length);
-        argumentTypes[abiIndex] = ffiTypeFor(argument.type);
+        argumentMetadata[abiIndex] = ffiTypeFor(argument.type);
+        argumentTypes[abiIndex] = argumentMetadata[abiIndex].type;
         if (argumentTypes[abiIndex] is null || argument.address is null)
             return false;
         argumentAddresses[abiIndex] = argument.address;
@@ -59,7 +61,7 @@ public bool call(
         &cif,
         FFI_DEFAULT_ABI,
         cast(uint) arguments.length,
-        resultFfiType,
+        resultMetadata.type,
         argumentTypes.ptr,
     );
     if (prepStatus != ffi_status.FFI_OK)
@@ -116,7 +118,20 @@ private size_t narrowIntegerResultSize(
 }
 
 
-private imported!"quickbite.ffi.libffi".ffi_type* ffiTypeFor(
+private struct FfiType {
+    private imported!"quickbite.ffi.libffi".ffi_type* _type;
+    private imported!"quickbite.ffi.libffi".ffi_type[] _ownedTypes;
+    private imported!"quickbite.ffi.libffi".ffi_type*[] _ownedElements;
+    private FfiType[] _members;
+
+    private imported!"quickbite.ffi.libffi".ffi_type* type()
+        @safe @nogc nothrow pure {
+        return _type;
+    }
+}
+
+
+private FfiType ffiTypeFor(
     imported!"dmd.mtype".Type type,
 ) {
     import quickbite.ffi.libffi:
@@ -127,22 +142,49 @@ private imported!"quickbite.ffi.libffi".ffi_type* ffiTypeFor(
     import dmd.astenums: TY;
 
     if (type is null)
-        return null;
+        return FfiType.init;
 
     switch (type.toBasetype.ty) with (TY) {
-        case Tvoid: return &ffi_type_void;
-        case Tbool, Tuns8, Tchar: return &ffi_type_uint8;
-        case Tint8: return &ffi_type_sint8;
-        case Tuns16, Twchar: return &ffi_type_uint16;
-        case Tint16: return &ffi_type_sint16;
-        case Tuns32, Tdchar: return &ffi_type_uint32;
-        case Tint32: return &ffi_type_sint32;
-        case Tuns64: return &ffi_type_uint64;
-        case Tint64: return &ffi_type_sint64;
-        case Tfloat32: return &ffi_type_float;
-        case Tfloat64: return &ffi_type_double;
-        case Tfloat80: return &ffi_type_longdouble;
-        case Tpointer, Tclass: return &ffi_type_pointer;
-        default: return null;
+        case Tvoid: return FfiType(&ffi_type_void);
+        case Tbool, Tuns8, Tchar: return FfiType(&ffi_type_uint8);
+        case Tint8: return FfiType(&ffi_type_sint8);
+        case Tuns16, Twchar: return FfiType(&ffi_type_uint16);
+        case Tint16: return FfiType(&ffi_type_sint16);
+        case Tuns32, Tdchar: return FfiType(&ffi_type_uint32);
+        case Tint32: return FfiType(&ffi_type_sint32);
+        case Tuns64: return FfiType(&ffi_type_uint64);
+        case Tint64: return FfiType(&ffi_type_sint64);
+        case Tfloat32: return FfiType(&ffi_type_float);
+        case Tfloat64: return FfiType(&ffi_type_double);
+        case Tfloat80: return FfiType(&ffi_type_longdouble);
+        case Tpointer, Tclass: return FfiType(&ffi_type_pointer);
+        case Tarray:
+            // A native D dynamic array is `{length, ptr}` in word order.
+            return aggregateFfiType([
+                FfiType(&ffi_type_uint64),
+                FfiType(&ffi_type_pointer),
+            ]);
+        case Tdelegate:
+            // A native D delegate is `{context, funcptr}` in word order.
+            return aggregateFfiType([
+                FfiType(&ffi_type_pointer),
+                FfiType(&ffi_type_pointer),
+            ]);
+        default: return FfiType.init;
     }
+}
+
+
+private FfiType aggregateFfiType(
+    FfiType[] members,
+) {
+    import quickbite.ffi.libffi: ffi_type, FFI_TYPE_STRUCT;
+
+    auto ownedTypes = new ffi_type[1];
+    auto elements = new ffi_type*[](members.length + 1);
+    foreach (index, ref member; members)
+        elements[index] = member.type;
+    elements[$ - 1] = null;
+    ownedTypes[0] = ffi_type(0, 0, FFI_TYPE_STRUCT, elements.ptr);
+    return FfiType(&ownedTypes[0], ownedTypes, elements, members);
 }
