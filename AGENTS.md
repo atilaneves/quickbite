@@ -4,16 +4,16 @@ Write a bytecode VM for the D programming language.
 
 # Design
 
-Optimise for unittest result latency from any edit — this overrides all other
-concerns. JIT would improve runtime but tests run in milliseconds; JIT compile
-time would dominate.
+Optimise for unittest result latency from any edit — this overrides
+all other concerns. JIT would improve runtime but tests run in
+milliseconds; JIT compile time would dominate.
 
-Avoid the linker tax: no object files, no whole-program compilation. Drive
-compilation from unittest blocks; generate only the bytecode needed for each
-test and its transitive dependencies.
+Avoid the linker tax: no object files, no whole-program
+compilation. Drive compilation from unittest blocks; generate only the
+bytecode needed for each test and its transitive dependencies.
 
-Keep code isolated from dmd internals behind a stable interface that wraps
-dmd-as-a-library.
+Keep code isolated from dmd internals behind a stable interface that
+wraps dmd-as-a-library.
 
 # Plan
 
@@ -173,6 +173,8 @@ Never delete test code to make tests pass.
 - No classes unless the goal is OOP (virtual dispatch, inheritance). A
   class with no base, no children, and no virtual methods is a struct.
 - CI must never be red. Not locally, not in a PR.
+- Do not mention quickbite implementation details in comments attached
+  to tests.
 
 # Do
 
@@ -180,6 +182,9 @@ Never delete test code to make tests pass.
 - Add new mistakes to `ai/mistakes.md`. No duplicates.
 - Read git history when starting a new session.
 - Wrap markdown files at 80 columns.
+- Explain why a unittest block is testing an AST shape by referring to
+  language semantics. If necessary, you are allowed to refer to dmd
+  internal implementation details.
 
 ## Github
 
