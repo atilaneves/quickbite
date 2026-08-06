@@ -395,19 +395,16 @@ row, not a guarantee. Reconfirm against the source before relying on it.
 - An ordinary scalar local's address is its native frame address, so a
   same-sized pointer reinterpretation observes the local's raw bytes. This
   does not make a scalar `ref` parameter's mirror into the caller's address.
-- The recognized 4- and 8-byte `core.internal.atomic.atomicLoad` inline-asm
-  sequence carries raw bits: retain the source pointer's signedness in its
-  result slot while using the width-specific atomic opcode. The host atomic
-  read itself is unsigned only as a raw-byte transport. Validate the source
-  pointee against that opcode width, but not the result pointer metadata: the
-  validated EAX/RAX store fixes its byte width.
-- The recognized 4- and 8-byte `core.internal.atomic.atomicFetchAdd`
-  inline-asm sequence returns the pre-addition raw bits. Validate the matching
-  EDI/EAX or RDI/RAX register pair and lower it to a width-specific host atomic
-  fetch-add rather than an ordinary load/add/store sequence. Resolve its named
-  `dest`/`value` operands from the function parameter list, never by
-  associative iteration over all locals: DMD can introduce other declarations
-  with the same spelling during semantic lowering.
+- Inline asm has no general x86 contract. The supported atomic subset is the
+  complete DRuntime `core.internal.atomic` lowering for 4-/8-byte load,
+  fetch-add, and 4-byte exchange, each translated to its one corresponding
+  host atomic operation; exact token shapes are an identity guard for that
+  DRuntime contract, not independently supported assembly. Validation must
+  reject every other shape and bind its registers, named parameters, result
+  flow, and operand widths: loads preserve signedness as raw bits and may rely
+  on the validated result-store width; fetch-add returns the pre-addition bits
+  and resolves `dest`/`value` from the parameter list; exchange stores the
+  previous 4-byte destination bits through validated `storage`.
 - Native calls pass `TypeInfo` arguments as their actual native class
   references; `GC.malloc(int.sizeof, 0, typeid(int))` uses the host's
   `TypeInfo!int` without display-value substitution.
@@ -492,8 +489,7 @@ a real ABI class object (including vtable) and synchronised field storage.
 Closure interactions with exceptions (a captured local mutated across
 try/catch/finally) and class polymorphism/vtable dispatch (including
 `super.f()`) match `SystemLinker` under `bin/qb` probing -- not a lead.
-Otherwise take the "One place resolver" item or an "Architecture work forced
-by the baseline" front.
+Otherwise take an "Architecture work forced by the baseline" front.
 
 ### TDD and handoff discipline
 
@@ -545,69 +541,17 @@ enabled matrix and a forward-looking next-row update.
 ### Structural consolidation queue
 
 Approved deepening work, distinct from the row-driven queue: each item lands
-as bounded, behaviour-preserving ride-along commits on the serial bytecode
-track, with the enabled matrix green after each commit. Order: width first,
-place second.
+as a bounded, behaviour-preserving ride-along commit on the serial bytecode
+track, with the enabled matrix green after the commit.
 
-1. **One width authority.** Element/operand byte width is hand-derived at
-   dozens of emit sites, and `ScalarType.void_` (size 0) doubles as the
-   aggregate sentinel, so an omitted width becomes a silent zero-byte copy
-   instead of a compile error. Two sub-pieces.
-
-   Still open: generalise `dynamicArrayElementSize`/`pointerElementMetadata`
-   into the single width authority every emit site's width *computation* goes
-   through. Each site still derives its own width today
-   (`dynamicArrayElementSize`, `staticArraySize`, `size(scalarType)`, ...).
-   This is a real generalisation, not a mechanical rename: the two named
-   functions differ materially in signature and return shape (a bare `uint`
-   vs. a `{opcodeType, byteStride}` pair) across 30+ call sites, so take it as
-   a bounded sub-piece (one call-site family, or one clearly-scoped shared
-   helper) rather than attempting the whole merge in one commit.
-   `pointerElementMetadata`, `dereferencedArrayIndexElementMetadata`, and
-   `dynamicArrayElementSize` now share both the aggregate-vs-scalar branch
-   and the inline DMD-layout query through `elementMetadataFor`/
-   `inlineByteWidth`; `storeStructPointerField`/`storeClassPointerField` and
-   `refArgumentFieldWidth` share that classification and query.
-   The aggregate call-layout builder now uses `inlineByteWidth` for inline
-   struct/static-array parameter and receiver widths, including its
-   type-only fallback. Struct-method receivers materialised from a pointer,
-   pointer/class field, or dynamic-array element also use it for their inline
-   load/store blocks. By-value and captured struct/static-array values use it
-   for their inline copy widths. Struct field write-back through module data,
-   pointer-indexed struct materialisation, and heap `new S` allocation use it
-   for their inline blocks too, as do whole-struct assignments to a receiver,
-   local, or field. Static-array assignment and literal materialisation now
-   use `inlineByteWidth` for their inline copy, fill, and element-placement
-   widths; module static-array storage and static-array-to-dynamic-array
-   materialisation derive their element widths and counts from that same
-   authority. The remaining inline DMD-layout queries in the compiler --
-   static-array indexing and views, pointer/AA stores, equality, and result
-   metadata -- also go through `inlineByteWidth`; no direct
-   `staticArraySize` authority remains.
-
-   Done: every width-suffixed opcode family (`indexLoad*`/`indexStore*`,
-   `pointerLoad*`/`pointerStore*`/`pointerSlice*`, `subSlice*`,
-   `appendElement*`, `dupArray*`, `concatArrays*`, and
-   `sliceCopy*`/`sliceFill*`/`sliceEqual*`) is emitted only through a
-   per-family `emit*` helper in `compiler.d` that takes width as a required
-   parameter and builds the `Instruction` itself, so an `*N` instruction can no
-   longer be constructed with a silently-defaulted-to-zero width operand. The
-   three slice families needed separate helpers rather than one shared helper:
-   `sliceCopy` covers 1/2/4/8/16 plus `N`, `sliceFill` covers 1/2/4/8 plus `N`
-   (its broadcast source is a scalar, never a descriptor element), and
-   `sliceEqual` covers only 1/2/4/8 with no `N` variant at all.
-   `Op.sliceEqualNested` is a genuinely different opcode with its own
-   depth/element-width operands and keeps its own `emitNestedArrayEqual`
-   construction site.
-
-2. **One place resolver.** A resolved `StructField` has exactly one
-   discriminated writeback target (frame, data segment, pointer, or none).
-   `structBaseOffsetOrMaterialise` and `structFieldAt` compose that target
-   through every field hop; a data-segment field derives its nested module
-   offset only through `moduleFieldOffset`. Heap struct-pointer and class
-   fields share `HeapField`/`heapFieldAddress`; runtime addresses otherwise go
-   through `addressOperand`. A new lvalue shape extends this resolver rather
-   than adding a sibling emitter or reconstructing storage from parallel state.
+1. **One width authority.** Every inline aggregate and element-width
+   computation must go through one compiler authority. `ScalarType.void_`'s
+   zero size must not act as an aggregate sentinel: an omitted width must fail
+   compilation rather than becoming a zero-byte copy. Still open: generalise
+   `dynamicArrayElementSize` and `pointerElementMetadata` so that each emit
+   site obtains its width from that authority. Their signatures and return
+   shapes differ, so make this a bounded sub-piece (one call-site family or a
+   clearly-scoped shared helper), not a mechanical whole-compiler rename.
 
 Reviewed and declined (2026-08): a bytecode-core disassembler with
 instruction-level emission pins — not worth tackling; do not re-propose.
@@ -769,11 +713,15 @@ lifetime as the dependency bytecode cache.
   `return dg;` (`compileDelegateReturn`), as a top-level delegate field of a
   directly returned struct literal (`structLiteralReturnOffset`), or by a
   class-field/dynamic-array-element write. Each capture gets a full
-  machine-word slot regardless of its own narrower width, so the `pointer +
-  index * width` addressing divides exactly for every scalar width. Everything
-  outside that shape -- three or more captures, a non-scalar/non-pointer
-  capture, a multi-level capture, a capture combined with `this` -- declines
-  through `throwFrameEscapingDelegateDiagnostic`.
+  machine-word slot regardless of its own narrower width. The fixed-slot
+  layout accepts only 1-, 2-, 4-, or 8-byte captured scalar widths, so the
+  `pointer + index * width` addressing divides exactly. `real_` is 16 bytes
+  here and must either receive an actual-width, suitably aligned closure
+  layout or be rejected before capture; it must never be stored in a
+  `size_t` slot. Everything outside that shape -- three or more captures, a
+  non-scalar/non-pointer capture, an ineligible scalar width, a multi-level
+  capture, or a capture combined with `this` -- declines through
+  `throwFrameEscapingDelegateDiagnostic`.
 
   A later direct scalar/pointer assignment, or a completed `ref`/`out` call
   that receives one of those frame locals, mirrors the new value into its heap
