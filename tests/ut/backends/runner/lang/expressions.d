@@ -11658,6 +11658,57 @@ static foreach (backend; Matrix!(
     }
 }
 
+// `&arr[i++].mid.a[j]` -- the same doubly-nested `DotVarExp` receiver as
+// `pointer.addressOfDoublyNestedDotVarStaticArrayElement` above, but this
+// time the receiver's OWN chain runs through an `IndexExp` with a
+// side-effecting index (`arr[i++]`). `arrayPointer`'s `IndexExp` arm
+// unconditionally evaluates its whole receiver early
+// (`runExpression(index.e1)`, needed for `$` support and a native-aggregate
+// fallback) before ever reaching the doubly-nested-`DotVarExp` branch that
+// delegates to `lvalue_place.placeOfLvalue` to compose the address --  and
+// `placeOfLvalue` evaluates that same `i++` a second time while resolving
+// the chain's address, since it has no way to know the receiver was already
+// evaluated once. `i` reads back 2 instead of 1, and the composed pointer
+// targets `arr[1]` instead of `arr[0]`. Fixed by detecting -- from syntax
+// alone, before evaluating anything -- whether the doubly-nested receiver's
+// chain contains an `IndexExp`, and if so resolving the whole address
+// through a single `placeOfLvalue` walk instead of evaluating the receiver
+// twice. SystemLinker is the oracle.
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.diverges,
+        "Ctfe runs the unittest body through DMD's own CTFE interpreter, " ~
+        "which cannot read the mutable module-scope variables `arr`/`i`/" ~
+        "`j` at compile time"),
+    Omit!(Bytecode, Because.unconfirmed,
+        "no support yet for address-of through a doubly-nested `DotVarExp` " ~
+        "receiver in the bytecode core, same gap as " ~
+        "addressOfDoublyNestedDotVarStaticArrayElement above"),
+    Omit!(LLVMJit, Because.unconfirmed,
+        "independent, unconfirmed gap: address-of through a doubly-nested " ~
+        "`DotVarExp` receiver in the JIT backend, same gap as " ~
+        "addressOfDoublyNestedDotVarStaticArrayElement above"),
+)) {
+    @("pointer.addressOfDoublyNestedDotVarStaticArrayElementThroughSideEffectingIndex." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct Mid { int[3] a; }
+            struct Outer { Mid mid; }
+            Outer[2] arr;
+            int i = 0;
+            int j = 1;
+            unittest {
+                arr[0].mid.a = [10, 20, 30];
+                arr[1].mid.a = [40, 50, 60];
+                auto p = &arr[i++].mid.a[j];
+                assert(i == 1);
+                assert(*p == 20);
+            }
+        });
+    }
+}
+
 // `(*next() = P(10)).bump()` -- a method call chained off an assignment
 // whose own target is a side-effecting `PtrExp` (`*next()`, `next()`
 // advancing `calls` and returning a fresh element each time). `bump()`'s

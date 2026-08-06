@@ -3157,6 +3157,26 @@ private struct Walker {
     // bbf236db left in place) silently returns a dynamic-array row's own
     // slice-header address instead of its element 0's data address whenever
     // the FINAL index in a nested chain (`a[0][0]`, `a[0][1][0]`, ...) is 0.
+    // Whether `expression`'s own lvalue chain -- as `lvalue_place.
+    // placeOfLvalue` would walk it, through `DotVarExp`/`PtrExp` receivers --
+    // runs through an `IndexExp` anywhere. Pure syntax, no evaluation:
+    // `arrayPointer`'s `IndexExp` arm uses this to detect, before evaluating
+    // anything, whether its own unconditional `runExpression(index.e1)`
+    // would duplicate a side effect that `placeOfLvalue` is about to
+    // evaluate again while resolving the same chain's address (`i++` inside
+    // `arr[i++].mid.a[j]`).
+    private static bool lvalueChainHasIndexExp(
+        imported!"dmd.expression".Expression expression,
+    ) {
+        if (expression.isIndexExp !is null)
+            return true;
+        if (auto dot = expression.isDotVarExp)
+            return lvalueChainHasIndexExp(dot.e1);
+        if (auto ptr = expression.isPtrExp)
+            return lvalueChainHasIndexExp(ptr.e1);
+        return false;
+    }
+
     private Value arrayPointer(
         imported!"dmd.expression".Expression array,
         in long offset,
@@ -3202,6 +3222,52 @@ private struct Walker {
 
             if (auto index = array.isIndexExp) {
                 import quickbite.backends.interpreter.layout: typeByteSize;
+
+                // A doubly (or more) nested `DotVarExp` receiver whose own
+                // chain runs through an `IndexExp` somewhere
+                // (`arr[i++].mid.a[j]`, `s.a[i++].mid.b[j]`, ...) must be
+                // resolved through `lvalue_place.placeOfLvalue` BEFORE this
+                // arm's own unconditional `runExpression(index.e1)` below
+                // ever runs: that eager evaluation exists to read
+                // `index.e1`'s VALUE (for `$` support and the
+                // native-aggregate fallback further down), but it fully
+                // evaluates the exact same chain `placeOfLvalue` needs to
+                // walk again to resolve an ADDRESS -- side-effecting index
+                // included (`i++`). Running both evaluates that index twice
+                // and the second (wrong) value wins. Detect the hazard from
+                // the syntax alone, with no evaluation of anything, and
+                // resolve the address in one single walk instead, skipping
+                // the eager value read entirely for this shape. A chain
+                // with no `IndexExp` in it (e.g. `s.inner.a[i]`) has nothing
+                // for the eager read to duplicate, so it keeps taking the
+                // ordinary path below unchanged.
+                if (auto nestedField = index.e1.isDotVarExp) {
+                    if (
+                        nestedField.e1.isDotVarExp !is null &&
+                        lvalueChainHasIndexExp(nestedField)
+                    ) {
+                        import quickbite.backends.interpreter.lvalue_place: placeOfLvalue;
+                        import quickbite.backends.interpreter.place: Place;
+
+                        auto fieldPlace = placeOfLvalue(
+                            nestedField,
+                            (variable) @safe => addressableBindingBase(variable),
+                            (expression) @trusted =>
+                                cast(size_t) runExpression(expression).asLong,
+                        );
+                        const outerOffset = runExpression(index.e2).asLong;
+                        const pointer = Value.pointerValue(
+                            fieldPlace.index(cast(size_t) outerOffset).address,
+                        );
+                        if (selfAddress)
+                            return pointer;
+                        return Value.pointerValue(
+                            Place(cast(void*) pointer.pointerAddress, array.type)
+                                .index(cast(size_t) offset)
+                                .address,
+                        );
+                    }
+                }
 
                 // An address-taking index must evaluate its receiver before
                 // the index: `$` is bound to this receiver's present length,
