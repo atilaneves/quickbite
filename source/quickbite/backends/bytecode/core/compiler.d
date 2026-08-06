@@ -373,6 +373,8 @@ private struct Compiler {
         VarDeclaration declaration;
         StructField field;
         bool hasFieldWriteback;
+        bool isPointerValue;
+        ScalarType pointerElement;
     }
 
     private void compileFunctionBody(in size_t index) {
@@ -2651,7 +2653,7 @@ private struct Compiler {
             return compileAddAssignExpression(addAssign);
 
         if (auto subtractAssign = expression.isMinAssignExp)
-            return compileLocalIntegerCompoundAssign(
+            return compileScalarIntegerCompoundAssign(
                 subtractAssign,
                 Op.subInt4,
                 Op.subInt8,
@@ -2659,32 +2661,23 @@ private struct Compiler {
             );
 
         if (auto multiplyAssign = expression.isMulAssignExp)
-            return compileLocalIntegerCompoundAssign(
+            return compileScalarIntegerCompoundAssign(
                 multiplyAssign,
                 Op.mulInt4,
                 Op.mulInt8,
                 "Unsupported compound assignment in bytecode core: ",
             );
 
-        if (auto rightShiftAssign = expression.isShrAssignExp) {
-            if (auto deref = rightShiftAssign.e1.isPtrExp)
-                if (auto store = tryPointerDereferenceIntegerCompoundAssign(
-                        deref,
-                        rightShiftAssign.e2,
-                        Op.shrInt4,
-                        Op.shrInt4,
-                    ))
-                    return *store;
-            return compileLocalIntegerCompoundAssign(
+        if (auto rightShiftAssign = expression.isShrAssignExp)
+            return compileScalarIntegerCompoundAssign(
                 rightShiftAssign,
                 Op.shrInt4,
                 Op.shrInt4,
                 "Unsupported compound assignment in bytecode core: ",
             );
-        }
 
         if (auto leftShiftAssign = expression.isShlAssignExp)
-            return compileLocalIntegerCompoundAssign(
+            return compileScalarIntegerCompoundAssign(
                 leftShiftAssign,
                 Op.shlInt4,
                 Op.shlInt8,
@@ -2692,7 +2685,7 @@ private struct Compiler {
             );
 
         if (auto orAssign = expression.isOrAssignExp)
-            return compileLocalIntegerCompoundAssign(
+            return compileScalarIntegerCompoundAssign(
                 orAssign,
                 Op.bitOrInt4,
                 Op.bitOrInt8,
@@ -2700,7 +2693,7 @@ private struct Compiler {
             );
 
         if (auto andAssign = expression.isAndAssignExp)
-            return compileLocalIntegerCompoundAssign(
+            return compileScalarIntegerCompoundAssign(
                 andAssign,
                 Op.bitAndInt4,
                 Op.bitAndInt8,
@@ -2708,7 +2701,7 @@ private struct Compiler {
             );
 
         if (auto xorAssign = expression.isXorAssignExp)
-            return compileLocalIntegerCompoundAssign(
+            return compileScalarIntegerCompoundAssign(
                 xorAssign,
                 Op.bitXorInt4,
                 Op.bitXorInt4,
@@ -3093,10 +3086,25 @@ private struct Compiler {
             auto declaration = variable.var.isVarDeclaration;
             if (declaration is null)
                 return null;
-            if (auto slot = declaration in _locals)
+            if (auto slot = declaration in _locals) {
+                if (auto element = declaration in _refLocalPointers)
+                    return new ScalarPlace(
+                        ScalarPlace.Kind.pointer,
+                        *element,
+                        *slot,
+                    );
+                auto pointerElement = declaration in _pointerLocals;
                 return new ScalarPlace(
                     ScalarPlace.Kind.frame, scalarType(declaration.type), *slot,
+                    declaration,
+                    StructField.init,
+                    false,
+                    pointerElement !is null,
+                    pointerElement is null
+                        ? ScalarType.void_
+                        : *pointerElement,
                 );
+            }
             if (_hasNestedContext)
                 if (auto offset = declaration in _capturedOffsets)
                     return new ScalarPlace(
@@ -3166,6 +3174,17 @@ private struct Compiler {
                         Op.copy, place.offset, value.offset,
                         cast(ushort) size(place.type),
                     );
+                if (auto closurePointer =
+                        place.declaration in _heapEscapingClosurePointers) {
+                    const closureOffset =
+                        _heapEscapingClosureOffsets[place.declaration];
+                    emitPointerStore(
+                        place.offset,
+                        *closurePointer,
+                        compileSizeConstant(closureOffset / size(place.type)),
+                        size(place.type),
+                    );
+                }
                 return;
             case field:
                 if (value.offset != place.offset)
@@ -10369,7 +10388,7 @@ private struct Compiler {
 
         // `p.at(0) /= rhs` / `p.at(0) %= rhs`: a ref-returning method call
         // used as a compound-assignment lvalue, the same shape
-        // `compileLocalIntegerCompoundAssign` handles for `+=`/`-=`/`*=`/
+        // `compileScalarIntegerCompoundAssign` handles for `+=`/`-=`/`*=`/
         // shifts/bitwise. Tried before the plain-local-declaration case
         // below, which a `CallExp` lvalue never matches. Unwrap a possible
         // outer `CastExp` first: DMD wraps `e1` in one whenever the
@@ -10382,16 +10401,15 @@ private struct Compiler {
                 ))
                 return *result;
 
-        auto declaration = compoundAssignLocalDeclaration(assign.e1);
-        auto slot = compoundAssignLocalSlot(declaration);
-        if (slot is null)
+        const rhs = compileExpression(assign.e2);
+        auto place = scalarPlaceOrNull(compoundAssignLvalue(assign.e1));
+        if (place is null || place.isPointerValue)
             throw new Exception(text(
                 unsupportedMessage,
                 expressionChars(assign),
             ));
 
-        const lvalueType = scalarType(declaration.type);
-        const rhs = compileExpression(assign.e2);
+        const lvalueType = place.type;
         if (!isCompoundIntegerScalar(lvalueType) ||
             !isCompoundIntegerScalar(rhs.type))
             throw new Exception(text(
@@ -10424,23 +10442,14 @@ private struct Compiler {
             op = isModulo ? Op.modInt4 : Op.divInt4;
 
         const lhs = integerOperationOperand(
-            Operand(*slot, lvalueType),
+            loadScalarPlace(*place),
             operationType,
         );
         const rhsValue = integerOperationOperand(rhs, operationType);
-        const destination = size(lvalueType) == size(operationType)
-            ? *slot
-            : allocate(operationType);
+        const destination = allocate(operationType);
         _code ~= Instruction(op, destination, lhs.offset, rhsValue.offset);
-        if (destination != *slot)
-            _code ~= Instruction(
-                Op.copy,
-                *slot,
-                destination,
-                cast(ushort) size(lvalueType),
-            );
-
-        return Operand(*slot, lvalueType);
+        storeScalarPlace(*place, Operand(destination, operationType));
+        return loadScalarPlace(*place);
     }
 
     private Operand compileShiftExpression(
@@ -10880,15 +10889,9 @@ private struct Compiler {
     private Operand compileAddAssignExpression(AddAssignExp addAssign) {
         import std.conv: text;
 
-        // `*p += rhs` through a pointer (a postblit's `++*this.postblits`): load
-        // `*p`, add the rhs, and store it back through the pointer.
-        if (auto deref = addAssign.e1.isPtrExp)
-            if (auto store = tryPointerDereferenceAddAssign(deref, addAssign.e2))
-                return *store;
-
         // `arr[i].fixedField[j] += rhs`: an indexed compound assignment into a
         // static-array field reached through an array-element pointer.
-        // Checked before `tryStaticArrayElementAddAssign` below, which would
+        // Checked before the scalar-place element path below, which would
         // otherwise resolve `arr[i].fixedField`'s base through
         // `tryStaticArrayElement`'s throwaway copy of the whole element (the
         // compound-assignment counterpart of the plain-assignment silent-
@@ -10898,17 +10901,26 @@ private struct Compiler {
                     tryArrayElementFieldIndexAddAssign(index, addAssign.e2))
                 return *element;
 
-        // `a[0] += rhs` / `s.a[1] += rhs`: a compile-time-constant index into
-        // a static-array chain (a plain local or a struct field's inline
-        // block) adds directly into the element's own inline frame slot.
-        // Tried before the dynamic-array descriptor case below, since
-        // `dynamicArrayDescriptorOrNull` would otherwise materialise a
-        // throwaway heap-copied view of the whole static array (for slicing
-        // and iteration reads) and write the sum into that copy instead of
-        // the real storage.
         if (auto index = compoundAssignIndex(addAssign.e1))
-            if (auto element = tryStaticArrayElementAddAssign(index, addAssign.e2))
-                return *element;
+            if (auto element = tryStaticArrayElement(index)) {
+                auto place = ScalarPlace(
+                    ScalarPlace.Kind.field,
+                    element.type,
+                    element.offset,
+                    null,
+                    element.writeback is null
+                        ? StructField.init : *element.writeback,
+                    element.writeback !is null,
+                );
+                return compileScalarIntegerCompoundAssign(
+                    place,
+                    compileExpression(addAssign.e2),
+                    addAssign,
+                    Op.addInt4,
+                    Op.addInt8,
+                    "Unsupported compound assignment in bytecode core: ",
+                );
+            }
 
         // `p[i] += rhs` through a pointer, including DMD's hidden-pointer
         // lowering for `m[k] += rhs` on an associative array.
@@ -10974,6 +10986,18 @@ private struct Compiler {
                 return Operand(current.offset, lvalueType);
             }
 
+        if (auto dot = compoundAssignDotVar(addAssign.e1))
+            if (!hasModuleStructBase(dot))
+                if (auto place = scalarPlaceOrNull(dot))
+                    return compileScalarIntegerCompoundAssign(
+                        *place,
+                        compileExpression(addAssign.e2),
+                        addAssign,
+                        Op.addInt4,
+                        Op.addInt8,
+                        "Unsupported compound assignment in bytecode core: ",
+                    );
+
         // `p += n` on a local pointer variable (e.g. `Throwable.next`'s own
         // `++newTail`): DMD pre-scales `n` to a byte offset for pointer
         // arithmetic (see `compilePointerAdd`), so a plain 8-byte add into the
@@ -10986,68 +11010,24 @@ private struct Compiler {
                     return Operand(*slot, ScalarType.ulong_, true, *element);
                 }
 
-        // `base.field += rhs` on an inline struct field (e.g. a `with (subject)`
-        // body's `(*__withSym).field`): add into the field's own frame slot.
-        // A module-struct field chain's whole-block copy (`tryStructField`'s
-        // `Op.loadModule`) must be taken after the rhs runs: the rhs may
-        // itself write this exact field by name (`gp.x += f()` where `f`
-        // writes `gp.x` directly), and that write has to already be in the
-        // copy this read-modify-write reads, or the post-op `Op.storeModule`
-        // writeback below clobbers it with a stale snapshot.
-        if (auto dot = compoundAssignDotVar(addAssign.e1)) {
-            const isModuleField = hasModuleStructBase(dot);
-            Operand earlyRhsValue;
-            if (isModuleField)
-                earlyRhsValue = compileExpression(addAssign.e2);
-
-            if (auto field = tryStructField(dot)) {
-                const lvalueType = scalarType(field.type);
-                const rhsValue = isModuleField
-                    ? earlyRhsValue
-                    : compileExpression(addAssign.e2);
-                if (!isCompoundIntegerScalar(lvalueType) ||
-                    !isCompoundIntegerScalar(rhsValue.type))
+        if (auto dot = compoundAssignDotVar(addAssign.e1))
+            if (hasModuleStructBase(dot)) {
+                const rhs = compileExpression(addAssign.e2);
+                auto place = scalarPlaceOrNull(dot);
+                if (place is null)
                     throw new Exception(text(
                         "Unsupported compound assignment in bytecode core: ",
                         expressionChars(addAssign),
                     ));
-
-                if (isEightByteInteger(lvalueType) !=
-                    isEightByteInteger(rhsValue.type))
-                    throw new Exception(text(
-                        "Unsupported compound assignment in bytecode core: ",
-                        expressionChars(addAssign),
-                    ));
-
-                const operationType = isEightByteInteger(lvalueType)
-                    ? lvalueType
-                    : ScalarType.int_;
-                const lhs = integerOperationOperand(
-                    Operand(field.offset, lvalueType),
-                    operationType,
+                return compileScalarIntegerCompoundAssign(
+                    *place,
+                    rhs,
+                    addAssign,
+                    Op.addInt4,
+                    Op.addInt8,
+                    "Unsupported compound assignment in bytecode core: ",
                 );
-                const rhs = integerOperationOperand(rhsValue, operationType);
-                const destination = size(lvalueType) == size(operationType)
-                    ? field.offset
-                    : allocate(operationType);
-                const addOp = lvalueType == ScalarType.long_ ||
-                    lvalueType == ScalarType.ulong_
-                        ? Op.addInt8
-                        : Op.addInt4;
-                _code ~= Instruction(
-                    addOp, destination, lhs.offset, rhs.offset,
-                );
-                if (destination != field.offset)
-                    _code ~= Instruction(
-                        Op.copy,
-                        field.offset,
-                        destination,
-                        cast(ushort) size(lvalueType),
-                    );
-                writeBackStructField(*field);
-                return Operand(field.offset, lvalueType);
             }
-        }
 
         // `box.field += rhs` through a class reference (e.g. `Throwable.next`'s
         // `++tail._refcount`): load the field, add the rhs, and store the
@@ -11109,7 +11089,7 @@ private struct Compiler {
         // (size_t is ulong on x86-64, so `++len` lands here) share the lvalue's
         // own slot as the destination. Narrow integer locals promote for the
         // operation and copy only their storage width back, preserving wrapping.
-        return compileLocalIntegerCompoundAssign(
+        return compileScalarIntegerCompoundAssign(
             addAssign,
             Op.addInt4,
             Op.addInt8,
@@ -11117,7 +11097,7 @@ private struct Compiler {
         );
     }
 
-    private Operand compileLocalIntegerCompoundAssign(
+    private Operand compileScalarIntegerCompoundAssign(
         BinExp assign,
         in Op op4,
         in Op op8,
@@ -11134,26 +11114,30 @@ private struct Compiler {
                 ))
                 return *result;
 
-        auto declaration = compoundAssignLocalDeclaration(assign.e1);
-        auto slot = compoundAssignLocalSlot(declaration);
-        if (slot is null && _hasNestedContext && declaration !is null)
-            if (auto captured = declaration in _capturedOffsets)
-                return compileCapturedIntegerCompoundAssign(
-                    declaration,
-                    *captured,
-                    assign,
-                    op4,
-                    op8,
-                    unsupportedMessage,
-                );
-        if (slot is null)
+        const rhs = compileExpression(assign.e2);
+        auto place = scalarPlaceOrNull(compoundAssignLvalue(assign.e1));
+        if (place is null || place.isPointerValue)
             throw new Exception(text(
                 unsupportedMessage,
                 expressionChars(assign),
             ));
 
-        const lvalueType = scalarType(declaration.type);
-        const rhs = compileExpression(assign.e2);
+        return compileScalarIntegerCompoundAssign(
+            *place, rhs, assign, op4, op8, unsupportedMessage,
+        );
+    }
+
+    private Operand compileScalarIntegerCompoundAssign(
+        ScalarPlace place,
+        in Operand rhs,
+        BinExp assign,
+        in Op op4,
+        in Op op8,
+        in string unsupportedMessage,
+    ) {
+        import std.conv: text;
+
+        const lvalueType = place.type;
         if (!isCompoundIntegerScalar(lvalueType) ||
             !isCompoundIntegerScalar(rhs.type))
             throw new Exception(text(
@@ -11180,7 +11164,7 @@ private struct Compiler {
             : ScalarType.int_;
 
         const lhs = integerOperationOperand(
-            Operand(*slot, lvalueType),
+            loadScalarPlace(place),
             operationType,
         );
         const rhsValue = integerOperationOperand(
@@ -11189,29 +11173,26 @@ private struct Compiler {
                 ? ScalarType.int_
                 : operationType,
         );
-        const destination = size(lvalueType) == size(operationType)
-            ? *slot
-            : allocate(operationType);
+        const destination = allocate(operationType);
+        const operation = isEightByteInteger(operationType)
+            ? op8
+            : op4 == Op.shrInt4 && lvalueType == ScalarType.uint_
+                ? Op.ushrInt4
+                : op4;
         _code ~= Instruction(
-            isEightByteInteger(operationType) ? op8 : op4,
+            operation,
             destination,
             lhs.offset,
             rhsValue.offset,
         );
-        if (destination != *slot)
-            _code ~= Instruction(
-                Op.copy,
-                *slot,
-                destination,
-                cast(ushort) size(lvalueType),
-            );
-
-        return Operand(*slot, lvalueType);
+        const value = Operand(destination, operationType);
+        storeScalarPlace(place, value);
+        return loadScalarPlace(place);
     }
 
     // The compound-assignment counterpart of `tryMemberRefIndexCallAssign`:
     // `p.at(0) += rhs` (and every other integer compound operator sharing
-    // `compileLocalIntegerCompoundAssign`) through the same `ref`-returning
+    // `compileScalarIntegerCompoundAssign`) through the same `ref`-returning
     // element-accessor shape. The callee still runs (preserving any
     // preceding side effect, e.g. a bounds check), then the real backing
     // element is loaded through the field's own slice descriptor, combined
@@ -11309,7 +11290,7 @@ private struct Compiler {
     // stored back through the same descriptor -- mirroring
     // `compilePostIncrement`'s copy/step/store shape for a plain lvalue, the
     // way `tryMemberRefIndexCompoundAssign` mirrors
-    // `compileLocalIntegerCompoundAssign`'s load/operate/store shape.
+    // `compileScalarIntegerCompoundAssign`'s load/operate/store shape.
     private Operand* tryMemberRefIndexPostIncrement(CallExp call, PostExp post) {
         import dmd.sideeffect: hasSideEffect;
         import dmd.tokens: EXP;
@@ -11475,61 +11456,18 @@ private struct Compiler {
         return null;
     }
 
-    private Operand compileCapturedIntegerCompoundAssign(
-        VarDeclaration declaration,
-        in ushort capturedOffset,
-        BinExp assign,
-        in Op op4,
-        in Op op8,
-        in string unsupportedMessage,
-    ) {
-        import std.conv: text;
-
-        const lvalueType = scalarType(declaration.type);
-        const rhs = compileExpression(assign.e2);
-        if (!isCompoundIntegerScalar(lvalueType) ||
-            !isCompoundIntegerScalar(rhs.type))
-            throw new Exception(text(
-                unsupportedMessage,
-                expressionChars(assign),
-            ));
-
-        if (isEightByteInteger(lvalueType) != isEightByteInteger(rhs.type) ||
-            (isEightByteInteger(lvalueType) &&
-                (rhs.type != lvalueType || op8 == op4)))
-            throw new Exception(text(
-                unsupportedMessage,
-                expressionChars(assign),
-            ));
-
-        const operationType = isEightByteInteger(lvalueType)
-            ? lvalueType
-            : ScalarType.int_;
-        const current = loadCapturedLocal(declaration, capturedOffset);
-        const lhs = integerOperationOperand(current, operationType);
-        const rhsValue = integerOperationOperand(rhs, operationType);
-        const destination = size(lvalueType) == size(operationType)
-            ? current.offset
-            : allocate(operationType);
-        _code ~= Instruction(
-            isEightByteInteger(operationType) ? op8 : op4,
-            destination,
-            lhs.offset,
-            rhsValue.offset,
-        );
-        const stored = size(lvalueType) == size(operationType)
-            ? Operand(destination, lvalueType)
-            : Operand(destination, operationType);
-        storeCapturedLocal(declaration, capturedOffset, stored);
-        return loadCapturedLocal(declaration, capturedOffset);
-    }
-
     private VarDeclaration compoundAssignLocalDeclaration(Expression lvalue) {
         if (auto cast_ = lvalue.isCastExp)
             return compoundAssignLocalDeclaration(cast_.e1);
 
         auto variable = lvalue.isVarExp;
         return variable is null ? null : variable.var.isVarDeclaration;
+    }
+
+    private Expression compoundAssignLvalue(Expression lvalue) {
+        if (auto cast_ = lvalue.isCastExp)
+            return compoundAssignLvalue(cast_.e1);
+        return lvalue;
     }
 
     private DotVarExp compoundAssignDotVar(Expression lvalue) {
@@ -11602,6 +11540,17 @@ private struct Compiler {
                 return Operand(descriptor.offset, ScalarType.void_);
             }
 
+        if (auto deref = assign.e1.isPtrExp) {
+            import dmd.astenums: TY;
+
+            const pointee = deref.type.toBasetype.ty;
+            if (pointee == TY.Tstruct || pointee == TY.Tsarray ||
+                pointee == TY.Tdelegate)
+                if (auto store = tryPointerDereferenceAssign(
+                        deref, assign.e2))
+                    return *store;
+        }
+
         // `m[k] = v` for an associative array: insert or overwrite the entry in
         // the VM-owned map.
         if (auto index = assign.e1.isIndexExp)
@@ -11612,11 +11561,6 @@ private struct Compiler {
         // the `_d_aaGetY` slot pointer): write the scalar rhs at `p + i`.
         if (auto index = assign.e1.isIndexExp)
             if (auto store = tryPointerElementAssign(index, assign.e2))
-                return *store;
-
-        // `*p = rhs` through a pointer.
-        if (auto deref = assign.e1.isPtrExp)
-            if (auto store = tryPointerDereferenceAssign(deref, assign.e2))
                 return *store;
 
         // `arr[i].fixedField[j] = rhs`: an indexed write into a static-array
@@ -12061,10 +12005,16 @@ private struct Compiler {
         auto variable = assign.e1.isVarExp;
         auto declaration =
             variable is null ? null : variable.var.isVarDeclaration;
-        auto slot = declaration is null ? null : declaration in _locals;
-        if (slot is null && _hasNestedContext && declaration !is null)
-            if (auto captured = declaration in _capturedOffsets)
-                return compileCapturedAssign(declaration, *captured, assign);
+        if (_hasNestedContext && declaration !is null)
+            if (auto captured = declaration in _capturedOffsets) {
+                import dmd.astenums: TY;
+
+                const ty = declaration.type.toBasetype.ty;
+                if (ty == TY.Tstruct || ty == TY.Tsarray)
+                    return compileCapturedAggregateAssign(
+                        declaration, *captured, assign,
+                    );
+            }
         if (declaration !is null)
             if (auto destination = declaration in _structLocals) {
                 // DMD's zero-init blit marker (an `IntegerExp(0)` retyped to
@@ -12092,70 +12042,32 @@ private struct Compiler {
                     return Operand(destination.offset, ScalarType.void_);
                 }
             }
-        if (slot !is null)
-            if (auto element = declaration in _refLocalPointers)
-                return storeThroughPointer(
-                    Operand(
-                        *slot,
-                        ScalarType.ulong_,
-                        true,
-                        *element,
-                    ),
-                    compileSizeConstant(0),
-                    assign.e2,
-                );
-        const type = slot is null
-            ? ScalarType.void_
-            : scalarType(declaration.type);
+        if (declaration !is null)
+            if (auto slot = declaration in _locals)
+                if (auto element = declaration in _refLocalPointers)
+                    if (*element == ScalarType.void_)
+                        return storeThroughPointer(
+                            Operand(
+                                *slot, ScalarType.ulong_, true, *element,
+                            ),
+                            compileSizeConstant(0),
+                            assign.e2,
+                        );
         const rhs = compileExpression(assign.e2);
-        if (slot is null)
-            if (auto moduleVariable =
-                    moduleScalarVariableOrNull(declaration)) {
-                if (rhs.type != moduleVariable.type)
-                    throw new Exception(text(
-                        "Unsupported assignment in bytecode core: ",
-                        expressionChars(assign),
-                    ));
-
-                _code ~= Instruction(
-                    Op.storeModule,
-                    rhs.offset,
-                    moduleVariable.offset,
-                    cast(ushort) size(moduleVariable.type),
-                );
-                return rhs;
-            }
-
-        if (slot is null || rhs.type != type)
+        auto place = scalarPlaceOrNull(assign.e1);
+        if (place is null || rhs.type != place.type)
             throw new Exception(text(
                 "Unsupported assignment in bytecode core: ",
                 expressionChars(assign),
             ));
 
-        _code ~= Instruction(
-            Op.copy,
-            *slot,
-            rhs.offset,
-            cast(ushort) size(type),
-        );
-        if (auto closurePointer = declaration in _heapEscapingClosurePointers) {
-            const closureOffset = _heapEscapingClosureOffsets[declaration];
-            emitPointerStore(
-                *slot,
-                *closurePointer,
-                compileSizeConstant(closureOffset / size(type)),
-                size(type),
-            );
-        }
-        // A plain pointer-local reassignment (`p = otherPointerExpr;`) must
-        // keep reading as a pointer to its caller -- e.g.
-        // `compilePointerDeclaration`'s self-referential `CommaExp`
-        // initializer shape, where this very assignment IS the pointer
-        // local's own construction, checks `.isPointer` on the value
-        // returned here.
-        if (auto element = declaration in _pointerLocals)
-            return Operand(*slot, type, true, *element);
-        return Operand(*slot, type);
+        storeScalarPlace(*place, rhs);
+        const result = loadScalarPlace(*place);
+        return place.isPointerValue
+            ? Operand(
+                result.offset, result.type, true, place.pointerElement,
+            )
+            : result;
     }
 
     private Operand* tryRefParameterCallAssign(
@@ -12679,7 +12591,7 @@ private struct Compiler {
         return null;
     }
 
-    private Operand compileCapturedAssign(
+    private Operand compileCapturedAggregateAssign(
         VarDeclaration declaration,
         in ushort capturedOffset,
         AssignExp assign,
@@ -12687,15 +12599,7 @@ private struct Compiler {
         import dmd.astenums: TY;
         import std.conv: text;
 
-        const ty = declaration.type.toBasetype.ty;
-
-        // A static-array rhs (an array literal in particular) is compiled
-        // generically as a dynamic-array descriptor by `compileExpression`,
-        // not the `inlineByteWidth(declaration.type)` bytes of element
-        // storage a captured `T[N]` needs; route it through the same
-        // literal/copy recognition `compileStaticArrayValueInto` already
-        // gives a plain local's whole-array reassignment (line ~9368 above).
-        if (ty == TY.Tsarray) {
+        if (declaration.type.toBasetype.ty == TY.Tsarray) {
             const destination = allocateStructBlock(declaration.type);
             if (!compileStaticArrayValueInto(
                     destination, declaration.type, assign.e2))
@@ -12710,14 +12614,7 @@ private struct Compiler {
             return loadCapturedLocal(declaration, capturedOffset);
         }
 
-        const isAggregate = ty == TY.Tstruct;
         const rhs = compileExpression(assign.e2);
-        if (!isAggregate && rhs.type != scalarType(declaration.type))
-            throw new Exception(text(
-                "Unsupported assignment in bytecode core: ",
-                expressionChars(assign),
-            ));
-
         storeCapturedLocal(declaration, capturedOffset, rhs);
         return loadCapturedLocal(declaration, capturedOffset);
     }
@@ -13753,10 +13650,17 @@ private struct Compiler {
         // raw address; copy the rhs pointer value into the field slot.
         if (isPointerType(field.type)) {
             const value = compileExpression(rhs);
-            _code ~= Instruction(
-                Op.copy, field.offset, value.offset, cast(ushort) size_t.sizeof,
+            auto place = ScalarPlace(
+                ScalarPlace.Kind.field,
+                ScalarType.ulong_,
+                field.offset,
+                null,
+                *field,
+                true,
+                true,
+                pointerElementScalar(field.type),
             );
-            writeBackStructField(*field);
+            storeScalarPlace(place, value);
             auto pointerResult = new Operand;
             *pointerResult = Operand(
                 field.offset, ScalarType.ulong_, true,
@@ -13767,12 +13671,17 @@ private struct Compiler {
 
         const fieldScalar = scalarType(field.type);
         const value = compileExpression(rhs);
-        _code ~= Instruction(
-            Op.copy, field.offset, value.offset, cast(ushort) size(fieldScalar),
+        auto place = ScalarPlace(
+            ScalarPlace.Kind.field,
+            fieldScalar,
+            field.offset,
+            null,
+            *field,
+            true,
         );
-        writeBackStructField(*field);
+        storeScalarPlace(place, value);
         auto result = new Operand;
-        *result = Operand(field.offset, fieldScalar);
+        *result = loadScalarPlace(place);
         return result;
     }
 
@@ -14154,95 +14063,6 @@ private struct Compiler {
         return result;
     }
 
-    // `*p += rhs` through a pointer: read `*p`, add `rhs`, and write the sum back
-    // through the same pointer. Null if `deref.e1` is not a pointer.
-    private Operand* tryPointerDereferenceAddAssign(
-        PtrExp deref,
-        Expression rhs,
-    ) {
-        const pointer = compileExpression(deref.e1);
-        if (!pointer.isPointer)
-            return null;
-
-        const zero = compileSizeConstant(0);
-        const current = loadThroughPointer(pointer, zero);
-        const rhsValue = compileExpression(rhs);
-        const addOp = isEightByteInteger(current.type)
-            ? Op.addInt8
-            : Op.addInt4;
-        _code ~= Instruction(
-            addOp, current.offset, current.offset, rhsValue.offset,
-        );
-        emitPointerStore(
-            current.offset, pointer.offset, zero,
-            size(pointer.pointerElement),
-        );
-        auto result = new Operand;
-        *result = Operand(current.offset, current.type);
-        return result;
-    }
-
-    // `*p op= rhs` through an integer pointer: load the current element, run
-    // the existing integer opcode, and store the result back through `p`.
-    private Operand* tryPointerDereferenceIntegerCompoundAssign(
-        PtrExp deref,
-        Expression rhs,
-        in Op op4,
-        in Op op8,
-    ) {
-        import std.conv: text;
-
-        const pointer = compileExpression(deref.e1);
-        if (!pointer.isPointer)
-            return null;
-
-        const zero = compileSizeConstant(0);
-        const current = loadThroughPointer(pointer, zero);
-        const rhsValue = compileExpression(rhs);
-        if (!isCompoundIntegerScalar(current.type) ||
-            !isCompoundIntegerScalar(rhsValue.type) ||
-            isEightByteInteger(current.type) !=
-                isEightByteInteger(rhsValue.type) ||
-            (isEightByteInteger(current.type) &&
-                (rhsValue.type != current.type || op8 == op4)))
-            throw new Exception(text(
-                "Unsupported compound assignment in bytecode core: ",
-                expressionChars(deref),
-            ));
-
-        const operationType = isEightByteInteger(current.type)
-            ? current.type
-            : ScalarType.int_;
-        const lhs = integerOperationOperand(current, operationType);
-        const rhsOperand = integerOperationOperand(rhsValue, operationType);
-        const destination = size(current.type) == size(operationType)
-            ? current.offset
-            : allocate(operationType);
-        const actualOp4 = op4 == Op.shrInt4 && !isSigned(current.type)
-            ? Op.ushrInt4
-            : op4;
-        _code ~= Instruction(
-            isEightByteInteger(operationType) ? op8 : actualOp4,
-            destination,
-            lhs.offset,
-            rhsOperand.offset,
-        );
-        if (destination != current.offset)
-            _code ~= Instruction(
-                Op.copy,
-                current.offset,
-                destination,
-                cast(ushort) size(current.type),
-            );
-        emitPointerStore(
-            current.offset, pointer.offset, zero,
-            size(pointer.pointerElement),
-        );
-        auto result = new Operand;
-        *result = Operand(current.offset, current.type);
-        return result;
-    }
-
     // Write the rhs to `[pointer + index * size]`, the shared store for
     // `*p = v` and `p[i] = v`. A scalar pointee's width is the opcode type's
     // fixed size; a non-scalar pointee (struct, e.g. `S* p; *p = S(42);`)
@@ -14438,63 +14258,6 @@ private struct Compiler {
 
         auto result = new Operand;
         *result = Operand(current, elementType);
-        return result;
-    }
-
-    // `a[0] += rhs` / `s.a[1] += rhs` on a static-array element: add directly
-    // into the element's own inline frame slot, the same authority
-    // `compileStaticArrayElementAssign` writes through. Null if `index` is
-    // not a compile-time-constant index into a known static-array chain.
-    private Operand* tryStaticArrayElementAddAssign(
-        IndexExp index,
-        Expression rhs,
-    ) {
-        import std.conv: text;
-
-        auto element = tryStaticArrayElement(index);
-        if (element is null)
-            return null;
-
-        const lvalueType = element.type;
-        const rhsValue = compileExpression(rhs);
-        if (!isCompoundIntegerScalar(lvalueType) ||
-            !isCompoundIntegerScalar(rhsValue.type) ||
-            isEightByteInteger(lvalueType) != isEightByteInteger(rhsValue.type))
-            throw new Exception(text(
-                "Unsupported compound assignment in bytecode core: ",
-                expressionChars(index),
-            ));
-
-        const operationType = isEightByteInteger(lvalueType)
-            ? lvalueType
-            : ScalarType.int_;
-        const lhs = integerOperationOperand(
-            Operand(element.offset, lvalueType), operationType,
-        );
-        const right = integerOperationOperand(rhsValue, operationType);
-        const destination = size(lvalueType) == size(operationType)
-            ? element.offset
-            : allocate(operationType);
-        const addOp = lvalueType == ScalarType.long_ ||
-            lvalueType == ScalarType.ulong_
-                ? Op.addInt8
-                : Op.addInt4;
-        _code ~= Instruction(addOp, destination, lhs.offset, right.offset);
-        if (destination != element.offset)
-            _code ~= Instruction(
-                Op.copy,
-                element.offset,
-                destination,
-                cast(ushort) size(lvalueType),
-            );
-        // Same throwaway-copy writeback as `compileStaticArrayElementAssign`
-        // above (`s.arr[1] += 1;` through a captured/module/AA-pointer
-        // struct receiver).
-        if (element.writeback !is null)
-            writeBackStructField(*element.writeback);
-
-        auto result = new Operand;
-        *result = Operand(element.offset, lvalueType);
         return result;
     }
 
@@ -14741,7 +14504,7 @@ private struct Compiler {
     }
 
     private Operand compileStaticArrayElementAssign(
-        in StaticArrayElement element,
+        StaticArrayElement element,
         Expression rhs,
     ) {
         import dmd.astenums: TY;
@@ -14780,9 +14543,21 @@ private struct Compiler {
         // `string`, both `void_` at this point) has no opcode scalar type at
         // all, so its width comes from DMD's own `Type.size()` for the value
         // actually being written.
-        const elementSize = element.type == ScalarType.void_
-            ? inlineByteWidth(rhs.type)
-            : size(element.type);
+        if (element.type != ScalarType.void_) {
+            auto place = ScalarPlace(
+                ScalarPlace.Kind.field,
+                element.type,
+                element.offset,
+                null,
+                element.writeback is null
+                    ? StructField.init : *element.writeback,
+                element.writeback !is null,
+            );
+            storeScalarPlace(place, value);
+            return loadScalarPlace(place);
+        }
+
+        const elementSize = inlineByteWidth(rhs.type);
         _code ~= Instruction(
             Op.copy,
             element.offset,
