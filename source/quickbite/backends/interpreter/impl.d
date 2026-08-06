@@ -3307,8 +3307,8 @@ private struct Walker {
                         import quickbite.backends.interpreter.place_value:
                             readValue;
 
-                        try {
-                            auto innerPlace = placeOfLvalue(
+                        Place resolveInnerPlace() {
+                            return placeOfLvalue(
                                 inner,
                                 (variable) @safe =>
                                     addressableBindingBase(variable),
@@ -3328,9 +3328,58 @@ private struct Walker {
                                         );
                                 },
                             );
+                        }
+
+                        // A static-array row's length (`P[2]` here) is a
+                        // compile-time fact that needs no runtime row
+                        // address, and DMD's own codegen for
+                        // `m[outer][inner]` bounds-checks `inner` against it
+                        // before ever evaluating `outer`: confirmed against
+                        // `SystemLinker`, `outer`'s own index expression is
+                        // never called at all when `inner`'s value is
+                        // already out of range, and when only `outer` is out
+                        // of range, `inner`'s side effect still runs exactly
+                        // once, before `outer`'s.
+                        if (auto rowArray = index.e1.type.toBasetype.isTypeSArray) {
+                            import quickbite.backends.interpreter.layout:
+                                staticArrayLength;
+
+                            const rowLength = staticArrayLength(rowArray);
+                            if (index.lengthVar !is null)
+                                setLocal(index.lengthVar, Value(rowLength));
+                            const elementOffset = runExpression(index.e2).asLong;
+                            if (cast(size_t) elementOffset >= rowLength)
+                                throwRangeError(
+                                    "quickbite.backends.interpreter.place.Place.index: "
+                                    ~ "index out of range for static array place",
+                                );
+
+                            try {
+                                const pointer = Value.pointerValue(
+                                    resolveInnerPlace()
+                                        .index(cast(size_t) elementOffset)
+                                        .address,
+                                );
+                                if (selfAddress)
+                                    return pointer;
+                                return Value.pointerValue(
+                                    Place(cast(void*) pointer.pointerAddress, array.type)
+                                        .index(cast(size_t) offset)
+                                        .address,
+                                );
+                            } catch (IndexOutOfBoundsException exception) {
+                                // The row bounds check above already ruled out
+                                // `elementOffset`; any exception here comes
+                                // from `resolveInnerPlace`'s own first-bracket
+                                // bounds check instead.
+                                throwRangeError(exception.msg);
+                            }
+                        }
+
+                        try {
                             return nestedIndexPointer(
                                 array,
-                                innerPlace,
+                                resolveInnerPlace(),
                                 offset,
                                 selfAddress,
                             );
