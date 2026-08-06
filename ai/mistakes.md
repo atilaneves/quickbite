@@ -239,6 +239,10 @@
   initializers and the shared-druntime registry path crashes on JIT mmap'd
   code.
 
+- Do not retain pointer-keyed DMD AST metadata across independently parsed
+  fixtures. DMD can reclaim an AST node and reuse its address, making stale
+  metadata appear to belong to an unrelated node.
+
 - SystemLinker's default-import template codegen is not derivable from "has
   archive imports": root-promoting druntime/phobos modules
   (`prepareArchiveImportsForTemplateCodegen`) permanently mutates process-
