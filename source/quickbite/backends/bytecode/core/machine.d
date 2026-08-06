@@ -330,16 +330,6 @@ package(quickbite.backends.bytecode) RunResult run(
                 ++ip;
                 break;
 
-            case rowRangeCopyInline:
-                copyInlineRowRange(
-                    stack,
-                    base + instruction.a,
-                    base + instruction.b,
-                    instruction.c,
-                );
-                ++ip;
-                break;
-
             case sliceFill1:
                 fillSlice1(stack, base + instruction.a, base + instruction.b);
                 ++ip;
@@ -2948,44 +2938,6 @@ private void copyRowRange(
     }
 }
 
-// Copy contiguous inline source rows into each separately allocated `T[N][]`
-// destination row. A multidimensional static-array view supplies a normal
-// slice descriptor over its inline backing bytes, unlike `T[N][]` whose
-// source elements are row descriptors consumed by `copyRowRange`.
-// Trusted because compiler-validated descriptors and row width bound every
-// native slice formed below.
-private void copyInlineRowRange(
-    ref ubyte[] stack,
-    in size_t destinationOffset,
-    in size_t sourceOffset,
-    in uint rowByteSize,
-) @trusted {
-    import std.conv: text;
-    import quickbite.backends.bytecode.core.program: sliceDescriptorSize;
-
-    const destinationPointer = scalarValue!size_t(stack, destinationOffset);
-    const destinationLength =
-        scalarValue!size_t(stack, destinationOffset + size_t.sizeof);
-    const sourcePointer = scalarValue!size_t(stack, sourceOffset);
-    const sourceLength =
-        scalarValue!size_t(stack, sourceOffset + size_t.sizeof);
-
-    if (destinationLength != sourceLength)
-        throw new Exception(text(
-            "Array lengths don't match for copy: ",
-            sourceLength, " != ", destinationLength,
-        ));
-
-    foreach (i; 0 .. destinationLength) {
-        const destRowPointer = *cast(const(size_t)*)
-            (destinationPointer + i * sliceDescriptorSize);
-        auto destRow = (cast(ubyte*) destRowPointer)[0 .. rowByteSize];
-        const sourceRow = (cast(const(ubyte)*)
-            (sourcePointer + i * rowByteSize))[0 .. rowByteSize];
-        destRow[] = sourceRow[];
-    }
-}
-
 // The compiler supplies a valid native slice descriptor and a 1-byte scalar
 // slot; the trusted boundary only forms the corresponding typed host slice.
 private void fillSlice1(
@@ -3132,13 +3084,13 @@ private void readHeapElement(ubyte[] destination, in ubyte* element)
 private uint atomicLoadDword(in const(ubyte)* address) @trusted {
     import core.atomic: atomicLoad;
 
-    return atomicLoad(*cast(shared(uint)*) address);
+    return atomicLoad(*atomicAddress!uint(address));
 }
 
 private ulong atomicLoadWord(in const(ubyte)* address) @trusted {
     import core.atomic: atomicLoad;
 
-    return cast(ulong) atomicLoad(*cast(shared(ulong)*) address);
+    return cast(ulong) atomicLoad(*atomicAddress!ulong(address));
 }
 
 // @trusted: `atomicExchange` reads and writes exactly one aligned 4-byte word
@@ -3147,7 +3099,7 @@ private ulong atomicLoadWord(in const(ubyte)* address) @trusted {
 private uint atomicExchangeDword(ubyte* address, in uint value) @trusted {
     import core.atomic: atomicExchange;
 
-    return atomicExchange(cast(shared(uint)*) address, value);
+    return atomicExchange(atomicAddress!uint(address), value);
 }
 
 // @trusted: `atomicFetchAdd` reads and writes exactly one aligned 4-byte word
@@ -3156,7 +3108,7 @@ private uint atomicExchangeDword(ubyte* address, in uint value) @trusted {
 private uint atomicFetchAddDword(ubyte* address, in uint value) @trusted {
     import core.atomic: atomicFetchAdd;
 
-    return atomicFetchAdd(*cast(shared(uint)*) address, value);
+    return atomicFetchAdd(*atomicAddress!uint(address), value);
 }
 
 // @trusted: `atomicFetchAdd` reads and writes exactly one aligned 8-byte word
@@ -3165,7 +3117,16 @@ private uint atomicFetchAddDword(ubyte* address, in uint value) @trusted {
 private ulong atomicFetchAddWord(ubyte* address, in ulong value) @trusted {
     import core.atomic: atomicFetchAdd;
 
-    return atomicFetchAdd(*cast(shared(ulong)*) address, value);
+    return atomicFetchAdd(*atomicAddress!ulong(address), value);
+}
+
+// @trusted: the atomic opcode wrappers pass only aligned native addresses
+// produced by the validated DRuntime inline-asm lowering. Restricting the
+// cast here keeps raw pointer conversion out of the atomic operations.
+private shared(T)* atomicAddress(T)(in const(ubyte)* address) @trusted
+    if (is(T == uint) || is(T == ulong))
+{
+    return cast(shared(T)*) address;
 }
 
 private void writeHeapElement(ubyte* element, in ubyte[] source) @trusted {
@@ -3849,8 +3810,10 @@ private final class BytecodeNativeMarshaller:
 
     // @trusted: the stack reserve at run start prevents reallocation while the
     // native call is active, so these frame-slot pointers stay valid for
-    // libffi. Out parameters point directly at the target local; ordinary
-    // arguments point at their fixed-stride argument slot.
+    // libffi. The compiler allocates one in-frame, word-aligned fixed-stride
+    // slot per native argument, and ffi/core.d supplies only its corresponding
+    // index, so `slot` is within that layout. Out parameters point directly at
+    // the target local; ordinary arguments point at their argument slot.
     public const(void)* argumentAddress(in size_t index, Type type) @trusted {
         import dmd.astenums: TY;
         import quickbite.backends.bytecode.core.program:
@@ -3933,6 +3896,8 @@ private final class BytecodeNativeMarshaller:
                 return bool.sizeof;
             case Tint32:
                 return int.sizeof;
+            case Tuns32:
+                return uint.sizeof;
             case Tint64:
                 return long.sizeof;
             case Tuns64:
