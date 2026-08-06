@@ -308,6 +308,24 @@ private bool containsVector(imported!"dmd.mtype".Type type) {
 }
 
 
+private bool containsWideVector(imported!"dmd.mtype".Type type) {
+    import dmd.astenums: TY;
+    import dmd.typesem: size;
+
+    auto storageType = semanticStorageType(type);
+    switch (storageType.ty) with (TY) {
+        case Tvector: return size(storageType) == 32;
+        case Tsarray: return containsWideVector(storageType.nextOf);
+        case Tstruct:
+            foreach (field; storageType.isTypeStruct.sym.fields)
+                if (containsWideVector(field.type))
+                    return true;
+            return false;
+        default: return false;
+    }
+}
+
+
 private bool callSysVVector(
     Callable callable,
     TypedAddress[] arguments,
@@ -327,6 +345,14 @@ private bool callSysVVector(
         callable.signature.parameterList.varargs == VarArg.variadic;
     const hasVariadicTail = hasCVariadicTail || isDVariadic;
     const numFixedArguments = callable.signature.parameterList.length;
+    bool needsAvx = containsWideVector(callable.signature.next);
+    foreach (argument; arguments)
+        needsAvx = needsAvx || containsWideVector(argument.type);
+    if (needsAvx) {
+        import core.cpuid: avx;
+        if (!avx)
+            return false;
+    }
     if ((callable.signature.linkage != LINK.c &&
             callable.signature.linkage != LINK.d) ||
         (receiver !is null && callable.signature.linkage != LINK.d) ||
@@ -342,6 +368,7 @@ private bool callSysVVector(
 
     SysVCallFrame frame;
     frame.target = callable.address;
+    frame.stackAlignment = 16;
     ubyte[] stackBytes;
     auto returnType = semanticStorageType(callable.signature.next);
     auto returnTuple = toArgTypes_sysv_x64(returnType);
@@ -406,7 +433,7 @@ private bool callSysVVector(
             return false;
     }
     frame.sseCount = cast(ubyte) nextXmm;
-    stackBytes.length = alignedTo(stackBytes.length, 16);
+    stackBytes.length = alignedTo(stackBytes.length, frame.stackAlignment);
     frame.stackAddress = stackBytes.ptr;
     frame.stackSize = stackBytes.length;
 
@@ -414,9 +441,13 @@ private bool callSysVVector(
         frame.resultKind = SysVResultKind.none;
     } else if (!returnsInMemory) {
         foreach (part; *returnTuple.arguments)
-            if (isSysVVectorPart(part.type) &&
-                size(part.type) != frame.resultXmm[0].length)
-                return false;
+            if (isSysVVectorPart(part.type)) {
+                const partSize = cast(size_t) size(part.type);
+                if (partSize != 16 && partSize != 32)
+                    return false;
+                if (partSize == 32)
+                    frame.usesAvx = true;
+            }
         frame.resultKind = SysVResultKind.registers;
     }
 
@@ -430,7 +461,7 @@ private bool callSysVVector(
             const partSize = cast(size_t) size(part.type);
             if (isSysVVectorPart(part.type) || isSysVSseType(part.type)) {
                 memcpy(cast(ubyte*) result.address + offset,
-                    frame.resultXmm[nextResultXmm].ptr, partSize);
+                    frame.resultVector[nextResultXmm].ptr, partSize);
                 ++nextResultXmm;
             } else {
                 memcpy(cast(ubyte*) result.address + offset,
@@ -465,8 +496,11 @@ private bool placeSysVArgument(
         if (part.type.toBasetype.ty == TY.Tfloat80)
             mustUseStack = true;
         else if (isSysVVectorPart(part.type)) {
-            if (size(part.type) != frame.xmm[0].length)
+            const partSize = cast(size_t) size(part.type);
+            if (partSize != 16 && partSize != 32)
                 return false;
+            if (partSize == 32)
+                frame.usesAvx = true;
             ++neededXmm;
         } else if (isSysVSseType(part.type))
             ++neededXmm;
@@ -475,8 +509,10 @@ private bool placeSysVArgument(
     }
     mustUseStack = mustUseStack ||
         nextGpr + neededGpr > frame.gpr.length ||
-        nextXmm + neededXmm > frame.xmm.length;
+        nextXmm + neededXmm > frame.vector.length;
     if (mustUseStack) {
+        if (containsWideVector(argument.type))
+            frame.stackAlignment = 32;
         appendSysVStackArgument(stackBytes, argument);
         return true;
     }
@@ -485,10 +521,10 @@ private bool placeSysVArgument(
         const offset = partIndex * ulong.sizeof;
         const partSize = cast(size_t) size(part.type);
         if (isSysVVectorPart(part.type) || isSysVSseType(part.type)) {
-            if (partSize > frame.xmm[nextXmm].length)
+            if (partSize > frame.vector[nextXmm].length)
                 return false;
             memcpy(
-                frame.xmm[nextXmm++].ptr,
+                frame.vector[nextXmm++].ptr,
                 cast(ubyte*) argument.address + offset,
                 partSize,
             );

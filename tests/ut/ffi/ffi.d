@@ -13,6 +13,127 @@ import quickbite.ffi.ffi:
 import unit_threaded;
 
 
+@("ffi.addressOnlySysVYmmCalls")
+unittest {
+    Type vectorType = new TypeVector(Type.tfloat32.sarrayOf(8));
+    vectorType = vectorType.merge;
+    ubyte[32] value = [
+        1, 2, 3, 4, 5, 6, 7, 8,
+        9, 10, 11, 12, 13, 14, 15, 16,
+        17, 18, 19, 20, 21, 22, 23, 24,
+        25, 26, 27, 28, 29, 30, 31, 32,
+    ];
+    ubyte[32] result;
+
+    import core.cpuid: avx;
+    if (!avx) {
+        call(
+            Callable(
+                cast(void*) &ymmIdentity,
+                functionSignature(vectorType, [vectorType], LINK.c),
+                CompilerAbi.dmd,
+            ),
+            [TypedAddress(vectorType, &value)],
+            TypedAddress(vectorType, &result),
+        ).should == false;
+        return;
+    }
+
+    call(
+        Callable(
+            cast(void*) &ymmIdentity,
+            functionSignature(vectorType, [vectorType], LINK.c),
+            CompilerAbi.dmd,
+        ),
+        [TypedAddress(vectorType, &value)],
+        TypedAddress(vectorType, &result),
+    ).should == true;
+    result.should == value;
+
+    int marker = 7;
+    result = ubyte[32].init;
+    call(
+        Callable(
+            cast(void*) &ymmIdentity,
+            functionSignature(
+                vectorType,
+                [Type.tint32, vectorType, Type.tint32],
+                LINK.c,
+            ),
+            CompilerAbi.dmd,
+        ),
+        [
+            TypedAddress(Type.tint32, &marker),
+            TypedAddress(vectorType, &value),
+            TypedAddress(Type.tint32, &marker),
+        ],
+        TypedAddress(vectorType, &result),
+    ).should == true;
+    result.should == value;
+
+    double[8] occupied = [1, 2, 3, 4, 5, 6, 7, 8];
+    auto exhaustedSignature = functionSignature(
+        vectorType,
+        [
+            Type.tfloat64, Type.tfloat64, Type.tfloat64, Type.tfloat64,
+            Type.tfloat64, Type.tfloat64, Type.tfloat64, Type.tfloat64,
+            vectorType,
+        ],
+        LINK.c,
+    );
+    TypedAddress[] exhaustedArguments;
+    foreach (ref number; occupied)
+        exhaustedArguments ~= TypedAddress(Type.tfloat64, &number);
+    exhaustedArguments ~= TypedAddress(vectorType, &value);
+    result = ubyte[32].init;
+    call(
+        Callable(
+            cast(void*) &ymmStackIdentity,
+            exhaustedSignature,
+            CompilerAbi.dmd,
+        ),
+        exhaustedArguments,
+        TypedAddress(vectorType, &result),
+    ).should == true;
+    result.should == value;
+
+    auto variadicSignature = functionSignature(q{
+        extern(C) ubyte vectorVariadicSseCount(int marker, ...);
+    }, "vectorVariadicSseCount");
+    ubyte sseCount;
+    call(
+        Callable(
+            cast(void*) &vectorVariadicSseCount,
+            variadicSignature,
+            CompilerAbi.dmd,
+        ),
+        [
+            TypedAddress(Type.tint32, &marker),
+            TypedAddress(vectorType, &value),
+        ],
+        TypedAddress(Type.tuns8, &sseCount),
+    ).should == true;
+    sseCount.should == 1;
+
+    auto aggregateType = vectorType.sarrayOf(2);
+    ubyte[64] aggregate;
+    aggregate[0 .. 32] = value[];
+    foreach (index; 32 .. aggregate.length)
+        aggregate[index] = cast(ubyte) (index + 1);
+    ubyte[64] aggregateResult;
+    call(
+        Callable(
+            cast(void*) &ymmMemoryIdentity,
+            functionSignature(aggregateType, [aggregateType], LINK.c),
+            CompilerAbi.dmd,
+        ),
+        [TypedAddress(aggregateType, &aggregate)],
+        TypedAddress(aggregateType, &aggregateResult),
+    ).should == true;
+    aggregateResult.should == aggregate;
+}
+
+
 @("ffi.addressOnlySysVVectorCalls")
 unittest {
     Type vectorType = new TypeVector(Type.tfloat32.sarrayOf(4));
@@ -2019,6 +2140,44 @@ private extern(C) T identity(T)(T value) {
 
 
 private alias Float4 = __vector(float[4]);
+
+
+pragma(inline, false)
+private extern(C) void ymmIdentity() {
+    asm pure nothrow @nogc {
+        naked;
+        db 0xC3;
+    }
+}
+
+
+pragma(inline, false)
+private extern(C) void ymmStackIdentity() {
+    asm pure nothrow @nogc {
+        naked;
+        lea RAX, [RSP + 8];
+        and RAX, 31;
+        jz aligned;
+        ud2;
+    aligned:
+        db 0xC5, 0xFE, 0x6F, 0x44, 0x24, 0x08;
+        db 0xC3;
+    }
+}
+
+
+pragma(inline, false)
+private extern(C) void ymmMemoryIdentity() {
+    asm pure nothrow @nogc {
+        naked;
+        db 0xC5, 0xFE, 0x6F, 0x44, 0x24, 0x08;
+        db 0xC5, 0xFE, 0x6F, 0x4C, 0x24, 0x28;
+        db 0xC5, 0xFE, 0x7F, 0x07;
+        db 0xC5, 0xFE, 0x7F, 0x4F, 0x20;
+        db 0x48, 0x89, 0xF8;
+        db 0xC3;
+    }
+}
 
 
 private struct DVectorReceiver {
