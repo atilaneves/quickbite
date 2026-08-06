@@ -748,6 +748,91 @@ static foreach (backend; Matrix!()) {
     }
 }
 
+// Array construction preserves the identity of a TypeInfo reference stored
+// directly as an element.
+static foreach (backend; Matrix!()) {
+    @("typeid.arrayLiteralRetainsElementReference." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            class Thing {}
+
+            unittest {
+                TypeInfo[] observations = [typeid(Thing)];
+                assert(observations[0] is typeid(Thing));
+            }
+        });
+    }
+}
+
+// Array construction copies the complete value of a struct element,
+// including a TypeInfo reference nested in that struct.
+static foreach (backend; Matrix!()) {
+    @("typeid.arrayLiteralRetainsNestedReference." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            class Thing {}
+
+            struct Observation {
+                TypeInfo type;
+            }
+
+            unittest {
+                Observation[] observations = [Observation(typeid(Thing))];
+                assert(observations[0].type is typeid(Thing));
+            }
+        });
+    }
+}
+
+// Reading and writing through a typed pointer has the same TypeInfo identity
+// and clearing semantics as accessing the pointed-to variable directly.
+static foreach (backend; Matrix!()) {
+    @("typeid.pointerReadAndNullOverwrite." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            class Thing {}
+
+            unittest {
+                TypeInfo observation = typeid(Thing);
+                TypeInfo* pointer = &observation;
+
+                assert(*pointer is typeid(Thing));
+                *pointer = null;
+                assert(*pointer is null);
+                assert(observation is null);
+            }
+        });
+    }
+}
+
+// Indexed replacement changes only the destination TypeInfo slot, and a
+// later null assignment clears that slot without disturbing its sibling.
+static foreach (backend; Matrix!()) {
+    @("typeid.indexedReplacementAndClearing." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            class First {}
+            class Second {}
+
+            unittest {
+                TypeInfo[] observations = [typeid(First), typeid(First)];
+
+                observations[1] = typeid(Second);
+                assert(observations[0] is typeid(First));
+                assert(observations[1] is typeid(Second));
+
+                observations[1] = null;
+                assert(observations[0] is typeid(First));
+                assert(observations[1] is null);
+            }
+        });
+    }
+}
+
 // A by-value aggregate call result remains a complete value when the language
 // gives its temporary an address for a `ref` input-range element.
 static foreach (backend; Matrix!()) {
