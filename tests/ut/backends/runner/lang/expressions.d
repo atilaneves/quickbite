@@ -2096,6 +2096,87 @@ static foreach (backend; Matrix!()) {
     }
 }
 
+// Interpreter declines indirect calls used as assignment targets with
+// "Unsupported interpreter assignment target: call". That is a separate
+// backend gap from the Bytecode result ABI exercised here.
+static foreach (backend; Matrix!(
+    Omit!(Interpreter, Because.unconfirmed),
+)) {
+    @("refCall.assignmentThroughKnownDelegateWritesReturnedLocation." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            unittest {
+                int value = 1;
+
+                ref int slot() {
+                    return value;
+                }
+
+                // Preserve the nested function's inferred attributes.
+                auto getter = &slot;
+                getter() = 42;
+
+                assert(value == 42);
+            }
+        });
+    }
+}
+
+static foreach (backend; Matrix!(
+    Omit!(Interpreter, Because.unconfirmed),
+)) {
+    @("refCall.assignmentThroughDelegateParameterWritesReturnedLocation." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            void assign(Getter)(Getter getter, int value) {
+                getter() = value;
+            }
+
+            unittest {
+                int value = 1;
+
+                ref int slot() {
+                    return value;
+                }
+
+                // Preserve the nested function's inferred attributes.
+                auto getter = &slot;
+                assign(getter, 42);
+
+                assert(value == 42);
+            }
+        });
+    }
+}
+
+static foreach (backend; Matrix!(
+    Omit!(Interpreter, Because.unconfirmed),
+)) {
+    @("refCall.assignmentThroughFunctionPointerWritesReturnedLocation." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            ref int slot(ref int value) {
+                return value;
+            }
+
+            unittest {
+                int value = 1;
+                alias Getter = ref int function(ref int);
+                Getter getter = &slot;
+                getter(value) = 42;
+
+                assert(value == 42);
+            }
+        });
+    }
+}
+
 // Each recursive activation binds the same declaration AST anew. A pointer
 // saved by the outer activation must keep naming that activation's local when
 // the inner activation binds its own `x`.

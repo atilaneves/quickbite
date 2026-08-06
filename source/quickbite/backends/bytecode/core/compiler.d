@@ -3125,7 +3125,7 @@ private struct Compiler {
                 compileCall(call, &receiver);
                 return pointerPlace(receiver.offset, expression.type);
             }
-            auto type = function_ is null ? null : function_.type.isTypeFunction;
+            auto type = callTypeFunction(call);
             if (type !is null && type.isRef)
                 return pointerPlace(
                     compileCall(call).offset, expression.type,
@@ -3503,6 +3503,15 @@ private struct Compiler {
             }
         }
         return null;
+    }
+
+    private auto callTypeFunction(CallExp call) {
+        import dmd.astenums: TY;
+
+        auto type = call.e1.type.toBasetype;
+        if (type.ty == TY.Tdelegate)
+            type = type.nextOf.toBasetype;
+        return type.isTypeFunction;
     }
 
     private Place* pointerPlace(
@@ -13532,13 +13541,9 @@ private struct Compiler {
             }
 
         const returnType = _program.functions[index].returnType;
-        const destination =
-            (!returnType.isArray &&
-                !returnType.isStruct &&
-                !returnType.isDelegate &&
-                returnType.scalar == ScalarType.void_)
-                ? cast(ushort) 0
-                : allocateBytes(size(returnType), 8);
+        const destination = allocateIndirectCallResult(
+            returnType, returnsRef,
+        );
         if (hasClassReceiver && !isSuperCall) {
             const functionSlot = allocate(ScalarType.ulong_);
             _code ~= Instruction(
@@ -14149,18 +14154,20 @@ private struct Compiler {
             cast(ushort) size_t.sizeof,
         );
 
-        const returnType = resultType(call.type);
-        const destination =
-            (!returnType.isArray &&
-                !returnType.isStruct &&
-                !returnType.isDelegate &&
-                returnType.scalar == ScalarType.void_)
-                ? cast(ushort) 0
-                : allocateBytes(size(returnType), 8);
+        const functionType = callTypeFunction(call);
+        const returnsRef = functionType !is null && functionType.isRef;
+        const returnType = returnsRef
+            ? ResultType.scalarResult(ScalarType.ulong_)
+            : resultType(call.type);
+        const destination = allocateIndirectCallResult(
+            returnType, returnsRef,
+        );
         _code ~= Instruction(
             Op.callIndirect, delegateOffset, argumentArea, destination,
         );
-        return Operand(destination, returnType.scalar);
+        return returnsRef
+            ? refReturnOperand(destination, call.type)
+            : Operand(destination, returnType.scalar);
     }
 
     private void emitLazyCallArgument(
@@ -14268,17 +14275,16 @@ private struct Compiler {
 
         const index = registerFunction(delegateLocal.function_);
         const returnType = _program.functions[index].returnType;
-        const destination =
-            (!returnType.isArray &&
-                !returnType.isStruct &&
-                !returnType.isDelegate &&
-                returnType.scalar == ScalarType.void_)
-                ? cast(ushort) 0
-                : allocateBytes(size(returnType), 8);
+        const returnsRef = delegateLocal.function_.type.isTypeFunction.isRef;
+        const destination = allocateIndirectCallResult(
+            returnType, functionType.isRef,
+        );
         _code ~= Instruction(
             Op.callIndirect, delegateLocal.offset, argumentArea, destination,
         );
-        return Operand(destination, returnType.scalar);
+        return returnsRef
+            ? refReturnOperand(destination, call.type)
+            : Operand(destination, returnType.scalar);
     }
 
     // `f(...)` through a delegate-typed PARAMETER: the callee is a run-time
@@ -14331,18 +14337,18 @@ private struct Compiler {
                 );
             }
 
-        const returnType = resultType(call.type);
-        const destination =
-            (!returnType.isArray &&
-                !returnType.isStruct &&
-                !returnType.isDelegate &&
-                returnType.scalar == ScalarType.void_)
-                ? cast(ushort) 0
-                : allocateBytes(size(returnType), 8);
+        const returnType = functionType.isRef
+            ? ResultType.scalarResult(ScalarType.ulong_)
+            : resultType(call.type);
+        const destination = allocateIndirectCallResult(
+            returnType, functionType.isRef,
+        );
         _code ~= Instruction(
             Op.callIndirectDynamic, descriptorOffset, argumentArea, destination,
         );
-        return Operand(destination, returnType.scalar);
+        return functionType.isRef
+            ? refReturnOperand(destination, call.type)
+            : Operand(destination, returnType.scalar);
     }
 
     private Operand* tryStaticDelegateAssocArrayCall(CallExp call) {
@@ -14408,7 +14414,9 @@ private struct Compiler {
         // sub-expression.
         auto deref = call.e1.isPtrExp;
         auto functionType = deref.type.toBasetype.isTypeFunction;
-        const returnType = resultType(functionType.next);
+        const returnType = functionType.isRef
+            ? ResultType.scalarResult(ScalarType.ulong_)
+            : resultType(functionType.next);
 
         const pointer = compileExpression(deref.e1);
 
@@ -14451,12 +14459,40 @@ private struct Compiler {
         // path already gives a direct call's pointer result -- a plain
         // scalar-typed operand is not accepted by a pointer-typed local's
         // declaration.
+        if (functionType.isRef)
+            return refReturnOperand(destination, functionType.next);
         if (isPointerType(functionType.next))
             return Operand(
                 destination, ScalarType.ulong_, true,
                 pointerElementScalar(functionType.next),
             );
         return Operand(destination, returnType.scalar);
+    }
+
+    private Operand refReturnOperand(in ushort offset, Type pointeeType) {
+        const facts = typeFacts(pointeeType);
+        return Operand(
+            offset,
+            ScalarType.ulong_,
+            true,
+            facts.isAggregate ? ScalarType.void_ : facts.opcodeType,
+        );
+    }
+
+    private ushort allocateIndirectCallResult(
+        in ResultType returnType,
+        in bool returnsRef,
+    ) {
+        if (returnsRef)
+            return allocateBytes(
+                cast(uint) size_t.sizeof, size_t.sizeof,
+            );
+        if (!returnType.isArray &&
+            !returnType.isStruct &&
+            !returnType.isDelegate &&
+            returnType.scalar == ScalarType.void_)
+            return 0;
+        return allocateBytes(size(returnType), 8);
     }
 
     private Operand* compileEmplace(CallExp call) {
