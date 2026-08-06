@@ -4602,6 +4602,29 @@ static foreach (backend; Matrix!(
 }
 
 static foreach (backend; Matrix!()) {
+    @("assocArray.defaultNullEqualsPopulatedThenEmptied." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            int runtimeValue(int value) {
+                return value;
+            }
+
+            unittest {
+                int[int] defaultNull;
+                int[int] emptied;
+                const key = runtimeValue(7);
+                emptied[key] = runtimeValue(11);
+                assert(emptied.remove(key));
+
+                assert(defaultNull == emptied);
+                assert(emptied == defaultNull);
+            }
+        });
+    }
+}
+
+static foreach (backend; Matrix!()) {
     @("assocArray.removeRuntimeKey." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {

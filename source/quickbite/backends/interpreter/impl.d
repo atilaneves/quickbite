@@ -5969,33 +5969,12 @@ private struct Walker {
     }
 
     private bool assocArrayEqual(in Value left, in Value right) {
+        if (left == Value.null_ || right == Value.null_)
+            return assocArrayLength(left) == 0 && assocArrayLength(right) == 0;
+
         if (!isNativeAssocArray(left) || !isNativeAssocArray(right))
             return left == right;
-
-        import quickbite.backends.interpreter.place: Place;
-        import quickbite.backends.interpreter.place_value: readValue;
-
-        auto leftHeader = nativeAssocArray(left);
-        auto rightHeader = nativeAssocArray(right);
-        if (leftHeader.length != rightHeader.length)
-            return false;
-
-        foreach (index; 0 .. leftHeader.length) {
-            const key = readValue(Place(
-                leftHeader.keyAt(index).address,
-                leftHeader.keyType,
-            ));
-            auto keySlot = nativeAssocKeySlot(rightHeader, key);
-            auto rightValue = rightHeader.valueAddress(keySlot.address);
-            if (rightValue is null)
-                return false;
-            if (readValue(Place(
-                leftHeader.valueAt(index).address,
-                leftHeader.valueType,
-            )) != readValue(Place(rightValue, rightHeader.valueType)))
-                return false;
-        }
-        return true;
+        return equalAssocArrayValues(left, right);
     }
 
     private Value assocArrayKeys(in Value value, imported!"dmd.mtype".Type resultType) {
@@ -7299,7 +7278,12 @@ private struct Walker {
         if (AggregateValue.isStruct(left) && AggregateValue.isStruct(right))
             return equalStructValues(left, right);
 
-        if (AggregateValue.isAssocArray(left) && AggregateValue.isAssocArray(right))
+        const leftIsAssocArray = AggregateValue.isAssocArray(left);
+        const rightIsAssocArray = AggregateValue.isAssocArray(right);
+        if (
+            (leftIsAssocArray && (rightIsAssocArray || right == Value.null_)) ||
+            (rightIsAssocArray && left == Value.null_)
+        )
             return equalAssocArrayValues(left, right);
 
         if (left.isFunctionPointer || right.isFunctionPointer)
@@ -7409,8 +7393,12 @@ private struct Walker {
         import quickbite.backends.interpreter.place: Place;
         import quickbite.backends.interpreter.place_value: readValue;
 
-        auto leftHeader = headerAt(AggregateValue.native(left).address);
-        auto rightHeader = headerAt(AggregateValue.native(right).address);
+        auto leftHeader = left == Value.null_
+            ? null
+            : headerAt(AggregateValue.native(left).address);
+        auto rightHeader = right == Value.null_
+            ? null
+            : headerAt(AggregateValue.native(right).address);
         const leftLength = leftHeader is null ? 0 : leftHeader.length;
         const rightLength = rightHeader is null ? 0 : rightHeader.length;
         if (leftLength != rightLength)
