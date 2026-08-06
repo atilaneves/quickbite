@@ -2061,9 +2061,7 @@ private struct Compiler {
 
         auto instance = stringSwitchSelector(call);
         auto selectorExpression = (*call.arguments)[0];
-        const elementType = dynamicArrayElementType(selectorExpression.type);
-        const compareWidth =
-            dynamicArrayElementSize(selectorExpression.type, elementType);
+        const compareWidth = dynamicArrayElementSize(selectorExpression.type);
 
         const result = allocate(ScalarType.int_);
         _code ~= Instruction(
@@ -4261,7 +4259,7 @@ private struct Compiler {
             const scaled =
                 allocateBytes(cast(uint) size_t.sizeof, size_t.sizeof);
             const stride = compileSizeConstant(
-                dynamicArrayElementSize(index.e1.type, ScalarType.void_),
+                dynamicArrayElementSize(index.e1.type),
             );
             _code ~= Instruction(Op.mulInt8, scaled, indexSlot.offset, stride);
             _code ~= Instruction(Op.addInt8, pointer, pointer, scaled);
@@ -7105,7 +7103,7 @@ private struct Compiler {
     // -- DMD's own `size()` -- already reports 16 for it, same as a slice
     // descriptor), so it is grouped with the other aggregates rather than
     // routed through `scalarType`, which has no `Tdelegate` case. Reuses
-    // `elementMetadataFor`'s shared aggregate-vs-scalar classification
+    // `typeFacts`' shared aggregate-vs-scalar classification
     // (its wider `Tarray`/`Tfunction` aggregate cases never apply here: a
     // dynamic-array field is written by the caller's own `Tarray` branch
     // before this ever runs, and a field cannot itself be `Tfunction`).
@@ -7113,12 +7111,7 @@ private struct Compiler {
         HeapField field,
         in ushort valueSlot,
     ) {
-        const metadata = elementMetadataFor(
-            field.type, inlineByteWidth(field.type),
-        );
-        const elementSize = metadata.opcodeType == ScalarType.void_
-            ? metadata.byteStride
-            : size(scalarType(field.type));
+        const elementSize = typeFacts(field.type).byteWidth;
         const fieldPointer = heapFieldAddress(field);
         emitPointerStore(
             valueSlot, fieldPointer, compileSizeConstant(0), elementSize,
@@ -7217,17 +7210,12 @@ private struct Compiler {
     // inline at that address, so it needs its own real byte width from
     // `inlineByteWidth` instead of the scalar-only gate, mirroring
     // `storeStructPointerField`'s identical widening -- including its reuse
-    // of `elementMetadataFor`'s shared classification.
+    // of `typeFacts`' shared classification.
     private void storeClassPointerField(
         HeapField field,
         in ushort valueSlot,
     ) {
-        const metadata = elementMetadataFor(
-            field.type, inlineByteWidth(field.type),
-        );
-        const elementSize = metadata.opcodeType == ScalarType.void_
-            ? metadata.byteStride
-            : size(scalarType(field.type));
+        const elementSize = typeFacts(field.type).byteWidth;
         const fieldPointer = heapFieldAddress(field);
         emitPointerStore(
             valueSlot, fieldPointer, compileSizeConstant(0), elementSize,
@@ -8037,7 +8025,7 @@ private struct Compiler {
         }
 
         const elementSize =
-            dynamicArrayElementSize(source.type, elementType, elementIsArray);
+            dynamicArrayElementSize(source.type, elementIsArray);
         _code ~= Instruction(
             Op.allocArray,
             destination,
@@ -8082,8 +8070,7 @@ private struct Compiler {
         auto sourceElement = sourceType.toBasetype.nextOf.toBasetype;
         const sourceElementSize = sourceElement.ty == TY.Tvoid
             ? 1
-            : dynamicArrayElementSize(
-                sourceType, dynamicArrayElementType(sourceType));
+            : dynamicArrayElementSize(sourceType);
         const destinationElementSize = size(destinationElementType);
         if (sourceElementSize == destinationElementSize)
             return;
@@ -8545,7 +8532,6 @@ private struct Compiler {
 
         const elementSize = dynamicArrayElementSize(
             slice.e1.type,
-            elementType,
             descriptor.elementIsArray,
         );
         emitSubSlice(destination, descriptor.offset, bounds, elementSize);
@@ -8573,7 +8559,7 @@ private struct Compiler {
             cast(ushort) size_t.sizeof,
         );
 
-        const byteStride = pointerElementMetadata(slice.e1.type).byteStride;
+        const byteStride = pointerElementMetadata(slice.e1.type).byteWidth;
         emitPointerSlice(destination, pointer.offset, bounds, byteStride);
     }
 
@@ -8587,9 +8573,7 @@ private struct Compiler {
         CatExp cat,
     ) {
         const elementIsArray = arrayElementIsArray(cat.type);
-        const elementSize = dynamicArrayElementSize(
-            cat.type, elementType, elementIsArray,
-        );
+        const elementSize = dynamicArrayElementSize(cat.type, elementIsArray);
         const left = catOperandDescriptor(
             elementType, elementSize, elementIsArray, cat.e1,
         );
@@ -8672,8 +8656,10 @@ private struct Compiler {
 
         const sourceDescriptor =
             arrayDescriptorOffset(elementType, array, elementIsArray);
-        const elementSize =
-            dynamicArrayElementSize(array.type, elementType, elementIsArray);
+        const elementSize = dynamicArrayElementSize(
+            array.type,
+            elementIsArray,
+        );
         emitDupArray(destination, sourceDescriptor, elementSize);
     }
 
@@ -8745,12 +8731,13 @@ private struct Compiler {
 
             const elementIsArray = arrayElementIsArray(cast_.to);
             const elementType = dynamicArrayElementType(cast_.to);
-            const targetElementSize =
-                dynamicArrayElementSize(cast_.to, elementType, elementIsArray);
+            const targetElementSize = dynamicArrayElementSize(
+                cast_.to,
+                elementIsArray,
+            );
             const sourceElementIsArray = arrayElementIsArray(cast_.e1.type);
             const sourceElementSize = dynamicArrayElementSize(
                 cast_.e1.type,
-                dynamicArrayElementType(cast_.e1.type),
                 sourceElementIsArray,
             );
             if (targetElementSize == sourceElementSize)
@@ -8910,7 +8897,8 @@ private struct Compiler {
     private Operand compileArrayPointer(CastExp cast_) {
         const descriptor = dynamicArrayDescriptor(cast_.e1);
         const elementByteWidth = dynamicArrayElementSize(
-            cast_.e1.type, descriptor.elementType, descriptor.elementIsArray,
+            cast_.e1.type,
+            descriptor.elementIsArray,
         );
         return pointerToElement(
             descriptor.offset, descriptor.elementType, compileSizeConstant(0),
@@ -8990,7 +8978,8 @@ private struct Compiler {
         }
 
         const elementByteWidth = dynamicArrayElementSize(
-            index.e1.type, descriptor.elementType, descriptor.elementIsArray,
+            index.e1.type,
+            descriptor.elementIsArray,
         );
         auto result = new Operand;
         *result = pointerToElement(
@@ -13787,7 +13776,7 @@ private struct Compiler {
             descriptor.offset,
             packedFill(
                 descriptor.elementType,
-                dynamicArrayElementSize(length.e1.type, descriptor.elementType),
+                dynamicArrayElementSize(length.e1.type),
             ),
             lengthSlot,
         );
@@ -13825,8 +13814,7 @@ private struct Compiler {
         if (isModuleDynamicArrayVariable(append.e1)) {
             const value = compileExpression(append.e2);
             const descriptor = dynamicArrayDescriptor(append.e1);
-            const elementSize =
-                dynamicArrayElementSize(append.e1.type, descriptor.elementType);
+            const elementSize = dynamicArrayElementSize(append.e1.type);
             emitAppendElement(descriptor.offset, value.offset, elementSize);
             writeBackDynamicArrayDescriptor(descriptor);
             return Operand(descriptor.offset, descriptor.elementType);
@@ -13850,8 +13838,7 @@ private struct Compiler {
         }
 
         const value = compileExpression(append.e2);
-        const elementSize =
-            dynamicArrayElementSize(append.e1.type, descriptor.elementType);
+        const elementSize = dynamicArrayElementSize(append.e1.type);
         emitAppendElement(descriptor.offset, value.offset, elementSize);
         writeBackDynamicArrayDescriptor(descriptor);
         return Operand(descriptor.offset, descriptor.elementType);
@@ -13884,7 +13871,7 @@ private struct Compiler {
             );
             const descriptor = dynamicArrayDescriptor(concatenate.e1);
             const elementSize = dynamicArrayElementSize(
-                concatenate.e1.type, descriptor.elementType,
+                concatenate.e1.type,
                 descriptor.elementIsArray,
             );
             emitConcatArrays(
@@ -13899,7 +13886,7 @@ private struct Compiler {
             descriptor.elementType, concatenate.e2, descriptor.elementIsArray,
         );
         const elementSize = dynamicArrayElementSize(
-            concatenate.e1.type, descriptor.elementType,
+            concatenate.e1.type,
             descriptor.elementIsArray,
         );
         emitConcatArrays(
@@ -14332,8 +14319,7 @@ private struct Compiler {
         _activeDollarLength = sliceLengthSlot(*descriptor);
         const indexSlot = compileExpression(index.e2);
         _activeDollarLength = savedDollarLength;
-        const elementSize =
-            dynamicArrayElementSize(index.e1.type, descriptor.elementType);
+        const elementSize = dynamicArrayElementSize(index.e1.type);
         emitIndexStore(
             valueOffset, descriptor.offset, indexSlot.offset, elementSize,
         );
@@ -15027,7 +15013,7 @@ private struct Compiler {
         // `dynamicArrayElementSize` derives the real byte width for a
         // struct/static-array element instead of the `ScalarType.void_`-
         // implied 0 that the raw `size(elementType)` gives it.
-        const elementSize = dynamicArrayElementSize(slice.e1.type, elementType);
+        const elementSize = dynamicArrayElementSize(slice.e1.type);
 
         const length = staticArrayLength(slice.e1.type);
         const bounds = allocateBytes(2 * size_t.sizeof, size_t.sizeof);
@@ -15082,7 +15068,7 @@ private struct Compiler {
             return null;
 
         const elementType = dynamicArrayElementType(slice.e1.type);
-        const elementSize = dynamicArrayElementSize(slice.e1.type, elementType);
+        const elementSize = dynamicArrayElementSize(slice.e1.type);
 
         if (isBroadcastFillSource(rhs)) {
             const value = compileExpression(rhs);
@@ -15163,8 +15149,10 @@ private struct Compiler {
         // element's real byte width instead of the `ScalarType.void_`-implied
         // 0 that a raw `size(elementType)` would give it, the same way
         // append/concat already do.
-        const elementSize =
-            dynamicArrayElementSize(slice.e1.type, elementType, elementIsArray);
+        const elementSize = dynamicArrayElementSize(
+            slice.e1.type,
+            elementIsArray,
+        );
 
         // `elementIsArray` means each destination element is its own
         // separately heap-allocated row descriptor (the `T[N][]`
@@ -15697,7 +15685,7 @@ private struct Compiler {
             if (!nested)
                 emitSliceEqual(
                     offset, left, right,
-                    dynamicArrayElementSize(equal.e1.type, elementType),
+                    dynamicArrayElementSize(equal.e1.type),
                 );
             if (equal.op == EXP.notEqual)
                 _code ~= Instruction(Op.notBool, offset, offset);
@@ -17202,9 +17190,7 @@ private struct Compiler {
             if (descriptor is null || descriptor.elementType == ScalarType.void_)
                 return null;
 
-            const elementSize = dynamicArrayElementSize(
-                index.e1.type, descriptor.elementType,
-            );
+            const elementSize = dynamicArrayElementSize(index.e1.type);
             if (elementSize > ulong.sizeof)
                 return null;
 
@@ -17238,9 +17224,7 @@ private struct Compiler {
             if (descriptor is null)
                 return null;
 
-            const elementSize = dynamicArrayElementSize(
-                index.e1.type, descriptor.elementType,
-            );
+            const elementSize = dynamicArrayElementSize(index.e1.type);
             if (elementSize > ulong.sizeof)
                 return null;
 
@@ -17699,7 +17683,8 @@ private struct Compiler {
         ref RefArgumentWriteBack[] writeBacks,
     ) {
         const elementSize = dynamicArrayElementSize(
-            arrayType, descriptor.elementType, descriptor.elementIsArray,
+            arrayType,
+            descriptor.elementIsArray,
         );
 
         const indexOffset = compileExpression(index).offset;
@@ -17947,10 +17932,10 @@ private struct Compiler {
     }
 
     // Shared width computation for `emitHeapFieldRefArgument`: an aggregate field (`Tstruct`,
-    // `Tsarray`, or `Tdelegate`, `elementMetadataFor`'s gate) lives inline at
+    // `Tsarray`, or `Tdelegate`, `typeFacts`' gate) lives inline at
     // its own address and takes its own real byte width; every other field
     // type takes its scalar width and declines outside 1/2/4/8. Routes
-    // through `elementMetadataFor` for the aggregate-vs-scalar
+    // through `typeFacts` for the aggregate-vs-scalar
     // classification rather than hand-rolling a narrower `Tstruct`/`Tsarray`
     // gate, so a `Tdelegate` field is a 16-byte mirror-writeback (the write
     // is visible through the original field afterward, confirmed against
@@ -17964,11 +17949,9 @@ private struct Compiler {
         out ushort valueSize,
         out ushort valueAlign,
     ) {
-        const metadata = elementMetadataFor(
-            fieldType, inlineByteWidth(fieldType),
-        );
-        const isAggregate = metadata.opcodeType == ScalarType.void_;
-        valueSize = cast(ushort) metadata.byteStride;
+        const facts = typeFacts(fieldType);
+        const isAggregate = facts.isAggregate;
+        valueSize = cast(ushort) facts.byteWidth;
         if (!isAggregate && valueSize != 1 && valueSize != 2 &&
             valueSize != 4 && valueSize != 8)
             return false;
@@ -18124,7 +18107,7 @@ private struct Compiler {
     // value through the pointer into a fresh slot for the call, and write it
     // back through that same pointer afterward. The pointee may be a struct
     // wider than a scalar register (`bump(*p)` where `p: S*` and `S` has no
-    // scalar opcode type); `pointerElementMetadata`'s `byteStride` already
+    // scalar opcode type); `pointerElementMetadata`'s `byteWidth` already
     // carries that width for such a pointee, alongside `pointerLoadOp`'s and
     // `pointerStoreOp`'s existing `N`-variant escape for any width.
     private bool emitPointerDereferenceRefArgument(
@@ -18151,10 +18134,8 @@ private struct Compiler {
             return false;
 
         const elementMetadata = pointerElementMetadata(deref.e1.type);
-        const isAggregatePointee = elementMetadata.opcodeType == ScalarType.void_;
-        const valueSize = cast(ushort) (isAggregatePointee
-            ? elementMetadata.byteStride
-            : size(elementMetadata.opcodeType));
+        const isAggregatePointee = elementMetadata.isAggregate;
+        const valueSize = cast(ushort) elementMetadata.byteWidth;
         if (valueSize == 0)
             return false;
         const valueAlign =
@@ -18614,11 +18595,7 @@ private struct Compiler {
             return delegateValueSize;
         if (aaType.toBasetype.nextOf.toBasetype.ty == TY.Tsarray)
             return inlineByteWidth(aaType.toBasetype.nextOf);
-        return dynamicArrayElementSize(
-            aaType,
-            dynamicArrayElementType(aaType),
-            arrayElementIsArray(aaType),
-        );
+        return dynamicArrayElementSize(aaType, arrayElementIsArray(aaType));
     }
 
     // The associative array's own key type (`TypeAArray.index`), the
@@ -19954,7 +19931,7 @@ private struct Compiler {
                     fieldEqual,
                     cast(ushort) (left + field.offset),
                     cast(ushort) (right + field.offset),
-                    dynamicArrayElementSize(fieldType, elementType),
+                    dynamicArrayElementSize(fieldType),
                 );
                 falseJumps ~=
                     emitJumpIfFalse(Operand(fieldEqual, ScalarType.bool_));
@@ -20118,7 +20095,7 @@ private struct Compiler {
         if (!nested)
             emitSliceEqual(
                 equal, lhsOffset, rhsOffset,
-                dynamicArrayElementSize(lhs.type, elementType),
+                dynamicArrayElementSize(lhs.type),
             );
 
         // `==` holds when the slices are equal; `!=` holds when negated.
@@ -21304,18 +21281,13 @@ private struct Compiler {
         return Operand(offset, ScalarType.void_, false, elementType);
     }
 
-    // The aggregate-vs-scalar classification is `elementMetadataFor`'s: a
+    // The aggregate-vs-scalar classification is `typeFacts`': a
     // struct, static array, or delegate element is a full-width byte blob
-    // (`byteStride`), everything else is a plain scalar. `Tvoid` stays a
-    // hand-checked special case ahead of that shared classification rather
-    // than folded into it: `scalarType(Tvoid)` is `ScalarType.void_`, the
-    // same tag `elementMetadataFor` uses as its aggregate marker, so routing
-    // a `void[]` element through the shared call would collide the two
-    // "void_" meanings instead of just reporting the element's real 1-byte
-    // width.
+    // (`byteWidth`), everything else is a plain scalar. `Tvoid` stays a
+    // hand-checked special case: D defines `void[]` with a one-byte element
+    // stride even though `void` is not a loadable scalar value.
     private uint dynamicArrayElementSize(
         Type type,
-        in ScalarType elementType,
         in bool elementIsArray = false,
     ) {
         import dmd.astenums: TY;
@@ -21326,10 +21298,7 @@ private struct Compiler {
         auto element = type.toBasetype.nextOf;
         if (element.toBasetype.ty == TY.Tvoid)
             return 1;
-        const metadata = elementMetadataFor(element);
-        if (metadata.opcodeType == ScalarType.void_)
-            return metadata.byteStride;
-        return size(elementType);
+        return typeFacts(element).byteWidth;
     }
 
     // True when an array's element is itself an array (`int[][]` or
@@ -21398,8 +21367,7 @@ private struct Compiler {
             if (nextBase.ty != TY.Tarray)
                 break;
         }
-        auto rowElementType = current.toBasetype.nextOf;
-        return dynamicArrayElementSize(current, scalarType(rowElementType));
+        return dynamicArrayElementSize(current);
     }
 
     // Emit `Op.sliceEqualNested`, comparing two array-of-arrays descriptors
@@ -21498,16 +21466,15 @@ private struct Compiler {
         return pointerElementMetadata(pointerType).opcodeType;
     }
 
-    private PointerElementMetadata pointerElementMetadata(Type pointerType) {
+    private TypeFacts pointerElementMetadata(Type pointerType) {
         import dmd.astenums: TY;
 
         auto element = pointerType.toBasetype.nextOf;
         if (element is null)
-            return PointerElementMetadata(ScalarType.void_, 0);
-        const byteStride = element.toBasetype.ty == TY.Tfunction
-            ? 0
-            : inlineByteWidth(element);
-        return elementMetadataFor(element, byteStride);
+            return TypeFacts.withoutByteWidth(ScalarType.void_);
+        if (element.toBasetype.ty == TY.Tfunction)
+            return TypeFacts.withoutByteWidth(ScalarType.void_, true);
+        return typeFacts(element);
     }
 
     // `(*p)[i]` where `p`'s pointee is itself a static array (`T[N]*`, e.g.
@@ -21518,7 +21485,7 @@ private struct Compiler {
     // `pointerElementMetadata` itself when `p`'s pointee is not a static
     // array (an ordinary `p[i]`/`(*pp)[i]` shape, unaffected by the
     // one-level unwrap this static-array case needs).
-    private PointerElementMetadata dereferencedArrayIndexElementMetadata(
+    private TypeFacts dereferencedArrayIndexElementMetadata(
         Type pointerType,
     ) {
         import dmd.astenums: TY;
@@ -21528,28 +21495,25 @@ private struct Compiler {
             return pointerElementMetadata(pointerType);
 
         auto element = pointee.toBasetype.nextOf;
-        const byteStride = inlineByteWidth(element);
-        return elementMetadataFor(element, byteStride);
+        return typeFacts(element);
     }
 
-    // The shared DMD-layout width query for an element stored inline in a
-    // frame, array, or pointed-at block. Callers with a non-inline convention
-    // (a function pointer has no dereferenceable payload) supply their own
-    // stride instead.
+    // The shared DMD-layout width query for a value stored inline in a frame,
+    // array, or pointed-at block. A function pointer has no dereferenceable
+    // payload, so its `TypeFacts` explicitly has no byte width instead.
     private uint inlineByteWidth(Type type) {
         import dmd.typesem: size;
 
         return cast(uint) size(type.toBasetype);
     }
 
-    // Shared aggregate-vs-scalar classification for a pointer/array element
-    // type, given its already-computed byte stride: `pointerElementMetadata`
-    // and `dereferencedArrayIndexElementMetadata` differed only in how they
-    // derived `element` and `byteStride`, not in this classification, so a
+    // Shared opcode, aggregate, and byte-width classification for a stored
+    // type. `pointerElementMetadata`, dynamic-array element sizing, and heap
+    // field operations previously derived these facts independently, so a
     // missed case here would otherwise have to be kept in sync by hand across
-    // both. A static-array, struct, dynamic-array, delegate, or function
+    // all of them. A static-array, struct, dynamic-array, or delegate
     // element is always an aggregate/opaque region (`void_` opcode type, full
-    // byte width as `byteStride`) regardless of its own nested element type --
+    // byte width) regardless of its own nested element type --
     // unwrapping one level here previously made a static-array pointee
     // (`int[3]*`) fall through to `scalarType(int)`, so
     // `storeThroughPointer`/`loadThroughPointer` and the ref-argument
@@ -21557,23 +21521,16 @@ private struct Compiler {
     // only the first 4 bytes of a 12-byte static array through such a pointer
     // instead of the whole object. Anything else is a plain scalar read
     // through `scalarType`.
-    private PointerElementMetadata elementMetadataFor(
-        Type element,
-        in uint byteStride,
-    ) {
+    private TypeFacts typeFacts(Type type) {
         import dmd.astenums: TY;
 
-        if (element.toBasetype.ty == TY.Tsarray ||
-            element.toBasetype.ty == TY.Tstruct ||
-            element.toBasetype.ty == TY.Tarray ||
-            element.toBasetype.ty == TY.Tdelegate ||
-            element.toBasetype.ty == TY.Tfunction)
-            return PointerElementMetadata(ScalarType.void_, byteStride);
-        return PointerElementMetadata(scalarType(element), byteStride);
-    }
-
-    private PointerElementMetadata elementMetadataFor(Type element) {
-        return elementMetadataFor(element, inlineByteWidth(element));
+        const byteWidth = inlineByteWidth(type);
+        if (type.toBasetype.ty == TY.Tsarray ||
+            type.toBasetype.ty == TY.Tstruct ||
+            type.toBasetype.ty == TY.Tarray ||
+            type.toBasetype.ty == TY.Tdelegate)
+            return TypeFacts(ScalarType.void_, byteWidth, true);
+        return TypeFacts(scalarType(type), byteWidth, false);
     }
 }
 
@@ -21603,9 +21560,41 @@ private struct Operand {
     bool isComplex;
 }
 
-private struct PointerElementMetadata {
-    imported!"quickbite.backends.bytecode.core.program".ScalarType opcodeType;
-    uint byteStride;
+private struct TypeFacts {
+    private alias ScalarType =
+        imported!"quickbite.backends.bytecode.core.program".ScalarType;
+
+    private ScalarType opcodeType;
+    private bool isAggregate;
+    private uint _byteWidth;
+    private bool _hasByteWidth;
+
+    private this(
+        in ScalarType opcodeType,
+        in uint byteWidth,
+        in bool isAggregate,
+    ) @safe pure {
+        this.opcodeType = opcodeType;
+        this.isAggregate = isAggregate;
+        _byteWidth = byteWidth;
+        _hasByteWidth = true;
+    }
+
+    private static TypeFacts withoutByteWidth(
+        in ScalarType opcodeType,
+        in bool isAggregate = false,
+    ) @safe pure {
+        TypeFacts result;
+        result.opcodeType = opcodeType;
+        result.isAggregate = isAggregate;
+        return result;
+    }
+
+    private uint byteWidth() @safe pure const {
+        if (!_hasByteWidth)
+            throw new Exception("Byte width is unavailable");
+        return _byteWidth;
+    }
 }
 
 // A string literal's stable-block placement: `blockIndex` into

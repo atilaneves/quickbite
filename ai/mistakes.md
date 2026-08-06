@@ -406,3 +406,9 @@
   to the same direct `Op.call` a non-class-receiver call uses, since
   `function_`/`index` are already resolved to the base implementation via
   DMD's `call.f`.
+
+- When a change completes or reshapes an item from an implementation plan,
+  update that plan in the same commit before handing the branch off. Remove
+  the completed item, preserve the durable contract the implementation
+  established, and name the next concrete item explicitly; otherwise the
+  next agent can reasonably repeat work that git already contains.

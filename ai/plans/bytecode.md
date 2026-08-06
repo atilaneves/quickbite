@@ -351,15 +351,17 @@ paused and resumes on top of it.
 
 Target state:
 
+- One `TypeFacts` authority supplies the opcode tag, optional byte width, and
+  explicit aggregate classification. It serves `dynamicArrayElementSize`,
+  `pointerElementMetadata`, heap-field stores and `ref` arguments, and must be
+  extended rather than duplicated when another lowering consumer needs those
+  facts. `ScalarType.void_`'s zero size is not an aggregate sentinel; an
+  omitted width fails compilation rather than becoming a zero-byte copy.
 - Declaration classification happens once. One classifier replaces the
   parallel tables and the per-kind `module<Kind>VariableOrNull` and
-  initializer-byte resolver families, and supplies a root place plus the
-  type/layout facts lowering needs (opcode tag, byte width, aggregate layout).
-  The same width authority serves declaration-rooted values,
-  `dynamicArrayElementSize`, `pointerElementMetadata`, and raw
-  `size(...)`-at-emit-site consumers. `ScalarType.void_`'s zero size must not
-  act as an aggregate sentinel; an omitted width must fail compilation rather
-  than become a zero-byte copy.
+  initializer-byte resolver families, and supplies a root place carrying the
+  same `TypeFacts`. Declaration-rooted values and every remaining raw
+  `size(...)`-at-emit-site consumer use that authority.
 - Every lvalue-capable expression resolves through one place path. Using it as
   an rvalue loads that place; assignment stores it; taking its address asks the
   same place for its address. Non-lvalue expressions produce values directly.
@@ -389,17 +391,19 @@ Target state:
   text below describing mirrors stays accurate until that final migration
   stage lands.
 
-Sequencing: establish declaration/type facts, place resolution, and the
-primitive operations first. Then migrate one consumer family per commit,
-with the enabled matrix green after each commit: assignment, all compound and
-prefix/postfix operations, field/index/slice/dereference access, address-of,
-`ref`/`out`, method receivers, and calls returning `ref`. A migrated emitter
-must become storage- and lvalue-shape-agnostic; delete each side table, probe,
-special writeback, and per-pair helper when its last consumer disappears.
-Finish the one-width-authority work through the same type facts, then replace
-scalar-`ref` mirrors through place addresses. Row promotions resume only when
-all existing consumers use the pipeline and pre-PR review finds no duplicated
-classification, access, width, materialisation, or writeback decision.
+Sequencing: next replace the parallel declaration tables with one classifier
+that attaches the existing `TypeFacts` to a root place, then establish place
+resolution and its primitive operations. Migrate one consumer family per
+commit, with the enabled matrix green after each commit: assignment, all
+compound and prefix/postfix operations, field/index/slice/dereference access,
+address-of, `ref`/`out`, method receivers, and calls returning `ref`. A
+migrated emitter must become storage- and lvalue-shape-agnostic; delete each
+side table, probe, special writeback, and per-pair helper when its last
+consumer disappears. Route remaining raw width choices through `TypeFacts`,
+then replace scalar-`ref` mirrors through place addresses. Row promotions
+resume only when all existing consumers use the pipeline and pre-PR review
+finds no duplicated classification, access, width, materialisation, or
+writeback decision.
 
 The two omitted module-scalar rows in
 `tests/ut/backends/runner/lang/expressions.d`
