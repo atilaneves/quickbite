@@ -88,6 +88,9 @@ Live plans:
 - `coverage.md` — corpus semantic-density process; the generative
   mechanisms (mutation ledger, spec walk, dmd-suite mining) are not yet
   started.
+- `example-corpus.md` — widen `tests/example.d` (`bin/bench.sh`'s default
+  fixture) to exercise more of the D language surface both `Interpreter`
+  and `Bytecode` already support.
 - `single-oracle.md` — the testing constitution: `SystemLinker` is the
   single oracle; `ct/` vs `rt/` split; promotion rules.
 - `backend-test-modules-order.md` — shared module ordering for backend
