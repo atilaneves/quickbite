@@ -259,6 +259,7 @@ private struct Compiler {
             pointer,
             dynamicIndex,
             assocIndex,
+            slice,
         }
 
         Kind kind;
@@ -275,6 +276,12 @@ private struct Compiler {
         bool declinesCapturingDelegate;
         ushort keyMeta;
         Place* container;
+        ScalarType sliceElementType;
+        uint sliceElementSize;
+        bool sliceElementIsArray;
+        bool isStaticSlice;
+        DynamicArrayLocal sliceDescriptor;
+        Type sliceBaseType;
 
         this(
             in Kind kind,
@@ -319,16 +326,6 @@ private struct Compiler {
             this.declaration = declaration;
             this.declinesCapturingDelegate = declinesCapturingDelegate;
         }
-    }
-
-    private static struct SlicePlace {
-        ushort destination;
-        ScalarType elementType;
-        uint elementSize;
-        bool elementIsArray;
-        bool isStaticArray;
-        DynamicArrayLocal descriptor;
-        Type baseType;
     }
 
     private void compileFunctionBody(in size_t index) {
@@ -2836,8 +2833,9 @@ private struct Compiler {
                 return functionPointer(function_);
         }
 
-        if (auto deref = expression.isPtrExp)
-            return compilePointerDereference(deref);
+        if (expression.isPtrExp !is null)
+            if (auto place = placeOrNull(expression))
+                return loadPlaceValue(*place);
 
         if (auto index = expression.isIndexExp) {
             import dmd.astenums: TY;
@@ -2852,14 +2850,9 @@ private struct Compiler {
             return compileStaticArrayIndex(index);
         }
 
-        if (auto slice = expression.isSliceExp) {
-            // A `string` sub-slice is an ordinary sub-slice of a real
-            // descriptor, identical to any other `T[]`.
-            const elementType = dynamicArrayElementType(slice.type);
-            const offset = allocateBytes(sliceDescriptorSize, size_t.sizeof);
-            compileSliceInto(offset, elementType, slice);
-            return Operand(offset, ScalarType.void_);
-        }
+        if (expression.isSliceExp !is null)
+            if (auto place = placeOrNull(expression))
+                return loadPlaceValue(*place);
 
         // `base.field`: read a struct field from its inline frame offset. A
         // pointer field (`tracker.postblits`) yields a pointer operand over its
@@ -3419,12 +3412,20 @@ private struct Compiler {
             const pointer = compileExpression(dereference.e1);
             if (!pointer.isPointer)
                 return null;
+            if (pointer.pointerElement == ScalarType.void_ &&
+                !facts.isAggregate)
+                return new Place(
+                    Place.Kind.frame, pointer.type, pointer.offset,
+                    null, StructField.init, false,
+                    isPointerLikePlaceType(dereference.type),
+                    ScalarType.void_,
+                );
             if (facts.isAggregate)
                 return pointerPlace(pointer.offset, expression.type);
             return new Place(
                 Place.Kind.pointer, pointer.pointerElement,
                 pointer.offset, null, StructField.init, false,
-                isPointerType(dereference.type),
+                isPointerLikePlaceType(dereference.type),
                 isPointerType(dereference.type)
                     ? pointerElementScalar(dereference.type)
                     : ScalarType.void_,
@@ -3501,6 +3502,41 @@ private struct Compiler {
                     descriptorMetadata, indexValue.offset, index.type,
                 );
             }
+        }
+        if (auto slice = expression.isSliceExp) {
+            auto result = new Place;
+            result.kind = Place.Kind.slice;
+            result.sliceBaseType = slice.e1.type;
+
+            if (auto destination = tryStaticArraySliceDescriptor(slice)) {
+                result.offset = *destination;
+                result.sliceElementType =
+                    dynamicArrayElementType(slice.e1.type);
+                result.sliceElementSize =
+                    inlineByteWidth(slice.e1.type.toBasetype.nextOf);
+                result.isStaticSlice = true;
+                return result;
+            }
+
+            auto descriptor = dynamicArrayDescriptorOrNull(slice.e1);
+            if (descriptor is null && !isPointerType(slice.e1.type))
+                return null;
+            result.sliceElementType = descriptor is null
+                ? dynamicArrayElementType(slice.type)
+                : descriptor.elementType;
+            result.sliceElementIsArray = descriptor is null
+                ? arrayElementIsArray(slice.e1.type)
+                : descriptor.elementIsArray;
+            result.sliceElementSize = dynamicArrayElementSize(
+                slice.e1.type, result.sliceElementIsArray,
+            );
+            if (descriptor !is null)
+                result.sliceDescriptor = *descriptor;
+            result.offset = allocateBytes(
+                sliceDescriptorSize, size_t.sizeof,
+            );
+            compileSliceInto(result.offset, result.sliceElementType, slice);
+            return result;
         }
         return null;
     }
@@ -3676,6 +3712,8 @@ private struct Compiler {
                     result, pointer, compileSizeConstant(0), width,
                 );
                 return Operand(result, operandType);
+            case slice:
+                return Operand(place.offset, ScalarType.void_);
         }
     }
 
@@ -3759,6 +3797,11 @@ private struct Compiler {
                         Operand(place.offset, ScalarType.ulong_),
                     );
                 return;
+            case slice:
+                emitSliceCopy(
+                    place.offset, value.offset, place.sliceElementSize,
+                );
+                return;
         }
     }
 
@@ -3832,6 +3875,11 @@ private struct Compiler {
                 );
                 return Operand(
                     pointer, ScalarType.ulong_, true, operandType,
+                );
+            case slice:
+                return Operand(
+                    place.offset, ScalarType.ulong_, true,
+                    place.sliceElementType,
                 );
         }
     }
@@ -3920,6 +3968,11 @@ private struct Compiler {
         Place place,
         Expression rhs,
     ) {
+        if (place.kind == Place.Kind.slice)
+            return place.isStaticSlice
+                ? storeStaticSlice(place, rhs)
+                : storeDynamicSlice(place, rhs);
+
         const source = place.declinesCapturingDelegate
             ? refEscapingDelegateOperandOffset(rhs)
             : aggregateValueOffset(
@@ -5481,8 +5534,8 @@ private struct Compiler {
         // slot's real address) and whose `e2` is the constant `0` (the same
         // `*p` == `p[0]` idiom DMD uses generally), not a further nested
         // `CallExp` and not an `IndexExp` whose `e1` is the plain AA
-        // variable. The generic fallback just below (`compileExpression`'s
-        // `tryPointerIndex`) already recognises this exact `p[0]` shape and
+        // variable. The generic place resolver already recognises this exact
+        // `p[0]` shape and
         // would normally load through the pointer correctly -- but its
         // `loadThroughPointer` sizes the load from `pointer.pointerElement`,
         // and an AA value's pointee scalar type is deliberately the opaque
@@ -6798,9 +6851,9 @@ private struct Compiler {
         // `p[i]` where `p` is a raw pointer (not an array): the element block
         // lives at `p + i * structSize` in VM-owned heap memory rather than a
         // frame offset, so read it through the same shared load as `*p`
-        // above. Gated on `index.e1`'s own static type, matching
-        // `tryPointerIndex`'s pointer check, so a struct array's own `arr[i]`
-        // (handled by `structBaseOffsetOrMaterialise` below) is untouched.
+        // above. Gated on `index.e1`'s own static type, matching the place
+        // resolver's pointer check, so a struct array's own `arr[i]` (handled
+        // by `structBaseOffsetOrMaterialise` below) is untouched.
         if (auto index = expression.isIndexExp)
             if (isPointerType(index.e1.type)) {
                 const pointer = compileExpression(index.e1);
@@ -9555,117 +9608,6 @@ private struct Compiler {
         return false;
     }
 
-    // `m[i][j]` (or deeper) read where at least one index in the chain is a
-    // runtime value: resolve the full chain to a runtime address and load
-    // the scalar leaf through it. A fully constant chain is left to
-    // `compileStaticArrayIndex`'s cheaper compile-time offset path, and a
-    // chain whose result is itself a sub-array/struct view (not yet fully
-    // indexed) is left unhandled here. Null if `index` is not a static-array
-    // access at all.
-    private Operand* tryStaticArrayRuntimeIndex(IndexExp index) {
-        import dmd.astenums: TY;
-
-        if (!indexesStaticArray(index.e1))
-            return null;
-
-        if (!staticArrayChainNeedsRuntimeAddress(index))
-            return null;
-
-        const ty = index.type.toBasetype.ty;
-        if (ty == TY.Tsarray || ty == TY.Tstruct || ty == TY.Tarray)
-            return null;
-
-        auto pointer = tryStaticArrayRuntimeAddress(index);
-        if (pointer is null)
-            return null;
-
-        auto result = new Operand;
-        *result = loadThroughPointer(*pointer, compileSizeConstant(0));
-        return result;
-    }
-
-    // `m[i][j] = rhs` (or deeper) where at least one index in the chain is a
-    // runtime value: resolve the leaf address at runtime and write through
-    // it, the runtime-address counterpart to `tryStaticArrayElement`'s
-    // compile-time-offset path. Null if `index` is not a static-array
-    // element access, or the chain is fully constant (handled above).
-    private Operand* tryClassStaticArrayElementPointer(IndexExp index) {
-        auto dot = index.e1.isDotVarExp;
-        if (dot is null)
-            return null;
-
-        auto field = classStaticArrayFieldOf(dot);
-        if (field is null)
-            return null;
-
-        auto result = new Operand;
-        *result = advanceStaticArrayPointer(
-            Operand(
-                heapFieldAddress(*field), ScalarType.ulong_, true,
-                ScalarType.void_,
-            ),
-            index.e2, index.type,
-            compileSizeConstant(staticArrayLength(index.e1.type)),
-        );
-        return result;
-    }
-
-    // `c.arr[i]` read for a class static-array field: null (falling through
-    // to `tryStaticArrayRuntimeIndex`/`compileStaticArrayIndex`'s struct/local
-    // handling, or the "Unsupported" fallback) if `index.e1` is not one, or
-    // the element itself is a sub-array/struct (not yet a scalar leaf).
-    private Operand* tryClassStaticArrayFieldElement(IndexExp index) {
-        import dmd.astenums: TY;
-
-        const ty = index.type.toBasetype.ty;
-        if (ty == TY.Tsarray || ty == TY.Tstruct || ty == TY.Tarray)
-            return null;
-
-        auto pointer = tryClassStaticArrayElementPointer(index);
-        if (pointer is null)
-            return null;
-
-        auto result = new Operand;
-        *result = loadThroughPointer(*pointer, compileSizeConstant(0));
-        return result;
-    }
-
-    // `c.arr[i] = rhs` for a class static-array field: the class-field
-    // counterpart of the static-array element place resolvers.
-    // Null if `index.e1` is not one.
-    private Operand* tryClassSliceFieldElementPointer(IndexExp index) {
-        import dmd.astenums: TY;
-
-        auto dot = index.e1.isDotVarExp;
-        if (dot is null ||
-            dot.e1.type is null ||
-            dot.e1.type.toBasetype.ty != TY.Tclass)
-            return null;
-
-        auto field = tryClassPointerField(dot);
-        if (field is null || field.type.toBasetype.ty != TY.Tarray)
-            return null;
-
-        const descriptor = allocateBytes(sliceDescriptorSize, size_t.sizeof);
-        emitPointerLoad(
-            descriptor, heapFieldAddress(*field), compileSizeConstant(0),
-            sliceDescriptorSize,
-        );
-        const basePointer =
-            allocateBytes(cast(uint) size_t.sizeof, size_t.sizeof);
-        _code ~= Instruction(
-            Op.copy, basePointer, descriptor, cast(ushort) size_t.sizeof,
-        );
-
-        auto result = new Operand;
-        *result = advanceStaticArrayPointer(
-            Operand(basePointer, ScalarType.ulong_, true, ScalarType.void_),
-            index.e2, index.type,
-            sliceLengthSlot(DynamicArrayLocal(descriptor, ScalarType.void_)),
-        );
-        return result;
-    }
-
     private Operand* symbolAddress(
         VarDeclaration declaration,
         in long offset,
@@ -9818,64 +9760,6 @@ private struct Compiler {
         const result = allocateBytes(cast(uint) size_t.sizeof, size_t.sizeof);
         _code ~= Instruction(Op.addInt8, result, pointerOffset, scaled);
         return Operand(result, ScalarType.ulong_, true, elementType);
-    }
-
-    // `*p`: read the element the pointer addresses (index 0), yielding a scalar
-    // operand of the pointed-at element type.
-    private Operand compilePointerDereference(PtrExp deref) {
-        import std.conv: text;
-
-        const pointer = compileExpression(deref.e1);
-        if (!pointer.isPointer)
-            throw new Exception(text(
-                "Unsupported pointer dereference in bytecode core: ",
-                expressionChars(deref),
-            ));
-        if (pointer.pointerElement == ScalarType.void_)
-            return pointer;
-
-        return asPointerValue(
-            loadThroughPointer(pointer, compileSizeConstant(0)), deref.type,
-        );
-    }
-
-    // `p[i]`: read the element at `p + i` through a pointer, yielding a scalar
-    // operand of the pointed-at element type. Null if `p` is not a pointer.
-    private Operand* tryPointerIndex(IndexExp index) {
-        if (auto deref = index.e1.isPtrExp) {
-            const pointer = compileExpression(deref.e1);
-            if (!pointer.isPointer)
-                return null;
-
-            // `(*p)[i]` where `p`'s pointee is a static array (`int[2]* p`):
-            // `pointer.pointerElement` (from `pointerElementMetadata`) names
-            // the WHOLE `T[N]` block `*p` dereferences to, not the single
-            // element `[i]` steps through; use the one-level-deeper metadata
-            // instead so the element width/stride is `sizeof(T)`, not
-            // `sizeof(T[N])` or the aggregate `void_` marker.
-            const elementMetadata =
-                dereferencedArrayIndexElementMetadata(deref.e1.type);
-            const indexPointer = Operand(
-                pointer.offset, pointer.type, true, elementMetadata.opcodeType,
-            );
-            const indexSlot = compileExpression(index.e2);
-            auto result = new Operand;
-            *result = asPointerValue(
-                loadThroughPointer(indexPointer, indexSlot.offset), index.type,
-            );
-            return result;
-        }
-
-        if (!isPointerType(index.e1.type))
-            return null;
-
-        const pointer = compileExpression(index.e1);
-        const indexSlot = compileExpression(index.e2);
-        auto result = new Operand;
-        *result = asPointerValue(
-            loadThroughPointer(pointer, indexSlot.offset), index.type,
-        );
-        return result;
     }
 
     // Read `size(elementType)` bytes from `[pointer + index * size]` into a
@@ -10782,8 +10666,6 @@ private struct Compiler {
         if (auto length = assign.e1.isArrayLengthExp)
             return compileArrayLengthAssign(length, assign.e2);
 
-        if (auto place = slicePlaceOrNull(assign.e1))
-            return storeSlicePlace(*place, assign.e2);
         auto place = placeOrNull(assign.e1);
         if (place is null)
             throw new Exception(text(
@@ -10791,7 +10673,7 @@ private struct Compiler {
                 expressionChars(assign),
             ));
 
-        if (place.valueType !is null)
+        if (place.valueType !is null || place.kind == Place.Kind.slice)
             return storeExpressionIntoPlace(*place, assign.e2);
 
         const rhs = compileExpression(assign.e2);
@@ -12332,42 +12214,6 @@ private struct Compiler {
         return result;
     }
 
-    // `arr[i] = rhs` for a static-array element captured from an enclosing
-    // function (`int[3] arr; void mutate() { arr[1] = 55; }`): `arr`'s slot
-    // lives in the enclosing frame, not this function's own
-    // static-array metadata, so the write must go through
-    // `capturedFrameIndex`/`Op.frameStore` (the same captured-variable
-    // machinery `compileCapturedPostIncrement` already uses for a captured
-    // *scalar*) instead of the ordinary in-frame place store.
-    private Operand* tryCapturedStaticArrayElementRead(IndexExp index) {
-        if (!_hasNestedContext)
-            return null;
-
-        auto element = tryCapturedStaticArrayElement(index);
-        if (element is null)
-            return null;
-
-        const captured = element.declaration in _capturedOffsets;
-        const absoluteOffset = cast(ushort) (*captured + element.relativeOffset);
-
-        const elementSize = element.type == ScalarType.void_
-            ? inlineByteWidth(index.type)
-            : size(element.type);
-        const destination = element.type == ScalarType.void_
-            ? allocateStructBlock(index.type)
-            : allocateBytes(elementSize, elementSize);
-        _code ~= Instruction(
-            Op.frameLoad,
-            destination,
-            capturedFrameIndex(_capturedOwners[element.declaration], absoluteOffset),
-            cast(ushort) elementSize,
-        );
-
-        auto result = new Operand;
-        *result = Operand(destination, element.type);
-        return result;
-    }
-
     // A real-address slice descriptor over a static-array sub-slice
     // (`arr[lo .. hi]`), sharing `arr`'s own frame or field storage instead of
     // the throwaway heap copy `dynamicArrayDescriptorOrNull` builds
@@ -12441,82 +12287,30 @@ private struct Compiler {
         return result;
     }
 
-    private Operand storeStaticSlicePlace(
-        SlicePlace place,
+    private Operand storeStaticSlice(
+        Place place,
         Expression rhs,
     ) {
-        auto elementType = place.baseType.toBasetype.nextOf;
+        auto elementType = place.sliceBaseType.toBasetype.nextOf;
         if (elementType !is null && rhs.type !is null &&
             sameType(rhs.type, elementType) &&
             typeFacts(elementType).isAggregate) {
             const value = aggregateValueOffset(elementType, rhs, false);
-            emitSliceFill(place.destination, value, place.elementSize);
+            emitSliceFill(place.offset, value, place.sliceElementSize);
             return Operand.init;
         }
 
         if (isBroadcastFillSource(rhs)) {
             const value = compileExpression(rhs);
             emitSliceFill(
-                place.destination, value.offset, place.elementSize,
+                place.offset, value.offset, place.sliceElementSize,
             );
             return Operand.init;
         }
 
-        const source = compileSourceSlice(place.elementType, rhs);
-        emitSliceCopy(place.destination, source, place.elementSize);
+        const source = compileSourceSlice(place.sliceElementType, rhs);
+        emitSliceCopy(place.offset, source, place.sliceElementSize);
         return Operand.init;
-    }
-
-    private SlicePlace* slicePlaceOrNull(Expression expression) {
-        auto slice = expression.isSliceExp;
-        if (slice is null)
-            return null;
-
-        if (auto destination = tryStaticArraySliceDescriptor(slice)) {
-            auto result = new SlicePlace;
-            *result = SlicePlace(
-                *destination,
-                dynamicArrayElementType(slice.e1.type),
-                inlineByteWidth(slice.e1.type.toBasetype.nextOf),
-                false,
-                true,
-                DynamicArrayLocal.init,
-                slice.e1.type,
-            );
-            return result;
-        }
-
-        auto descriptor = dynamicArrayDescriptorOrNull(slice.e1);
-        if (descriptor is null && !isPointerType(slice.e1.type))
-            return null;
-        const elementType = descriptor is null
-            ? dynamicArrayElementType(slice.type)
-            : descriptor.elementType;
-        const elementIsArray = descriptor is null
-            ? arrayElementIsArray(slice.e1.type)
-            : descriptor.elementIsArray;
-        const destination = allocateBytes(
-            sliceDescriptorSize, size_t.sizeof,
-        );
-        compileSliceInto(destination, elementType, slice);
-
-        auto result = new SlicePlace;
-        *result = SlicePlace(
-            destination,
-            elementType,
-            dynamicArrayElementSize(slice.e1.type, elementIsArray),
-            elementIsArray,
-            false,
-            descriptor is null ? DynamicArrayLocal.init : *descriptor,
-            slice.e1.type,
-        );
-        return result;
-    }
-
-    private Operand storeSlicePlace(SlicePlace place, Expression rhs) {
-        return place.isStaticArray
-            ? storeStaticSlicePlace(place, rhs)
-            : storeDynamicSlicePlace(place, rhs);
     }
 
     // True when `rhs` is a single value broadcast into every element of a
@@ -12557,15 +12351,15 @@ private struct Compiler {
         return descriptor !is null && descriptor.elementIsArray;
     }
 
-    private Operand storeDynamicSlicePlace(
-        SlicePlace place,
+    private Operand storeDynamicSlice(
+        Place place,
         Expression rhs,
     ) {
-        auto descriptor = &place.descriptor;
-        const elementType = place.elementType;
-        const elementIsArray = place.elementIsArray;
-        const destination = place.destination;
-        const elementSize = place.elementSize;
+        auto descriptor = &place.sliceDescriptor;
+        const elementType = place.sliceElementType;
+        const elementIsArray = place.sliceElementIsArray;
+        const destination = place.offset;
+        const elementSize = place.sliceElementSize;
 
         // `elementIsArray` means each destination element is its own
         // separately heap-allocated row descriptor (the `T[N][]`
@@ -12588,7 +12382,7 @@ private struct Compiler {
 
         if (elementIsArray && descriptor !is null &&
             !descriptor.isStaticArrayView) {
-            auto rowType = place.baseType.toBasetype.nextOf;
+            auto rowType = place.sliceBaseType.toBasetype.nextOf;
             if (rowType.toBasetype.ty == TY.Tsarray) {
                 const rowByteSize = inlineByteWidth(rowType);
 
@@ -15608,7 +15402,7 @@ private struct Compiler {
         // whose `e1` is the bounds-checked pointer-yielding hook glue and
         // whose `e2` is the constant `0` (the same `*p` == `p[0]` idiom DMD
         // uses generally), rather than lowering it to a further nested
-        // `CallExp`. `tryPointerIndex` already compiles this exact shape
+        // `CallExp`. The place resolver already compiles this exact shape
         // correctly for a plain `int x = a[1];`, loading through the pointer
         // at the value's own scalar width; reuse it here so the loaded
         // AA-handle value (or ordinary scalar) lands in a real frame slot,
@@ -15617,8 +15411,7 @@ private struct Compiler {
             if (auto zero = index.e2.isIntegerExp)
                 if (zero.toInteger == 0 &&
                     isPointerType(index.e1.type)) {
-                    // Inlines `tryPointerIndex`'s non-`PtrExp` branch (this
-                    // shape's `e1` is never itself a `PtrExp`) instead of
+                    // Keep this shape's pointer available instead of
                     // delegating to `compileExpression`, so the pointer into
                     // the OUTER map's own storage stays available below for
                     // `compileAssocArrayGetLvalue` to write an
