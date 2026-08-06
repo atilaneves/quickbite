@@ -255,7 +255,7 @@ private struct Compiler {
         ushort offset;
     }
 
-    private static struct ScalarPlace {
+    private static struct Place {
         private enum Kind {
             frame,
             captured,
@@ -275,27 +275,53 @@ private struct Compiler {
         bool isPointerValue;
         ScalarType pointerElement;
         ushort indexOffset;
-    }
+        Type valueType;
+        bool heapEscapingDelegate;
+        bool declinesCapturingDelegate;
 
-    private static struct AggregatePlace {
-        private enum Kind {
-            frame,
-            captured,
-            module_,
-            pointer,
-            dynamicIndex,
-            field,
+        this(
+            in Kind kind,
+            in ScalarType type,
+            in ushort offset,
+            VarDeclaration declaration = null,
+            StructField field = StructField.init,
+            in bool hasFieldWriteback = false,
+            in bool isPointerValue = false,
+            in ScalarType pointerElement = ScalarType.void_,
+            in ushort indexOffset = 0,
+        ) {
+            this.kind = kind;
+            this.type = type;
+            this.offset = offset;
+            this.declaration = declaration;
+            this.field = field;
+            this.hasFieldWriteback = hasFieldWriteback;
+            this.isPointerValue = isPointerValue;
+            this.pointerElement = pointerElement;
+            this.indexOffset = indexOffset;
         }
 
-        Kind kind;
-        Type type;
-        ushort offset;
-        ushort indexOffset;
-        StructField field;
-        bool hasFieldWriteback;
-        bool heapEscapingDelegate;
-        VarDeclaration declaration;
-        bool declinesCapturingDelegate;
+        this(
+            in Kind kind,
+            Type valueType,
+            in ushort offset,
+            in ushort indexOffset = 0,
+            StructField field = StructField.init,
+            in bool hasFieldWriteback = false,
+            in bool heapEscapingDelegate = false,
+            VarDeclaration declaration = null,
+            in bool declinesCapturingDelegate = false,
+        ) {
+            this.kind = kind;
+            this.valueType = valueType;
+            this.offset = offset;
+            this.indexOffset = indexOffset;
+            this.field = field;
+            this.hasFieldWriteback = hasFieldWriteback;
+            this.heapEscapingDelegate = heapEscapingDelegate;
+            this.declaration = declaration;
+            this.declinesCapturingDelegate = declinesCapturingDelegate;
+        }
     }
 
     private static struct SlicePlace {
@@ -2872,8 +2898,8 @@ private struct Compiler {
                 return *property;
 
         if (expression.isDotVarExp !is null) {
-            if (auto place = scalarPlaceOrNull(expression)) {
-                const value = loadScalarPlace(*place);
+            if (auto place = placeOrNull(expression)) {
+                const value = loadPlace(*place);
                 return place.isPointerValue
                     ? Operand(
                         value.offset, value.type, true,
@@ -2881,8 +2907,8 @@ private struct Compiler {
                     )
                     : value;
             }
-            if (auto place = aggregatePlaceOrNull(expression))
-                return loadAggregatePlace(*place);
+            if (auto place = placeOrNull(expression))
+                return loadPlace(*place);
         }
 
         if (auto dot = expression.isDotVarExp)
@@ -3036,14 +3062,14 @@ private struct Compiler {
         import dmd.tokens: EXP;
         import std.conv: text;
 
-        auto place = scalarPlaceOrNull(post.e1);
+        auto place = placeOrNull(post.e1);
         if (place is null || !isIntegerScalar(place.type))
             throw new Exception(text(
                 "Unsupported post-increment in bytecode core: ",
                 expressionChars(post),
             ));
 
-        const lvalue = loadScalarPlace(*place);
+        const lvalue = loadPlace(*place);
         const result = allocate(place.type);
         _code ~= Instruction(
             Op.copy, result, lvalue.offset, cast(ushort) size(place.type),
@@ -3059,11 +3085,78 @@ private struct Compiler {
         _code ~= Instruction(
             stepOp, lvalue.offset, lvalue.offset, increment.offset,
         );
-        storeScalarPlace(*place, lvalue);
+        storePlace(*place, lvalue);
         return Operand(result, place.type);
     }
 
-    private ScalarPlace* scalarPlaceOrNull(Expression expression) {
+    private Place* placeOrNull(Expression expression) {
+        const facts = typeFacts(expression.type);
+        if (!facts.isAggregate && expression.isArrayLengthExp !is null)
+            return scalarPlaceCandidate(expression);
+        if (auto conditional = expression.isCondExp) {
+            const condition = compileBoolCondition(conditional.econd);
+            const pointer = allocateBytes(
+                cast(uint) size_t.sizeof, size_t.sizeof,
+            );
+            const falseJump = emitJumpIfFalse(condition);
+            auto whenTrue = placeOrNull(conditional.e1);
+            if (whenTrue is null)
+                return null;
+            const whenTrueAddress = addressOfPlace(*whenTrue);
+            _code ~= Instruction(
+                Op.copy, pointer, whenTrueAddress.offset,
+                cast(ushort) size_t.sizeof,
+            );
+            const endJump = emitJump;
+            patchJump(falseJump);
+            auto whenFalse = placeOrNull(conditional.e2);
+            if (whenFalse is null)
+                return null;
+            const whenFalseAddress = addressOfPlace(*whenFalse);
+            _code ~= Instruction(
+                Op.copy, pointer, whenFalseAddress.offset,
+                cast(ushort) size_t.sizeof,
+            );
+            patchJump(endJump);
+            return pointerPlace(pointer, expression.type);
+        }
+        if (auto call = expression.isCallExp) {
+            auto function_ = callFunction(call);
+            if (facts.isAggregate && function_ !is null &&
+                function_.isCtorDeclaration !is null) {
+                const receiver = methodReceiver(call);
+                compileCall(call, &receiver);
+                return pointerPlace(receiver.offset, expression.type);
+            }
+            auto type = function_ is null ? null : function_.type.isTypeFunction;
+            if (type !is null && type.isRef)
+                return pointerPlace(
+                    compileCall(call).offset, expression.type,
+                );
+            return null;
+        }
+        if (expression.isVarExp !is null || expression.isThisExp !is null ||
+            expression.isSuperExp !is null ||
+            expression.isDotVarExp !is null ||
+            expression.isIndexExp !is null)
+            return facts.isAggregate
+                ? aggregatePlaceCandidate(expression)
+                : scalarPlaceCandidate(expression);
+        if (auto dereference = expression.isPtrExp) {
+            import dmd.astenums: TY;
+
+            if (!facts.isAggregate &&
+                dereference.type.toBasetype.ty == TY.Tfunction)
+                return null;
+            const pointer = compileExpression(dereference.e1);
+            if (!pointer.isPointer)
+                return null;
+            return pointerPlace(pointer.offset, expression.type);
+        }
+        return null;
+    }
+
+    private Place* scalarPlaceCandidate(Expression expression) {
         if (auto length = expression.isArrayLengthExp)
             if (auto descriptor = dynamicArrayDescriptorOrNull(length.e1)) {
                 Operand address;
@@ -3082,7 +3175,7 @@ private struct Compiler {
                         ),
                         ScalarType.ulong_,
                     );
-                return pointerScalarPlace(address.offset, expression.type);
+                return pointerPlace(address.offset, expression.type);
             }
 
         if (auto call = expression.isCallExp) {
@@ -3091,7 +3184,7 @@ private struct Compiler {
             if (type !is null && type.isRef &&
                 !typeFacts(expression.type).isAggregate) {
                 const pointer = compileCall(call);
-                return pointerScalarPlace(pointer.offset, expression.type);
+                return pointerPlace(pointer.offset, expression.type);
             }
         }
         if (auto variable = expression.isVarExp) {
@@ -3101,8 +3194,8 @@ private struct Compiler {
             if (_hasNestedContext && !declaration.isReference)
                 if (auto offset = declaration in _capturedOffsets)
                     if (_capturedOwners[declaration] !is _currentFunction)
-                        return new ScalarPlace(
-                            ScalarPlace.Kind.captured,
+                        return new Place(
+                            Place.Kind.captured,
                             scalarType(declaration.type), *offset,
                             declaration,
                             StructField.init,
@@ -3126,8 +3219,8 @@ private struct Compiler {
                             ),
                             cast(ushort) size_t.sizeof,
                         );
-                        return new ScalarPlace(
-                            ScalarPlace.Kind.pointer,
+                        return new Place(
+                            Place.Kind.pointer,
                             *element,
                             pointer,
                             null,
@@ -3140,8 +3233,8 @@ private struct Compiler {
                             compileSizeConstant(0),
                         );
                     }
-                    return new ScalarPlace(
-                        ScalarPlace.Kind.pointer,
+                    return new Place(
+                        Place.Kind.pointer,
                         *element,
                         *slot,
                         null,
@@ -3155,8 +3248,8 @@ private struct Compiler {
                     );
                 }
                 auto pointerElement = declarationRecordView(declaration).pointerOrNull;
-                return new ScalarPlace(
-                    ScalarPlace.Kind.frame, scalarType(declaration.type), *slot,
+                return new Place(
+                    Place.Kind.frame, scalarType(declaration.type), *slot,
                     declaration,
                     StructField.init,
                     false,
@@ -3179,8 +3272,8 @@ private struct Compiler {
                             ),
                             cast(ushort) size_t.sizeof,
                         );
-                        return new ScalarPlace(
-                            ScalarPlace.Kind.pointer,
+                        return new Place(
+                            Place.Kind.pointer,
                             scalarType(declaration.type),
                             pointer,
                             null,
@@ -3193,8 +3286,8 @@ private struct Compiler {
                             compileSizeConstant(0),
                         );
                     }
-                    return new ScalarPlace(
-                        ScalarPlace.Kind.captured,
+                    return new Place(
+                        Place.Kind.captured,
                         scalarType(declaration.type), *offset,
                         declaration,
                         StructField.init,
@@ -3206,8 +3299,8 @@ private struct Compiler {
                     );
                 }
             if (auto moduleVariable = moduleDeclarationRecord(declaration).moduleScalarOrNull)
-                return new ScalarPlace(
-                    ScalarPlace.Kind.module_, moduleVariable.type,
+                return new Place(
+                    Place.Kind.module_, moduleVariable.type,
                     moduleVariable.offset,
                 );
             return null;
@@ -3216,15 +3309,15 @@ private struct Compiler {
             auto field = dot.var.isVarDeclaration;
             if (field !is null && dot.e1.type !is null &&
                 typeFacts(dot.e1.type).isAggregate)
-                if (auto base = aggregatePlaceOrNull(dot.e1)) {
-                    const address = addressOfAggregatePlace(*base);
+                if (auto base = placeOrNull(dot.e1)) {
+                    const address = addressOfPlace(*base);
                     const fieldAddress = pointerPlaceAddress(
                         address.offset,
                         compileSizeConstant(cast(size_t) field.offset),
                         1,
                         scalarType(field.type),
                     );
-                    return pointerScalarPlace(
+                    return pointerPlace(
                         fieldAddress.offset, field.type,
                     );
                 }
@@ -3238,8 +3331,8 @@ private struct Compiler {
             const pointer = compileExpression(dereference.e1);
             if (!pointer.isPointer)
                 return null;
-            return new ScalarPlace(
-                ScalarPlace.Kind.pointer, pointer.pointerElement,
+            return new Place(
+                Place.Kind.pointer, pointer.pointerElement,
                 pointer.offset, null, StructField.init, false,
                 isPointerType(dereference.type),
                 isPointerType(dereference.type)
@@ -3250,12 +3343,12 @@ private struct Compiler {
         }
         if (auto dot = expression.isDotVarExp) {
             if (auto element = tryClassArrayFieldElementFieldPointer(dot))
-                return pointerScalarPlace(element.pointer, element.type);
+                return pointerPlace(element.pointer, element.type);
             if (auto element = tryStructSliceFieldElementFieldPointer(dot))
-                return pointerScalarPlace(element.pointer, element.type);
+                return pointerPlace(element.pointer, element.type);
             if (auto field = tryStructField(dot))
-                return new ScalarPlace(
-                    ScalarPlace.Kind.field, scalarType(field.type),
+                return new Place(
+                    Place.Kind.field, scalarType(field.type),
                     field.offset, null, *field, true,
                     isPointerType(field.type),
                     isPointerType(field.type)
@@ -3263,17 +3356,17 @@ private struct Compiler {
                         : ScalarType.void_,
                 );
             if (auto field = tryStructPointerField(dot))
-                return pointerScalarPlace(heapFieldAddress(*field), field.type);
+                return pointerPlace(heapFieldAddress(*field), field.type);
             if (auto field = tryClassPointerField(dot))
-                return pointerScalarPlace(heapFieldAddress(*field), field.type);
+                return pointerPlace(heapFieldAddress(*field), field.type);
         }
         if (auto index = expression.isIndexExp) {
             import dmd.astenums: TY;
 
             if (index.e1.type !is null &&
                 index.e1.type.toBasetype.ty == TY.Tsarray)
-                if (auto base = aggregatePlaceOrNull(index.e1)) {
-                    const address = addressOfAggregatePlace(*base);
+                if (auto base = placeOrNull(index.e1)) {
+                    const address = addressOfPlace(*base);
                     const facts = typeFacts(index.type);
                     if (!facts.isAggregate) {
                         const elementAddress = advanceStaticArrayPointer(
@@ -3282,7 +3375,7 @@ private struct Compiler {
                                 staticArrayLength(index.e1.type),
                             ),
                         );
-                        return pointerScalarPlace(
+                        return pointerPlace(
                             elementAddress.offset, index.type,
                         );
                     }
@@ -3290,8 +3383,8 @@ private struct Compiler {
             if (_hasNestedContext)
                 if (auto element = tryCapturedStaticArrayElement(index)) {
                     const base = _capturedOffsets[element.declaration];
-                    return new ScalarPlace(
-                        ScalarPlace.Kind.capturedElement,
+                    return new Place(
+                        Place.Kind.capturedElement,
                         element.type,
                         cast(ushort) (base + element.relativeOffset),
                         element.declaration,
@@ -3301,13 +3394,13 @@ private struct Compiler {
                 if (auto pointer = advanceArrayElementFieldPointer(
                         base, index.e2,
                     ))
-                    return pointerScalarPlace(pointer.offset, index.type);
+                    return pointerPlace(pointer.offset, index.type);
             if (isPointerType(index.e1.type)) {
                 const pointer = compileExpression(index.e1);
                 const indexValue = compileExpression(index.e2);
                 if (pointer.isPointer)
-                    return new ScalarPlace(
-                        ScalarPlace.Kind.pointer,
+                    return new Place(
+                        Place.Kind.pointer,
                         scalarType(index.type),
                         pointer.offset,
                         null,
@@ -3327,8 +3420,8 @@ private struct Compiler {
                     dereference.e1.type,
                 );
                 if (pointer.isPointer && !facts.isAggregate)
-                    return new ScalarPlace(
-                        ScalarPlace.Kind.pointer,
+                    return new Place(
+                        Place.Kind.pointer,
                         facts.opcodeType,
                         pointer.offset,
                         null,
@@ -3342,10 +3435,10 @@ private struct Compiler {
             if (indexesStaticArray(index.e1)) {
                 if (staticArrayChainNeedsRuntimeAddress(index))
                     if (auto pointer = tryStaticArrayRuntimeAddress(index))
-                        return pointerScalarPlace(pointer.offset, index.type);
+                        return pointerPlace(pointer.offset, index.type);
                 if (auto element = tryStaticArrayElement(index))
-                    return new ScalarPlace(
-                        ScalarPlace.Kind.field, element.type, element.offset,
+                    return new Place(
+                        Place.Kind.field, element.type, element.offset,
                         null, element.writeback is null
                             ? StructField.init : *element.writeback,
                         element.writeback !is null,
@@ -3359,8 +3452,8 @@ private struct Compiler {
                     _activeDollarLength = savedDollarLength;
                     const facts = typeFacts(index.type);
                     if (!facts.isAggregate)
-                        return new ScalarPlace(
-                            ScalarPlace.Kind.dynamicIndex,
+                        return new Place(
+                            Place.Kind.dynamicIndex,
                             facts.opcodeType,
                             descriptor.offset,
                             null,
@@ -3375,20 +3468,25 @@ private struct Compiler {
                 }
             }
             if (auto pointer = tryPointerToElement(index))
-                return pointerScalarPlace(pointer.offset, index.type);
+                return pointerPlace(pointer.offset, index.type);
         }
         return null;
     }
 
-    private ScalarPlace* pointerScalarPlace(
+    private Place* pointerPlace(
         in ushort pointer,
         Type type,
+        in bool heapEscapingDelegate = false,
     ) {
         const facts = typeFacts(type);
         if (facts.isAggregate)
-            return null;
-        auto result = new ScalarPlace(
-            ScalarPlace.Kind.pointer,
+            return new Place(
+                Place.Kind.pointer, type, pointer,
+                compileSizeConstant(0), StructField.init, false,
+                heapEscapingDelegate || isDelegateValueType(type),
+            );
+        auto result = new Place(
+            Place.Kind.pointer,
             facts.opcodeType,
             pointer,
             null,
@@ -3409,90 +3507,121 @@ private struct Compiler {
         return isPointerType(type) || type.toBasetype.ty == TY.Tclass;
     }
 
-    private Operand loadScalarPlace(ScalarPlace place) {
-        final switch (place.kind) with (ScalarPlace.Kind) {
+    private Operand loadPlace(Place place) {
+        const aggregate = place.valueType !is null;
+        const width = aggregate
+            ? typeFacts(place.valueType).byteWidth
+            : size(place.type);
+        const operandType = aggregate ? ScalarType.void_ : place.type;
+        final switch (place.kind) with (Place.Kind) {
             case frame:
-                if (auto closurePointer =
+                if (!aggregate)
+                    if (auto closurePointer =
                         place.declaration in _heapEscapingClosurePointers)
-                    return loadThroughPointer(
-                        Operand(
-                            *closurePointer, ScalarType.ulong_, true,
-                            place.type,
-                        ),
-                        compileSizeConstant(
-                            _heapEscapingClosureOffsets[place.declaration] /
-                                size(place.type),
-                        ),
-                    );
-                return Operand(place.offset, place.type);
+                        return loadThroughPointer(
+                            Operand(
+                                *closurePointer, ScalarType.ulong_, true,
+                                place.type,
+                            ),
+                            compileSizeConstant(
+                                _heapEscapingClosureOffsets[place.declaration] /
+                                    width,
+                            ),
+                        );
+                return Operand(place.offset, operandType);
             case field:
-                return Operand(place.offset, place.type);
+                return Operand(place.offset, operandType);
             case captured:
-                return loadCapturedLocal(place.declaration, place.offset);
+                if (!aggregate)
+                    return loadCapturedLocal(place.declaration, place.offset);
+                goto case capturedElement;
             case capturedElement:
-                const result = allocate(place.type);
+                const result = aggregate
+                    ? allocateBytes(width, staticArrayAlign(place.valueType))
+                    : allocate(place.type);
                 _code ~= Instruction(
                     Op.frameLoad,
                     result,
                     capturedFrameIndex(
                         _capturedOwners[place.declaration], place.offset,
                     ),
-                    cast(ushort) size(place.type),
+                    cast(ushort) width,
                 );
-                return Operand(result, place.type);
+                return Operand(result, operandType);
             case module_:
-                const result = allocate(place.type);
+                const result = aggregate
+                    ? allocateBytes(width, staticArrayAlign(place.valueType))
+                    : allocate(place.type);
                 _code ~= Instruction(
                     Op.loadModule, result, place.offset,
-                    cast(ushort) size(place.type),
+                    cast(ushort) width,
                 );
-                return Operand(result, place.type);
+                return Operand(result, operandType);
             case pointer:
+                if (aggregate) {
+                    const result = allocateBytes(
+                        width, staticArrayAlign(place.valueType),
+                    );
+                    emitPointerLoad(
+                        result, place.offset, place.indexOffset, width,
+                    );
+                    return Operand(result, operandType);
+                }
                 return loadThroughPointer(
                     Operand(place.offset, ScalarType.ulong_, true, place.type),
                     place.indexOffset,
                 );
             case dynamicIndex:
-                const result = allocate(place.type);
+                const result = aggregate
+                    ? allocateBytes(width, staticArrayAlign(place.valueType))
+                    : allocate(place.type);
                 emitIndexLoad(
-                    result, place.offset, place.indexOffset, size(place.type),
+                    result, place.offset, place.indexOffset, width,
                 );
-                return Operand(result, place.type);
+                return Operand(result, operandType);
         }
     }
 
-    private void storeScalarPlace(ScalarPlace place, in Operand value) {
-        final switch (place.kind) with (ScalarPlace.Kind) {
+    private void storePlace(Place place, in Operand value) {
+        const aggregate = place.valueType !is null;
+        const width = aggregate
+            ? typeFacts(place.valueType).byteWidth
+            : size(place.type);
+        final switch (place.kind) with (Place.Kind) {
             case frame:
                 if (value.offset != place.offset)
                     _code ~= Instruction(
                         Op.copy, place.offset, value.offset,
-                        cast(ushort) size(place.type),
+                        cast(ushort) width,
                     );
-                if (auto closurePointer =
+                if (!aggregate)
+                    if (auto closurePointer =
                         place.declaration in _heapEscapingClosurePointers) {
-                    const closureOffset =
-                        _heapEscapingClosureOffsets[place.declaration];
-                    emitPointerStore(
-                        place.offset,
-                        *closurePointer,
-                        compileSizeConstant(closureOffset / size(place.type)),
-                        size(place.type),
-                    );
-                }
+                        const closureOffset =
+                            _heapEscapingClosureOffsets[place.declaration];
+                        emitPointerStore(
+                            place.offset,
+                            *closurePointer,
+                            compileSizeConstant(closureOffset / width),
+                            width,
+                        );
+                    }
                 return;
             case field:
                 if (value.offset != place.offset)
                     _code ~= Instruction(
                         Op.copy, place.offset, value.offset,
-                        cast(ushort) size(place.type),
+                        cast(ushort) width,
                     );
                 if (place.hasFieldWriteback)
                     writeBackStructField(place.field);
                 return;
             case captured:
-                storeCapturedLocal(place.declaration, place.offset, value);
-                return;
+                if (!aggregate) {
+                    storeCapturedLocal(place.declaration, place.offset, value);
+                    return;
+                }
+                goto case capturedElement;
             case capturedElement:
                 _code ~= Instruction(
                     Op.frameStore,
@@ -3500,58 +3629,64 @@ private struct Compiler {
                     capturedFrameIndex(
                         _capturedOwners[place.declaration], place.offset,
                     ),
-                    cast(ushort) size(place.type),
+                    cast(ushort) width,
                 );
                 return;
             case module_:
                 _code ~= Instruction(
                     Op.storeModule, value.offset, place.offset,
-                    cast(ushort) size(place.type),
+                    cast(ushort) width,
                 );
                 return;
             case pointer:
                 emitPointerStore(
                     value.offset, place.offset, place.indexOffset,
-                    size(place.type),
+                    width,
                 );
                 return;
             case dynamicIndex:
                 emitIndexStore(
                     value.offset, place.offset, place.indexOffset,
-                    size(place.type),
+                    width,
                 );
                 return;
         }
     }
 
-    private Operand addressOfScalarPlace(ScalarPlace place) {
-        final switch (place.kind) with (ScalarPlace.Kind) {
+    private Operand addressOfPlace(Place place) {
+        const aggregate = place.valueType !is null;
+        const width = aggregate
+            ? typeFacts(place.valueType).byteWidth
+            : size(place.type);
+        const operandType = aggregate ? ScalarType.void_ : place.type;
+        final switch (place.kind) with (Place.Kind) {
             case frame:
-                if (auto closurePointer =
+                if (!aggregate)
+                    if (auto closurePointer =
                         place.declaration in _heapEscapingClosurePointers)
-                    return pointerPlaceAddress(
-                        *closurePointer,
-                        compileSizeConstant(
-                            _heapEscapingClosureOffsets[place.declaration] /
-                                size(place.type),
-                        ),
-                        size(place.type),
-                        place.type,
-                    );
-                return *addressOperand(Op.frameAddress, place.offset, place.type);
-            case captured:
-                return capturedPlaceAddress(
-                    place.declaration, place.offset, place.type,
+                        return pointerPlaceAddress(
+                            *closurePointer,
+                            compileSizeConstant(
+                                _heapEscapingClosureOffsets[place.declaration] /
+                                    width,
+                            ),
+                            width,
+                            operandType,
+                        );
+                return *addressOperand(
+                    Op.frameAddress, place.offset, operandType,
                 );
-            case capturedElement:
+            case captured, capturedElement:
                 return capturedPlaceAddress(
-                    place.declaration, place.offset, place.type,
+                    place.declaration, place.offset, operandType,
                 );
             case module_:
-                return *addressOperand(Op.moduleAddress, place.offset, place.type);
+                return *addressOperand(
+                    Op.moduleAddress, place.offset, operandType,
+                );
             case pointer:
                 return pointerPlaceAddress(
-                    place.offset, place.indexOffset, size(place.type), place.type,
+                    place.offset, place.indexOffset, width, operandType,
                 );
             case dynamicIndex:
                 const pointer = allocateBytes(
@@ -3562,10 +3697,10 @@ private struct Compiler {
                     cast(ushort) size_t.sizeof,
                 );
                 return pointerPlaceAddress(
-                    pointer, place.indexOffset, size(place.type), place.type,
+                    pointer, place.indexOffset, width, operandType,
                 );
             case field:
-                return addressOfStructField(place.field, place.type);
+                return addressOfStructField(place.field, operandType);
         }
     }
 
@@ -3643,7 +3778,7 @@ private struct Compiler {
         }
     }
 
-    private AggregatePlace* aggregatePlaceOrNull(Expression expression) {
+    private Place* aggregatePlaceCandidate(Expression expression) {
         if (!typeFacts(expression.type).isAggregate)
             return null;
 
@@ -3653,11 +3788,11 @@ private struct Compiler {
                 function_.isCtorDeclaration !is null) {
                 const receiver = methodReceiver(call);
                 compileCall(call, &receiver);
-                return pointerAggregatePlace(receiver.offset, expression.type);
+                return pointerPlace(receiver.offset, expression.type);
             }
             auto type = function_ is null ? null : function_.type.isTypeFunction;
             if (type !is null && type.isRef)
-                return pointerAggregatePlace(
+                return pointerPlace(
                     compileCall(call).offset, expression.type,
                 );
         }
@@ -3668,8 +3803,8 @@ private struct Compiler {
                 return null;
             if (declaration.isParameter && declaration.isReference)
                 if (auto offset = declaration in _capturedOffsets)
-                    return new AggregatePlace(
-                        AggregatePlace.Kind.pointer, expression.type,
+                    return new Place(
+                        Place.Kind.pointer, expression.type,
                         *offset, compileSizeConstant(0),
                         StructField.init, false,
                         isDelegateValueType(expression.type),
@@ -3679,46 +3814,46 @@ private struct Compiler {
             if (auto slot = declarationRecordView(declaration).scalarOrNull)
                 if (declarationRecordView(declaration).refPointerOrNull
                         !is null)
-                    return pointerAggregatePlace(*slot, expression.type);
+                    return pointerPlace(*slot, expression.type);
             if (auto local = declarationRecordView(declaration).struct_OrNull)
-                return new AggregatePlace(
-                    AggregatePlace.Kind.frame, expression.type, local.offset,
+                return new Place(
+                    Place.Kind.frame, expression.type, local.offset,
                 );
             if (auto offset = declarationRecordView(declaration).staticArrayOrNull)
-                return new AggregatePlace(
-                    AggregatePlace.Kind.frame, expression.type, *offset,
+                return new Place(
+                    Place.Kind.frame, expression.type, *offset,
                 );
             if (auto local = declarationRecordView(declaration).dynamicArrayOrNull)
-                return new AggregatePlace(
-                    AggregatePlace.Kind.frame, expression.type, local.offset,
+                return new Place(
+                    Place.Kind.frame, expression.type, local.offset,
                 );
             if (auto module_ = moduleDeclarationRecord(declaration).moduleStructOrNull)
-                return new AggregatePlace(
-                    AggregatePlace.Kind.module_, expression.type,
+                return new Place(
+                    Place.Kind.module_, expression.type,
                     module_.offset,
                 );
             if (auto module_ = moduleDeclarationRecord(declaration).moduleStaticArrayOrNull)
-                return new AggregatePlace(
-                    AggregatePlace.Kind.module_, expression.type,
+                return new Place(
+                    Place.Kind.module_, expression.type,
                     module_.offset,
                 );
             if (auto module_ = moduleDeclarationRecord(declaration).moduleDynamicArrayOrNull)
-                return new AggregatePlace(
-                    AggregatePlace.Kind.module_, expression.type,
+                return new Place(
+                    Place.Kind.module_, expression.type,
                     module_.offset,
                 );
             if (auto module_ = moduleDeclarationRecord(declaration).moduleDelegateOrNull)
-                return new AggregatePlace(
-                    AggregatePlace.Kind.module_, expression.type,
+                return new Place(
+                    Place.Kind.module_, expression.type,
                     module_.offset,
                 );
             if (auto local = declarationRecordView(declaration).delegate_OrNull)
-                return new AggregatePlace(
-                    AggregatePlace.Kind.frame, expression.type, local.offset,
+                return new Place(
+                    Place.Kind.frame, expression.type, local.offset,
                 );
             if (auto local = declarationRecordView(declaration).delegateParameterOrNull)
-                return new AggregatePlace(
-                    AggregatePlace.Kind.frame, expression.type, *local,
+                return new Place(
+                    Place.Kind.frame, expression.type, *local,
                 );
             if (_hasNestedContext)
                 if (auto captured = declaration in _capturedOffsets) {
@@ -3727,12 +3862,12 @@ private struct Compiler {
                             declaration, *captured,
                         );
                         if (pointer.isPointer)
-                            return pointerAggregatePlace(
+                            return pointerPlace(
                                 pointer.offset, expression.type,
                             );
                     }
-                    return new AggregatePlace(
-                        AggregatePlace.Kind.captured,
+                    return new Place(
+                        Place.Kind.captured,
                         expression.type,
                         *captured,
                         0,
@@ -3747,8 +3882,8 @@ private struct Compiler {
 
         if ((expression.isThisExp !is null ||
                 expression.isSuperExp !is null) && _hasThis)
-            return new AggregatePlace(
-                AggregatePlace.Kind.pointer, expression.type,
+            return new Place(
+                Place.Kind.pointer, expression.type,
                 _thisLocal.offset, compileSizeConstant(0),
             );
 
@@ -3765,7 +3900,7 @@ private struct Compiler {
                         ),
                         cast(ushort) size_t.sizeof,
                     );
-                    return pointerAggregatePlace(
+                    return pointerPlace(
                         pointer, expression.type,
                     );
                 }
@@ -3775,8 +3910,8 @@ private struct Compiler {
             const pointer = compileExpression(dereference.e1);
             if (!pointer.isPointer)
                 return null;
-            return new AggregatePlace(
-                AggregatePlace.Kind.pointer, expression.type,
+            return new Place(
+                Place.Kind.pointer, expression.type,
                 pointer.offset, compileSizeConstant(0),
                 StructField.init, false,
                 isDelegateValueType(expression.type),
@@ -3787,35 +3922,35 @@ private struct Compiler {
             auto declaration = dot.var.isVarDeclaration;
             if (declaration !is null && dot.e1.type !is null &&
                 typeFacts(dot.e1.type).isAggregate)
-                if (auto base = aggregatePlaceOrNull(dot.e1)) {
-                    const address = addressOfAggregatePlace(*base);
+                if (auto base = placeOrNull(dot.e1)) {
+                    const address = addressOfPlace(*base);
                     const fieldAddress = pointerPlaceAddress(
                         address.offset,
                         compileSizeConstant(cast(size_t) declaration.offset),
                         1,
                         ScalarType.void_,
                     );
-                    return pointerAggregatePlace(
+                    return pointerPlace(
                         fieldAddress.offset, expression.type,
                     );
                 }
             if (auto element = tryClassArrayFieldElementFieldPointer(dot))
-                return pointerAggregatePlace(
+                return pointerPlace(
                     element.pointer, element.type, true,
                 );
             if (auto element = tryStructSliceFieldElementFieldPointer(dot))
-                return pointerAggregatePlace(element.pointer, element.type);
+                return pointerPlace(element.pointer, element.type);
             if (auto field = tryStructField(dot))
-                return new AggregatePlace(
-                    AggregatePlace.Kind.field, field.type, field.offset, 0,
+                return new Place(
+                    Place.Kind.field, field.type, field.offset, 0,
                     *field, true,
                 );
             if (auto field = tryStructPointerField(dot))
-                return pointerAggregatePlace(
+                return pointerPlace(
                     heapFieldAddress(*field), field.type,
                 );
             if (auto field = tryClassPointerField(dot))
-                return pointerAggregatePlace(
+                return pointerPlace(
                     heapFieldAddress(*field), field.type, true,
                 );
         }
@@ -3825,8 +3960,8 @@ private struct Compiler {
 
             if (index.e1.type !is null &&
                 index.e1.type.toBasetype.ty == TY.Tsarray)
-                if (auto base = aggregatePlaceOrNull(index.e1)) {
-                    const address = addressOfAggregatePlace(*base);
+                if (auto base = placeOrNull(index.e1)) {
+                    const address = addressOfPlace(*base);
                     const facts = typeFacts(index.type);
                     if (facts.isAggregate) {
                         const elementAddress = advanceStaticArrayPointer(
@@ -3835,7 +3970,7 @@ private struct Compiler {
                                 staticArrayLength(index.e1.type),
                             ),
                         );
-                        return pointerAggregatePlace(
+                        return pointerPlace(
                             elementAddress.offset, index.type,
                         );
                     }
@@ -3844,8 +3979,8 @@ private struct Compiler {
             if (_hasNestedContext)
                 if (auto element = tryCapturedStaticArrayElement(index)) {
                     const base = _capturedOffsets[element.declaration];
-                    return new AggregatePlace(
-                        AggregatePlace.Kind.captured,
+                    return new Place(
+                        Place.Kind.captured,
                         index.type,
                         cast(ushort) (base + element.relativeOffset),
                         0,
@@ -3859,7 +3994,7 @@ private struct Compiler {
                 if (auto pointer = advanceArrayElementFieldPointer(
                         base, index.e2,
                     ))
-                    return pointerAggregatePlace(
+                    return pointerPlace(
                         pointer.offset, index.type,
                     );
 
@@ -3867,8 +4002,8 @@ private struct Compiler {
                 const pointer = compileExpression(index.e1);
                 const indexValue = compileExpression(index.e2);
                 if (pointer.isPointer)
-                    return new AggregatePlace(
-                        AggregatePlace.Kind.pointer, index.type,
+                    return new Place(
+                        Place.Kind.pointer, index.type,
                         pointer.offset, indexValue.offset,
                         StructField.init, false,
                         isDelegateValueType(index.type),
@@ -3878,8 +4013,8 @@ private struct Compiler {
                 const pointer = compileExpression(dereference.e1);
                 const indexValue = compileExpression(index.e2);
                 if (pointer.isPointer)
-                    return new AggregatePlace(
-                        AggregatePlace.Kind.pointer, index.type,
+                    return new Place(
+                        Place.Kind.pointer, index.type,
                         pointer.offset, indexValue.offset,
                         StructField.init, false,
                         isDelegateValueType(index.type),
@@ -3889,12 +4024,12 @@ private struct Compiler {
             if (indexesStaticArray(index.e1)) {
                 if (staticArrayChainNeedsRuntimeAddress(index))
                     if (auto pointer = tryStaticArrayRuntimeAddress(index))
-                        return pointerAggregatePlace(
+                        return pointerPlace(
                             pointer.offset, index.type,
                         );
                 if (auto element = tryStaticArrayElement(index))
-                    return new AggregatePlace(
-                        AggregatePlace.Kind.field, index.type,
+                    return new Place(
+                        Place.Kind.field, index.type,
                         element.offset, 0,
                         element.writeback is null
                             ? StructField.init : *element.writeback,
@@ -3907,7 +4042,7 @@ private struct Compiler {
                     const pointer = staticArrayViewElementPointer(
                         *descriptor, index.e2, index.type,
                     );
-                    return pointerAggregatePlace(pointer.offset, index.type);
+                    return pointerPlace(pointer.offset, index.type);
                 }
                 const savedDollarLength = _activeDollarLength;
                 _activeDollarLength = sliceLengthSlot(*descriptor);
@@ -3915,14 +4050,14 @@ private struct Compiler {
                 _activeDollarLength = savedDollarLength;
                 if (descriptor.elementIsArray &&
                     index.type.toBasetype.ty == TY.Tsarray)
-                    return pointerAggregatePlace(
+                    return pointerPlace(
                         innerArrayRowPointer(
                             *descriptor, indexValue.offset,
                         ),
                         index.type,
                     );
-                return new AggregatePlace(
-                    AggregatePlace.Kind.dynamicIndex, index.type,
+                return new Place(
+                    Place.Kind.dynamicIndex, index.type,
                     descriptor.offset, indexValue.offset,
                     StructField.init, false,
                     isDelegateValueType(index.type),
@@ -3930,25 +4065,10 @@ private struct Compiler {
             }
 
             if (auto pointer = tryClassStaticArrayElementPointer(index))
-                return pointerAggregatePlace(pointer.offset, index.type, true);
+                return pointerPlace(pointer.offset, index.type, true);
         }
 
         return null;
-    }
-
-    private AggregatePlace* pointerAggregatePlace(
-        in ushort pointer,
-        Type type,
-        in bool heapEscapingDelegate = false,
-    ) {
-        if (!typeFacts(type).isAggregate)
-            return null;
-        auto result = new AggregatePlace(
-            AggregatePlace.Kind.pointer, type, pointer,
-            compileSizeConstant(0), StructField.init, false,
-            heapEscapingDelegate || isDelegateValueType(type),
-        );
-        return result;
     }
 
     private bool isDelegateValueType(Type type) {
@@ -3957,123 +4077,17 @@ private struct Compiler {
         return type !is null && type.toBasetype.ty == TY.Tdelegate;
     }
 
-    private Operand storeAggregatePlace(
-        AggregatePlace place,
+    private Operand storeExpressionIntoPlace(
+        Place place,
         Expression rhs,
     ) {
         const source = place.declinesCapturingDelegate
             ? refEscapingDelegateOperandOffset(rhs)
             : aggregateValueOffset(
-                place.type, rhs, place.heapEscapingDelegate,
+                place.valueType, rhs, place.heapEscapingDelegate,
             );
-        const width = typeFacts(place.type).byteWidth;
-        final switch (place.kind) with (AggregatePlace.Kind) {
-            case frame, field:
-                _code ~= Instruction(
-                    Op.copy, place.offset, source, cast(ushort) width,
-                );
-                if (place.kind == field && place.hasFieldWriteback)
-                    writeBackStructField(place.field);
-                return Operand(place.offset, ScalarType.void_);
-            case captured:
-                _code ~= Instruction(
-                    Op.frameStore,
-                    source,
-                    capturedFrameIndex(
-                        _capturedOwners[place.declaration], place.offset,
-                    ),
-                    cast(ushort) width,
-                );
-                return Operand(source, ScalarType.void_);
-            case module_:
-                _code ~= Instruction(
-                    Op.storeModule, source, place.offset, cast(ushort) width,
-                );
-                return Operand(source, ScalarType.void_);
-            case pointer:
-                emitPointerStore(
-                    source, place.offset, place.indexOffset, width,
-                );
-                return Operand(source, ScalarType.void_);
-            case dynamicIndex:
-                emitIndexStore(
-                    source, place.offset, place.indexOffset, width,
-                );
-                return Operand(source, ScalarType.void_);
-        }
-    }
-
-    private Operand addressOfAggregatePlace(AggregatePlace place) {
-        const width = typeFacts(place.type).byteWidth;
-        final switch (place.kind) with (AggregatePlace.Kind) {
-            case frame:
-                return *addressOperand(
-                    Op.frameAddress, place.offset, ScalarType.void_,
-                );
-            case captured:
-                return capturedPlaceAddress(
-                    place.declaration, place.offset, ScalarType.void_,
-                );
-            case module_:
-                return *addressOperand(
-                    Op.moduleAddress, place.offset, ScalarType.void_,
-                );
-            case pointer:
-                return pointerPlaceAddress(
-                    place.offset, place.indexOffset, width, ScalarType.void_,
-                );
-            case dynamicIndex:
-                const pointer = allocateBytes(
-                    cast(uint) size_t.sizeof, size_t.sizeof,
-                );
-                _code ~= Instruction(
-                    Op.copy, pointer, place.offset,
-                    cast(ushort) size_t.sizeof,
-                );
-                return pointerPlaceAddress(
-                    pointer, place.indexOffset, width, ScalarType.void_,
-                );
-            case field:
-                return addressOfStructField(
-                    place.field, ScalarType.void_,
-                );
-        }
-    }
-
-    private Operand loadAggregatePlace(AggregatePlace place) {
-        const width = typeFacts(place.type).byteWidth;
-        final switch (place.kind) with (AggregatePlace.Kind) {
-            case frame, field:
-                return Operand(place.offset, ScalarType.void_);
-            case captured:
-                const result = allocateBytes(width, staticArrayAlign(place.type));
-                _code ~= Instruction(
-                    Op.frameLoad, result,
-                    capturedFrameIndex(
-                        _capturedOwners[place.declaration], place.offset,
-                    ),
-                    cast(ushort) width,
-                );
-                return Operand(result, ScalarType.void_);
-            case module_:
-                const result = allocateBytes(width, staticArrayAlign(place.type));
-                _code ~= Instruction(
-                    Op.loadModule, result, place.offset, cast(ushort) width,
-                );
-                return Operand(result, ScalarType.void_);
-            case pointer:
-                const result = allocateBytes(width, staticArrayAlign(place.type));
-                emitPointerLoad(
-                    result, place.offset, place.indexOffset, width,
-                );
-                return Operand(result, ScalarType.void_);
-            case dynamicIndex:
-                const result = allocateBytes(width, staticArrayAlign(place.type));
-                emitIndexLoad(
-                    result, place.offset, place.indexOffset, width,
-                );
-                return Operand(result, ScalarType.void_);
-        }
+        storePlace(place, Operand(source, ScalarType.void_));
+        return Operand(source, ScalarType.void_);
     }
 
     private Operand* placeAddressOrNull(Expression expression) {
@@ -4111,15 +4125,15 @@ private struct Compiler {
         }
 
         if (typeFacts(expression.type).isAggregate) {
-            if (auto aggregate = aggregatePlaceOrNull(expression)) {
+            if (auto aggregate = placeOrNull(expression)) {
                 auto result = new Operand;
-                *result = addressOfAggregatePlace(*aggregate);
+                *result = addressOfPlace(*aggregate);
                 return result;
             }
         } else {
-            if (auto scalar = scalarPlaceOrNull(expression)) {
+            if (auto scalar = placeOrNull(expression)) {
                 auto result = new Operand;
-                *result = addressOfScalarPlace(*scalar);
+                *result = addressOfPlace(*scalar);
                 return result;
             }
         }
@@ -4520,9 +4534,9 @@ private struct Compiler {
         if (expression.type !is null &&
             expression.type.toBasetype.ty == TY.Tarray &&
             (expression.isDotVarExp !is null || refParameter || refLocal))
-            if (auto place = aggregatePlaceOrNull(expression)) {
-                const address = addressOfAggregatePlace(*place);
-                const offset = loadAggregatePlace(*place).offset;
+            if (auto place = placeOrNull(expression)) {
+                const address = addressOfPlace(*place);
+                const offset = loadPlace(*place).offset;
                 auto result = new DynamicArrayLocal(
                     offset,
                     dynamicArrayElementType(expression.type),
@@ -4639,8 +4653,8 @@ private struct Compiler {
 
         if (expression.type !is null &&
             expression.type.toBasetype.ty == TY.Tsarray)
-            if (auto place = aggregatePlaceOrNull(expression)) {
-                const address = addressOfAggregatePlace(*place);
+            if (auto place = placeOrNull(expression)) {
+                const address = addressOfPlace(*place);
                 const offset = allocateBytes(
                     sliceDescriptorSize, size_t.sizeof,
                 );
@@ -5960,9 +5974,9 @@ private struct Compiler {
                 receiver = address.e1;
             if (receiver is null)
                 return _thisLocal.offset;
-            auto place = aggregatePlaceOrNull(receiver);
+            auto place = placeOrNull(receiver);
             if (place !is null)
-                return addressOfAggregatePlace(*place).offset;
+                return addressOfPlace(*place).offset;
             const receiverOffset = structOperandOffset(receiver);
             return addressOperand(
                 Op.frameAddress, receiverOffset, ScalarType.void_,
@@ -6896,9 +6910,9 @@ private struct Compiler {
             return MethodReceiver(_thisLocal.offset);
         if (dot !is null && isPointerType(dot.e1.type))
             return MethodReceiver(compileExpression(dot.e1).offset);
-        auto place = dot is null ? null : aggregatePlaceOrNull(dot.e1);
+        auto place = dot is null ? null : placeOrNull(dot.e1);
         if (place !is null)
-            return MethodReceiver(addressOfAggregatePlace(*place).offset);
+            return MethodReceiver(addressOfPlace(*place).offset);
         if (dot !is null && dot.e1.type !is null &&
             typeFacts(dot.e1.type).isAggregate) {
             const value = compileExpression(dot.e1);
@@ -6956,8 +6970,8 @@ private struct Compiler {
         if (auto variable = expression.isVarExp)
             if (auto declaration = variable.var.isVarDeclaration)
                 if (declarationRecordView(declaration).refPointerOrNull !is null)
-                    if (auto place = aggregatePlaceOrNull(expression))
-                        return loadAggregatePlace(*place).offset;
+                    if (auto place = placeOrNull(expression))
+                        return loadPlace(*place).offset;
 
         if (auto dereference = expression.isPtrExp) {
             const pointer = compileExpression(dereference.e1);
@@ -9618,10 +9632,10 @@ private struct Compiler {
                 index.type.toBasetype.ty == TY.Tstruct)
                 return null;
 
-            if (auto place = aggregatePlaceOrNull(index.e1)) {
+            if (auto place = placeOrNull(index.e1)) {
                 auto result = new Operand;
                 *result = advanceStaticArrayPointer(
-                    addressOfAggregatePlace(*place), index.e2, index.type,
+                    addressOfPlace(*place), index.e2, index.type,
                     compileSizeConstant(staticArrayLength(index.e1.type)),
                 );
                 return result;
@@ -10913,7 +10927,7 @@ private struct Compiler {
     ) {
         import std.conv: text;
 
-        auto place = scalarPlaceOrNull(compoundAssignLvalue(assign.e1));
+        auto place = placeOrNull(compoundAssignLvalue(assign.e1));
         if (place is null || place.isPointerValue)
             throw new Exception(text(
                 unsupportedMessage,
@@ -10954,14 +10968,14 @@ private struct Compiler {
             op = isModulo ? Op.modInt4 : Op.divInt4;
 
         const lhs = integerOperationOperand(
-            loadScalarPlace(*place),
+            loadPlace(*place),
             operationType,
         );
         const rhsValue = integerOperationOperand(rhs, operationType);
         const destination = allocate(operationType);
         _code ~= Instruction(op, destination, lhs.offset, rhsValue.offset);
-        storeScalarPlace(*place, Operand(destination, operationType));
-        return loadScalarPlace(*place);
+        storePlace(*place, Operand(destination, operationType));
+        return loadPlace(*place);
     }
 
     private Operand compileShiftExpression(
@@ -11434,7 +11448,7 @@ private struct Compiler {
         import std.conv: text;
 
         const rhs = compileExpression(assign.e2);
-        auto place = scalarPlaceOrNull(compoundAssignLvalue(assign.e1));
+        auto place = placeOrNull(compoundAssignLvalue(assign.e1));
         if (place is null || place.isPointerValue)
             throw new Exception(text(
                 unsupportedMessage,
@@ -11447,7 +11461,7 @@ private struct Compiler {
     }
 
     private Operand compileScalarIntegerCompoundAssign(
-        ScalarPlace place,
+        Place place,
         in Operand rhs,
         BinExp assign,
         in Op op4,
@@ -11483,7 +11497,7 @@ private struct Compiler {
             : ScalarType.int_;
 
         const lhs = integerOperationOperand(
-            loadScalarPlace(place),
+            loadPlace(place),
             operationType,
         );
         const rhsValue = integerOperationOperand(
@@ -11505,8 +11519,8 @@ private struct Compiler {
             rhsValue.offset,
         );
         const value = Operand(destination, operationType);
-        storeScalarPlace(place, value);
-        return loadScalarPlace(place);
+        storePlace(place, value);
+        return loadPlace(place);
     }
 
     private ushort* compoundAssignLocalSlot(VarDeclaration declaration) {
@@ -11591,15 +11605,15 @@ private struct Compiler {
             return compileArrayLengthAssign(length, assign.e2);
 
         if (!typeFacts(assign.e1.type).isAggregate)
-            if (auto place = scalarPlaceOrNull(assign.e1)) {
+            if (auto place = placeOrNull(assign.e1)) {
                 const rhs = compileExpression(assign.e2);
                 if (rhs.type != place.type)
                     throw new Exception(text(
                         "Unsupported assignment in bytecode core: ",
                         expressionChars(assign),
                     ));
-                storeScalarPlace(*place, rhs);
-                const result = loadScalarPlace(*place);
+                storePlace(*place, rhs);
+                const result = loadPlace(*place);
                 return place.isPointerValue
                     ? Operand(
                         result.offset, result.type, true,
@@ -11610,8 +11624,8 @@ private struct Compiler {
 
         if (typeFacts(assign.e1.type).isAggregate &&
             assign.e1.isSliceExp is null)
-            if (auto place = aggregatePlaceOrNull(assign.e1))
-                return storeAggregatePlace(*place, assign.e2);
+            if (auto place = placeOrNull(assign.e1))
+                return storeExpressionIntoPlace(*place, assign.e2);
 
         if (auto place = slicePlaceOrNull(assign.e1))
             return storeSlicePlace(*place, assign.e2);
@@ -11860,15 +11874,15 @@ private struct Compiler {
                             assign.e2,
                         );
         const rhs = compileExpression(assign.e2);
-        auto place = scalarPlaceOrNull(assign.e1);
+        auto place = placeOrNull(assign.e1);
         if (place is null || rhs.type != place.type)
             throw new Exception(text(
                 "Unsupported assignment in bytecode core: ",
                 expressionChars(assign),
             ));
 
-        storeScalarPlace(*place, rhs);
-        const result = loadScalarPlace(*place);
+        storePlace(*place, rhs);
+        const result = loadPlace(*place);
         return place.isPointerValue
             ? Operand(
                 result.offset, result.type, true, place.pointerElement,
@@ -15226,11 +15240,11 @@ private struct Compiler {
         if (declaration is null)
             return null;
         if (declaration.isParameter && declaration.isReference) {
-            auto place = aggregatePlaceOrNull(call.e1);
+            auto place = placeOrNull(call.e1);
             if (place is null)
                 return null;
             auto result = new ushort;
-            *result = loadAggregatePlace(*place).offset;
+            *result = loadPlace(*place).offset;
             return result;
         }
         return declarationRecordView(declaration).delegateParameterOrNull;
@@ -15790,16 +15804,16 @@ private struct Compiler {
             return result;
         }
 
-        if (auto place = scalarPlaceOrNull(index)) {
+        if (auto place = placeOrNull(index)) {
             const value = compileExpression((*call.arguments)[1]);
-            storeScalarPlace(*place, value);
+            storePlace(*place, value);
             auto result = new Operand;
-            *result = loadScalarPlace(*place);
+            *result = loadPlace(*place);
             return result;
         }
-        if (auto place = aggregatePlaceOrNull(index)) {
+        if (auto place = placeOrNull(index)) {
             auto result = new Operand;
-            *result = storeAggregatePlace(
+            *result = storeExpressionIntoPlace(
                 *place, (*call.arguments)[1],
             );
             return result;
@@ -16725,11 +16739,11 @@ private struct Compiler {
         if (auto variable = inner.isVarExp)
             if (auto declaration = variable.var.isVarDeclaration)
                 if (declarationRecordView(declaration).assocArrayOrNull)
-                    if (auto place = scalarPlaceOrNull(inner)) {
-                        const value = loadScalarPlace(*place);
+                    if (auto place = placeOrNull(inner)) {
+                        const value = loadPlace(*place);
                         return AssocArrayHandleResult(
                             value.offset,
-                            place.kind == ScalarPlace.Kind.pointer
+                            place.kind == Place.Kind.pointer
                                 ? place.offset : ushort.max,
                         );
                     }
