@@ -4921,6 +4921,12 @@ private struct Walker {
                 Value result;
                 Value[] writebacks;
                 try {
+                    // A native callback may have hydrated a native-backed
+                    // class for interpreted field access. Native calls consume
+                    // the preserved object identity, independent of whether
+                    // DMD retained a parameter declaration we can classify.
+                    foreach (ref argument; arguments)
+                        argument = preservedNativeClassIdentity(argument);
                     // Mutable because the native-call interfaces accept Type[].
                     auto argumentTypes =
                         nativeArgumentTypes(argumentExpressions);
@@ -12078,6 +12084,17 @@ private struct Walker {
         if (auto cast_ = expression.isCastExp)
             return rootedNativeClassValue(cast_.e1, evaluated);
 
+        // Re-entry through a native callback creates a child Walker. A native
+        // class caught there is hydrated for interpreted field access, but
+        // its class value still carries the runtime object's preserved body
+        // pointer. Restore that opaque identity before the value crosses a
+        // later native-call boundary; attempting to compose the hydrated
+        // field snapshot into a class-reference slot would invent a second
+        // object representation.
+        const nativeIdentity = preservedNativeClassIdentity(evaluated);
+        if (nativeIdentity.isPointer)
+            return nativeIdentity;
+
         auto var = expression.isVarExp;
         auto variable = var is null ? null : var.var.isVarDeclaration;
         if (variable !is null)
@@ -12095,6 +12112,22 @@ private struct Walker {
                     evaluated.pointerAddress,
                 );
         return evaluated;
+    }
+
+    private Value preservedNativeClassIdentity(in Value value) {
+        if (
+            AggregateValue.isClass(value) &&
+            AggregateValue.hasClassFieldNamed(
+                value,
+                nativeExceptionObjectPointerField,
+            )
+        )
+            return AggregateValue.classFieldNamed(
+                value,
+                nativeExceptionObjectPointerField,
+            );
+
+        return value;
     }
 
     // A same-width scalar dynamic-array cast changes only the element type

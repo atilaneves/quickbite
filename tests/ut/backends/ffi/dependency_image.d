@@ -2620,6 +2620,83 @@ unittest {
     }
 }
 
+// Native code may synchronously re-enter an interpreted delegate. A class
+// reference caught during that re-entry must retain the native object identity
+// created by the runtime when the callback passes it to another native call.
+@("dependencyImage.callbackPreservesCaughtNativeClassIdentity." ~ backend.stringof)
+@Tags(backend.stringof)
+unittest {
+    import quickbite.frontend.compiler: parseSnippetWithCheckActionContext;
+    import std.path: buildPath;
+
+    const sandbox = immutable Sandbox();
+    with(sandbox) {
+        const importPath = "imports";
+        const depPath = buildPath(importPath,
+            "dep_image_caught_class_callback_fixture_" ~ backend.stringof ~ ".d");
+        writeFile(depPath, q{
+            module dep_image_caught_class_callback_fixture;
+
+            void dependencyVisit(scope void delegate() callback) {
+                callback();
+            }
+
+            void accept(Throwable value) {
+                assert(value !is null);
+            }
+        }.uniqueDepModule("dep_image_caught_class_callback_fixture", backend.stringof));
+
+        const imagePath = buildSharedLibrary(
+            sandbox,
+            "dep_image_caught_class_callback_fixture_" ~ backend.stringof,
+            [depPath],
+        );
+
+        writeFile(depPath, q{
+            module dep_image_caught_class_callback_fixture;
+
+            void dependencyVisit(scope void delegate() callback);
+            void accept(Throwable value);
+        }.uniqueDepModule("dep_image_caught_class_callback_fixture", backend.stringof));
+
+        auto moduleResult = parseSnippetWithCheckActionContext(
+            q{
+                import core.exception: RangeError;
+                import dep_image_caught_class_callback_fixture;
+
+                unittest {
+                    void delegate() callback = () {
+                        int[] values;
+                        try {
+                            auto ignored = values[0];
+                        } catch (RangeError error) {
+                            accept(error);
+                        }
+                    };
+                    dependencyVisit(callback);
+                }
+            }.uniqueDepModule(
+                "dep_image_caught_class_callback_fixture", backend.stringof),
+            [inSandboxPath(importPath)],
+        );
+
+        const oracle = (new SystemLinker(
+            [imagePath],
+            [inSandboxPath(importPath)],
+        )).runTests(moduleResult.module_);
+        oracle.length.should == 1;
+        oracle[0].passed.should == true;
+
+        const actual = runDependencyImage!backend(
+            [imagePath],
+            [inSandboxPath(importPath)],
+            moduleResult.module_,
+        );
+        actual.length.should == 1;
+        actual[0].passed.should == true;
+    }
+}
+
 // A scoped delegate is contractually consumed within this native call, so it
 // remains on the call-scoped reverse bridge (ffi.md §34.16).
 @("dependencyImage.externDScopedVoidDelegateCallback." ~ backend.stringof)
