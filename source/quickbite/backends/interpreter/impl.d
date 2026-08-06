@@ -3256,7 +3256,7 @@ private struct Walker {
                         );
                     }
                 }
-                if (auto field = index.e1.isDotVarExp)
+                if (auto field = index.e1.isDotVarExp) {
                     if (field.e1.isVarExp !is null) {
                         // Always element mode -- same reasoning as the
                         // `VarExp` arm above: `pointer` is `field`'s own
@@ -3280,7 +3280,53 @@ private struct Walker {
                                     .address,
                             );
                         }
+                    } else if (field.e1.isDotVarExp !is null) {
+                        // A doubly (or more) nested field receiver
+                        // (`s.inner.a[i]`, `field.e1` itself a `DotVarExp`)
+                        // has no `VarExp` for the fast path above to recurse
+                        // `arrayPointer` from -- and `arrayPointer`'s own
+                        // `DotVarExp` arm below only recognizes a `VarExp`
+                        // receiver too, so recursing into it here would hit
+                        // the exact same gap one level deeper.
+                        // `lvalue_place.placeOfLvalue` already recurses
+                        // through an arbitrarily nested `DotVarExp`/`VarExp`
+                        // chain to the field's own place without
+                        // re-evaluating any side effect (unlike
+                        // `addressOfExpression`, whose `DotVarExp` arm
+                        // special-cases a static-array-typed field straight
+                        // back into this same `arrayPointer` gap); reuse it
+                        // for `field`'s own place, then compose the
+                        // `outerOffset`'th element the same way the `VarExp`
+                        // fast path above does.
+                        import quickbite.backends.interpreter.lvalue_place: placeOfLvalue;
+                        import quickbite.backends.interpreter.place: Place;
+
+                        try {
+                            auto fieldPlace = placeOfLvalue(
+                                field,
+                                (variable) @safe => addressableBindingBase(variable),
+                                (expression) @trusted =>
+                                    cast(size_t) runExpression(expression).asLong,
+                            );
+                            const pointer = Value.pointerValue(
+                                fieldPlace.index(cast(size_t) outerOffset).address,
+                            );
+                            if (selfAddress)
+                                return pointer;
+                            // Same hazard as the `VarExp` arm above.
+                            return Value.pointerValue(
+                                Place(cast(void*) pointer.pointerAddress, array.type)
+                                    .index(cast(size_t) offset)
+                                    .address,
+                            );
+                        } catch (Exception) {
+                            // Fall through to the detached-copy fallback
+                            // below for a receiver shape `placeOfLvalue`
+                            // does not (yet) support -- safe refusal is
+                            // preferable to inventing a copied pointee.
+                        }
                     }
+                }
                 // A nested/multi-dimensional static-array index
                 // (`m[i][j]`, `m.e1` itself an `IndexExp`) must compose its
                 // receiver's address the same way the `VarExp` case above

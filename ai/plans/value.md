@@ -698,18 +698,11 @@ second time. The single-level `arr[i++].method()` fix does not cover this
 doubly-nested shape (fixture:
 `struct.methodCallThroughDoublyNestedIndexedReceiverEvaluatesIndexOnce`).
 
-`arrayPointer`'s `IndexExp` arm's `DotVarExp` receiver branch only recognizes
-a single level of field access (`field.e1.isVarExp !is null`, i.e.
-`s.a[i]`); a doubly-nested receiver like `s.inner.a[i]` (`field.e1` is
-itself a `DotVarExp`) falls through to the generic `arrayValue` fallback,
-which composes the address from `runExpression(index.e1)`'s detached copy
-of the static array rather than `s`'s real backing storage, so the write is
-lost (fixture: `pointer.addressOfDoublyNestedDotVarStaticArrayElement`).
-Separately, `&s.a.ptr` on a zero-length dynamic-array field throws
-`"Place.index: index out of range for slice place"` instead of yielding
-`null`, via the same `pointerCastValue`/`arrayPointer(cast_.e1, 0, op)`
-fallback reaching `.field().index(0)` on an empty slice; confirmed on both
-master and this branch, not yet an oracle-backed fixture.
+`&s.a.ptr` on a zero-length dynamic-array field throws `"Place.index: index
+out of range for slice place"` instead of yielding `null`, via the
+`pointerCastValue`/`arrayPointer(cast_.e1, 0, op)` fallback reaching
+`.field().index(0)` on an empty slice; confirmed on master, not yet an
+oracle-backed fixture.
 
 A method call chained off an assign/construct/blit whose target is itself a
 side-effecting `PtrExp`/`IndexExp` (`(*next() = value).bump()`) has no

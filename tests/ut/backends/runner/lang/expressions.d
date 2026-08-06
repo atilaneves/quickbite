@@ -11615,16 +11615,18 @@ static foreach (backend; Matrix!(
 
 // `&s.inner.a[i]` -- an address-of through a NESTED `DotVarExp` receiver
 // (`s.inner` is itself a struct, `.a` is that inner struct's static-array
-// field) with a runtime index -- loses the write. `arrayPointer`'s
-// `IndexExp` arm's `DotVarExp` receiver branch guards on
-// `field.e1.isVarExp !is null` (i.e. only a direct `s.a[i]` shape, one
-// level of field access, per `pointer.addressOfFinalNonZeroIndexOfDotVarDynamicArrayRow`
-// above); a doubly-nested receiver like `s.inner.a[i]` (`field.e1` is
-// itself a `DotVarExp`, not a `VarExp`) falls through to a native-
-// aggregate fallback that composes the address from a detached copy of
-// `runExpression`'s result rather than the real backing storage inside
-// `s`. Pre-existing gap, confirmed red on master too; `ai/plans/value.md`
-// item 4. SystemLinker is the oracle.
+// field) with a runtime index. `arrayPointer`'s `IndexExp` arm's `DotVarExp`
+// receiver branch used to guard on `field.e1.isVarExp !is null` (i.e. only a
+// direct `s.a[i]` shape, one level of field access, per
+// `pointer.addressOfFinalNonZeroIndexOfDotVarDynamicArrayRow` above); a
+// doubly-nested receiver like `s.inner.a[i]` (`field.e1` is itself a
+// `DotVarExp`, not a `VarExp`) fell through to a native-aggregate fallback
+// that composed the address from a detached copy of `runExpression`'s
+// result rather than the real backing storage inside `s`. Fixed on the
+// Interpreter by delegating that shape to `lvalue_place.placeOfLvalue`,
+// which already recurses through an arbitrarily nested `DotVarExp`/`VarExp`
+// chain without re-evaluating any side effect. `ai/plans/value.md` item 4.
+// SystemLinker is the oracle.
 static foreach (backend; Matrix!(
     Omit!(Ctfe, Because.diverges,
         "Ctfe runs the unittest body through DMD's own CTFE interpreter, " ~
@@ -11633,11 +11635,6 @@ static foreach (backend; Matrix!(
     Omit!(Bytecode, Because.unconfirmed,
         "no support yet for address-of through a doubly-nested `DotVarExp` " ~
         "receiver in the bytecode core; reads back 0 instead of 9"),
-    Omit!(Interpreter, Because.unconfirmed,
-        "`arrayPointer`'s `DotVarExp` receiver arm only recognizes a " ~
-        "single level of field access (`field.e1.isVarExp`); a doubly-" ~
-        "nested receiver (`s.inner.a[i]`) falls through to a detached-" ~
-        "copy fallback and the write is lost (reads back 0 instead of 9)"),
     Omit!(LLVMJit, Because.unconfirmed,
         "independent, unconfirmed gap: address-of through a doubly-nested " ~
         "`DotVarExp` receiver reads back 0 instead of 9 in the JIT backend " ~
