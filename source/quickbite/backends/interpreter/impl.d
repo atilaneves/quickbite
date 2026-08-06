@@ -5922,11 +5922,16 @@ private struct Walker {
     }
 
     private Value assocArrayKeys(in Value value, imported!"dmd.mtype".Type resultType) {
+        import quickbite.backends.interpreter.aggregate_value: AggregateValue;
+
+        if (value == Value.null_) {
+            Value[] keys;
+            return AggregateValue.reconstructArray(resultType, keys);
+        }
         if (!isNativeAssocArray(value))
             return value.assocArrayKeys;
 
         import dmd.mtype: TypeDArray;
-        import quickbite.backends.interpreter.aggregate_value: AggregateValue;
         import quickbite.backends.interpreter.place: Place;
         import quickbite.backends.interpreter.place_value: readValue;
 

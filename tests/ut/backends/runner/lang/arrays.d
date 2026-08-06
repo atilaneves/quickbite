@@ -3398,6 +3398,29 @@ static foreach (backend; Matrix!()) {
     }
 }
 
+// Returning the associative array across a function boundary keeps its null
+// state as a runtime value; `.keys` preserves that state as a null key slice.
+static foreach (backend; Matrix!()) {
+    @("assocArray.nullKeysReturnsEmptyArray." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            int[int] emptyValues() {
+                int[int] values;
+                return values;
+            }
+
+            unittest {
+                auto values = emptyValues;
+                const keys = values.keys;
+
+                assert(keys.length == 0);
+                assert(keys.ptr is null);
+            }
+        });
+    }
+}
+
 static foreach (backend; Matrix!()) {
     @("assocArray.inFindsRuntimeKey." ~ backend.stringof)
     @Tags(backend.stringof)
