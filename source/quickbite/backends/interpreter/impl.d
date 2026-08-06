@@ -1135,9 +1135,22 @@ private struct Walker {
 
     // DMD declaration inspection is `@system`; the returned address is still
     // restricted to storage owned by the frame/module/native binding tables.
+    //
+    // Every other caller that hands out a dataseg variable's address
+    // (`symbolOffsetLocalValue`, `bindingPointerValue`, the ordinary `VarExp`
+    // address-of arm) calls `materializeDatasegInitializer` first, so a
+    // never-touched module-table block never gets its address taken as raw
+    // zeroed bytes. This is the shared `resolveBase` callback `placeOfLvalue`
+    // calls for the base variable of an lvalue chain (a doubly-nested
+    // `DotVarExp`/`IndexExp` receiver among them) -- the same guarantee must
+    // hold here, or a chain whose base resolves straight through this
+    // function without any other code path having materialized it first
+    // hands out an address into never-initialized storage. A no-op for a
+    // true local and for a dataseg variable already materialized.
     private void* addressableBindingBase(VarDeclaration variable) @trusted {
         if (auto address = variable in nativeRefLocalAddresses)
             return *address;
+        materializeDatasegInitializer(variable);
         return bindingPlace(variable).address;
     }
 
@@ -2194,10 +2207,17 @@ private struct Walker {
                 ? ""
                 : identifier.ident.toString.idup;
 
-            // DMD-generated exception support can leave the magic __ctfe flag
-            // as an identifier instead of lowering it to a VarExp.
+            // DMD's own `IdentifierExp` semantic (`expressionsem.d`) always
+            // resolves `__ctfe` into a `VarExp` before a fully-semantic'd
+            // module reaches this walker -- confirmed empirically, including
+            // through the `-preview=dip1008` scope-catch-var destructor that
+            // synthesizes this identifier (`statementsem.d`'s
+            // `if (!__ctfe) _d_delThrowable(var)`): its own subsequent
+            // `statementSemantic` resolves it before any backend walks it.
+            // This arm is defensive dead code kept in the same shape as the
+            // `VarExp` arm below rather than assumed unreachable forever.
             if (name == "__ctfe")
-                return Value(true);
+                return Value(false);
 
             if (
                 hasThis &&
@@ -2239,11 +2259,14 @@ private struct Walker {
             // Mutable because frame/layout APIs take DMD declarations.
             auto referenceVariable = variable;
 
-            // the magic __ctfe variable is true under AST interpretation,
-            // matching dmd's own interpreter; the language requires both
-            // __ctfe branches to be observably equivalent
+            // The Interpreter runs a compiled-D-equivalent runtime, not
+            // DMD's own CTFE engine (that is the separate `Ctfe` backend,
+            // `backends/ctfe/dmd_ctfe.d`, which invokes DMD's real CTFE
+            // interpreter and legitimately observes `true`); the magic
+            // `__ctfe` flag must therefore read `false` here, matching
+            // `SystemLinker`.
             if (variable.ident is Id.ctfe)
-                return Value(true);
+                return Value(false);
 
             if (isUninitializedBinding(variable)) {
                 import quickbite.backends.interpreter.messages: uninitializedVariableMessage;
@@ -2501,7 +2524,18 @@ private struct Walker {
         const leftValue = runExpression(comparison.e1);
         const rightValue = runExpression(comparison.e2);
 
-        if (leftValue.isPointer && rightValue.isPointer)
+        // A default-initialized pointer-typed operand (e.g. a GC pool
+        // boundary pointer that has never been assigned) reads as `Null`,
+        // not a zero-valued `Pointer`; the static operand type still marks
+        // this as a pointer comparison. See `runAddExpression`.
+        import quickbite.frontend.dmd.types: isPointerType;
+
+        const leftIsPointer = leftValue.isPointer ||
+            (leftValue == Value.null_ && isPointerType(comparison.e1.type));
+        const rightIsPointer = rightValue.isPointer ||
+            (rightValue == Value.null_ && isPointerType(comparison.e2.type));
+
+        if (leftIsPointer && rightIsPointer)
             return runPointerComparison(comparison.op, leftValue, rightValue);
 
         const left = leftValue.asReal;
@@ -2540,11 +2574,22 @@ private struct Walker {
     }
 
     private Value runAddExpression(imported!"dmd.expression".AddExp add) {
+        import quickbite.frontend.dmd.types: isPointerType;
+
         const left = runExpression(add.e1);
         const right = runExpression(add.e2);
 
-        if (left.isPointer) {
-            const offset = left.isPointer
+        // A default-initialized pointer-typed operand (e.g. druntime's
+        // dip1008 Throwable chain-link arithmetic on its own default-null
+        // `_nextInChainPtr`) reads as `Null`, not a zero-valued `Pointer`;
+        // the static operand type still marks it as pointer arithmetic.
+        const leftIsPointer = left.isPointer ||
+            (left == Value.null_ && isPointerType(add.e1.type));
+        const rightIsPointer = right.isPointer ||
+            (right == Value.null_ && isPointerType(add.e2.type));
+
+        if (leftIsPointer) {
+            const offset = leftIsPointer
                 ? right.asLong
                 : pointerElementOffset(add.type, right.asLong);
             return left.pointerOffsetBy(
@@ -2552,8 +2597,8 @@ private struct Walker {
             );
         }
 
-        if (right.isPointer) {
-            const offset = right.isPointer
+        if (rightIsPointer) {
+            const offset = rightIsPointer
                 ? left.asLong
                 : pointerElementOffset(add.type, left.asLong);
             return right.pointerOffsetBy(
@@ -2565,13 +2610,22 @@ private struct Walker {
     }
 
     private Value runMinExpression(imported!"dmd.expression".MinExp sub) {
+        import quickbite.frontend.dmd.types: isPointerType;
+
         const left = runExpression(sub.e1);
         const right = runExpression(sub.e2);
 
+        // See `runAddExpression`: a default-null pointer operand reads as
+        // `Null`, not a zero-valued `Pointer`.
+        const leftIsPointer = left.isPointer ||
+            (left == Value.null_ && isPointerType(sub.e1.type));
+        const rightIsPointer = right.isPointer ||
+            (right == Value.null_ && isPointerType(sub.e2.type));
+
         // DMD lowers `p - q` to `(p - q) / elementSize`; return the byte
         // difference so the lowered division yields the element difference
-        if (left.isPointer && right.isPointer) {
-            const scale = left.isPointer && right.isPointer
+        if (leftIsPointer && rightIsPointer) {
+            const scale = leftIsPointer && rightIsPointer
                 ? 1
                 : pointerElementSize(sub.e1.type);
             return Value(
@@ -2579,8 +2633,8 @@ private struct Walker {
             );
         }
 
-        if (left.isPointer) {
-            const offset = left.isPointer
+        if (leftIsPointer) {
+            const offset = leftIsPointer
                 ? right.asLong
                 : pointerElementOffset(sub.type, right.asLong);
             return left.pointerOffsetBy(
@@ -2722,6 +2776,28 @@ private struct Walker {
                 import quickbite.backends.interpreter.layout: fieldByteOffset;
 
                 if (auto field = dot.var.isVarDeclaration) {
+                    // `$` inside `index.e2` (a `DollarExp`) is bound to
+                    // `index.lengthVar`; the ordinary eager path binds it
+                    // from `runExpression(index.e1)`'s length before
+                    // evaluating the index, but this branch exists
+                    // specifically to avoid evaluating `index.e1` a second,
+                    // independent way -- `arrayPointer` below already
+                    // resolves it once. A bare variable receiver
+                    // (`arr[$ - 1].mid.x`) has no side effect of its own to
+                    // duplicate: reading it again here to bind `lengthVar`
+                    // is exactly as safe as `arrayPointer`'s own upcoming
+                    // resolution of the same variable, so do so before
+                    // `index.e2` runs. A receiver with a side effect of its
+                    // own (a further nested `IndexExp`, a `CallExp`, ...) is
+                    // left as the pre-existing gap it already was --
+                    // re-evaluating it here would reintroduce exactly the
+                    // double-evaluation hazard this branch exists to avoid.
+                    if (index.lengthVar !is null)
+                        if (auto receiverVar = index.e1.isVarExp)
+                            setLocal(
+                                index.lengthVar,
+                                Value(AggregateValue.length(runExpression(receiverVar))),
+                            );
                     const elementIndex = runExpression(index.e2).asLong;
                     const elementPointer = arrayPointer(index.e1, elementIndex, op);
                     if (elementPointer.isPointer)
@@ -2872,7 +2948,7 @@ private struct Walker {
                 text("Unsupported eval expression: ", op, " of ", e1.op),
             );
 
-        return arrayPointer(index, 0, op);
+        return arrayPointer(index, 0, op, true /* selfAddress */);
     }
 
     // Stable allocation id for `&s.field`, memoized per (receiver variable,
@@ -3093,24 +3169,78 @@ private struct Walker {
         return child.result;
     }
 
+    // `selfAddress` distinguishes two shapes that both recurse into the
+    // `array.isIndexExp` arm below with what looks like the same (IndexExp
+    // receiver, offset) signature but need different results:
+    //
+    // - `true` (used only by the single top-level `&expr[i]` entry point,
+    //   `addressOfExpression`'s `arrayPointer(index, 0, op)`): `array` IS
+    //   the expression whose address is wanted. Once `element` (the address
+    //   of `array` itself, composed from its own receiver) is known, that
+    //   IS the answer -- no further `.index` composes past it, matching a
+    //   pointer-to-a-dynamic-array-typed-subexpression being that
+    //   subexpression's own header address, not its first element's.
+    // - `false` (the default; every recursive `arrayPointer` call, plus the
+    //   `&arr[i].field` member-call-receiver caller): `array[offset]`'s
+    //   address is wanted. `element` above is only `array`'s OWN address,
+    //   one level short -- `Place(element, array.type).index(offset)` must
+    //   still run even when `offset == 0`, since for a dynamic-array row
+    //   that dereferences `element`'s slice header to reach real element
+    //   data, landing somewhere completely different from `element` itself.
+    //
+    // Conflating the two (treating `offset == 0` alone as "self", the bug
+    // bbf236db left in place) silently returns a dynamic-array row's own
+    // slice-header address instead of its element 0's data address whenever
+    // the FINAL index in a nested chain (`a[0][0]`, `a[0][1][0]`, ...) is 0.
+    // Whether `expression`'s own lvalue chain -- as `lvalue_place.
+    // placeOfLvalue` would walk it, through `DotVarExp`/`PtrExp` receivers --
+    // runs through an `IndexExp` anywhere. Pure syntax, no evaluation:
+    // `arrayPointer`'s `IndexExp` arm uses this to detect, before evaluating
+    // anything, whether its own unconditional `runExpression(index.e1)`
+    // would duplicate a side effect that `placeOfLvalue` is about to
+    // evaluate again while resolving the same chain's address (`i++` inside
+    // `arr[i++].mid.a[j]`).
+    private static bool lvalueChainHasIndexExp(
+        imported!"dmd.expression".Expression expression,
+    ) {
+        if (expression.isIndexExp !is null)
+            return true;
+        if (auto dot = expression.isDotVarExp)
+            return lvalueChainHasIndexExp(dot.e1);
+        if (auto ptr = expression.isPtrExp)
+            return lvalueChainHasIndexExp(ptr.e1);
+        // `lvalue_place.placeOfLvalue` itself walks straight through a
+        // `CastExp` (its own `CastExp` arm recurses on the operand
+        // unchanged); mirror that here so a cast-carrying chain
+        // (`(cast(Outer[]) arr)[i++].mid.a[j]`) is detected from syntax
+        // alone exactly like an uncast one, rather than silently taking the
+        // old double-evaluating path below.
+        if (auto cast_ = expression.isCastExp)
+            return lvalueChainHasIndexExp(cast_.e1);
+        return false;
+    }
+
     private Value arrayPointer(
         imported!"dmd.expression".Expression array,
         in long offset,
         in imported!"dmd.tokens".EXP op,
-    ) {
+        in bool selfAddress = false,
+    )
+    in (!selfAddress || offset == 0, "selfAddress is only ever paired with offset 0") {
         import std.conv: text;
 
         auto var = array.isVarExp;
         if (var is null) {
             if (auto comma = array.isCommaExp) {
                 runExpression(comma.e1);
-                return arrayPointer(comma.e2, offset, op);
+                return arrayPointer(comma.e2, offset, op, selfAddress);
             }
             if (auto question = array.isCondExp)
                 return arrayPointer(
                     isTruthy(runExpression(question.econd)) ? question.e1 : question.e2,
                     offset,
                     op,
+                    selfAddress,
                 );
 
             // DMD lowers indexing a dynamic-array call through a pointer
@@ -3135,6 +3265,110 @@ private struct Walker {
 
             if (auto index = array.isIndexExp) {
                 import quickbite.backends.interpreter.layout: typeByteSize;
+
+                // A doubly (or more) nested `DotVarExp` receiver whose own
+                // chain runs through an `IndexExp` somewhere
+                // (`arr[i++].mid.a[j]`, `s.a[i++].mid.b[j]`, ...) must be
+                // resolved through `lvalue_place.placeOfLvalue` BEFORE this
+                // arm's own unconditional `runExpression(index.e1)` below
+                // ever runs: that eager evaluation exists to read
+                // `index.e1`'s VALUE (for `$` support and the
+                // native-aggregate fallback further down), but it fully
+                // evaluates the exact same chain `placeOfLvalue` needs to
+                // walk again to resolve an ADDRESS -- side-effecting index
+                // included (`i++`). Running both evaluates that index twice
+                // and the second (wrong) value wins. Detect the hazard from
+                // the syntax alone, with no evaluation of anything, and
+                // resolve the address in one single walk instead, skipping
+                // the eager value read entirely for this shape. A chain
+                // with no `IndexExp` in it (e.g. `s.inner.a[i]`) has nothing
+                // for the eager read to duplicate, so it keeps taking the
+                // ordinary path below unchanged.
+                if (auto nestedField = index.e1.isDotVarExp) {
+                    if (
+                        nestedField.e1.isDotVarExp !is null &&
+                        lvalueChainHasIndexExp(nestedField)
+                    ) {
+                        import quickbite.backends.interpreter.lvalue_place: placeOfLvalue;
+                        import quickbite.backends.interpreter.place: Place;
+                        import quickbite.backends.interpreter.place_value: readValue;
+
+                        // `placeOfLvalue` refuses a receiver shape it does
+                        // not support (e.g. a `CallExp` base,
+                        // `makeHolder().arr[1].mid.a[1]`) by throwing --
+                        // same contract the neighbouring doubly-nested-
+                        // `DotVarExp`-without-side-effecting-index branch
+                        // below already relies on. `placeOfLvalue` always
+                        // resolves a chain's BASE before evaluating its own
+                        // index, so a refusal here always throws before any
+                        // index side effect in the chain has run; falling
+                        // through to the eager path below to re-resolve the
+                        // whole receiver from scratch is therefore safe,
+                        // exactly as safe as it is for that neighbouring
+                        // branch.
+                        try {
+                            auto fieldPlace = placeOfLvalue(
+                                nestedField,
+                                (variable) @safe => addressableBindingBase(variable),
+                                (expression) @trusted =>
+                                    cast(size_t) runExpression(expression).asLong,
+                                // `$` inside a CHAIN `IndexExp`'s own index
+                                // (e.g. `arr[$ - 1]` inside
+                                // `arr[$ - 1].mid.a[j]`) is bound to THAT
+                                // `IndexExp`'s own `lengthVar` from ITS OWN
+                                // receiver's length -- exactly what
+                                // `runIndexExpression` binds as a side
+                                // effect of evaluating an `IndexExp` on the
+                                // ordinary eager path this branch skips.
+                                // `placeOfLvalue` calls this once per
+                                // `IndexExp` it resolves, with that
+                                // `IndexExp` and its own base's `Place`,
+                                // before evaluating the index itself, so
+                                // binding it here needs no separate,
+                                // potentially-double-evaluating pre-walk.
+                                (chainIndex, base) @trusted {
+                                    if (chainIndex.lengthVar !is null)
+                                        setLocal(
+                                            chainIndex.lengthVar,
+                                            Value(AggregateValue.length(readValue(base))),
+                                        );
+                                },
+                            );
+                            // `$` inside the OUTER `index.e2` is bound to
+                            // `index.lengthVar`, and must see `nestedField`'s
+                            // (the composed field's) own current length --
+                            // the same length the skipped eager
+                            // `runExpression(index.e1)` used to provide via
+                            // `AggregateValue.length` of the receiver it
+                            // read. Bind it from `fieldPlace` before
+                            // evaluating `index.e2`, the same order the
+                            // ordinary eager path below already uses for the
+                            // identical binding.
+                            if (index.lengthVar !is null)
+                                setLocal(
+                                    index.lengthVar,
+                                    Value(AggregateValue.length(readValue(fieldPlace))),
+                                );
+                            const outerOffset = runExpression(index.e2).asLong;
+                            const pointer = Value.pointerValue(
+                                fieldPlace.index(cast(size_t) outerOffset).address,
+                            );
+                            if (selfAddress)
+                                return pointer;
+                            return Value.pointerValue(
+                                Place(cast(void*) pointer.pointerAddress, array.type)
+                                    .index(cast(size_t) offset)
+                                    .address,
+                            );
+                        } catch (Exception) {
+                            // Fall through to the eager path below for a
+                            // receiver shape `placeOfLvalue` does not (yet)
+                            // support -- safe refusal is preferable to
+                            // inventing a copied pointee, same reasoning as
+                            // the neighbouring branch's own catch.
+                        }
+                    }
+                }
 
                 // An address-taking index must evaluate its receiver before
                 // the index: `$` is bound to this receiver's present length,
@@ -3162,41 +3396,178 @@ private struct Walker {
                 // from the binding's current place so a `ref` static-array
                 // local and its source name the same inline bytes.
                 if (index.e1.isVarExp !is null) {
+                    // Always element mode: `element` below is `index.e1`'s
+                    // own address, one level short of `array`'s (this
+                    // IndexExp's) element -- see `arrayPointer`'s
+                    // `selfAddress` doc comment.
                     const element = arrayPointer(index.e1, outerOffset, op);
                     if (element.isPointer) {
-                        if (offset == 0)
+                        if (selfAddress)
                             return element;
-                        return element.pointerOffsetBy(
-                            offset * cast(long) typeByteSize(
-                                array.type.toBasetype.nextOf,
-                            ),
+                        // A raw byte offset from `element` would land inside
+                        // a slice header instead of the row's data when this
+                        // row is itself a dynamic array (e.g. `int[][]`).
+                        // `Place.index` dereferences that header first, and
+                        // strides directly for a static-array row -- the
+                        // same composition the fallthrough case below uses.
+                        // This must run even when `offset == 0`: for a
+                        // dynamic-array row, element 0's real data address is
+                        // NOT `element` itself (that is the row's own header
+                        // address), it is one dereference further in.
+                        import quickbite.backends.interpreter.place: Place;
+
+                        return Value.pointerValue(
+                            Place(cast(void*) element.pointerAddress, array.type)
+                                .index(cast(size_t) offset)
+                                .address,
                         );
                     }
                 }
-                if (auto field = index.e1.isDotVarExp)
+                if (auto field = index.e1.isDotVarExp) {
                     if (field.e1.isVarExp !is null) {
+                        // Always element mode -- same reasoning as the
+                        // `VarExp` arm above: `pointer` is `field`'s own
+                        // address, one level short of `array`'s (this
+                        // IndexExp's) element.
                         const pointer = arrayPointer(field, outerOffset, op);
-                        if (pointer.isPointer)
-                            return pointer;
+                        if (pointer.isPointer) {
+                            if (selfAddress)
+                                return pointer;
+                            // Same hazard as the `VarExp` arm above: a raw
+                            // byte offset from `pointer` would land inside a
+                            // slice header instead of the row's data when
+                            // this row is itself a dynamic array. Compose
+                            // through `Place.index` instead, even when
+                            // `offset == 0`.
+                            import quickbite.backends.interpreter.place: Place;
+
+                            return Value.pointerValue(
+                                Place(cast(void*) pointer.pointerAddress, array.type)
+                                    .index(cast(size_t) offset)
+                                    .address,
+                            );
+                        }
+                    } else if (field.e1.isDotVarExp !is null) {
+                        // A doubly (or more) nested field receiver
+                        // (`s.inner.a[i]`, `field.e1` itself a `DotVarExp`)
+                        // has no `VarExp` for the fast path above to recurse
+                        // `arrayPointer` from -- and `arrayPointer`'s own
+                        // `DotVarExp` arm below only recognizes a `VarExp`
+                        // receiver too, so recursing into it here would hit
+                        // the exact same gap one level deeper.
+                        // `lvalue_place.placeOfLvalue` already recurses
+                        // through an arbitrarily nested `DotVarExp`/`VarExp`
+                        // chain to the field's own place without
+                        // re-evaluating any side effect (unlike
+                        // `addressOfExpression`, whose `DotVarExp` arm
+                        // special-cases a static-array-typed field straight
+                        // back into this same `arrayPointer` gap); reuse it
+                        // for `field`'s own place, then compose the
+                        // `outerOffset`'th element the same way the `VarExp`
+                        // fast path above does.
+                        import quickbite.backends.interpreter.lvalue_place: placeOfLvalue;
+                        import quickbite.backends.interpreter.place: Place;
+
+                        try {
+                            auto fieldPlace = placeOfLvalue(
+                                field,
+                                (variable) @safe => addressableBindingBase(variable),
+                                (expression) @trusted =>
+                                    cast(size_t) runExpression(expression).asLong,
+                            );
+                            const pointer = Value.pointerValue(
+                                fieldPlace.index(cast(size_t) outerOffset).address,
+                            );
+                            if (selfAddress)
+                                return pointer;
+                            // Same hazard as the `VarExp` arm above.
+                            return Value.pointerValue(
+                                Place(cast(void*) pointer.pointerAddress, array.type)
+                                    .index(cast(size_t) offset)
+                                    .address,
+                            );
+                        } catch (Exception) {
+                            // Fall through to the detached-copy fallback
+                            // below for a receiver shape `placeOfLvalue`
+                            // does not (yet) support -- safe refusal is
+                            // preferable to inventing a copied pointee.
+                        }
                     }
+                }
+                // A nested/multi-dimensional static-array index
+                // (`m[i][j]`, `m.e1` itself an `IndexExp`) must compose its
+                // receiver's address the same way the `VarExp` case above
+                // does, rather than falling through to `arrayValue` below:
+                // `arrayValue` is `runExpression(index.e1)`'s result, and
+                // reading a static-array-typed rvalue copies its bytes
+                // (`place_value.readValue`'s array arm returns
+                // `AggregateValue.copyFromAddress`). Composing the address
+                // from that copy silently detaches the receiver from `m`'s
+                // real backing storage, so a method call through it (or any
+                // further write) is lost.
+                if (index.e1.isIndexExp !is null) {
+                    // Always element mode -- same reasoning as the `VarExp`
+                    // arm above.
+                    const element = arrayPointer(index.e1, outerOffset, op);
+                    if (element.isPointer) {
+                        if (selfAddress)
+                            return element;
+                        // Same hazard as the `VarExp` arm above: a raw byte
+                        // offset from `element` would land inside a slice
+                        // header instead of the row's data when this nested
+                        // row is itself a dynamic array. Compose through
+                        // `Place.index` instead, even when `offset == 0`
+                        // (the FINAL index of a nested chain like
+                        // `a[0][1][0]`, where `element` is `a[0][1]`'s own
+                        // header address, not `a[0][1][0]`'s data address).
+                        import quickbite.backends.interpreter.place: Place;
+
+                        return Value.pointerValue(
+                            Place(cast(void*) element.pointerAddress, array.type)
+                                .index(cast(size_t) offset)
+                                .address,
+                        );
+                    }
+                }
                 if (AggregateValue.isArray(arrayValue)) {
                     if (arrayValue.isNativeAggregate) {
-                        const element = Value.pointerValue(
-                            AggregateValue.elementAddress(
-                                arrayValue,
-                                cast(size_t) outerOffset,
-                            ),
+                        // `index.e1` had no VarExp/DotVarExp receiver, so it
+                        // was just re-evaluated above as a second, independent
+                        // call/index. That result's native storage has no
+                        // root beyond this call's own locals; retain it in
+                        // the execution roots before returning a bare address
+                        // into it, matching the DotVarExp call-result fix
+                        // above (`nativePointerRoots`) -- without this, the
+                        // composed address can outlive its backing block.
+                        auto aggregate = AggregateValue.native(arrayValue);
+                        nativePointerRoots[aggregate.storage.address] = aggregate.storage;
+                        auto elementAddress = AggregateValue.elementAddress(
+                            arrayValue,
+                            cast(size_t) outerOffset,
                         );
                         // DMD leaves this synthetic IndexExp's type null for
                         // a direct `&array[index]`. Its element address is
-                        // already complete when no further offset composes
-                        // through it.
-                        if (offset == 0)
-                            return element;
-                        return element.pointerOffsetBy(
-                            offset * cast(long) typeByteSize(
-                                array.type.toBasetype.nextOf,
-                            ),
+                        // already complete when this call is itself the
+                        // top-level `&array[index]` (`selfAddress`) -- no
+                        // further offset composes through it.
+                        if (selfAddress)
+                            return Value.pointerValue(elementAddress);
+                        // `array.type` (this row's own type, e.g. `int[]` or
+                        // `int[3]`) drives the leaf stride. `Place.index`
+                        // dereferences a dynamic-array row's `{length, ptr}`
+                        // header before applying that stride, and applies it
+                        // directly for a static-array row's inline bytes --
+                        // exactly the two cases the Contracts' "one level at
+                        // a time" rule distinguishes; a raw byte offset from
+                        // `elementAddress` would land inside a slice header
+                        // instead of the row's data for the dynamic-array
+                        // case.
+                        import quickbite.backends.interpreter.place: Place;
+
+                        return Value.pointerValue(
+                            Place(elementAddress, array.type)
+                                .index(cast(size_t) offset)
+                                .address,
                         );
                     }
 
@@ -3213,11 +3584,14 @@ private struct Walker {
                 // in `expressionsem.d`, reached here via a mutating AA-value
                 // method-call receiver, `aa[key].method()`), so no further
                 // offset composes past this element -- matching the
-                // `offset == 0` early return the `index.e1.isVarExp` arm
-                // above already takes for the identical reason.
+                // `selfAddress` early return the `index.e1.isVarExp` arm
+                // above already takes for the identical reason. (Raw
+                // pointer arithmetic has no slice header to dereference, so
+                // `offset == 0` is harmless here either way; `selfAddress`
+                // is used for consistency with the other arms.)
                 const pointer = arrayPointer(index.e1, outerOffset, op);
                 if (pointer.isPointer) {
-                    if (offset == 0)
+                    if (selfAddress)
                         return pointer;
                     return pointer.pointerOffsetBy(
                         offset * cast(long) typeByteSize(
@@ -3315,11 +3689,6 @@ private struct Walker {
         if (variable is null)
             throw new Exception(text("Unsupported eval expression: ", op));
 
-
-        auto current = variable in locals;
-        if (current is null)
-            throw new Exception(text("Unsupported eval expression: ", op));
-
         if (auto address = variable in nativeRefLocalAddresses) {
             import quickbite.backends.interpreter.place: Place;
 
@@ -3330,6 +3699,22 @@ private struct Walker {
             );
         }
 
+        // A dataseg element's address exists structurally the moment its
+        // module-table block exists (allocated lazily by `bindingPlace`
+        // itself), whether or not `locals` yet holds a cached read/write of
+        // it: a module-scope static array with no explicit initializer (e.g.
+        // `S[N] arr;`) never runs `storeBinding`, so requiring a `locals`
+        // entry before reaching this check rejected a first-ever
+        // address-taking index into it (`arr[i++].method()`) with the
+        // generic "Unsupported eval expression" fallback below. An owning
+        // frame slot is the analogous in-activation case. A dataseg
+        // variable must materialize its declared default value before this
+        // address is handed out: the module-table block starts as raw
+        // zeroed memory, and a struct element with a non-zero `.init`
+        // pattern must read that pattern on first touch, not zero bytes
+        // (mirrors `symbolOffsetLocalValue`'s own call below).
+        materializeDatasegInitializer(variable);
+
         if (hasMirrorSlot(variable)) {
             import quickbite.backends.interpreter.place: Place;
 
@@ -3339,6 +3724,10 @@ private struct Walker {
                     .address,
             );
         }
+
+        auto current = variable in locals;
+        if (current is null)
+            throw new Exception(text("Unsupported eval expression: ", op));
 
         // A plain `ref` aggregate local has no owning slot, but its binding
         // records the caller's typed address. Element addresses through that
@@ -3498,15 +3887,77 @@ private struct Walker {
         )
             return;
 
-        import quickbite.frontend.dmd.types: isAssocArrayType;
+        // A never-written dataseg variable's module-table block is raw
+        // zeroed GC memory (`ModuleTable.allocateBlock`/`NativeBlock.
+        // allocate`), not its declared type's default value: the hand-rolled
+        // `defaultValue` free function recurses on each struct field's own
+        // TYPE default (`runtime_values.structDefaultValue`), silently
+        // dropping a field's own default initializer (`int x = 7;` reads
+        // back `0`, the field type's `.init`, not `7`). DMD's own
+        // `defaultInitLiteral` is the layout-authority source for a default
+        // value (the "Layout authority" contract): it already walks
+        // `VarDeclaration._init`/`getConstInitializer` per field
+        // (`typesem.d`), so evaluating it through the ordinary expression
+        // path builds the correct native default.
+        //
+        // `ModuleTable`'s block map is shared, not duped, across every forked
+        // child `Walker` a function call creates (`forkExecutionStateInto`'s
+        // `child.moduleTable = moduleTable` aliases the same underlying
+        // hashmap; D associative arrays are reference types), so
+        // `moduleTable.has(variable)` answers "has this variable's block
+        // ever been allocated" for the whole program. `mirrorEstablished` (and
+        // `locals`) are per-activation bookkeeping that starts empty in every
+        // child and is never merged back into the caller (`mergeFunctionState`
+        // does not carry it). When the block already exists -- established by
+        // a DIFFERENT activation, whether an earlier sibling call or the
+        // activation that just returned from calling this one -- this
+        // activation must still adopt the block's current, authoritative
+        // bytes into its own `locals`/`mirrorEstablished` bookkeeping (several
+        // call sites, notably index-assignment's `variable in locals` check,
+        // require that bookkeeping even though a plain read would tolerate
+        // its absence via the `bindingPlace` fallback). Adopting is a
+        // read-then-store-the-same-value round trip: it must never re-run the
+        // initializer expression, which would clobber an already-mutated
+        // block (observed: three `bump()` calls each resetting a `__gshared
+        // int counter = 5;` back to `5` before incrementing, so the final
+        // read saw `5` instead of `8`).
+        //
+        // A `Tdelegate`-typed variable is the one shape this round trip
+        // itself destroys: a delegate never writes its bytes into the
+        // dataseg block at all (`setLocal`'s `Tdelegate` arm stores it
+        // out-of-band in `nativeDelegateSlots`, keyed by the block's
+        // address, leaving the block's bytes zeroed), so `readValue` on the
+        // block reads back `Value.null_`, and routing that through
+        // `setLocal` would overwrite `nativeDelegateSlots[address]` with
+        // `null` -- destroying a delegate a sibling/prior activation
+        // legitimately registered there (observed: a delegate assigned by
+        // one function and called from another read back "Unsupported eval
+        // call" because adopting the caller's own dataseg mirror nulled the
+        // callee's freshly-assigned delegate). Note this activation's
+        // bookkeeping directly from the out-of-band slot instead, without
+        // routing through `setLocal`'s destructive side effect.
+        if (moduleTable.has(variable)) {
+            import dmd.astenums: TY;
+            import quickbite.backends.interpreter.place_value: readValue;
 
-        if (variable._init is null && isAssocArrayType(variable.type)) {
-            setLocal(variable, defaultLocalValue(variable));
+            if (variable.type.toBasetype.ty == TY.Tdelegate) {
+                locals[variable] = nativeDelegateSlots.get(
+                    bindingPlace(variable).address, Value.null_,
+                );
+                mirrorEstablished[variable] = true;
+                return;
+            }
+
+            setLocal(variable, readValue(bindingPlace(variable)));
             return;
         }
 
-        if (variable._init is null)
+        if (variable._init is null) {
+            import dmd.typesem: defaultInitLiteral;
+
+            setLocal(variable, runExpression(variable.type.defaultInitLiteral(variable.loc)));
             return;
+        }
 
         resolveNonRootInitializer(variable);
 
@@ -3808,9 +4259,20 @@ private struct Walker {
     private Value runPointerExpression(
         imported!"dmd.expression".PtrExp pointer,
     ) {
+        return dereferencePointerValue(pointer, runExpression(pointer.e1));
+    }
+
+    // The dereference half of `runPointerExpression`, split out so a caller
+    // that already evaluated `pointer.e1` itself (to also retain that
+    // address for a later use, e.g. a member-call receiver rebind) can reuse
+    // that single evaluation instead of running the -- possibly
+    // side-effecting -- pointer operand a second time.
+    private Value dereferencePointerValue(
+        imported!"dmd.expression".PtrExp pointer,
+        in Value value,
+    ) {
         import quickbite.frontend.dmd.types: isStaticArrayType;
 
-        const value = runExpression(pointer.e1);
         if (value.isFunctionPointer)
             return value;
 
@@ -4098,7 +4560,42 @@ private struct Walker {
         }
 
         if (auto dot = call.e1.isDotVarExp) {
-            auto receiver = runExpression(dot.e1);
+            // For a `PtrExp` receiver (`p().get()`'s implicit deref of a
+            // pointer-returning call), evaluate the pointer operand exactly
+            // once here and keep its address around: a struct receiver's
+            // later `this`-rebind (`runMemberFunction`, guarded by
+            // `isWritableLocation`) would otherwise re-derive that same
+            // address via `addressOfExpression`, re-running a
+            // side-effecting operand like `p()` a second time. A struct
+            // element read through a side-effecting `IndexExp` receiver
+            // (`a[i++].method()`) has the identical hazard: compose its
+            // address once here too, and read the receiver from that
+            // address rather than through a second independent evaluation.
+            Value receiverPointerAddress;
+            bool hasReceiverPointerAddress;
+            Value receiver;
+            if (auto pointerReceiver = dot.e1.isPtrExp) {
+                receiverPointerAddress = runExpression(pointerReceiver.e1);
+                hasReceiverPointerAddress = true;
+                receiver = dereferencePointerValue(
+                    pointerReceiver,
+                    receiverPointerAddress,
+                );
+            } else if (
+                dot.e1.isIndexExp !is null &&
+                dot.e1.type.toBasetype.isTypeStruct !is null
+            ) {
+                import dmd.tokens: EXP;
+                import quickbite.backends.interpreter.place: Place;
+                import quickbite.backends.interpreter.place_value: readValue;
+
+                receiverPointerAddress = addressOfExpression(dot.e1, EXP.address);
+                hasReceiverPointerAddress = true;
+                receiver = readValue(
+                    Place(receiverPointerAddress.pointerAddress, dot.e1.type),
+                );
+            } else
+                receiver = runExpression(dot.e1);
             receiver = rootedNativeClassValue(dot.e1, receiver);
             const interpreterAllocatedClass = receiver.isNativeAggregate &&
                 dot.e1.type.toBasetype.isTypeClass !is null;
@@ -4247,6 +4744,7 @@ private struct Walker {
                     arguments,
                     argumentExpressions,
                     evaluatedArguments,
+                    hasReceiverPointerAddress ? &receiverPointerAddress : null,
                 );
             }
         }
@@ -5462,6 +5960,14 @@ private struct Walker {
         in Value[] arguments,
         imported!"dmd.expression".Expression[] argumentExpressions,
         in EvaluatedReferenceArgument[] evaluatedArguments = null,
+        // Set by a caller that already evaluated a `PtrExp` or `IndexExp`
+        // receiver's side-effecting operand itself (to compute `receiver`
+        // above) and kept the resulting address around. The `this`-rebind
+        // below needs that same address; reusing it here -- instead of
+        // re-deriving it from `receiverExpression` -- keeps a side-effecting
+        // operand (e.g. `p()` in `p().get()`, or `i++` in `a[i++].method()`)
+        // evaluated exactly once.
+        const(Value)* precomputedReceiverPointerAddress = null,
     ) {
         const memberReceiver = nativeMemberReceiver(function_, receiver);
 
@@ -5538,15 +6044,39 @@ private struct Walker {
                 NativeAggregate;
             import quickbite.backends.interpreter.native_block: NativeBlock;
 
+            // An assign/construct/blit receiver (`(place = value).method()`)
+            // already wrote `value` into `place` when `receiver` above was
+            // computed (evaluating this call's own receiver expression runs
+            // the assignment); resolve the writable address from `place`
+            // itself rather than re-evaluating the assignment a second time.
+            auto placeExpression = assignmentTarget(receiverExpression);
+            if (placeExpression !is null && !isPeelableAssignmentTarget(placeExpression))
+                // `place` is a `PtrExp`/`IndexExp` (e.g. `(*next() = value).
+                // bump()`, `(arr[i++] = value).bump()`): it may embed a
+                // side-effecting operand, and there is no precomputed
+                // address for it to reuse (that precompute only exists for
+                // a bare `PtrExp`/`IndexExp` *receiver expression itself*,
+                // not one recovered by peeling an assignment) -- refuse
+                // outright rather than re-evaluate that operand a second
+                // time via `addressOfExpression` below.
+                throw new Exception(
+                    "Unsupported eval expression: chained postblit/method " ~
+                    "call receiver's assignment target is a pointer/index " ~
+                    "expression that cannot be re-addressed without " ~
+                    "evaluating a side-effecting operand twice",
+                );
+            if (placeExpression is null)
+                placeExpression = receiverExpression;
+
             Value address;
             if (
-                receiverExpression.isThisExp !is null &&
+                placeExpression.isThisExp !is null &&
                 currentFunction !is null && currentFunction.vthis !is null
             ) {
                 address = bindingPointerValue(currentFunction.vthis);
             } else if (
-                receiverExpression.isDotVarExp !is null &&
-                receiverExpression.isDotVarExp.e1.isThisExp !is null &&
+                placeExpression.isDotVarExp !is null &&
+                placeExpression.isDotVarExp.e1.isThisExp !is null &&
                 currentFunction !is null && currentFunction.vthis !is null
             ) {
                 import quickbite.backends.interpreter.place: Place;
@@ -5555,9 +6085,17 @@ private struct Walker {
                 address = Value.pointerValue(Place(
                     base.pointerAddress,
                     currentFunction.vthis.type,
-                ).field(receiverExpression.isDotVarExp.var.isVarDeclaration).address);
+                ).field(placeExpression.isDotVarExp.var.isVarDeclaration).address);
+            } else if (
+                (
+                    placeExpression.isPtrExp !is null ||
+                    placeExpression.isIndexExp !is null
+                ) &&
+                precomputedReceiverPointerAddress !is null
+            ) {
+                address = *precomputedReceiverPointerAddress;
             } else {
-                address = addressOfExpression(receiverExpression, EXP.address);
+                address = addressOfExpression(placeExpression, EXP.address);
             }
             if (address.isPointer) {
                 child.nativeRefLocalAddresses[function_.vthis] =
@@ -5759,17 +6297,68 @@ private struct Walker {
         return result;
     }
 
+    // `assign`/`construct`/`blit` (`=`, its DMD-synthesized construction
+    // form, and its DMD-synthesized zero-init/copy form) all share the
+    // `BinExp`-derived `.e1` target shape; DMD's own "assign, then mutate the
+    // target in place" lowering (e.g. `emplaceRef`'s generated
+    // `(this.payload = args).__postblit()`) chains a postblit/method call
+    // straight off one of these. Returns the assignment's target expression,
+    // or `null` if `expression` is none of the three.
+    private static imported!"dmd.expression".Expression assignmentTarget(
+        imported!"dmd.expression".Expression expression,
+    ) {
+        if (auto assign = expression.isAssignExp)
+            return assign.e1;
+        if (auto construct = expression.isConstructExp)
+            return construct.e1;
+        if (auto blit = expression.isBlitExp)
+            return blit.e1;
+        return null;
+    }
+
+    // Whether `expression` -- a target recovered from an assign/construct/
+    // blit chain by `assignmentTarget` -- is safe to resolve an address from
+    // directly, i.e. carries no side-effecting operand that a second
+    // evaluation could re-run. Only a plain local variable or a `this`-
+    // rooted field-access chain qualify: the only shapes the commit's actual
+    // use case (`emplaceRef`'s `(this.payload = args).__postblit()`-style
+    // lowerings) ever produces. A `PtrExp`/`IndexExp` target (e.g.
+    // `(*next() = value).bump()`, `(arr[i++] = value).bump()`) may embed an
+    // arbitrary side-effecting operand; the receiver-level
+    // `precomputedReceiverPointerAddress` precompute that protects a bare
+    // `PtrExp`/`IndexExp` *receiver* doesn't reach a target recovered by
+    // peeling, so re-deriving its address via `addressOfExpression` would
+    // silently re-run that side effect a second time -- callers must refuse
+    // that shape outright instead (see `runMemberFunction`).
+    private static bool isPeelableAssignmentTarget(
+        imported!"dmd.expression".Expression expression,
+    ) {
+        if (expression.isVarExp !is null || expression.isThisExp !is null)
+            return true;
+        if (auto dotVar = expression.isDotVarExp)
+            return isPeelableAssignmentTarget(dotVar.e1);
+        return false;
+    }
+
     private bool isWritableLocation(
         imported!"dmd.expression".Expression expression,
     ) {
         if (expression is null)
             return false;
 
+        // By the time a chained postblit/method call's receiver expression
+        // is evaluated, the assignment/construction/blit has already written
+        // its value into the target place -- the call's receiver is
+        // writable exactly when that place is.
+        if (auto target = assignmentTarget(expression))
+            return isWritableLocation(target);
+
         return
             expression.isVarExp !is null ||
             expression.isDotVarExp !is null ||
             expression.isThisExp !is null ||
-            expression.isIndexExp !is null;
+            expression.isIndexExp !is null ||
+            expression.isPtrExp !is null;
     }
 
     private void bindFunctionParameters(
@@ -7131,16 +7720,30 @@ private struct Walker {
         // through to `runExpression(assign.e2)` below, which evaluated the
         // `IntegerExp` as a scalar `Value(0)` and clobbered the parameter's
         // boxed struct value with a bare int.
+        //
+        // The identical synthesized zero-init blit precedes a whole-struct
+        // -typed FIELD's constructor call too (e.g. `core.internal.lifetime.
+        // emplaceRef`'s generated wrapper `this.payload = T(args)`, lowered
+        // to a zero-init blit of `this.payload` followed by its `__ctor`
+        // call): `assign.e1` is then a `DotVarExp`, not a `VarExp`, so it
+        // needs the same default-value materialization rather than writing
+        // the raw `0` literal into the field's native struct storage.
         if (auto blit = assign.isBlitExp) {
             import quickbite.frontend.dmd.types: isStructType;
 
-            if (blit.e2.isIntegerExp !is null && isStructType(assign.e1.type))
+            if (blit.e2.isIntegerExp !is null && isStructType(assign.e1.type)) {
                 if (auto var = assign.e1.isVarExp)
                     if (auto variable = var.var.isVarDeclaration) {
                         const value = defaultValue(variable);
                         writeLocation(assign.e1, value);
                         return value;
                     }
+                if (assign.e1.isDotVarExp !is null) {
+                    const value = defaultValue(assign.e1.type);
+                    writeLocation(assign.e1, value);
+                    return value;
+                }
+            }
         }
 
         // A fresh closure RHS (`c.f = (int x) => x + captured;`) is a bare
@@ -7805,6 +8408,28 @@ private struct Walker {
             throw new Exception("Pointer index assignment needs a native address.");
         }
 
+        // `(*p)[i] = v`: `index.e1` is itself a dereference (`p`'s pointee
+        // is the static array being indexed, e.g. `int[3]*`), not a
+        // variable/field lvalue. `&(*p)` recovers `p`'s own address
+        // (`addressOfExpression`'s identical `PtrExp` arm); index directly
+        // into the pointee's bytes at that address rather than through a
+        // binding, matching the `nativeRefLocalAddresses` arm below for a
+        // `ref` static-array alias.
+        if (auto derefBase = index.e1.isPtrExp) {
+            const pointer = runExpression(derefBase.e1);
+            if (pointer.isPointer) {
+                import quickbite.backends.interpreter.place: Place;
+                import quickbite.backends.interpreter.place_value: writeValue;
+
+                writeValue(
+                    Place(pointer.pointerAddress, index.e1.type).index(arrayIndex),
+                    value,
+                );
+                return;
+            }
+            throw new Exception("Unsupported interpreter assignment target.");
+        }
+
         // The compound-assignment (`arr[i].field[j][k] += value`) sibling of
         // `runNestedIndexAssignExpression`'s identical `DotVarExp` arm: `index.e1`
         // (`arr[i].field[j]`) is itself an `IndexExp` whose own `e1` is a
@@ -8101,6 +8726,29 @@ private struct Walker {
                 return value;
             }
             throw new Exception("Pointer index assignment needs a native address.");
+        }
+
+        // `(*p)[i] = v`'s SIMPLE-assignment path -- the counterpart of
+        // `writeIndexLocation`'s identical `PtrExp` arm (compound
+        // assignment/atomic path). `index.e1` is a dereference whose
+        // pointee is the static array being indexed (e.g. `int[3]*`), not a
+        // variable/field lvalue; `&(*p)` recovers `p`'s own address
+        // (`addressOfExpression`'s identical `PtrExp` arm).
+        if (auto derefBase = index.e1.isPtrExp) {
+            const pointer = runExpression(derefBase.e1);
+            if (pointer.isPointer) {
+                import quickbite.backends.interpreter.place: Place;
+                import quickbite.backends.interpreter.place_value: writeValue;
+
+                const arrayIndex = cast(size_t) runExpression(index.e2).asLong;
+                const value = runExpression(rhs);
+                writeValue(
+                    Place(pointer.pointerAddress, index.e1.type).index(arrayIndex),
+                    value,
+                );
+                return value;
+            }
+            throw new Exception("Unsupported interpreter assignment target.");
         }
 
         if (auto outer = index.e1.isIndexExp)
@@ -8609,10 +9257,28 @@ private struct Walker {
             );
 
         auto current = variable in locals;
-        if (current is null)
-            throw new Exception(
-                "Unsupported interpreter assignment target: slice of unset local.",
-            );
+        if (current is null) {
+            // A `T t = void;` local (e.g. `std.algorithm.mutation.swap`'s
+            // raw-byte fallback `ubyte[T.sizeof] t = void;`) never runs
+            // `setLocal` at its declaration -- there is no meaningful value
+            // to shadow -- so it has no boxed local yet the first time it is
+            // used as a slice-assignment target. Compiled D leaves its bytes
+            // unspecified until written; materialising the ordinary default
+            // here is observably identical for the whole-range overwrite
+            // (`t[] = ...`) idiom this local exists for, and is no less
+            // defined than compiled D for a genuine partial write to
+            // still-uninitialized bytes.
+            if ((variable in uninitializedLocals) is null)
+                throw new Exception(
+                    "Unsupported interpreter assignment target: slice of unset local.",
+                );
+
+            setLocal(variable, defaultLocalValue(variable));
+            if (hasMirrorSlot(variable))
+                clearUninitializedBindingAddress(bindingPlace(variable).address);
+            uninitializedLocals.remove(variable);
+            current = variable in locals;
+        }
 
         const lower = slice.lwr is null
             ? 0
@@ -9429,12 +10095,52 @@ private struct Walker {
                         );
                 }
 
+            // Druntime's array-growth hooks (`_d_arraysetlengthT` and
+            // siblings) take a `void[]* p` parameter and read `(*p).ptr` to
+            // consult the GC block-info cache before reallocating. `p`
+            // itself is a plain local/parameter; the same zero-length-safe
+            // bypass above applies one dereference further in -- `p`'s own
+            // storage holds the pointer to dereference, and `Place.deref`
+            // follows it to the array's slice-header place.
+            if (auto pointer = cast_.e1.isPtrExp)
+                if (auto var = pointer.e1.isVarExp)
+                    if (auto variable = var.var.isVarDeclaration) {
+                        import quickbite.backends.interpreter.place: Place;
+
+                        if (auto address = variable in nativeRefLocalAddresses)
+                            return Value.pointerValue(
+                                Place(*address, variable.type)
+                                    .deref
+                                    .sliceDataPointer,
+                            );
+                        if (
+                            hasMirrorSlot(variable) &&
+                            mirrorEstablished.get(variable, false)
+                        )
+                            return Value.pointerValue(
+                                bindingPlace(variable).deref.sliceDataPointer,
+                            );
+                    }
+
             const value = runExpression(cast_.e1);
             if (value.isNativeAggregate) {
                 import quickbite.backends.interpreter.aggregate_value: AggregateValue;
 
-                if (auto address = AggregateValue.nativeArrayAddress(value))
-                    return Value.pointerValue(cast(void*) address);
+                // `nativeArrayAddress` returning null is ambiguous: it
+                // means either "not a dynamic array" or "a dynamic array
+                // whose stored `ptr` is legitimately null" (a zero-length
+                // slice). Checking the aggregate's own type first, rather
+                // than the returned address's truthiness, tells those
+                // apart -- a null `ptr` is `.ptr`'s correct answer here,
+                // not a signal to fall through to the checked, throwing
+                // `arrayPointer` index route below.
+                auto aggregate = AggregateValue.native(value);
+                if (aggregate.type.toBasetype.isTypeDArray !is null) {
+                    const address = AggregateValue.nativeArrayAddress(value);
+                    return address is null
+                        ? Value.null_
+                        : Value.pointerValue(cast(void*) address);
+                }
             }
             return arrayPointer(cast_.e1, 0, cast_.op);
         }
@@ -10368,7 +11074,18 @@ private struct Walker {
         if (isPointerType(index.e1.type)) {
             arrayIndex = cast(size_t) cast(ulong) runExpression(index.e2).asLong;
             if (_evaluatedReferenceArgumentIndices !is null)
-                (*_evaluatedReferenceArgumentIndices)[cast(const(void)*) index] =
+                // Keyed by `index.e2` (the index subexpression), not the
+                // outer `IndexExp` itself: `lvalue_place.placeOfLvalue`'s
+                // `evalIndex` callback is invoked with `indexExpIndex(index)`
+                // (`index.e2`) when composing a `ref`-argument's address
+                // (`bindReferenceSlot`/`evaluatedIndex`), so a mismatched key
+                // here always missed the lookup -- silently, since
+                // `bindReferenceSlot` catches the resulting exception and
+                // declines to bind the reference slot at all. A `ref`
+                // parameter bound to `arr[runtimeVariable]` (as opposed to a
+                // constant index) therefore never wrote back to the caller's
+                // array: the callee mutated its own unbound local copy.
+                (*_evaluatedReferenceArgumentIndices)[cast(const(void)*) index.e2] =
                     arrayIndex;
 
             return loadNativePointerElement(index.e1.type, source, arrayIndex);
@@ -10383,7 +11100,9 @@ private struct Walker {
         // matches CTFE, which formats the index as unsigned
         arrayIndex = cast(size_t) cast(ulong) runExpression(index.e2).asLong;
         if (_evaluatedReferenceArgumentIndices !is null)
-            (*_evaluatedReferenceArgumentIndices)[cast(const(void)*) index] =
+            // See the `isPointerType` arm above: keyed by `index.e2`, matching
+            // `evaluatedIndex`'s lookup key.
+            (*_evaluatedReferenceArgumentIndices)[cast(const(void)*) index.e2] =
                 arrayIndex;
 
         if (AggregateValue.isArray(source) && arrayIndex >= sourceLength) {

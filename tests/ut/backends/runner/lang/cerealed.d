@@ -1749,6 +1749,18 @@ static foreach (backend; Matrix!()) {
 // matching compiled construction semantics.
 // Bytecode must preserve this one postblit while its `emplaceRef` wrapper
 // writes the indexed destination.
+// Interpreter: `Counter` has a postblit, so `emplaceRef`'s generated wrapper
+// takes its `(this.payload = forward!args).__postblit()` arm -- a chained
+// postblit call whose receiver expression is the assignment itself, not a
+// plain `VarExp`/`DotVarExp`/`ThisExp`. `isWritableLocation` (`impl.d`)
+// didn't recognise an assign/construct/blit receiver as writable, so
+// `runMemberFunction` fell back to a disconnected value copy for `this`:
+// `postblitCount++` ran on that copy and the mutation was lost, reading back
+// `0` instead of `1`. Fixed by peeling the assignment's target (`this.
+// payload`) out of the receiver expression before resolving `this`'s native
+// address, matching the identical `(copy = original).__postblit()` shape
+// `runDeclarationExpression` already special-cased for a declaration
+// initializer.
 static foreach (backend; Matrix!()) {
     @("emplaceRefSkipsPostblitForStructElement." ~ backend.stringof)
     @Tags(backend.stringof)

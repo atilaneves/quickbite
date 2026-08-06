@@ -631,7 +631,24 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode)) {
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode)) {
+// Interpreter: previously produced garbage/uninitialized bytes instead of
+// `[2, 4, 6]` (e.g. `[-659590464, 32674, 2017211696]`). Not an Appender
+// growth bug (`.array`'s fast path for a `hasLength` range never touches
+// Appender at all -- it takes `std.array.array`'s `uninitializedArray` +
+// `emplaceRef` loop). The real cause: `runIndexExpression` (`impl.d`)
+// recorded a `ref` call argument's evaluated array index keyed by the whole
+// `IndexExp` node, but `lvalue_place.placeOfLvalue`'s `evalIndex` callback
+// looks it up keyed by `index.e2` (the index subexpression) when composing
+// a `ref` parameter's bind address. The mismatch made every lookup miss,
+// throwing inside `bindReferenceSlot`'s try/catch, which silently declines
+// to bind the reference slot on any exception -- so a `ref` parameter bound
+// to `arr[runtimeVariable]` (as opposed to a compile-time-constant index)
+// never wrote back to the caller's array at all; the callee mutated an
+// unbound local copy instead. `emplaceRef`'s `result[cnt]` argument (`cnt` a
+// runtime loop counter) hit exactly this. Fixed by keying both
+// `runIndexExpression` recording sites by `index.e2`, matching
+// `evaluatedIndex`'s lookup key.
+static foreach (backend; AliasSeq!(Ctfe, Bytecode, Interpreter)) {
 
     @("repl.backend.importStdExposesPhobosSymbols." ~ backend.stringof)
     unittest {
