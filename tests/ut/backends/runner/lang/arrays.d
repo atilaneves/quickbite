@@ -4556,6 +4556,51 @@ static foreach (backend; Matrix!()) {
     }
 }
 
+// Generated equality recurses through nested aggregate fields. An
+// associative array reached through a dynamic-array element therefore still
+// compares its runtime entries, including struct-typed values.
+static foreach (backend; Matrix!(
+    Omit!(Bytecode, Because.refusal, "Assertion failure (==)"),
+)) {
+    @("assocArray.structFieldEqualityComparesRuntimeEntries." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct Leaf {
+                int value;
+            }
+
+            struct Nested {
+                Leaf[int] children;
+            }
+
+            struct Wrapper {
+                Nested[] values;
+            }
+
+            int runtimeValue(int value) {
+                return value;
+            }
+
+            unittest {
+                int key = runtimeValue(7);
+                Wrapper left = Wrapper([
+                    Nested([key: Leaf(runtimeValue(11))]),
+                ]);
+                Wrapper same = Wrapper([
+                    Nested([key: Leaf(runtimeValue(11))]),
+                ]);
+                Wrapper different = Wrapper([
+                    Nested([key: Leaf(runtimeValue(12))]),
+                ]);
+
+                assert(left == same);
+                assert(left != different);
+            }
+        });
+    }
+}
+
 static foreach (backend; Matrix!()) {
     @("assocArray.removeRuntimeKey." ~ backend.stringof)
     @Tags(backend.stringof)

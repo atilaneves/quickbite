@@ -7294,6 +7294,9 @@ private struct Walker {
         if (AggregateValue.isStruct(left) && AggregateValue.isStruct(right))
             return equalStructValues(left, right);
 
+        if (AggregateValue.isAssocArray(left) && AggregateValue.isAssocArray(right))
+            return equalAssocArrayValues(left, right);
+
         if (left.isFunctionPointer || right.isFunctionPointer)
             return equalDelegateValues(left, right);
 
@@ -7392,6 +7395,34 @@ private struct Walker {
                 AggregateValue.fieldAt(right, index),
             ))
                 return false;
+
+        return true;
+    }
+
+    private bool equalAssocArrayValues(in Value left, in Value right) {
+        import quickbite.backends.interpreter.native_assoc_array: headerAt;
+        import quickbite.backends.interpreter.place: Place;
+        import quickbite.backends.interpreter.place_value: readValue;
+
+        auto leftHeader = headerAt(AggregateValue.native(left).address);
+        auto rightHeader = headerAt(AggregateValue.native(right).address);
+        const leftLength = leftHeader is null ? 0 : leftHeader.length;
+        const rightLength = rightHeader is null ? 0 : rightHeader.length;
+        if (leftLength != rightLength)
+            return false;
+        if (leftLength == 0)
+            return true;
+
+        foreach (index; 0 .. leftLength) {
+            auto rightValueAddress = rightHeader.valueAddress(
+                leftHeader.keyAt(index).address,
+            );
+            if (rightValueAddress is null || !equalValues(
+                readValue(Place(leftHeader.valueAt(index).address, leftHeader.valueType)),
+                readValue(Place(rightValueAddress, rightHeader.valueType)),
+            ))
+                return false;
+        }
 
         return true;
     }
