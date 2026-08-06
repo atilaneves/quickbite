@@ -10901,6 +10901,17 @@ private struct Walker {
             }
 
             const upper = cast(size_t) runExpression(slice.upr).asLong;
+            if (lower > upper) {
+                import std.conv: text;
+
+                throwRangeError(text(
+                    "slice [",
+                    lower,
+                    " .. ",
+                    upper,
+                    "] has a larger lower index than upper index",
+                ));
+            }
 
             // Pointer slicing forms a native view; it does not read the
             // pointed-to elements. Reads happen only when that view is later

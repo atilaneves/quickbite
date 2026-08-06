@@ -123,6 +123,9 @@ calls migrate to the new typed-address contract and
 Pointer slicing is ordinary D semantics and stays in this plan. Constructing
 `ptr[lower .. upper]` creates a view at the adjusted address and length; it
 must not eagerly read, unmarshal, or reconstruct the pointed-to elements.
+It rejects `lower > upper` before address arithmetic, while deliberately not
+checking whether the resulting view lies inside an allocation, matching
+compiled D.
 
 ### 4.1 Immediate work order
 

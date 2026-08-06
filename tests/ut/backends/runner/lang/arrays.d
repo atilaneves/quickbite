@@ -5004,6 +5004,66 @@ static foreach (backend; Matrix!()) {
     }
 }
 
+// A pointer slice still has the intrinsic half-open-range requirement that its
+// lower bound not exceed its upper bound, even though compiled D does not
+// validate that the range lies inside an allocation.
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.diverges, "see sibling pin below (Ctfe)"),
+    Omit!(Bytecode, Because.refusal, "18446744073709551615 != 0"),
+)) {
+    @("pointer.sliceWithReversedRuntimeBoundsThrowsRangeError." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            size_t runtimeBound(size_t value) {
+                return value;
+            }
+
+            unittest {
+                int value = 42;
+                int* pointer = &value;
+                const lower = runtimeBound(2);
+                const upper = runtimeBound(1);
+
+                auto slice = pointer[lower .. upper];
+
+                assert(slice.length == 0);
+            }
+        }).shouldThrowWithMessage(
+            "slice [2 .. 1] has a larger lower index than upper index",
+        );
+    }
+}
+
+// Ctfe diverges from compiled D by refusing to slice this pointer before it
+// considers the reversed bounds.
+static foreach (backend; AliasSeq!(Ctfe)) {
+    @("pointer.sliceWithReversedRuntimeBoundsThrowsRangeError." ~
+        backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            size_t runtimeBound(size_t value) {
+                return value;
+            }
+
+            unittest {
+                int value = 42;
+                int* pointer = &value;
+                const lower = runtimeBound(2);
+                const upper = runtimeBound(1);
+
+                auto slice = pointer[lower .. upper];
+
+                assert(slice.length == 0);
+            }
+        }).shouldThrowWithMessage(
+            "pointer `pointer` cannot be sliced at compile time " ~
+            "(it does not point to an array)",
+        );
+    }
+}
+
 static foreach (backend; AliasSeq!(Ctfe)) {
     @("pointer.slicePastAllocatedBlockDiagnostic." ~ backend.stringof)
     unittest {
