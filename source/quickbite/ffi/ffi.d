@@ -86,7 +86,7 @@ public bool call(
     if (resultMetadata.type is null)
         return false;
 
-    const resultTy = returnType.ty;
+    const resultTy = semanticStorageType(returnType).ty;
     if ((returnsReference || resultTy != TY.Tvoid) && result.address is null)
         return false;
 
@@ -277,7 +277,9 @@ private FfiType ffiTypeFor(
     if (type is null)
         return FfiType.init;
 
-    switch (type.toBasetype.ty) with (TY) {
+    // DMD owns mutable semantic type nodes.
+    auto storageType = semanticStorageType(type);
+    switch (storageType.ty) with (TY) {
         case Tvoid: return FfiType(&ffi_type_void);
         case Tbool, Tuns8, Tchar: return FfiType(&ffi_type_uint8);
         case Tint8: return FfiType(&ffi_type_sint8);
@@ -290,7 +292,7 @@ private FfiType ffiTypeFor(
         case Tfloat32: return FfiType(&ffi_type_float);
         case Tfloat64: return FfiType(&ffi_type_double);
         case Tfloat80: return FfiType(&ffi_type_longdouble);
-        case Tpointer, Tclass: return FfiType(&ffi_type_pointer);
+        case Tpointer, Tclass, Taarray: return FfiType(&ffi_type_pointer);
         case Tarray:
             // A native D dynamic array is `{length, ptr}` in word order.
             return aggregateFfiType([
@@ -303,10 +305,23 @@ private FfiType ffiTypeFor(
                 FfiType(&ffi_type_pointer),
                 FfiType(&ffi_type_pointer),
             ]);
-        case Tsarray: return staticArrayFfiType(type.toBasetype.isTypeSArray);
-        case Tstruct: return structFfiType(type.toBasetype.isTypeStruct);
+        case Tsarray: return staticArrayFfiType(storageType.isTypeSArray);
+        case Tstruct: return structFfiType(storageType.isTypeStruct);
         default: return FfiType.init;
     }
+}
+
+
+private imported!"dmd.mtype".Type semanticStorageType(
+    imported!"dmd.mtype".Type type,
+) {
+    import dmd.astenums: TY;
+
+    // DMD owns mutable semantic type nodes.
+    auto baseType = type.toBasetype;
+    return baseType.ty == TY.Tenum
+        ? semanticStorageType(baseType.isTypeEnum.memType)
+        : baseType;
 }
 
 

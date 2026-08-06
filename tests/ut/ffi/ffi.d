@@ -266,6 +266,53 @@ unittest {
 }
 
 
+@("ffi.addressOnlyEnumsAndAssociativeArraysUseNativeLayout")
+unittest {
+    auto enumSignature = functionSignature(q{
+        enum Narrow : byte;
+        extern(C) Narrow transformNarrow(Narrow);
+    }, "transformNarrow");
+    auto enumType = enumSignature.next.isTypeEnum;
+    assert(enumType !is null);
+    Narrow narrow = cast(Narrow) -101;
+    Narrow narrowResult;
+
+    call(
+        Callable(
+            cast(void*) &transformNarrow,
+            enumSignature,
+            CompilerAbi.dmd,
+        ),
+        [TypedAddress(enumType, &narrow)],
+        TypedAddress(enumType, &narrowResult),
+    ).should == true;
+
+    narrowResult.should == cast(Narrow) 37;
+
+    auto associativeArraySignature = functionSignature(q{
+        extern(C) int[int] mutateAssociativeArray(int[int]);
+    }, "mutateAssociativeArray");
+    auto associativeArrayType = associativeArraySignature.next.isTypeAArray;
+    assert(associativeArrayType !is null);
+    int[int] values = [3: 11];
+    int[int] result;
+
+    call(
+        Callable(
+            cast(void*) &mutateAssociativeArray,
+            associativeArraySignature,
+            CompilerAbi.dmd,
+        ),
+        [TypedAddress(associativeArrayType, &values)],
+        TypedAddress(associativeArrayType, &result),
+    ).should == true;
+
+    values[3].should == 22;
+    result[7] = 41;
+    values[7].should == 41;
+}
+
+
 @("ffi.referenceArgumentsAndReturnUseAuthoritativeStorage")
 unittest {
     auto signature = functionSignature(q{
@@ -504,6 +551,22 @@ private extern(C) Large transformLarge(Large value) {
         value.values[1] + 2,
         value.values[0] + 3,
     ]);
+}
+
+
+private enum Narrow : byte {
+    unused,
+}
+
+
+private extern(C) Narrow transformNarrow(Narrow value) {
+    return cast(Narrow) (cast(byte) value + 138);
+}
+
+
+private extern(C) int[int] mutateAssociativeArray(int[int] values) {
+    values[3] *= 2;
+    return values;
 }
 
 
