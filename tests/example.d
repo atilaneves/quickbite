@@ -1,15 +1,28 @@
 void encode(T)(T val, ref ubyte[] output) {
-    static foreach(i; 0 .. T.sizeof)
-        output ~= cast(ubyte)(val >> (i * 8));
+    static if (is(T == float))
+        encode(*cast(uint*) &val, output);
+    else static if (is(T == double))
+        encode(*cast(ulong*) &val, output);
+    else
+        static foreach(i; 0 .. T.sizeof)
+            output ~= cast(ubyte)(val >> (i * 8));
 }
 
 T decode(T)(in ubyte[] input, ref size_t pos) {
-    T result = 0;
+    static if (is(T == float)) {
+        uint bits = decode!uint(input, pos);
+        return *cast(float*) &bits;
+    } else static if (is(T == double)) {
+        ulong bits = decode!ulong(input, pos);
+        return *cast(double*) &bits;
+    } else {
+        T result = 0;
 
-    static foreach(i; 0 .. T.sizeof)
-        result |= cast(T)(input[pos++]) << (i * 8);
+        static foreach(i; 0 .. T.sizeof)
+            result |= cast(T)(input[pos++]) << (i * 8);
 
-    return result;
+        return result;
+    }
 }
 
 struct Minicereal {
@@ -242,6 +255,62 @@ unittest {
     size_t pos = 0;
     assert(decode!long(buf, pos) == value);
     assert(pos == 8);
+}
+
+unittest {
+    ubyte[] buf;
+    encode!float(1.5f, buf);
+    ubyte[] expected = [0x00u, 0x00u, 0xc0u, 0x3fu];
+    assert(buf == expected);
+}
+
+unittest {
+    ubyte[] input = [0x00u, 0x00u, 0xc0u, 0x3fu];
+    size_t pos = 0;
+    assert(decode!float(input, pos) == 1.5f);
+    assert(pos == 4);
+}
+
+unittest {
+    float value = -2.25f;
+    ubyte[] buf;
+    encode(value, buf);
+    size_t pos = 0;
+    assert(decode!float(buf, pos) == value);
+    assert(pos == 4);
+}
+
+unittest {
+    ubyte[] buf;
+    encode!double(1.5, buf);
+    ubyte[] expected = [0x00u, 0x00u, 0x00u, 0x00u, 0x00u, 0x00u, 0xf8u, 0x3fu];
+    assert(buf == expected);
+}
+
+unittest {
+    ubyte[] input = [0x00u, 0x00u, 0x00u, 0x00u, 0x00u, 0x00u, 0xf8u, 0x3fu];
+    size_t pos = 0;
+    assert(decode!double(input, pos) == 1.5);
+    assert(pos == 8);
+}
+
+unittest {
+    double value = -2.25;
+    ubyte[] buf;
+    encode(value, buf);
+    size_t pos = 0;
+    assert(decode!double(buf, pos) == value);
+    assert(pos == 8);
+}
+
+unittest {
+    Minicereal cereal;
+    cereal.put!double(3.5);
+    cereal.put!float(-1.25f);
+    size_t pos = 0;
+    assert(cereal.get!double(pos) == 3.5);
+    assert(cereal.get!float(pos) == -1.25f);
+    assert(pos == cereal.bytes.length);
 }
 
 unittest {
