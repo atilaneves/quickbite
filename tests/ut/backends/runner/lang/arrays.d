@@ -5322,8 +5322,6 @@ static foreach (backend; Matrix!()) {
 static foreach (backend; Matrix!(
     Omit!(Ctfe, Because.inexpressible,
         "pointer-identity `is` on a GC-backed slice lowers to an address cast CTFE refuses at compile time"),
-    Omit!(Interpreter, Because.unconfirmed,
-        "reserve loses the zero-length allocation's pointer identity"),
 )) {
     @("dynamicArray.reserveThenAppendWithinCapacityDoesNotReallocate." ~
         backend.stringof)
@@ -5378,8 +5376,6 @@ static foreach (backend; Matrix!(
 static foreach (backend; Matrix!(
     Omit!(Ctfe, Because.inexpressible,
         "gc_getArrayUsed has no D source, so Ctfe cannot intercept it at all"),
-    Omit!(Interpreter, Because.unconfirmed,
-        "reserve capacity is not retained when the zero-length slice descriptor is rebound"),
 )) {
     @("dynamicArray.assumeSafeAppendOnInteriorSliceAppendsInPlace." ~
         backend.stringof)
@@ -7168,32 +7164,11 @@ static foreach (backend; Matrix!()) {
 // passing `arrayElementIsArray(expression.type)` both to
 // `compileDynamicArrayInto` and into the resulting `DynamicArrayLocal`.
 //
-// Interpreter's own gap is not a mis-sizing: `assert(matrixMaker()[1][2] ==
-// 5)` reads a garbage int (confirmed via real `bin/ut`, e.g. `-1053594512
-// != 5`) rather than throwing. Root cause, traced with temporary
-// instrumentation: DMD's `-checkaction=context` lowering hoists the LHS
-// operand into a synthetic `ref int __assertOpN = matrixMaker()[1][2];`
-// (so the failure message can reuse it without a second evaluation from
-// SOURCE). `runDeclarationExpression`'s `isArrayElementAlias` branch
-// (`impl.d`) evaluates that initializer once correctly for its VALUE, then
-// separately calls `arrayPointer` to alias the `ref` local onto the
-// element's ADDRESS -- `arrayPointer`'s `IndexExp` arm, given the
-// non-`VarExp` inner receiver `matrixMaker()[1]`, re-evaluates `index.e1`
-// (the `CallExp` `matrixMaker()`) from scratch to compose that address, a
-// SECOND, independent call. That second call's returned array-of-arrays is
-// a transient native aggregate with no GC root beyond the `arrayPointer`
-// call's own locals; `nativeRefLocalAddresses[variable]` retains only the
-// raw address, so once that temporary's backing store is reclaimed or
-// reused, reading `__assertOp12` back out returns garbage. Fixing this
-// needs either rooting the second call's temporary for the `ref` binding's
-// whole lifetime or teaching `arrayPointer`'s `IndexExp` arm to reuse the
-// already-evaluated value's own address instead of re-invoking a `CallExp`
-// receiver; both are more than a small, self-contained fix.
-static foreach (backend; Matrix!(
-    Omit!(Interpreter, Because.unconfirmed,
-        "ref-aliases a second, unrooted call result: garbage int, not a " ~
-        "thrown exception (see comment above)"),
-)) {
+// DMD's `-checkaction=context` lowering hoists an `assert`'s LHS operand
+// into a synthetic `ref int __assertOpN = matrixMaker()[1][2];` -- a `ref`
+// binding to an element reached by indexing twice into a call's own return
+// value, rather than into a named array variable.
+static foreach (backend; Matrix!()) {
     @("dynamicArray.arrayOfArraysReturningCallResultIndexing." ~
         backend.stringof)
     @Tags(backend.stringof)

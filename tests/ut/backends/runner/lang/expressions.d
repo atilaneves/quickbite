@@ -2398,9 +2398,7 @@ static foreach (backend; Matrix!()) {
 // resolves a bare pointer-to-struct receiver the same way, materialising a
 // fresh inline copy and writing the (possibly mutated) copy back through
 // the real pointer address afterward.
-static foreach (backend; Matrix!(
-    Omit!(Interpreter, Because.unconfirmed),
-)) {
+static foreach (backend; Matrix!()) {
     @("struct.opAssignCalledThroughBarePointerToLocal." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -2427,9 +2425,7 @@ static foreach (backend; Matrix!(
 // `&arr[1]` needs the real byte stride to address the right element, and
 // the `opOpAssign` call through that pointer needs the write-back-through-
 // pointer receiver branch, together.
-static foreach (backend; Matrix!(
-    Omit!(Interpreter, Because.unconfirmed),
-)) {
+static foreach (backend; Matrix!()) {
     @("struct.opOpAssignCalledThroughDynamicArrayElementPointer." ~
         backend.stringof)
     @Tags(backend.stringof)
@@ -4283,6 +4279,35 @@ static foreach (backend; Matrix!(
     }
 }
 
+// A module-scope variable with an explicit initializer (`__gshared int
+// counter = 5;`) must keep accumulating mutations across repeated calls
+// from separate function activations, the same as a real global. `Ctfe`
+// cannot read or write dataseg storage at all.
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.inexpressible,
+        "CTFE cannot read or write dataseg (__gshared/static) storage"),
+)) {
+    @("dataseg.initializedModuleScalarSurvivesRepeatedCalls." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            __gshared int counter = 5;
+
+            void bump() {
+                counter = counter + 1;
+            }
+
+            unittest {
+                bump();
+                bump();
+                bump();
+                assert(counter == 8);
+            }
+        });
+    }
+}
+
 // A module-level fixed-size static array (`int[3] arr;`) fell through
 // `moduleScalarVariableOrNull`'s decline list outright ("Tsarray/Taarray/
 // Tdelegate ... variables remain entirely unsupported"). Scoped to a
@@ -4504,6 +4529,31 @@ static foreach (backend; Matrix!(
                 // module's own authoritative storage, not a throwaway copy.
                 assignFromMethod(g);
                 assert(quickbiteDatasegDelegate !is null);
+            }
+        });
+    }
+}
+
+// A module-level delegate variable assigned from one function must be
+// callable from another: the value `setIt()` stores into the shared
+// global must be the exact value `callIt()` reads back and invokes.
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.inexpressible,
+        "CTFE cannot read or write dataseg (__gshared/static) storage"),
+)) {
+    @("dataseg.delegateAssignedInOneFunctionSurvivesAdoptionInAnother." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            __gshared int delegate() quickbiteTempDg2;
+
+            void setIt() { quickbiteTempDg2 = () => 43; }
+            int callIt() { return quickbiteTempDg2(); }
+
+            unittest {
+                setIt();
+                assert(callIt() == 43);
             }
         });
     }
@@ -10031,11 +10081,7 @@ static foreach (backend; Matrix!()) {
 // class-receiver counterpart of
 // `pointer.wholeStaticArrayAssignmentWritesRealStorage`'s local-variable
 // case. SystemLinker is the oracle.
-static foreach (backend; Matrix!(
-    Omit!(Interpreter, Because.unconfirmed,
-        "an indexed write through a dereferenced static-array pointer " ~
-        "(`(*p)[i] = v`) expects a native pointer representation"),
-)) {
+static foreach (backend; Matrix!()) {
     @("pointer.classStaticArrayFieldElementWrittenThroughWholeFieldPointerIsVisibleDirectly." ~
         backend.stringof)
     @Tags(backend.stringof)
@@ -10933,6 +10979,814 @@ static foreach (backend; Matrix!(
                 forwardShared(value);
                 assert(value == 42);
                 assert(&value == expected);
+            }
+        });
+    }
+}
+
+// The magic `__ctfe` flag observes the *engine*, not source shape: only
+// `Ctfe` genuinely runs through DMD's own CTFE interpreter, so only `Ctfe`
+// legitimately reads `true` here. Every other backend executes as compiled
+// D would and must read `false`, matching `SystemLinker`.
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.diverges,
+        "Ctfe runs the unittest body through DMD's own CTFE interpreter, " ~
+        "which legitimately observes __ctfe as true"),
+)) {
+    @("identifier.ctfeIsFalseAtRuntime." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            unittest {
+                bool f() {
+                    return __ctfe;
+                }
+                assert(f() == false);
+            }
+        });
+    }
+}
+
+// The other half of the same invariant: `__ctfe` reads `true` when actually
+// evaluated at compile time. `static assert` forces DMD's own frontend to
+// evaluate `f()` via genuine CTFE regardless of which backend later
+// executes the rest of the module, so this fixture needs no `Ctfe`
+// omission -- unlike the runtime half above, it holds identically for
+// every backend.
+static foreach (backend; Matrix!()) {
+    @("identifier.ctfeIsTrueAtCompileTime." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            unittest {
+                bool f() {
+                    return __ctfe;
+                }
+                static assert(f() == true);
+            }
+        });
+    }
+}
+
+// A struct method call whose receiver is an implicit dereference of a
+// pointer-returning call (`p().get()`) must evaluate the side-effecting
+// `p()` operand exactly once, matching real D's evaluation-order guarantee.
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.diverges,
+        "Ctfe runs the unittest body through DMD's own CTFE interpreter, " ~
+        "which cannot read the mutable module-scope variable `calls` at " ~
+        "compile time"),
+    Omit!(Bytecode, Because.unconfirmed,
+        "bytecode core does not yet support `++` on a module-scope variable"),
+    Omit!(LLVMJit, Because.unconfirmed,
+        "returns a stale 0 for `calls`; root cause not investigated, " ~
+        "independent of the Interpreter-only fix this fixture targets"),
+)) {
+    @("struct.methodCallThroughReturnedPointerEvaluatesReceiverOnce." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct S {
+                int x;
+                int get() const { return x; }
+            }
+            int calls;
+            S s = S(42);
+            S* p() { calls++; return &s; }
+            unittest {
+                assert(p().get() == 42);
+                assert(calls == 1);
+            }
+        });
+    }
+}
+
+// A struct method call whose receiver is a side-effecting index expression
+// (`a[i++].method()`) must evaluate `i++` exactly once -- the same
+// evaluation-order guarantee as the pointer-returning-call receiver above,
+// for an indexed receiver instead.
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.diverges,
+        "Ctfe runs the unittest body through DMD's own CTFE interpreter, " ~
+        "which cannot read the mutable module-scope variable `i` at " ~
+        "compile time"),
+    Omit!(Bytecode, Because.unconfirmed,
+        "bytecode core does not yet support `++` on a module-scope variable"),
+    Omit!(LLVMJit, Because.unconfirmed,
+        "JIT child segfaults (signal 11) on this shape; root cause not " ~
+        "investigated, independent of the Interpreter-only fix this " ~
+        "fixture targets"),
+)) {
+    @("struct.methodCallThroughIndexedReceiverEvaluatesIndexOnce." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct S {
+                int x;
+                void inc() { x++; }
+            }
+            S[] arr = [S(0), S(0)];
+            int i;
+            unittest {
+                arr[i++].inc();
+                assert(i == 1);
+                assert(arr[0].x == 1);
+                assert(arr[1].x == 0);
+            }
+        });
+    }
+}
+
+// The static-array counterpart of the fixture above, with no explicit
+// initializer (`S[2] arr;`): the very first read, write, or address-taking
+// index into a never-touched module-scope static array must still resolve
+// to real storage, not fail merely because nothing has touched it yet.
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.diverges,
+        "Ctfe runs the unittest body through DMD's own CTFE interpreter, " ~
+        "which cannot read the mutable module-scope variable `arr`/`i` at " ~
+        "compile time"),
+    Omit!(Bytecode, Because.unconfirmed,
+        "\"Unsupported struct value in bytecode core: arr[cast(ulong)i++]\" " ~
+        "-- independent, unconfirmed gap in the bytecode core"),
+)) {
+    @("struct.methodCallThroughIndexedReceiverIntoUninitializedStaticArray." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct S {
+                int x;
+                void inc() { x++; }
+            }
+            S[2] arr;
+            int i;
+            unittest {
+                arr[i++].inc();
+                assert(i == 1);
+                assert(arr[0].x == 1);
+                assert(arr[1].x == 0);
+            }
+        });
+    }
+}
+
+// The same first-touch, uninitialized module-scope static array as the
+// fixture above, but with an element type whose `.init` pattern is non-zero
+// (`int x = 7;` rather than `int x;`): the untouched element must read back
+// its declared default, not zeroed memory.
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.diverges,
+        "Ctfe runs the unittest body through DMD's own CTFE interpreter, " ~
+        "which cannot read the mutable module-scope variable `arr`/`i` at " ~
+        "compile time"),
+    Omit!(Bytecode, Because.unconfirmed,
+        "\"Unsupported struct value in bytecode core: arr[cast(ulong)i++]\" " ~
+        "-- independent, unconfirmed gap in the bytecode core"),
+    Omit!(LLVMJit, Because.unconfirmed,
+        "reads back a garbage value (`458753 != 8`) rather than the real " ~
+        "default -- an independent, unconfirmed default-static-" ~
+        "initialization gap, not the Interpreter's `hasMirrorSlot` path"),
+)) {
+    @("struct.methodCallThroughIndexedReceiverIntoUninitializedStaticArrayWithNonZeroInit." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct S {
+                int x = 7;
+                void inc() { x++; }
+            }
+            S[2] arr;
+            int i;
+            unittest {
+                arr[i++].inc();
+                assert(i == 1);
+                assert(arr[0].x == 8);
+                assert(arr[1].x == 7);
+            }
+        });
+    }
+}
+
+// A struct method call through a receiver that is itself a nested/
+// multi-dimensional static-array index (`m[i][j].inc()` on `S[2][2] m`)
+// must mutate the real backing storage, not a detached copy of the row.
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.diverges,
+        "Ctfe runs the unittest body through DMD's own CTFE interpreter, " ~
+        "which cannot read the mutable module-scope variable `m` at " ~
+        "compile time"),
+    Omit!(Bytecode, Because.unconfirmed,
+        "\"Unsupported struct value in bytecode core: m[0][0]\" -- " ~
+        "independent, unconfirmed gap in the bytecode core"),
+)) {
+    @("struct.methodCallThroughNestedStaticArrayIndexedReceiverMutatesBackingStorage." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct S {
+                int x;
+                void inc() { x++; }
+            }
+            S[2][2] m;
+            unittest {
+                m[0][0].inc();
+                assert(m[0][0].x == 1);
+            }
+        });
+    }
+}
+
+// `&a[0][1]` on `int[][] a` (a dynamic array of dynamic arrays): the
+// address of an element inside a row that is itself a dynamic array must
+// land on the row's actual data, not inside the row's own
+// `{length, ptr}` slice header. SystemLinker is the oracle.
+static foreach (backend; Matrix!()) {
+    @("pointer.addressOfElementOfDynamicArrayRowOfDynamicArrayOfArrays." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            unittest {
+                int[][] a;
+                a ~= [10, 20, 30];
+                auto p = &a[0][1];
+                *p = 99;
+                assert(a[0][1] == 99);
+            }
+        });
+    }
+}
+
+// The same shape as the fixture above, but the FINAL index applied is `0`
+// (`&a[0][0]`): element 0's address must still be the row's actual data,
+// not the row's own slice-header address, even though "index 0" can look
+// like "no offset needed." SystemLinker is the oracle for both fixtures
+// below.
+static foreach (backend; Matrix!()) {
+    @("pointer.addressOfFinalZeroIndexOfDynamicArrayRowOfDynamicArray." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            unittest {
+                int[][] a;
+                a ~= [1, 2, 3];
+                auto p = &a[0][0];
+                *p = 9;
+                assert(a[0][0] == 9);
+                assert(a[0][1] == 2);
+                assert(a[0].length == 3);
+            }
+        });
+    }
+}
+
+// Same shape one level deeper (`a[0][1][0]`, the FINAL index of a
+// triple-nested chain is `0`).
+static foreach (backend; Matrix!(
+    Omit!(Bytecode, Because.unconfirmed,
+        "\"Unsupported expression in bytecode core: &a[0][1][0]\" -- no " ~
+        "support yet for address-of through two levels of `IndexExp` " ~
+        "receiver recursion"),
+)) {
+    @("pointer.addressOfFinalZeroIndexOfTripleNestedDynamicArray." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            unittest {
+                int[][][] a;
+                a ~= [[1, 2], [3, 4]];
+                auto p = &a[0][1][0];
+                *p = 9;
+                assert(a[0][0][0] == 1);
+                assert(a[0][0][1] == 2);
+                assert(a[0][1][0] == 9);
+                assert(a[0][1][1] == 4);
+            }
+        });
+    }
+}
+
+// A well-behaved neighbour of the fixtures above: `&a[0]` itself on a
+// dynamic array of dynamic arrays must yield `a[0]`'s own slice-header
+// address (a pointer-to-`int[]`), not drill one level further into
+// `a[0][0]`.
+static foreach (backend; Matrix!(
+    Omit!(Bytecode, Because.unconfirmed,
+        "`&a[0]` on a dynamic array of dynamic arrays does not yet compose " ~
+        "the row's own address correctly in the bytecode core -- " ~
+        "`(*p)[0]` reads back 0 instead of 1"),
+)) {
+    @("pointer.selfAddressOfDynamicArrayRowIsTheRowItself." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            unittest {
+                int[][] a;
+                a ~= [1, 2, 3];
+                auto p = &a[0];
+                const first = (*p)[0];
+                const len = (*p).length;
+                assert(first == 1);
+                assert(len == 3);
+                (*p)[0] = 42;
+                assert(a[0][0] == 42);
+            }
+        });
+    }
+}
+
+// Another well-behaved neighbour: a purely static nested array
+// (`int[3][2]`) has no slice header to dereference at any level, so
+// `selfAddress` vs. always-`.index` makes no observable difference there;
+// this pins that indexing through a fully static chain, including a final
+// zero index, still lands on the right byte.
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.inexpressible,
+        "DMD's own CTFE engine refuses to reinterpret a nested " ~
+        "static-array element's address as a pointer: \"reinterpreting " ~
+        "cast from `int[3][2]` to `int*` is not supported in CTFE\""),
+)) {
+    @("pointer.addressOfFinalZeroIndexOfStaticNestedArray." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            unittest {
+                int[3][2] m = [[1, 2, 3], [4, 5, 6]];
+                auto p = &m[1][0];
+                *p = 9;
+                assert(m[1][0] == 9);
+                assert(m[1][1] == 5);
+                assert(m[0][0] == 1);
+            }
+        });
+    }
+}
+
+// The same slice-header-vs-data-address hazard as the fixtures above, but
+// for a dynamic-array row reached through a struct field (`s.a[i]`) rather
+// than a plain local. A non-zero final index must land the write on the
+// row's actual data. SystemLinker is the oracle.
+static foreach (backend; Matrix!()) {
+    @("pointer.addressOfFinalNonZeroIndexOfDotVarDynamicArrayRow." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            unittest {
+                static struct S { int[][] a; }
+                S s;
+                s.a ~= [1, 2, 3];
+                auto p = &s.a[0][1];
+                *p = 9;
+                assert(s.a[0][1] == 9);
+                assert(s.a[0][0] == 1);
+                assert(s.a[0].length == 3);
+            }
+        });
+    }
+}
+
+// Same field-reached row, final index `0`: element 0's data address must
+// not be conflated with the row's own slice-header address.
+static foreach (backend; Matrix!()) {
+    @("pointer.addressOfFinalZeroIndexOfDotVarDynamicArrayRow." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            unittest {
+                static struct S { int[][] a; }
+                S s;
+                s.a ~= [1, 2, 3];
+                auto q = &s.a[0][0];
+                *q = 9;
+                assert(s.a[0][0] == 9);
+                assert(s.a[0][1] == 2);
+                assert(s.a[0].length == 3);
+            }
+        });
+    }
+}
+
+// The same "evaluate a side-effecting index exactly once" guarantee as
+// `struct.methodCallThroughIndexedReceiverEvaluatesIndexOnce` above, but
+// for an index NESTED under another index (`m[i++][1].bump()`). SystemLinker
+// is the oracle.
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.diverges,
+        "Ctfe runs the unittest body through DMD's own CTFE interpreter, " ~
+        "which cannot read the mutable module-scope variable `m`/`i` at " ~
+        "compile time"),
+    Omit!(Bytecode, Because.unconfirmed,
+        "\"Unsupported struct value in bytecode core: m[cast(ulong)i++][1]\" " ~
+        "-- independent, unconfirmed gap in the bytecode core"),
+    Omit!(Interpreter, Because.unconfirmed,
+        "`arrayPointer`'s nested-`IndexExp` arm re-evaluates the inner " ~
+        "index's side effect a second time when composing the rebind " ~
+        "address for a doubly-nested indexed receiver: `i++` runs twice " ~
+        "(i == 2 instead of 1) and `m[1][1]` gets bumped instead of " ~
+        "`m[0][1]`"),
+)) {
+    @("struct.methodCallThroughDoublyNestedIndexedReceiverEvaluatesIndexOnce." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct P {
+                int x;
+                void bump() { x++; }
+            }
+            P[2][3] m;
+            int i;
+            unittest {
+                m[i++][1].bump();
+                assert(i == 1);
+                assert(m[0][1].x == 1);
+                assert(m[1][1].x == 0);
+            }
+        });
+    }
+}
+
+// `&s.inner.a[i]` -- an address-of through a NESTED field access (`s.inner`
+// is itself a struct, `.a` is that inner struct's static-array field) with
+// a runtime index must land on the real backing storage inside `s`, not a
+// detached copy. SystemLinker is the oracle.
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.diverges,
+        "Ctfe runs the unittest body through DMD's own CTFE interpreter, " ~
+        "which cannot read the mutable module-scope variable `s` at " ~
+        "compile time"),
+    Omit!(Bytecode, Because.unconfirmed,
+        "no support yet for address-of through a doubly-nested `DotVarExp` " ~
+        "receiver in the bytecode core; reads back 0 instead of 9"),
+    Omit!(LLVMJit, Because.unconfirmed,
+        "independent, unconfirmed gap: address-of through a doubly-nested " ~
+        "`DotVarExp` receiver reads back 0 instead of 9 in the JIT backend " ~
+        "too"),
+)) {
+    @("pointer.addressOfDoublyNestedDotVarStaticArrayElement." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct Inner { int[4] a; }
+            struct Outer { Inner inner; }
+            Outer s;
+            int i = 2;
+            unittest {
+                auto p = &s.inner.a[i];
+                *p = 9;
+                assert(s.inner.a[2] == 9);
+            }
+        });
+    }
+}
+
+// `&arr[i++].mid.a[j]` -- the same nested-field address-of as
+// `pointer.addressOfDoublyNestedDotVarStaticArrayElement` above, but the
+// receiver's OWN chain contains a side-effecting index (`arr[i++]`), which
+// must still be evaluated exactly once when composing the address.
+// SystemLinker is the oracle.
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.diverges,
+        "Ctfe runs the unittest body through DMD's own CTFE interpreter, " ~
+        "which cannot read the mutable module-scope variables `arr`/`i`/" ~
+        "`j` at compile time"),
+    Omit!(Bytecode, Because.unconfirmed,
+        "no support yet for address-of through a doubly-nested `DotVarExp` " ~
+        "receiver in the bytecode core, same gap as " ~
+        "addressOfDoublyNestedDotVarStaticArrayElement above"),
+    Omit!(LLVMJit, Because.unconfirmed,
+        "independent, unconfirmed gap: address-of through a doubly-nested " ~
+        "`DotVarExp` receiver in the JIT backend, same gap as " ~
+        "addressOfDoublyNestedDotVarStaticArrayElement above"),
+)) {
+    @("pointer.addressOfDoublyNestedDotVarStaticArrayElementThroughSideEffectingIndex." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct Mid { int[3] a; }
+            struct Outer { Mid mid; }
+            Outer[2] arr;
+            int i = 0;
+            int j = 1;
+            unittest {
+                arr[0].mid.a = [10, 20, 30];
+                arr[1].mid.a = [40, 50, 60];
+                auto p = &arr[i++].mid.a[j];
+                assert(i == 1);
+                assert(*p == 20);
+            }
+        });
+    }
+}
+
+// Same nested side-effecting-index shape as
+// `pointer.addressOfDoublyNestedDotVarStaticArrayElementThroughSideEffectingIndex`
+// above, but `i` starts out of bounds for `arr[i++]` rather than in bounds:
+// the out-of-range access must raise the same `RangeError` real D raises,
+// with `i` incremented exactly once -- not silently succeed against a
+// stale, already-incremented index as if nothing were wrong. SystemLinker
+// is the oracle.
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.diverges,
+        "Ctfe runs the unittest body through DMD's own CTFE interpreter, " ~
+        "which cannot read the mutable module-scope variables `arr`/`i`/" ~
+        "`j` at compile time"),
+    Omit!(Bytecode, Because.unconfirmed,
+        "no support yet for address-of through a doubly-nested `DotVarExp` " ~
+        "receiver in the bytecode core, same gap as " ~
+        "addressOfDoublyNestedDotVarStaticArrayElement above"),
+    Omit!(LLVMJit, Because.unconfirmed,
+        "independent, unconfirmed gap: address-of through a doubly-nested " ~
+        "`DotVarExp` receiver in the JIT backend, same gap as " ~
+        "addressOfDoublyNestedDotVarStaticArrayElement above"),
+)) {
+    @("pointer.addressOfDoublyNestedDotVarStaticArrayElementThroughOutOfBoundsSideEffectingIndex." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            import core.exception: RangeError;
+            struct Mid { int[3] a; }
+            struct Outer { Mid mid; }
+            Outer[2] arr;
+            int i = -1;
+            int j = 1;
+            unittest {
+                arr[0].mid.a = [10, 20, 30];
+                arr[1].mid.a = [40, 50, 60];
+                bool caught = false;
+                try {
+                    auto p = &arr[i++].mid.a[j];
+                } catch (RangeError) {
+                    caught = true;
+                }
+                assert(caught);
+                assert(i == 0);
+            }
+        });
+    }
+}
+
+// `&arr[0].mid.a[$ - 1]` -- the same nested address-of shape as
+// `pointer.addressOfDoublyNestedDotVarStaticArrayElementThroughSideEffectingIndex`
+// above, but exercising `$` at the OUTERMOST index position (`a[$ - 1]`,
+// where `a` is a dynamic array): `$` must bind to that array's real length.
+// SystemLinker is the oracle.
+static foreach (backend; Matrix!(
+    Omit!(Bytecode, Because.unconfirmed,
+        "no support yet for address-of through a doubly-nested `DotVarExp` " ~
+        "receiver in the bytecode core, same gap as " ~
+        "addressOfDoublyNestedDotVarStaticArrayElement above"),
+    Omit!(LLVMJit, Because.unconfirmed,
+        "independent, unconfirmed gap: address-of through a doubly-nested " ~
+        "`DotVarExp` receiver in the JIT backend, same gap as " ~
+        "addressOfDoublyNestedDotVarStaticArrayElement above"),
+)) {
+    @("pointer.addressOfDoublyNestedDotVarDynamicArrayElementThroughDollarAtOuterIndex." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            unittest {
+                struct Mid { int[] a; }
+                struct Outer { Mid mid; }
+                Outer[] arr;
+                arr ~= Outer(Mid([10, 20, 30]));
+                auto p = &arr[0].mid.a[$ - 1];
+                assert(*p == 30);
+            }
+        });
+    }
+}
+
+// `&arr[$ - 1].mid.a[0]` -- `$` bound inside the receiver's OWN index
+// (`arr[$ - 1]`, as opposed to the outer index position the fixture above
+// exercises) must still bind to `arr`'s real length. SystemLinker is the
+// oracle.
+static foreach (backend; Matrix!(
+    Omit!(Bytecode, Because.unconfirmed,
+        "no support yet for address-of through a doubly-nested `DotVarExp` " ~
+        "receiver in the bytecode core, same gap as " ~
+        "addressOfDoublyNestedDotVarStaticArrayElement above"),
+    Omit!(LLVMJit, Because.unconfirmed,
+        "independent, unconfirmed gap: address-of through a doubly-nested " ~
+        "`DotVarExp` receiver in the JIT backend, same gap as " ~
+        "addressOfDoublyNestedDotVarStaticArrayElement above"),
+)) {
+    @("pointer.addressOfDoublyNestedDotVarStaticArrayElementThroughDollarInChainIndex." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            unittest {
+                struct Mid { int[3] a; }
+                struct Outer { Mid mid; }
+                Outer[] arr;
+                arr ~= Outer(Mid([10, 20, 30]));
+                arr ~= Outer(Mid([40, 50, 60]));
+                auto p = &arr[$ - 1].mid.a[0];
+                assert(*p == 40);
+            }
+        });
+    }
+}
+
+// `&arr[$ - 1].mid.a` -- the same receiver-index `$`-binding as above, but
+// the chain's last leg (`.a`, a scalar field) is not itself indexed.
+// SystemLinker is the oracle.
+static foreach (backend; Matrix!(
+    Omit!(Bytecode, Because.unconfirmed,
+        "no support yet for address-of through a doubly-nested `DotVarExp` " ~
+        "receiver in the bytecode core, same gap as " ~
+        "addressOfDoublyNestedDotVarStaticArrayElement above"),
+    Omit!(LLVMJit, Because.unconfirmed,
+        "independent, unconfirmed gap: address-of through a doubly-nested " ~
+        "`DotVarExp` receiver in the JIT backend, same gap as " ~
+        "addressOfDoublyNestedDotVarStaticArrayElement above"),
+)) {
+    @("pointer.addressOfDoublyNestedDotVarFieldThroughDollarInChainIndex." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            unittest {
+                struct Mid { int a; }
+                struct Outer { Mid mid; }
+                Outer[] arr;
+                arr ~= Outer(Mid(7));
+                arr ~= Outer(Mid(8));
+                auto p = &arr[$ - 1].mid.a;
+                assert(*p == 8);
+            }
+        });
+    }
+}
+
+// `makeHolder().arr[1].mid.a[1].doubled()` -- the same nested indexed-field
+// method-call receiver as the fixtures above, but rooted in a function
+// call's return value rather than a named variable. SystemLinker is the
+// oracle.
+static foreach (backend; Matrix!(
+    Omit!(Bytecode, Because.unconfirmed,
+        "no support yet for address-of through a doubly-nested `DotVarExp` " ~
+        "receiver in the bytecode core, same gap as " ~
+        "addressOfDoublyNestedDotVarStaticArrayElement above"),
+    Omit!(LLVMJit, Because.unconfirmed,
+        "independent, unconfirmed gap: address-of through a doubly-nested " ~
+        "`DotVarExp` receiver in the JIT backend, same gap as " ~
+        "addressOfDoublyNestedDotVarStaticArrayElement above"),
+)) {
+    @("pointer.addressOfDoublyNestedDotVarElementThroughIndexChainWithCallExpBase." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct Elem {
+                int val;
+                int doubled() { return val * 2; }
+            }
+            struct Mid { Elem[3] a; }
+            struct Outer { Mid mid; }
+            struct Holder { Outer[3] arr; }
+            Holder makeHolder() {
+                Holder h;
+                h.arr[1].mid.a[1] = Elem(21);
+                return h;
+            }
+            unittest {
+                assert(makeHolder().arr[1].mid.a[1].doubled() == 42);
+            }
+        });
+    }
+}
+
+// `&arr[k].mid.a[1]` where `arr` is a MODULE-SCOPE (`__gshared`/static)
+// variable with a declared array-literal initializer, and this
+// address-of expression is the FIRST-EVER touch of `arr`: the element
+// must read back its declared initial value, not zeroed memory.
+// SystemLinker is the oracle.
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.diverges,
+        "Ctfe runs the unittest body through DMD's own CTFE interpreter, " ~
+        "which cannot read the mutable module-scope variables `arr`/`k` " ~
+        "at compile time"),
+    Omit!(Bytecode, Because.unconfirmed,
+        "no support yet for address-of through a doubly-nested `DotVarExp` " ~
+        "receiver in the bytecode core, same gap as " ~
+        "addressOfDoublyNestedDotVarStaticArrayElement above"),
+    Omit!(LLVMJit, Because.unconfirmed,
+        "independent, unconfirmed gap: address-of through a doubly-nested " ~
+        "`DotVarExp` receiver in the JIT backend, same gap as " ~
+        "addressOfDoublyNestedDotVarStaticArrayElement above"),
+)) {
+    @("pointer.addressOfDoublyNestedDotVarStaticArrayElementFirstTouchMaterializesDatasegInitializer." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct Mid { int[3] a; }
+            struct Outer { Mid mid; }
+            Outer[2] arr = [Outer(Mid([10, 20, 30])), Outer(Mid([40, 50, 60]))];
+            int k = 0;
+            unittest {
+                auto p = &arr[k].mid.a[1];
+                assert(*p == 20);
+            }
+        });
+    }
+}
+
+// The dynamic-array sibling of the fixture above (`int[] a` instead of
+// `int[3] a`): the same first-touch guarantee, but for a slice-typed field,
+// where an uninitialized read would surface as a zero-length null slice
+// (and a bounds exception on indexing it) rather than a silently wrong
+// scalar. SystemLinker is the oracle.
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.diverges,
+        "Ctfe runs the unittest body through DMD's own CTFE interpreter, " ~
+        "which cannot read the mutable module-scope variables `arr`/`k` " ~
+        "at compile time"),
+    Omit!(Bytecode, Because.unconfirmed,
+        "no support yet for address-of through a doubly-nested `DotVarExp` " ~
+        "receiver in the bytecode core, same gap as " ~
+        "addressOfDoublyNestedDotVarStaticArrayElement above"),
+    Omit!(LLVMJit, Because.unconfirmed,
+        "independent, unconfirmed gap: address-of through a doubly-nested " ~
+        "`DotVarExp` receiver in the JIT backend, same gap as " ~
+        "addressOfDoublyNestedDotVarStaticArrayElement above"),
+)) {
+    @("pointer.addressOfDoublyNestedDotVarDynamicArrayElementFirstTouchMaterializesDatasegInitializer." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct Mid { int[] a; }
+            struct Outer { Mid mid; }
+            Outer[] arr = [Outer(Mid([10, 20, 30]))];
+            int k = 0;
+            unittest {
+                auto p = &arr[k].mid.a[1];
+                assert(*p == 20);
+            }
+        });
+    }
+}
+
+// `(*next() = P(10)).bump()` -- a method call chained off an assignment
+// whose own target is a side-effecting pointer dereference (`*next()`,
+// `next()` advancing `calls` and returning a fresh element each time) must
+// evaluate `next()` exactly once, matching real D's evaluation-order
+// guarantee. SystemLinker is the oracle.
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.diverges,
+        "Ctfe runs the unittest body through DMD's own CTFE interpreter, " ~
+        "which cannot read the mutable module-scope variables `arr`/" ~
+        "`calls` at compile time"),
+    Omit!(Interpreter, Because.unconfirmed,
+        "a pointer/index assignment-chain receiver (`(*next() = value)." ~
+        "method()`) would need `next()`'s side effect evaluated exactly " ~
+        "once when resolving the method's `this` address, which the " ~
+        "current architecture can't guarantee without duplicating it; " ~
+        "`runMemberFunction` refuses the shape with \"Unsupported eval " ~
+        "expression: chained postblit/method call receiver's assignment " ~
+        "target is a pointer/index expression...\" rather than risk the " ~
+        "double evaluation"),
+    Omit!(Bytecode, Because.unconfirmed,
+        "independent, unconfirmed gap: \"Unsupported struct value in " ~
+        "bytecode core: *next() = P(10)\" -- the bytecode core doesn't " ~
+        "support an assignment expression as a struct value in this " ~
+        "position at all"),
+)) {
+    @("struct.methodCallThroughAssignmentChainedPtrExpReceiverEvaluatesOnce." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct P {
+                int x;
+                void bump() { x++; }
+            }
+            P[2] arr;
+            int calls;
+            P* next() { return &arr[calls++]; }
+            unittest {
+                (*next() = P(10)).bump();
+                assert(calls == 1);
+                assert(arr[1].x == 0);
+                assert(arr[0].x == 11);
             }
         });
     }

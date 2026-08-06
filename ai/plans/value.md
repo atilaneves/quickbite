@@ -664,14 +664,6 @@ native slice header, including its retained backing address, rather than a
 transient aggregate handle. This is slice execution, not a formatter-specific
 storage shim; the interceptor remains temporary per item 1.
 
-Runtime Interpreter evaluation of `__ctfe` must match compiled D and therefore
-produce `false`; `Ctfe` alone observes `true`. Cover both frontend shapes before
-changing the walker: an ordinary runtime function currently leaves `__ctfe` as
-an `IdentifierExp`, while DMD-generated support code can present the magic
-variable as a `VarExp`. The oracle-backed runtime fixture must be green on
-`SystemLinker`, and the `Ctfe` divergence must remain omitted or characterized
-separately rather than becoming Interpreter behavior.
-
 An associative-array binding has no native-place encoding yet. Preserve the
 boxed reference path until it does: passing a direct local `int[int]` by `ref`
 and inserting through the parameter must mutate the caller, as `SystemLinker`
@@ -693,17 +685,31 @@ static archive at all (see the fixtures' `Omit` notes for the confirmed
 specifics) — a new native symbol-resolution source belongs to `ffi.md`, not
 this track.
 
-`runDeclarationExpression`'s `isArrayElementAlias` branch aliases a `ref`
-local onto an indexed call result's element by re-invoking `arrayPointer` on
-the initializer's inner receiver to compose an address — a SECOND,
-independent evaluation of the same call, distinct from the one already used
-for the alias's value. The second call's returned aggregate has no GC root
-beyond `arrayPointer`'s own locals, so the `ref` binding can end up aliasing
-reclaimed/reused memory (`dynamicArray.arrayOfArraysReturningCallResultIndexing`,
-`tests/ut/backends/runner/lang/arrays.d`, reads a garbage int instead of the
-call's real element). Fix needs either rooting the second call's temporary
-for the `ref` binding's lifetime, or reusing the already-evaluated value's
-own address instead of re-invoking the `CallExp` receiver.
+A struct method call through a side-effecting index receiver that is itself
+nested under another index (`m[i++][1].bump()`) evaluates `i++` twice and
+mutates the wrong element. `runCallExpression`'s `DotVarExp` arm composes the
+receiver address once via `addressOfExpression(dot.e1, EXP.address)` (the
+fix behind `struct.methodCallThroughIndexedReceiverEvaluatesIndexOnce`), but
+`arrayPointer`'s own nested-`IndexExp` arm (`index.e1.isIndexExp`) evaluates
+`index.e1` once for its `arrayValue`/length-var bookkeeping and then
+independently recurses into `arrayPointer(index.e1, outerOffset, op)` to
+compose the element address, re-running any side effect inside `index.e1` a
+second time. The single-level `arr[i++].method()` fix does not cover this
+doubly-nested shape (fixture:
+`struct.methodCallThroughDoublyNestedIndexedReceiverEvaluatesIndexOnce`).
+
+A method call chained off an assign/construct/blit whose target is itself a
+side-effecting `PtrExp`/`IndexExp` (`(*next() = value).bump()`) has no
+address to rebind `this` to without re-running that side effect a second
+time: `assignmentTarget`'s peel only trusts a `VarExp` or a `this`-rooted
+`DotVarExp` chain as safe to re-address, so `runMemberFunction` refuses the
+`PtrExp`/`IndexExp` shape outright (fixture:
+`struct.methodCallThroughAssignmentChainedPtrExpReceiverEvaluatesOnce`).
+Lifting the refusal needs the assignment's own write to hand back the
+address it used, the same way the receiver-level
+`precomputedReceiverPointerAddress` precompute does for a bare
+`PtrExp`/`IndexExp` *receiver* -- not yet threaded through for a target
+recovered by peeling.
 
 ### Item 5 — Delete Interpreter FFI marshalling fallbacks
 

@@ -49,8 +49,7 @@ gated on this plan: PR #386's frontier work empirically confirmed the
 correctness ceiling `value.md` (decision 2026-06-23) named as the decider, so
 the dependency now runs the other way for one class of gaps — frontier failure
 classes that are representation-induced defer to `value.md`'s native-layout
-track instead of being shimmed here. See the triage rule in §8 and the
-deletion inventory in §9.10.
+track instead of being shimmed here. See the triage rule in §8.
 
 ## 2. Non-goals
 
@@ -93,10 +92,11 @@ value.md       how the interpreter represents runtime results and addressable
                pointers, cast-aliasing, allocation identity, reinterpret
                loads) is value.md's, handled per the §8 triage rule — red
                fixture here, Interpreter omitted, root fix there. The #386
-               shims for such classes are tracked debt (§9.10), not
-               precedent. value.md decisions 15-18 (2026-07-20) commit its
-               end state (native-layout storage, a place is an address plus
-               its static type, no FFI marshalling; deleting `Value` is the
+               shims for such classes were a one-off exception (since
+               retired), not precedent. value.md decisions 15-18 (2026-07-20)
+               commit its end state (native-layout storage, a place is an
+               address plus its static type, no FFI marshalling; deleting
+               `Value` is the
                completion signal) and a two-track migration in which THIS
                plan is the workingness track and leads; the representation
                track lands in parallel behavior-neutral slices plus one
@@ -558,15 +558,13 @@ called function is reserved for functions the frontend has **no body** for
 walker cannot execute (`core.internal.atomic`). A function with
 interpretable D source must be executed; failure to execute it is an
 interpreter or value-model gap to fix at the root, never to special-case.
-The #386 `emplaceRef` intercept violates this and is tracked for deletion
-in §9.10; `std.conv.text` is the one pre-existing, deliberate exemption
-(perf scaffolding, already scheduled for removal by `value.md` remaining
-work item 1).
+`std.conv.text` is the one deliberate exemption (perf scaffolding, already
+scheduled for removal by `value.md` remaining work item 1).
 
 **Mechanical guard (landed, owed-fixtures follow-up).** The chokepoint is
 `Walker.runCallExpression` (impl.d). Every name-based intercept there —
 `tryInterpreterBuiltin`, `isDruntimeArrayOpAddAssign`, the `memcpy` name
-check, `isEmplaceRef`, `tryGCArrayHook`, `tryAssocArrayHook`, `tryAtomicHook`,
+check, `tryAssocArrayHook`, `tryAtomicHook`,
 `isStringForeachApplyCall`, `isStdConvText`, and the raw-function-pointer
 `enforceRawArraysConformableNogc` special case — now calls
 `enforceInterceptionPolicy(callee, interceptorName)`
@@ -594,10 +592,6 @@ rejected, body-less accepted, asm-bodied accepted, and the assert fires).
 Exemption list (`isExemptInterception`), each with its retirement condition:
 
 ```text
-core.internal.lifetime.emplaceRef!(...)   §9.10 tracked violation; retire
-                                           once the value model sees
-                                           cast-aliasing, or native layout
-                                           lands, and the real body runs.
 std.conv.text                             §8's pre-existing deliberate
                                            exemption; retire per value.md
                                            remaining work item 1.
@@ -2284,59 +2278,9 @@ site); the cerealed 21× `identifier` class converts to the same
 getrandom FFI class rather than disappearing, so it is `ffi.md` §35.11
 that finally clears it from the §7 inventory.
 
-### 9.10 Representation debt: the #386 shim deletion inventory (2026-07-09)
+### 9.10 Known `signbit` interception defect
 
-PR #386 advanced the cerealed frontier past several representation-ceiling
-classes (§8 triage rule) with name-based shims. They were merged deliberately —
-each is load-bearing for the frontier state, and deleting one before its real
-replacement exists only re-masks the classes behind it — but they are **debt,
-not precedent**. Each entry names its defect and its retirement condition; the
-retirement trigger for all of them is `value.md`'s authority switch
-(decisions 15/17; its remaining-work item 5). A shim is deleted only when
-its fixtures stay green through the real path.
-
-```text
-shim                                  defect / divergence            retire when
-runEmplaceRefCall + isEmplaceRef      violates the §8 interception   the value model sees
-(impl.d)                              policy: emplaceRef has D       cast-aliasing (or native
-                                      source. Skips postblit/copy-   layout lands) and the
-                                      ctor for structs; refuses      real body executes
-                                      0-arg and multi-arg forms
-                                      with "Unsupported eval call."
-tryGCArrayHook / runGCArrayHookCall   stubs diverge from druntime    interpreted arrays are
-+ lastGCArrayUsedAllocation           contracts: reserveCapacity     native-layout GC
-side-channel + arrayAllocation-       echoes the request and never   allocations; the gc_*
-Aliases (builtins.d, impl.d)          returns 0 on failure;          hooks become ordinary
-                                      shrinkUsed always true;        body-less FFI leaves
-                                      getUsed rebuilds from the
-                                      incoming pointer, not the
-                                      block base, so it loops the
-                                      full backing-block length
-                                      while indexing from the
-                                      interior offset and throws
-                                      before the loop completes
-                                      (corrected 2026-07-09: not a
-                                      silent offset-0 read). The
-                                      side-channel pattern-matches
-                                      the current source shape of
-                                      core.internal.array.capacity.
-reinterpretLocalPointerLoad +         blesses exactly two cast       native layout makes all
-floatBits/doubleBits (impl.d)         shapes (float->uint,           reinterpret loads
-                                      double->ulong); every other    structural
-                                      reinterpret is still wrong
-                                      or refused
-writeBackByValueClassArguments        models reference semantics     first-class object
-(impl.d)                              by post-call value diffing     references (native-
-                                      (skips on type-name            layout object model)
-                                      mismatch, non-writable
-                                      locations)
-runMemcpyCall (impl.d, pre-#386)      same category; already         same as gc_* hooks
-                                      flagged in §9.7 as an
-                                      intrinsics-layer candidate
-```
-
-Not representation debt but known-defective, same guard commit
-(`c7c78c69`): `tryInterpreterBuiltin`'s bare-identifier `signbit` fallback
+`tryInterpreterBuiltin`'s bare-identifier `signbit` fallback
 (`interception_guard.d:199-206`) matches on the identifier `signbit` alone,
 with no module check, so a user or library function literally named
 `signbit` would be silently intercepted and given
@@ -2653,36 +2597,9 @@ exactly cerealed's `grainReinterpret` shape: same-size pointer casts are
 what it actually does, so this construction is the faithful standalone
 proof, not a contrivance.
 
-Cross-reference to §9.10's shim inventory above:
-`reinterpretLocalPointerLoad` + `floatBits`/`doubleBits` remain listed
-representation debt — they bless exactly two cast shapes (float->uint,
-double->ulong) and every other reinterpret is still wrong or refused.
-These three fixtures are the ratchet: they must stay green through the
-eventual native-layout replacement of that shim, at which point the
-shim itself is deleted per its retirement condition.
-
-The remaining two owed ratchet fixtures,
-`appenderClearKeepsPointerSliceBackingAllocation` and
-`classReferencePassedByValueMutatesObject`, were reconstructed red-first
-(procedure per the 2026-07-09 handoff above) and landed in `lang/cerealed.d`.
-
-`appenderClearKeepsPointerSliceBackingAllocation` uses `std.array.appender`
-(Phobos) rather than a hand-rolled pointer-slice snippet: the bug is
-specifically in `Value.pointerSlice`'s handling of `Appender.clear`'s
-`_data.arr = _data.arr.ptr[0 .. 0]` followed by regrowth via
-`arr.ptr[0 .. len + 1]` inside `Appender.put`, and only `Appender`'s exact
-clear/grow sequence exercises it. Applied alone at `833c560c`'s parent
-(the pointer-slice fix's own parent, `ca901fd9` — the class-reference fix
-just prior), `Interpreter` fails with the exact diagnostic the plan
-predicted: `` pointer slice `[0..1]` exceeds allocated memory block
-`[0..0]` ``; `SystemLinker` is green. This is "a genuine boxed-model fix,
-not a shim" (per the classification above), so the fixture asserts
-allocation-identity behaviour outright, with no shim cross-reference.
-Verified green at this branch's `HEAD` on `Ctfe, Interpreter, SystemLinker,
-LLVMJit`. `BytecodeNewCore` is omitted, genuinely red, not a pinned
-refusal: `Unsupported expression in bytecode core: & arr` — that backend
-does not yet support taking the address of a local array, an
-unimplemented-construct gap unrelated to the fix being proven.
+The `reinterpretLocalPointerLoad`/`floatBits`/`doubleBits` shim named in
+§9.10 is deleted; these three fixtures are its ratchet and stay green
+through the real native-layout reinterpret path.
 
 **2026-07-09 follow-up: fixture rewritten as a raw pointer-slice
 reproduction, Phobos `Appender` dropped.** The full-suite `bin/ut --random`
@@ -2720,13 +2637,10 @@ observes the mutation. Applied alone at `ca901fd9`'s parent (`bce523cc`,
 "interpreter: handle emplaceRef writes" — the true parent of the
 class-reference-writeback fix), `Interpreter` fails with `0 != 42` (the
 caller sees the default field value instead of the callee's mutation);
-`SystemLinker` is green. This fixture is shim-backed by
-`writeBackByValueClassArguments` (§9.10 deletion inventory above): the
-shim models reference semantics by post-call value diffing rather than
-first-class object references. The fixture pins observable *behaviour*,
-not the shim's mechanism, so it is a valid ratchet fixture that must stay
-green once §9.10's native-layout object model replaces the shim with
-first-class object references. Verified green at this branch's `HEAD` on
+`SystemLinker` is green. This fixture pins observable *behaviour*, so it
+survived unchanged as `writeBackByValueClassArguments` (§9.10) was later
+deleted in favor of first-class object references. Verified green at this
+branch's `HEAD` on
 `Ctfe, Interpreter, SystemLinker, LLVMJit`. `BytecodeNewCore` is omitted,
 genuinely red: `Unsupported assignment in bytecode core: box.value = 42`
 — that backend does not yet support class-field assignment at all, an
@@ -2762,14 +2676,6 @@ their own; the decisive evidence is the symbol identity in the failure
 message together with this fixture being the suite's unique
 `Appender!(ubyte[])` instantiator.
 
-**Landed (2026-07-09, owed-fixtures follow-up).** The last owed §9.10
-`emplaceRef` fixtures — one ratchet, three gap — were reconstructed
-red-first (procedure per the 2026-07-09 handoff above) and landed in
-`lang/cerealed.d`. This discharges the `emplaceRefWritesArrayElement` line
-from §9.10's owed ratchet list, and the "emplaceRef with a postblit or
-copy-constructor struct element" line from the owed gap list — both
-lists above are now empty.
-
 `emplaceRefWritesArrayElement` is the ratchet fixture: it pins the
 `runEmplaceRefCall`/`isEmplaceRef` shim's behaviour for the one case
 §9.10 says it is provably equivalent to real semantics — a scalar
@@ -2788,295 +2694,19 @@ _d_assert_fail("==", message, "ok")`), confirmed independent of
 identically, and an `emplaceRef`-using probe that asserts via scalar
 comparisons instead passes on `BytecodeNewCore`.
 
-The three gap fixtures document what the shim gets wrong, each landing
-with `Interpreter` omitted per §8 (the omission is the documentation):
+**Control-flow array truthiness.** Interpreter control-flow treats a
+`Value.Array` as true exactly when its length is nonzero. This applies to
+`if`, loop conditions, logical expressions, `assert`, and `?:`; explicit
+`Value.castTo!bool` remains unchanged.
 
-- `emplaceRefSkipsPostblitForStructElement`: a struct element with a
-  postblit. Green on `Ctfe, SystemLinker, LLVMJit` (`SystemLinker`
-  confirms the real semantics run the postblit exactly once, via
-  `emplaceRef`'s "conversions" branch, a struct assignment that blits
-  then postblits the destination). `Interpreter` red with `0 != 1`: the
-  shim's raw `runExpression` + `writeLocation` moves the correct bits
-  (`counters[0].value == 42` passes) but never runs the postblit
-  (`counters[0].postblitCount` stays `0`). `BytecodeNewCore` omitted for
-  an unrelated reason: passing a struct by value through a `ref`
-  array-element argument (here, `emplaceRef`'s generated wrapper
-  constructor) is only partially supported there (`Unsupported variable
-  in bytecode core: source`), confirmed by a second, `emplaceRef`-free
-  probe (a plain `ref` function assigning a by-value struct parameter to
-  an array element) that fails on `BytecodeNewCore` with the sibling
-  diagnostic `Unsupported ref argument in bytecode core: counters[0]`.
-- `emplaceRefRefusesZeroArgDefaultInit`: the 0-arg (default-init) form.
-  Green on `Ctfe, SystemLinker, LLVMJit`. `Interpreter` red with
-  `Unsupported eval call.` — `runEmplaceRefCall` throws whenever
-  `call.arguments.length != 2`, and the 1-argument `emplaceRef(chunk)`
-  overload never reaches the shim's 2-arg path. `BytecodeNewCore`
-  omitted for the same unrelated ref-array-element gap:
-  `Unsupported ref argument in bytecode core: message[0]`.
-- `emplaceRefRefusesMultiArgConstructor`: the multi-arg (constructor)
-  form. Green on `Ctfe, SystemLinker, LLVMJit`. `Interpreter` red with
-  `Unsupported eval call.` — 3 call arguments (`chunk, 1, 2`) also fail
-  the shim's `!= 2` check. `BytecodeNewCore` is omitted here for a
-  distinct reason: it does not refuse cleanly like the sibling gap
-  fixtures above, it **segfaults** — exit code 139 (SIGSEGV), no
-  exception text at all. This is a pre-existing, unrelated
-  `BytecodeNewCore` crash (no `emplaceRef`-specific code path is
-  involved), out of this task's scope to fix. Recorded as a
-  **cross-track observation** for `ai/plans/bytecode.md` (owned by that
-  track, not edited here): `BytecodeNewCore` segfaults on `emplaceRef`
-  with a multi-arg constructor call.
+**`std.conv.text` character-array rendering.** The local interception renders
+an operand raw when its expression type is a character array, while retaining
+normal array display for non-string arrays.
 
-All four fixtures were verified at this branch's `HEAD` (`5130ea5a`,
-after the exception-classification fix `5130ea5a` and the lazy-argument
-frame-capture change `674e76a2`, neither present at master when the
-scratchpad proofs were originally run): every diagnostic above was
-re-confirmed verbatim by temporarily widening each fixture's matrix
-(adding `Interpreter` to the three gap fixtures, and `BytecodeNewCore` to
-all four) and running them focused — no deviation from the original
-proofs. Full `lang/cerealed.d` regression: 144 tests, 0 failed, 1 expected
-failure (pre-existing, unrelated).
-
-These three gap fixtures are the acceptance criteria for deleting the
-`runEmplaceRefCall`/`isEmplaceRef` shim: when `value.md`'s native-layout
-track lands, all three must go green with `Interpreter` added to their
-matrices, and `emplaceRefWritesArrayElement` must stay green throughout.
-
-**Landed (2026-07-09, owed-fixtures follow-up).** The last two owed §9.10
-gap fixtures — both naming the `tryGCArrayHook`/`runGCArrayHookCall` +
-`lastGCArrayUsedAllocation` shim — were reconstructed and landed in
-`lang/arrays.d`. This discharges both remaining lines from §9.10's owed gap
-list, which is now empty:
-
-- `dynamicArray.reserveThenAppendWithinCapacityDoesNotReallocate`: asserts
-  the oracle's real `reserve` contract (`arr.reserve(8)` then filling to 8
-  elements does not move `arr.ptr`), not the shim's echoed return value.
-  The plan's own warning that the drafted
-  `gcReserveArrayCapacityHookReturnsRequestedBytes` name pinned the
-  shim's wrong answer and must not land in that form was honoured: the
-  landed fixture never calls the raw `extern(C)` hook and never asserts
-  the echoed capacity number, only the public `reserve`/`.ptr`/`~=`
-  surface and the pointer-stability guarantee `SystemLinker` actually
-  provides. Matrix: `SystemLinker, LLVMJit`. `Interpreter` omitted (red:
-  `` const(Pointer)([0, 1, ..., 7], 1, 0) !is const(Pointer)([], 1, 0) ``
-  — `gc_reserveArrayCapacity` fabricates a capacity number without
-  growing the value model's backing allocation, so `arr.ptr` before vs.
-  after the fill differs in `target` even though the allocation id is
-  unchanged). `Ctfe` omitted (pointer-identity `is` on a GC-backed slice
-  lowers to an address cast CTFE refuses at compile time — no
-  reserve/capacity/pointer-identity support for this construct, not an
-  in-development gap). `BytecodeNewCore` omitted (`.ptr` of an array is
-  unimplemented there, unrelated to this shim).
-- `dynamicArray.assumeSafeAppendOnInteriorSliceAppendsInPlace`: takes an
-  interior slice (`tail = arr[2 .. $]`), calls `assumeSafeAppend` on it,
-  and asserts the following append lands in place (`tail.ptr` unchanged,
-  `tail[2] == 99`) — the oracle's contract, not a stub value. Matrix:
-  `SystemLinker, LLVMJit`. `Interpreter` omitted (red: `` pointer index
-  `2` exceeds allocated memory block `[-2..2]` ``). `Ctfe` omitted
-  (`gc_getArrayUsed` has no D source at all, so `Ctfe` cannot intercept
-  it — no support to begin with, not a refusal to pin). `BytecodeNewCore`
-  omitted (same `.ptr`-of-array gap as above).
-
-**Correction to the shim inventory above.** The `gc_*` hooks table entry
-stated the `getUsed` interior-pointer defect as "interior pointers get
-offset 0" — a silent wrong answer. Building the second fixture showed
-this is not what happens: it **throws**, ``pointer index `2` exceeds
-allocated memory block `[-2..2]` ``, because `gcArrayUsed` loops
-`pointer.pointerLength()` (the full backing-block length) while indexing
-from the interior `offset`, so it overruns and throws before the loop
-can complete for any `offset > 0` — it never reaches a point where it
-could substitute offset 0. The stated root cause ("rebuilds from the
-incoming pointer, not the block base") was correct; only the described
-symptom was wrong. The table above has been corrected to describe the
-throw instead of a silent offset-0 read.
-
-Both fixtures were verified at this branch's `HEAD` (`11250c93`): built
-with `ninja bin/ut`, then run focused (`SystemLinker`/`LLVMJit`, both
-green), then temporarily widened to add `Interpreter` and re-run to
-reconfirm the exact diagnostics above verbatim (no deviation from the
-prior investigation), then reverted to the landed `SystemLinker,
-LLVMJit` matrix. Full `lang/arrays.d` regression after landing: 293 tests,
-0 failed.
-
-These two gap fixtures are, together with the three `emplaceRef` gap
-fixtures above, acceptance criteria for deleting the
-`tryGCArrayHook`/`runGCArrayHookCall`/`lastGCArrayUsedAllocation` shims:
-when interpreted arrays become native-layout GC allocations, both must
-go green with `Interpreter` added to their matrices.
-
-**Fresh baseline (2026-07-09).** On current branch `HEAD` `1a430048`,
-after the owed-fixtures work, `ninja bin/ut` built successfully before
-the bench run. `bin/bench.sh -b interpreter --dub cerealed` then
-discovered/prepared 32/32 modules and skipped at the next visible
-interpreter frontier:
-
-```text
-Unsupported cast to bool from Array
-```
-
-Build generation and the bench needed escalation only because `~/.dub`
-writes are outside the sandbox.
-
-**Landed (2026-07-09, conditional array truthiness).** The approved
-`grainBitsBoolWritesScalar` fixture was added to `lang/cerealed.d` before
-production changes, but it did not reproduce the package failure: both
-oracle and interpreter were already green in focused runs:
-
-```text
-bin/ut ut.backends.runner.lang.cerealed.grainBitsBoolWritesScalar.SystemLinker
-bin/ut ut.backends.runner.lang.cerealed.grainBitsBoolWritesScalar.Interpreter
-```
-
-The red signal for this rung therefore stayed the package bench above:
-`bin/bench.sh -b interpreter --dub cerealed` skipped with
-`Unsupported cast to bool from Array`. Temporary probes showed the failing
-value was not the `grainBitsT` scalar `uint` path. It was Phobos
-`std.exception.enforce`: cerealed passes a lazy string diagnostic to
-`enforce`, then `bailOut` evaluates `msg ? msg.idup : ...`. D accepts an
-array in a condition even though explicit `cast(bool) array` is rejected.
-A small compiled-D check confirmed the conditional rule: null and empty
-dynamic arrays are false, non-empty arrays are true.
-
-The fix is intentionally local to interpreter control-flow truthiness in
-`impl.d`: `Value.Array` is truthy when `length != 0`, while explicit
-`Value.castTo!bool` remains unchanged. This covers `if`, loop conditions,
-logical expressions, `assert`, and `?:` without adding a broad cast shim.
-
-**Reviewer Finding 1 resolved (2026-07-09).** The original
-`grainBitsBoolWritesScalar` fixture did not directly pin the package failure,
-so the follow-up fixture
-`dynamicArrayTruthinessControlsEnforceFallback` now exercises dynamic-array
-truthiness directly in interpreter control-flow contexts: `if`, `?:`, and
-`!`. It is standalone in `lang/cerealed.d`, backed by `SystemLinker`, and covers
-compiled D's null/empty false and non-empty true rule.
-
-Red/green evidence:
-
-```text
-# 705cd1ed + fixture only, parent of the production truthiness fix:
-dynamicArrayTruthinessControlsEnforceFallback.SystemLinker
-# 1 test(s) run, 0 failed.
-dynamicArrayTruthinessControlsEnforceFallback.Interpreter
-# Unsupported cast to bool from Array
-
-# current HEAD:
-dynamicArrayTruthinessControlsEnforceFallback.SystemLinker
-# 1 test(s) run, 0 failed.
-dynamicArrayTruthinessControlsEnforceFallback.Interpreter
-# 1 test(s) run, 0 failed.
-```
-
-Verification after the fix:
-
-```text
-ninja bin/ut
-bin/ut ut.backends.runner.lang.cerealed.grainBitsBoolWritesScalar.SystemLinker
-bin/ut ut.backends.runner.lang.cerealed.grainBitsBoolWritesScalar.Interpreter
-bin/bench.sh -b interpreter --dub cerealed
-```
-
-The cerealed bench advanced past `Unsupported cast to bool from Array` and
-now reaches the next visible frontier, an expected-message mismatch beginning
-with:
-
-```text
-Expected: "Not enough bytes left to decerealise ubyte[] of 8 elements
-```
-
-`bin/ut --random` was also attempted. It ran 2973 tests and failed one
-unrelated, order-sensitive `LLVMJit` test:
-`ut.backends.runner.lang.structs.struct.staticArrayCopyRunsPostblitAndDtors`
-`.LLVMJit`.
-The same test passed when rerun focused. The required seed check was then
-run with `bin/ut --seed 3098732115`; it failed a different unrelated runner
-path,
-`ut.backends.ffi.dependency_image.dependencyImage.pointerGlobalRead`
-`.Interpreter`, with `SystemLinker` reporting
-`unittest symbol not found in shared library` during that test's setup.
-
-**Landed (2026-07-09, `std.conv.text` string-array rendering).** The
-approved `arrayTooShortExceptionMessageIncludesBytes` fixture was added to
-`lang/cerealed.d` before production changes. Red-first evidence: `SystemLinker`
-passed, while `Interpreter` failed with quoted fragments in the message:
-
-```text
-""Not enough bytes left to decerealise ubyte[] of "8" elements
-""Bytes left: "2", Needed: "8", bytes: "[1, 2]"
-```
-
-The first local fix made the fixture pass but did not clear the package rung:
-the real cerealed path builds the expected message with
-`shouldThrowWithMessage`, where `e.msg.array.dup.text` passed a `char[]` to
-`std.conv.text`. The interpreter was rendering that character array as a
-normal range, producing `[N, o, t, ...]`.
-
-The fix keeps the `std.conv.text` interception local. It renders operands raw
-when their expression type is a character array, and still uses normal array
-display for non-string arrays such as the fixture's `ubyte[]` payload.
-Existing string-display values remain raw through the same helper.
-
-Verification after the fix:
-
-```text
-ninja bin/ut
-bin/ut <arrayTooShortExceptionMessageIncludesBytes.SystemLinker>
-bin/ut <arrayTooShortExceptionMessageIncludesBytes.Interpreter>
-```
-
-The focused oracle and interpreter fixture are both green. The cerealed package
-remeasure used both backends:
-
-```text
-bin/bench.sh -b system-linker -b interpreter --dub cerealed
-```
-
-It prepared 32/32 modules and the previous
-`Not enough bytes left to decerealise ubyte[] of 8 elements` mismatch is gone.
-The current first visible mismatch is the signed-byte/value frontier, so
-`bin/bench.sh -b interpreter -b system-linker --dub cerealed` fails its
-result-agreement check before timing:
-
-```text
-Expected: [1, 3, 254, 5, 252]
-```
-
-**Reviewer Finding 2 resolved (2026-07-09).** The standalone
-`stdConvTextRendersCharArrayExpressionRaw` fixture now pins the direct
-`e.msg.array.dup.text`-style call path in `lang/cerealed.d`. Red evidence from a
-detached worktree at pre-fix commit `17a1dde7`: `SystemLinker` passed, while
-`Interpreter` failed with the rendered message
-`[c, e, r, e, a, l, e, d,  , b, y, t, e, s]`. Current HEAD green evidence:
-
-```text
-ninja bin/ut
-bin/ut <stdConvTextRendersCharArrayExpressionRaw.SystemLinker>
-bin/ut <stdConvTextRendersCharArrayExpressionRaw.Interpreter>
-bin/ut --random
-```
-
-Both focused fixture runs pass on current HEAD, directly covering the
-`rawStringArguments` path the reviewer called out. The randomized suite also
-passed 2822 tests, with 6 expected failures, using seed `1255702531`.
-
-`bin/ut --random` ran 2975 tests with seed `3364058692` and failed one
-unrelated order-sensitive `LLVMJit` struct test,
-`ut.backends.runner.lang.structs.struct.staticArrayCopyRunsPostblitAndDtors`
-`.LLVMJit`. The required seed check, `bin/ut --seed 3364058692`, failed one
-unrelated `SystemLinker` struct test,
-`ut.backends.runner.lang.structs.struct.scalarFieldReadWrite.SystemLinker`,
-because `mold` could not open a temporary object file under `/tmp`.
-
-**Landed (2026-07-10, signed-byte array reinterpretation frontier).** The
-approved standalone `dynamicArray.castSignedBytesToUbytesPreservesRawBits`
-fixture in `lang/arrays.d` pins compiled D's raw-bit view of a `byte[]` cast to
-`ubyte[]`: the stored `byte` values `-2` and `-4` read back as `254` and
-`252`. `SystemLinker` is green and remains the oracle. `Interpreter` is
-deliberately omitted under §8's representation-ceiling rule: its recursive
-aggregate boxing cannot preserve cast-aliasing/layout reinterpretation, so the
-root belongs to `value.md`'s native-layout track rather than an interpreter
-shim. Ctfe, Bytecode, and LLVMJit are included as the widest currently-green
-matrix. Verification: `ninja bin/ut` built cleanly; the four focused backend
-instances passed (0 failed); and `bin/ut --random` passed with seed
-`919839423`.
+**Signed-byte array reinterpretation.** A `byte[]` cast to `ubyte[]` must
+preserve raw bits. Recursive aggregate boxing cannot preserve this
+cast-aliasing/layout reinterpretation, so it belongs to `value.md`'s
+native-layout track rather than an interpreter shim.
 
 ### 9.11 Current unconfirmed language-surface queue
 

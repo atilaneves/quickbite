@@ -1749,6 +1749,11 @@ static foreach (backend; Matrix!()) {
 // matching compiled construction semantics.
 // Bytecode must preserve this one postblit while its `emplaceRef` wrapper
 // writes the indexed destination.
+// `Counter` having a postblit routes `emplaceRef`'s generated construction
+// through `(this.payload = forward!args).__postblit()` -- a postblit call
+// whose receiver is itself an assignment expression, not a plain variable
+// or field reference, so the postblit's mutation must still be visible on
+// the real destination rather than a disconnected copy.
 static foreach (backend; Matrix!()) {
     @("emplaceRefSkipsPostblitForStructElement." ~ backend.stringof)
     @Tags(backend.stringof)

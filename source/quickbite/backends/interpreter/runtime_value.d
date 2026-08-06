@@ -539,6 +539,27 @@ public struct RuntimeValue {
                     return Value(cast(T) value.realPart);
                 } else static if (is(U == EnumValue)) {
                     return Value(cast(T) value.value);
+                } else static if (is(U == Pointer)) {
+                    // `cast(ulong)ptr`/`cast(long)ptr` etc.: druntime's
+                    // Throwable chaining (object.d, dip1008 scope-catch-var
+                    // destructor lowering) reads `_nextInChainPtr` through
+                    // this exact cast to test/clear its refcount tag bit.
+                    //
+                    // @trusted: a pointer-to-integer cast is `@system` only
+                    // because the result COULD later be cast back to a
+                    // pointer and dereferenced; this operation itself reads
+                    // no memory through `value.address` -- it reinterprets
+                    // an already-held address value as a same-width integer
+                    // and stops there, with no dereference on either side of
+                    // the cast.
+                    return () @trusted {
+                        return Value(cast(T) cast(size_t) value.address);
+                    }();
+                } else static if (is(U == Null)) {
+                    // A default-initialized pointer/class/delegate field is
+                    // `Null`, not a zero-valued `Pointer`; the same
+                    // pointer-to-integer cast must see it as address zero.
+                    return Value(cast(T) 0);
                 } else {
                     import std.conv: text;
                     throw new Exception(
@@ -854,7 +875,7 @@ public struct RuntimeValue {
         );
     }
 
-    public void* pointerAddress() const {
+    public void* pointerAddress() const @safe pure {
         import std.sumtype: match;
 
         return data.match!(
@@ -1009,6 +1030,11 @@ public struct RuntimeValue {
             (const(Pointer) pointer) => Value(Pointer(
                 cast(void*) (cast(size_t) pointer.address + delta),
             )),
+            // A default-initialized pointer-typed field/local is `Null`, the
+            // same zero address `pointerAddress` already reads it as (e.g.
+            // druntime's dip1008 Throwable chain-link arithmetic reads and
+            // offsets its own default-null `_nextInChainPtr`).
+            (const(Null) null_) => Value(Pointer(cast(void*) delta)),
             (_) {
                 throw new Exception("Expected pointer.");
                 return Value.void_;
@@ -1016,24 +1042,22 @@ public struct RuntimeValue {
         );
     }
 
+    // `pointerAddress` already reads a default-initialized (`Null`)
+    // pointer-typed value as address zero; pointer comparison/difference
+    // must agree so a never-assigned pointer compares/subtracts like the
+    // zero-valued `Pointer` it represents.
+    private bool isPointerOrNull() const @safe pure {
+        return isPointer || this == Value.null_;
+    }
+
     public bool pointerSameAllocation(in Value other) const @safe pure {
-        return isPointer && other.isPointer;
+        return isPointerOrNull && other.isPointerOrNull;
     }
 
     public long pointerOffsetDifference(in Value other) const @safe pure {
-        if (isPointer && other.isPointer) {
-            import std.sumtype: match;
-
-            return data.match!(
-                (const(Pointer) left) => other.data.match!(
-                    (const(Pointer) right) =>
-                        cast(long) cast(size_t) left.address -
-                            cast(long) cast(size_t) right.address,
-                    (_) => assert(false),
-                ),
-                (_) => assert(false),
-            );
-        }
+        if (isPointerOrNull && other.isPointerOrNull)
+            return cast(long) cast(size_t) pointerAddress -
+                cast(long) cast(size_t) other.pointerAddress;
 
         throw new Exception("Expected pointers.");
     }
