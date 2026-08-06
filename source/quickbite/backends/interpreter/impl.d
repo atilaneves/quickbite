@@ -873,6 +873,19 @@ private struct Walker {
 
         if (
             variable.type.toBasetype.isTypeClass !is null &&
+            value.isPointer
+        ) {
+            // A by-value class parameter owns a reference slot, not a copy of
+            // the object body. Keep that slot authoritative so taking the
+            // parameter by `ref` forwards the same live reference rather than
+            // the frame's initial null bytes.
+            writeValue(bindingPlace(variable), value);
+            mirrorEstablished[variable] = true;
+            return;
+        }
+
+        if (
+            variable.type.toBasetype.isTypeClass !is null &&
             !value.isNativeAggregate &&
             !value.isPointer &&
             value != Value.null_

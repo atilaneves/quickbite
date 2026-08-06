@@ -6533,6 +6533,63 @@ static foreach (backend; Matrix!()) {
     }
 }
 
+// A class-reference field remains the same reference when its containing
+// struct is passed by `ref` and that field is copied into a by-value class
+// parameter. Reading a scalar through the copied reference must therefore
+// observe the object constructed into the original struct field.
+static foreach (backend; Matrix!()) {
+    @("classField.copiedFromRefStructPreservesReference." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            class Payload {
+                ushort value;
+
+                this(ushort value) {
+                    this.value = value;
+                }
+            }
+
+            struct Wrapper {
+                Payload payload;
+            }
+
+            void observeScalar(ref ushort value) {
+                assert(value == 7);
+            }
+
+            struct Visitor {
+                void visitClass(T)(T value) {
+                    visitClassImpl(this, value);
+                }
+
+                void visitMembers(ref Payload value) {
+                    visitMember!"value"(this, value);
+                }
+            }
+
+            void visitClassImpl(C, T)(ref C visitor, ref T value) {
+                visitor.visitMembers(value);
+            }
+
+            void visitMember(string member, C, T)(ref C visitor, ref T value) {
+                observeScalar(__traits(getMember, value, member));
+            }
+
+            void observeWrapper(ref Visitor visitor, ref Wrapper wrapper) {
+                visitor.visitClass(wrapper.payload);
+            }
+
+            unittest {
+                ushort seed = 7;
+                auto wrapper = Wrapper(new Payload(seed));
+                Visitor visitor;
+                observeWrapper(visitor, wrapper);
+            }
+        });
+    }
+}
+
 // A class cell promoted by taking a field's address is authoritative for the
 // whole object, not only for later field reads. Passing the class value onward
 // must therefore reconstruct the argument from the cell after a pointer write,
