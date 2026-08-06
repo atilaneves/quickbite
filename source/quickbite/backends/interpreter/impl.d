@@ -2301,6 +2301,7 @@ private struct Walker {
                     referenceVariable.type.toBasetype.isTypeStruct !is null ||
                     referenceVariable.type.toBasetype.isTypeSArray !is null ||
                     referenceVariable.type.toBasetype.isTypeDArray !is null ||
+                    referenceVariable.type.toBasetype.isTypeAArray !is null ||
                     referenceVariable.type.toBasetype.isTypePointer !is null
                 )
             ) {
@@ -5725,7 +5726,7 @@ private struct Walker {
             auto variable = variableExpression.var.isVarDeclaration;
             if (variable is null)
                 throw new Exception("Associative-array lvalue needs a variable.");
-            setLocal(variable, aa);
+            storeBinding(variable, aa);
         }
         const key = runExpression((*call.arguments)[1]);
         if (isNativeAssocArray(aa)) {

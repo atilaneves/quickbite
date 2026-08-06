@@ -16,11 +16,7 @@ private void runSse2BackendSourceFixtureTests(T)(in string moduleSource) {
 }
 
 
-// Interpreter declines this shape with "Expected associative array." -- a
-// separate, unconfirmed gap.
-static foreach (backend; Matrix!(
-    Omit!(Interpreter, Because.unconfirmed, "Expected associative array."),
-)) {
+static foreach (backend; Matrix!()) {
     @("associativeArray.directLocalRefArgumentMutatesSource." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {

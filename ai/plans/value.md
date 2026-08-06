@@ -676,12 +676,10 @@ native slice header, including its retained backing address, rather than a
 transient aggregate handle. This is slice execution, not a formatter-specific
 storage shim; the interceptor remains temporary per item 1.
 
-An associative-array binding has no native-place encoding yet. Preserve the
-boxed reference path until it does: passing a direct local `int[int]` by `ref`
-and inserting through the parameter must mutate the caller, as `SystemLinker`
-does. The Interpreter currently routes the parameter read into native storage
-and fails with `Expected associative array`; adding an address for the binding
-must not bypass the boxed authority before an AA place exists.
+An associative-array `ref` parameter reads the caller's typed handle place,
+just like other native-layout reference values. Autovivifying a null handle
+writes that handle through the referenced binding before inserting, so the
+caller retains both the allocation and later mutations.
 
 An associative array's dynamic-array-typed VALUE (e.g. `int[][int]`) writes
 through `native_call_adapter.marshalNative`'s legacy boxed `marshalArgument`
