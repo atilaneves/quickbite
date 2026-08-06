@@ -127,12 +127,10 @@ must not eagerly read, unmarshal, or reconstruct the pointed-to elements.
 ### 4.1 Immediate work order
 
 1. Make native calls in the default LDC host obey the actual callable's ABI.
-2. Make pointer slicing construct a native-backed view without reading its
-   elements.
-3. Re-run the full Cerealed suite and classify the first remaining mismatch.
-4. Distil each newly exposed class into a standalone, package-independent D
+2. Re-run the full Cerealed suite and classify the first remaining mismatch.
+3. Distil each newly exposed class into a standalone, package-independent D
    behavior, then implement that behavior against `SystemLinker`.
-5. Repeat until the default command reports every Cerealed unittest passing.
+4. Repeat until the default command reports every Cerealed unittest passing.
 
 ### 4.2 Unittest execution is not REPL evaluation
 

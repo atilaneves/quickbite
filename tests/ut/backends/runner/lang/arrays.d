@@ -5395,6 +5395,28 @@ static foreach (backend; Matrix!(
     }
 }
 
+// Forming a pointer slice computes an address and length without reading the
+// pointed-to elements. The raw words deliberately do not encode a valid
+// `string`; they become relevant only if the resulting slice is indexed.
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.inexpressible,
+        "CTFE cannot reinterpret a static-array address as `string*`"),
+)) {
+    @("pointer.sliceFormationDoesNotReadElements." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            unittest {
+                size_t runtime = size_t.max;
+                size_t[2] raw = [runtime, cast(size_t) 0];
+                auto strings = (cast(string*) raw.ptr)[0 .. 1];
+
+                assert(strings.length == 1);
+            }
+        });
+    }
+}
+
 // This fixture pins `assumeSafeAppend` through an interior pointer (a slice
 // that does not start at its backing block's base). Interpreter omitted: its
 // reserve descriptor loses the zero-length allocation's capacity when the

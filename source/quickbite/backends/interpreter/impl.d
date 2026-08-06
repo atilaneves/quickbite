@@ -10717,27 +10717,18 @@ private struct Walker {
 
             const upper = cast(size_t) runExpression(slice.upr).asLong;
 
-            // Slicing native memory (`ptr[0 .. n]` over a C allocation, as
-            // std.file.read does): reify the elements into an array Value.
-            if (source.isPointer) {
-                import quickbite.backends.interpreter.layout: typeByteSize;
+            // Pointer slicing forms a native view; it does not read the
+            // pointed-to elements. Reads happen only when that view is later
+            // indexed, just as they do for compiled D.
+            import quickbite.backends.interpreter.layout: typeByteSize;
 
-                Value[] elements;
-                foreach (index; lower .. upper)
-                    elements ~= loadNativePointerElement(
-                        slice.e1.type,
-                        source,
-                        index,
-                    );
-                return AggregateValue.reconstructNativeArray(
-                    slice.type,
-                    elements,
-                    cast(const(ubyte)*) source.pointerAddress + lower *
-                        typeByteSize(slice.e1.type.toBasetype.nextOf),
-                );
-            }
-
-            return source;
+            const address = cast(const(ubyte)*) source.pointerAddress + lower *
+                typeByteSize(slice.e1.type.toBasetype.nextOf);
+            return AggregateValue.reconstructNativeArrayWithLength(
+                slice.type,
+                upper - lower,
+                address,
+            );
         }
 
         const upper = slice.upr is null
