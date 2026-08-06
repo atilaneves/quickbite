@@ -2920,7 +2920,7 @@ private struct Walker {
                 return Value.pointerValue(placeOfLvalue(
                     dot,
                     (variable) @safe => addressableBindingBase(variable),
-                    (expression) @trusted => cast(size_t)
+                    (expression) @system => cast(size_t)
                         runExpression(expression).asLong,
                 ).address);
             } catch (Exception exception) {
@@ -3312,12 +3312,7 @@ private struct Walker {
                                 inner,
                                 (variable) @safe =>
                                     addressableBindingBase(variable),
-                                // @trusted: `runExpression` is the interpreter's
-                                // @system AST dispatcher. This delegate only
-                                // converts the evaluated D index to `size_t` for
-                                // `placeOfLvalue`, as the ordinary path below
-                                // does directly.
-                                (expression) @trusted =>
+                                (expression) @system =>
                                     cast(size_t) runExpression(expression).asLong,
                                 // @trusted: `setLocal` is @system because it is
                                 // part of the interpreter's general storage
@@ -3393,21 +3388,7 @@ private struct Walker {
                             auto fieldPlace = placeOfLvalue(
                                 nestedField,
                                 (variable) @safe => addressableBindingBase(variable),
-                                // @trusted: `runExpression` itself carries no
-                                // attribute (defaults to `@system`) as the
-                                // top-level AST dispatch over every
-                                // expression kind, several of which are
-                                // `@system` for reasons already justified at
-                                // their own boundaries deeper in this class.
-                                // Evaluating a chain index to a plain
-                                // `size_t` is the identical call the
-                                // ordinary eager path already makes for the
-                                // same purpose a few lines below
-                                // (`runExpression(index.e2).asLong`); this
-                                // closure only exists to offer that same
-                                // call through `placeOfLvalue`'s `@safe`
-                                // delegate signature.
-                                (expression) @trusted =>
+                                (expression) @system =>
                                     cast(size_t) runExpression(expression).asLong,
                                 // `$` inside a CHAIN `IndexExp`'s own index
                                 // (e.g. `arr[$ - 1]` inside
@@ -3578,20 +3559,7 @@ private struct Walker {
                             auto fieldPlace = placeOfLvalue(
                                 field,
                                 (variable) @safe => addressableBindingBase(variable),
-                                // @trusted: `runExpression` itself carries
-                                // no attribute (defaults to `@system`) as
-                                // the top-level AST dispatch over every
-                                // expression kind, several of which are
-                                // `@system` for reasons already justified at
-                                // their own boundaries deeper in this class.
-                                // Evaluating an index subexpression to a
-                                // plain `size_t` here is the same call the
-                                // ordinary eager path already makes for the
-                                // same purpose (`outerOffset` above); this
-                                // closure only exists to offer that same
-                                // call through `placeOfLvalue`'s `@safe`
-                                // delegate signature.
-                                (expression) @trusted =>
+                                (expression) @system =>
                                     cast(size_t) runExpression(expression).asLong,
                             );
                             const pointer = Value.pointerValue(
