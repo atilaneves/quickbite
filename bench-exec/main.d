@@ -78,7 +78,7 @@ private WireResult[] runOrcObjects(in RunRequest request) {
 
     // The executor is one-shot. Keep JIT mappings alive until process exit,
     // rather than disposing them while druntime may retain fixture metadata.
-    auto jit = createJit(request.objectFiles, request.archives);
+    auto jit = createJit(request.objectFiles);
     WireResult[] results;
     foreach (test; request.tests) {
         const run = runSymbol(jit, test.mangled);

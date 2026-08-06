@@ -3,14 +3,11 @@
 ## Current state / next action
 
 The backend works and is promoted alongside `SystemLinker` across the whole
-`SystemLinker`-oracle matrix, including `lang/archive.d` archive-backed imports.
-Archive link files are split by shape: shared images are still `dlopen`'d into
-the process, while static archives are attached to the ORC object layer with
-`LLVMOrcCreateStaticLibrarySearchGeneratorForPath` and lazily searched for
-referenced members. The duplicate-`UND`-symbol → zero-GOT-stub defect is fixed
-by the ELF normalizer. `bin/ut @LLVMJit` and the full `bin/ut --random` are
-green (0 failed is the invariant; totals rot and are deliberately not
-recorded in this file).
+`SystemLinker`-oracle matrix. Dependency images are loaded with
+`RTLD_GLOBAL` before ORC resolves fresh project objects from the process. The
+duplicate-`UND`-symbol → zero-GOT-stub defect is fixed by the ELF normalizer.
+`bin/ut @LLVMJit` and the full `bin/ut --random` are green (0 failed is the
+invariant; totals rot and are deliberately not recorded in this file).
 
 Everything below is kept as an outcome log; the interposition (Step 1), fork
 fix (Step 4), and ELF normalizer writeups are the load-bearing history. Original
@@ -32,7 +29,8 @@ during the Slice 4 gate (environmental `liblto_plugin.so`; a Bytecode
 
 (Provenance: a hand-written in-memory linker was explored as the alternative
 load step and rejected — ELF linking semantics are too deep to re-implement;
-JITLink/ORC is battle-tested and already solves it, including static archives.
+JITLink/ORC is battle-tested and already solves the required project-object
+linking work.
 That conclusion, from the deleted `mini-linker.md` exploration, is settled:
 do not revisit hand-rolling a linker.)
 

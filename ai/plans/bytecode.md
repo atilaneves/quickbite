@@ -341,7 +341,7 @@ in-repo `SystemLinker`-oracle test include `Bytecode` and pass. In particular:
   cause is isolated; do not re-enable it on presumed exception or formatting
   support.
 - Phobos, druntime, `File`, `Random`, `Concurrency`, lazy structs,
-  archive-backed imports, and FFI are normal ways arbitrary D unittest code
+  dependency source, and FFI are normal ways arbitrary D unittest code
   reaches the VM. Unsupported constructs on those paths are expected VM work.
   A broad dependency path may be decomposed into bounded language or runtime
   semantics, but it must not be dismissed as speculative merely because it is
@@ -471,21 +471,6 @@ reaches them:
   a `finally` between the throw site and wherever it's really caught can
   still be silently skipped.
 
-Archive function pointers use a native forwarding wrapper only for a
-receiver-free zero-argument target; the function-table word remains an index,
-so the wrapper is needed before `callIndirect` can reach the native bridge.
-An archive-backed struct method accepts a direct local's native-layout frame
-block as its ABI `this` pointer; a materialised, pointer-based, or delegate
-receiver still needs a frame-independent representation and refuses. A
-delegate of that direct-local struct method uses a native forwarding wrapper
-too: it reuses the normal indirect-call receiver copy/writeback protocol, and
-repacks value scalar arguments for the bridge. Its arguments and result stay
-limited to the native scalar shapes the bridge represents; `ref`/aggregate
-shapes remain unsupported. An archive-backed class method also refuses: a VM
-class block begins with a Quickbite class index, while native virtual dispatch
-reads that word as a vtable pointer. Passing the VM reference to the native
-bridge can therefore segfault before the method body runs. Supporting it needs
-a real ABI class object (including vtable) and synchronised field storage.
 Closure interactions with exceptions (a captured local mutated across
 try/catch/finally) and class polymorphism/vtable dispatch (including
 `super.f()`) match `SystemLinker` under `bin/qb` probing -- not a lead.
@@ -526,7 +511,7 @@ paths are expected to exercise these architectural fronts:
 2. Execute available Phobos and druntime source, including templates,
    delegates, closures, classes, exceptions, and module initialization.
 3. Widen the outbound native bridge for body-less leaves, aggregate returns,
-   host resources, and archive symbols. Keep the bytecode-owned work in this
+   and host resources. Keep the bytecode-owned work in this
    plan and coordinate shared FFI seam work through `ai/plans/ffi.md`.
 4. Synthesize runtime type metadata and inbound VM entry thunks when druntime,
    callbacks, finalizers, associative-array methods, or virtual dispatch force

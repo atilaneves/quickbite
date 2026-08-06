@@ -29,7 +29,6 @@ public struct RunRequest {
     public string libPath;      // the linked DMD-codegen .so to load and run
     public string[] depImages;  // dependency images to dlopen RTLD_GLOBAL first
     public string[] objectFiles;
-    public string[] archives;
     public UnitTestSymbol[] tests;
 }
 
@@ -52,9 +51,6 @@ public ubyte[] encodeRequest(in RunRequest request) @safe pure nothrow {
     bytes.putSizeT(request.objectFiles.length);
     foreach (objectFile; request.objectFiles)
         bytes.putString(objectFile);
-    bytes.putSizeT(request.archives.length);
-    foreach (archive; request.archives)
-        bytes.putString(archive);
     bytes.putSizeT(request.tests.length);
     foreach (test; request.tests) {
         bytes.putString(test.mangled);
@@ -75,9 +71,6 @@ public RunRequest decodeRequest(in ubyte[] bytes) @safe pure {
     const objectFileCount = bytes.getSizeT(pos);
     foreach (_; 0 .. objectFileCount)
         request.objectFiles ~= bytes.getString(pos);
-    const archiveCount = bytes.getSizeT(pos);
-    foreach (_; 0 .. archiveCount)
-        request.archives ~= bytes.getString(pos);
     const testCount = bytes.getSizeT(pos);
     foreach (_; 0 .. testCount)
         request.tests ~= UnitTestSymbol(

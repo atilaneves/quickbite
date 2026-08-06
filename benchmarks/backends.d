@@ -12,7 +12,7 @@ private:
 // it does not use.
 public struct BackendEnv {
     string[] importPaths;
-    string[] linkFiles;
+    string[] dependencyImages;
     string packageRoot;
     imported!"quickbite.frontend.compiler".FrontendFlags frontendFlags;
     // A dub package is codegen'd as its own root set; a standalone fixture is
@@ -25,18 +25,17 @@ private Runner makeCtfe(in BackendEnv env) {
 }
 
 private Runner makeBytecode(in BackendEnv env) {
-    return new Bytecode;
+    return new Bytecode(env.dependencyImages);
 }
 
 private Runner makeInterpreter(in BackendEnv env) {
-    return new Interpreter;
+    return new Interpreter(env.dependencyImages);
 }
 
-// Like `dub test`: dependency objects come from the dub-built archives; only
-// the project under test is codegen'd per run.
+// Like `dub test`: only the project under test is codegen'd per run.
 private Runner makeSystemLinker(in BackendEnv env) {
     return new SystemLinker(
-        env.linkFiles,
+        env.dependencyImages,
         env.importPaths,
         env.packageRoot,
         env.frontendFlags,
@@ -44,12 +43,11 @@ private Runner makeSystemLinker(in BackendEnv env) {
     );
 }
 
-// In-process ORC JIT: reuses SystemLinker's object production but resolves
-// druntime/phobos and dub shared-image symbols from the running process, and
-// static archives through ORC.
+// In-process ORC JIT: reuses SystemLinker's object production and resolves
+// druntime/phobos and dependency-image symbols from the running process.
 private Runner makeLLVMJit(in BackendEnv env) {
     return new LLVMJit(
-        env.linkFiles,
+        env.dependencyImages,
         env.importPaths,
         env.packageRoot,
         env.frontendFlags,

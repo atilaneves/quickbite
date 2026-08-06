@@ -24,21 +24,21 @@ public class SystemLinker:
     }
 
     public this(
-        const string[] linkFiles,
-        const string[] archiveImportPaths,
+        const string[] dependencyImages,
+        const string[] dependencyImportPaths,
     ) @safe @nogc nothrow pure {
         this(
-            SystemLinkerInputs(linkFiles, archiveImportPaths),
+            SystemLinkerInputs(dependencyImages, dependencyImportPaths),
         );
     }
 
-    // Derives the archive import paths from the raw dub import paths and the
+    // Derives the dependency import paths from the raw dub import paths and the
     // package root: the driver forwards what dub reported and lets the backend
-    // decide what is already compiled into the archives. The filtering uses
+    // decide what is already compiled into the dependency image. The filtering uses
     // std.path/std.algorithm, so this constructor cannot be @nogc nothrow pure
     // like its siblings.
     public this(
-        const string[] linkFiles,
+        const string[] dependencyImages,
         const string[] importPaths,
         in string packageRoot,
         in imported!"quickbite.frontend.compiler".FrontendFlags frontendFlags =
@@ -46,12 +46,12 @@ public class SystemLinker:
         in DubPackage dubPackage = DubPackage.no,
     ) @safe {
         import quickbite.frontend.compiler: FrontendFlags;
-        import quickbite.backends.native.link_files: archiveImportPathsUnder;
+        import quickbite.backends.native.link_files: dependencyImportPathsOutside;
 
         this(
             SystemLinkerInputs(
-                linkFiles,
-                archiveImportPathsUnder(importPaths, packageRoot),
+                dependencyImages,
+                dependencyImportPathsOutside(importPaths, packageRoot),
                 FrontendFlags(frontendFlags.compilerArguments.dup),
                 dubPackage,
             ),
@@ -128,15 +128,15 @@ public class SystemLinker:
 public alias DubPackage = imported!"std.typecons".Flag!"dubPackage";
 
 public struct SystemLinkerInputs {
-    // Link files are prebuilt libraries appended to every link. Modules under
-    // archive import paths are defined by those libraries and must not be
+    // Dependency images are appended to every hot project link. Modules under
+    // dependency import paths are defined by those images and must not be
     // codegen'd again.
-    public const string[] linkFiles;
-    public const string[] archiveImportPaths;
+    public const string[] dependencyImages;
+    public const string[] dependencyImportPaths;
     public imported!"quickbite.frontend.compiler".FrontendFlags frontendFlags =
         imported!"quickbite.frontend.compiler".FrontendFlags.init;
     // Yes.dubPackage codegens the modules as a dub package's own root set
-    // (`dmd -unittest <files>`): no lightning rod, no archive-gated emission,
+    // (`dmd -unittest <files>`): no lightning rod, no dependency-image-gated emission,
     // no member pruning -- that apparatus is for the single-snippet path. See
     // emitObjectFilesForDubPackage.
     public DubPackage dubPackage;
@@ -177,13 +177,13 @@ private BuiltLibrary buildSharedLibrary(
     string[] objPaths;
     withCompilerLock(() {
         auto codegenInputs = CodegenInputs(
-            inputs.archiveImportPaths,
+            inputs.dependencyImportPaths,
             FrontendFlags(inputs.frontendFlags.compilerArguments.dup),
             inputs.dubPackage == DubPackage.yes,
         );
         objPaths = emitObjectFilesForBackend(modules, dir, codegenInputs);
     });
-    linkSharedLibrary(objPaths, libPath, inputs.linkFiles);
+    linkSharedLibrary(objPaths, libPath, inputs.dependencyImages);
 
     return BuiltLibrary(dir, libPath);
 }
@@ -237,8 +237,7 @@ private imported!"quickbite.backends.runner".TestResult[] runTestsViaExecutor(
     write(requestFile, encodeRequest(RunRequest(
         RunKind.sharedLibrary,
         built.libPath,
-        sharedLibrariesOf(inputs.linkFiles),
-        [],
+        inputs.dependencyImages.dup,
         [],
         symbols,
     )));
@@ -252,23 +251,12 @@ private imported!"quickbite.backends.runner".TestResult[] runTestsViaExecutor(
     return cases;
 }
 
-version (LDC)
-private string[] sharedLibrariesOf(in string[] linkFiles) @safe {
-    import quickbite.backends.native.link_files: isSharedLibraryPath;
-    import std.algorithm.iteration: filter, map;
-    import std.array: array;
-
-    return linkFiles
-        .filter!isSharedLibraryPath
-        .map!(file => file.idup)
-        .array;
-}
-
 private void linkSharedLibrary(
     in string[] objPaths,
     in string libPath,
-    in string[] linkFiles,
+    in string[] dependencyImages,
 ) {
+    import quickbite.ffi: verifyDependencyImages;
     import std.conv: text;
     import std.process: execute;
 
@@ -276,40 +264,25 @@ private void linkSharedLibrary(
     // (one GC, one DSO registry) instead of smuggling in its own copy.
     //
     // `-z defs` turns any symbol the generated code fails to provide into a
-    // link error instead of a load-time failure. Shared dependency images are
-    // the exception: a module may reference a symbol supplied by a DT_NEEDED
+    // link error instead of a load-time failure. Dependency images are the
+    // exception: a module may reference a symbol supplied by a DT_NEEDED
     // dependency of the explicitly-linked image, and the dynamic loader
     // resolves that closure at load time.
-    const sharedDependencyImages =
-        linkFiles.length != 0 && allSharedLibraries(linkFiles);
+    verifyDependencyImages(dependencyImages);
     auto command = [ // const fails: appended to below
         "dmd",
         "-shared",
         "-defaultlib=libphobos2.so",
         "-of=" ~ libPath,
     ];
-    if (!sharedDependencyImages)
+    if (dependencyImages.length == 0)
         command ~= ["-L=-z", "-L=defs"];
 
     command ~= objPaths;
-    if (sharedDependencyImages) {
-        command ~= linkFiles;
-    } else if (linkFiles.length != 0) {
-        // Group-wrap archive lists: references between archives can go in
-        // either direction, and the group makes the linker rescan to fixpoint.
-        command ~= "-L=--start-group" ~ linkFiles ~ "-L=--end-group";
-    }
+    command ~= dependencyImages;
     const result = execute(command);
     if (result.status != 0)
         throw new Exception(text("link failed: ", result.output));
-}
-
-private bool allSharedLibraries(in string[] linkFiles) @safe pure {
-    import quickbite.backends.native.link_files: isSharedLibraryPath;
-    foreach (linkFile; linkFiles)
-        if (!linkFile.isSharedLibraryPath)
-            return false;
-    return true;
 }
 
 private void* loadSharedLibrary(in string libPath) {

@@ -120,10 +120,6 @@ extern(C) @nogc nothrow {
     // The JITDylib that AddObjectFile and lookup operate on by default.
     LLVMOrcJITDylibRef LLVMOrcLLJITGetMainJITDylib(LLVMOrcLLJITRef jit);
 
-    // The object linking layer used by LLJIT. Static-library generators need
-    // this so they can add archive members to the same layer as hot objects.
-    LLVMOrcObjectLayerRef LLVMOrcLLJITGetObjLinkingLayer(LLVMOrcLLJITRef jit);
-
     // The platform global symbol prefix character (0 on Linux x86-64 ELF), so
     // lookup names need no extra leading underscore here.
     char LLVMOrcLLJITGetGlobalPrefix(LLVMOrcLLJITRef jit);
@@ -137,13 +133,6 @@ extern(C) @nogc nothrow {
         void* filterCtx,
     );
 
-    // A generator that resolves symbols by lazily extracting object members
-    // from a static library archive.
-    LLVMErrorRef LLVMOrcCreateStaticLibrarySearchGeneratorForPath(
-        LLVMOrcDefinitionGeneratorRef* result,
-        LLVMOrcObjectLayerRef objLayer,
-        const(char)* fileName,
-    );
 
     // Attach a generator to a JITDylib so unresolved symbols fall through to it.
     void LLVMOrcJITDylibAddGenerator(

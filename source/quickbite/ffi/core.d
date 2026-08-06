@@ -4,8 +4,25 @@ private:
 
 
 public void loadDependencyImages(in string[] dependencyImages) {
-    foreach (dependencyImage; dependencyImages)
+    foreach (dependencyImage; dependencyImages) {
+        verifyDependencyImage(dependencyImage);
         loadDependencyImage(dependencyImage);
+    }
+}
+
+public void verifyDependencyImages(in string[] dependencyImages) {
+    foreach (dependencyImage; dependencyImages)
+        verifyDependencyImage(dependencyImage);
+}
+
+private void verifyDependencyImage(in string dependencyImage) {
+    import std.string: endsWith;
+
+    if (!dependencyImage.endsWith(".so"))
+        throw new Exception(
+            "dependency image must be a loadable shared library (.so): "
+            ~ dependencyImage,
+        );
 }
 
 // Returns a diagnostic naming an FFI-uncrossable type in `function_`'s

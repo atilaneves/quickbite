@@ -4,16 +4,10 @@ module quickbite.backends.native.link_files;
 private:
 
 
-package bool isSharedLibraryPath(in string linkFile) @safe pure {
-    import std.string: endsWith;
-
-    return linkFile.endsWith(".so");
-}
-
 // Import paths under the package belong to the project under test and are
 // compiled fresh per run; the rest belong to dependencies, whose code is
-// supplied by prebuilt archives or dependency images.
-package string[] archiveImportPathsUnder(
+// supplied by the dependency images.
+package string[] dependencyImportPathsOutside(
     in string[] importPaths,
     in string packageRoot,
 ) @safe {
