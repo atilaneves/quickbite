@@ -317,6 +317,12 @@ private struct Walker {
     // pointer; no boxed pointer carrier is ever written into guest bytes.
     private Value[const(void)*] nativeFunctionPointerSlots;
 
+    // TypeInfo values for interpreted-only guest types have no resident host
+    // object address. Their class-reference slots keep null ABI bytes while
+    // this table retains the symbolic singleton keyed by the real slot
+    // address, matching interpreted delegates and function pointers.
+    private Value[void*] nativeTypeInfoSlots;
+
     private Value[VarDeclaration] locals;
 
     // Non-null only while `runRefArgumentExpression` is walking one call
@@ -913,12 +919,18 @@ private struct Walker {
         // registration, keyed by that temporary address, would otherwise be
         // orphaned once `variable`'s own binding address takes over as the
         // durable location.
-        if (value.isNativeAggregate)
+        if (value.isNativeAggregate) {
             relocateDelegateSlots(
                 variable.type,
                 AggregateValue.native(value).address,
                 bindingPlace(variable).address,
             );
+            relocateTypeInfoSlots(
+                variable.type,
+                AggregateValue.native(value).address,
+                bindingPlace(variable).address,
+            );
+        }
 
         writeValue(bindingPlace(variable), value);
         mirrorEstablished[variable] = true;
@@ -983,6 +995,48 @@ private struct Walker {
         if (staticArray !is null)
             foreach (i; 0 .. staticArrayLength(staticArray))
                 relocateDelegateSlots(
+                    staticArray.next,
+                    Place(oldAddress, type).index(i).address,
+                    Place(newAddress, type).index(i).address,
+                );
+    }
+
+    private void relocateTypeInfoSlots(
+        imported!"dmd.mtype".Type type,
+        void* oldAddress,
+        void* newAddress,
+    ) {
+        import quickbite.backends.interpreter.layout:
+            structFields, declaredType, staticArrayLength;
+        import quickbite.backends.interpreter.place: Place;
+
+        if (oldAddress is newAddress)
+            return;
+
+        auto base = type.toBasetype;
+        if (base.isTypeClass !is null) {
+            if (auto typeInfo = oldAddress in nativeTypeInfoSlots) {
+                nativeTypeInfoSlots[newAddress] = *typeInfo;
+                nativeTypeInfoSlots.remove(oldAddress);
+            }
+            return;
+        }
+
+        auto structType = base.isTypeStruct;
+        if (structType !is null && structType.sym.isUnionDeclaration is null) {
+            foreach (field; structFields(structType))
+                relocateTypeInfoSlots(
+                    declaredType(field),
+                    Place(oldAddress, type).field(field).address,
+                    Place(newAddress, type).field(field).address,
+                );
+            return;
+        }
+
+        auto staticArray = base.isTypeSArray;
+        if (staticArray !is null)
+            foreach (i; 0 .. staticArrayLength(staticArray))
+                relocateTypeInfoSlots(
                     staticArray.next,
                     Place(oldAddress, type).index(i).address,
                     Place(newAddress, type).index(i).address,
@@ -3116,6 +3170,7 @@ private struct Walker {
         child.nativeThrowableNext = nativeThrowableNext.dup;
         child.nativePointerRoots = nativePointerRoots.dup;
         child.nativeFunctionPointerSlots = nativeFunctionPointerSlots.dup;
+        child.nativeTypeInfoSlots = nativeTypeInfoSlots.dup;
         child.nextClassObjectId = nextClassObjectId;
         child.functionPointers = functionPointers.dup;
         child.functionPointerIds = functionPointerIds.dup;
@@ -6339,6 +6394,7 @@ private struct Walker {
         nativeExceptionMetadata = child.nativeExceptionMetadata;
         nativeDelegateSlots = child.nativeDelegateSlots;
         nativeFunctionPointerSlots = child.nativeFunctionPointerSlots;
+        nativeTypeInfoSlots = child.nativeTypeInfoSlots;
         lazyArgumentExpressions = child.lazyArgumentExpressions;
         lazyArgumentLocals = child.lazyArgumentLocals;
         lazyArgumentFrames = child.lazyArgumentFrames;
@@ -6363,6 +6419,7 @@ private struct Walker {
         nativeExceptionMetadata = child.nativeExceptionMetadata;
         nativeDelegateSlots = child.nativeDelegateSlots;
         nativeFunctionPointerSlots = child.nativeFunctionPointerSlots;
+        nativeTypeInfoSlots = child.nativeTypeInfoSlots;
         lazyArgumentExpressions = child.lazyArgumentExpressions;
         lazyArgumentLocals = child.lazyArgumentLocals;
         lazyArgumentFrames = child.lazyArgumentFrames;
@@ -7560,6 +7617,21 @@ private struct Walker {
         import std.conv: text;
 
         if (auto field = dot.var.isVarDeclaration) {
+            if (field.type.toBasetype.isTypeClass !is null)
+                if (auto variableExpression = dot.e1.isVarExp)
+                    if (auto variable = variableExpression.var.isVarDeclaration)
+                        if (
+                            hasMirrorSlot(variable) &&
+                            mirrorEstablished.get(variable, false)
+                        ) {
+                            auto fieldPlace = bindingPlace(variable).field(field);
+                            if (
+                                auto typeInfo = fieldPlace.address
+                                    in nativeTypeInfoSlots
+                            )
+                                return *typeInfo;
+                        }
+
             auto pointerType = field.type.toBasetype.isTypePointer;
             if (
                 pointerType !is null &&
@@ -7664,6 +7736,11 @@ private struct Walker {
                 auto fieldPlace = Place(target.pointerAddress, dot.e1.type)
                     .field(dot.var.isVarDeclaration);
                 if (fieldPlace.type.isTypeClass !is null) {
+                    if (
+                        auto typeInfo = fieldPlace.address
+                            in nativeTypeInfoSlots
+                    )
+                        return *typeInfo;
                     auto address = fieldPlace.deref.address;
                     if (address is null)
                         return Value.null_;
@@ -7691,17 +7768,26 @@ private struct Walker {
             }
             if (target.isNativeAggregate) {
                 import dmd.astenums: TY;
+                import quickbite.backends.interpreter.aggregate_value: AggregateValue;
+                import quickbite.backends.interpreter.place: Place;
 
                 auto field = dot.var.isVarDeclaration;
+                auto native = AggregateValue.native(target);
+                auto fieldPlace = Place(native.address, native.type).field(field);
+                if (
+                    auto typeInfo = fieldPlace.address in nativeTypeInfoSlots
+                )
+                    return *typeInfo;
                 if (auto variableExpression = dot.e1.isVarExp)
                     if (auto variable = variableExpression.var.isVarDeclaration)
                     if (
                         hasMirrorSlot(variable) &&
                         mirrorEstablished.get(variable, false)
                     ) {
-                        auto fieldPlace = bindingPlace(variable).field(field);
+                        auto bindingFieldPlace = bindingPlace(variable)
+                            .field(field);
                         if (field.type.toBasetype.ty == TY.Tdelegate)
-                            if (auto delegate_ = fieldPlace.address in nativeDelegateSlots)
+                            if (auto delegate_ = bindingFieldPlace.address in nativeDelegateSlots)
                                 return *delegate_;
                     }
             }
@@ -10411,6 +10497,8 @@ private struct Walker {
         Value[] fields;
         imported!"dmd.declaration".VarDeclaration[] liveDelegateFields;
         Value[] liveDelegateValues;
+        imported!"dmd.declaration".VarDeclaration[] symbolicTypeInfoFields;
+        Value[] symbolicTypeInfoValues;
         if (literal.sd !is null)
             foreach (index; 0 .. literal.sd.fields.length) {
                 const hasElement = literal.elements !is null
@@ -10441,6 +10529,15 @@ private struct Walker {
                     liveDelegateValues ~= value;
                     value = Value.null_;
                 }
+                if (
+                    field !is null &&
+                    field.type.toBasetype.isTypeClass !is null &&
+                    value.isTypeName
+                ) {
+                    symbolicTypeInfoFields ~= field;
+                    symbolicTypeInfoValues ~= value;
+                    value = Value.null_;
+                }
 
                 fields ~= value;
             }
@@ -10453,6 +10550,14 @@ private struct Walker {
                 nativeDelegateSlots[
                     Place(native.address, native.type).field(field).address
                 ] = liveDelegateValues[index];
+        }
+
+        if (symbolicTypeInfoFields.length != 0) {
+            auto native = AggregateValue.native(result);
+            foreach (index, field; symbolicTypeInfoFields)
+                nativeTypeInfoSlots[
+                    Place(native.address, native.type).field(field).address
+                ] = symbolicTypeInfoValues[index];
         }
 
         return result;
@@ -11730,6 +11835,7 @@ private struct Walker {
         nativeExceptionMetadata = child.nativeExceptionMetadata;
         nativeDelegateSlots = child.nativeDelegateSlots;
         nativeFunctionPointerSlots = child.nativeFunctionPointerSlots;
+        nativeTypeInfoSlots = child.nativeTypeInfoSlots;
         lazyArgumentExpressions = child.lazyArgumentExpressions;
         lazyArgumentLocals = child.lazyArgumentLocals;
         lazyArgumentFrames = child.lazyArgumentFrames;

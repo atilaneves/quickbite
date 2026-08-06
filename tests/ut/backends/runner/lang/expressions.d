@@ -679,6 +679,28 @@ static foreach (backend; Matrix!()) {
     }
 }
 
+// A TypeInfo reference retains its identity when stored in an aggregate and
+// read back.
+static foreach (backend; Matrix!()) {
+    @("typeid.classExpressionStoredInStruct." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            class Thing {}
+
+            struct Observation {
+                TypeInfo type;
+            }
+
+            unittest {
+                auto value = new Thing;
+                auto observation = Observation(typeid(value));
+                assert(observation.type is typeid(Thing));
+            }
+        });
+    }
+}
+
 static foreach (backend; AliasSeq!(Ctfe)) {
     @("typeid.typeNameReturnsIdentifier." ~ backend.stringof)
     unittest {
