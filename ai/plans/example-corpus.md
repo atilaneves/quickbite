@@ -20,10 +20,12 @@ is no production change. The only check is `./bin/bench.sh -b interpreter
 ## Current coverage
 
 `tests/example.d` exercises `ubyte`/`byte`/`ushort`/`short`/`uint`/`int`/
-`ulong`/`long` encode-decode round trips, dynamic arrays (`~=`, slicing,
-`$`, assignment), `foreach`/`for`/`switch` control flow, short-circuit
-`&&`/`||`, and bitwise ops. It has no floating point, exceptions,
-classes/interfaces, delegates/closures, or associative arrays.
+`ulong`/`long`/`float`/`double` encode-decode round trips, dynamic arrays
+(`~=`, slicing, `$`, assignment), `foreach`/`for`/`switch` control flow,
+short-circuit `&&`/`||`, bitwise ops, and exceptions (`throw`/`catch`/
+`finally`, catch-by-base, multi-catch, rethrow — via a
+`decode`/`Minicereal.get` bounds check). It has no classes/interfaces,
+delegates/closures, or associative arrays.
 
 ## Constraint and method
 
@@ -37,20 +39,15 @@ never mine it for new features.
 
 ## Queue
 
-1. Floating point `encode`/`decode` (`double`/`float`) — the biggest gap
-   given `math.d`'s full-matrix support and no float coverage today.
-2. Exceptions — `throw`/`catch`/`finally`, catch-by-base, multi-catch,
-   rethrow. Natural fit: make `decode`/`Minicereal.get` throw on
-   out-of-bounds input.
-3. Classes + interfaces + virtual dispatch — fields, inheritance, default
+1. Classes + interfaces + virtual dispatch — fields, inheritance, default
    field initializers, an interface with runtime-dispatched
    implementations.
-4. Delegates / closures / nested functions — capture-by-reference, a
+2. Delegates / closures / nested functions — capture-by-reference, a
    nested function or IIFE reading an enclosing local or `this` field.
-5. Associative arrays — scalar/string/struct keys, nested `AA[AA]`,
+3. Associative arrays — scalar/string/struct keys, nested `AA[AA]`,
    iteration. Avoid AA passed as a `ref` parameter (Interpreter-only
    omit, `tests/ut/backends/runner/lang/arrays.d`).
-6. Remaining control flow: `do`/`while`, labeled `break`/`continue`
+4. Remaining control flow: `do`/`while`, labeled `break`/`continue`
    across nested loops, `switch` `goto case`/`goto default`, case
    ranges/multi-value cases, `final switch` on an enum, string-typed
    switch cases, ternary `?:`.
@@ -64,6 +61,11 @@ never mine it for new features.
 - Class-hierarchy/pointer-aliasing shapes beyond single inheritance with
   plain fields — `value.md`'s class-identity redesign is in flight.
 - `synchronized`/concurrency.
+- A nested `try { try {...} catch (Exception) {...} } catch (Error e)`
+  around an out-of-bounds array index (`RangeError`): confirmed Bytecode
+  diverges from `SystemLinker` (Bytecode fails the assertion that the
+  `Error` reaches the outer handler; `Interpreter` matches the oracle).
+  Route a minimal fixture to `bytecode.md` before re-adding this shape.
 
 ## Process per rung
 

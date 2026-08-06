@@ -16,6 +16,9 @@ T decode(T)(in ubyte[] input, ref size_t pos) {
         ulong bits = decode!ulong(input, pos);
         return *cast(double*) &bits;
     } else {
+        if (pos + T.sizeof > input.length)
+            throw new OutOfBytesError("Minicereal.decode: not enough bytes");
+
         T result = 0;
 
         static foreach(i; 0 .. T.sizeof)
@@ -35,6 +38,121 @@ struct Minicereal {
     T get(T)(ref size_t pos) {
         return decode!T(bytes, pos);
     }
+}
+
+class MinicerealError : Exception {
+    this(string msg) {
+        super(msg);
+    }
+}
+
+class OutOfBytesError : MinicerealError {
+    this(string msg) {
+        super(msg);
+    }
+}
+
+unittest {
+    ubyte[] input;
+    size_t pos = 0;
+    bool caught;
+
+    try {
+        decode!uint(input, pos);
+    } catch (MinicerealError e) {
+        caught = true;
+    }
+
+    assert(caught);
+}
+
+unittest {
+    ubyte[] input;
+    size_t pos = 0;
+    string message;
+
+    try {
+        decode!ulong(input, pos);
+    } catch (MinicerealError e) {
+        auto specific = cast(OutOfBytesError) e;
+        message = specific.msg;
+    }
+
+    assert(message == "Minicereal.decode: not enough bytes");
+}
+
+unittest {
+    ubyte[] input;
+    size_t pos = 0;
+    bool caught;
+    bool finallyRan;
+
+    try {
+        decode!int(input, pos);
+    } catch (Exception e) {
+        caught = true;
+    } finally {
+        finallyRan = true;
+    }
+
+    assert(caught);
+    assert(finallyRan);
+}
+
+unittest {
+    ubyte[] input = [0x2au];
+    size_t pos = 0;
+    bool finallyRan;
+    ubyte value;
+
+    try {
+        value = decode!ubyte(input, pos);
+    } finally {
+        finallyRan = true;
+    }
+
+    assert(value == 0x2au);
+    assert(finallyRan);
+}
+
+unittest {
+    string caughtAs;
+
+    void attempt(ubyte[] input) {
+        size_t pos = 0;
+        try {
+            decode!uint(input, pos);
+        } catch (OutOfBytesError e) {
+            caughtAs = "outOfBytes";
+        } catch (MinicerealError e) {
+            caughtAs = "minicereal";
+        }
+    }
+
+    attempt([]);
+    assert(caughtAs == "outOfBytes");
+}
+
+unittest {
+    bool outerCaught;
+
+    void inner(ubyte[] input, ref size_t pos) {
+        try {
+            decode!int(input, pos);
+        } catch (MinicerealError e) {
+            throw e;
+        }
+    }
+
+    ubyte[] input;
+    size_t pos = 0;
+    try {
+        inner(input, pos);
+    } catch (MinicerealError e) {
+        outerCaught = true;
+    }
+
+    assert(outerCaught);
 }
 
 unittest {
