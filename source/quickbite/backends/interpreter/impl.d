@@ -3216,6 +3216,38 @@ private struct Walker {
         return false;
     }
 
+    // Compose this index expression from its receiver's already-resolved
+    // place. Both nested-index and nested-field receivers take this route:
+    // keeping the `$` binding, outer-index evaluation, and final-offset
+    // composition together ensures each expression is evaluated once.
+    private Value nestedIndexPointer(
+        Expression expression,
+        Place receiverPlace,
+        in long offset,
+        in bool selfAddress,
+    ) {
+        import quickbite.backends.interpreter.place_value: readValue;
+
+        auto index = expression.isIndexExp;
+        assert(index !is null);
+        if (index.lengthVar !is null)
+            setLocal(
+                index.lengthVar,
+                Value(AggregateValue.length(readValue(receiverPlace))),
+            );
+        const outerOffset = runExpression(index.e2).asLong;
+        const pointer = Value.pointerValue(
+            receiverPlace.index(cast(size_t) outerOffset).address,
+        );
+        if (selfAddress)
+            return pointer;
+        return Value.pointerValue(
+            Place(cast(void*) pointer.pointerAddress, expression.type)
+                .index(cast(size_t) offset)
+                .address,
+        );
+    }
+
     private Value arrayPointer(
         imported!"dmd.expression".Expression array,
         in long offset,
@@ -3301,21 +3333,11 @@ private struct Walker {
                                         );
                                 },
                             );
-                            if (index.lengthVar !is null)
-                                setLocal(
-                                    index.lengthVar,
-                                    Value(AggregateValue.length(readValue(innerPlace))),
-                                );
-                            const outerOffset = runExpression(index.e2).asLong;
-                            const pointer = Value.pointerValue(
-                                innerPlace.index(cast(size_t) outerOffset).address,
-                            );
-                            if (selfAddress)
-                                return pointer;
-                            return Value.pointerValue(
-                                Place(cast(void*) pointer.pointerAddress, array.type)
-                                    .index(cast(size_t) offset)
-                                    .address,
+                            return nestedIndexPointer(
+                                array,
+                                innerPlace,
+                                offset,
+                                selfAddress,
                             );
                         } catch (IndexOutOfBoundsException exception) {
                             // The composed `Place.index` call observes bounds
@@ -3417,31 +3439,11 @@ private struct Walker {
                                         );
                                 },
                             );
-                            // `$` inside the OUTER `index.e2` is bound to
-                            // `index.lengthVar`, and must see `nestedField`'s
-                            // (the composed field's) own current length --
-                            // the same length the skipped eager
-                            // `runExpression(index.e1)` used to provide via
-                            // `AggregateValue.length` of the receiver it
-                            // read. Bind it from `fieldPlace` before
-                            // evaluating `index.e2`, the same order the
-                            // ordinary eager path below already uses for the
-                            // identical binding.
-                            if (index.lengthVar !is null)
-                                setLocal(
-                                    index.lengthVar,
-                                    Value(AggregateValue.length(readValue(fieldPlace))),
-                                );
-                            const outerOffset = runExpression(index.e2).asLong;
-                            const pointer = Value.pointerValue(
-                                fieldPlace.index(cast(size_t) outerOffset).address,
-                            );
-                            if (selfAddress)
-                                return pointer;
-                            return Value.pointerValue(
-                                Place(cast(void*) pointer.pointerAddress, array.type)
-                                    .index(cast(size_t) offset)
-                                    .address,
+                            return nestedIndexPointer(
+                                array,
+                                fieldPlace,
+                                offset,
+                                selfAddress,
                             );
                         } catch (UnsupportedLvalueShapeException) {
                             // Fall through to the eager path below for a
