@@ -2881,21 +2881,11 @@ static foreach (backend; Matrix!(
     }
 }
 
-// The open soundness question `ai/plans/bytecode.md`'s Closures section
-// flagged for the two fixtures above: unlike `compileDelegateReturn`'s
-// `return`-based escape sites, a class-field/array-element write is not
-// itself the function's last act, so a further same-function mutation of the
-// captured local between the write and the aggregate's actual escape can
-// diverge from `heapClosureContextOrNull`'s heap snapshot, taken at the
-// write. SystemLinker reflects the later write (102: `40 + 2`, then
-// `total = 100` makes the read-back-through-the-delegate value `100 + 2`);
-// before `heapEscapingDelegateOperandOffset` gained the
-// `capturedLocalsMayBeMutatedInCurrentFunction` gate below, Bytecode silently
-// returned the frozen pre-mutation snapshot (42) instead -- the same
-// silent-wrong-answer shape `delegate.outParameterEscapingCaptureDeclines`
-// documents for the `ref`/`out`-parameter escape site. `Bytecode` now
-// declines this shape outright (`delegate.classFieldEscapingCaptureDeclines`
-// below) rather than risk it.
+// Unlike a direct delegate return, a class-field write is not the function's
+// last act. For the supported narrow scalar/pointer capture shape, a later
+// direct assignment mirrors into the same heap environment, so the escaped
+// delegate observes the enclosing function's final value. SystemLinker is
+// the oracle.
 static foreach (backend; Matrix!(
     Omit!(Ctfe, Because.inexpressible,
         "Ctfe wraps dmd.dinterpret, whose CTFE engine refuses the "
@@ -2928,10 +2918,9 @@ static foreach (backend; Matrix!(
     }
 }
 
-// The array-element twin of the class-field fixture above:
-// `tryDynamicArrayElementAssign`'s `Tdelegate` branch shares the same
-// `heapEscapingDelegateOperandOffset` gate, so the same further-mutation
-// shape declines the same way.
+// The array-element twin of the class-field fixture above: its supported
+// narrow scalar/pointer capture uses the same heap environment, so a later
+// direct assignment remains visible through the escaped delegate.
 static foreach (backend; Matrix!(
     Omit!(Ctfe, Because.inexpressible,
         "Ctfe wraps dmd.dinterpret, whose CTFE engine refuses the "
@@ -2966,9 +2955,8 @@ static foreach (backend; Matrix!(
 }
 
 // The `ref`-argument twin of `delegate.classFieldMutatedAfterCapturingWriteIsCallable`
-// above: DMD does not wrap a `ref` argument in an `AddrExp` (unlike `&arg`),
-// so a captured local mutated only by being passed to a `ref` parameter is
-// just as unsound a heap-box input as a direct `total = 100;` reassignment.
+// above: after the `ref` call completes, its writeback likewise mirrors the
+// captured local's final value into the supported narrow heap environment.
 static foreach (backend; Matrix!(
     Omit!(Ctfe, Because.inexpressible,
         "Ctfe wraps dmd.dinterpret, whose CTFE engine refuses the "
