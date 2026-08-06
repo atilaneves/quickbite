@@ -13541,9 +13541,13 @@ private struct Compiler {
             }
 
         const returnType = _program.functions[index].returnType;
-        const destination = allocateIndirectCallResult(
-            returnType, returnsRef,
-        );
+        const destination =
+            (!returnType.isArray &&
+                !returnType.isStruct &&
+                !returnType.isDelegate &&
+                returnType.scalar == ScalarType.void_)
+                ? cast(ushort) 0
+                : allocateBytes(size(returnType), 8);
         if (hasClassReceiver && !isSuperCall) {
             const functionSlot = allocate(ScalarType.ulong_);
             _code ~= Instruction(
@@ -14277,7 +14281,7 @@ private struct Compiler {
         const returnType = _program.functions[index].returnType;
         const returnsRef = delegateLocal.function_.type.isTypeFunction.isRef;
         const destination = allocateIndirectCallResult(
-            returnType, functionType.isRef,
+            returnType, returnsRef,
         );
         _code ~= Instruction(
             Op.callIndirect, delegateLocal.offset, argumentArea, destination,
@@ -14442,13 +14446,9 @@ private struct Compiler {
                 );
             }
 
-        const destination =
-            (!returnType.isArray &&
-                !returnType.isStruct &&
-                !returnType.isDelegate &&
-                returnType.scalar == ScalarType.void_)
-                ? cast(ushort) 0
-                : allocateBytes(size(returnType), 8);
+        const destination = allocateIndirectCallResult(
+            returnType, functionType.isRef,
+        );
         _code ~= Instruction(
             Op.callIndirect, pointer.offset, argumentArea, destination,
         );
