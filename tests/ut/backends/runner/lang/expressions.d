@@ -701,6 +701,91 @@ static foreach (backend; Matrix!()) {
     }
 }
 
+// Copying a struct copies the identity of its TypeInfo reference while
+// leaving the source value unchanged.
+static foreach (backend; Matrix!()) {
+    @("typeid.structCopyRetainsBothReferences." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            class Thing {}
+
+            struct Observation {
+                TypeInfo type;
+            }
+
+            unittest {
+                Observation original = Observation(typeid(Thing));
+                auto copy = original;
+
+                assert(original.type is typeid(Thing));
+                assert(copy.type is typeid(Thing));
+            }
+        });
+    }
+}
+
+// Field assignment stores a TypeInfo reference in an already-addressable
+// aggregate just as aggregate construction does.
+static foreach (backend; Matrix!()) {
+    @("typeid.assignedToStructField." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            class Thing {}
+
+            struct Observation {
+                TypeInfo type;
+            }
+
+            unittest {
+                Observation observation;
+                observation.type = typeid(Thing);
+
+                assert(observation.type is typeid(Thing));
+            }
+        });
+    }
+}
+
+// A by-value aggregate call result remains a complete value when the language
+// gives its temporary an address for a `ref` input-range element.
+static foreach (backend; Matrix!()) {
+    @("typeid.byValueCallTemporaryRetainsStructField." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            class Thing {}
+
+            struct Observation {
+                TypeInfo type;
+            }
+
+            struct Range {
+                bool consumed;
+
+                bool empty() const @property {
+                    return consumed;
+                }
+
+                Observation front() @property {
+                    return Observation(typeid(Thing));
+                }
+
+                void popFront() {
+                    consumed = true;
+                }
+            }
+
+            unittest {
+                Range range;
+                foreach (ref observation; range)
+                    assert(observation.type is typeid(Thing));
+            }
+        });
+    }
+}
+
 static foreach (backend; AliasSeq!(Ctfe)) {
     @("typeid.typeNameReturnsIdentifier." ~ backend.stringof)
     unittest {
