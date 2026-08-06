@@ -7,7 +7,7 @@ import dmd.func: FuncDeclaration;
 import dmd.mtype:
     ParameterList, Type, TypeClass, TypeDArray, TypeDelegate, TypeFunction,
     TypeReference, TypeStruct, TypeVector;
-import dmd.typesem: merge, sarrayOf;
+import dmd.typesem: constOf, merge, sarrayOf;
 import quickbite.ffi.ffi:
     Callable, CompilerAbi, DVariadicMetadata, TypedAddress, call;
 import unit_threaded;
@@ -1086,6 +1086,28 @@ unittest {
             ~this();
         }
     }, true);
+    auto otherReceiverType = structType(q{
+        extern(C++) struct Other {
+            int value;
+        }
+    }, "Other");
+    CppLifetime unrelatedReceiverStorage;
+    receiver = TypedAddress(otherReceiverType, &unrelatedReceiverStorage);
+    call(
+        Callable(
+            cast(void*) &cppConstructorOracle,
+            constructor.type.isTypeFunction,
+            CompilerAbi.dmd,
+            constructor,
+        ),
+        [
+            TypedAddress(Type.tint32, &lhs),
+            TypedAddress(Type.tint32, &rhs),
+        ],
+        TypedAddress(constructor.type.isTypeFunction.next, null),
+        &receiver,
+    ).should == false;
+
     CppLifetime lifetime;
     receiver = TypedAddress(constructor.isThis.type, &lifetime);
     call(
@@ -1103,6 +1125,22 @@ unittest {
         &receiver,
     ).should == true;
     lifetime.value.should == 47;
+
+    receiver = TypedAddress(constructor.isThis.type.constOf, &lifetime);
+    call(
+        Callable(
+            cast(void*) &cppConstructorOracle,
+            constructor.type.isTypeFunction,
+            CompilerAbi.dmd,
+            constructor,
+        ),
+        [
+            TypedAddress(Type.tint32, &lhs),
+            TypedAddress(Type.tint32, &rhs),
+        ],
+        TypedAddress(constructor.type.isTypeFunction.next, null),
+        &receiver,
+    ).should == true;
 
     auto destructor = specialFunctionDeclaration(q{
         extern(C++) struct Lifetime {

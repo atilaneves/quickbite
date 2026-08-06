@@ -294,6 +294,14 @@ private PhysicalCall physicalCallFor(
     const hasReceiver = receiver !is null;
     if (hasReceiver && (receiver.type is null || receiver.address is null))
         return physical;
+    if (hasReceiver && callable.signature.linkage == LINK.cpp &&
+        callable.declaration !is null &&
+        callable.declaration.isThis !is null &&
+        !isMatchingReceiverType(
+            receiver.type,
+            callable.declaration.isThis.type,
+        ))
+        return physical;
     if (isDVariadic) {
         const expectedType = callable.compilerAbi == CompilerAbi.dmd
             ? TY.Tclass
@@ -367,6 +375,22 @@ private PhysicalCall physicalCallFor(
         : numPassedFixedArguments + hasReceiver;
     physical.valid = true;
     return physical;
+}
+
+
+private bool isMatchingReceiverType(
+    imported!"dmd.mtype".Type actual,
+    imported!"dmd.mtype".Type expected,
+) {
+    import dmd.typesem: mutableOf, unSharedOf;
+
+    // DMD's qualifier transforms require mutable type nodes.
+    auto actualBase = actual.toBasetype;
+    auto expectedBase = expected.toBasetype;
+    return actualBase.ty == expectedBase.ty &&
+        actualBase.mutableOf.unSharedOf.equals(
+            expectedBase.mutableOf.unSharedOf,
+        );
 }
 
 
