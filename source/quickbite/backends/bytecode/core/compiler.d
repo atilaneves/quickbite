@@ -358,6 +358,23 @@ private struct Compiler {
         ushort writeBackElementSize;
     }
 
+    private static struct ScalarPlace {
+        private enum Kind {
+            frame,
+            captured,
+            module_,
+            pointer,
+            field,
+        }
+
+        Kind kind;
+        ScalarType type;
+        ushort offset;
+        VarDeclaration declaration;
+        StructField field;
+        bool hasFieldWriteback;
+    }
+
     private void compileFunctionBody(in size_t index) {
         // Only the entry (index 0) can be a unittest body; any lazily
         // compiled callee is an ordinary function.
@@ -3036,42 +3053,6 @@ private struct Compiler {
         import dmd.tokens: EXP;
         import std.conv: text;
 
-        // `x++` where `x` is an outer local captured into this function (a
-        // `lazy` argument's thunk, or any nested closure): its slot lives in
-        // the enclosing frame, not this function's `_locals`.
-        if (auto variable = post.e1.isVarExp)
-            if (auto declaration = variable.var.isVarDeclaration)
-                if (declaration !in _locals && _hasNestedContext)
-                    if (auto captured = declaration in _capturedOffsets)
-                        return compileCapturedPostIncrement(
-                            declaration, *captured, post,
-                        );
-
-        if (auto deref = post.e1.isPtrExp) {
-            const pointer = compileExpression(deref.e1);
-            if (pointer.isPointer && isIntegerScalar(pointer.pointerElement)) {
-                const zero = compileSizeConstant(0);
-                const lvalue = loadThroughPointer(pointer, zero);
-                const result = allocate(lvalue.type);
-                _code ~= Instruction(
-                    Op.copy, result, lvalue.offset, cast(ushort) size(lvalue.type),
-                );
-
-                const increment = compileExpression(post.e2);
-                const stepOp = post.op == EXP.minusMinus
-                    ? (isEightByteInteger(lvalue.type) ? Op.subInt8 : Op.subInt4)
-                    : (isEightByteInteger(lvalue.type) ? Op.addInt8 : Op.addInt4);
-                _code ~= Instruction(
-                    stepOp, lvalue.offset, lvalue.offset, increment.offset,
-                );
-                emitPointerStore(
-                    lvalue.offset, pointer.offset, zero,
-                    size(pointer.pointerElement),
-                );
-                return Operand(result, lvalue.type);
-            }
-        }
-
         // `p.at(0)++` / `p.at(0)--`: a ref-returning method call used as a
         // post-increment lvalue. Tried before the plain-local/field/
         // static-array-element cases below, which a `CallExp` lvalue never
@@ -3080,96 +3061,137 @@ private struct Compiler {
             if (auto result = tryMemberRefIndexPostIncrement(call, post))
                 return *result;
 
-        ushort lvalueSlot;
-        auto lvalueType = ScalarType.void_;
-        StructField* lvalueField;
-
-        if (auto variable = post.e1.isVarExp) {
-            if (auto declaration = variable.var.isVarDeclaration)
-                if (auto slot = declaration in _locals) {
-                    lvalueSlot = *slot;
-                    lvalueType = scalarType(declaration.type);
-                }
-        } else if (auto dot = post.e1.isDotVarExp) {
-            // `this.pos++` / `box.pos++`: the field lives at its inline offset.
-            if (auto field = tryStructField(dot)) {
-                lvalueSlot = field.offset;
-                lvalueType = scalarType(field.type);
-                lvalueField = field;
-            }
-        } else if (auto index = post.e1.isIndexExp) {
-            // `a[0]++` / `s.a[1]++`: a compile-time-constant index into a
-            // static-array chain (a plain local or a struct field's inline
-            // block) resolves to the element's own inline frame slot, the
-            // same authority `compileStaticArrayElementAssign` writes
-            // through.
-            if (auto element = tryStaticArrayElement(index)) {
-                lvalueSlot = element.offset;
-                lvalueType = element.type;
-                lvalueField = element.writeback;
-            }
-        }
-
-        if (!isIntegerScalar(lvalueType))
+        auto place = scalarPlaceOrNull(post.e1);
+        if (place is null || !isIntegerScalar(place.type))
             throw new Exception(text(
                 "Unsupported post-increment in bytecode core: ",
                 expressionChars(post),
             ));
 
-        const result = allocate(lvalueType);
+        const lvalue = loadScalarPlace(*place);
+        const result = allocate(place.type);
         _code ~= Instruction(
-            Op.copy, result, lvalueSlot, cast(ushort) size(lvalueType),
+            Op.copy, result, lvalue.offset, cast(ushort) size(place.type),
         );
 
         // `PostExp.e2` is always the literal `1`; `post.op` (`plusPlus` vs
         // `minusMinus`) decides whether we add or subtract it.
         const increment = compileExpression(post.e2);
-        const eightByte = lvalueType == ScalarType.long_ ||
-            lvalueType == ScalarType.ulong_;
+        const eightByte = isEightByteInteger(place.type);
         const stepOp = post.op == EXP.minusMinus
             ? (eightByte ? Op.subInt8 : Op.subInt4)
             : (eightByte ? Op.addInt8 : Op.addInt4);
-        _code ~= Instruction(stepOp, lvalueSlot, lvalueSlot, increment.offset);
-        if (lvalueField !is null)
-            writeBackStructField(*lvalueField);
-        return Operand(result, lvalueType);
+        _code ~= Instruction(
+            stepOp, lvalue.offset, lvalue.offset, increment.offset,
+        );
+        storeScalarPlace(*place, lvalue);
+        return Operand(result, place.type);
     }
 
-    // `x++` for an outer local `x` captured by this function: read/step/write
-    // through the captured-local frame ops instead of an in-place local-slot
-    // update, since `x`'s slot is the enclosing frame's, not this one's.
-    private Operand compileCapturedPostIncrement(
-        VarDeclaration declaration,
-        in ushort capturedOffset,
-        PostExp post,
-    ) {
-        import dmd.tokens: EXP;
-        import std.conv: text;
+    private ScalarPlace* scalarPlaceOrNull(Expression expression) {
+        if (auto variable = expression.isVarExp) {
+            auto declaration = variable.var.isVarDeclaration;
+            if (declaration is null)
+                return null;
+            if (auto slot = declaration in _locals)
+                return new ScalarPlace(
+                    ScalarPlace.Kind.frame, scalarType(declaration.type), *slot,
+                );
+            if (_hasNestedContext)
+                if (auto offset = declaration in _capturedOffsets)
+                    return new ScalarPlace(
+                        ScalarPlace.Kind.captured,
+                        scalarType(declaration.type), *offset,
+                        declaration,
+                    );
+            if (auto moduleVariable = moduleScalarVariableOrNull(declaration))
+                return new ScalarPlace(
+                    ScalarPlace.Kind.module_, moduleVariable.type,
+                    moduleVariable.offset,
+                );
+            return null;
+        }
+        if (auto dereference = expression.isPtrExp) {
+            const pointer = compileExpression(dereference.e1);
+            if (!pointer.isPointer)
+                return null;
+            return new ScalarPlace(
+                ScalarPlace.Kind.pointer, pointer.pointerElement,
+                pointer.offset,
+            );
+        }
+        if (auto dot = expression.isDotVarExp)
+            if (auto field = tryStructField(dot))
+                return new ScalarPlace(
+                    ScalarPlace.Kind.field, scalarType(field.type),
+                    field.offset, null, *field, true,
+                );
+        if (auto index = expression.isIndexExp)
+            if (auto element = tryStaticArrayElement(index))
+                return new ScalarPlace(
+                    ScalarPlace.Kind.field, element.type, element.offset,
+                    null, element.writeback is null
+                        ? StructField.init : *element.writeback,
+                    element.writeback !is null,
+                );
+        return null;
+    }
 
-        const lvalueType = scalarType(declaration.type);
-        if (!isIntegerScalar(lvalueType))
-            throw new Exception(text(
-                "Unsupported post-increment in bytecode core: ",
-                expressionChars(post),
-            ));
+    private Operand loadScalarPlace(ScalarPlace place) {
+        final switch (place.kind) with (ScalarPlace.Kind) {
+            case frame, field:
+                return Operand(place.offset, place.type);
+            case captured:
+                return loadCapturedLocal(place.declaration, place.offset);
+            case module_:
+                const result = allocate(place.type);
+                _code ~= Instruction(
+                    Op.loadModule, result, place.offset,
+                    cast(ushort) size(place.type),
+                );
+                return Operand(result, place.type);
+            case pointer:
+                return loadThroughPointer(
+                    Operand(place.offset, ScalarType.ulong_, true, place.type),
+                    compileSizeConstant(0),
+                );
+        }
+    }
 
-        const loaded = loadCapturedLocal(declaration, capturedOffset);
-        const result = allocate(lvalueType);
-        _code ~= Instruction(
-            Op.copy, result, loaded.offset, cast(ushort) size(lvalueType),
-        );
-
-        const increment = compileExpression(post.e2);
-        const eightByte = lvalueType == ScalarType.long_ ||
-            lvalueType == ScalarType.ulong_;
-        const stepOp = post.op == EXP.minusMinus
-            ? (eightByte ? Op.subInt8 : Op.subInt4)
-            : (eightByte ? Op.addInt8 : Op.addInt4);
-        _code ~= Instruction(
-            stepOp, loaded.offset, loaded.offset, increment.offset,
-        );
-        storeCapturedLocal(declaration, capturedOffset, loaded);
-        return Operand(result, lvalueType);
+    private void storeScalarPlace(ScalarPlace place, in Operand value) {
+        final switch (place.kind) with (ScalarPlace.Kind) {
+            case frame:
+                if (value.offset != place.offset)
+                    _code ~= Instruction(
+                        Op.copy, place.offset, value.offset,
+                        cast(ushort) size(place.type),
+                    );
+                return;
+            case field:
+                if (value.offset != place.offset)
+                    _code ~= Instruction(
+                        Op.copy, place.offset, value.offset,
+                        cast(ushort) size(place.type),
+                    );
+                if (place.hasFieldWriteback)
+                    writeBackStructField(place.field);
+                return;
+            case captured:
+                storeCapturedLocal(place.declaration, place.offset, value);
+                return;
+            case module_:
+                _code ~= Instruction(
+                    Op.storeModule, value.offset, place.offset,
+                    cast(ushort) size(place.type),
+                );
+                return;
+            case pointer:
+                emitPointerStore(
+                    value.offset, place.offset, compileSizeConstant(0),
+                    size(place.type),
+                );
+                return;
+        }
     }
 
     // `arr.length` reads the descriptor's length word (a `size_t`) into a fresh
@@ -9711,6 +9733,15 @@ private struct Compiler {
             if (auto pointer = tryAddressOfCaptured(
                     declaration, symOff.type.toBasetype.nextOf))
                 return pointer;
+            if (auto moduleStruct = moduleStructVariableOrNull(declaration)) {
+                if (symOff.offset != 0)
+                    return null;
+                return addressOperand(
+                    Op.moduleAddress,
+                    moduleStruct.offset,
+                    ScalarType.void_,
+                );
+            }
             auto moduleVariable = moduleScalarVariableOrNull(declaration);
             if (moduleVariable is null || symOff.offset != 0)
                 return null;
@@ -9815,6 +9846,13 @@ private struct Compiler {
                 if (auto struct_ = declaration in _structLocals) {
                     slot = struct_.offset;
                     pointedType = declaration.type;
+                } else if (auto moduleStruct =
+                        moduleStructVariableOrNull(declaration)) {
+                    return addressOperand(
+                        Op.moduleAddress,
+                        moduleStruct.offset,
+                        ScalarType.void_,
+                    );
                 } else if (auto moduleVariable =
                         moduleScalarVariableOrNull(declaration)) {
                     return addressOperand(
