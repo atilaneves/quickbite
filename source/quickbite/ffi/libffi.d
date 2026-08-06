@@ -122,6 +122,8 @@ extern __gshared {
     ffi_type ffi_type_sint32;
     ffi_type ffi_type_uint64;
     ffi_type ffi_type_sint64;
+    ffi_type ffi_type_uint128;
+    ffi_type ffi_type_sint128;
     ffi_type ffi_type_float;
     ffi_type ffi_type_double;
     ffi_type ffi_type_pointer;

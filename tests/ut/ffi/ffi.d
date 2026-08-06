@@ -582,6 +582,13 @@ unittest {
 }
 
 
+@("ffi.addressOnly128BitIntegerCallsUseTwoIntegerEightbytes")
+unittest {
+    assert128BitIntegerCalls(Type.tint128);
+    assert128BitIntegerCalls(Type.tuns128);
+}
+
+
 @("ffi.addressOnlyFloatingPointCallsPreserveNativePrecision")
 unittest {
     assertFloatingPointCall(cast(float) 1.25, Type.tfloat32);
@@ -1697,6 +1704,93 @@ private void assertScalarRoundTrip(T)(T expected, Type type) {
 
 private extern(C) T identity(T)(T value) {
     return value;
+}
+
+
+private struct UInt128Abi {
+    ulong low;
+    ulong high;
+}
+
+
+private void assert128BitIntegerCalls(Type type) {
+    UInt128Abi value = UInt128Abi(
+        0x0123_4567_89ab_cdef,
+        0xfedc_ba98_7654_3210,
+    );
+    UInt128Abi result;
+
+    call(
+        Callable(
+            cast(void*) &transformUInt128,
+            functionSignature(type, [type], LINK.c),
+            CompilerAbi.dmd,
+        ),
+        [TypedAddress(type, &value)],
+        TypedAddress(type, &result),
+    ).should == true;
+    result.should == transformUInt128(value);
+
+    ulong[5] prefix = [11, 22, 33, 44, 55];
+    result = UInt128Abi.init;
+    call(
+        Callable(
+            cast(void*) &transformExhaustedUInt128,
+            functionSignature(
+                type,
+                [
+                    Type.tuns64,
+                    Type.tuns64,
+                    Type.tuns64,
+                    Type.tuns64,
+                    Type.tuns64,
+                    type,
+                ],
+                LINK.c,
+            ),
+            CompilerAbi.dmd,
+        ),
+        [
+            TypedAddress(Type.tuns64, &prefix[0]),
+            TypedAddress(Type.tuns64, &prefix[1]),
+            TypedAddress(Type.tuns64, &prefix[2]),
+            TypedAddress(Type.tuns64, &prefix[3]),
+            TypedAddress(Type.tuns64, &prefix[4]),
+            TypedAddress(type, &value),
+        ],
+        TypedAddress(type, &result),
+    ).should == true;
+    result.should == transformExhaustedUInt128(
+        prefix[0],
+        prefix[1],
+        prefix[2],
+        prefix[3],
+        prefix[4],
+        value,
+    );
+}
+
+
+private extern(C) UInt128Abi transformUInt128(UInt128Abi value) {
+    return UInt128Abi(
+        value.high ^ 0x55aa_55aa_55aa_55aa,
+        value.low ^ 0xaa55_aa55_aa55_aa55,
+    );
+}
+
+
+private extern(C) UInt128Abi transformExhaustedUInt128(
+    ulong first,
+    ulong second,
+    ulong third,
+    ulong fourth,
+    ulong fifth,
+    UInt128Abi value,
+) {
+    return UInt128Abi(
+        value.low ^ first ^ third ^ fifth,
+        value.high ^ second ^ fourth,
+    );
 }
 
 
