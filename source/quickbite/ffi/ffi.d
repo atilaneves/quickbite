@@ -22,11 +22,17 @@ public struct TypedAddress {
 }
 
 
+public struct DVariadicMetadata {
+    public TypedAddress value;
+}
+
+
 public bool call(
     Callable callable,
     TypedAddress[] arguments,
     TypedAddress result,
     TypedAddress* receiver = null,
+    DVariadicMetadata* variadicMetadata = null,
 ) {
     import quickbite.ffi.libffi:
         ffi_arg, ffi_cif, ffi_call, ffi_prep_cif, ffi_prep_cif_var,
@@ -38,17 +44,19 @@ public bool call(
         (callable.signature.linkage != LINK.c &&
             callable.signature.linkage != LINK.d) ||
         (receiver !is null && callable.signature.linkage != LINK.d) ||
-        (callable.signature.parameterList.varargs != VarArg.none &&
-            (callable.signature.linkage != LINK.c ||
-                callable.signature.parameterList.varargs != VarArg.variadic)))
+        !hasSupportedVarArgs(callable.signature))
         return false;
 
     const numFixedArguments = callable.signature.parameterList.length;
-    const isVariadic = callable.signature.parameterList.varargs ==
-        VarArg.variadic;
-    if (isVariadic
-            ? arguments.length < numFixedArguments
-            : arguments.length != numFixedArguments)
+    const isCVariadic = callable.signature.linkage == LINK.c &&
+        callable.signature.parameterList.varargs == VarArg.variadic;
+    const isDVariadic = callable.signature.linkage == LINK.d &&
+        callable.signature.parameterList.varargs == VarArg.variadic;
+    const hasArgumentTail = isCVariadic || isDVariadic;
+    if (hasArgumentTail && arguments.length < numFixedArguments ||
+        !hasArgumentTail && arguments.length != numFixedArguments)
+        return false;
+    if (isDVariadic != (variadicMetadata !is null))
         return false;
 
     const hasReceiver = receiver !is null;
@@ -90,7 +98,23 @@ public bool call(
     if ((returnsReference || resultTy != TY.Tvoid) && result.address is null)
         return false;
 
-    const numAbiArguments = arguments.length + hasReceiver;
+    FfiType variadicMetadataType;
+    if (isDVariadic) {
+        if (variadicMetadata.value.type is null ||
+            variadicMetadata.value.address is null)
+            return false;
+        const expectedType = callable.compilerAbi == CompilerAbi.dmd
+            ? TY.Tclass
+            : TY.Tarray;
+        if (variadicMetadata.value.type.toBasetype.ty != expectedType)
+            return false;
+        variadicMetadataType = ffiTypeFor(variadicMetadata.value.type);
+        if (variadicMetadataType.type is null)
+            return false;
+    }
+
+    const numAbiArguments = arguments.length + hasReceiver +
+        isDVariadic;
     auto argumentTypes = new ffi_type*[](numAbiArguments);
     auto argumentAddresses = new void*[](numAbiArguments);
     auto argumentMetadata = new FfiType[](numAbiArguments);
@@ -98,6 +122,12 @@ public bool call(
         argumentMetadata[0] = receiverMetadata;
         argumentTypes[0] = receiverMetadata.type;
         argumentAddresses[0] = receiverAddress;
+    }
+    if (isDVariadic) {
+        const metadataIndex = hasReceiver;
+        argumentMetadata[metadataIndex] = variadicMetadataType;
+        argumentTypes[metadataIndex] = variadicMetadataType.type;
+        argumentAddresses[metadataIndex] = variadicMetadata.value.address;
     }
     // A ref/out ABI argument is a pointer value. Only that pointer value is
     // temporary: its cell lives through ffi_call and points directly at the
@@ -114,7 +144,7 @@ public bool call(
             if (!argument.type.toBasetype.equals(parameter.type.toBasetype))
                 return false;
             argumentIsReference[index] = isReferenceParameter(parameter);
-        } else if (!isPromotedVariadicType(argument.type))
+        } else if (isCVariadic && !isPromotedVariadicType(argument.type))
             return false;
 
         const abiIndex = abiArgumentIndex(
@@ -122,6 +152,7 @@ public bool call(
             index,
             arguments.length,
             hasReceiver,
+            isDVariadic,
         );
         argumentMetadata[abiIndex] = argumentIsReference[index]
             ? FfiType(&ffi_type_pointer)
@@ -137,7 +168,7 @@ public bool call(
     }
 
     ffi_cif cif;
-    const prepStatus = isVariadic
+    const prepStatus = isCVariadic
         ? ffi_prep_cif_var(
             &cif,
             FFI_DEFAULT_ABI,
@@ -167,6 +198,7 @@ public bool call(
                     index,
                     arguments.length,
                     hasReceiver,
+                    isDVariadic,
                 )],
             ))
             return false;
@@ -211,6 +243,17 @@ private bool isPromotedVariadicType(
 }
 
 
+private bool hasSupportedVarArgs(
+    imported!"dmd.mtype".TypeFunction signature,
+) @safe @nogc nothrow pure {
+    import dmd.astenums: LINK, VarArg;
+
+    const varargs = signature.parameterList.varargs;
+    return varargs == VarArg.none || varargs == VarArg.variadic ||
+        signature.linkage == LINK.d && varargs == VarArg.typesafe;
+}
+
+
 private bool isReferenceParameter(
     imported!"dmd.mtype".Parameter parameter,
 ) @safe @nogc nothrow pure {
@@ -225,16 +268,18 @@ private size_t abiArgumentIndex(
     in size_t sourceIndex,
     in size_t numArguments,
     in bool hasReceiver = false,
+    in bool hasDVariadicMetadata = false,
 ) @safe @nogc nothrow pure {
     import dmd.astenums: LINK;
 
     const explicitIndex = callable.signature.linkage == LINK.d &&
-            callable.compilerAbi == CompilerAbi.dmd
+            callable.compilerAbi == CompilerAbi.dmd &&
+            !hasDVariadicMetadata
         ? numArguments - sourceIndex - 1
         : sourceIndex;
-    // D's hidden receiver/context leads the explicit arguments for both
-    // compiler ABIs; provenance controls only the explicit argument order.
-    return explicitIndex + hasReceiver;
+    // True D variadics use source order. Both compiler ABIs place hidden ABI
+    // operands before explicit arguments: receiver, then variadic metadata.
+    return explicitIndex + hasReceiver + hasDVariadicMetadata;
 }
 
 

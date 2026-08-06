@@ -7,7 +7,8 @@ import dmd.func: FuncDeclaration;
 import dmd.mtype:
     ParameterList, Type, TypeClass, TypeDArray, TypeDelegate, TypeFunction,
     TypeStruct;
-import quickbite.ffi.ffi: Callable, CompilerAbi, TypedAddress, call;
+import quickbite.ffi.ffi:
+    Callable, CompilerAbi, DVariadicMetadata, TypedAddress, call;
 import unit_threaded;
 
 
@@ -168,6 +169,101 @@ unittest {
         ],
         TypedAddress(Type.tint32, &actualLengthWritten),
     ).should == false;
+}
+
+
+@("ffi.addressOnlyExternDVariadicCall")
+unittest {
+    version (LDC)
+        enum hostCompilerAbi = CompilerAbi.ldc;
+    else
+        enum hostCompilerAbi = CompilerAbi.dmd;
+
+    auto signature = functionSignature(q{
+        struct Receiver {
+            float combine(int fixed, ...);
+        }
+    }, "combine");
+    auto receiverType = structType(q{
+        struct Receiver {
+            int bias;
+        }
+    }, "Receiver");
+    DVariadicReceiver receiver = DVariadicReceiver(3);
+    auto method = &receiver.combine;
+    int fixed = 4;
+    int integer = 7;
+    float floating = 2.5;
+    float result;
+    auto receiverAddress = TypedAddress(receiverType, &receiver);
+    DVariadicMetadata variadicMetadata;
+
+    version (LDC) {
+        TypeInfo[] metadata = [typeid(int), typeid(float)];
+        auto metadataType = functionSignature(q{
+            void metadata(TypeInfo[]);
+        }, "metadata").parameterList[0].type;
+        variadicMetadata = DVariadicMetadata(
+            TypedAddress(metadataType, &metadata),
+        );
+    } else {
+        TypeInfo_Tuple metadata = new TypeInfo_Tuple;
+        metadata.elements = [typeid(int), typeid(float)];
+        auto metadataType = functionSignature(q{
+            void metadata(TypeInfo_Tuple);
+        }, "metadata").parameterList[0].type;
+        variadicMetadata = DVariadicMetadata(
+            TypedAddress(metadataType, &metadata),
+        );
+    }
+
+    const expected = receiver.combine(fixed, integer, floating);
+    call(
+        Callable(cast(void*) method.funcptr, signature, hostCompilerAbi),
+        [
+            TypedAddress(Type.tint32, &fixed),
+            TypedAddress(Type.tint32, &integer),
+            TypedAddress(Type.tfloat32, &floating),
+        ],
+        TypedAddress(Type.tfloat32, &result),
+        &receiverAddress,
+        &variadicMetadata,
+    ).should == true;
+
+    result.should == expected;
+    result.should == 772.5;
+}
+
+
+@("ffi.addressOnlyTypesafeExternDVariadicCall")
+unittest {
+    version (LDC)
+        enum hostCompilerAbi = CompilerAbi.ldc;
+    else
+        enum hostCompilerAbi = CompilerAbi.dmd;
+
+    auto signature = functionSignature(q{
+        int sum(int seed, int[] rest...);
+    }, "sum");
+    int seed = 5;
+    int[] rest = [7, 11, 13];
+    int result;
+    const expected = typesafeVariadicSum(seed, rest);
+
+    call(
+        Callable(
+            cast(void*) &typesafeVariadicSum,
+            signature,
+            hostCompilerAbi,
+        ),
+        [
+            TypedAddress(Type.tint32, &seed),
+            TypedAddress(signature.parameterList[1].type, &rest),
+        ],
+        TypedAddress(Type.tint32, &result),
+    ).should == true;
+
+    result.should == expected;
 }
 
 
@@ -712,6 +808,30 @@ private struct ReceiverStruct {
         value += rhs;
         return value * 100 + lhs * 10 + rhs;
     }
+}
+
+
+private struct DVariadicReceiver {
+    private int bias;
+
+    private float combine(int fixed, ...) {
+        import core.vararg: va_arg;
+
+        assert(_arguments.length == 2);
+        assert(_arguments[0] is typeid(int));
+        assert(_arguments[1] is typeid(float));
+        const integer = va_arg!int(_argptr);
+        const floating = va_arg!float(_argptr);
+        return bias * 100 + fixed * 100 + integer * 10 + floating;
+    }
+}
+
+
+private int typesafeVariadicSum(int seed, int[] rest...) {
+    auto result = seed;
+    foreach (const value; rest)
+        result += value;
+    return result;
 }
 
 
