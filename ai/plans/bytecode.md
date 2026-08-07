@@ -504,13 +504,10 @@ reaches them:
   `T*` has no runtime bounds check either (verified against `dmd`, including
   `-boundscheck=on` and `-release`; a raw pointer carries no length metadata to
   check against). Do not add one; it would diverge from the oracle.
-- A struct-receiver method delegate cannot be called through a delegate
-  parameter: its context is a caller-frame-relative offset into a receiver
-  block, not the single pointer word a lambda or nested function carries, so
-  `Op.callIndirectDynamic` rejects it on `CompiledFunction.hasThis`
-  (`delegate.structReceiverPassedAsParameterIsRejected`). Making it callable
-  needs the receiver encoded frame-independently -- a real pointer to the
-  receiver block -- which changes how every struct method receives `this`.
+- A struct-receiver method delegate carries the receiver's runtime address in
+  its pointer-width context word. Dynamic delegate calls copy that word into
+  the callee's hidden `this` slot, the same receiver ABI used by direct and
+  statically resolved delegate calls.
 - The static-delegate-registry hack (`_staticDelegateAssocArrays`,
   `tryStaticDelegateAssocArrayAssign`, `tryStaticDelegateAssocArrayCall`,
   `staticDelegateAssocArrayDeclaration`, `compiler.d`) exists to pass one

@@ -2953,14 +2953,9 @@ static foreach (backend; Matrix!()) {
     }
 }
 
-// A struct method's delegate (`&receiver.value`) passed through a
-// delegate-typed PARAMETER carries a caller-frame-relative receiver offset,
-// not the pointer-sized context word `callIndirectDynamic`'s argument area
-// assumes for a nested function or lambda; the VM checks the resolved
-// callee's `hasThis` and refuses the call instead of misreading that offset
-// as a bogus caller-frame reference.
-static foreach (backend; AliasSeq!(Bytecode)) {
-    @("delegate.structReceiverPassedAsParameterIsRejected." ~ backend.stringof)
+static foreach (backend; Matrix!()) {
+    @("delegate.structReceiverPassedAsParameter." ~ backend.stringof)
+    @Tags(backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
             struct Counter {
@@ -2971,22 +2966,35 @@ static foreach (backend; AliasSeq!(Bytecode)) {
                 }
             }
 
+            struct Holder {
+                int delegate(int) value;
+            }
+
+            int delegate(int) bind(ref Counter counter) {
+                return &counter.value;
+            }
+
             int applyOnce(int delegate(int) f) {
                 return f(5);
             }
 
             int callStructMethodDelegate(int seed) {
                 Counter counter = Counter(seed + 2);
-                return applyOnce(&counter.value);
+                auto returned = bind(counter);
+                assert(applyOnce(returned) == 10);
+
+                Holder holder;
+                holder.value = returned;
+                assert(holder.value(6) == 11);
+
+                int delegate(int) copied = holder.value;
+                return copied(7);
             }
 
             unittest {
-                assert(callStructMethodDelegate(3) == 10);
+                assert(callStructMethodDelegate(3) == 12);
             }
-        }).shouldThrowWithMessage(
-            "Unsupported delegate-parameter call in bytecode core: the " ~
-                "callee is a struct-receiver method",
-        );
+        });
     }
 }
 
@@ -4954,12 +4962,7 @@ static foreach (backend; Matrix!(
 // from inside a called function, mirroring back to the module's own
 // authoritative storage rather than a throwaway copy (verified via `!is
 // null`, since the module value is read again from a separately-compiled
-// context after the call returns). Calling through a struct-receiver
-// method delegate reached via this dynamic (no-statically-known-callee)
-// dispatch path is a separate, already-documented, pre-existing limitation
-// (`delegate.structReceiverPassedAsParameterIsRejected`,
-// `Op.callIndirectDynamic`'s `hasThis` rejection) shared by a delegate-typed
-// PARAMETER, not attempted here. `Ctfe` cannot read or write dataseg
+// context after the call returns). `Ctfe` cannot read or write dataseg
 // storage at all (compile-time execution has no such storage to access).
 // `Interpreter` declines this shape outright, the same pre-existing "does
 // not mirror a dataseg write back through a called function" gap already

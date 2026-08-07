@@ -14020,7 +14020,7 @@ private struct Compiler {
 
     // `d()` through a delegate local: the lambda's VM index lives in the first
     // word of the delegate slot and its captured context (the enclosing `this`
-    // receiver offset) in the second. Pass the context as the lambda's hidden
+    // receiver address) in the second. Pass the context as the lambda's hidden
     // `this` block, then dispatch through `callIndirect` on the index word.
     private Operand compileDelegateCall(
         DelegateLocal delegateLocal,
@@ -14042,7 +14042,7 @@ private struct Compiler {
         const layout = parameterLayout(delegateLocal.function_);
         const argumentArea = allocateBytes(layout.blockSize, 8);
 
-        // Struct-member delegates store the receiver offset in the pair's
+        // Struct-member delegates store the receiver address in the pair's
         // context word; the machine dereferences it as the hidden `this` block.
         if (layout.hasThis)
             _code ~= Instruction(
@@ -18160,7 +18160,7 @@ private struct DynamicArrayLocal {
 // A delegate local (`auto d = () => this.field;`): a 16-byte slot holding a
 // `{functionIndex, context}` pair. `offset` is that slot; `function_` is the
 // captured lambda, giving the callee's layout and result type when `d()` is
-// compiled. The context word is the enclosing method's `this` receiver offset.
+// compiled. The context word is the enclosing method's `this` receiver address.
 private struct DelegateLocal {
     ushort offset;
     imported!"dmd.func".FuncDeclaration function_;
