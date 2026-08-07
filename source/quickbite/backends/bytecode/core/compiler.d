@@ -3078,27 +3078,6 @@ private struct Compiler {
                 return pointerPlace(address.offset, pointee);
             return null;
         }
-        if (auto length = expression.isArrayLengthExp)
-            if (auto descriptor = dynamicArrayDescriptorOrNull(length.e1)) {
-                Operand address;
-                if (descriptor.writeBackThroughPointer)
-                    address = pointerPlaceAddress(
-                        descriptor.pointerOffset,
-                        compileSizeConstant(1),
-                        cast(uint) size_t.sizeof,
-                        ScalarType.ulong_,
-                    );
-                else
-                    address = *addressOperand(
-                        Op.frameAddress,
-                        cast(ushort) sliceDescriptorLengthOffset(
-                            descriptor.offset,
-                        ),
-                        ScalarType.ulong_,
-                    );
-                return pointerPlace(address.offset, expression.type);
-        }
-
         if (auto call = expression.isCallExp) {
             auto function_ = callFunction(call);
             if (facts.isAggregate && function_ !is null &&
@@ -4241,23 +4220,6 @@ private struct Compiler {
                     field.offset, dynamicArrayElementType(field.type),
                     arrayElementIsArray(field.type),
                 );
-                result.writeBackStructThroughFrame =
-                    field.writeBack == StructField.WriteBack.frame;
-                result.structOffset = field.target.frame.structOffset;
-                result.structFrameIndexOffset =
-                    field.target.frame.frameIndexOffset;
-                result.structSize = field.target.frame.structSize;
-                // A module-struct field's data-segment target is the whole
-                // struct's own dataseg base (`writeBackStructField`
-                // adds back the field's offset within the struct); mirror
-                // that same arithmetic here so the array's own writeback
-                // lands at the field's own module slot, not the struct's.
-                result.writeBackThroughModule =
-                    field.writeBack == StructField.WriteBack.dataSegment;
-                result.moduleOffset = cast(ushort) (
-                    field.target.dataSegment.moduleOffset + (field.offset -
-                        field.target.dataSegment.structOffset)
-                );
                 return result;
             }
 
@@ -4275,8 +4237,6 @@ private struct Compiler {
                     offset,
                     dynamicArrayElementType(field.type),
                     arrayElementIsArray(field.type),
-                    true,
-                    pointer,
                 );
                 return result;
             }
@@ -4299,8 +4259,6 @@ private struct Compiler {
                     offset,
                     dynamicArrayElementType(field.type),
                     arrayElementIsArray(field.type),
-                    true,
-                    pointer,
                 );
                 return result;
             }
@@ -4348,8 +4306,6 @@ private struct Compiler {
             dynamicArrayElementType(declaration.type),
             arrayElementIsArray(declaration.type),
         );
-        result.writeBackThroughFrame = true;
-        result.frameIndexOffset = frameIndex;
         return result;
     }
 
@@ -4407,8 +4363,6 @@ private struct Compiler {
                     dynamicArrayElementType(expression.type),
                     arrayElementIsArray(expression.type),
                 );
-                result.writeBackThroughPointer = true;
-                result.pointerOffset = address.offset;
                 return result;
             }
 
@@ -4420,8 +4374,7 @@ private struct Compiler {
         // A module-level dynamic array (`byte[] a;`): materialise its
         // 16-byte descriptor from `_program.moduleData` into a fresh frame
         // slot, using the shared module-place read but sized for a whole slice
-        // descriptor; reassignment writes the slot back
-        // through `writeBackThroughModule` (`writeBackDynamicArrayDescriptor`).
+        // descriptor.
         if (auto variable = expression.isVarExp)
             if (auto declaration = variable.var.isVarDeclaration)
                 if (auto moduleVariable =
@@ -4440,8 +4393,6 @@ private struct Compiler {
                         moduleVariable.elementType,
                         moduleVariable.elementIsArray,
                     );
-                    result.writeBackThroughModule = true;
-                    result.moduleOffset = moduleVariable.offset;
                     return result;
                 }
 
@@ -4475,8 +4426,6 @@ private struct Compiler {
                     offset,
                     dynamicArrayElementType(expression.type),
                     arrayElementIsArray(expression.type),
-                    true,
-                    pointer.offset,
                 );
                 return result;
             }
@@ -4506,8 +4455,6 @@ private struct Compiler {
                         offset,
                         dynamicArrayElementType(expression.type),
                         arrayElementIsArray(expression.type),
-                        true,
-                        pointer.offset,
                     );
                     return result;
                 }
@@ -4657,8 +4604,6 @@ private struct Compiler {
                         offset,
                         dynamicArrayElementType(index.type),
                         arrayElementIsArray(index.type),
-                        true,
-                        pointer.offset,
                     );
                     return result;
                 }
@@ -6912,8 +6857,7 @@ private struct Compiler {
         // associative-array rvalue-read pointer (`a[1]`, or a field chain
         // rooted at one, `a[1].inner.x`): the field's writeback must copy
         // the whole struct block back through that same pointer, the same
-        // whole-block shape `writeBackThroughFrame` already uses for a
-        // captured struct receiver.
+        // whole-block shape used for a captured struct receiver.
         // `dot.e1` resolved through a materialised copy of an *indirectly*
         // captured struct receiver (e.g. `o.inner` inside `o.inner.arr[1]`,
         // where `o` itself -- not `o.inner` -- is the captured outer local):
@@ -11484,8 +11428,9 @@ private struct Compiler {
         import dmd.astenums: TY;
         import dmd.typesem: defaultInitLiteral;
 
-        const descriptor = dynamicArrayDescriptor(length.e1);
+        auto destination = dynamicArrayMutationPlace(length.e1);
         const lengthValue = compileExpression(newLength);
+        const descriptor = loadDynamicArrayPlace(*destination, length.e1.type);
         const lengthSlot = allocate(ScalarType.ulong_);
         _code ~= Instruction(
             Op.copy,
@@ -11511,7 +11456,7 @@ private struct Compiler {
                 lengthSlot,
                 cast(ushort) elementSize,
             );
-            writeBackDynamicArrayDescriptor(descriptor);
+            storeDynamicArrayPlace(*destination, descriptor);
             return Operand(lengthSlot, ScalarType.ulong_);
         }
 
@@ -11524,47 +11469,12 @@ private struct Compiler {
             ),
             lengthSlot,
         );
-        writeBackDynamicArrayDescriptor(descriptor);
+        storeDynamicArrayPlace(*destination, descriptor);
         return Operand(lengthSlot, ScalarType.ulong_);
     }
 
     private Operand compileAppendElement(CatElemAssignExp append) {
-        // `outer[i] ~= x` for an array-of-arrays element: the inner descriptor is
-        // materialised into a fresh slot, so the reallocated descriptor must be
-        // written back into the outer block's element `i`. Other rows keep their
-        // own backing memory untouched.
-        if (auto outerElement = outerArrayElement(append.e1)) {
-            const value = compileExpression(append.e2);
-            const elementSize = size(outerElement.inner.elementType);
-            emitAppendElement(
-                outerElement.inner.offset, value.offset, elementSize,
-            );
-            emitIndexStore(
-                outerElement.inner.offset, outerElement.outerOffset,
-                outerElement.indexSlot, sliceDescriptorSize,
-            );
-            return Operand(
-                outerElement.inner.offset, outerElement.inner.elementType,
-            );
-        }
-
-        // `ga ~= f()` where `ga` is a module-level array: `f()` may itself
-        // append to `ga` through its own name (a direct module read/write,
-        // not this call's descriptor). Compiling `append.e2` first lets any
-        // such write land in real module storage before the descriptor is
-        // materialised, so the materialised descriptor reflects it instead
-        // of a stale pre-call snapshot that the post-call writeback would
-        // otherwise clobber it with.
-        if (isModuleDynamicArrayVariable(append.e1)) {
-            const value = compileExpression(append.e2);
-            const descriptor = dynamicArrayDescriptor(append.e1);
-            const elementSize = dynamicArrayElementSize(append.e1.type);
-            emitAppendElement(descriptor.offset, value.offset, elementSize);
-            writeBackDynamicArrayDescriptor(descriptor);
-            return Operand(descriptor.offset, descriptor.elementType);
-        }
-
-        const descriptor = dynamicArrayDescriptor(append.e1);
+        auto destination = dynamicArrayMutationPlace(append.e1);
 
         // `outer ~= row` where `outer`'s element is itself an array
         // (`int[][]`/`int[N][]`): the appended row needs its own heap-backed
@@ -11573,138 +11483,77 @@ private struct Compiler {
         // `elementIsArray` branch), not the flat scalar/struct byte layout --
         // `outer[i]` always reads a stored element as a descriptor to
         // dereference.
-        if (descriptor.elementIsArray) {
+        if (arrayElementIsArray(append.e1.type)) {
             const inner = allocateBytes(sliceDescriptorSize, size_t.sizeof);
-            compileDynamicArrayInto(inner, descriptor.elementType, append.e2);
+            const elementType = dynamicArrayElementType(append.e1.type);
+            compileDynamicArrayInto(inner, elementType, append.e2);
+            const descriptor = loadDynamicArrayPlace(
+                *destination, append.e1.type,
+            );
             emitAppendElement(descriptor.offset, inner, sliceDescriptorSize);
-            writeBackDynamicArrayDescriptor(descriptor);
+            storeDynamicArrayPlace(*destination, descriptor);
             return Operand(descriptor.offset, descriptor.elementType);
         }
 
         const value = compileExpression(append.e2);
+        const descriptor = loadDynamicArrayPlace(*destination, append.e1.type);
         const elementSize = dynamicArrayElementSize(append.e1.type);
         emitAppendElement(descriptor.offset, value.offset, elementSize);
-        writeBackDynamicArrayDescriptor(descriptor);
+        storeDynamicArrayPlace(*destination, descriptor);
         return Operand(descriptor.offset, descriptor.elementType);
     }
 
-    private bool isModuleDynamicArrayVariable(Expression expression) {
-        auto variable = expression.isVarExp;
-        if (variable is null)
-            return false;
-        return moduleDeclarationRecord(variable.var.isVarDeclaration).moduleDynamicArrayOrNull
-            !is null;
-    }
-
     // `arr ~= other`: concatenate both array descriptors into fresh backing
-    // memory, then overwrite the local's descriptor with the result.
+    // memory, then overwrite the resolved destination's descriptor.
     private Operand compileConcatenationAssign(CatAssignExp concatenate) {
-        // `ga ~= other()` where `ga` is a module-level array: `other()` may
-        // itself append to `ga` through its own name (a direct module
-        // read/write, not this call's descriptor). Compiling `other()`
-        // before materialising `ga`'s descriptor lets any such write land in
-        // real module storage first, mirroring `compileAppendElement`'s
-        // identical fix for the single-element case.
-        if (isModuleDynamicArrayVariable(concatenate.e1)) {
-            const moduleVariable = *moduleDeclarationRecord(
-                concatenate.e1.isVarExp.var.isVarDeclaration,
-            ).moduleDynamicArrayOrNull;
-            const right = arrayDescriptorOffset(
-                moduleVariable.elementType, concatenate.e2,
-                moduleVariable.elementIsArray,
-            );
-            const descriptor = dynamicArrayDescriptor(concatenate.e1);
-            const elementSize = dynamicArrayElementSize(
-                concatenate.e1.type,
-                descriptor.elementIsArray,
-            );
-            emitConcatArrays(
-                descriptor.offset, descriptor.offset, right, elementSize,
-            );
-            writeBackDynamicArrayDescriptor(descriptor);
-            return Operand(descriptor.offset, descriptor.elementType);
-        }
-
-        const descriptor = dynamicArrayDescriptor(concatenate.e1);
+        auto destination = dynamicArrayMutationPlace(concatenate.e1);
+        const elementType = dynamicArrayElementType(concatenate.e1.type);
+        const elementIsArray = arrayElementIsArray(concatenate.e1.type);
         const right = arrayDescriptorOffset(
-            descriptor.elementType, concatenate.e2, descriptor.elementIsArray,
+            elementType, concatenate.e2, elementIsArray,
+        );
+        const descriptor = loadDynamicArrayPlace(
+            *destination, concatenate.e1.type,
         );
         const elementSize = dynamicArrayElementSize(
-            concatenate.e1.type,
-            descriptor.elementIsArray,
+            concatenate.e1.type, elementIsArray,
         );
         emitConcatArrays(
             descriptor.offset, descriptor.offset, right, elementSize,
         );
-        writeBackDynamicArrayDescriptor(descriptor);
+        storeDynamicArrayPlace(*destination, descriptor);
         return Operand(descriptor.offset, descriptor.elementType);
     }
 
-    private void writeBackDynamicArrayDescriptor(
-        in DynamicArrayLocal descriptor,
+    private Place* dynamicArrayMutationPlace(Expression expression) {
+        import std.conv: text;
+
+        auto place = placeOrNull(expression);
+        if (place is null)
+            throw new Exception(text(
+                "Unsupported dynamic array mutation in bytecode core: ",
+                expressionChars(expression),
+            ));
+        return place;
+    }
+
+    private DynamicArrayLocal loadDynamicArrayPlace(
+        Place place,
+        Type type,
     ) {
-        if (descriptor.writeBackThroughFrame)
-            _code ~= Instruction(
-                Op.frameStore,
-                descriptor.offset,
-                descriptor.frameIndexOffset,
-                cast(ushort) sliceDescriptorSize,
-            );
-
-        if (descriptor.writeBackStructThroughFrame)
-            _code ~= Instruction(
-                Op.frameStore,
-                descriptor.structOffset,
-                descriptor.structFrameIndexOffset,
-                descriptor.structSize,
-            );
-
-        if (descriptor.writeBackThroughModule)
-            _code ~= Instruction(
-                Op.storeModule,
-                descriptor.offset,
-                descriptor.moduleOffset,
-                cast(ushort) sliceDescriptorSize,
-            );
-
-        if (!descriptor.writeBackThroughPointer)
-            return;
-
-        emitPointerStore(
-            descriptor.offset, descriptor.pointerOffset,
-            compileSizeConstant(0), sliceDescriptorSize,
+        const descriptor = loadPlace(place);
+        return DynamicArrayLocal(
+            descriptor.offset,
+            dynamicArrayElementType(type),
+            arrayElementIsArray(type),
         );
     }
 
-    // An `outer[i]` access into an array-of-arrays local: the outer descriptor
-    // offset, the index slot, and the inner descriptor materialised into a fresh
-    // slot. Null if `expression` is not such an access. Used to write a
-    // reallocated inner descriptor back into the outer block.
-    private OuterArrayElement* outerArrayElement(Expression expression) {
-        auto index = expression.isIndexExp;
-        if (index is null)
-            return null;
-
-        auto variable = index.e1.isVarExp;
-        auto declaration =
-            variable is null ? null : variable.var.isVarDeclaration;
-        auto outer = declaration is null
-            ? null
-            : declarationRecordView(declaration).dynamicArrayOrNull;
-        if (outer is null || !outer.elementIsArray)
-            return null;
-
-        const indexSlot = compileExpression(index.e2);
-        const inner = allocateBytes(sliceDescriptorSize, size_t.sizeof);
-        emitIndexLoad(inner, outer.offset, indexSlot.offset, sliceDescriptorSize);
-
-        auto result = new OuterArrayElement;
-        *result = OuterArrayElement(
-            outer.offset,
-            indexSlot.offset,
-            DynamicArrayLocal(inner, outer.elementType),
-        );
-        return result;
+    private void storeDynamicArrayPlace(
+        Place place,
+        in DynamicArrayLocal descriptor,
+    ) {
+        storePlace(place, Operand(descriptor.offset, ScalarType.void_));
     }
 
     // A real-address slice descriptor over a static-array sub-slice
@@ -17528,14 +17377,6 @@ private struct DynamicArrayLocal {
     ushort offset;
     imported!"quickbite.backends.bytecode.core.program".ScalarType elementType;
     bool elementIsArray;
-    bool writeBackThroughPointer;
-    ushort pointerOffset;
-    bool writeBackThroughFrame;
-    ushort frameIndexOffset;
-    bool writeBackStructThroughFrame;
-    ushort structOffset;
-    ushort structFrameIndexOffset;
-    ushort structSize;
     bool isStaticArrayView;
     ushort staticArrayOffset;
     // When set, `staticArrayOffset` is not a frame-relative array offset
@@ -17544,13 +17385,6 @@ private struct DynamicArrayLocal {
     // element, because the underlying static array is a class field living
     // in the class's own heap block rather than inline in this frame.
     bool staticArrayViewIsClassField;
-    // Set when this descriptor is a materialised view of a module-level
-    // dynamic-array variable's own storage; `moduleOffset` is that
-    // variable's slot in `_program.moduleData`, written back through
-    // `Op.storeModule` on reassignment, the module counterpart of
-    // `writeBackThroughFrame`/`writeBackThroughPointer`.
-    bool writeBackThroughModule;
-    ushort moduleOffset;
 }
 
 // A delegate local (`auto d = () => this.field;`): a 16-byte slot holding a
@@ -17698,16 +17532,6 @@ private struct ModuleStaticArrayVariable {
 
 private struct ExceptionStringField {
     ushort offset;
-}
-
-// An `outer[i]` element of an array-of-arrays local: the outer descriptor's
-// frame offset, the slot holding the index `i`, and the inner descriptor loaded
-// into a fresh slot. Reallocating the inner array (an append) must write the new
-// inner descriptor back into the outer block at index `i`.
-private struct OuterArrayElement {
-    ushort outerOffset;
-    ushort indexSlot;
-    DynamicArrayLocal inner;
 }
 
 private bool isDeclarationNamed(

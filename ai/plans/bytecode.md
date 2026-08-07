@@ -368,7 +368,10 @@ Settled contracts:
   Method receivers and calls returning `ref` use the same path. Specialized
   multi-element operations, such as slice fill/copy and array resizing, may
   retain semantic emitters, but their destination and write-through authority
-  remains the resolved place.
+  remains the resolved place. Dynamic-array length assignment, append, and
+  concatenation resolve that destination once, evaluate the right-hand side,
+  load the current descriptor through the place, and store the updated
+  descriptor through the same place.
 - The axes remain independent. A new semantic operation is implemented once
   for every compatible place; a new lvalue shape resolves once for every
   compatible operation; a new storage kind implements its primitives once;
