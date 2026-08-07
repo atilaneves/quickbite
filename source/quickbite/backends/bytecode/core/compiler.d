@@ -1372,8 +1372,8 @@ private struct Compiler {
             );
             hasResult = true;
         } else if (_currentReturnType.isStruct) {
-            if (auto staticArray = staticArrayOffsetOf(return_.exp))
-                result = *staticArray;
+            if (auto place = placeOrNull(return_.exp))
+                result = loadPlace(*place).offset;
             else if (auto literal = return_.exp.isStructLiteralExp)
                 // `return S(() => ...);`: a top-level `Tdelegate` field of
                 // the directly-returned literal gets the same heap-escape
@@ -1419,8 +1419,8 @@ private struct Compiler {
     private ushort staticArrayReturnOffset(Expression source) {
         import std.conv: text;
 
-        if (auto existing = staticArrayOffsetOf(source))
-            return *existing;
+        if (auto place = placeOrNull(source))
+            return loadPlace(*place).offset;
 
         const totalSize = typeFacts(source.type).byteWidth;
         const offset =
@@ -2796,8 +2796,8 @@ private struct Compiler {
             return compileArrayLength(length);
 
         if (auto vectorArray = expression.isVectorArrayExp)
-            if (auto offset = staticArrayOffsetOf(vectorArray.e1))
-                return Operand(*offset, ScalarType.void_);
+            if (auto place = placeOrNull(vectorArray.e1))
+                return loadPlaceValue(*place);
 
         if (auto address = expression.isAddrExp) {
             if (auto pointer = placeAddressOrNull(address.e1))
@@ -4201,8 +4201,8 @@ private struct Compiler {
     // (`a.m[0][0] = 99`, where `a.m` is a `DotVarExp` rather than the plain
     // `VarExp` that case originally required). Deliberately narrower than a
     // recursive call into `dynamicArrayDescriptorOrNull` itself: it never
-    // reaches that function's later, ungated `staticArrayOffsetOf` branch,
-    // whose `isStaticArrayView` result is only valid for a genuine `Tarray`
+    // reaches that function's later static-array place branch, whose
+    // `isStaticArrayView` result is only valid for a genuine `Tarray`
     // element (16-byte descriptor stride), not an inline `Tsarray` one. A
     // prior attempt generalised via that recursive call and corrupted
     // `nestedStaticArrayFieldElementOfStructElementAddAssigned` (wrong
@@ -4224,10 +4224,10 @@ private struct Compiler {
         // `innerArrayDescriptor`'s class/struct-field-base branch:
         // `dynamicArrayDescriptorOrNull`'s own top-level dispatch never hits
         // this function for a `Tsarray` field because its earlier, ungated
-        // `staticArrayOffsetOf` branch already claims it first, but
+        // static-array place branch already claims it first, but
         // `innerArrayDescriptor` calls straight in here, bypassing that
         // branch entirely (deliberately, per this function's own doc
-        // comment) -- so the same guard `staticArrayOffsetOf`'s ordering
+        // comment) -- so the same guard as the place branch's ordering
         // used to provide has to be reinstated explicitly here instead.
         auto declaredField = dot.var.isVarDeclaration;
         if (declaredField is null ||
@@ -4549,38 +4549,6 @@ private struct Compiler {
                 return result;
             }
 
-        if (auto staticArray = staticArrayOffsetOf(expression)) {
-            const elementType = dynamicArrayElementType(expression.type);
-            const elementIsArray = arrayElementIsArray(expression.type);
-            const offset = allocateBytes(sliceDescriptorSize, size_t.sizeof);
-            compileStaticArrayAsDynamicInto(offset, elementType, expression);
-            auto result = new DynamicArrayLocal;
-            *result = DynamicArrayLocal(offset, elementType, elementIsArray);
-            result.isStaticArrayView = true;
-            result.staticArrayOffset = *staticArray;
-            return result;
-        }
-
-        // `c.arr` where `arr` is a static-array field of a class instance:
-        // the class-field counterpart of the struct-field branch above,
-        // redirected through a real runtime pointer since the field's
-        // storage lives in the class's own heap block, not this frame.
-        if (auto classField = classStaticArrayFieldOf(expression)) {
-            const elementType = dynamicArrayElementType(expression.type);
-            const elementIsArray = arrayElementIsArray(expression.type);
-            const offset = allocateBytes(sliceDescriptorSize, size_t.sizeof);
-            const basePointer = heapFieldAddress(*classField);
-            compileClassStaticArrayAsDynamicInto(
-                offset, elementType, expression.type, basePointer,
-            );
-            auto result = new DynamicArrayLocal;
-            *result = DynamicArrayLocal(offset, elementType, elementIsArray);
-            result.isStaticArrayView = true;
-            result.staticArrayViewIsClassField = true;
-            result.staticArrayOffset = basePointer;
-            return result;
-        }
-
         // `base.field` where the field is a dynamic array: its slice descriptor
         // lives at `base + field.offset`, so indexing, `.length`, element-assign
         // and append reuse the existing dynamic-array machinery on that slot.
@@ -4671,11 +4639,11 @@ private struct Compiler {
         // via the ordinary static-array-element path, not a descriptor to
         // dereference.
         if (outer is null)
-            if (auto baseOffset = staticArrayOffsetOf(index.e1))
+            if (auto base = placeOrNull(index.e1))
                 if (index.e1.type.toBasetype.nextOf.toBasetype.ty ==
                         TY.Tarray) {
-                    const pointer = staticArrayElementPointer(
-                        *baseOffset, index.e2, index.type,
+                    const pointer = advanceStaticArrayPointer(
+                        addressOfPlace(*base), index.e2, index.type,
                         compileSizeConstant(staticArrayLength(index.e1.type)),
                     );
                     const offset =
@@ -6006,55 +5974,25 @@ private struct Compiler {
             return true;
         }
 
+        // A postblit-bearing static-array copy is represented by DMD as a
+        // call. Intercept it before resolving ordinary aggregate places:
+        // CallExp places denote their result temporary, whereas this helper
+        // must run the element postblits as part of constructing `offset`.
+        if (compileArrayConstructor(offset, type, source))
+            return true;
+
         // `T[N] dest = src`: a value-type block copy of all N*sizeof(T) bytes
         // from the source static array's inline slot into the destination's.
-        if (auto sourceOffset = staticArrayOffsetOf(source)) {
+        if (auto sourcePlace = placeOrNull(source)) {
+            const sourceValue = loadPlace(*sourcePlace);
             _code ~= Instruction(
                 Op.copy,
                 offset,
-                *sourceOffset,
+                sourceValue.offset,
                 cast(ushort) totalSize,
             );
             return true;
         }
-
-        // `T[N] dest = arr;` where `arr` is a module-level static-array
-        // variable: materialise its whole block and copy it in, the module
-        // counterpart of the frame-to-frame copy above. Scoped narrowly to
-        // this one call site (rather than taught to `staticArrayOffsetOf`
-        // itself, which many other callers -- `ref` binding among them --
-        // treat as real aliasable storage, not a throwaway read) since this
-        // materialised copy is never written back.
-        if (auto variable = source.isVarExp)
-            if (auto declaration = variable.var.isVarDeclaration)
-                if (auto moduleVariable =
-                        moduleDeclarationRecord(declaration).moduleStaticArrayOrNull) {
-                    const materialized = materializeModuleStaticArray(
-                        declaration.type, *moduleVariable,
-                    );
-                    _code ~= Instruction(
-                        Op.copy, offset, materialized, cast(ushort) totalSize,
-                    );
-                    return true;
-                }
-
-        // `T[N] dest = c.arr`: the class-field counterpart of the frame-to-
-        // frame copy above -- `arr`'s storage lives in the class's own heap
-        // block, addressed through a real runtime pointer
-        // (`heapFieldAddress`) rather than a frame offset, so the copy
-        // reads through that pointer instead. Limited to the sizes
-        // `pointerLoadOp` supports, matching every other fixed-size
-        // pointer-read block copy in this module.
-        if (auto classField = classStaticArrayFieldOf(source))
-            if (totalSize == 1 || totalSize == 2 || totalSize == 4 ||
-                totalSize == 8 || totalSize == 16)
-            {
-                emitPointerLoad(
-                    offset, heapFieldAddress(*classField),
-                    compileSizeConstant(0), totalSize,
-                );
-                return true;
-            }
 
         if (auto literal = arrayLiteralOf(source)) {
             compileStaticArrayLiteral(offset, type, literal);
@@ -6086,7 +6024,7 @@ private struct Compiler {
             // inline nested static array. Without this check,
             // `tryDynamicArrayIndex` still successfully resolves the inline
             // shape too -- `dynamicArrayDescriptorOrNull`'s own
-            // `staticArrayOffsetOf` branch matches ANY `Tsarray` local,
+            // static-array place branch matches ANY `Tsarray` local,
             // unconditionally building a slice-descriptor VIEW over `arr`'s
             // raw inline bytes and tagging it `elementIsArray` (since
             // `arr`'s own element type, `T[M]`, is itself an array type) --
@@ -6118,11 +6056,6 @@ private struct Compiler {
             );
             return true;
         }
-
-        // `T[N] dest = src` for an element type with a postblit lowers to a
-        // `_d_arrayctor` call: block-copy each element, then run its postblit.
-        if (compileArrayConstructor(offset, type, source))
-            return true;
 
         return false;
     }
@@ -6198,12 +6131,13 @@ private struct Compiler {
         auto sourceArray = (*call.arguments)[1];
         while (auto cast_ = sourceArray.isCastExp)
             sourceArray = cast_.e1;
-        auto sourceOffset = staticArrayOffsetOf(sourceArray);
-        if (sourceOffset is null)
+        auto sourcePlace = placeOrNull(sourceArray);
+        if (sourcePlace is null)
             return false;
+        const sourceValue = loadPlace(*sourcePlace);
 
         _code ~= Instruction(
-            Op.copy, destination, *sourceOffset,
+            Op.copy, destination, sourceValue.offset,
             cast(ushort) (count * elementSize),
         );
 
@@ -6235,12 +6169,13 @@ private struct Compiler {
                 expressionChars(call),
             ));
 
-        auto arrayOffset = staticArrayOffsetOf(slice.e1);
-        if (arrayOffset is null)
+        auto arrayPlace = placeOrNull(slice.e1);
+        if (arrayPlace is null)
             throw new Exception(text(
                 "Unsupported array destructor in bytecode core: ",
                 expressionChars(call),
             ));
+        const arrayAddress = addressOfPlace(*arrayPlace);
 
         auto arrayType = slice.e1.type;
         auto elementType = arrayType.toBasetype.nextOf;
@@ -6250,8 +6185,14 @@ private struct Compiler {
         auto dtor = structDeclarationOf(elementType).dtor;
         if (dtor !is null)
             foreach_reverse (i; 0 .. count)
-                runStructMethod(
-                    cast(ushort) (*arrayOffset + i * elementSize), dtor,
+                runStructMethodAtAddress(
+                    pointerPlaceAddress(
+                        arrayAddress.offset,
+                        compileSizeConstant(i * elementSize),
+                        1,
+                        ScalarType.void_,
+                    ).offset,
+                    dtor,
                 );
         return Operand.init;
     }
@@ -8165,6 +8106,22 @@ private struct Compiler {
         runConstructor(base, function_, null);
     }
 
+    private void runStructMethodAtAddress(
+        in ushort address,
+        FuncDeclaration function_,
+    ) {
+        const index = registerFunction(function_);
+        const layout = parameterLayout(function_);
+        const argumentArea = allocateBytes(layout.blockSize, 8);
+        _code ~= Instruction(
+            Op.copy,
+            cast(ushort) (argumentArea + layout.thisOffset),
+            address,
+            cast(ushort) size_t.sizeof,
+        );
+        _code ~= Instruction(Op.call, index, argumentArea, cast(ushort) 0);
+    }
+
     // Copy a string literal's bytes into a `char[N]` inline slot. DMD requires
     // the literal length to match N, so the copy fills the whole slot.
     private void loadStaticString(
@@ -8197,6 +8154,8 @@ private struct Compiler {
     // an array literal initializer heap-allocates backing memory and writes the
     // descriptor.
     private void compileDynamicArrayDeclaration(VarDeclaration variable) {
+        import dmd.astenums: TY;
+
         const elementType = dynamicArrayElementType(variable.type);
         const elementIsArray = arrayElementIsArray(variable.type);
         const offset = allocateBytes(sliceDescriptorSize, size_t.sizeof);
@@ -8212,15 +8171,23 @@ private struct Compiler {
         }
 
         auto source = initializerExpression(initializer.exp);
-        if (auto staticArray = staticArrayViewOffset(source)) {
-            registerFrameDeclaration(variable).dynamicArray.isStaticArrayView = true;
-            registerFrameDeclaration(variable).dynamicArray.staticArrayOffset = *staticArray;
-        } else if (auto classField = classStaticArrayViewFieldOf(source)) {
-            registerFrameDeclaration(variable).dynamicArray.isStaticArrayView = true;
-            registerFrameDeclaration(variable).dynamicArray.staticArrayViewIsClassField = true;
-            registerFrameDeclaration(variable).dynamicArray.staticArrayOffset =
-                heapFieldAddress(*classField);
-        }
+        auto staticSource = source;
+        while (auto cast_ = staticSource.isCastExp)
+            staticSource = cast_.e1;
+        if (auto slice = staticSource.isSliceExp)
+            if (slice.lwr is null && slice.upr is null)
+                staticSource = slice.e1;
+        if (staticSource.type !is null &&
+            staticSource.type.toBasetype.ty == TY.Tsarray)
+            if (auto place = placeOrNull(staticSource)) {
+                const address = addressOfPlace(*place);
+                registerFrameDeclaration(variable)
+                    .dynamicArray.isStaticArrayView = true;
+                registerFrameDeclaration(variable)
+                    .dynamicArray.staticArrayViewIsClassField = true;
+                registerFrameDeclaration(variable)
+                    .dynamicArray.staticArrayOffset = address.offset;
+            }
         compileDynamicArrayInto(
             offset, elementType, source, elementIsArray);
     }
@@ -8668,12 +8635,13 @@ private struct Compiler {
     ) {
         import std.conv: text;
 
-        auto sourceOffset = staticArrayOffsetOf(source);
-        if (sourceOffset is null)
+        auto sourcePlace = placeOrNull(source);
+        if (sourcePlace is null)
             throw new Exception(text(
                 "Unsupported dynamic array initializer in bytecode core: ",
                 expressionChars(source),
             ));
+        const sourceAddress = addressOfPlace(*sourcePlace);
 
         auto sourceElementType = source.type.toBasetype.nextOf;
         const sourceElementSize = typeFacts(sourceElementType).byteWidth;
@@ -8701,55 +8669,17 @@ private struct Compiler {
         );
 
         foreach (elementIndex; 0 .. count) {
-            const index = compileSizeConstant(elementIndex);
-            emitIndexStore(
-                cast(ushort) (*sourceOffset + elementIndex * sourceElementSize),
-                destination, index, elementSize,
-            );
-        }
-    }
-
-    // The class-field counterpart of `compileStaticArrayAsDynamicInto`:
-    // builds the same throwaway heap copy, but reads each element through
-    // `basePointer` (a real runtime pointer, `heapFieldAddress`) with
-    // `Op.pointerLoad*` instead of a folded frame offset with `Op.copy`,
-    // since the source field's storage lives in the class's own heap block.
-    private void compileClassStaticArrayAsDynamicInto(
-        in ushort destination,
-        in ScalarType elementType,
-        Type sourceType,
-        in ushort basePointer,
-    ) {
-        auto sourceElementType = sourceType.toBasetype.nextOf;
-        const sourceElementSize = typeFacts(sourceElementType).byteWidth;
-        const elementSize = elementType == ScalarType.void_ ||
-                arrayElementIsArray(sourceType)
-            ? sourceElementSize
-            : cast(uint) size(elementType);
-
-        const count = typeFacts(sourceType).byteWidth / sourceElementSize;
-        _code ~= Instruction(
-            Op.allocArray,
-            destination,
-            cast(ushort) elementSize,
-            cast(ushort) count,
-        );
-
-        foreach (elementIndex; 0 .. count) {
-            const elementPointer =
-                allocateBytes(cast(uint) size_t.sizeof, size_t.sizeof);
-            _code ~= Instruction(
-                Op.addInt8,
-                elementPointer,
-                basePointer,
-                compileSizeConstant(elementIndex * sourceElementSize),
-            );
             const loaded = allocateBytes(elementSize, elementSize);
             emitPointerLoad(
-                loaded, elementPointer, compileSizeConstant(0), elementSize,
+                loaded,
+                sourceAddress.offset,
+                compileSizeConstant(elementIndex),
+                elementSize,
             );
             const index = compileSizeConstant(elementIndex);
-            emitIndexStore(loaded, destination, index, elementSize);
+            emitIndexStore(
+                loaded, destination, index, elementSize,
+            );
         }
     }
 
@@ -11126,12 +11056,9 @@ private struct Compiler {
     // `ModuleDynamicArrayVariable` (a 16-byte descriptor pointing at heap
     // storage), the array's own `N * elementSize` bytes live inline in
     // `moduleData`, exactly like a local static array's frame slot: element
-    // access materialises the whole block into a fresh frame slot
-    // (`Op.loadModule`, see `materializeModuleStaticArray`) and writes it
-    // back in full (`Op.storeModule`) after any write, the same whole-block
-    // pattern `tryStructField`'s module branch already uses for a struct
-    // field -- there is no narrower "field" to isolate here, since the
-    // array element written IS (a byte range of) the whole variable.
+    // access resolves a module-backed Place and reads or writes through its
+    // native address, so an element operation touches only that element's
+    // byte range.
     // Scoped to a scalar element type for now (`int[3]`, not `S[3]`,
     // `int[3][3]`, `int[3][]`, or a delegate/`Taarray` element): those
     // shapes decline registration, falling through to the pre-existing
@@ -11361,20 +11288,6 @@ private struct Compiler {
             return null;
         }
         return bytes;
-    }
-
-    // Materialise a module-level static-array variable's whole inline block
-    // from `_program.moduleData` into a fresh frame slot for a whole-value
-    // read.
-    private ushort materializeModuleStaticArray(
-        Type type, in ModuleStaticArrayVariable moduleVariable,
-    ) {
-        const structOffset = allocateStructBlock(type);
-        _code ~= Instruction(
-            Op.loadModule, structOffset, moduleVariable.offset,
-            moduleVariable.size,
-        );
-        return structOffset;
     }
 
     private bool moduleVariableHasDefaultInitializer(
@@ -12280,112 +12193,6 @@ private struct Compiler {
                 cast(ushort) elementSize,
             );
         }
-    }
-
-    // The inline frame offset of a static-array local denoted by an
-    // expression (through any casts), or null if it is not one.
-    private ushort* staticArrayOffsetOf(Expression expression) {
-        import dmd.astenums: TY;
-
-        if (auto cast_ = expression.isCastExp)
-            return staticArrayOffsetOf(cast_.e1);
-
-        if (auto vectorArray = expression.isVectorArrayExp)
-            return staticArrayOffsetOf(vectorArray.e1);
-
-        if (auto variable = expression.isVarExp) {
-            if (auto declaration = variable.var.isVarDeclaration) {
-                if (auto existing = declarationRecordView(declaration).staticArrayOrNull)
-                    return existing;
-            }
-        }
-
-        if (auto dot = expression.isDotVarExp)
-            if (auto field = tryStructField(dot))
-                if (field.type.toBasetype.ty == TY.Tsarray)
-                    return &field.offset;
-
-        return null;
-    }
-
-    private ushort* staticArrayViewOffset(Expression expression) {
-        if (auto cast_ = expression.isCastExp)
-            return staticArrayViewOffset(cast_.e1);
-
-        if (auto slice = expression.isSliceExp)
-            if (slice.lwr is null && slice.upr is null)
-                return staticArrayOffsetOf(slice.e1);
-
-        return staticArrayOffsetOf(expression);
-    }
-
-    // Whether `expression` is a class reference, or a struct-field access
-    // chain (any depth, e.g. `c.inner`, `c.inner.deeper`) ultimately rooted
-    // at one -- i.e. an expression `tryClassPointerField` can safely
-    // `compileExpression` for a real runtime pointer, as opposed to a plain
-    // (non-class-backed) struct value addressed through its declaration
-    // record, a captured struct receiver, a module struct, or an AA-value-read
-    // pointer, none of which `compileExpression` accepts directly. Walks
-    // down the `DotVarExp.e1` chain rather than compiling anything, so it is
-    // safe to call before deciding whether probing further is even valid.
-    private bool structFieldReachedThroughClass(Expression expression) {
-        import dmd.astenums: TY;
-
-        if (expression.type is null)
-            return false;
-        if (expression.type.toBasetype.ty == TY.Tclass)
-            return true;
-        if (auto dot = expression.isDotVarExp)
-            return structFieldReachedThroughClass(dot.e1);
-        return false;
-    }
-
-    // The class-field counterpart of `staticArrayOffsetOf`: a static-array
-    // field reached through a class pointer -- either directly (`c.arr`) or
-    // through an intermediate struct-field chain rooted at a class (`c.inner
-    // .arr`, `c.inner.deeper.arr`, ...) -- or null if `expression` is not
-    // one. Unlike a struct's static-array field (an inline frame offset
-    // `staticArrayOffsetOf` folds at compile time), the field's storage
-    // lives in the class's own heap block, so callers address it through
-    // `heapFieldAddress` (a real runtime pointer) instead; an intermediate
-    // struct-field hop resolves through that same real-pointer plumbing
-    // (`tryClassPointerField`'s generic pointer-receiver mechanism, per
-    // `loadClassPointerField`'s `Tstruct` branch), so no materialised copy
-    // or writeback is ever needed for the struct hop itself.
-    private HeapField* classStaticArrayFieldOf(Expression expression) {
-        import dmd.astenums: TY;
-
-        if (auto cast_ = expression.isCastExp)
-            return classStaticArrayFieldOf(cast_.e1);
-
-        // The receiver must resolve to a class reference (directly or
-        // through a struct-field chain rooted at one) before probing
-        // further: `tryClassPointerField` unconditionally compiles `dot.e1`
-        // to check whether it yields a pointer, which throws for a plain
-        // (non-class-backed) struct local (structs are addressed through their
-        // places, never `compileExpression`) rather than simply
-        // failing to match.
-        if (auto dot = expression.isDotVarExp)
-            if (dot.e1.type !is null &&
-                structFieldReachedThroughClass(dot.e1))
-                if (auto field = tryClassPointerField(dot))
-                    if (field.type.toBasetype.ty == TY.Tsarray)
-                        return field;
-
-        return null;
-    }
-
-    private HeapField* classStaticArrayViewFieldOf(
-        Expression expression,
-    ) {
-        if (auto cast_ = expression.isCastExp)
-            return classStaticArrayViewFieldOf(cast_.e1);
-
-        if (auto slice = expression.isSliceExp)
-            if (slice.lwr is null && slice.upr is null)
-                return classStaticArrayFieldOf(slice.e1);
-
-        return classStaticArrayFieldOf(expression);
     }
 
     private Operand compileEqualExpression(Expression expression) {
@@ -14127,12 +13934,13 @@ private struct Compiler {
 
         if (argument.type !is null &&
             argument.type.toBasetype.ty == TY.Tsarray) {
-            auto source = staticArrayOffsetOf(argument);
-            assert(source !is null);
+            auto place = placeOrNull(argument);
+            assert(place !is null);
+            const source = loadPlace(*place);
             _code ~= Instruction(
                 Op.copy,
                 slot,
-                *source,
+                source.offset,
                 cast(ushort) typeFacts(argument.type).byteWidth,
             );
             return;
@@ -14152,24 +13960,31 @@ private struct Compiler {
             // A static-array whole slice passed to a callee aliases its frame
             // storage. Keep the general materialisation path below for result
             // values, whose bytes must outlive this VM invocation.
-            if (auto source = staticArrayViewOffset(argument)) {
-                auto staticArray = argument;
-                while (auto cast_ = staticArray.isCastExp)
-                    staticArray = cast_.e1;
-                if (auto slice = staticArray.isSliceExp)
+            auto staticArray = argument;
+            while (auto cast_ = staticArray.isCastExp)
+                staticArray = cast_.e1;
+            if (auto slice = staticArray.isSliceExp)
+                if (slice.lwr is null && slice.upr is null)
                     staticArray = slice.e1;
-                const element = staticArray.type.toBasetype.nextOf;
-                const count = typeFacts(staticArray.type).byteWidth /
-                    typeFacts(cast(Type) element).byteWidth;
-                _code ~= Instruction(Op.frameAddress, slot, *source);
-                _code ~= Instruction(
-                    Op.loadConstant,
-                    cast(ushort) sliceDescriptorLengthOffset(slot),
-                    constantIndex(count),
-                    cast(ushort) size_t.sizeof,
-                );
-                return;
-            }
+            if (staticArray.type !is null &&
+                staticArray.type.toBasetype.ty == TY.Tsarray)
+                if (auto place = placeOrNull(staticArray)) {
+                    const source = addressOfPlace(*place);
+                    const element = staticArray.type.toBasetype.nextOf;
+                    const count = typeFacts(staticArray.type).byteWidth /
+                        typeFacts(cast(Type) element).byteWidth;
+                    _code ~= Instruction(
+                        Op.copy, slot, source.offset,
+                        cast(ushort) size_t.sizeof,
+                    );
+                    _code ~= Instruction(
+                        Op.loadConstant,
+                        cast(ushort) sliceDescriptorLengthOffset(slot),
+                        constantIndex(count),
+                        cast(ushort) size_t.sizeof,
+                    );
+                    return;
+                }
 
             const descriptor = arrayDescriptorOffset(
                 dynamicArrayElementType(argument.type), argument,
@@ -16099,9 +15914,11 @@ private struct Compiler {
         if (rowType.toBasetype.ty != TY.Tsarray)
             return false;
 
-        auto nestedOffset = staticArrayOffsetOf(nestedStatic);
-        if (nestedOffset is null)
+        auto nestedPlace = placeOrNull(nestedStatic);
+        if (nestedPlace is null)
             return false;
+        const nestedAddress = addressOfPlace(*nestedPlace);
+        const nestedValue = loadPlace(*nestedPlace);
 
         auto rowElementType = rowType.toBasetype.nextOf;
         const rowElementScalar = scalarType(rowElementType);
@@ -16127,10 +15944,17 @@ private struct Compiler {
             [emitJumpIfFalse(Operand(lengthsEqual, ScalarType.bool_))];
 
         foreach (rowIndex; 0 .. rowCount) {
-            const rowOffset =
-                cast(ushort) (*nestedOffset + rowIndex * rowByteSize);
             const view = allocateBytes(sliceDescriptorSize, size_t.sizeof);
-            _code ~= Instruction(Op.frameAddress, view, rowOffset);
+            const rowAddress = pointerPlaceAddress(
+                nestedAddress.offset,
+                compileSizeConstant(rowIndex * rowByteSize),
+                1,
+                ScalarType.void_,
+            );
+            _code ~= Instruction(
+                Op.copy, view, rowAddress.offset,
+                cast(ushort) size_t.sizeof,
+            );
             _code ~= Instruction(
                 Op.loadConstant,
                 cast(ushort) sliceDescriptorLengthOffset(view),
@@ -16163,7 +15987,7 @@ private struct Compiler {
 
         const diagnostic = _program.assertDiagnostics.length;
         _program.assertDiagnostics ~= AssertDiagnostic(
-            op, *nestedOffset, otherDescriptor, ScalarType.void_,
+            op, nestedValue.offset, otherDescriptor, ScalarType.void_,
         );
         _code ~= Instruction(
             Op.assertTrue,

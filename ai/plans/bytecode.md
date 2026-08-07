@@ -459,10 +459,10 @@ row, not a guarantee. Reconfirm against the source before relying on it.
   and `cdouble`. Dynamic-array literal initializers cover constant scalar and
   struct elements at any nesting depth, plus `[]`; the other kinds take only
   their default initializer, and a struct/array/delegate/complex *element* of a
-  module static array declines. Field and element access materialises a block
-  and writes back only the bytes it touched. `Ctfe` cannot read or write
-  dataseg storage at all; `Interpreter` has a separate pre-existing gap where a
-  write through a pointer into dataseg storage does not mirror back.
+  module static array declines. Field and element access resolves a place over
+  the module data's real address. `Ctfe` cannot read or write dataseg storage at
+  all; `Interpreter` has a separate pre-existing gap where a write through a
+  pointer into dataseg storage does not mirror back.
 - Whole static-array values use `compileStaticArrayValueInto` at every
   aggregate store boundary; do not route a `Tsarray` literal through the
   struct-only operand resolver.
