@@ -891,9 +891,8 @@ private FfiType ffiTypeFor(
         ffi_type_complex_double, ffi_type_complex_float,
         ffi_type_complex_longdouble, ffi_type_double, ffi_type_float,
         ffi_type_longdouble, ffi_type_pointer, ffi_type_sint8, ffi_type_sint16,
-        ffi_type_sint32, ffi_type_sint64, ffi_type_sint128, ffi_type_uint8,
-        ffi_type_uint16, ffi_type_uint32, ffi_type_uint64, ffi_type_uint128,
-        ffi_type_void;
+        ffi_type_sint32, ffi_type_sint64, ffi_type_uint8, ffi_type_uint16,
+        ffi_type_uint32, ffi_type_uint64, ffi_type_void;
     import dmd.astenums: TY;
 
     if (type is null)
@@ -911,8 +910,11 @@ private FfiType ffiTypeFor(
         case Tint32: return FfiType(&ffi_type_sint32);
         case Tuns64: return FfiType(&ffi_type_uint64);
         case Tint64: return FfiType(&ffi_type_sint64);
-        case Tuns128: return FfiType(&ffi_type_uint128);
-        case Tint128: return FfiType(&ffi_type_sint128);
+        case Tint128, Tuns128:
+            return aggregateFfiType([
+                FfiType(&ffi_type_uint64),
+                FfiType(&ffi_type_uint64),
+            ]);
         // An imaginary scalar has the same one-component native storage as
         // its real counterpart. Complex descriptors express the two-component
         // ABI directly; neither path reads or reconstructs the value.
