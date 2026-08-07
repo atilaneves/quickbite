@@ -9185,27 +9185,32 @@ private struct Compiler {
         if (!declaration.isDataseg || declaration.isImmutable)
             return;
 
-        import dmd.astenums: TY;
-
-        if (isComplexDoubleType(declaration.type)) {
-            allocateModuleComplexVariable(declaration);
-            return;
-        }
-        switch (declaration.type.toBasetype.ty) with (TY) {
-            case Tarray:
+        final switch (declarationRecord(declaration).facts.representation)
+            with (DeclarationRepresentation)
+        {
+            case unavailable:
+            case lazyDelegate:
+                return;
+            case scalar:
+            case pointer:
+            case classPointer:
+            case assocArray:
+                allocateModuleScalarVariable(declaration);
+                return;
+            case dynamicArray:
                 allocateModuleDynamicArrayVariable(declaration);
                 return;
-            case Tsarray:
+            case staticArray:
                 allocateModuleStaticArrayVariable(declaration);
                 return;
-            case Tstruct:
+            case struct_:
                 allocateModuleStructVariable(declaration);
                 return;
-            case Tdelegate:
+            case delegate_:
                 allocateModuleDelegateVariable(declaration);
                 return;
-            default:
-                allocateModuleScalarVariable(declaration);
+            case complexDouble:
+                allocateModuleComplexVariable(declaration);
                 return;
         }
     }
@@ -9215,17 +9220,6 @@ private struct Compiler {
     ) {
         if (declaration is null || !declaration.isDataseg ||
             declaration.isImmutable)
-        {
-            return null;
-        }
-
-        import dmd.astenums: TY;
-
-        if (declaration.type.toBasetype.ty == TY.Tarray ||
-            declaration.type.toBasetype.ty == TY.Tsarray ||
-            declaration.type.toBasetype.ty == TY.Tstruct ||
-            declaration.type.toBasetype.ty == TY.Tdelegate ||
-            isComplexDoubleType(declaration.type))
         {
             return null;
         }
@@ -9257,12 +9251,15 @@ private struct Compiler {
         if (auto existing = declarationRecordView(declaration).moduleScalarOrNull)
             return existing;
 
-        const isClassReference = declaration.type.toBasetype.ty == TY.Tclass;
+        const representation =
+            declarationRecord(declaration).facts.representation;
+        const isClassReference =
+            representation == DeclarationRepresentation.classPointer;
         if (isClassReference &&
             !moduleVariableHasDefaultInitializer(declaration))
             return null;
 
-        const isPointer = isPointerType(declaration.type);
+        const isPointer = representation == DeclarationRepresentation.pointer;
         const type = isClassReference
             ? ScalarType.ulong_
             : scalarType(declaration.type);
@@ -9322,11 +9319,6 @@ private struct Compiler {
         {
             return null;
         }
-
-        import dmd.astenums: TY;
-
-        if (declaration.type.toBasetype.ty != TY.Tarray)
-            return null;
 
         if (auto existing = declarationRecordView(declaration).moduleDynamicArrayOrNull)
             return existing;
@@ -9607,11 +9599,6 @@ private struct Compiler {
             return null;
         }
 
-        import dmd.astenums: TY;
-
-        if (declaration.type.toBasetype.ty != TY.Tstruct)
-            return null;
-
         if (auto existing = declarationRecordView(declaration).moduleStructOrNull)
             return existing;
 
@@ -9660,9 +9647,6 @@ private struct Compiler {
         }
 
         import dmd.astenums: TY;
-
-        if (declaration.type.toBasetype.ty != TY.Tsarray)
-            return null;
 
         auto elementType = declaration.type.toBasetype.nextOf;
         switch (elementType.toBasetype.ty) with (TY) {
@@ -9743,11 +9727,6 @@ private struct Compiler {
             return null;
         }
 
-        import dmd.astenums: TY;
-
-        if (declaration.type.toBasetype.ty != TY.Tdelegate)
-            return null;
-
         if (auto existing = declarationRecordView(declaration).moduleDelegateOrNull)
             return existing;
 
@@ -9794,9 +9773,6 @@ private struct Compiler {
         {
             return null;
         }
-
-        if (!isComplexDoubleType(declaration.type))
-            return null;
 
         if (auto existing = declarationRecordView(declaration).moduleComplexOrNull)
             return existing;
