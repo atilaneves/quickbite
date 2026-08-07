@@ -354,8 +354,9 @@ Settled contracts:
   and local, parameter, or synthetic-local registration dispatch solely on
   that representation; representation-specific initializer encoders populate
   the record but do not classify the declaration again.
-  Non-declaration caches, such as the static delegate associative-array
-  registry, must not become parallel storage authorities.
+  Associative-array entries, including delegate-valued entries, use the shared
+  place and AA storage paths; no parallel registry may become their storage
+  authority.
 - Every supported lvalue-capable expression resolves through `Place`. Using it
   as an rvalue loads that place; assignment stores it; taking its address asks
   the same place for its address. Non-lvalue expressions produce values

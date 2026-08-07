@@ -80,10 +80,6 @@ private struct Compiler {
     // carries its TypeFacts, storage owner, and representation-specific data.
     private DeclarationRecord[VarDeclaration] _declarations;
     private DeclarationRecord _unavailableDeclaration;
-    // The function behind a compiler-generated static AA of delegate values is
-    // not a declaration-root storage decision, so it remains a separate cache.
-    private FuncDeclaration[VarDeclaration] _staticDelegateAssocArrays;
-    private FuncDeclaration _latestStaticDelegateAssocArrayFunction;
     // Named catch variables for the narrow Exception/Throwable object surface:
     // each synthetic object exposes native {ptr, length} string descriptors
     // for `msg` and, when a finally throw chains a body exception, `next.msg`.
@@ -1618,6 +1614,7 @@ private struct Compiler {
                 : msgOffset,
             nativeClassTypeInfo(class_),
         );
+        _program.classes[index].name = classInfoName(class_);
         if (classInfoName(class_) == "core.exception.RangeError")
             _program.rangeErrorClass = index;
         if (baseClass != noExceptionClass)
@@ -2880,7 +2877,6 @@ private struct Compiler {
                     literal.type.toBasetype.ty == TY.Tpointer)
                     return functionPointer(literal.fd);
 
-                _latestStaticDelegateAssocArrayFunction = literal.fd;
                 const offset = allocateBytes(delegateValueSize, size_t.sizeof);
                 emitDelegateValue(
                     offset,
@@ -4321,14 +4317,34 @@ private struct Compiler {
                     ScalarType.void_,
                 ));
 
+        // DMD lowers `object.classinfo.name` to `(**object).name`: retain the
+        // original class-typed expression at the root of the two dereferences
+        // so the VM can ask the runtime object for its dynamic class name.
+        if (auto outer = dot.e1.isPtrExp)
+            if (auto inner = outer.e1.isPtrExp)
+                if (inner.e1.type !is null &&
+                    inner.e1.type.toBasetype.isTypeClass !is null) {
+                    const object = compileExpression(inner.e1);
+                    const offset = allocateBytes(
+                        sliceDescriptorSize, size_t.sizeof,
+                    );
+                    _code ~= Instruction(
+                        Op.className, offset, object.offset,
+                    );
+                    return heapOperand(Operand(offset, ScalarType.void_));
+                }
+
         if (auto classinfo = dot.e1.isDotVarExp)
             if (classinfo.var !is null &&
                 classinfo.var.ident !is null &&
-                classinfo.var.ident.toString == "classinfo")
-                return heapOperand(Operand(
-                    compileStringLiteralBytes(""),
-                    ScalarType.void_,
-                ));
+                classinfo.var.ident.toString == "classinfo") {
+                const object = compileExpression(classinfo.e1);
+                const offset = allocateBytes(
+                    sliceDescriptorSize, size_t.sizeof,
+                );
+                _code ~= Instruction(Op.className, offset, object.offset);
+                return heapOperand(Operand(offset, ScalarType.void_));
+            }
 
         return null;
     }
@@ -4754,35 +4770,6 @@ private struct Compiler {
 
         auto delegate_ = delegateInitializer(argument);
         if (delegate_.function_ !is null) {
-            // A bare lambda literal (`(...) { ... }`) assigned as a
-            // delegate-typed rvalue: `compileExpression`'s own `FuncExp`
-            // branch records this exact shape into
-            // `_latestStaticDelegateAssocArrayFunction` as the static-
-            // delegate-registry hack's read-side fallback (see
-            // `tryStaticDelegateAssocArrayCall`) for whenever a
-            // `childWriters[key] = someLambda;`-shaped assignment's own
-            // structural declaration lookup declines (DMD hoists the
-            // `_d_aaGetY` slot pointer into a compiler temp, so
-            // `staticDelegateAssocArrayAssignDeclaration`'s `IndexExp`
-            // branch sees that temp, not the `childWriters` variable, and
-            // never populates `_staticDelegateAssocArrays`). Storing a
-            // delegate-typed rhs through a pointer (`storeThroughPointer`'s
-            // `Tdelegate` branch) used to reach that same `compileExpression`
-            // `FuncExp` branch and so set this side channel as a side
-            // effect; it now routes through here instead (this function)
-            // to get the correct 16-byte `delegateValueSize` load/store
-            // width, bypassing the side channel entirely. Reproduce it here
-            // for exactly the same shape (a literal `FuncExp`, matching
-            // `compileExpression`'s own guard) so the registry's read-side
-            // fallback still has a function to find -- `childWriters` itself
-            // has no real persistent backing storage under the hack
-            // (`resolveAssocArrayOperand`'s `childWriters`-named branch hands
-            // out a fresh, empty `Op.aaNew` handle on every access), so a
-            // real `_d_aaGetRvalueX` read of it always misses and raises a
-            // spurious "Range violation" once this fallback is empty.
-            if (argument.isFuncExp !is null)
-                _latestStaticDelegateAssocArrayFunction = delegate_.function_;
-
             const offset = allocateBytes(delegateValueSize, size_t.sizeof);
             emitDelegateValue(
                 offset, delegate_.function_, delegate_.contextOffset,
@@ -6996,6 +6983,17 @@ private struct Compiler {
             return;
         }
 
+        // A runtime class name is derived from the VM object's dynamic class,
+        // not loaded as a field of the host TypeInfo mirror.
+        if (auto dot = source.isDotVarExp)
+            if (auto name = tryTypeidName(dot)) {
+                _code ~= Instruction(
+                    Op.copy, destination, name.offset,
+                    cast(ushort) sliceDescriptorSize,
+                );
+                return;
+            }
+
         // An lvalue array source loads its descriptor through the same Place
         // used by mutation, preserving D's shared-backing assignment.
         if (auto place = placeOrNull(source)) {
@@ -9066,9 +9064,6 @@ private struct Compiler {
     private Operand compileAssignExpression(AssignExp assign) {
         import std.conv: text;
 
-        if (auto registryAssign = tryStaticDelegateAssocArrayAssign(assign))
-            return *registryAssign;
-
         // `arr.length = n`: resize the array in place, preserving existing
         // elements and zero-filling growth. Detected by the ArrayLengthExp
         // lvalue (DMD wraps this in a LoweredAssignExp), not a druntime name.
@@ -9109,44 +9104,6 @@ private struct Compiler {
                 *result = index;
                 return result;
             }
-        return null;
-    }
-
-    private Operand* tryStaticDelegateAssocArrayAssign(AssignExp assign) {
-        auto declaration =
-            staticDelegateAssocArrayAssignDeclaration(assign.e1);
-        if (declaration is null)
-            return null;
-
-        auto function_ = delegateInitializerFunctionOrNull(assign.e2);
-        if (function_ is null)
-            return null;
-
-        _staticDelegateAssocArrays[declaration] = function_;
-
-        auto result = new Operand;
-        *result = Operand.init;
-        return result;
-    }
-
-    private VarDeclaration staticDelegateAssocArrayAssignDeclaration(
-        Expression expression,
-    ) {
-        if (auto deref = expression.isPtrExp)
-            return staticDelegateAssocArrayAssignDeclaration(deref.e1);
-
-        if (auto index = expression.isIndexExp)
-            return staticDelegateAssocArrayDeclaration(index.e1);
-
-        if (auto call = expression.isCallExp) {
-            auto function_ = callFunction(call);
-            if (function_ !is null &&
-                assocArrayHook(function_) == AssocArrayHook.getLvalue)
-                return staticDelegateAssocArrayDeclaration(
-                    (*call.arguments)[0],
-                );
-        }
-
         return null;
     }
 
@@ -10861,9 +10818,6 @@ private struct Compiler {
         if (auto expression = immediateLambdaReturn(call))
             return compileExpression(expression);
 
-        if (auto registryCall = tryStaticDelegateAssocArrayCall(call))
-            return *registryCall;
-
         // `_aApply*(string, delegate)` is DMD's lowering of `foreach`/
         // `foreach_reverse` over a UTF string whose loop variable has a different
         // code-unit width: it decodes/transcodes code points and invokes the
@@ -11912,53 +11866,6 @@ private struct Compiler {
         );
     }
 
-    private Operand* tryStaticDelegateAssocArrayCall(CallExp call) {
-        import std.algorithm: startsWith;
-
-        auto declaration =
-            staticDelegateAssocArrayCallDeclaration(call.e1);
-        if (declaration is null &&
-            !expressionChars(call.e1).startsWith("childWriters["))
-            return null;
-
-        auto function_ = declaration is null
-            ? null
-            : declaration in _staticDelegateAssocArrays;
-        auto target = function_ is null
-            ? _latestStaticDelegateAssocArrayFunction
-            : *function_;
-        if (target is null)
-            return null;
-
-        const offset = allocateBytes(delegateValueSize, size_t.sizeof);
-        emitDelegateValue(offset, target, compileSizeConstant(0));
-
-        auto result = new Operand;
-        *result = compileDelegateCall(DelegateLocal(offset, target), call);
-        return result;
-    }
-
-    private VarDeclaration staticDelegateAssocArrayCallDeclaration(
-        Expression expression,
-    ) {
-        if (auto deref = expression.isPtrExp)
-            return staticDelegateAssocArrayCallDeclaration(deref.e1);
-
-        if (auto index = expression.isIndexExp)
-            return staticDelegateAssocArrayDeclaration(index.e1);
-
-        if (auto call = expression.isCallExp) {
-            auto function_ = callFunction(call);
-            if (function_ !is null &&
-                assocArrayHook(function_) == AssocArrayHook.getRvalue)
-                return staticDelegateAssocArrayDeclaration(
-                    (*call.arguments)[0],
-                );
-        }
-
-        return null;
-    }
-
     // `fp(args...)` through a function-pointer value: load the callee's
     // run-time function index from the pointer slot and dispatch through
     // `callIndirect`. There is no statically known `FuncDeclaration` behind
@@ -12718,9 +12625,8 @@ private struct Compiler {
     // The pointee scalar for an associative array's value type, matching
     // `dynamicArrayElementType`'s convention (`void_` marks an opaque
     // aggregate block rather than a plain machine scalar). `scalarType`
-    // itself never classifies `Tdelegate` (a static-registry AA such as
-    // `void delegate(...)[string]`, `staticDelegateAssocArrayDeclaration`,
-    // still gives its value slot real -- if never runtime-read -- storage);
+    // itself never classifies `Tdelegate`; a delegate AA value slot has real
+    // storage through the same AA entry representation as every other value;
     // a delegate value is the same opaque 16-byte `{context, funcptr}` pair
     // `emitDelegateValue` lays out for every other delegate-typed slot.
     private ScalarType assocArrayValueScalarType(Type aaType) {
@@ -13036,46 +12942,10 @@ private struct Compiler {
                 container, loadPlaceValue(*container),
             );
 
-        if (staticDelegateAssocArrayDeclaration(inner) !is null) {
-            const offset =
-                allocateBytes(cast(uint) size_t.sizeof, size_t.sizeof);
-            _code ~= Instruction(Op.aaNew, offset);
-            return AssocArrayOperand(
-                null, Operand(offset, ScalarType.ulong_),
-            );
-        }
-
         throw new Exception(text(
             "Unsupported associative array operand in bytecode core: ",
             expressionChars(expression),
         ));
-    }
-
-    private VarDeclaration staticDelegateAssocArrayDeclaration(
-        Expression expression,
-    ) {
-        import dmd.astenums: TY;
-
-        auto inner = expression;
-        if (auto address = inner.isAddrExp)
-            inner = address.e1;
-        if (auto deref = inner.isPtrExp)
-            inner = deref.e1;
-
-        auto variable = inner.isVarExp;
-        auto declaration =
-            variable is null ? null : variable.var.isVarDeclaration;
-        if (isDeclarationNamed(declaration, "childWriters"))
-            return declaration;
-        if (declaration is null ||
-            declaration.type.toBasetype.ty != TY.Taarray)
-            return null;
-
-        auto valueType = declaration.type.toBasetype.nextOf;
-        if (valueType is null)
-            return null;
-
-        return declaration;
     }
 
     // `dest[] = a[] + b[]`: the druntime arrayOp call carries three slice

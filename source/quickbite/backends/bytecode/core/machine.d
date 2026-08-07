@@ -1691,6 +1691,24 @@ package(quickbite.backends.bytecode) RunResult run(
                 ++ip;
                 break;
 
+            case className:
+                const objectPointer =
+                    scalarValue!size_t(stack, base + instruction.b);
+                const classIndex = objectPointer == 0
+                    ? noExceptionClass
+                    : objectClassIndex(objectPointer);
+                const name = classIndex < program.classes.length
+                    ? program.classes[classIndex].name
+                    : "";
+                writeSliceDescriptorPointer(
+                    stack,
+                    base + instruction.a,
+                    cast(size_t) name.ptr,
+                    name.length,
+                );
+                ++ip;
+                break;
+
             case throwIfNullClassReference:
                 if (scalarValue!size_t(stack, base + instruction.a) == 0)
                     throw new Exception(stringFromData(

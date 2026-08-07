@@ -677,6 +677,9 @@ package(quickbite.backends.bytecode) enum Op: ubyte {
     // a: destination size_t slot, b: class-object pointer slot. Reads the
     // object's dynamic VM class and writes its host TypeInfo mirror.
     classTypeInfo,
+    // a: destination string descriptor, b: class-object pointer slot. Reads
+    // the object's dynamic VM class and writes its fully qualified D name.
+    className,
     // a: class-object pointer slot, b: diagnostic data offset, c: data length.
     throwIfNullClassReference,
     nativeCall, // a: native-call index, b: argument area, c: destination
@@ -1336,6 +1339,7 @@ package(quickbite.backends.bytecode) struct ClassInfo {
     ushort msgOffset = ushort.max;
     size_t nativeTypeInfo;
     VirtualFunction[] virtualFunctions;
+    string name;
 }
 
 package(quickbite.backends.bytecode) struct CatchClause {
