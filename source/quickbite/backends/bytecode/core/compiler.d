@@ -398,89 +398,26 @@ private struct Compiler {
                 registerCapturedOffset(parameter, offset);
 
                 if (parameterIsLazy(parameter)) {
-                    registerFrameDeclaration(parameter).lazyDelegate = offset;
-                    registerFrameDeclaration(parameter).lazyDeclaration = true;
+                    registerFrameParameter(parameter, offset);
                     continue;
                 }
 
                 if (parameter.isReference &&
-                    !typeFacts(parameter.type).isAggregate) {
-                    registerReferenceDeclaration(parameter).scalar = offset;
-                    registerReferenceDeclaration(parameter).refPointer =
-                        scalarType(parameter.type);
-                    if (parameter.type.toBasetype.ty == TY.Tclass)
-                        registerReferenceDeclaration(parameter).classPointer =
-                            parameter.type.toBasetype.isTypeClass.sym;
-                    if (isPointerType(parameter.type))
-                        registerReferenceDeclaration(parameter).pointer =
-                            pointerElementScalar(parameter.type);
-                    if (parameter.type.toBasetype.ty == TY.Taarray)
-                        registerReferenceDeclaration(parameter).assocArray = true;
+                    !declarationRecord(parameter).facts.isAggregate)
+                {
+                    auto record = registerReferenceDeclaration(parameter);
+                    record.scalar = offset;
+                    record.refPointer = record.facts.opcodeType;
                     continue;
                 }
 
-                // Aggregate reference parameters remain pointer places.  All
+                // Aggregate reference parameters remain pointer places. All
                 // loads, stores, field/index composition, and forwarding use
                 // that one caller-storage address directly.
                 if (parameter.isReference)
                     continue;
 
-                // A dynamic-array parameter (including `string`) is a 16-byte
-                // slice descriptor, tracked like a dynamic-array local rather
-                // than a scalar slot. `elementIsArray` marks a `T[N][]`/`T[][]`
-                // parameter whose elements are themselves heap-allocated inner
-                // descriptors, matching how a same-typed local is tracked
-                // (`arrayElementIsArray`, below) so a promoted-cell array
-                // passed as an argument keeps its authoritative row storage in
-                // the callee instead of falling back to a flat scalar stride.
-                if (parameter.type.toBasetype.ty == TY.Tarray) {
-                    registerFrameDeclaration(parameter).dynamicArray = DynamicArrayLocal(
-                        offset, dynamicArrayElementType(parameter.type),
-                        arrayElementIsArray(parameter.type),
-                    );
-                    continue;
-                }
-
-                // A by-value struct parameter is an inline block, tracked like a
-                // struct local so field access resolves against its base offset.
-                if (parameter.type.toBasetype.ty == TY.Tstruct) {
-                    registerFrameDeclaration(parameter).struct_ = StructLocal(
-                        offset, structDeclarationOf(parameter.type),
-                    );
-                    continue;
-                }
-
-                // A by-value static-array parameter is an inline block, tracked
-                // like a static-array local so indexing resolves against it.
-                if (parameter.type.toBasetype.ty == TY.Tsarray) {
-                    registerFrameDeclaration(parameter).staticArray = offset;
-                    continue;
-                }
-
-                if (parameter.type.toBasetype.ty == TY.Tclass) {
-                    registerFrameDeclaration(parameter).scalar = offset;
-                    registerFrameDeclaration(parameter).classPointer =
-                        parameter.type.toBasetype.isTypeClass.sym;
-                    continue;
-                }
-
-                // A delegate-typed parameter is a caller-supplied 16-byte
-                // `{functionIndex, context}` pair whose actual callee is a
-                // run-time value; calling through it dispatches by that
-                // pair's own function-index word rather than a statically
-                // known `FuncDeclaration`.
-                if (parameter.type.toBasetype.ty == TY.Tdelegate) {
-                    registerFrameDeclaration(parameter).delegateRuntime = true;
-                    registerFrameDeclaration(parameter).delegateParameter = offset;
-                    continue;
-                }
-
-                registerFrameDeclaration(parameter).scalar = offset;
-                if (parameter.type.toBasetype.ty == TY.Taarray)
-                    registerFrameDeclaration(parameter).assocArray = true;
-                if (isPointerType(parameter.type))
-                    registerFrameDeclaration(parameter).pointer =
-                        pointerElementScalar(parameter.type);
+                registerFrameParameter(parameter, offset);
             }
 
         // A function with a named `out(result)` contract gets a synthesized
@@ -499,6 +436,62 @@ private struct Compiler {
 
         _program.functions[index].code = _code;
         _program.functions[index].frameSize = (_peakFrameOffset + 15) & ~15u;
+    }
+
+    private void registerFrameParameter(
+        VarDeclaration parameter,
+        in ushort offset,
+    ) {
+        import std.conv: text;
+
+        auto record = registerFrameDeclaration(parameter);
+        final switch (record.facts.representation)
+            with (DeclarationRepresentation)
+        {
+            case unavailable:
+                throw new Exception(text(
+                    "Unsupported parameter in bytecode core: ",
+                    declarationChars(parameter),
+                ));
+            case scalar:
+                record.scalar = offset;
+                return;
+            case staticArray:
+            case vector:
+                record.staticArray = offset;
+                return;
+            case dynamicArray:
+                record.dynamicArray = DynamicArrayLocal(
+                    offset, dynamicArrayElementType(parameter.type),
+                    arrayElementIsArray(parameter.type),
+                );
+                return;
+            case pointer:
+                record.scalar = offset;
+                return;
+            case struct_:
+                record.struct_ = StructLocal(
+                    offset, structDeclarationOf(parameter.type),
+                );
+                return;
+            case delegate_:
+                record.delegateRuntime = true;
+                record.delegateParameter = offset;
+                return;
+            case complexDouble:
+                record.scalar = offset;
+                return;
+            case lazyDelegate:
+                record.lazyDelegate = offset;
+                record.lazyDeclaration = true;
+                return;
+            case classPointer:
+                record.scalar = offset;
+                return;
+            case assocArray:
+                record.scalar = offset;
+                return;
+        }
     }
 
     private ushort registerFunction(FuncDeclaration function_) {
@@ -1707,11 +1700,10 @@ private struct Compiler {
         const nextMessageOffset =
             allocateBytes(sliceDescriptorSize, size_t.sizeof);
 
-        auto classType = variable.type.toBasetype.isTypeClass;
-        if (classType !is null && classType.sym !is null) {
+        auto record = declarationRecord(variable);
+        if (record.facts.representation ==
+            DeclarationRepresentation.classPointer)
             registerFrameDeclaration(variable).scalar = objectOffset;
-            registerFrameDeclaration(variable).classPointer = classType.sym;
-        }
 
         auto object = ExceptionObjectLocal(
             objectOffset, messageOffset, nextMessageOffset,
@@ -4328,7 +4320,7 @@ private struct Compiler {
     }
 
     private void compileVariableDeclaration(VarDeclaration variable) {
-        import dmd.astenums: STC, TY;
+        import dmd.astenums: STC;
         import std.conv: text;
 
         if ((variable.storage_class & STC.ref_) != STC.none &&
@@ -4337,67 +4329,49 @@ private struct Compiler {
             return;
         }
 
-        // A static array `T[N]` is a value type stored inline in the frame at
-        // its DMD-computed size and alignment; no heap, no slice descriptor.
-        if (variable.type.toBasetype.ty == TY.Tsarray) {
-            compileStaticArrayDeclaration(variable);
-            return;
+        final switch (declarationRecord(variable).facts.representation)
+            with (DeclarationRepresentation)
+        {
+            case unavailable:
+            case lazyDelegate:
+                throw new Exception(text(
+                    "Unsupported variable in bytecode core: ",
+                    declarationChars(variable),
+                ));
+            case scalar:
+                compileScalarDeclaration(variable);
+                return;
+            case staticArray:
+                compileStaticArrayDeclaration(variable);
+                return;
+            case vector:
+                compileVectorDeclaration(variable);
+                return;
+            case dynamicArray:
+                compileDynamicArrayDeclaration(variable);
+                return;
+            case pointer:
+                compilePointerDeclaration(variable);
+                return;
+            case struct_:
+                compileStructDeclaration(variable);
+                return;
+            case delegate_:
+                compileDelegateDeclaration(variable);
+                return;
+            case complexDouble:
+                compileComplexDoubleDeclaration(variable);
+                return;
+            case classPointer:
+                compileClassPointerDeclaration(variable);
+                return;
+            case assocArray:
+                compileAssocArrayDeclaration(variable);
+                return;
         }
+    }
 
-        if (variable.type.toBasetype.ty == TY.Tvector) {
-            compileVectorDeclaration(variable);
-            return;
-        }
-
-        // A struct `S` is a value type stored inline in the frame at its
-        // DMD-computed size and alignment; each field lives at `base +
-        // field.offset`.
-        if (variable.type.toBasetype.ty == TY.Tstruct) {
-            compileStructDeclaration(variable);
-            return;
-        }
-
-        // A dynamic array `T[]` (including `string`) holds a 16-byte slice
-        // descriptor {ptr, length}; its backing memory lives on the VM-owned
-        // heap, or — for a literal-initialised `string` — the immutable
-        // program data segment.
-        if (variable.type.toBasetype.ty == TY.Tarray) {
-            compileDynamicArrayDeclaration(variable);
-            return;
-        }
-
-        // An associative array `T[K]` holds an 8-byte handle into the machine's
-        // VM-owned map table; `int[int]` is the only form the core lowers.
-        if (variable.type.toBasetype.ty == TY.Taarray) {
-            compileAssocArrayDeclaration(variable);
-            return;
-        }
-
-        if (variable.type.toBasetype.ty == TY.Tclass) {
-            compileClassPointerDeclaration(variable);
-            return;
-        }
-
-        if (isComplexDoubleType(variable.type)) {
-            compileComplexDoubleDeclaration(variable);
-            return;
-        }
-
-        // A pointer local `T* p` holds a raw `size_t` address into VM-owned
-        // heap; allocate an 8-byte slot, compile the pointer-valued initializer,
-        // and copy its address word in.
-        if (isPointerType(variable.type)) {
-            compilePointerDeclaration(variable);
-            return;
-        }
-
-        // A delegate local `auto d = () => this.field;` holds a
-        // `{functionIndex, context}` pair; build it from the lambda literal.
-        if (variable.type.toBasetype.ty == TY.Tdelegate) {
-            compileDelegateDeclaration(variable);
-            return;
-        }
-
+    private void compileScalarDeclaration(VarDeclaration variable) {
         const type = scalarType(variable.type);
         const offset = allocateBytes(size(type), size(type));
         registerFrameDeclaration(variable).scalar = offset;
@@ -4434,10 +4408,11 @@ private struct Compiler {
         auto expression = initializerExpression(initializer.exp);
         if (auto address = placeAddressOrNull(expression)) {
             registerReferenceDeclaration(variable).scalar = address.offset;
+            const facts = declarationRecord(variable).facts;
             registerReferenceDeclaration(variable).refPointer =
-                typeFacts(variable.type).isAggregate
+                facts.isAggregate
                     ? ScalarType.void_
-                    : scalarType(variable.type);
+                    : facts.opcodeType;
             return true;
         }
         return false;
@@ -4446,7 +4421,6 @@ private struct Compiler {
     private void compileComplexDoubleDeclaration(VarDeclaration variable) {
         const offset = allocateComplexDouble;
         registerFrameDeclaration(variable).scalar = offset;
-        registerFrameDeclaration(variable).complexDouble = true;
 
         auto initializer =
             variable._init is null ? null : variable._init.isExpInitializer;
@@ -4491,8 +4465,6 @@ private struct Compiler {
             ));
 
         registerFrameDeclaration(variable).scalar = offset;
-        registerFrameDeclaration(variable).classPointer =
-            variable.type.toBasetype.isTypeClass.sym;
         registerCapturedOffset(variable, offset);
         _code ~= Instruction(
             Op.copy, offset, pointer.offset, cast(ushort) size_t.sizeof,
@@ -4514,7 +4486,6 @@ private struct Compiler {
         if (initializer is null ||
             initializerExpression(initializer.exp).isNullExp !is null) {
             registerFrameDeclaration(variable).scalar = offset;
-            registerFrameDeclaration(variable).pointer = pointerElementScalar(variable.type);
             registerCapturedOffset(variable, offset);
             _code ~= Instruction(
                 Op.loadConstant,
@@ -4540,7 +4511,6 @@ private struct Compiler {
         // delegate-pointee case) once the initializer finishes compiling
         // below.
         registerFrameDeclaration(variable).scalar = offset;
-        registerFrameDeclaration(variable).pointer = pointerElementScalar(variable.type);
         registerCapturedOffset(variable, offset);
 
         const pointer =
@@ -4551,18 +4521,17 @@ private struct Compiler {
                 declarationChars(variable),
             ));
 
-        registerFrameDeclaration(variable).scalar = offset;
+        auto record = registerFrameDeclaration(variable);
+        record.scalar = offset;
         auto declaredElement = variable.type.toBasetype.nextOf;
-        registerFrameDeclaration(variable).pointer =
-            declaredElement !is null &&
-            declaredElement.toBasetype.ty == TY.Tdelegate
-            ? pointer.pointerElement
-            : pointerElementScalar(variable.type);
+        if (declaredElement !is null &&
+            declaredElement.toBasetype.ty == TY.Tdelegate)
+            record.pointer = pointer.pointerElement;
         registerCapturedOffset(variable, offset);
         // A `S* p = new S(...)` pointer addresses a heap struct block; record the
         // struct declaration so `p.field` resolves through the pointer.
         if (auto structDeclaration = structPointerDeclaration(variable.type))
-            registerFrameDeclaration(variable).structPointer = structDeclaration;
+            record.structPointer = structDeclaration;
         // The self-referential `CommaExp` initializer shape above (the
         // nested `variable = ...` assignment) already writes the pointer
         // value directly into `offset` -- skip the otherwise-redundant
@@ -6821,7 +6790,6 @@ private struct Compiler {
     private void compileAssocArrayDeclaration(VarDeclaration variable) {
         const offset = allocateBytes(cast(uint) size_t.sizeof, size_t.sizeof);
         registerFrameDeclaration(variable).scalar = offset;
-        registerFrameDeclaration(variable).assocArray = true;
 
         auto initializer =
             variable._init is null ? null : variable._init.isExpInitializer;
@@ -9201,6 +9169,7 @@ private struct Compiler {
                 allocateModuleDynamicArrayVariable(declaration);
                 return;
             case staticArray:
+            case vector:
                 allocateModuleStaticArrayVariable(declaration);
                 return;
             case struct_:
@@ -11531,7 +11500,7 @@ private struct Compiler {
         // to a fresh frame slot the body reads through the ordinary local path.
         auto parameter = (*literal.fd.parameters)[0];
         const variableSlot = allocateBytes(elementSize, elementSize);
-        registerFrameDeclaration(parameter).scalar = variableSlot;
+        registerFrameParameter(parameter, variableSlot);
 
         // `for (i = 0; i < elements.length; ++i) { var = elements[i]; body }`.
         const index = compileSizeConstant(0);
@@ -12657,18 +12626,7 @@ private struct Compiler {
             : keyIsArray
                 ? allocateBytes(keyElementSize, size_t.sizeof)
                 : allocate(scalarType(keyParameter.type));
-        if (keyIsStruct)
-            registerFrameDeclaration(keyParameter).struct_ = StructLocal(
-                keySlot, structDeclarationOf(keyParameter.type),
-            );
-        else if (keyIsArray)
-            registerFrameDeclaration(keyParameter).dynamicArray = DynamicArrayLocal(
-                keySlot,
-                dynamicArrayElementType(keyParameter.type),
-                arrayElementIsArray(keyParameter.type),
-            );
-        else
-            registerFrameDeclaration(keyParameter).scalar = keySlot;
+        registerFrameParameter(keyParameter, keySlot);
 
         const valueSlot = allocateBytes(
             valueElementSize,
@@ -12676,29 +12634,7 @@ private struct Compiler {
                 ? staticArrayAlign(valueParameter.type)
                 : valueElementSize,
         );
-        if (valueParameter.type.toBasetype.ty == TY.Tstruct)
-            registerFrameDeclaration(valueParameter).struct_ = StructLocal(
-                valueSlot, structDeclarationOf(valueParameter.type),
-            );
-        else if (valueParameter.type.toBasetype.ty == TY.Tsarray)
-            registerFrameDeclaration(valueParameter).staticArray = valueSlot;
-        else if (valueParameter.type.toBasetype.ty == TY.Tdelegate) {
-            // A per-entry delegate VALUE read out of `values` above (a
-            // run-time `{functionIndex, context}` pair with no statically
-            // known callee) -- the same "caller-supplied delegate value,
-            // dispatch by its own function-index word" shape an ordinary
-            // delegate-typed function parameter already gets
-            // (the runtime delegate representation set up next to the
-            // parameter loop above this function). A static delegate target
-            // is wrong here because this loop variable has no known
-            // `FuncDeclaration`. Without this, `delegateOperandOffset`'s
-            // `VarExp` branch cannot resolve `valueParameter` and falls
-            // through to its final "Unsupported delegate argument" throw
-            // the moment the loop body calls through it (`v()`).
-            registerFrameDeclaration(valueParameter).delegateRuntime = true;
-            registerFrameDeclaration(valueParameter).delegateParameter = valueSlot;
-        } else
-            registerFrameDeclaration(valueParameter).scalar = valueSlot;
+        registerFrameParameter(valueParameter, valueSlot);
 
         const index = compileSizeConstant(0);
         const length = allocate(ScalarType.ulong_);
@@ -14689,7 +14625,7 @@ private struct Compiler {
         Type type,
         in bool isReference,
     ) {
-        import dmd.astenums: TY;
+        import std.conv: text;
 
         if (isReference) {
             enum pointerAlign = cast(uint) size_t.sizeof;
@@ -14701,41 +14637,38 @@ private struct Compiler {
             return;
         }
 
-        if (type.toBasetype.ty == TY.Tarray) {
-            enum descriptorAlign = cast(uint) size_t.sizeof;
-            layout.blockSize = (layout.blockSize +
-                descriptorAlign - 1) & ~(descriptorAlign - 1);
-            layout.offsets ~= cast(ushort) layout.blockSize;
-            layout.isReference ~= isReference;
-            layout.blockSize += sliceDescriptorSize;
-            return;
+        const facts = typeFacts(type);
+        uint argumentSize;
+        uint argumentAlign;
+        final switch (facts.representation) with (DeclarationRepresentation) {
+            case unavailable:
+            case lazyDelegate:
+                throw new Exception(text(
+                    "Unsupported parameter type in bytecode core: ",
+                    typeChars(type),
+                ));
+            case scalar:
+            case pointer:
+            case classPointer:
+            case assocArray:
+                argumentSize = facts.byteWidth;
+                argumentAlign = argumentSize;
+                break;
+            case staticArray:
+            case vector:
+            case struct_:
+            case complexDouble:
+                argumentSize = facts.byteWidth;
+                argumentAlign = staticArrayAlign(type);
+                break;
+            case dynamicArray:
+            case delegate_:
+                argumentSize = facts.byteWidth;
+                argumentAlign = cast(uint) size_t.sizeof;
+                break;
         }
-
-        if (type.toBasetype.ty == TY.Tstruct || type.toBasetype.ty == TY.Tsarray) {
-            const aggregateAlign = staticArrayAlign(type);
-            const aggregateBytes = typeFacts(type).byteWidth;
-            layout.blockSize = (layout.blockSize +
-                aggregateAlign - 1) & ~(aggregateAlign - 1);
-            layout.offsets ~= cast(ushort) layout.blockSize;
-            layout.isReference ~= isReference;
-            layout.blockSize += aggregateBytes;
-            return;
-        }
-
-        if (type.toBasetype.ty == TY.Tdelegate) {
-            enum delegateAlign = cast(uint) size_t.sizeof;
-            layout.blockSize = (layout.blockSize +
-                delegateAlign - 1) & ~(delegateAlign - 1);
-            layout.offsets ~= cast(ushort) layout.blockSize;
-            layout.isReference ~= isReference;
-            layout.blockSize += delegateValueSize;
-            return;
-        }
-
-        const scalar = scalarType(type);
-        const argumentSize = size(scalar);
         layout.blockSize = (layout.blockSize +
-            argumentSize - 1) & ~(argumentSize - 1);
+            argumentAlign - 1) & ~(argumentAlign - 1);
         layout.offsets ~= cast(ushort) layout.blockSize;
         layout.isReference ~= isReference;
         layout.blockSize += argumentSize;
@@ -15364,10 +15297,14 @@ private struct Compiler {
             );
         switch (type.toBasetype.ty) with (TY) {
             case Tsarray:
-            case Tvector:
                 return TypeFacts(
                     ScalarType.void_, byteWidth,
                     DeclarationRepresentation.staticArray, true,
+                );
+            case Tvector:
+                return TypeFacts(
+                    ScalarType.void_, byteWidth,
+                    DeclarationRepresentation.vector, true,
                 );
             case Tarray:
                 return TypeFacts(
@@ -15467,6 +15404,10 @@ private struct Compiler {
         else if (created.facts.representation ==
             DeclarationRepresentation.classPointer)
             created.classPointer = declaration.type.toBasetype.isTypeClass.sym;
+        created.complexDouble = created.facts.representation ==
+            DeclarationRepresentation.complexDouble;
+        created.assocArray = created.facts.representation ==
+            DeclarationRepresentation.assocArray;
         _declarations[declaration] = created;
         return declaration in _declarations;
     }
@@ -15563,6 +15504,7 @@ private enum DeclarationRepresentation {
     unavailable,
     scalar,
     staticArray,
+    vector,
     dynamicArray,
     pointer,
     struct_,
@@ -15636,7 +15578,8 @@ private struct DeclarationRecord {
     }
     private auto staticArrayOrNull() {
         return storage == DeclarationStorage.frame &&
-            facts.representation == DeclarationRepresentation.staticArray
+            (facts.representation == DeclarationRepresentation.staticArray ||
+                facts.representation == DeclarationRepresentation.vector)
             ? &staticArray
             : null;
     }
@@ -15724,7 +15667,8 @@ private struct DeclarationRecord {
     }
     private auto moduleStaticArrayOrNull() {
         return storage == DeclarationStorage.module_ &&
-            facts.representation == DeclarationRepresentation.staticArray
+            (facts.representation == DeclarationRepresentation.staticArray ||
+                facts.representation == DeclarationRepresentation.vector)
             ? &moduleStaticArray
             : null;
     }

@@ -350,8 +350,9 @@ Settled contracts:
   omitted width fails compilation rather than becoming a zero-byte copy.
 - One `DeclarationRecord` authority owns each declaration's `TypeFacts`,
   storage owner, and representation-specific metadata. Module registration
-  selects the representation once; representation-specific initializer
-  encoders populate that record but do not classify the declaration again.
+  and local, parameter, or synthetic-local registration dispatch solely on
+  that representation; representation-specific initializer encoders populate
+  the record but do not classify the declaration again.
   Non-declaration caches, such as the static delegate associative-array
   registry, must not become parallel storage authorities.
 - Every supported lvalue-capable expression resolves through `Place`. Using it
