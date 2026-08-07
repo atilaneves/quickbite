@@ -3263,7 +3263,10 @@ private string assertMessage(
             invertedOperator(diagnostic.operator),
             " ",
             arrayOperandText(
-                frame, diagnostic.rhs, diagnostic.operandType,
+                frame, diagnostic.rhs,
+                diagnostic.hasDistinctOperandTypes
+                    ? diagnostic.rhsOperandType
+                    : diagnostic.operandType,
                 diagnostic.elementNestingDepth,
             ),
         );

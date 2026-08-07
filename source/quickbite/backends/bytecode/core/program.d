@@ -1331,6 +1331,12 @@ package(quickbite.backends.bytecode) struct AssertDiagnostic {
     // rhsIsNull positionally and would silently shift onto the wrong field
     // otherwise.
     uint elementNestingDepth;
+    // Mixed numeric array equality permits distinct element types. Retain the
+    // RHS type separately so a failed assertion uses that operand's physical
+    // stride and signedness instead of reading both arrays as `operandType`.
+    // Appended to preserve every positional construction above.
+    ScalarType rhsOperandType;
+    bool hasDistinctOperandTypes;
 }
 
 package(quickbite.backends.bytecode) struct VirtualFunction {

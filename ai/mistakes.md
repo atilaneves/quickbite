@@ -184,6 +184,10 @@
   external symbols with hardcoded "known symbol" lists, and don't probe the
   process loader from diagnostics just to guess symbol availability.
 
+- When an operation accepts operands with different physical representations,
+  preserve each operand's type metadata for diagnostics too. Reusing the
+  execution's common type can select the wrong stride or read past an operand.
+
 - Don't propose adding or enabling dependency-backed tests for new tree walker
   TDD slices; extract dependency-free language or project-inspired tests
   instead.

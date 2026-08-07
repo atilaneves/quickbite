@@ -1001,6 +1001,37 @@ static foreach (backend; Matrix!()) {
 }
 
 static foreach (backend; Matrix!()) {
+    @("assertDiagnostic.mixedWidthArrayElementMismatch." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            unittest {
+                ubyte[] bytes = [1, 2, 3];
+                int[] integers = [1, 2, 400];
+
+                assert(bytes == integers);
+            }
+        }).shouldThrowWithMessage("[1, 2, 3] != [1, 2, 400]");
+    }
+}
+
+static foreach (backend; Matrix!()) {
+    @("assertDiagnostic.mixedWidthSignedArrayElementMismatch." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            unittest {
+                int[] integers = [-400, 2, 3];
+                ubyte[] bytes = [1, 2, 3];
+
+                assert(integers == bytes);
+            }
+        }).shouldThrowWithMessage("[-400, 2, 3] != [1, 2, 3]");
+    }
+}
+
+static foreach (backend; Matrix!()) {
     @("assertDiagnostic.arrayLengthMismatch." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {

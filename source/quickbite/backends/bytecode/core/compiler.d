@@ -13927,6 +13927,8 @@ private struct Compiler {
             AssertDiagnostic(
                 op, lhsOffset, rhsOffset, elementType, true,
                 elementNestingDepth: nested ? arrayNestingDepth(lhs.type) - 1 : 0,
+                rhsOperandType: rhsElementType,
+                hasDistinctOperandTypes: lhsElementType != rhsElementType,
             );
         _code ~= Instruction(
             Op.assertTrue,
