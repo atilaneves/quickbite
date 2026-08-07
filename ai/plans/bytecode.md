@@ -337,10 +337,10 @@ materialisation, writeback, and diagnostics all mean the composition boundary
 is wrong. Stop feature work and establish the missing shared abstraction when
 two sites encode the same decision. A green matrix does not justify the
 duplication. This consolidation is the serial bytecode track's sole work until
-the pipeline below owns all existing pairings; the row-driven baseline gate is
-paused and resumes on top of it.
+the pipeline below owns all existing pairings. Once established, these
+composition boundaries remain invariants for subsequent baseline work.
 
-Target state:
+Settled contracts:
 
 - One `TypeFacts` authority supplies the opcode tag, optional byte width, and
   explicit aggregate classification. It serves `dynamicArrayElementSize`,
@@ -348,24 +348,27 @@ Target state:
   extended rather than duplicated when another lowering consumer needs those
   facts. `ScalarType.void_`'s zero size is not an aggregate sentinel; an
   omitted width fails compilation rather than becoming a zero-byte copy.
-- Declaration classification happens once. One classifier replaces the
-  parallel tables and the per-kind `module<Kind>VariableOrNull` and
-  initializer-byte resolver families, and supplies a root place carrying the
-  same `TypeFacts`. Declaration-rooted values and every remaining raw
-  `size(...)`-at-emit-site consumer use that authority.
-- Every lvalue-capable expression resolves through one place path. Using it as
-  an rvalue loads that place; assignment stores it; taking its address asks the
-  same place for its address. Non-lvalue expressions produce values directly.
-  A place composes a storage locator with an access path (field, index,
-  dereference, slice, or returned reference), evaluates every contributing
-  expression once, and supplies the primitive load, store, and address
-  operations for the value's true storage.
-- Semantic emitters consume values and places. They do not inspect lvalue AST
-  shapes, probe declaration tables, select storage kinds, or implement
-  materialisation and writeback. Assignment stores once; compound and
-  prefix/postfix operations compose load/operation/store; address-of and
-  `ref`/`out` consume the place's address. Method receivers and calls returning
-  `ref` use the same path.
+- One `DeclarationRecord` authority owns each declaration's `TypeFacts`,
+  storage owner, and representation-specific metadata. Module registration
+  selects the representation once; representation-specific initializer
+  encoders populate that record but do not classify the declaration again.
+  Non-declaration caches, such as the static delegate associative-array
+  registry, must not become parallel storage authorities.
+- Every supported lvalue-capable expression resolves through `Place`. Using it
+  as an rvalue loads that place; assignment stores it; taking its address asks
+  the same place for its address. Non-lvalue expressions produce values
+  directly. A place composes a storage locator with an access path (field,
+  index, dereference, slice, or returned reference), evaluates every
+  contributing expression once, and supplies the primitive load, store, and
+  address operations for the value's true storage.
+- Semantic mutation emitters consume values and places instead of selecting
+  storage from declaration maps or reconstructing an lvalue access path.
+  Assignment stores once; compound and prefix/postfix operations compose
+  load/operation/store; address-of and `ref`/`out` consume the place's address.
+  Method receivers and calls returning `ref` use the same path. Specialized
+  multi-element operations, such as slice fill/copy and array resizing, may
+  retain semantic emitters, but their destination and write-through authority
+  remains the resolved place.
 - The axes remain independent. A new semantic operation is implemented once
   for every compatible place; a new lvalue shape resolves once for every
   compatible operation; a new storage kind implements its primitives once;
@@ -373,27 +376,30 @@ Target state:
   Adding any one of them must not modify the pairings with the others.
 - Places exist only while the compiler emits bytecode. They add no runtime
   boxing, polymorphism, or generic place opcode.
-- An unclassifiable declaration or unsupported lvalue shape is declined by
-  the resolver, in one place, with the usual explicit diagnostic.
+- An unclassifiable declaration is represented as unavailable by the shared
+  declaration authority. An unsupported lvalue shape is declined by the place
+  resolver and its semantic caller emits the operation-specific diagnostic.
 - Direct `ref`/`out` parameters of every value type occupy exactly one native
   pointer-width argument slot and resolve as real pointers into caller storage
   through the same place pipeline, replacing the per-callee
   mirror/return-writeback convention and its address-identity,
   exceptional-control-flow, and aliasing incoherences.
 
-New lowering work extends the classified roots, access-path composition,
-place primitives, or semantic emitters independently. It must not reintroduce
-parallel declaration tables, shape-specific assignment/ref/receiver helpers,
-or call-return writeback mirrors.
+Immediate remaining work:
 
-The two omitted module-scalar rows in
-`tests/ut/backends/runner/lang/expressions.d`
-(`methodCallThroughReturnedPointerEvaluatesReceiverOnce`,
-`methodCallThroughIndexedReceiverEvaluatesIndexOnce`) are pipeline work: close
-them through the shared primitives, never with new per-operator storage arms.
-The first additionally needs `&s` on a module-scope struct, which the resolver
-should classify like any other declaration rather than decline as a special
-case.
+- Migrate the static-array read and struct-element materialisation fallbacks to
+  `Place`, then delete `StaticArrayElement`, `compileStaticArrayIndex`,
+  `locateStaticArrayElement`, `staticArrayBaseOffset`, and the dead
+  `tryStaticArrayElement`. Runtime-index and slice addressing must compose the
+  same static-array root place rather than retain a parallel root walk.
+
+After that deletion, new lowering work extends the classified roots,
+access-path composition, place primitives, or semantic emitters independently.
+It must not reintroduce parallel declaration tables, shape-specific
+assignment/ref/receiver helpers, or call-return writeback mirrors.
+Representation-specific module initializer encoders and specialized array
+algorithms remain implementation details under these authorities; they are not
+alternative declaration classifiers or lvalue resolvers.
 
 ### Paused until the pipeline lands: complete the existing Bytecode baseline
 
@@ -416,8 +422,10 @@ in-repo `SystemLinker`-oracle test include `Bytecode` and pass. In particular:
   A broad dependency path may be decomposed into bounded language or runtime
   semantics, but it must not be dismissed as speculative merely because it is
   broad.
-- Keep every enabled Bytecode row green. `ninja bin/ut` and repeated
-  `bin/ut --random` runs must be green and stable. An order-dependent crash or
+- Keep every enabled Bytecode row green. During implementation, use focused
+  Bytecode rows and at most the complete Bytecode matrix. Run `ci.sh` once,
+  immediately before creating the PR; its randomized unit-test run is the
+  full-suite verification. An order-dependent crash or
   hang is a blocker to reproduce with the reported seed and fix; it is not
   acceptable handoff noise.
 - A regression in an enabled row blocks the next promotion. Diagnose it from

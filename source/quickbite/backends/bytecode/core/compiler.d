@@ -4429,8 +4429,8 @@ private struct Compiler {
 
         // A module-level dynamic array (`byte[] a;`): materialise its
         // 16-byte descriptor from `_program.moduleData` into a fresh frame
-        // slot, mirroring `moduleScalarVariableOrNull`'s read but sized for
-        // a whole slice descriptor; reassignment writes the slot back
+        // slot, using the shared module-place read but sized for a whole slice
+        // descriptor; reassignment writes the slot back
         // through `writeBackThroughModule` (`writeBackDynamicArrayDescriptor`).
         if (auto variable = expression.isVarExp)
             if (auto declaration = variable.var.isVarDeclaration)
@@ -6796,11 +6796,9 @@ private struct Compiler {
         ));
     }
 
-    // A struct receiver returned by `ref`, or through `&`, from one of the
-    // receiver call's own `ref` parameters aliases that caller lvalue. Resolve
-    // nested forwarding calls from the inside out, passing each recovered
-    // caller slot into call emission so every argument expression runs once.
-    private Operand classMethodReceiver(CallExp call) {
+    // Resolve the object pointer for a class method call. Struct receivers use
+    // the shared place/address path in `compileCall`.
+    private Operand compileClassReceiver(CallExp call) {
         import std.conv: text;
 
         if (auto dot = call.e1.isDotVarExp) {
@@ -7349,9 +7347,8 @@ private struct Compiler {
         // local's own `VarExp` read already tags it -- otherwise a dereference
         // of the captured value
         // (`*p`/`p[i]`) throws "Unsupported pointer dereference in
-        // bytecode core", the same gap `moduleScalarVariableOrNull`'s
-        // pointer support (commit 402d885e) fixed for a module-level
-        // pointer's own `VarExp` read.
+        // bytecode core". Module pointer places carry the same metadata for
+        // their own `VarExp` reads.
         if (declaredTy == TY.Tpointer)
             return Operand(
                 destination, ScalarType.ulong_, true,
@@ -7917,10 +7914,10 @@ private struct Compiler {
     // static blob every allocation copies -- so a per-`new`-site runtime
     // `compileDynamicArrayInto` build (fresh heap array per instance) would
     // be observably wrong. `classFieldArraySharedDefaultOrNull` computes
-    // that shared `{pointer, count}` once per field, mirroring
-    // `moduleDynamicArrayVariableOrNull`'s once-at-registration
-    // `literalBlocks` mechanism, and every `new C()` site writes the same
-    // compile-time-constant descriptor. Any other `Tarray` default shape
+    // that shared `{pointer, count}` once per field, using module dynamic-array
+    // registration's `literalBlocks` mechanism. Every `new C()` site writes
+    // the same compile-time-constant descriptor. Any other `Tarray` default
+    // shape
     // (a non-literal expression, `null`, or an array-of-arrays element,
     // which `moduleDynamicArrayLiteralInitializerBytes` declines) falls
     // back to the pre-existing per-instance `storeClassField` path.
@@ -10705,9 +10702,6 @@ private struct Compiler {
         return null;
     }
 
-    // `&refReturning(ref value)` must execute the callee, then point at the
-    // caller lvalue the returned ref aliases. This narrow form handles a
-    // direct return of one ref parameter.
     private Operand* tryStaticDelegateAssocArrayAssign(AssignExp assign) {
         auto declaration =
             staticDelegateAssocArrayAssignDeclaration(assign.e1);
@@ -11234,8 +11228,7 @@ private struct Compiler {
     // Scoped to a scalar element type for now (`int[3]`, not `S[3]`,
     // `int[3][3]`, `int[3][]`, or a delegate/`Taarray` element): those
     // shapes decline registration, falling through to the pre-existing
-    // "Unsupported variable in bytecode core" error, matching
-    // `moduleScalarVariableOrNull`'s own decline list for complex-double.
+    // "Unsupported variable in bytecode core" error.
     private ModuleStaticArrayVariable* allocateModuleStaticArrayVariable(
         VarDeclaration declaration,
     ) {
@@ -11271,8 +11264,8 @@ private struct Compiler {
         // generic over the declaration's type, despite the array-specific
         // name) rather than `moduleVariableHasDefaultInitializer`, which
         // would misclassify a literal as "no initializer" and silently drop
-        // its values -- the same AST-quirk bug `moduleDynamicArrayVariableOrNull`
-        // documents fixing for the dynamic-array case.
+        // its values. Dynamic-array module registration uses the same
+        // normalization.
         auto initializerExpr =
             moduleDynamicArrayInitializerExpressionOrNull(declaration);
         const hasDefaultInitializer = initializerExpr is null ||
@@ -11300,9 +11293,9 @@ private struct Compiler {
     // plain 16-byte native-order `{functionIndex, context}` slot in
     // `_program.moduleData`, the delegate counterpart of
     // `ModuleDynamicArrayVariable`/`ModuleScalarVariable` -- unlike a module
-    // pointer or associative array (an 8-byte value routed through
-    // `moduleScalarVariableOrNull`'s generic scalar path, since `scalarType`
-    // already maps both `Tpointer` and `Taarray` to `ScalarType.ulong_`), a
+    // pointer or associative array (an 8-byte value routed through the module
+    // scalar representation, since `scalarType` already maps both `Tpointer`
+    // and `Taarray` to `ScalarType.ulong_`), a
     // delegate is a 16-byte pair with no `ScalarType` of its own, so it
     // needs this dedicated storage record instead. `allocateModuleBytes`
     // grows `_program.moduleData` with freshly zero-filled bytes, which is
@@ -11350,13 +11343,13 @@ private struct Compiler {
     // A module-level `cdouble` variable (`__gshared cdouble c;`) reserves a
     // plain 16-byte native-order `{re, im}` slot in `_program.moduleData`,
     // the complex counterpart of `ModuleDelegateVariable` above. Unlike a
-    // module pointer/associative array (an 8-byte value routed through
-    // `moduleScalarVariableOrNull`'s generic scalar path, since `scalarType`
-    // already maps `Tpointer`/`Taarray` to `ScalarType.ulong_`), a `cdouble`
-    // is a 16-byte pair with no `ScalarType` of its own -- the same reason a
-    // `cdouble` local already gets its own dedicated tracking
-    // (`_complexDoubleLocals`) rather than going through the generic scalar
-    // machinery -- so it gets its own dedicated storage record instead.
+    // module pointer/associative array (an 8-byte value routed through the
+    // module scalar representation, since `scalarType` already maps
+    // `Tpointer`/`Taarray` to `ScalarType.ulong_`), a `cdouble`
+    // is a 16-byte pair with no `ScalarType` of its own. A `cdouble` local uses
+    // the same dedicated declaration representation rather than going through
+    // the generic scalar machinery, so the module value gets its own storage
+    // record too.
     // Unlike a defaulted pointer/AA/delegate (all-zero is the correct
     // default), `cdouble.init` is `double.nan + double.nan * 1i` -- D gives
     // every floating-point-derived type a NaN default, not zero -- confirmed
@@ -12746,8 +12739,8 @@ private struct Compiler {
     // chain (any depth, e.g. `c.inner`, `c.inner.deeper`) ultimately rooted
     // at one -- i.e. an expression `tryClassPointerField` can safely
     // `compileExpression` for a real runtime pointer, as opposed to a plain
-    // (non-class-backed) struct value addressed through `_structLocals`, a
-    // captured struct receiver, a module struct, or an AA-value-read
+    // (non-class-backed) struct value addressed through its declaration
+    // record, a captured struct receiver, a module struct, or an AA-value-read
     // pointer, none of which `compileExpression` accepts directly. Walks
     // down the `DotVarExp.e1` chain rather than compiling anything, so it is
     // safe to call before deciding whether probing further is even valid.
@@ -12785,8 +12778,8 @@ private struct Compiler {
         // through a struct-field chain rooted at one) before probing
         // further: `tryClassPointerField` unconditionally compiles `dot.e1`
         // to check whether it yields a pointer, which throws for a plain
-        // (non-class-backed) struct local (structs are addressed through
-        // `_structLocals`, never `compileExpression`) rather than simply
+        // (non-class-backed) struct local (structs are addressed through their
+        // places, never `compileExpression`) rather than simply
         // failing to match.
         if (auto dot = expression.isDotVarExp)
             if (dot.e1.type !is null &&
@@ -12848,9 +12841,9 @@ private struct Compiler {
         // is a builtin type with no `opEquals` to lower through, so DMD keeps
         // this as a plain `EqualExp` over the 16-byte `{functionIndex,
         // context}` pair. `compileExpression` below has no generic VarExp
-        // case for a delegate-typed local (delegate locals live in their own
-        // `_delegateLocals` table, resolved through `delegateOperandOffset`
-        // instead), so this needs its own branch the same way the aggregate
+        // case for a delegate-typed local (the declaration record resolves it
+        // through `delegateOperandOffset` instead), so this needs its own
+        // branch the same way the aggregate
         // cases above do.
         if (equal.e1.type.toBasetype.ty == TY.Tdelegate)
             return compileDelegateEquality(
@@ -13175,10 +13168,11 @@ private struct Compiler {
             if (auto offset = structFieldDelegateOffsetOf(call))
                 return compileDynamicDelegateCall(*offset, call);
 
-        // `d()` through a delegate local declared in an ENCLOSING function and
-        // read here as a captured variable (`_delegateLocals` only tracks the
-        // function currently being compiled): load its `{functionIndex,
-        // context}` pair out of the captured environment into a fresh slot in
+        // `d()` through a delegate local declared in an enclosing function and
+        // read here as a captured variable (ordinary declaration views only
+        // expose the function currently being compiled): load its
+        // `{functionIndex, context}` pair out of the captured environment into
+        // a fresh slot in
         // the current frame, then dispatch it exactly like a delegate-typed
         // parameter. Tried only after every current-function-owned delegate
         // shape above has declined, since a plain parameter also carries a
@@ -13271,7 +13265,7 @@ private struct Compiler {
         }
 
         if (layout.hasClassThis) {
-            classReceiver = classMethodReceiver(call);
+            classReceiver = compileClassReceiver(call);
             hasClassReceiver = true;
             _code ~= Instruction(
                 Op.copy,
@@ -13775,8 +13769,8 @@ private struct Compiler {
     }
 
     // The delegate local invoked by `d()`, or null if `call` is not a call
-    // through a delegate local. The callee is a `VarExp` of a `_delegateLocals`
-    // entry.
+    // through a delegate local. The callee is a `VarExp` whose declaration
+    // record carries a statically known delegate target.
     private DelegateLocal* delegateLocalOf(CallExp call) {
         auto variable = call.e1 is null ? null : call.e1.isVarExp;
         if (variable is null)
@@ -14837,7 +14831,7 @@ private struct Compiler {
         // (`assocArrayKeyIsArray`'s struct branch) is *compared* by content
         // like a bare `string`, but its declared foreach-parameter type is
         // still `Tstruct` -- checking `keyIsStruct` first here keeps it on
-        // the same `_structLocals` frame representation the raw-byte
+        // the same inline-frame representation the raw-byte
         // struct-key foreach case already uses (`dynamicArrayElementType`
         // below expects an actual `Tarray`, not a struct, so it must never
         // see this key's type).
@@ -14880,12 +14874,11 @@ private struct Compiler {
             // known callee) -- the same "caller-supplied delegate value,
             // dispatch by its own function-index word" shape an ordinary
             // delegate-typed function parameter already gets
-            // (`_delegateParameterLocals`, set up next to the parameter
-            // loop above this function). `_delegateLocals` is the wrong
-            // table: every entry there carries a statically-known
-            // `FuncDeclaration`, which this loop variable does not have.
-            // Without this, `delegateOperandOffset`'s `VarExp` branch never
-            // finds `valueParameter` in either delegate table and falls
+            // (the runtime delegate representation set up next to the
+            // parameter loop above this function). A static delegate target
+            // is wrong here because this loop variable has no known
+            // `FuncDeclaration`. Without this, `delegateOperandOffset`'s
+            // `VarExp` branch cannot resolve `valueParameter` and falls
             // through to its final "Unsupported delegate argument" throw
             // the moment the loop body calls through it (`v()`).
             registerFrameDeclaration(valueParameter).delegateRuntime = true;
@@ -15296,9 +15289,8 @@ private struct Compiler {
     // The frame offset of a compiled AA key's raw bytes, `assocArrayKeyMeta`'s
     // expression-compiling counterpart: a struct-typed key (a local or a
     // literal) is not itself a frame-resident scalar the generic
-    // `compileExpression` `VarExp` path recognises (unlike
-    // `structBaseOffsetOrMaterialise`, it never consults `_structLocals`), so
-    // route it through `structOperandOffset` instead; any other supported key
+    // `compileExpression` `VarExp` path recognises, so route it through
+    // `structOperandOffset` instead; any other supported key
     // (scalar or `string`) already compiles correctly through the generic
     // path.
     private ushort assocArrayKeyOffset(Expression keyExpression, Type aaType) {
@@ -15531,10 +15523,6 @@ private struct Compiler {
         return offset;
     }
 
-    // The caller-frame offset of a `ref` argument: the slot of the local being
-    // passed by reference, whether a scalar local or a dynamic-array local
-    // (whose slot holds a 16-byte slice descriptor). Only a plain local lvalue
-    // is supported.
     private Operand* compileBuiltinCall(
         CallExp call,
         FuncDeclaration function_,
@@ -18235,8 +18223,8 @@ private struct ModuleScalarVariable {
     // Set for a `Tpointer`-typed module variable: `type` is always
     // `ScalarType.ulong_` (the pointer's own native-word storage), but a
     // read still needs to carry the pointed-at element's scalar type so
-    // `*p`/`p[i]` recognise the loaded value as a pointer at all --
-    // mirroring `_pointerLocals`' role for a local/parameter pointer.
+    // `*p`/`p[i]` recognise the loaded value as a pointer at all, just as a
+    // local or parameter pointer's declaration record does.
     bool isPointer;
     imported!"quickbite.backends.bytecode.core.program".ScalarType pointerElement;
 }
@@ -18258,7 +18246,7 @@ private struct ModuleDynamicArrayVariable {
 // reason a delegate local/field/array-element carries its own dedicated
 // tracking rather than going through the generic scalar machinery -- so it
 // gets its own record here, the delegate counterpart of
-// `ModuleDynamicArrayVariable`. See `moduleDelegateVariableOrNull`.
+// `ModuleDynamicArrayVariable`.
 private struct ModuleDelegateVariable {
     ushort offset;
 }
@@ -18268,10 +18256,9 @@ private struct ModuleDelegateVariable {
 // delegate, a `cdouble` has no `ScalarType` of its own (`scalarType` has no
 // `Tcomplex64` case, and `isComplex` is carried as a separate `Operand` flag
 // rather than folded into `ScalarType`) -- the same reason a `cdouble` LOCAL
-// already gets its own dedicated tracking (`_complexDoubleLocals`) rather
-// than going through the generic scalar machinery -- so it gets its own
-// record here, the complex counterpart of `ModuleDelegateVariable`. See
-// `moduleComplexVariableOrNull`.
+// uses a dedicated declaration representation rather than going through the
+// generic scalar machinery, so it gets its own record here, the complex
+// counterpart of `ModuleDelegateVariable`.
 private struct ModuleComplexVariable {
     ushort offset;
 }
@@ -18294,8 +18281,8 @@ private struct ModuleStructVariable {
 }
 
 // A module-level (`__gshared`/`static`) fixed-size static-array variable's
-// own inline block storage in `_program.moduleData`, the Tsarray
-// counterpart of `ModuleStructVariable`. See `moduleStaticArrayVariableOrNull`.
+// own inline block storage in `_program.moduleData`, the Tsarray counterpart
+// of `ModuleStructVariable`.
 private struct ModuleStaticArrayVariable {
     ushort offset;
     ushort size;

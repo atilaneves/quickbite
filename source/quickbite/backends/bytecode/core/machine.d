@@ -2043,7 +2043,7 @@ package(quickbite.backends.bytecode) RunResult run(
                             base + instruction.c,
                         );
                 }
-                writeBackUnwoundFrames(
+                discardUnwoundFrames(
                     stack, frames, base, handler.frameDepth,
                 );
                 functionIndex = handler.functionIndex;
@@ -2089,7 +2089,7 @@ package(quickbite.backends.bytecode) RunResult run(
                         .. handler.base + clause.nextMessageOffset
                             + sliceDescriptorSize
                     ] = 0;
-                writeBackUnwoundFrames(
+                discardUnwoundFrames(
                     stack, frames, base, handler.frameDepth,
                 );
                 functionIndex = handler.functionIndex;
@@ -2149,7 +2149,7 @@ package(quickbite.backends.bytecode) RunResult run(
             const clause = selected.clause;
             if (clause.objectOffset != noCatchObjectField)
                 throw error;
-            writeBackUnwoundFrames(stack, frames, base, handler.frameDepth);
+            discardUnwoundFrames(stack, frames, base, handler.frameDepth);
             functionIndex = handler.functionIndex;
             base = handler.base;
             ip = clause.handlerIp;
@@ -2157,7 +2157,7 @@ package(quickbite.backends.bytecode) RunResult run(
     }
 }
 
-private void writeBackUnwoundFrames(
+private void discardUnwoundFrames(
     ubyte[] stack,
     ref Frame[] frames,
     size_t base,
