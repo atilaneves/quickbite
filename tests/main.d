@@ -49,5 +49,6 @@ int main(string[] args) {
         "ut.backends.native.llvm_jit",
         "ut.backends.native.inline_asm",
         "ut.backends.ffi.dependency_image",
+        "ut.ffi.ffi",
     );
 }
