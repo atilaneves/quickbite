@@ -518,18 +518,6 @@ reaches them:
   its pointer-width context word. Dynamic delegate calls copy that word into
   the callee's hidden `this` slot, the same receiver ABI used by direct and
   statically resolved delegate calls.
-- The static-delegate-registry hack (`_staticDelegateAssocArrays`,
-  `tryStaticDelegateAssocArrayAssign`, `tryStaticDelegateAssocArrayCall`,
-  `staticDelegateAssocArrayDeclaration`, `compiler.d`) exists to pass one
-  `cerealed.d` row (`classSerialisationReadsStaticChildRegistry`,
-  `Writer.childWriters`, a `Taarray`-of-delegate static struct field). It
-  matches any module/static `Taarray`-of-delegate declaration, ignores the key
-  (one global slot per declaration, last-write-wins), and falls back to a
-  cross-call-site global (`_latestStaticDelegateAssocArrayFunction`). The
-  general delegate-AA path is confirmed NOT yet a superset of it -- forcing
-  both entry points to decline still fails that row -- so do not remove or
-  narrow it without a real fix backing it, and note that any change to how a
-  delegate-typed store resolves can starve that fallback and break the row.
 - A `throw`'s exception-chaining (`.next`) only threads through
   `_pendingFinallyExceptionMessageOffset` on the `emitThrowString` (string
   `new Exception(...)`) path. An object throw (`throw e;`, or any non-string-
