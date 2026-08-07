@@ -370,7 +370,13 @@ private bool sameBaseType(
         // agnostic, so the same byte copy below is correct either way.
         if (rhsArray.next.toBasetype.ty == TY.Tvoid)
             return true;
-        return mutableOf(lhsArray.next).equals(mutableOf(rhsArray.next));
+        // Compare the element layouts recursively. For a nested dynamic
+        // array, qualifying the inner slice header (`int[]` ->
+        // `const(int[])`) does not qualify its `int` elements and does not
+        // change either header's representation. A one-level `mutableOf`
+        // comparison retains that inner wrapper qualifier and rejects the
+        // ordinary implicit conversion `int[][]` -> `const(int[])[]`.
+        return sameBaseType(lhsArray.next, rhsArray.next);
     }
 
     return mutableOf(lhs.toBasetype).equals(mutableOf(rhs.toBasetype));

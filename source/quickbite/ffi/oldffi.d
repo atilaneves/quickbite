@@ -3,10 +3,41 @@ module quickbite.ffi.oldffi;
 private:
 
 
+public enum CompilerAbi {
+    dmd,
+    ldc,
+}
+
+public struct DependencyImage {
+    string path;
+    CompilerAbi compilerAbi;
+}
+
+version (LDC)
+    private enum CompilerAbi hostCompilerAbi = CompilerAbi.ldc;
+else
+    private enum CompilerAbi hostCompilerAbi = CompilerAbi.dmd;
+
+private CompilerAbi[string] _dependencyImageAbis;
+private CompilerAbi[const(void)*] _closureAbis;
+
+
 public void loadDependencyImages(in string[] dependencyImages) {
     foreach (dependencyImage; dependencyImages) {
         verifyDependencyImage(dependencyImage);
-        loadDependencyImage(dependencyImage);
+        loadDependencyImage(
+            dependencyImage,
+            compilerAbiFromImage(dependencyImage),
+        );
+    }
+}
+
+public void loadDependencyImages(
+    in DependencyImage[] dependencyImages,
+) {
+    foreach (dependencyImage; dependencyImages) {
+        verifyDependencyImage(dependencyImage.path);
+        loadDependencyImage(dependencyImage.path, dependencyImage.compilerAbi);
     }
 }
 
@@ -23,6 +54,80 @@ private void verifyDependencyImage(in string dependencyImage) {
             "dependency image must be a loadable shared library (.so): "
             ~ dependencyImage,
         );
+}
+
+private CompilerAbi compilerAbiFromImage(in string dependencyImage) {
+    import std.algorithm.searching: canFind;
+    import std.file: read;
+
+    const bytes = cast(const(ubyte)[]) dependencyImage.read;
+    const comment = elfCommentSection(bytes);
+    const saysDmd = comment.canFind(cast(const(ubyte)[]) "DMD v");
+    const saysLdc = comment.canFind(cast(const(ubyte)[]) "ldc version ");
+    if (saysDmd == saysLdc)
+        throw new Exception(
+            "dependency image compiler ABI is ambiguous; supply explicit "
+            ~ "compiler provenance: " ~ dependencyImage,
+        );
+    return saysDmd ? CompilerAbi.dmd : CompilerAbi.ldc;
+}
+
+private const(ubyte)[] elfCommentSection(in ubyte[] bytes) {
+    import std.algorithm.searching: countUntil;
+
+    if (bytes.length < 64 || bytes[0 .. 4] != [0x7f, 'E', 'L', 'F'])
+        throw new Exception("dependency image is not a supported ELF image");
+    if (bytes[4] != 2 || bytes[5] != 1)
+        throw new Exception("dependency image is not little-endian ELF64");
+
+    const sectionOffset = readElfWord!ulong(bytes, 40);
+    const sectionEntrySize = readElfWord!ushort(bytes, 58);
+    const sectionCount = readElfWord!ushort(bytes, 60);
+    const namesIndex = readElfWord!ushort(bytes, 62);
+    if (sectionEntrySize < 64 || namesIndex >= sectionCount)
+        throw new Exception("dependency image has an invalid ELF section table");
+
+    const namesHeader = sectionOffset + namesIndex * sectionEntrySize;
+    const namesOffset = readElfWord!ulong(bytes, namesHeader + 24);
+    const namesSize = readElfWord!ulong(bytes, namesHeader + 32);
+    const names = checkedElfSlice(bytes, namesOffset, namesSize);
+
+    foreach (index; 0 .. sectionCount) {
+        const header = sectionOffset + index * sectionEntrySize;
+        const nameOffset = readElfWord!uint(bytes, header);
+        if (nameOffset >= names.length)
+            throw new Exception("dependency image has an invalid ELF section name");
+        const nameTail = names[nameOffset .. $];
+        const nameLength = nameTail.countUntil(0);
+        if (nameLength < 0)
+            throw new Exception("dependency image has an unterminated ELF section name");
+        const name = cast(const(char)[]) nameTail[0 .. nameLength];
+        if (name == ".comment") {
+            const offset = readElfWord!ulong(bytes, header + 24);
+            const size = readElfWord!ulong(bytes, header + 32);
+            return checkedElfSlice(bytes, offset, size);
+        }
+    }
+    throw new Exception("dependency image has no compiler metadata");
+}
+
+private T readElfWord(T)(in ubyte[] bytes, in size_t offset) {
+    if (offset > bytes.length || T.sizeof > bytes.length - offset)
+        throw new Exception("dependency image has a truncated ELF section table");
+    T result;
+    foreach (index; 0 .. T.sizeof)
+        result |= cast(T) bytes[offset + index] << (index * 8);
+    return result;
+}
+
+private const(ubyte)[] checkedElfSlice(
+    in ubyte[] bytes,
+    in size_t offset,
+    in size_t length,
+) {
+    if (offset > bytes.length || length > bytes.length - offset)
+        throw new Exception("dependency image has a truncated ELF section");
+    return bytes[offset .. offset + length];
 }
 
 // Returns a diagnostic naming an FFI-uncrossable type in `function_`'s
@@ -244,8 +349,15 @@ public struct InboundTrampolineRegistry {
         ubyte[] buffer,
         imported!"dmd.mtype".Type delegateType,
         in size_t callbackId,
+        in CompilerAbi compilerAbi,
     ) {
-        setupDurableDelegateArgument(buffer, delegateType, callbackId, &this);
+        setupDurableDelegateArgument(
+            buffer,
+            delegateType,
+            callbackId,
+            compilerAbi,
+            &this,
+        );
     }
 
     // The owning backend session calls this after native code can no longer
@@ -254,6 +366,8 @@ public struct InboundTrampolineRegistry {
     public void close() {
         import quickbite.ffi.libffi: ffi_closure_free;
 
+        foreach (context; _contexts)
+            _closureAbis.remove(context.code);
         foreach (closure; _closures)
             ffi_closure_free(closure);
         _closures = null;
@@ -342,8 +456,8 @@ public bool callNativeMember(
 
 // Call a native delegate reified from a native return value (ffi.md §35.8):
 // the inverse of the §34.16 closure trampoline. The funcptr is invoked with
-// the context pointer leading and the extern(D) explicit arguments reversed;
-// there is no symbol resolution, the pair already names the code to run.
+// the context pointer leading and the extern(D) explicit arguments ordered for
+// the image containing its code; the pair already names the code to run.
 public bool callNativeDelegate(
     imported!"dmd.mtype".TypeFunction type,
     const void* funcptr,
@@ -362,6 +476,7 @@ public bool callNativeDelegate(
         LINK.d,
         type,
         funcptr,
+        compilerAbiFor(funcptr),
         NativeThis.fromRawContext(context),
         marshaller,
         argumentTypes,
@@ -437,6 +552,7 @@ private struct NativeCifCacheKey {
     private const(void)* function_;
     private bool hasReceiver;
     private RefReturnMode refReturnMode;
+    private CompilerAbi compilerAbi;
 }
 
 private struct CachedNativeCif {
@@ -492,6 +608,7 @@ private bool callNativeImpl(
         function_._linkage,
         type,
         symbol,
+        compilerAbiFor(symbol),
         receiver,
         marshaller,
         argumentTypes,
@@ -557,7 +674,10 @@ public const(void)* resolveDataSymbol(
     return dlsym(RTLD_DEFAULT, buf.peekChars);
 }
 
-private void loadDependencyImage(in string dependencyImage) {
+private void loadDependencyImage(
+    in string dependencyImage,
+    in CompilerAbi compilerAbi,
+) {
     import core.sys.posix.dlfcn: dlerror, dlopen, RTLD_GLOBAL, RTLD_NOW;
     import std.conv: text;
     import std.string: fromStringz, toStringz;
@@ -570,6 +690,11 @@ private void loadDependencyImage(in string dependencyImage) {
             err is null ? "" : text(" :: ", err.fromStringz),
         ));
     }
+
+    import std.path: absolutePath, buildNormalizedPath;
+
+    _dependencyImageAbis[dependencyImage.absolutePath.buildNormalizedPath] =
+        compilerAbi;
 }
 
 private bool isSupportedNativeLinkage(
@@ -590,6 +715,7 @@ private bool callViaLibffi(
     imported!"dmd.astenums".LINK linkage,
     imported!"dmd.mtype".TypeFunction type,
     const void* symbol,
+    in CompilerAbi compilerAbi,
     NativeThis receiver,
     NativeMarshaller marshaller,
     imported!"dmd.mtype".Type[] argumentTypes,
@@ -662,7 +788,12 @@ private bool callViaLibffi(
         abiArgumentFfiTypes[0] = &ffi_type_pointer;
     foreach (abiIndex; 0 .. nargs)
         abiArgumentFfiTypes[hiddenNargs + abiIndex] =
-            argumentFfiTypes[abiSourceIndex(linkage, nargs, abiIndex)];
+            argumentFfiTypes[abiSourceIndex(
+                linkage,
+                compilerAbi,
+                nargs,
+                abiIndex,
+            )];
 
     // strtol's `endptr` writes a pointer into its string argument's buffer, so
     // any string argument of a call with an out-pointer must outlive the call.
@@ -706,6 +837,7 @@ private bool callViaLibffi(
             function_,
             receiver,
             refReturnMode,
+            compilerAbi,
             returnFfi,
             argumentFfiTypes,
             abiArgumentFfiTypes,
@@ -782,8 +914,12 @@ private bool callViaLibffi(
     // CIF survive the call.
     void*[] closuresToFree;
     ClosureContext*[] closureContexts;
-    scope(exit) foreach (closure; closuresToFree)
-        ffi_closure_free(closure);
+    scope(exit) {
+        foreach (context; closureContexts)
+            _closureAbis.remove(context.code);
+        foreach (closure; closuresToFree)
+            ffi_closure_free(closure);
+    }
 
     foreach (index; 0 .. nargs) {
         const addressOfLocal =
@@ -816,6 +952,7 @@ private bool callViaLibffi(
                     argumentBuffers[index],
                     parameterTypes[index],
                     marshaller.durableInboundCallbackId(index),
+                    compilerAbi,
                 );
             } else {
                 // A scoped parameter cannot escape this native call, so retain
@@ -825,6 +962,7 @@ private bool callViaLibffi(
                     parameterTypes[index],
                     index,
                     marshaller,
+                    compilerAbi,
                     closuresToFree,
                     closureContexts,
                 );
@@ -869,7 +1007,12 @@ private bool callViaLibffi(
         abiArgumentValues[0] = receiverPointerBuffer.ptr;
     foreach (abiIndex; 0 .. nargs)
         abiArgumentValues[hiddenNargs + abiIndex] =
-            argumentValues[abiSourceIndex(linkage, nargs, abiIndex)];
+            argumentValues[abiSourceIndex(
+                linkage,
+                compilerAbi,
+                nargs,
+                abiIndex,
+            )];
 
     // The return buffer must be at least ffi_arg-wide (8 bytes) and aligned,
     // even for narrow returns. Size it from `preparedReturnFfi`, not the
@@ -944,6 +1087,7 @@ private CachedNativeCif* cachedNativeCif(
     imported!"dmd.func".FuncDeclaration function_,
     NativeThis receiver,
     in RefReturnMode refReturnMode,
+    in CompilerAbi compilerAbi,
     imported!"quickbite.ffi.libffi".ffi_type* returnFfi,
     imported!"quickbite.ffi.libffi".ffi_type*[] argumentFfiTypes,
     imported!"quickbite.ffi.libffi".ffi_type*[] abiArgumentFfiTypes,
@@ -954,6 +1098,7 @@ private CachedNativeCif* cachedNativeCif(
         cast(const(void)*) function_,
         receiver.enabled,
         refReturnMode,
+        compilerAbi,
     );
     if (auto existing = key in _nativeCifCache)
         return *existing;
@@ -1053,12 +1198,35 @@ private NativeCallException nativeCallExceptionFrom(Throwable throwable) {
 
 private size_t abiSourceIndex(
     imported!"dmd.astenums".LINK linkage,
+    in CompilerAbi compilerAbi,
     in size_t argumentCount,
     in size_t abiIndex,
 ) @safe @nogc nothrow pure {
     import dmd.astenums: LINK;
 
-    return linkage == LINK.d ? argumentCount - abiIndex - 1 : abiIndex;
+    return linkage == LINK.d && compilerAbi == CompilerAbi.dmd
+        ? argumentCount - abiIndex - 1
+        : abiIndex;
+}
+
+private CompilerAbi compilerAbiFor(in void* symbol) {
+    import core.sys.posix.dlfcn: dladdr, Dl_info;
+    import std.path: absolutePath, buildNormalizedPath;
+    import std.string: fromStringz;
+
+    if (auto compilerAbi = cast(const(void)*) symbol in _closureAbis)
+        return *compilerAbi;
+
+    Dl_info info;
+    if (dladdr(symbol, &info) == 0 || info.dli_fname is null)
+        return hostCompilerAbi;
+
+    const imagePath = info.dli_fname.fromStringz.idup
+        .absolutePath
+        .buildNormalizedPath;
+    if (auto compilerAbi = imagePath in _dependencyImageAbis)
+        return *compilerAbi;
+    return hostCompilerAbi;
 }
 
 // The reverse-bridge routing behind one libffi closure (ffi.md §34.16): which
@@ -1072,6 +1240,8 @@ private struct ClosureContext {
     imported!"dmd.mtype".Type returnType;
     imported!"dmd.mtype".Type[] parameterTypes;   // source order
     size_t returnSize;
+    CompilerAbi compilerAbi;
+    const(void)* code;
     imported!"quickbite.ffi.libffi".ffi_cif* cif;
     imported!"quickbite.ffi.libffi".ffi_type*[] argumentFfiTypes;
 }
@@ -1085,6 +1255,8 @@ private struct DurableClosureContext {
     imported!"dmd.mtype".Type returnType;
     imported!"dmd.mtype".Type[] parameterTypes;
     size_t returnSize;
+    CompilerAbi compilerAbi;
+    const(void)* code;
     imported!"quickbite.ffi.libffi".ffi_cif* cif;
     imported!"quickbite.ffi.libffi".ffi_type*[] argumentFfiTypes;
 }
@@ -1110,14 +1282,14 @@ private bool isScopedDelegateParameter(
 
 // Prepare a libffi closure for an interpreted delegate argument and write the
 // resulting {context, funcptr} delegate into `buffer`. Native code invokes the
-// funcptr as `Ret(context, reverse(explicit args))` — the extern(D) delegate
-// convention confirmed by disassembly — so the trampoline CIF leads with the
-// context pointer and the explicit parameter types follow in reverse order.
+// funcptr with the context pointer first and its compiler's extern(D) explicit
+// argument order, so the trampoline CIF must retain the caller's compiler ABI.
 private void setupDelegateArgument(
     ubyte[] buffer,
     imported!"dmd.mtype".Type delegateType,
     in size_t argumentIndex,
     NativeMarshaller marshaller,
+    in CompilerAbi compilerAbi,
     ref void*[] closuresToFree,
     ref ClosureContext*[] closureContexts,
 ) {
@@ -1144,7 +1316,12 @@ private void setupDelegateArgument(
     argumentFfiTypes[0] = &ffi_type_pointer;
     foreach (abiIndex; 0 .. np)
         argumentFfiTypes[1 + abiIndex] =
-            ffiArgumentTypeFor(parameterTypes[abiSourceIndex(LINK.d, np, abiIndex)]);
+            ffiArgumentTypeFor(parameterTypes[abiSourceIndex(
+                LINK.d,
+                compilerAbi,
+                np,
+                abiIndex,
+            )]);
 
     auto cif = new ffi_cif;
     ffi_prep_cif(
@@ -1161,6 +1338,7 @@ private void setupDelegateArgument(
     context.returnType = returnType;
     context.parameterTypes = parameterTypes;
     context.returnSize = returnFfi.size < 8 ? 8 : returnFfi.size;
+    context.compilerAbi = compilerAbi;
     context.cif = cif;
     context.argumentFfiTypes = argumentFfiTypes;
     closureContexts ~= context;
@@ -1174,6 +1352,8 @@ private void setupDelegateArgument(
         cast(void*) context,
         code,
     );
+    context.code = code;
+    _closureAbis[code] = compilerAbi;
     closuresToFree ~= writable;
 
     // The D delegate: context at offset 0, funcptr at offset 8.
@@ -1185,6 +1365,7 @@ private void setupDurableDelegateArgument(
     ubyte[] buffer,
     imported!"dmd.mtype".Type delegateType,
     in size_t callbackId,
+    in CompilerAbi compilerAbi,
     InboundTrampolineRegistry* registry,
 ) {
     import quickbite.ffi.libffi:
@@ -1208,7 +1389,12 @@ private void setupDurableDelegateArgument(
     argumentFfiTypes[0] = &ffi_type_pointer;
     foreach (abiIndex; 0 .. np)
         argumentFfiTypes[1 + abiIndex] =
-            ffiArgumentTypeFor(parameterTypes[abiSourceIndex(LINK.d, np, abiIndex)]);
+            ffiArgumentTypeFor(parameterTypes[abiSourceIndex(
+                LINK.d,
+                compilerAbi,
+                np,
+                abiIndex,
+            )]);
 
     auto cif = new ffi_cif;
     ffi_prep_cif(cif, FFI_DEFAULT_ABI, cast(uint) (1 + np), returnFfi,
@@ -1220,6 +1406,7 @@ private void setupDurableDelegateArgument(
     context.returnType = returnType;
     context.parameterTypes = parameterTypes;
     context.returnSize = returnFfi.size < 8 ? 8 : returnFfi.size;
+    context.compilerAbi = compilerAbi;
     context.cif = cif;
     context.argumentFfiTypes = argumentFfiTypes;
     registry._contexts ~= context;
@@ -1228,6 +1415,8 @@ private void setupDurableDelegateArgument(
     auto writable = ffi_closure_alloc(ffi_closure.sizeof, &code);
     ffi_prep_closure_loc(cast(ffi_closure*) writable, cif,
         &durableClosureTrampoline, cast(void*) context, code);
+    context.code = code;
+    _closureAbis[code] = compilerAbi;
     registry._closures ~= writable;
 
     *cast(void**) buffer.ptr = cast(void*) context;
@@ -1236,8 +1425,8 @@ private void setupDurableDelegateArgument(
 
 // Invoked by native code through the libffi closure. `args[0]` is the delegate
 // context (ignored — the backend resolves the closure by argument index);
-// `args[1 ..]` are the explicit arguments in ABI (reversed) order, restored to
-// source order before the backend materializes them.
+// `args[1 ..]` are the explicit arguments in the caller's compiler ABI order,
+// restored to source order before the backend materializes them.
 private extern(C) void closureTrampoline(
     imported!"quickbite.ffi.libffi".ffi_cif* cif,
     void* ret,
@@ -1250,7 +1439,12 @@ private extern(C) void closureTrampoline(
     const np = context.parameterTypes.length;
     auto sourceArguments = new void*[](np);
     foreach (abiIndex; 0 .. np)
-        sourceArguments[abiSourceIndex(LINK.d, np, abiIndex)] =
+        sourceArguments[abiSourceIndex(
+            LINK.d,
+            context.compilerAbi,
+            np,
+            abiIndex,
+        )] =
             args[1 + abiIndex];
 
     context.marshaller.invokeClosure(
@@ -1274,7 +1468,12 @@ private extern(C) void durableClosureTrampoline(
     const np = context.parameterTypes.length;
     auto sourceArguments = new void*[](np);
     foreach (abiIndex; 0 .. np)
-        sourceArguments[abiSourceIndex(LINK.d, np, abiIndex)] = args[1 + abiIndex];
+        sourceArguments[abiSourceIndex(
+            LINK.d,
+            context.compilerAbi,
+            np,
+            abiIndex,
+        )] = args[1 + abiIndex];
     context.registry._invoke(
         context.callbackId,
         context.returnType,

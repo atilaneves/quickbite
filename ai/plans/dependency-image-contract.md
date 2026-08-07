@@ -75,6 +75,9 @@ it. That identity participates in preparation inputs, cache keys, backend
 loading decisions, and native symbol resolution. A resolved D callable is an
 address plus the defining image's ABI provenance; loading it into a DMD- or
 LDC-built host does not change that provenance. `LINK.d` alone is not enough.
+The legacy path-only loader derives that identity from the compiler-authored
+ELF `.comment` section and rejects missing or ambiguous metadata; callers that
+already carry provenance supply it explicitly per image.
 
 Boundary argument ordering cannot make an otherwise incompatible D image safe
 inside a host with a different druntime ABI. An in-process backend may load D

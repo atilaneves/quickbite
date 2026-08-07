@@ -123,16 +123,17 @@ calls migrate to the new typed-address contract and
 Pointer slicing is ordinary D semantics and stays in this plan. Constructing
 `ptr[lower .. upper]` creates a view at the adjusted address and length; it
 must not eagerly read, unmarshal, or reconstruct the pointed-to elements.
+It rejects `lower > upper` before address arithmetic, while deliberately not
+checking whether the resulting view lies inside an allocation, matching
+compiled D.
 
 ### 4.1 Immediate work order
 
 1. Make native calls in the default LDC host obey the actual callable's ABI.
-2. Make pointer slicing construct a native-backed view without reading its
-   elements.
-3. Re-run the full Cerealed suite and classify the first remaining mismatch.
-4. Distil each newly exposed class into a standalone, package-independent D
+2. Re-run the full Cerealed suite and classify the first remaining mismatch.
+3. Distil each newly exposed class into a standalone, package-independent D
    behavior, then implement that behavior against `SystemLinker`.
-5. Repeat until the default command reports every Cerealed unittest passing.
+4. Repeat until the default command reports every Cerealed unittest passing.
 
 ### 4.2 Unittest execution is not REPL evaluation
 

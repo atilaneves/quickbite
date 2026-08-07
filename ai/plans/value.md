@@ -247,6 +247,15 @@ deletion (items 2-3).
     handles are separate non-data categories. Boxed values survive only as
     transient rvalues (decisions 7/11), never as storage authority.
 
+    A symbolic `TypeInfo` for an interpreted-only guest type, an interpreted
+    delegate, or an interpreted function pointer has no resident native
+    callable/object address, so its null ABI slot is accompanied by
+    interpreter-owned metadata keyed by that slot's real address. Typed value
+    copies preserve every metadata entry in the copied byte range without
+    consuming the source. A write clears every entry whose slot overlaps the
+    written bytes before registering the new value; this applies equally to
+    union members and aggregates containing several metadata kinds.
+
     Rationale: simplicity motivates the design. Boxing earns its keep
     only where the frontend cannot type values (Lox, Python — the
     runtime tag is the type system) or where evaluation must be
@@ -476,8 +485,10 @@ checked fact; do not relearn them.
 - Native class references carry only their body address. VM-owned allocations
   retain their storage in an ownership table; borrowed native exceptions keep
   their hydrated `Throwable` metadata in a separate table keyed by object
-  address. A catch's static view may replace exception metadata, but never an
-  ordinary class allocation root.
+  address. A temporary boxed view of a borrowed native class retains its host
+  pointer in interpreter-owned capability metadata keyed by the view's object
+  identity; guest fields are never host metadata. A catch's static view may
+  replace exception metadata, but never an ordinary class allocation root.
 - A field slice borrows bytes composed from its receiver place; an aggregate
   expression snapshot is never the backing storage for an lvalue-derived view.
 - `RuntimeValue.NativeAggregate` owns or borrows DMD-layout bytes for a
@@ -676,12 +687,10 @@ native slice header, including its retained backing address, rather than a
 transient aggregate handle. This is slice execution, not a formatter-specific
 storage shim; the interceptor remains temporary per item 1.
 
-An associative-array binding has no native-place encoding yet. Preserve the
-boxed reference path until it does: passing a direct local `int[int]` by `ref`
-and inserting through the parameter must mutate the caller, as `SystemLinker`
-does. The Interpreter currently routes the parameter read into native storage
-and fails with `Expected associative array`; adding an address for the binding
-must not bypass the boxed authority before an AA place exists.
+An associative-array `ref` parameter reads the caller's typed handle place,
+just like other native-layout reference values. Autovivifying a null handle
+writes that handle through the referenced binding before inserting, so the
+caller retains both the allocation and later mutations.
 
 An associative array's dynamic-array-typed VALUE (e.g. `int[][int]`) writes
 through `native_call_adapter.marshalNative`'s legacy boxed `marshalArgument`

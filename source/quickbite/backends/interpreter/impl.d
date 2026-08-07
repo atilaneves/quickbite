@@ -28,6 +28,14 @@ public class Interpreter: imported!"quickbite.backends".TreeNodeBackend {
         loadDependencyImages(dependencyImages);
     }
 
+    public this(
+        const imported!"quickbite.ffi.oldffi".DependencyImage[] dependencyImages,
+    ) {
+        import quickbite.ffi.oldffi: loadDependencyImages;
+
+        loadDependencyImages(dependencyImages);
+    }
+
     public override bool supportsReplPreludeFormatter() const
     @safe @nogc nothrow pure {
         return true;
@@ -216,10 +224,6 @@ private enum LoopControl {
     continue_,
 }
 
-private enum nativeExceptionObjectPointerField =
-    "__quickbiteNativeThrowableObjectPointer";
-
-
 // The evaluated indices within one `ref`/`out` call argument.  The ordinary
 // expression walk records them as it evaluates the argument; binding the
 // callee's reference slot later composes its address from those exact results
@@ -317,6 +321,12 @@ private struct Walker {
     // pointer; no boxed pointer carrier is ever written into guest bytes.
     private Value[const(void)*] nativeFunctionPointerSlots;
 
+    // TypeInfo values for interpreted-only guest types have no resident host
+    // object address. Their class-reference slots keep null ABI bytes while
+    // this table retains the symbolic singleton keyed by the real slot
+    // address, matching interpreted delegates and function pointers.
+    private Value[void*] nativeTypeInfoSlots;
+
     private Value[VarDeclaration] locals;
 
     // Non-null only while `runRefArgumentExpression` is walking one call
@@ -392,6 +402,10 @@ private struct Walker {
     // Keep its boxed field description separate from ordinary class ownership
     // so hydrating a catch's static view cannot replace an allocation root.
     private Value[void*] nativeExceptionMetadata;
+    // A boxed view of a borrowed native class retains its opaque host object
+    // pointer as interpreter metadata keyed by the view's ordinary object
+    // identity. Guest fields remain exclusively guest data.
+    private void*[size_t] borrowedNativeClassPointers;
     // Interpreted delegates have no guest ABI function pointer. Native
     // delegate slots retain their callable Value out-of-band while their
     // ordinary `{context, function}` guest bytes remain ABI-shaped.
@@ -864,10 +878,32 @@ private struct Walker {
 
         if (
             variable.type.toBasetype.isTypeClass !is null &&
+            value.isTypeName
+        ) {
+            writeStoredValue(bindingPlace(variable), value);
+            mirrorEstablished[variable] = true;
+            return;
+        }
+
+        if (
+            variable.type.toBasetype.isTypeClass !is null &&
             value == Value.null_
         ) {
-            mirrorEstablished[variable] = hasMirrorSlot(variable)
-                && mirrorClassToFrame(variable, value);
+            writeStoredValue(bindingPlace(variable), value);
+            mirrorEstablished[variable] = true;
+            return;
+        }
+
+        if (
+            variable.type.toBasetype.isTypeClass !is null &&
+            value.isPointer
+        ) {
+            // A by-value class parameter owns a reference slot, not a copy of
+            // the object body. Keep that slot authoritative so taking the
+            // parameter by `ref` forwards the same live reference rather than
+            // the frame's initial null bytes.
+            writeValue(bindingPlace(variable), value);
+            mirrorEstablished[variable] = true;
             return;
         }
 
@@ -893,87 +929,239 @@ private struct Walker {
             return;
         }
 
-        // A native aggregate rvalue's own bytes may still be the temporary
-        // storage `structLiteralValue`/`AggregateValue` allocated to build
-        // it; `writeValue`'s native-aggregate arm below only copies bytes,
-        // so any Tdelegate-typed (sub)field's live `nativeDelegateSlots`
-        // registration, keyed by that temporary address, would otherwise be
-        // orphaned once `variable`'s own binding address takes over as the
-        // durable location.
-        if (value.isNativeAggregate)
-            relocateDelegateSlots(
-                variable.type,
-                AggregateValue.native(value).address,
-                bindingPlace(variable).address,
-            );
-
-        writeValue(bindingPlace(variable), value);
+        writeStoredValue(bindingPlace(variable), value, true);
         mirrorEstablished[variable] = true;
     }
 
-    // Moves any `nativeDelegateSlots` entry for a Tdelegate-typed (sub)field
-    // or STATIC-array element of `type` from `oldAddress` to `newAddress`,
-    // recursing through non-union struct fields and static-array elements
-    // the same way `place_value.writeValue`'s own struct/static-array arms
-    // compose a field-by-field or element-by-element copy -- the
-    // out-of-band counterpart to that byte copy for the one part of the
-    // bytes a plain `memcpy` cannot carry (`nativeDelegateSlots`'s own
-    // field comment: an interpreted delegate has no native ABI function
-    // address). A no-op when the two addresses already coincide, or when
-    // no entry is registered at a given field/element address (an ordinary
-    // null/uninitialized delegate, whose bytes copy correctly on their
-    // own).
-    //
-    // Deliberately NOT extended to a dynamic array (`Tarray`): rebinding a
-    // slice only copies its two-word `{length, ptr}` HEADER to a new
-    // address -- the element bytes `ptr` refers to never move -- so a
-    // dynamic-array element's `nativeDelegateSlots` key (always the
-    // element's own DATA address, from `AggregateValue.elementAddress`,
-    // never the header's address) stays valid without relocation. Reading
-    // `newAddress`'s header to recompute element addresses would also be
-    // wrong here regardless, since this call always runs BEFORE the header
-    // copy that gives `newAddress` its live `{length, ptr}` bytes.
-    private void relocateDelegateSlots(
+    // Out-of-band callable and symbolic-reference entries are part of the
+    // value stored in their native byte range. Copy them by byte offset so
+    // unions, nested aggregates, and mixed metadata fields obey the same
+    // value-copy semantics as the native bytes. Snapshot first because source
+    // and destination ranges may overlap. Callers that replace temporary or
+    // reallocated storage may consume its entries after the copy; ordinary D
+    // value copies retain them at the source.
+    private void copyStoredMetadata(
         imported!"dmd.mtype".Type type,
         void* oldAddress,
         void* newAddress,
+        in bool consumeSource = false,
     ) {
-        import dmd.astenums: TY;
-        import quickbite.backends.interpreter.layout:
-            structFields, declaredType, staticArrayLength;
-        import quickbite.backends.interpreter.place: Place;
+        import quickbite.backends.interpreter.layout: typeByteSize;
 
         if (oldAddress is newAddress)
             return;
 
-        auto base = type.toBasetype;
-        if (base.ty == TY.Tdelegate) {
-            if (auto delegate_ = oldAddress in nativeDelegateSlots) {
-                nativeDelegateSlots[newAddress] = *delegate_;
-                nativeDelegateSlots.remove(oldAddress);
+        const byteLength = typeByteSize(type);
+        const oldStart = cast(size_t) oldAddress;
+        const oldEnd = oldStart + byteLength;
+
+        size_t[] delegateOffsets;
+        Value[] delegateValues;
+        foreach (address, value; nativeDelegateSlots)
+            if (cast(size_t) address >= oldStart && cast(size_t) address < oldEnd) {
+                delegateOffsets ~= cast(size_t) address - oldStart;
+                delegateValues ~= value;
             }
+
+        size_t[] functionOffsets;
+        Value[] functionValues;
+        foreach (address, value; nativeFunctionPointerSlots)
+            if (cast(size_t) address >= oldStart && cast(size_t) address < oldEnd) {
+                functionOffsets ~= cast(size_t) address - oldStart;
+                functionValues ~= value;
+            }
+
+        size_t[] typeInfoOffsets;
+        Value[] typeInfoValues;
+        foreach (address, value; nativeTypeInfoSlots)
+            if (cast(size_t) address >= oldStart && cast(size_t) address < oldEnd) {
+                typeInfoOffsets ~= cast(size_t) address - oldStart;
+                typeInfoValues ~= value;
+            }
+
+        clearStoredMetadata(type, newAddress);
+
+        foreach (index, offset; delegateOffsets)
+            nativeDelegateSlots[cast(void*) (cast(ubyte*) newAddress + offset)] =
+                delegateValues[index];
+        foreach (index, offset; functionOffsets)
+            nativeFunctionPointerSlots[
+                cast(const(void)*) (cast(ubyte*) newAddress + offset)
+            ] = functionValues[index];
+        foreach (index, offset; typeInfoOffsets)
+            nativeTypeInfoSlots[cast(void*) (cast(ubyte*) newAddress + offset)] =
+                typeInfoValues[index];
+
+        if (
+            consumeSource &&
+            !rangesOverlap(
+                oldStart,
+                byteLength,
+                cast(size_t) newAddress,
+                byteLength,
+            )
+        )
+            clearStoredMetadata(type, oldAddress);
+    }
+
+    // Any write invalidates every symbolic entry whose slot overlaps the
+    // overwritten bytes. This is especially important for unions: writing a
+    // non-symbolic sibling still overwrites the active symbolic member.
+    private void clearStoredMetadata(
+        imported!"dmd.mtype".Type type,
+        void* address,
+    ) {
+        import quickbite.backends.interpreter.layout: typeByteSize;
+
+        const start = cast(size_t) address;
+        const end = start + typeByteSize(type);
+
+        const(void)*[] delegateAddresses;
+        foreach (slot; nativeDelegateSlots.byKeyValue)
+            if (rangesOverlap(
+                cast(size_t) slot.key,
+                2 * (void*).sizeof,
+                start,
+                end - start,
+            ))
+                delegateAddresses ~= slot.key;
+        foreach (slot; delegateAddresses)
+            nativeDelegateSlots.remove(cast(void*) slot);
+
+        const(void)*[] functionAddresses;
+        foreach (slot; nativeFunctionPointerSlots.byKeyValue)
+            if (rangesOverlap(
+                cast(size_t) slot.key,
+                (void*).sizeof,
+                start,
+                end - start,
+            ))
+                functionAddresses ~= slot.key;
+        foreach (slot; functionAddresses)
+            nativeFunctionPointerSlots.remove(slot);
+
+        const(void)*[] typeInfoAddresses;
+        foreach (slot; nativeTypeInfoSlots.byKeyValue)
+            if (rangesOverlap(
+                cast(size_t) slot.key,
+                (void*).sizeof,
+                start,
+                end - start,
+            ))
+                typeInfoAddresses ~= slot.key;
+        foreach (slot; typeInfoAddresses)
+            nativeTypeInfoSlots.remove(cast(void*) slot);
+    }
+
+    private static bool rangesOverlap(
+        in size_t firstStart,
+        in size_t firstLength,
+        in size_t secondStart,
+        in size_t secondLength,
+    ) @safe @nogc nothrow pure {
+        return firstStart < secondStart + secondLength &&
+            secondStart < firstStart + firstLength;
+    }
+
+    // Writes one typed place and keeps its out-of-band symbolic TypeInfo
+    // identity under the same value-copy rules as the place's native bytes.
+    private void writeStoredValue(
+        imported!"quickbite.backends.interpreter.place".Place place,
+        in Value value,
+        in bool consumeMetadata = false,
+    ) {
+        import quickbite.backends.interpreter.aggregate_value: AggregateValue;
+        import quickbite.backends.interpreter.place_value: writeValue;
+
+        import dmd.astenums: TY;
+
+        if (place.type.toBasetype.isTypeClass !is null && value.isTypeName) {
+            clearStoredMetadata(place.type, place.address);
+            nativeTypeInfoSlots[place.address] = value;
+            writeValue(place, Value.null_);
             return;
         }
 
-        auto structType = base.isTypeStruct;
-        if (structType !is null && structType.sym.isUnionDeclaration is null) {
-            foreach (field; structFields(structType))
-                relocateDelegateSlots(
-                    declaredType(field),
-                    Place(oldAddress, type).field(field).address,
-                    Place(newAddress, type).field(field).address,
-                );
+        if (place.type.toBasetype.ty == TY.Tdelegate && value != Value.null_) {
+            clearStoredMetadata(place.type, place.address);
+            nativeDelegateSlots[place.address] = value;
+            writeValue(place, Value.null_);
             return;
         }
 
-        auto staticArray = base.isTypeSArray;
-        if (staticArray !is null)
-            foreach (i; 0 .. staticArrayLength(staticArray))
-                relocateDelegateSlots(
-                    staticArray.next,
-                    Place(oldAddress, type).index(i).address,
-                    Place(newAddress, type).index(i).address,
-                );
+        auto pointerType = place.type.toBasetype.isTypePointer;
+        if (
+            pointerType !is null &&
+            pointerType.nextOf.toBasetype.isTypeFunction !is null &&
+            value.isFunctionPointer
+        ) {
+            clearStoredMetadata(place.type, place.address);
+            nativeFunctionPointerSlots[place.address] = value;
+            place.storeReference(null);
+            return;
+        }
+
+        if (value.isNativeAggregate)
+            copyStoredMetadata(
+                place.type,
+                AggregateValue.native(value).address,
+                place.address,
+                consumeMetadata,
+            );
+        else
+            clearStoredMetadata(place.type, place.address);
+
+        writeValue(place, value);
+    }
+
+    // A by-value load materializes fresh aggregate storage. Copy the symbolic
+    // slot identity into that value while retaining it at the source place.
+    private Value readStoredValue(
+        imported!"quickbite.backends.interpreter.place".Place place,
+    ) {
+        import quickbite.backends.interpreter.aggregate_value: AggregateValue;
+        import quickbite.backends.interpreter.place_value: readValue;
+
+        if (place.type.toBasetype.isTypeClass !is null)
+            if (auto typeInfo = place.address in nativeTypeInfoSlots)
+                return *typeInfo;
+
+        const value = readValue(place);
+        if (value.isNativeAggregate)
+            copyStoredMetadata(
+                place.type,
+                place.address,
+                AggregateValue.native(value).address,
+            );
+        return value;
+    }
+
+    private Value withStoredStructField(
+        in Value receiver,
+        imported!"dmd.mtype".Type receiverType,
+        in size_t fieldIndex,
+        in Value fieldValue,
+    ) {
+        import quickbite.backends.interpreter.aggregate_value: AggregateValue;
+        import quickbite.backends.interpreter.layout: structFields;
+        import quickbite.backends.interpreter.place: Place;
+
+        auto field = structFields(receiverType.toBasetype.isTypeStruct)[fieldIndex];
+        const symbolicTypeInfo = field.type.toBasetype.isTypeClass !is null &&
+            fieldValue.isTypeName;
+        auto result = AggregateValue.withStructField(
+            receiver,
+            fieldIndex,
+            symbolicTypeInfo ? Value.null_ : fieldValue,
+        );
+        auto source = AggregateValue.native(receiver);
+        auto destination = AggregateValue.native(result);
+        copyStoredMetadata(receiverType, source.address, destination.address);
+
+        auto fieldPlace = Place(destination.address, destination.type)
+            .field(field);
+        writeStoredValue(fieldPlace, fieldValue);
+        return result;
     }
 
     private Value nativeArrayBindingValue(VarDeclaration variable, in Value value) {
@@ -1022,14 +1210,14 @@ private struct Walker {
                 variable.type.toBasetype.isTypeClass !is null &&
                 value.isNativeAggregate
             ) {
-                writeValue(
+                writeStoredValue(
                     Place(*address, declaredType(variable)),
                     Value.pointerValue(
                         AggregateValue.nativeClassBodyAddress(value),
                     ),
                 );
             } else {
-                writeValue(Place(*address, declaredType(variable)), value);
+                writeStoredValue(Place(*address, declaredType(variable)), value);
             }
             clearUninitializedBindingAddress(*address);
             locals[variable] = value;
@@ -1051,7 +1239,7 @@ private struct Walker {
                 uninitializedLocals.remove(variable);
                 return;
             }
-            writeValue(
+            writeStoredValue(
                 Place(_activationFrame.bindingAddress(variable), declaredType(variable)),
                 value,
             );
@@ -1297,14 +1485,10 @@ private struct Walker {
         if (catch_.var is null)
             return;
 
-        if (AggregateValue.hasClassFieldNamed(object, nativeExceptionObjectPointerField)) {
+        if (auto pointer = borrowedNativeClassPointer(object)) {
             const hydrated = nativeExceptionCatchObject(catch_, object);
-            const pointer = AggregateValue.classFieldNamed(
-                hydrated,
-                nativeExceptionObjectPointerField,
-            ).pointerAddress;
-            nativeExceptionMetadata[cast(void*) pointer] = hydrated;
-            bindingPlace(catch_.var).storeReference(cast(void*) pointer);
+            nativeExceptionMetadata[*pointer] = hydrated;
+            bindingPlace(catch_.var).storeReference(*pointer);
             mirrorEstablished[catch_.var] = true;
         } else {
             setLocal(catch_.var, object);
@@ -1391,18 +1575,11 @@ private struct Walker {
                 );
         }
 
-        if (AggregateValue.hasClassFieldNamed(
-            object,
-            nativeExceptionObjectPointerField,
-        )) {
+        if (auto pointer = borrowedNativeClassPointer(object)) {
             // Throwable.next exposes another native reference before its
             // interpreted cast runs, so every captured link needs the same
             // host-only metadata lookup as the outer catch binding.
-            const pointer = AggregateValue.classFieldNamed(
-                object,
-                nativeExceptionObjectPointerField,
-            ).pointerAddress;
-            nativeExceptionMetadata[cast(void*) pointer] = object;
+            nativeExceptionMetadata[*pointer] = object;
         }
 
         return object;
@@ -1413,37 +1590,28 @@ private struct Walker {
         in string className,
         in const(void)* nativeObjectPointer = null,
     ) {
+        Value object;
         if (auto class_ = dynamicClassDeclarationByName(className)) {
-            return withNativeExceptionObjectPointer(
-                AggregateValue.withClassFieldNamed(
-                    classDefaultValue(class_),
-                    "msg",
-                    Value(message),
-                ),
-                nativeObjectPointer,
+            object = AggregateValue.withClassFieldNamed(
+                classDefaultValue(class_),
+                "msg",
+                Value(message),
             );
+        } else if (auto class_ = classDeclarationByQualifiedName(className)) {
+            // Fully-qualified name (e.g. a native throw's `classinfo.name`)
+            // may not be lexically visible from the current call frame but
+            // still be known to the frontend. Reusing the declaration gives
+            // the real base-class chain.
+            object = AggregateValue.withClassFieldNamed(
+                classDefaultValue(class_),
+                "msg",
+                Value(message),
+            );
+        } else {
+            object = nativeExceptionValue(message, className);
         }
 
-        // Fully-qualified name (e.g. a native throw's `classinfo.name`) may
-        // not be lexically visible from the current call frame but still be
-        // known to the frontend, since druntime/Phobos modules the source
-        // imports are semantically analysed by dmd-as-a-library. Reusing
-        // classDefaultValue/classTypeNames here (rather than the string
-        // heuristic below) gives the real base-class chain: correct
-        // Error-vs-Exception classification and intermediate bases, instead
-        // of `nativeExceptionRoot`'s name-prefix guess.
-        if (auto class_ = classDeclarationByQualifiedName(className)) {
-            return withNativeExceptionObjectPointer(
-                AggregateValue.withClassFieldNamed(
-                    classDefaultValue(class_),
-                    "msg",
-                    Value(message),
-                ),
-                nativeObjectPointer,
-            );
-        }
-
-        return nativeExceptionValue(message, className, nativeObjectPointer);
+        return withBorrowedNativeClassPointer(object, nativeObjectPointer);
     }
 
     // Build a native exception object with the full Throwable field layout so
@@ -1454,7 +1622,6 @@ private struct Walker {
     private Value nativeExceptionValue(
         in string message,
         in string className,
-        in const(void)* nativeObjectPointer,
     ) const {
         import quickbite.backends.interpreter.runtime_values: defaultValue;
         import quickbite.backends.interpreter.layout: classFields;
@@ -1462,12 +1629,12 @@ private struct Walker {
 
         auto class_ = ClassDeclaration.exception;
         if (class_ is null)
-            return withNativeExceptionObjectPointer(Value.classValue(
+            return Value.classValue(
                 className,
                 nativeExceptionTypeNames(className),
                 ["msg"],
                 [Value(message)],
-            ), nativeObjectPointer);
+            );
 
         string[] fieldNames;
         Value[] fields;
@@ -1476,18 +1643,15 @@ private struct Walker {
             fields ~= defaultValue(field.type);
         }
 
-        return withNativeExceptionObjectPointer(
-            AggregateValue.withClassFieldNamed(
-                Value.classValue(
-                    className,
-                    nativeExceptionTypeNames(className),
-                    fieldNames,
-                    fields,
-                ),
-                "msg",
-                Value(message),
+        return AggregateValue.withClassFieldNamed(
+            Value.classValue(
+                className,
+                nativeExceptionTypeNames(className),
+                fieldNames,
+                fields,
             ),
-            nativeObjectPointer,
+            "msg",
+            Value(message),
         );
     }
 
@@ -1495,7 +1659,7 @@ private struct Walker {
         imported!"dmd.statement".Catch catch_,
         in Value object,
     ) {
-        if (!AggregateValue.hasClassFieldNamed(object, nativeExceptionObjectPointerField))
+        if (borrowedNativeClassPointer(object) is null)
             return object;
 
         auto classType = catch_.type.toBasetype.isTypeClass;
@@ -1511,16 +1675,11 @@ private struct Walker {
     ) {
         import quickbite.backends.interpreter.layout: classFields;
 
-        if (!AggregateValue.hasClassFieldNamed(object, nativeExceptionObjectPointerField))
+        auto nativePointer = borrowedNativeClassPointer(object);
+        if (nativePointer is null)
             return object;
 
-        const pointerValue = AggregateValue.classFieldNamed(
-            object,
-            nativeExceptionObjectPointerField,
-        );
-        const pointer = pointerValue.isNativeAggregate
-            ? AggregateValue.nativeClassBodyAddress(pointerValue)
-            : pointerValue.pointerAddress;
+        const pointer = *nativePointer;
         string[] fieldNames;
         Value[] fields;
         foreach (field; classFields(class_)) {
@@ -1532,12 +1691,13 @@ private struct Walker {
                 : nativeClassFieldValue(field, pointer);
         }
 
-        return withNativeExceptionObjectPointer(Value.classValue(
+        return Value.classValue(
             AggregateValue.classTypeName(object),
             AggregateValue.classTypeNames(object),
             fieldNames,
             fields,
-        ), pointer);
+            AggregateValue.classIdentity(object),
+        );
     }
 
     // Delete this once class/object storage is fully native-layout backed.
@@ -1563,25 +1723,29 @@ private struct Walker {
         );
     }
 
-    private Value withNativeExceptionObjectPointer(
+    private Value withBorrowedNativeClassPointer(
         in Value object,
         in const(void)* nativeObjectPointer,
-    ) const {
+    ) {
         if (nativeObjectPointer is null)
             return object;
 
-        if (AggregateValue.hasClassFieldNamed(object, nativeExceptionObjectPointerField))
-            return AggregateValue.withClassFieldNamed(
-                object,
-                nativeExceptionObjectPointerField,
-                Value.pointerValue(cast(void*) nativeObjectPointer),
-            );
+        const existingIdentity = AggregateValue.classIdentity(object);
+        const identity = existingIdentity == 0
+            ? ++nextClassObjectId
+            : existingIdentity;
+        const identified = existingIdentity == 0
+            ? object.withClassIdentity(identity)
+            : object;
+        borrowedNativeClassPointers[identity] = cast(void*) nativeObjectPointer;
+        return identified;
+    }
 
-        return AggregateValue.withAppendedClassField(
-            object,
-            nativeExceptionObjectPointerField,
-            Value.pointerValue(cast(void*) nativeObjectPointer),
-        );
+    private void** borrowedNativeClassPointer(in Value object) {
+        if (!AggregateValue.isClass(object) || object.isNativeAggregate)
+            return null;
+        const identity = AggregateValue.classIdentity(object);
+        return identity == 0 ? null : identity in borrowedNativeClassPointers;
     }
 
     private Value chainExceptionObject(in Value thrown, in Value next) const {
@@ -1951,7 +2115,7 @@ private struct Walker {
             // (`defaultValue`).  `new S` of a struct with an array field passes
             // this literal as the field's initialiser.
             if (null_.type !is null && null_.type.toBasetype.ty == TY.Tarray)
-                return AggregateValue.reconstructArray(null_.type, []);
+                return reconstructStoredArray(null_.type, []);
 
             return Value.null_;
         }
@@ -2301,6 +2465,7 @@ private struct Walker {
                     referenceVariable.type.toBasetype.isTypeStruct !is null ||
                     referenceVariable.type.toBasetype.isTypeSArray !is null ||
                     referenceVariable.type.toBasetype.isTypeDArray !is null ||
+                    referenceVariable.type.toBasetype.isTypeAArray !is null ||
                     referenceVariable.type.toBasetype.isTypePointer !is null
                 )
             ) {
@@ -2308,7 +2473,7 @@ private struct Walker {
                 import quickbite.backends.interpreter.place_value: readValue;
                 import quickbite.backends.interpreter.layout: declaredType;
 
-                return readValue(Place(
+                return readStoredValue(Place(
                     _activationFrame.bindingAddress(referenceVariable),
                     declaredType(referenceVariable),
                 ));
@@ -2327,7 +2492,7 @@ private struct Walker {
                     return *delegate_;
                 if (auto function_ = *address in nativeFunctionPointerSlots)
                     return *function_;
-                return readValue(Place(*address, declaredType(variable)));
+                return readStoredValue(Place(*address, declaredType(variable)));
             }
 
             // An `extern __gshared` global defined in a compiled dependency
@@ -2378,7 +2543,7 @@ private struct Walker {
                             );
                         }
 
-                return readValue(bindingPlace(variable));
+                return readStoredValue(bindingPlace(variable));
             }
 
             if (auto current = variable in locals) {
@@ -2994,8 +3159,10 @@ private struct Walker {
         const unsupported =
             text("Unsupported eval expression: ", op, " of ", call.op);
 
-        if (call.f is null || !returnsRef(call.f))
+        if (call.f is null)
             throw new Exception(unsupported);
+        if (!returnsRef(call.f))
+            return addressOfCallResultTemporary(call);
 
         functionSemantic3(call.f);
         if (call.f.needThis)
@@ -3075,6 +3242,28 @@ private struct Walker {
         return returnedLvalueAddress(call.f, argumentExpressions, child);
     }
 
+    // A `ref` foreach variable over an input range may bind to a `front`
+    // result returned by value. DMD represents its per-iteration temporary as
+    // `AddrExp(CallExp)`: evaluate the call once into typed native storage and
+    // return that ordinary temporary's address.
+    private Value addressOfCallResultTemporary(
+        imported!"dmd.expression".CallExp call,
+    ) {
+        import quickbite.backends.interpreter.layout:
+            typeByteSize, typeHasPointers;
+        import quickbite.backends.interpreter.place: Place;
+        import quickbite.backends.interpreter.place_value: writeValue;
+
+        const value = runCallExpression(call);
+        const scan = typeHasPointers(call.type)
+            ? NativeBlock.Scan.conservative
+            : NativeBlock.Scan.no;
+        auto temporary = NativeBlock.allocate(typeByteSize(call.type), scan);
+        writeStoredValue(Place(temporary.address, call.type), value);
+        nativePointerRoots[temporary.address] = temporary;
+        return Value.pointerValue(temporary.address);
+    }
+
     // Duplicates the complete per-frame cell-state maps -- scalar/array/
     // struct/class cells, every field-pointer reverse-lookup map (and its
     // field-index/writeback siblings), allocation bookkeeping, and the
@@ -3102,6 +3291,7 @@ private struct Walker {
         child.nativeThrowableNext = nativeThrowableNext.dup;
         child.nativePointerRoots = nativePointerRoots.dup;
         child.nativeFunctionPointerSlots = nativeFunctionPointerSlots.dup;
+        child.nativeTypeInfoSlots = nativeTypeInfoSlots.dup;
         child.nextClassObjectId = nextClassObjectId;
         child.functionPointers = functionPointers.dup;
         child.functionPointerIds = functionPointerIds.dup;
@@ -3110,6 +3300,7 @@ private struct Walker {
         child.nativeClassTypes = nativeClassTypes.dup;
         child.nativeClassOwners = nativeClassOwners.dup;
         child.nativeExceptionMetadata = nativeExceptionMetadata.dup;
+        child.borrowedNativeClassPointers = borrowedNativeClassPointers.dup;
         child.nativeDelegateSlots = nativeDelegateSlots.dup;
         child.lazyArgumentExpressions = lazyArgumentExpressions.dup;
         child.lazyArgumentLocals = lazyArgumentLocals.dup;
@@ -4515,12 +4706,21 @@ private struct Walker {
         const aggregateValues =
             AggregateValue.isStruct(left) && AggregateValue.isStruct(right) ||
             AggregateValue.isArray(left) && AggregateValue.isArray(right);
+        const nullPointerIdentity =
+            left.isPointer && left.pointerAddress is null &&
+                right == Value.null_ ||
+            right.isPointer && right.pointerAddress is null &&
+                left == Value.null_;
         const same =
-            identity.e1.isTypeidExp is null && identity.e2.isTypeidExp is null &&
+            left.isTypeName || right.isTypeName
+            ? left == right
+            : identity.e1.isTypeidExp is null && identity.e2.isTypeidExp is null &&
             identity.e1.type.toBasetype.isTypeClass !is null
             ? classIdentityAddress(left) == classIdentityAddress(right)
             : aggregateValues
             ? equalValues(left, right)
+            : nullPointerIdentity
+            ? true
             : left == right;
         if (identity.op == EXP.notIdentity)
             return Value(!same);
@@ -4538,14 +4738,8 @@ private struct Walker {
             return AggregateValue.nativeClassBodyAddress(value);
         if (value.isPointer)
             return value.pointerAddress;
-        if (AggregateValue.hasClassFieldNamed(
-            value,
-            nativeExceptionObjectPointerField,
-        ))
-            return AggregateValue.classFieldNamed(
-                value,
-                nativeExceptionObjectPointerField,
-            ).pointerAddress;
+        if (auto pointer = borrowedNativeClassPointer(value))
+            return *pointer;
         return cast(void*) AggregateValue.classIdentity(value);
     }
 
@@ -4757,6 +4951,18 @@ private struct Walker {
                 );
 
             if (call.f !is null && call.f.needThis) {
+                // An interpreted-only TypeInfo has symbolic identity but no
+                // resident class body on which druntime's member can run.
+                // TypeInfo.opEquals defines equality by that identity (and
+                // accepts null), so answer it before native object dispatch.
+                if (
+                    receiver.isTypeName &&
+                    functionName(call.f) == "opEquals" &&
+                    arguments.length == 1 &&
+                    (arguments[0].isTypeName || arguments[0] == Value.null_)
+                )
+                    return Value(receiver == arguments[0]);
+
                 import quickbite.frontend.dmd.functions:
                     hasNoAvailableSource, noAvailableSourceMessage;
                 import quickbite.ffi.oldffi: unsupportedNativeTypeMessage;
@@ -4913,6 +5119,12 @@ private struct Walker {
                 Value result;
                 Value[] writebacks;
                 try {
+                    // A native callback may have hydrated a native-backed
+                    // class for interpreted field access. Native calls consume
+                    // the preserved object identity, independent of whether
+                    // DMD retained a parameter declaration we can classify.
+                    foreach (ref argument; arguments)
+                        argument = preservedNativeClassIdentity(argument);
                     // Mutable because the native-call interfaces accept Type[].
                     auto argumentTypes =
                         nativeArgumentTypes(argumentExpressions);
@@ -5525,7 +5737,7 @@ private struct Walker {
                 ? elements[index - lower]
                 : AggregateValue.elementAt(*current, index);
 
-        setLocal(variable, AggregateValue.reconstructArray(variable.type, updated));
+        setLocal(variable, reconstructStoredArray(variable.type, updated));
         uninitializedLocals.remove(variable);
         return locals[variable];
     }
@@ -5718,7 +5930,7 @@ private struct Walker {
             auto variable = variableExpression.var.isVarDeclaration;
             if (variable is null)
                 throw new Exception("Associative-array lvalue needs a variable.");
-            setLocal(variable, aa);
+            storeBinding(variable, aa);
         }
         const key = runExpression((*call.arguments)[1]);
         if (isNativeAssocArray(aa)) {
@@ -5821,12 +6033,15 @@ private struct Walker {
     private Value nativeArrayElementAt(in Value array, in size_t index) {
         import dmd.astenums: TY;
         import quickbite.backends.interpreter.aggregate_value: AggregateValue;
+        import quickbite.backends.interpreter.place: Place;
 
         if (array.isNativeAggregate) {
-            auto elementType = AggregateValue.native(array).type.toBasetype.nextOf;
+            auto aggregate = AggregateValue.native(array);
+            auto elementType = aggregate.type.toBasetype.nextOf;
             if (elementType !is null && elementType.toBasetype.ty == TY.Tdelegate)
                 if (auto delegate_ = AggregateValue.elementAddress(array, index) in nativeDelegateSlots)
                     return *delegate_;
+            return readStoredValue(Place(aggregate.address, aggregate.type).index(index));
         }
         return AggregateValue.elementAt(array, index);
     }
@@ -5884,41 +6099,25 @@ private struct Walker {
     }
 
     private bool assocArrayEqual(in Value left, in Value right) {
+        if (left == Value.null_ || right == Value.null_)
+            return assocArrayLength(left) == 0 && assocArrayLength(right) == 0;
+
         if (!isNativeAssocArray(left) || !isNativeAssocArray(right))
             return left == right;
-
-        import quickbite.backends.interpreter.place: Place;
-        import quickbite.backends.interpreter.place_value: readValue;
-
-        auto leftHeader = nativeAssocArray(left);
-        auto rightHeader = nativeAssocArray(right);
-        if (leftHeader.length != rightHeader.length)
-            return false;
-
-        foreach (index; 0 .. leftHeader.length) {
-            const key = readValue(Place(
-                leftHeader.keyAt(index).address,
-                leftHeader.keyType,
-            ));
-            auto keySlot = nativeAssocKeySlot(rightHeader, key);
-            auto rightValue = rightHeader.valueAddress(keySlot.address);
-            if (rightValue is null)
-                return false;
-            if (readValue(Place(
-                leftHeader.valueAt(index).address,
-                leftHeader.valueType,
-            )) != readValue(Place(rightValue, rightHeader.valueType)))
-                return false;
-        }
-        return true;
+        return equalAssocArrayValues(left, right);
     }
 
     private Value assocArrayKeys(in Value value, imported!"dmd.mtype".Type resultType) {
+        import quickbite.backends.interpreter.aggregate_value: AggregateValue;
+
+        if (value == Value.null_) {
+            Value[] keys;
+            return reconstructStoredArray(resultType, keys);
+        }
         if (!isNativeAssocArray(value))
             return value.assocArrayKeys;
 
         import dmd.mtype: TypeDArray;
-        import quickbite.backends.interpreter.aggregate_value: AggregateValue;
         import quickbite.backends.interpreter.place: Place;
         import quickbite.backends.interpreter.place_value: readValue;
 
@@ -5926,7 +6125,7 @@ private struct Walker {
         Value[] keys;
         foreach (index; 0 .. header.length)
             keys ~= readValue(Place(header.keyAt(index).address, header.keyType));
-        return AggregateValue.reconstructArray(
+        return reconstructStoredArray(
             resultType is null ? new TypeDArray(header.keyType) : resultType,
             keys,
         );
@@ -5972,7 +6171,7 @@ private struct Walker {
                 }
             values ~= readValue(Place(address, header.valueType));
         }
-        auto result = AggregateValue.reconstructArray(
+        auto result = reconstructStoredArray(
             resultType is null ? new TypeDArray(header.valueType) : resultType,
             values,
         );
@@ -6305,8 +6504,10 @@ private struct Walker {
         nativeClassTypes = child.nativeClassTypes;
         nativeClassOwners = child.nativeClassOwners;
         nativeExceptionMetadata = child.nativeExceptionMetadata;
+        borrowedNativeClassPointers = child.borrowedNativeClassPointers;
         nativeDelegateSlots = child.nativeDelegateSlots;
         nativeFunctionPointerSlots = child.nativeFunctionPointerSlots;
+        nativeTypeInfoSlots = child.nativeTypeInfoSlots;
         lazyArgumentExpressions = child.lazyArgumentExpressions;
         lazyArgumentLocals = child.lazyArgumentLocals;
         lazyArgumentFrames = child.lazyArgumentFrames;
@@ -6329,8 +6530,10 @@ private struct Walker {
         nativeClassTypes = child.nativeClassTypes;
         nativeClassOwners = child.nativeClassOwners;
         nativeExceptionMetadata = child.nativeExceptionMetadata;
+        borrowedNativeClassPointers = child.borrowedNativeClassPointers;
         nativeDelegateSlots = child.nativeDelegateSlots;
         nativeFunctionPointerSlots = child.nativeFunctionPointerSlots;
+        nativeTypeInfoSlots = child.nativeTypeInfoSlots;
         lazyArgumentExpressions = child.lazyArgumentExpressions;
         lazyArgumentLocals = child.lazyArgumentLocals;
         lazyArgumentFrames = child.lazyArgumentFrames;
@@ -7205,6 +7408,14 @@ private struct Walker {
         if (AggregateValue.isStruct(left) && AggregateValue.isStruct(right))
             return equalStructValues(left, right);
 
+        const leftIsAssocArray = AggregateValue.isAssocArray(left);
+        const rightIsAssocArray = AggregateValue.isAssocArray(right);
+        if (
+            (leftIsAssocArray && (rightIsAssocArray || right == Value.null_)) ||
+            (rightIsAssocArray && left == Value.null_)
+        )
+            return equalAssocArrayValues(left, right);
+
         if (left.isFunctionPointer || right.isFunctionPointer)
             return equalDelegateValues(left, right);
 
@@ -7275,12 +7486,24 @@ private struct Walker {
 
         foreach (index; 0 .. AggregateValue.length(left))
             if (!equalValues(
-                AggregateValue.elementAt(left, index),
-                AggregateValue.elementAt(right, index),
+                arrayElementForEquality(left, index),
+                arrayElementForEquality(right, index),
             ))
                 return false;
 
         return true;
+    }
+
+    private Value arrayElementForEquality(in Value value, in size_t index) {
+        import quickbite.backends.interpreter.place: Place;
+
+        if (!value.isNativeAggregate)
+            return AggregateValue.elementAt(value, index);
+
+        auto aggregate = AggregateValue.native(value);
+        return readStoredValue(
+            Place(aggregate.address, aggregate.type).index(index),
+        );
     }
 
     // A struct field written by anything other than an enum-typed literal
@@ -7299,10 +7522,56 @@ private struct Walker {
 
         foreach (index; 0 .. count)
             if (!equalValues(
-                AggregateValue.fieldAt(left, index),
-                AggregateValue.fieldAt(right, index),
+                structFieldForEquality(left, index),
+                structFieldForEquality(right, index),
             ))
                 return false;
+
+        return true;
+    }
+
+    private Value structFieldForEquality(in Value value, in size_t index) {
+        import quickbite.backends.interpreter.layout: structFields;
+        import quickbite.backends.interpreter.place: Place;
+
+        if (!value.isNativeAggregate)
+            return AggregateValue.fieldAt(value, index);
+
+        auto aggregate = AggregateValue.native(value);
+        auto fields = structFields(aggregate.type.toBasetype.isTypeStruct);
+        return readStoredValue(
+            Place(aggregate.address, aggregate.type).field(fields[index]),
+        );
+    }
+
+    private bool equalAssocArrayValues(in Value left, in Value right) {
+        import quickbite.backends.interpreter.native_assoc_array: headerAt;
+        import quickbite.backends.interpreter.place: Place;
+        import quickbite.backends.interpreter.place_value: readValue;
+
+        auto leftHeader = left == Value.null_
+            ? null
+            : headerAt(AggregateValue.native(left).address);
+        auto rightHeader = right == Value.null_
+            ? null
+            : headerAt(AggregateValue.native(right).address);
+        const leftLength = leftHeader is null ? 0 : leftHeader.length;
+        const rightLength = rightHeader is null ? 0 : rightHeader.length;
+        if (leftLength != rightLength)
+            return false;
+        if (leftLength == 0)
+            return true;
+
+        foreach (index; 0 .. leftLength) {
+            auto rightValueAddress = rightHeader.valueAddress(
+                leftHeader.keyAt(index).address,
+            );
+            if (rightValueAddress is null || !equalValues(
+                readValue(Place(leftHeader.valueAt(index).address, leftHeader.valueType)),
+                readValue(Place(rightValueAddress, rightHeader.valueType)),
+            ))
+                return false;
+        }
 
         return true;
     }
@@ -7528,6 +7797,21 @@ private struct Walker {
         import std.conv: text;
 
         if (auto field = dot.var.isVarDeclaration) {
+            if (field.type.toBasetype.isTypeClass !is null)
+                if (auto variableExpression = dot.e1.isVarExp)
+                    if (auto variable = variableExpression.var.isVarDeclaration)
+                        if (
+                            hasMirrorSlot(variable) &&
+                            mirrorEstablished.get(variable, false)
+                        ) {
+                            auto fieldPlace = bindingPlace(variable).field(field);
+                            if (
+                                auto typeInfo = fieldPlace.address
+                                    in nativeTypeInfoSlots
+                            )
+                                return *typeInfo;
+                        }
+
             auto pointerType = field.type.toBasetype.isTypePointer;
             if (
                 pointerType !is null &&
@@ -7632,6 +7916,11 @@ private struct Walker {
                 auto fieldPlace = Place(target.pointerAddress, dot.e1.type)
                     .field(dot.var.isVarDeclaration);
                 if (fieldPlace.type.isTypeClass !is null) {
+                    if (
+                        auto typeInfo = fieldPlace.address
+                            in nativeTypeInfoSlots
+                    )
+                        return *typeInfo;
                     auto address = fieldPlace.deref.address;
                     if (address is null)
                         return Value.null_;
@@ -7659,17 +7948,26 @@ private struct Walker {
             }
             if (target.isNativeAggregate) {
                 import dmd.astenums: TY;
+                import quickbite.backends.interpreter.aggregate_value: AggregateValue;
+                import quickbite.backends.interpreter.place: Place;
 
                 auto field = dot.var.isVarDeclaration;
+                auto native = AggregateValue.native(target);
+                auto fieldPlace = Place(native.address, native.type).field(field);
+                if (
+                    auto typeInfo = fieldPlace.address in nativeTypeInfoSlots
+                )
+                    return *typeInfo;
                 if (auto variableExpression = dot.e1.isVarExp)
                     if (auto variable = variableExpression.var.isVarDeclaration)
                     if (
                         hasMirrorSlot(variable) &&
                         mirrorEstablished.get(variable, false)
                     ) {
-                        auto fieldPlace = bindingPlace(variable).field(field);
+                        auto bindingFieldPlace = bindingPlace(variable)
+                            .field(field);
                         if (field.type.toBasetype.ty == TY.Tdelegate)
-                            if (auto delegate_ = fieldPlace.address in nativeDelegateSlots)
+                            if (auto delegate_ = bindingFieldPlace.address in nativeDelegateSlots)
                                 return *delegate_;
                     }
             }
@@ -7827,7 +8125,7 @@ private struct Walker {
         foreach (_; 0 .. length)
             elements ~= value;
 
-        const array = AggregateValue.reconstructArray(vector.to.basetype, elements);
+        const array = reconstructStoredArray(vector.to.basetype, elements);
         auto native = AggregateValue.native(array);
         return Value.nativeAggregateValue(NativeAggregate(
             vector.type,
@@ -7975,7 +8273,10 @@ private struct Walker {
                     _activationFrame.bindingAddress(referenceVariable),
                     declaredType(referenceVariable),
                 );
-                writeValue(place, storageValue(referenceVariable.type, value));
+                writeStoredValue(
+                    place,
+                    storageValue(referenceVariable.type, value),
+                );
                 clearUninitializedBindingAddress(
                     _activationFrame.bindingAddress(referenceVariable),
                 );
@@ -8043,9 +8344,26 @@ private struct Walker {
             const receiver = runExpression(dot.e1);
             if (receiver.isNativeAggregate) {
                 import dmd.astenums: TY;
+                import quickbite.backends.interpreter.aggregate_value: AggregateValue;
+                import quickbite.backends.interpreter.place: Place;
                 import quickbite.backends.interpreter.place_value: writeValue;
 
                 auto field = dot.var.isVarDeclaration;
+                if (
+                    field !is null &&
+                    field.type.toBasetype.isTypeClass !is null &&
+                    value.isTypeName
+                ) {
+                    const fieldIndex = structFieldIndex(dot);
+                    auto updated = withStoredStructField(
+                        receiver,
+                        dot.e1.type,
+                        fieldIndex,
+                        value,
+                    );
+                    writeLocation(dot.e1, updated);
+                    return;
+                }
                 if (field !is null && field.type.toBasetype.ty == TY.Tdelegate) {
                     if (auto variableExpression = dot.e1.isVarExp)
                         if (auto variable = variableExpression.var.isVarDeclaration)
@@ -8110,7 +8428,7 @@ private struct Walker {
                     writeValue(fieldPlace, Value.null_);
                     return;
                 }
-                writeValue(fieldPlace, value);
+                writeStoredValue(fieldPlace, value);
                 return;
             }
 
@@ -8161,7 +8479,12 @@ private struct Walker {
             auto unionType = receiverStructType(dot.e1);
             const updated = unionType !is null && unionType.sym.isUnionDeclaration !is null
                 ? withUnionFieldWrite(receiver, unionType, fieldIndex, value)
-                : AggregateValue.withStructField(receiver, fieldIndex, value);
+                : withStoredStructField(
+                    receiver,
+                    dot.e1.type,
+                    fieldIndex,
+                    value,
+                );
             writeLocation(dot.e1, updated);
             return;
         }
@@ -8445,7 +8768,7 @@ private struct Walker {
                 ? AggregateValue.elementAt(current, index)
                 : runDefaultValue(arrayElementType(target.e1.type));
 
-        writeLocation(target.e1, AggregateValue.reconstructArray(target.e1.type, elements));
+        writeLocation(target.e1, reconstructStoredArray(target.e1.type, elements));
     }
 
     private Value runDefaultValue(imported!"dmd.mtype".Type type) {
@@ -8571,9 +8894,8 @@ private struct Walker {
             const pointer = runExpression(derefBase.e1);
             if (pointer.isPointer) {
                 import quickbite.backends.interpreter.place: Place;
-                import quickbite.backends.interpreter.place_value: writeValue;
 
-                writeValue(
+                writeStoredValue(
                     Place(pointer.pointerAddress, index.e1.type).index(arrayIndex),
                     value,
                 );
@@ -8688,9 +9010,11 @@ private struct Walker {
 
         if (auto address = referenceVariable in nativeRefLocalAddresses) {
             import quickbite.backends.interpreter.place: Place;
-            import quickbite.backends.interpreter.place_value: writeValue;
 
-            writeValue(Place(*address, referenceVariable.type).index(arrayIndex), value);
+            writeStoredValue(
+                Place(*address, referenceVariable.type).index(arrayIndex),
+                value,
+            );
             uninitializedLocals.remove(referenceVariable);
             return;
         }
@@ -8728,16 +9052,24 @@ private struct Walker {
         in size_t fieldIndex,
         in Value value,
     ) {
+        import dmd.astenums: TY;
         import quickbite.backends.interpreter.layout: structFields;
         import quickbite.backends.interpreter.native_scalar:
             isNativeScalarType, readScalar, writeScalar;
         import quickbite.frontend.dmd.types: isStaticArrayType;
 
-        auto updated = AggregateValue.withStructField(receiver, fieldIndex, value);
-
         auto fields = structFields(unionType);
         if (fieldIndex >= fields.length)
-            return updated;
+            throw new Exception("Unsupported interpreter union field access.");
+        const symbolicValue = value.isTypeName ||
+            value.isFunctionPointer ||
+            (fields[fieldIndex].type.toBasetype.ty == TY.Tdelegate &&
+                value != Value.null_);
+        auto updated = AggregateValue.withStructField(
+            receiver,
+            fieldIndex,
+            symbolicValue ? Value.null_ : value,
+        );
 
         auto writtenType = fields[fieldIndex].type;
         const writtenScalar = isNativeScalarType(writtenType);
@@ -8749,7 +9081,13 @@ private struct Walker {
             && value.isArray;
 
         if (!writtenScalar && !writtenStruct && !writtenArray)
-            return updated;
+            return withUnionStoredField(
+                receiver,
+                unionType,
+                fieldIndex,
+                value,
+                updated,
+            );
 
         auto cell = NativeStruct.allocate(unionType);
 
@@ -8826,6 +9164,34 @@ private struct Walker {
                 structValueFromCell(siblingCurrent, siblingCell));
         }
 
+        return withUnionStoredField(
+            receiver,
+            unionType,
+            fieldIndex,
+            value,
+            updated,
+        );
+    }
+
+    private Value withUnionStoredField(
+        in Value receiver,
+        imported!"dmd.mtype".TypeStruct unionType,
+        in size_t fieldIndex,
+        in Value value,
+        in Value updated,
+    ) {
+        import quickbite.backends.interpreter.layout: structFields;
+        import quickbite.backends.interpreter.place: Place;
+
+        auto source = AggregateValue.native(receiver);
+        auto destination = AggregateValue.native(updated);
+        copyStoredMetadata(unionType, source.address, destination.address);
+        writeStoredValue(
+            Place(destination.address, unionType).field(
+                structFields(unionType)[fieldIndex],
+            ),
+            value,
+        );
         return updated;
     }
 
@@ -8890,11 +9256,10 @@ private struct Walker {
             const pointer = runExpression(derefBase.e1);
             if (pointer.isPointer) {
                 import quickbite.backends.interpreter.place: Place;
-                import quickbite.backends.interpreter.place_value: writeValue;
 
                 const arrayIndex = cast(size_t) runExpression(index.e2).asLong;
                 const value = runExpression(rhs);
-                writeValue(
+                writeStoredValue(
                     Place(pointer.pointerAddress, index.e1.type).index(arrayIndex),
                     value,
                 );
@@ -8926,16 +9291,15 @@ private struct Walker {
                     : Value.null_;
                 if (nativeClassReceiver.isPointer) {
                     import quickbite.backends.interpreter.place: Place;
-                    import quickbite.backends.interpreter.place_value: readValue, writeValue;
 
                     auto fieldPlace = Place(nativeClassReceiver.pointerAddress, dot.e1.type)
                         .field(dot.var.isVarDeclaration);
-                    const source = readValue(fieldPlace);
+                    const source = readStoredValue(fieldPlace);
                     if (index.lengthVar !is null)
                         setLocal(index.lengthVar, Value(AggregateValue.length(source)));
                     const arrayIndex = cast(size_t) runExpression(index.e2).asLong;
                     const value = runExpression(rhs);
-                    writeValue(fieldPlace.index(arrayIndex), value);
+                    writeStoredValue(fieldPlace.index(arrayIndex), value);
                     return value;
                 }
                 const fieldIndex = classFieldIndex(dot, receiver);
@@ -9017,6 +9381,26 @@ private struct Walker {
             && elementType.toBasetype.ty == TY.Tdelegate
             && value != Value.null_;
         auto storedValue = isLiveDelegate ? Value.null_ : value;
+        if (
+            (*current).isNativeAggregate &&
+            canContainStoredMetadata(elementType)
+        ) {
+            import quickbite.backends.interpreter.aggregate_value: AggregateValue;
+            import quickbite.backends.interpreter.place: Place;
+
+            auto destination = hasMirrorSlot(variable) &&
+                mirrorEstablished.get(variable, false)
+                ? bindingPlace(variable).index(arrayIndex)
+                : Place(
+                    AggregateValue.native(*current).address,
+                    AggregateValue.native(*current).type,
+                ).index(arrayIndex);
+            writeStoredValue(destination, storedValue);
+            if (isLiveDelegate)
+                nativeDelegateSlots[destination.address] = value;
+            uninitializedLocals.remove(variable);
+            return value;
+        }
         setLocal(variable, AggregateValue.withArrayElement(*current, arrayIndex, storedValue));
         writeThroughArrayCell(variable, arrayIndex, storedValue);
         if (isLiveDelegate)
@@ -9056,15 +9440,14 @@ private struct Walker {
         in Value value,
     ) {
         import quickbite.backends.interpreter.place: Place;
-        import quickbite.backends.interpreter.place_value: writeValue;
 
         if (auto address = variable in nativeRefLocalAddresses) {
-            writeValue(Place(*address, variable.type).index(index), value);
+            writeStoredValue(Place(*address, variable.type).index(index), value);
             return;
         }
 
         if (hasMirrorSlot(variable) && mirrorEstablished.get(variable, false))
-            writeValue(bindingPlace(variable).index(index), value);
+            writeStoredValue(bindingPlace(variable).index(index), value);
     }
 
     private void writeArrayCellElement(
@@ -9253,7 +9636,6 @@ private struct Walker {
 
         if (isPointerType(outer.e1.type)) {
             import quickbite.backends.interpreter.place: Place;
-            import quickbite.backends.interpreter.place_value: writeValue;
 
             const pointer = runExpression(outer.e1);
             if (!pointer.isPointer)
@@ -9261,7 +9643,10 @@ private struct Walker {
 
             const innerIndex = cast(size_t) runExpression(inner.e2).asLong;
             const value = runExpression(rhs);
-            writeValue(Place(pointer.pointerAddress, outer.type).index(innerIndex), value);
+            writeStoredValue(
+                Place(pointer.pointerAddress, outer.type).index(innerIndex),
+                value,
+            );
             return value;
         }
 
@@ -9486,14 +9871,13 @@ private struct Walker {
 
         if (current.isNativeAggregate) {
             import quickbite.backends.interpreter.place: Place;
-            import quickbite.backends.interpreter.place_value: writeValue;
 
             auto destination = Place(AggregateValue.native(*current).address,
                 variable.type);
             foreach (index; lower .. upper)
-                writeValue(destination.index(index), elements[index]);
+                writeStoredValue(destination.index(index), elements[index]);
         } else {
-            setLocal(variable, AggregateValue.reconstructArray(variable.type, elements));
+            setLocal(variable, reconstructStoredArray(variable.type, elements));
         }
         uninitializedLocals.remove(variable);
 
@@ -9655,7 +10039,7 @@ private struct Walker {
 
         writeLocation(dot.e1, AggregateValue.withStructField(receiver,
             fieldIndex,
-            AggregateValue.reconstructArray(dot.var.type, elements),
+            reconstructStoredArray(dot.var.type, elements),
         ));
         return value;
     }
@@ -9685,8 +10069,8 @@ private struct Walker {
             elements ~= AggregateValue.elementAt(value, index);
 
         return value.isNativeAggregate
-            ? AggregateValue.reconstructArray(AggregateValue.native(value).type, elements)
-            : AggregateValue.reconstructArray(type, elements);
+            ? reconstructStoredArray(AggregateValue.native(value).type, elements)
+            : reconstructStoredArray(type, elements);
     }
 
     private Value runLoweredAssignExpression(
@@ -9738,12 +10122,12 @@ private struct Walker {
         // array on the caller's aliased struct field; `writeLocation`'s
         // `VarExp` branch runs the same write-through-alias propagation as
         // every other assignment target.
-        writeLocation(var, AggregateValue.reconstructArray(variable.type, elements));
+        writeLocation(var, reconstructStoredArray(variable.type, elements));
         return lengthValue;
     }
 
     private Value runConcatenateExpression(imported!"dmd.expression".CatExp cat) {
-        return AggregateValue.reconstructArray(
+        return reconstructStoredArray(
             cat.type,
             concatenationElements(cat.type, cat.e1) ~
                 concatenationElements(cat.type, cat.e2),
@@ -9843,10 +10227,11 @@ private struct Walker {
                     // own (temporary) address, so it needs the same relocation
                     // `setLocal` already does for a whole-value local binding,
                     // here to the newly appended element's real address.
-                    relocateDelegateSlots(
+                    copyStoredMetadata(
                         elementType,
                         AggregateValue.native(element).address,
                         AggregateValue.elementAddress(appended, index),
+                        true,
                     );
             }
             // A native `ref T[]` parameter already names the caller's slice
@@ -9870,18 +10255,19 @@ private struct Walker {
     // as the array's current block has no spare capacity -- true again
     // immediately for a freshly one-element array's second append -- and
     // copies every existing element's bytes into the new block. That plain
-    // byte copy carries ordinary element bytes fine, but it orphans every
-    // PRIOR element's `nativeDelegateSlots` registration, which is keyed by
-    // that element's own address in the now-freed old block: the same gap
+    // byte copy carries ordinary element bytes fine, but does not duplicate
+    // each PRIOR element's `nativeDelegateSlots` registration at its new
+    // address: the same gap
     // the newly appended element's own registration above needs relocating
     // for, just for every earlier element instead of only the latest one.
     // Detect the reallocation by comparing the slice's data pointer before
     // (`previous`) and after (`appended`) this iteration's append, and if
     // it moved, relocate every one of `previous`'s `count` elements from
     // its old per-element address to its corresponding new one --
-    // `relocateDelegateSlots`'s existing struct-field/static-array
-    // recursion covers a struct-with-delegate-field element the same way
-    // it covers a bare delegate element.
+    // `copyStoredMetadata` carries every symbolic entry in each element's
+    // byte range, including entries in nested structs and static arrays. The
+    // old registrations remain because another live slice may still alias
+    // the old allocation.
     private void relocatePriorAppendedElementSlots(
         imported!"dmd.mtype".Type elementType,
         in Value previous,
@@ -9903,7 +10289,7 @@ private struct Walker {
             return;
 
         foreach (i; 0 .. count)
-            relocateDelegateSlots(
+            copyStoredMetadata(
                 elementType,
                 AggregateValue.elementAddress(previous, i),
                 AggregateValue.elementAddress(appended, i),
@@ -9934,7 +10320,7 @@ private struct Walker {
         imported!"dmd.expression".BinExp assign,
     ) {
         if (assign.e1.isDotVarExp !is null) {
-            const concatenated = AggregateValue.reconstructArray(
+            const concatenated = reconstructStoredArray(
                 assign.e1.type,
                 concatenationElements(assign.e1.type, assign.e1) ~
                     concatenationElements(assign.e1.type, assign.e2),
@@ -9950,7 +10336,7 @@ private struct Walker {
                     "Unsupported interpreter array concatenate target.",
                 );
 
-            const concatenated = AggregateValue.reconstructArray(
+            const concatenated = reconstructStoredArray(
                 assign.e1.type,
                 concatenationElements(assign.e1.type, assign.e1) ~
                     concatenationElements(assign.e1.type, assign.e2),
@@ -10346,11 +10732,57 @@ private struct Walker {
                 values ~= value;
             }
 
-        auto result = AggregateValue.reconstructArray(array.type, values);
+        auto result = reconstructStoredArray(array.type, values);
         foreach (position, index; liveDelegateIndices)
             nativeDelegateSlots[AggregateValue.elementAddress(result, index)] =
                 liveDelegateValues[position];
         return result;
+    }
+
+    private Value reconstructStoredArray(
+        imported!"dmd.mtype".Type type,
+        in Value[] elements,
+    ) {
+        import quickbite.backends.interpreter.aggregate_value: AggregateValue;
+        import quickbite.backends.interpreter.place: Place;
+
+        if (!canContainStoredMetadata(type))
+            return AggregateValue.reconstructArray(type, elements);
+
+        Value[] nativeElements;
+        nativeElements.reserve(elements.length);
+        foreach (element; elements)
+            nativeElements ~= element.isTypeName ? Value.null_ : element;
+
+        auto result = AggregateValue.reconstructArray(type, nativeElements);
+        auto destination = Place(AggregateValue.native(result).address, type);
+        foreach (index, element; elements)
+            writeStoredValue(destination.index(index), element);
+        return result;
+    }
+
+    private bool canContainStoredMetadata(
+        imported!"dmd.mtype".Type type,
+    ) {
+        import dmd.astenums: TY;
+        import quickbite.backends.interpreter.layout:
+            declaredType, structFields;
+
+        auto base = type.toBasetype;
+        if (base.isTypeClass !is null || base.ty == TY.Tdelegate)
+            return true;
+        if (auto pointer = base.isTypePointer)
+            if (pointer.nextOf.toBasetype.isTypeFunction !is null)
+                return true;
+        if (auto array = base.isTypeDArray)
+            return canContainStoredMetadata(array.next);
+        if (auto array = base.isTypeSArray)
+            return canContainStoredMetadata(array.next);
+        if (auto structType = base.isTypeStruct)
+            foreach (field; structFields(structType))
+                if (canContainStoredMetadata(declaredType(field)))
+                    return true;
+        return false;
     }
 
     // A struct-literal field typed `delegate` may carry a LIVE callable
@@ -10367,9 +10799,8 @@ private struct Walker {
     // this substitutes `Value.null_` for any live delegate field before
     // that call -- the same bytes the ordinary default-null case already
     // writes -- and registers the live value at the field's own address
-    // once that address exists. `setLocal`'s own `relocateDelegateSlots`
-    // carries the registration forward again when this rvalue's bytes are
-    // later copied into a durable binding.
+    // once that address exists. `writeStoredValue` carries the registration
+    // forward again when this rvalue is copied into durable storage.
     private Value structLiteralValue(
         imported!"dmd.expression".StructLiteralExp literal,
     ) {
@@ -10379,6 +10810,8 @@ private struct Walker {
         Value[] fields;
         imported!"dmd.declaration".VarDeclaration[] liveDelegateFields;
         Value[] liveDelegateValues;
+        imported!"dmd.declaration".VarDeclaration[] symbolicTypeInfoFields;
+        Value[] symbolicTypeInfoValues;
         if (literal.sd !is null)
             foreach (index; 0 .. literal.sd.fields.length) {
                 const hasElement = literal.elements !is null
@@ -10409,6 +10842,15 @@ private struct Walker {
                     liveDelegateValues ~= value;
                     value = Value.null_;
                 }
+                if (
+                    field !is null &&
+                    field.type.toBasetype.isTypeClass !is null &&
+                    value.isTypeName
+                ) {
+                    symbolicTypeInfoFields ~= field;
+                    symbolicTypeInfoValues ~= value;
+                    value = Value.null_;
+                }
 
                 fields ~= value;
             }
@@ -10421,6 +10863,14 @@ private struct Walker {
                 nativeDelegateSlots[
                     Place(native.address, native.type).field(field).address
                 ] = liveDelegateValues[index];
+        }
+
+        if (symbolicTypeInfoFields.length != 0) {
+            auto native = AggregateValue.native(result);
+            foreach (index, field; symbolicTypeInfoFields)
+                nativeTypeInfoSlots[
+                    Place(native.address, native.type).field(field).address
+                ] = symbolicTypeInfoValues[index];
         }
 
         return result;
@@ -10666,7 +11116,7 @@ private struct Walker {
         foreach (_; 0 .. length)
             elements ~= value;
 
-        return AggregateValue.reconstructArray(field.type, elements);
+        return reconstructStoredArray(field.type, elements);
     }
 
     // duplicate keys keep the last value, as in compiled D
@@ -10709,28 +11159,30 @@ private struct Walker {
             }
 
             const upper = cast(size_t) runExpression(slice.upr).asLong;
+            if (lower > upper) {
+                import std.conv: text;
 
-            // Slicing native memory (`ptr[0 .. n]` over a C allocation, as
-            // std.file.read does): reify the elements into an array Value.
-            if (source.isPointer) {
-                import quickbite.backends.interpreter.layout: typeByteSize;
-
-                Value[] elements;
-                foreach (index; lower .. upper)
-                    elements ~= loadNativePointerElement(
-                        slice.e1.type,
-                        source,
-                        index,
-                    );
-                return AggregateValue.reconstructNativeArray(
-                    slice.type,
-                    elements,
-                    cast(const(ubyte)*) source.pointerAddress + lower *
-                        typeByteSize(slice.e1.type.toBasetype.nextOf),
-                );
+                throwRangeError(text(
+                    "slice [",
+                    lower,
+                    " .. ",
+                    upper,
+                    "] has a larger lower index than upper index",
+                ));
             }
 
-            return source;
+            // Pointer slicing forms a native view; it does not read the
+            // pointed-to elements. Reads happen only when that view is later
+            // indexed, just as they do for compiled D.
+            import quickbite.backends.interpreter.layout: typeByteSize;
+
+            const address = cast(const(ubyte)*) source.pointerAddress + lower *
+                typeByteSize(slice.e1.type.toBasetype.nextOf);
+            return AggregateValue.reconstructNativeArrayWithLength(
+                slice.type,
+                upper - lower,
+                address,
+            );
         }
 
         const upper = slice.upr is null
@@ -10843,8 +11295,9 @@ private struct Walker {
         in size_t index,
     ) {
         import dmd.astenums: TY;
-        import quickbite.backends.interpreter.native_call_adapter: unmarshalNative;
         import quickbite.backends.interpreter.layout: typeByteSize;
+        import quickbite.backends.interpreter.native_call_adapter: unmarshalNative;
+        import quickbite.backends.interpreter.place: Place;
 
         auto elementType = pointerType.toBasetype.nextOf.toBasetype;
         auto address = nativeElementAddress(
@@ -10857,16 +11310,12 @@ private struct Walker {
                 return *delegate_;
         if (auto function_ = address in nativeFunctionPointerSlots)
             return *function_;
-        if (elementType.isTypeAArray !is null) {
-            import quickbite.backends.interpreter.place: Place;
-            import quickbite.backends.interpreter.place_value: readValue;
-
-            return readValue(Place(address, elementType));
-        }
-        return unmarshalNative(
-            elementType,
-            address,
-        );
+        if (
+            elementType.isTypeAArray !is null ||
+            canContainStoredMetadata(elementType)
+        )
+            return readStoredValue(Place(address, elementType));
+        return unmarshalNative(elementType, address);
     }
 
     private void storeNativePointerElement(
@@ -10875,9 +11324,9 @@ private struct Walker {
         in size_t index,
         in Value value,
     ) {
-        import dmd.astenums: TY;
-        import quickbite.backends.interpreter.native_call_adapter: marshalNative;
         import quickbite.backends.interpreter.layout: typeByteSize;
+        import quickbite.backends.interpreter.native_call_adapter: marshalNative;
+        import quickbite.backends.interpreter.place: Place;
 
         auto elementType = pointerType.toBasetype.nextOf.toBasetype;
         auto address = nativeElementAddress(
@@ -10885,15 +11334,29 @@ private struct Walker {
             index,
             typeByteSize(elementType),
         );
-        if (elementType.ty == TY.Tdelegate) {
-            nativeDelegateSlots[address] = value;
+        if (elementType.isTypeDelegate !is null) {
+            writeStoredValue(Place(address, elementType), value);
+            clearUninitializedBindingAddress(pointer.pointerAddress);
             return;
         }
-        marshalNative(
-            elementType,
-            address,
-            value,
-        );
+        // `TypeNext.nextOf` is mutable in DMD's API, so this cannot be const.
+        auto functionPointerType = elementType.isTypePointer;
+        if (
+            functionPointerType !is null &&
+            functionPointerType.nextOf.toBasetype.isTypeFunction !is null
+        ) {
+            if (value.isFunctionPointer) {
+                nativeFunctionPointerSlots[address] = value;
+                Place(address, elementType).storeReference(null);
+                clearUninitializedBindingAddress(pointer.pointerAddress);
+                return;
+            }
+            nativeFunctionPointerSlots.remove(address);
+        }
+        if (canContainStoredMetadata(elementType))
+            writeStoredValue(Place(address, elementType), value);
+        else
+            marshalNative(elementType, address, value);
         // A native pointer can denote a still-void frame binding directly.
         // Once the first element is written, a later aggregate read must use
         // those frame bytes rather than materializing `.init` over them.
@@ -11283,8 +11746,6 @@ private struct Walker {
                     mirrorEstablished.get(variable, false)
                 ) {
                     import dmd.astenums: TY;
-                    import quickbite.backends.interpreter.place_value: readValue;
-
                     // A live delegate element's bytes are the all-zero ABI
                     // value (`place_value.writeValue`'s Tdelegate arm only
                     // ever accepts `Value.null_`), so a plain `readValue`
@@ -11301,7 +11762,9 @@ private struct Walker {
                         )
                             return *delegate_;
 
-                    return readValue(bindingPlace(variable).index(arrayIndex));
+                    return readStoredValue(
+                        bindingPlace(variable).index(arrayIndex),
+                    );
                 }
                 if (auto current = variable in locals)
                     if ((*current).isNativeAggregate)
@@ -11314,9 +11777,14 @@ private struct Walker {
     }
 
     private void throwRangeError(in string message) {
+        import core.exception: RangeError;
+
+        auto native = new RangeError;
+        native.msg = message;
         throw new InterpretedException(nativeExceptionBaseObject(
             message,
-            "core.exception.RangeError",
+            native.classinfo.name,
+            cast(void*) native,
         ));
     }
 
@@ -11572,6 +12040,7 @@ private struct Walker {
         nativeClassTypes = child.nativeClassTypes;
         nativeClassOwners = child.nativeClassOwners;
         nativeExceptionMetadata = child.nativeExceptionMetadata;
+        borrowedNativeClassPointers = child.borrowedNativeClassPointers;
     }
 
     // `new T(args)` where T's constructor is a body-less native leaf: construct
@@ -11684,8 +12153,10 @@ private struct Walker {
         nativeClassTypes = child.nativeClassTypes;
         nativeClassOwners = child.nativeClassOwners;
         nativeExceptionMetadata = child.nativeExceptionMetadata;
+        borrowedNativeClassPointers = child.borrowedNativeClassPointers;
         nativeDelegateSlots = child.nativeDelegateSlots;
         nativeFunctionPointerSlots = child.nativeFunctionPointerSlots;
+        nativeTypeInfoSlots = child.nativeTypeInfoSlots;
         lazyArgumentExpressions = child.lazyArgumentExpressions;
         lazyArgumentLocals = child.lazyArgumentLocals;
         lazyArgumentFrames = child.lazyArgumentFrames;
@@ -11711,7 +12182,7 @@ private struct Walker {
                 ? newArrayValue(elementType, lengths[1 .. $])
                 : defaultValue(elementType);
 
-        return AggregateValue.reconstructArray(type, elements);
+        return reconstructStoredArray(type, elements);
     }
 
     private Value runDeclarationExpression(
@@ -11869,7 +12340,7 @@ private struct Walker {
         if (initializer.isNullExp !is null && isDynamicArrayType(variable.type)) {
             import quickbite.backends.interpreter.aggregate_value: AggregateValue;
 
-            auto value = AggregateValue.reconstructArray(variable.type, []);
+            auto value = reconstructStoredArray(variable.type, []);
             setLocal(variable, value);
             uninitializedLocals.remove(variable);
             return value;
@@ -12053,6 +12524,17 @@ private struct Walker {
         if (auto cast_ = expression.isCastExp)
             return rootedNativeClassValue(cast_.e1, evaluated);
 
+        // Re-entry through a native callback creates a child Walker. A native
+        // class caught there is hydrated for interpreted field access, but
+        // its class value still carries the runtime object's preserved body
+        // pointer. Restore that opaque identity before the value crosses a
+        // later native-call boundary; attempting to compose the hydrated
+        // field snapshot into a class-reference slot would invent a second
+        // object representation.
+        const nativeIdentity = preservedNativeClassIdentity(evaluated);
+        if (!evaluated.isPointer && nativeIdentity.isPointer)
+            return nativeIdentity;
+
         auto var = expression.isVarExp;
         auto variable = var is null ? null : var.var.isVarDeclaration;
         if (variable !is null)
@@ -12070,6 +12552,13 @@ private struct Walker {
                     evaluated.pointerAddress,
                 );
         return evaluated;
+    }
+
+    private Value preservedNativeClassIdentity(in Value value) {
+        if (auto pointer = borrowedNativeClassPointer(value))
+            return Value.pointerValue(*pointer);
+
+        return value;
     }
 
     // A same-width scalar dynamic-array cast changes only the element type

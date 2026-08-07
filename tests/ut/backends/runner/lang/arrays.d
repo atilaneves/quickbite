@@ -4,6 +4,29 @@ module ut.backends.runner.lang.arrays;
 import ut.backends;
 
 
+// Qualifying the slice headers nested inside an outer dynamic array does not
+// change either level's native representation. D therefore permits a mutable
+// array of mutable rows to initialise an array whose row views are const.
+static foreach (backend; Matrix!()) {
+    @("dynamicArray.mutableRowsInitialiseConstRowViews." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            unittest {
+                int first = 10;
+                int[][] mutableRows = [[first, 20], [30]];
+                const(int[])[] rows = mutableRows;
+
+                assert(rows.length == 2);
+                assert(rows[0].length == 2);
+                assert(rows[0][1] == 20);
+                assert(rows[1][0] == 30);
+            }
+        });
+    }
+}
+
+
 /++
     Generic assert message coverage.
 
@@ -3398,6 +3421,29 @@ static foreach (backend; Matrix!()) {
     }
 }
 
+// Returning the associative array across a function boundary keeps its null
+// state as a runtime value; `.keys` preserves that state as a null key slice.
+static foreach (backend; Matrix!()) {
+    @("assocArray.nullKeysReturnsEmptyArray." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            int[int] emptyValues() {
+                int[int] values;
+                return values;
+            }
+
+            unittest {
+                auto values = emptyValues;
+                const keys = values.keys;
+
+                assert(keys.length == 0);
+                assert(keys.ptr is null);
+            }
+        });
+    }
+}
+
 static foreach (backend; Matrix!()) {
     @("assocArray.inFindsRuntimeKey." ~ backend.stringof)
     @Tags(backend.stringof)
@@ -3422,6 +3468,49 @@ static foreach (backend; Matrix!()) {
                 assert(found !is null);
                 assert(*found == 40);
                 assert(absent is null);
+            }
+        });
+    }
+}
+
+// Membership in a default-initialized associative array observes an empty
+// mapping, including when the null handle crosses a function boundary.
+static foreach (backend; Matrix!()) {
+    @("assocArray.inMissingFromNullArray." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            int[int] emptyValues() {
+                int[int] values;
+                return values;
+            }
+
+            unittest {
+                int key = 10;
+                auto values = emptyValues;
+
+                assert((key in values) is null);
+            }
+        });
+    }
+}
+
+// A non-capturing lambda has a plain function-pointer type.  Storing it in an
+// associative-array entry must preserve that callable value when the entry is
+// read back; unlike a delegate, it has no context word.
+static foreach (backend; Matrix!()) {
+    @("assocArray.functionPointerValuePreservesCallable." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            unittest {
+                int function(int)[string] callbacks;
+                callbacks["increment"] = value => value + 1;
+
+                assert(callbacks["increment"](41) == 42);
+
+                callbacks["increment"] = null;
+                assert(callbacks["increment"] is null);
             }
         });
     }
@@ -4467,6 +4556,74 @@ static foreach (backend; Matrix!()) {
     }
 }
 
+// Generated equality recurses through nested aggregate fields. An
+// associative array reached through a dynamic-array element therefore still
+// compares its runtime entries, including struct-typed values.
+static foreach (backend; Matrix!(
+    Omit!(Bytecode, Because.refusal, "Assertion failure (==)"),
+)) {
+    @("assocArray.structFieldEqualityComparesRuntimeEntries." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct Leaf {
+                int value;
+            }
+
+            struct Nested {
+                Leaf[int] children;
+            }
+
+            struct Wrapper {
+                Nested[] values;
+            }
+
+            int runtimeValue(int value) {
+                return value;
+            }
+
+            unittest {
+                int key = runtimeValue(7);
+                Wrapper left = Wrapper([
+                    Nested([key: Leaf(runtimeValue(11))]),
+                ]);
+                Wrapper same = Wrapper([
+                    Nested([key: Leaf(runtimeValue(11))]),
+                ]);
+                Wrapper different = Wrapper([
+                    Nested([key: Leaf(runtimeValue(12))]),
+                ]);
+
+                assert(left == same);
+                assert(left != different);
+            }
+        });
+    }
+}
+
+static foreach (backend; Matrix!()) {
+    @("assocArray.defaultNullEqualsPopulatedThenEmptied." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            int runtimeValue(int value) {
+                return value;
+            }
+
+            unittest {
+                int[int] defaultNull;
+                int[int] emptied;
+                const key = runtimeValue(7);
+                emptied[key] = runtimeValue(11);
+                assert(emptied.remove(key));
+
+                assert(defaultNull == emptied);
+                assert(emptied == defaultNull);
+            }
+        });
+    }
+}
+
 static foreach (backend; Matrix!()) {
     @("assocArray.removeRuntimeKey." ~ backend.stringof)
     @Tags(backend.stringof)
@@ -4867,6 +5024,66 @@ static foreach (backend; Matrix!()) {
                 assert(slice[1] == values[2]);
             }
         });
+    }
+}
+
+// A pointer slice still has the intrinsic half-open-range requirement that its
+// lower bound not exceed its upper bound, even though compiled D does not
+// validate that the range lies inside an allocation.
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.diverges, "see sibling pin below (Ctfe)"),
+    Omit!(Bytecode, Because.refusal, "18446744073709551615 != 0"),
+)) {
+    @("pointer.sliceWithReversedRuntimeBoundsThrowsRangeError." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            size_t runtimeBound(size_t value) {
+                return value;
+            }
+
+            unittest {
+                int value = 42;
+                int* pointer = &value;
+                const lower = runtimeBound(2);
+                const upper = runtimeBound(1);
+
+                auto slice = pointer[lower .. upper];
+
+                assert(slice.length == 0);
+            }
+        }).shouldThrowWithMessage(
+            "slice [2 .. 1] has a larger lower index than upper index",
+        );
+    }
+}
+
+// Ctfe diverges from compiled D by refusing to slice this pointer before it
+// considers the reversed bounds.
+static foreach (backend; AliasSeq!(Ctfe)) {
+    @("pointer.sliceWithReversedRuntimeBoundsThrowsRangeError." ~
+        backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            size_t runtimeBound(size_t value) {
+                return value;
+            }
+
+            unittest {
+                int value = 42;
+                int* pointer = &value;
+                const lower = runtimeBound(2);
+                const upper = runtimeBound(1);
+
+                auto slice = pointer[lower .. upper];
+
+                assert(slice.length == 0);
+            }
+        }).shouldThrowWithMessage(
+            "pointer `pointer` cannot be sliced at compile time " ~
+            "(it does not point to an array)",
+        );
     }
 }
 
@@ -5343,26 +5560,75 @@ static foreach (backend; Matrix!(
     }
 }
 
-// A `ref` parameter forwarded to `mulu` must preserve the caller's native
-// bool address through the imported/template-instantiated native call.
+// A body-less declaration for a process-resident extern(D) callable uses the
+// ABI of the compiler that built the host. Its trailing `ref` parameter makes
+// the two compiler ABIs observably different even though multiplication is
+// commutative.
 static foreach (backend; Matrix!(
     Omit!(Ctfe, Because.inexpressible,
         "core.checkedint.mulu has inline assembly that CTFE cannot execute"),
+    Omit!(Bytecode, Because.refusal,
+        "`residentMulu` cannot be interpreted at compile time, because it " ~
+        "has no available source code"),
 )) {
-    @("nativeRefArgument.muluReceivesForwardedReference." ~ backend.stringof)
+    @("nativeExternD.muluUsesResidentCompilerArgumentOrder." ~
+        backend.stringof)
     @Tags(backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
-            import core.checkedint : mulu;
-
-            size_t multiply(ref bool overflow, size_t x, size_t y) {
-                return mulu(x, y, overflow);
-            }
+            pragma(mangle, "_D4core10checkedint__T4muluZQgFNaNbNiNfmmKbZm")
+            ulong residentMulu(ulong left, ulong right, ref bool overflow);
 
             unittest {
                 bool overflow;
-                assert(multiply(overflow, size_t.max, 2) == size_t.max - 1);
-                assert(overflow);
+                assert(residentMulu(6, 7, overflow) == 42);
+                assert(!overflow);
+            }
+        });
+    }
+}
+
+// A native function returning a null dynamic array produces the ordinary D
+// null-slice value. Its pointer property must therefore have null pointer
+// identity, just like the pointer of a default-initialised dynamic array.
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.refusal,
+        "`residentGetArrayUsed` has no source for compile-time evaluation"),
+)) {
+    @("nativeSliceReturn.nullPointerIsIdenticalToNull." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            extern(C) pragma(mangle, "gc_getArrayUsed")
+            void[] residentGetArrayUsed(void* pointer, bool atomic);
+
+            unittest {
+                const used = residentGetArrayUsed(null, false);
+
+                assert(used.length == 0);
+                assert(used.ptr is null);
+            }
+        });
+    }
+}
+
+// Forming a pointer slice computes an address and length without reading the
+// pointed-to elements. The raw words deliberately do not encode a valid
+// `string`; they become relevant only if the resulting slice is indexed.
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.inexpressible,
+        "CTFE cannot reinterpret a static-array address as `string*`"),
+)) {
+    @("pointer.sliceFormationDoesNotReadElements." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            unittest {
+                size_t runtime = size_t.max;
+                size_t[2] raw = [runtime, cast(size_t) 0];
+                auto strings = (cast(string*) raw.ptr)[0 .. 1];
+
+                assert(strings.length == 1);
             }
         });
     }

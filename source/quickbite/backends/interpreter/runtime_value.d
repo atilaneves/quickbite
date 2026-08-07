@@ -703,6 +703,7 @@ public struct RuntimeValue {
                         return true;
                 return false;
             },
+            (const(Null)) => false,
             (_) {
                 throw new Exception("Expected associative array.");
                 return false;
@@ -1290,6 +1291,29 @@ public struct RuntimeValue {
                     object.fieldNames,
                     values,
                     object.identity,
+                );
+            },
+            (_) {
+                throw new Exception("Expected class object.");
+                return Value.void_;
+            },
+        );
+    }
+
+    public Value withClassIdentity(in size_t identity) const pure {
+        import std.sumtype: match;
+
+        return data.match!(
+            (const(ClassObject) object) {
+                Value[] values;
+                foreach (field; object.fields)
+                    values ~= field.value;
+                return Value.classValue(
+                    object.typeName,
+                    object.typeNames,
+                    object.fieldNames,
+                    values,
+                    identity,
                 );
             },
             (_) {

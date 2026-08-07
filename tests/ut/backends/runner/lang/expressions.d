@@ -16,11 +16,7 @@ private void runSse2BackendSourceFixtureTests(T)(in string moduleSource) {
 }
 
 
-// Interpreter declines this shape with "Expected associative array." -- a
-// separate, unconfirmed gap.
-static foreach (backend; Matrix!(
-    Omit!(Interpreter, Because.unconfirmed, "Expected associative array."),
-)) {
+static foreach (backend; Matrix!()) {
     @("associativeArray.directLocalRefArgumentMutatesSource." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -678,6 +674,373 @@ static foreach (backend; Matrix!()) {
 
             unittest {
                 assert(classify(3) == 7);
+            }
+        });
+    }
+}
+
+// A TypeInfo reference retains its identity when stored in an aggregate and
+// read back.
+static foreach (backend; Matrix!()) {
+    @("typeid.classExpressionStoredInStruct." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            class Thing {}
+
+            struct Observation {
+                TypeInfo type;
+            }
+
+            unittest {
+                auto value = new Thing;
+                auto observation = Observation(typeid(value));
+                assert(observation.type is typeid(Thing));
+            }
+        });
+    }
+}
+
+// Copying a struct copies the identity of its TypeInfo reference while
+// leaving the source value unchanged.
+static foreach (backend; Matrix!()) {
+    @("typeid.structCopyRetainsBothReferences." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            class Thing {}
+
+            struct Observation {
+                TypeInfo type;
+            }
+
+            unittest {
+                Observation original = Observation(typeid(Thing));
+                auto copy = original;
+
+                assert(original.type is typeid(Thing));
+                assert(copy.type is typeid(Thing));
+            }
+        });
+    }
+}
+
+// Struct equality compares the TypeInfo identity stored in each field, while
+// an ordinary value copy remains equal to its source.
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.diverges,
+        "DMD CTFE cannot read these TypeInfo objects at compile time"),
+    Omit!(Bytecode, Because.unconfirmed,
+        "Bytecode child segfaults (signal 11) on TypeInfo struct equality; " ~
+        "independent of the Interpreter-only fix this fixture targets"),
+)) {
+    @("typeid.structEqualityUsesStoredReferenceIdentity." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            class First {}
+            class Second {}
+
+            struct Observation {
+                TypeInfo type;
+            }
+
+            unittest {
+                auto first = Observation(typeid(First));
+                auto copy = first;
+                auto second = Observation(typeid(Second));
+
+                assert(first != second);
+                assert(first == copy);
+            }
+        });
+    }
+}
+
+// Dynamic-array equality compares each stored TypeInfo reference, including
+// equal identities held in separate array allocations.
+static foreach (backend; Matrix!()) {
+    @("typeid.arrayEqualityUsesStoredReferenceIdentity." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            class First {}
+            class Second {}
+
+            unittest {
+                auto first = [typeid(First)];
+                auto copy = [typeid(First)];
+                auto second = [typeid(Second)];
+
+                assert(first != second);
+                assert(first == copy);
+            }
+        });
+    }
+}
+
+// Field assignment stores a TypeInfo reference in an already-addressable
+// aggregate just as aggregate construction does.
+static foreach (backend; Matrix!()) {
+    @("typeid.assignedToStructField." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            class Thing {}
+
+            struct Observation {
+                TypeInfo type;
+            }
+
+            unittest {
+                Observation observation;
+                observation.type = typeid(Thing);
+
+                assert(observation.type is typeid(Thing));
+            }
+        });
+    }
+}
+
+// Array construction preserves the identity of a TypeInfo reference stored
+// directly as an element.
+static foreach (backend; Matrix!()) {
+    @("typeid.arrayLiteralRetainsElementReference." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            class Thing {}
+
+            unittest {
+                TypeInfo[] observations = [typeid(Thing)];
+                assert(observations[0] is typeid(Thing));
+            }
+        });
+    }
+}
+
+// Array construction copies the complete value of a struct element,
+// including a TypeInfo reference nested in that struct.
+static foreach (backend; Matrix!()) {
+    @("typeid.arrayLiteralRetainsNestedReference." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            class Thing {}
+
+            struct Observation {
+                TypeInfo type;
+            }
+
+            unittest {
+                Observation[] observations = [Observation(typeid(Thing))];
+                assert(observations[0].type is typeid(Thing));
+            }
+        });
+    }
+}
+
+// Appending may reallocate one slice's backing storage while another slice
+// still aliases the old allocation. Both allocations retain the values they
+// contain, including symbolic references and callable identity.
+static foreach (backend; Matrix!()) {
+    @("typeid.appendReallocationPreservesAliasedElement." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            class First {}
+
+            struct Observation {
+                TypeInfo type;
+                int delegate() observe;
+            }
+
+            unittest {
+                int seed = 42;
+                Observation[] values = [
+                    Observation(typeid(First), () => seed),
+                ];
+                auto alias_ = values;
+                values ~= Observation();
+
+                assert(alias_[0].type is typeid(First));
+                assert(alias_[0].observe() == 42);
+                assert(values[0].type is typeid(First));
+                assert(values[0].observe() == 42);
+                assert(values[1].type is null);
+                assert(values[1].observe is null);
+            }
+        });
+    }
+}
+
+// Reading and writing through a typed pointer has the same TypeInfo identity
+// and clearing semantics as accessing the pointed-to variable directly.
+static foreach (backend; Matrix!()) {
+    @("typeid.pointerReadAndNullOverwrite." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            class Thing {}
+
+            unittest {
+                TypeInfo observation = typeid(Thing);
+                TypeInfo* pointer = &observation;
+
+                assert(*pointer is typeid(Thing));
+                *pointer = null;
+                assert(*pointer is null);
+                assert(observation is null);
+            }
+        });
+    }
+}
+
+// Indexed replacement changes only the destination TypeInfo slot, and a
+// later null assignment clears that slot without disturbing its sibling.
+static foreach (backend; Matrix!()) {
+    @("typeid.indexedReplacementAndClearing." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            class First {}
+            class Second {}
+
+            unittest {
+                TypeInfo[] observations = [typeid(First), typeid(First)];
+
+                observations[1] = typeid(Second);
+                assert(observations[0] is typeid(First));
+                assert(observations[1] is typeid(Second));
+
+                observations[1] = null;
+                assert(observations[0] is typeid(First));
+                assert(observations[1] is null);
+            }
+        });
+    }
+}
+
+// Writing one union member overwrites the shared storage occupied by every
+// overlapping member, including a class-reference member.
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.diverges,
+        "DMD CTFE rejects reads through an overlapping union member"),
+)) {
+    @("typeid.unionPointerOverwriteClearsReference." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            class Thing {}
+
+            union Slot {
+                TypeInfo type;
+                void* pointer;
+            }
+
+            unittest {
+                Slot slot;
+                slot.type = typeid(Thing);
+                assert(slot.type is typeid(Thing));
+
+                slot.pointer = null;
+                assert(slot.type is null);
+            }
+        });
+    }
+}
+
+// A static-array value copy retains the active union member's reference, and
+// overwriting that member through the copy does not change the source.
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.diverges,
+        "DMD CTFE rejects reads through an overlapping union member"),
+)) {
+    @("typeid.unionArrayCopyRetainsThenClearsReference." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            class Thing {}
+
+            union Slot {
+                TypeInfo type;
+                void* pointer;
+            }
+
+            unittest {
+                Slot[1] source;
+                source[0].type = typeid(Thing);
+                auto copy = source;
+
+                assert(copy[0].type is typeid(Thing));
+                copy[0].pointer = null;
+                assert(copy[0].type is null);
+                assert(source[0].type is typeid(Thing));
+            }
+        });
+    }
+}
+
+// Copying a struct into an array preserves independent symbolic fields even
+// when one is a class reference and another is a callable delegate.
+static foreach (backend; Matrix!()) {
+    @("typeid.structArrayCopyRetainsReferenceAndDelegate." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            class Thing {}
+
+            struct Observation {
+                TypeInfo type;
+                int delegate() observe;
+            }
+
+            unittest {
+                int seed = 40;
+                auto observation = Observation(typeid(Thing), () => seed + 2);
+                Observation[] observations = [observation];
+
+                assert(observations[0].type is typeid(Thing));
+                auto observe = observations[0].observe;
+                assert(observe() == 42);
+            }
+        });
+    }
+}
+
+// A by-value aggregate call result remains a complete value when the language
+// gives its temporary an address for a `ref` input-range element.
+static foreach (backend; Matrix!()) {
+    @("typeid.byValueCallTemporaryRetainsStructField." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            class Thing {}
+
+            struct Observation {
+                TypeInfo type;
+            }
+
+            struct Range {
+                bool consumed;
+
+                bool empty() const @property {
+                    return consumed;
+                }
+
+                Observation front() @property {
+                    return Observation(typeid(Thing));
+                }
+
+                void popFront() {
+                    consumed = true;
+                }
+            }
+
+            unittest {
+                Range range;
+                foreach (ref observation; range)
+                    assert(observation.type is typeid(Thing));
             }
         });
     }
@@ -1702,6 +2065,32 @@ static foreach (backend; Matrix!()) {
                 }();
 
                 assert(result == 1);
+            }
+        });
+    }
+}
+
+// Assigning through a pointer to a delegate updates the delegate value stored
+// in the pointed-to slot. A later null assignment through the same pointer
+// clears both words of that delegate value.
+static foreach (backend; Matrix!()) {
+    @("pointer.delegateAssignmentPreservesCallableAndNull." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct Slot {
+                int delegate() value;
+            }
+
+            unittest {
+                Slot slot;
+                auto pointer = &slot.value;
+
+                *pointer = () => 42;
+                assert(slot.value() == 42);
+
+                *pointer = null;
+                assert(slot.value is null);
             }
         });
     }
@@ -6537,6 +6926,63 @@ static foreach (backend; Matrix!()) {
     }
 }
 
+// A class-reference field remains the same reference when its containing
+// struct is passed by `ref` and that field is copied into a by-value class
+// parameter. Reading a scalar through the copied reference must therefore
+// observe the object constructed into the original struct field.
+static foreach (backend; Matrix!()) {
+    @("classField.copiedFromRefStructPreservesReference." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            class Payload {
+                ushort value;
+
+                this(ushort value) {
+                    this.value = value;
+                }
+            }
+
+            struct Wrapper {
+                Payload payload;
+            }
+
+            void observeScalar(ref ushort value) {
+                assert(value == 7);
+            }
+
+            struct Visitor {
+                void visitClass(T)(T value) {
+                    visitClassImpl(this, value);
+                }
+
+                void visitMembers(ref Payload value) {
+                    visitMember!"value"(this, value);
+                }
+            }
+
+            void visitClassImpl(C, T)(ref C visitor, ref T value) {
+                visitor.visitMembers(value);
+            }
+
+            void visitMember(string member, C, T)(ref C visitor, ref T value) {
+                observeScalar(__traits(getMember, value, member));
+            }
+
+            void observeWrapper(ref Visitor visitor, ref Wrapper wrapper) {
+                visitor.visitClass(wrapper.payload);
+            }
+
+            unittest {
+                ushort seed = 7;
+                auto wrapper = Wrapper(new Payload(seed));
+                Visitor visitor;
+                observeWrapper(visitor, wrapper);
+            }
+        });
+    }
+}
+
 // A class cell promoted by taking a field's address is authoritative for the
 // whole object, not only for later field reads. Passing the class value onward
 // must therefore reconstruct the argument from the cell after a pointer write,
@@ -7464,6 +7910,43 @@ static foreach (backend; Matrix!()) {
                 int y = 2;
                 assert(pick(false, x, y) == 2);
                 assert(pick(true, x, y) == 1);
+            }
+        });
+    }
+}
+
+// A `ref` foreach variable over an input range whose `front` returns by value
+// aliases a temporary for that iteration. The compiler takes the address of
+// the `front` call result, so the ordinary value must occupy stable storage.
+static foreach (backend; Matrix!()) {
+    @("foreach.refInputRangeElementAliasesCallTemporary." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct Range {
+                bool consumed;
+
+                bool empty() const @property {
+                    return consumed;
+                }
+
+                ubyte front() inout pure nothrow @nogc @property @safe {
+                    return 42;
+                }
+
+                void popFront() {
+                    consumed = true;
+                }
+            }
+
+            unittest {
+                Range range;
+                int total;
+                foreach (ref value; range) {
+                    total += value;
+                    value = 7;
+                }
+                assert(total == 42);
             }
         });
     }

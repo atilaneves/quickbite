@@ -342,6 +342,13 @@ public struct AggregateValue {
         return value.isArray;
     }
 
+    public static bool isAssocArray(
+        in imported!"quickbite.backends.interpreter.runtime_value".Value value,
+    ) @safe {
+        return value.isNativeAggregate &&
+            baseTypeOf(native(value).type).isTypeAArray !is null;
+    }
+
     public static bool isClass(
         in imported!"quickbite.backends.interpreter.runtime_value".Value value,
     ) @safe {

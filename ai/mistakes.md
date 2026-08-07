@@ -10,6 +10,9 @@
 
 - Never weaken or replace a test to make it pass.
 
+- When a normalization helper may return its input unchanged, do not infer
+  that normalization occurred solely from the result's value category.
+
 - Keep touched code aligned with repo conventions (OTBS, local imports).
 
 - For `in` parameters and stronger attributes, reconcile signatures properly
