@@ -3842,9 +3842,9 @@ private struct Compiler {
     }
 
     private bool isDelegateValueType(Type type) {
-        import dmd.astenums: TY;
-
-        return type !is null && type.toBasetype.ty == TY.Tdelegate;
+        return type !is null &&
+            typeFacts(type).representation ==
+                DeclarationRepresentation.delegate_;
     }
 
     private Operand storeExpressionIntoPlace(
@@ -3868,7 +3868,8 @@ private struct Compiler {
             registerFrameDeclaration(place.declaration).delegateParameter =
                 place.offset;
         }
-        return isComplexDoubleType(place.valueType)
+        return typeFacts(place.valueType).representation ==
+            DeclarationRepresentation.complexDouble
             ? complexDoubleOperand(source)
             : Operand(source, ScalarType.void_);
     }
@@ -3887,8 +3888,9 @@ private struct Compiler {
         Expression rhs,
         in bool heapEscapingDelegate,
     ) {
-        import dmd.astenums: TY;
         import std.conv: text;
+
+        const facts = typeFacts(type);
 
         // DMD exposes `vector.array` as a struct-typed view over the vector's
         // inline bytes. Its value emitter already returns that backing block;
@@ -3896,27 +3898,30 @@ private struct Compiler {
         if (rhs.isVectorArrayExp !is null)
             if (auto place = placeOrNull(rhs))
                 return loadPlace(*place).offset;
-        if (rhs.type.toBasetype.ty == TY.Tsarray &&
-            type.toBasetype.ty != TY.Tsarray) {
+        const rhsFacts = typeFacts(rhs.type);
+        if (rhsFacts.representation == DeclarationRepresentation.staticArray &&
+            facts.representation != DeclarationRepresentation.staticArray &&
+            facts.representation != DeclarationRepresentation.vector)
+        {
             const result = allocateBytes(
-                typeFacts(type).byteWidth, staticArrayAlign(type),
+                facts.byteWidth, staticArrayAlign(type),
             );
             if (compileStaticArrayValueInto(result, rhs.type, rhs))
                 return result;
         }
 
-        switch (type.toBasetype.ty) with (TY) {
-            case Tstruct:
+        final switch (facts.representation) with (DeclarationRepresentation) {
+            case struct_:
                 if (auto integer = rhs.isIntegerExp)
                     if (integer.toInteger == 0) {
                         const result = allocateStructBlock(type);
-                        zeroFrameBlock(result, typeFacts(type).byteWidth);
+                        zeroFrameBlock(result, facts.byteWidth);
                         return result;
                     }
                 return structOperandOffset(rhs);
-            case Tsarray:
+            case staticArray:
                 const result = allocateBytes(
-                    typeFacts(type).byteWidth, staticArrayAlign(type),
+                    facts.byteWidth, staticArrayAlign(type),
                 );
                 if (!compileStaticArrayValueInto(result, type, rhs))
                     throw new Exception(text(
@@ -3924,7 +3929,11 @@ private struct Compiler {
                         expressionChars(rhs),
                     ));
                 return result;
-            case Tarray:
+            case vector:
+                if (auto place = placeOrNull(rhs))
+                    return loadPlaceValue(*place).offset;
+                return compileExpression(rhs).offset;
+            case dynamicArray:
                 const result = allocateBytes(
                     sliceDescriptorSize, size_t.sizeof,
                 );
@@ -3933,13 +3942,18 @@ private struct Compiler {
                     arrayElementIsArray(type),
                 );
                 return result;
-            case Tdelegate:
+            case delegate_:
                 return heapEscapingDelegate
                     ? heapEscapingDelegateOperandOffset(rhs)
                     : delegateOperandOffset(rhs);
-            default:
-                if (isComplexDoubleType(type))
-                    return compileComplexDoubleOperand(rhs).offset;
+            case complexDouble:
+                return compileComplexDoubleOperand(rhs).offset;
+            case unavailable:
+            case scalar:
+            case pointer:
+            case lazyDelegate:
+            case classPointer:
+            case assocArray:
                 throw new Exception(text(
                     "Unsupported aggregate assignment in bytecode core: ",
                     expressionChars(rhs),
@@ -11125,29 +11139,11 @@ private struct Compiler {
             );
         } else
             _code ~= Instruction(Op.call, index, argumentArea, destination);
-        if (isPointerType(call.type))
-            return Operand(
-                destination, ScalarType.ulong_, true,
-                pointerElementScalar(call.type),
-            );
-        if (function_.type.isTypeFunction !is null &&
-            function_.type.isTypeFunction.isRef)
-            return Operand(
-                destination, ScalarType.ulong_, true,
-                typeFacts(call.type).isAggregate
-                    ? ScalarType.void_
-                    : scalarType(call.type),
-            );
-        // A class-typed return (e.g. `Throwable.next`'s getter, called from
-        // its own setter as `auto n = next;`) yields a class reference, which
-        // callers such as `compileClassPointerDeclaration` recognise only via
-        // the pointer flag; the pointed-at class comes from the assignment
-        // target's own declared type, not from this operand.
-        if (call.type !is null && call.type.toBasetype.ty == TY.Tclass)
-            return Operand(
-                destination, ScalarType.ulong_, true, ScalarType.void_,
-            );
-        return Operand(destination, returnType.scalar);
+        const returnsRef = function_.type.isTypeFunction !is null &&
+            function_.type.isTypeFunction.isRef;
+        return callResultOperand(
+            destination, call.type, returnsRef, returnType,
+        );
     }
 
     // A null return always falls through to the call site's unconditional
@@ -11730,9 +11726,9 @@ private struct Compiler {
         _code ~= Instruction(
             Op.callIndirect, delegateOffset, argumentArea, destination,
         );
-        return returnsRef
-            ? refReturnOperand(destination, call.type)
-            : Operand(destination, returnType.scalar);
+        return callResultOperand(
+            destination, call.type, returnsRef, returnType,
+        );
     }
 
     private void emitLazyCallArgument(
@@ -11847,9 +11843,9 @@ private struct Compiler {
         _code ~= Instruction(
             Op.callIndirect, delegateLocal.offset, argumentArea, destination,
         );
-        return returnsRef
-            ? refReturnOperand(destination, call.type)
-            : Operand(destination, returnType.scalar);
+        return callResultOperand(
+            destination, call.type, returnsRef, returnType,
+        );
     }
 
     // `f(...)` through a delegate-typed PARAMETER: the callee is a run-time
@@ -11911,9 +11907,9 @@ private struct Compiler {
         _code ~= Instruction(
             Op.callIndirectDynamic, descriptorOffset, argumentArea, destination,
         );
-        return functionType.isRef
-            ? refReturnOperand(destination, call.type)
-            : Operand(destination, returnType.scalar);
+        return callResultOperand(
+            destination, call.type, functionType.isRef, returnType,
+        );
     }
 
     private Operand* tryStaticDelegateAssocArrayCall(CallExp call) {
@@ -12020,14 +12016,43 @@ private struct Compiler {
         // path already gives a direct call's pointer result -- a plain
         // scalar-typed operand is not accepted by a pointer-typed local's
         // declaration.
-        if (functionType.isRef)
-            return refReturnOperand(destination, functionType.next);
-        if (isPointerType(functionType.next))
+        return callResultOperand(
+            destination, functionType.next, functionType.isRef, returnType,
+        );
+    }
+
+    private Operand callResultOperand(
+        in ushort offset,
+        Type type,
+        in bool returnsRef,
+        in ResultType resultType,
+    ) {
+        if (returnsRef)
+            return refReturnOperand(offset, type);
+
+        const facts = typeFacts(type);
+        final switch (facts.representation) with (DeclarationRepresentation) {
+        case pointer:
             return Operand(
-                destination, ScalarType.ulong_, true,
-                pointerElementScalar(functionType.next),
+                offset, ScalarType.ulong_, true,
+                pointerElementScalar(type),
             );
-        return Operand(destination, returnType.scalar);
+        case classPointer:
+            return Operand(
+                offset, ScalarType.ulong_, true, ScalarType.void_,
+            );
+        case unavailable:
+        case scalar:
+        case staticArray:
+        case vector:
+        case dynamicArray:
+        case struct_:
+        case delegate_:
+        case lazyDelegate:
+        case assocArray:
+        case complexDouble:
+            return Operand(offset, resultType.scalar);
+        }
     }
 
     private Operand refReturnOperand(in ushort offset, Type pointeeType) {
@@ -12294,65 +12319,58 @@ private struct Compiler {
         in bool isReference,
         Expression argument,
     ) {
-        import dmd.astenums: TY;
+        import std.conv: text;
 
         if (isReference) {
             emitReferenceArgument(slot, argument);
             return;
         }
 
-        if (argument.type !is null &&
-            argument.type.toBasetype.ty == TY.Tstruct) {
+        if (argument.type is null)
+            throw new Exception(text(
+                "Unsupported call argument in bytecode core: ",
+                expressionChars(argument),
+            ));
+
+        const facts = typeFacts(argument.type);
+        final switch (facts.representation) with (DeclarationRepresentation) {
+        case struct_:
             const source = structOperandOffset(argument);
             _code ~= Instruction(
-                Op.copy,
-                slot,
-                source,
-                cast(ushort) typeFacts(argument.type).byteWidth,
+                Op.copy, slot, source, cast(ushort) facts.byteWidth,
             );
             return;
-        }
-
-        if (argument.type !is null &&
-            argument.type.toBasetype.ty == TY.Tsarray) {
+        case staticArray:
+        case vector:
             auto place = placeOrNull(argument);
             assert(place !is null);
             const source = loadPlace(*place);
             _code ~= Instruction(
-                Op.copy,
-                slot,
-                source.offset,
-                cast(ushort) typeFacts(argument.type).byteWidth,
+                Op.copy, slot, source.offset, cast(ushort) facts.byteWidth,
             );
             return;
-        }
-
-        if (argument.type !is null &&
-            argument.type.toBasetype.ty == TY.Tdelegate) {
+        case delegate_:
             const source = delegateOperandOffset(argument);
             _code ~= Instruction(
-                Op.copy, slot, source, cast(ushort) delegateValueSize,
+                Op.copy, slot, source, cast(ushort) facts.byteWidth,
             );
             return;
-        }
-
-        if (isDynamicArrayArgument(argument) ||
-            (argument.type !is null && isStringType(argument.type))) {
+        case dynamicArray:
             // A static-array whole slice passed to a callee aliases its frame
             // storage. Keep the general materialisation path below for result
             // values, whose bytes must outlive this VM invocation.
-            auto staticArray = argument;
-            while (auto cast_ = staticArray.isCastExp)
-                staticArray = cast_.e1;
-            if (auto slice = staticArray.isSliceExp)
+            auto staticSource = argument;
+            while (auto cast_ = staticSource.isCastExp)
+                staticSource = cast_.e1;
+            if (auto slice = staticSource.isSliceExp)
                 if (slice.lwr is null && slice.upr is null)
-                    staticArray = slice.e1;
-            if (staticArray.type !is null &&
-                staticArray.type.toBasetype.ty == TY.Tsarray)
-                if (auto place = placeOrNull(staticArray)) {
+                    staticSource = slice.e1;
+            if (staticSource.type !is null &&
+                typeFacts(staticSource.type).representation == staticArray)
+                if (auto place = placeOrNull(staticSource)) {
                     const source = addressOfPlace(*place);
-                    const element = staticArray.type.toBasetype.nextOf;
-                    const count = typeFacts(staticArray.type).byteWidth /
+                    const element = staticSource.type.toBasetype.nextOf;
+                    const count = typeFacts(staticSource.type).byteWidth /
                         typeFacts(cast(Type) element).byteWidth;
                     _code ~= Instruction(
                         Op.copy, slot, source.offset,
@@ -12375,15 +12393,28 @@ private struct Compiler {
                 cast(ushort) sliceDescriptorSize,
             );
             return;
+        case complexDouble:
+            const source = compileComplexDoubleOperand(argument);
+            _code ~= Instruction(
+                Op.copy, slot, source.offset, cast(ushort) facts.byteWidth,
+            );
+            return;
+        case scalar:
+        case pointer:
+        case classPointer:
+        case assocArray:
+            const operand = compileExpression(argument);
+            _code ~= Instruction(
+                Op.copy, slot, operand.offset, cast(ushort) facts.byteWidth,
+            );
+            return;
+        case unavailable:
+        case lazyDelegate:
+            throw new Exception(text(
+                "Unsupported call argument in bytecode core: ",
+                expressionChars(argument),
+            ));
         }
-
-        const operand = compileExpression(argument);
-        _code ~= Instruction(
-            Op.copy,
-            slot,
-            operand.offset,
-            cast(ushort) size(operand.type),
-        );
     }
 
     private void emitReferenceArgument(
@@ -14767,16 +14798,15 @@ private struct Compiler {
         return ((*parameters)[index].storageClass & STC.lazy_) != STC.none;
     }
 
-    // A function result is either a scalar or a dynamic-array slice
-    // descriptor (`string` included); every other shape routes through the
-    // scalar path.
+    // A function result follows the same representation classification used
+    // for storage and call arguments; each arm adds only its result/display
+    // metadata.
     private ResultType resultType(Type type) {
-        import dmd.astenums: TY;
+        import std.conv: text;
 
-        // A dynamic array `T[]` result — `string` included, its basetype is
-        // also `Tarray` — is a 16-byte slice descriptor; `elementType` gives
-        // the element size for indexing the returned descriptor.
-        if (type.toBasetype.ty == TY.Tarray) {
+        const facts = typeFacts(type);
+        final switch (facts.representation) with (DeclarationRepresentation) {
+        case dynamicArray:
             auto result = ResultType(
                 scalar: ScalarType.void_,
                 isArray: true,
@@ -14793,54 +14823,49 @@ private struct Compiler {
             );
             populateArrayElementStructDisplay(result, type);
             return result;
-        }
-
-        if (type.toBasetype.ty == TY.Tsarray && arrayElementIsString(type))
-            return ResultType(
-                scalar: ScalarType.void_,
-                isArray: true,
-                elementType: dynamicArrayElementType(type),
-                arrayElementsAreArrays: arrayElementIsArray(type),
-                isStruct: false,
-                structSize: typeFacts(type).byteWidth,
-                isUndisplayable: false,
-                isStaticArray: true,
-                arrayLength: staticArrayLength(type),
-                arrayElementsAreStrings: arrayElementIsString(type),
-            );
-
-        if (type.toBasetype.ty == TY.Tsarray)
+        case staticArray:
+            if (arrayElementIsString(type))
+                return ResultType(
+                    scalar: ScalarType.void_,
+                    isArray: true,
+                    elementType: dynamicArrayElementType(type),
+                    arrayElementsAreArrays: arrayElementIsArray(type),
+                    isStruct: false,
+                    structSize: facts.byteWidth,
+                    isUndisplayable: false,
+                    isStaticArray: true,
+                    arrayLength: staticArrayLength(type),
+                    arrayElementsAreStrings: true,
+                );
             return ResultType(
                 scalar: ScalarType.void_,
                 isArray: false,
                 elementType: ScalarType.void_,
                 arrayElementsAreArrays: false,
                 isStruct: true,
-                structSize: typeFacts(type).byteWidth,
+                structSize: facts.byteWidth,
             );
-
-        // A by-value struct result is an inline block of `Type.size()` bytes,
-        // copied back to the caller's destination on return like any other frame
-        // block; field access then resolves against that destination's base.
-        if (type.toBasetype.ty == TY.Tstruct) {
+        case vector:
+            return ResultType(
+                scalar: ScalarType.void_,
+                isArray: false,
+                elementType: ScalarType.void_,
+                arrayElementsAreArrays: false,
+                isStruct: true,
+                structSize: facts.byteWidth,
+            );
+        case struct_:
             auto result = ResultType(
                 scalar: ScalarType.void_,
                 isArray: false,
                 elementType: ScalarType.void_,
                 arrayElementsAreArrays: false,
                 isStruct: true,
-                structSize: typeFacts(type).byteWidth,
+                structSize: facts.byteWidth,
             );
             populateStructDisplay(result, type);
             return result;
-        }
-
-        // A delegate result is a real 16-byte `{functionIndex, context}`
-        // pair the caller must receive, not just an REPL-undisplayable
-        // value with no bytes -- distinct from the generic
-        // `isUndisplayableType` branch below, which only marks display
-        // scaffolding.
-        if (type.toBasetype.ty == TY.Tdelegate) {
+        case delegate_:
             auto result = ResultType(
                 scalar: ScalarType.void_,
                 isArray: false,
@@ -14852,9 +14877,8 @@ private struct Compiler {
             );
             result.isDelegate = true;
             return result;
-        }
-
-        if (isUndisplayableType(type))
+        case unavailable:
+        case lazyDelegate:
             return ResultType(
                 scalar: ScalarType.void_,
                 isArray: false,
@@ -14864,14 +14888,21 @@ private struct Compiler {
                 structSize: 0,
                 isUndisplayable: true,
             );
-
-        if (isPointerType(type))
+        case pointer:
+        case classPointer:
+        case assocArray:
             return ResultType.scalarResult(ScalarType.ulong_);
-
-        return ResultType.scalarResult(
-            scalarType(type),
-            enumMembersByValue(type),
-        );
+        case scalar:
+            return ResultType.scalarResult(
+                facts.opcodeType,
+                enumMembersByValue(type),
+            );
+        case complexDouble:
+            throw new Exception(text(
+                "Unsupported function result in bytecode core: ",
+                typeChars(type),
+            ));
+        }
     }
 
     private void populateStructDisplay(ref ResultType result, Type type) {
@@ -15284,7 +15315,8 @@ private struct Compiler {
         import dmd.astenums: TY;
         import dmd.typesem: size;
 
-        if (type.toBasetype.ty == TY.Terror)
+        if (type.toBasetype.ty == TY.Terror ||
+            type.toBasetype.ty == TY.Tfunction)
             return TypeFacts.withoutByteWidth(
                 ScalarType.void_, DeclarationRepresentation.unavailable,
                 true,
@@ -16507,20 +16539,6 @@ private bool isDynamicArrayArgument(
     return argument.type !is null &&
         argument.type.toBasetype.ty == TY.Tarray &&
         !isStringType(argument.type);
-}
-
-private bool isUndisplayableType(imported!"dmd.mtype".Type type) {
-    import dmd.astenums: TY;
-
-    if (type is null)
-        return false;
-
-    switch (type.toBasetype.ty) with (TY) {
-        case Tdelegate, Tfunction:
-            return true;
-        default:
-            return false;
-    }
 }
 
 // True when `type` is a raw pointer `T*` (not a function pointer or delegate);
