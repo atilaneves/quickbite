@@ -99,7 +99,7 @@ private struct Compiler {
     // Synthetic `with` pointers (`S* __withSym = &subject`): each maps to the
     // inline frame base of its struct subject, so `(*__withSym).field` in the
     // body resolves to `subjectBase + field.offset`.
-    private ushort[VarDeclaration] _withDerefBases;
+    private ushort[VarDeclaration] _withPointers;
     // Resolved label positions (instruction index) by identifier, plus the
     // indices of `jump` instructions awaiting a still-unseen forward label.
     private size_t[const(void)*] _labelTargets;
@@ -266,8 +266,6 @@ private struct Compiler {
         ScalarType type;
         ushort offset;
         VarDeclaration declaration;
-        StructField field;
-        bool hasFieldWriteback;
         bool isPointerValue;
         ScalarType pointerElement;
         ushort indexOffset;
@@ -288,8 +286,6 @@ private struct Compiler {
             in ScalarType type,
             in ushort offset,
             VarDeclaration declaration = null,
-            StructField field = StructField.init,
-            in bool hasFieldWriteback = false,
             in bool isPointerValue = false,
             in ScalarType pointerElement = ScalarType.void_,
             in ushort indexOffset = 0,
@@ -298,8 +294,6 @@ private struct Compiler {
             this.type = type;
             this.offset = offset;
             this.declaration = declaration;
-            this.field = field;
-            this.hasFieldWriteback = hasFieldWriteback;
             this.isPointerValue = isPointerValue;
             this.pointerElement = pointerElement;
             this.indexOffset = indexOffset;
@@ -310,8 +304,6 @@ private struct Compiler {
             Type valueType,
             in ushort offset,
             in ushort indexOffset = 0,
-            StructField field = StructField.init,
-            in bool hasFieldWriteback = false,
             in bool heapEscapingDelegate = false,
             VarDeclaration declaration = null,
             in bool declinesCapturingDelegate = false,
@@ -320,8 +312,6 @@ private struct Compiler {
             this.valueType = valueType;
             this.offset = offset;
             this.indexOffset = indexOffset;
-            this.field = field;
-            this.hasFieldWriteback = hasFieldWriteback;
             this.heapEscapingDelegate = heapEscapingDelegate;
             this.declaration = declaration;
             this.declinesCapturingDelegate = declinesCapturingDelegate;
@@ -346,7 +336,7 @@ private struct Compiler {
         _classThisOffset = ushort.max;
         _hasNestedContext = false;
         _thisLocal = StructLocal.init;
-        _withDerefBases = null;
+        _withPointers = null;
         _labelTargets = null;
         _pendingGotos = null;
         _loopStack = null;
@@ -1161,15 +1151,15 @@ private struct Compiler {
 
     // `with (subject) body`. For a struct subject, DMD binds a synthetic
     // `S* __withSym = &subject` and rewrites the body's unqualified fields to
-    // `(*__withSym).field`; record the subject's inline base so those resolve
-    // against it. For an enum/type subject there is no runtime binding (DMD has
-    // already constant-folded the members), so just compile the body.
+    // `(*__withSym).field`; resolve the subject once and bind the synthetic
+    // pointer to its place address. For an enum/type subject there is no
+    // runtime binding (DMD has already constant-folded the members).
     private void compileWithStatement(
         imported!"dmd.statement".WithStatement with_,
     ) {
         if (with_.wthis !is null)
-            if (auto base = structBaseOffsetOrNull(with_.exp))
-                _withDerefBases[with_.wthis] = *base;
+            if (auto place = placeOrNull(with_.exp))
+                _withPointers[with_.wthis] = addressOfPlace(*place).offset;
 
         if (with_._body !is null)
             compileNestedStatement(with_._body);
@@ -2375,13 +2365,10 @@ private struct Compiler {
 
         if (auto variable = expression.isVarExp) {
             if (auto declaration = variable.var.isVarDeclaration)
-                if (auto base = declaration in _withDerefBases) {
-                    return *addressOperand(
-                        Op.frameAddress,
-                        *base,
-                        ScalarType.void_,
+                if (auto pointer = declaration in _withPointers)
+                    return Operand(
+                        *pointer, ScalarType.ulong_, true, ScalarType.void_,
                     );
-                }
 
             if (auto declaration = variable.var.isVarDeclaration)
                 if (auto existing = declarationRecordView(declaration).scalarOrNull) {
@@ -2428,15 +2415,6 @@ private struct Compiler {
                     return Operand(*existing, ScalarType.void_);
             if (auto descriptor = dynamicArrayDescriptorOrNull(expression))
                 return Operand(descriptor.offset, ScalarType.void_);
-            if (auto declaration = variable.var.isVarDeclaration)
-                if (auto existing = declaration in _withDerefBases) {
-                    return *addressOperand(
-                        Op.frameAddress,
-                        *existing,
-                        ScalarType.void_,
-                    );
-                }
-
             if (auto declaration = variable.var.isVarDeclaration)
                 if (auto moduleVariable =
                         moduleDeclarationRecord(declaration).moduleScalarOrNull) {
@@ -3111,7 +3089,6 @@ private struct Compiler {
                         return new Place(
                             Place.Kind.pointer, expression.type,
                             *offset, compileSizeConstant(0),
-                            StructField.init, false,
                             isDelegateValueType(expression.type),
                             null,
                             isDelegateValueType(expression.type),
@@ -3161,13 +3138,13 @@ private struct Compiler {
                 if (auto local = record.delegate_OrNull)
                     return new Place(
                         Place.Kind.frame, expression.type, local.offset,
-                        0, StructField.init, false, false,
+                        0, false,
                         declaration,
                     );
                 if (auto local = record.delegateParameterOrNull)
                     return new Place(
                         Place.Kind.frame, expression.type, *local,
-                        0, StructField.init, false, false,
+                        0, false,
                         declaration,
                         declaration.isReference && declaration.isParameter,
                     );
@@ -3187,8 +3164,6 @@ private struct Compiler {
                             expression.type,
                             *captured,
                             0,
-                            StructField.init,
-                            false,
                             false,
                             declaration,
                         );
@@ -3202,8 +3177,6 @@ private struct Compiler {
                             Place.Kind.captured,
                             scalarType(declaration.type), *offset,
                             declaration,
-                            StructField.init,
-                            false,
                             isPointerLikePlaceType(declaration.type),
                             isPointerType(declaration.type)
                                 ? pointerElementScalar(declaration.type)
@@ -3228,8 +3201,6 @@ private struct Compiler {
                             *element,
                             pointer,
                             null,
-                            StructField.init,
-                            false,
                             isPointerLikePlaceType(declaration.type),
                             isPointerType(declaration.type)
                                 ? pointerElementScalar(declaration.type)
@@ -3242,8 +3213,6 @@ private struct Compiler {
                         *element,
                         *slot,
                         null,
-                        StructField.init,
-                        false,
                         isPointerLikePlaceType(declaration.type),
                         isPointerType(declaration.type)
                             ? pointerElementScalar(declaration.type)
@@ -3255,8 +3224,6 @@ private struct Compiler {
                 return new Place(
                     Place.Kind.frame, scalarType(declaration.type), *slot,
                     declaration,
-                    StructField.init,
-                    false,
                     pointerElement !is null,
                     pointerElement is null
                         ? ScalarType.void_
@@ -3281,8 +3248,6 @@ private struct Compiler {
                             scalarType(declaration.type),
                             pointer,
                             null,
-                            StructField.init,
-                            false,
                             isPointerLikePlaceType(declaration.type),
                             isPointerType(declaration.type)
                                 ? pointerElementScalar(declaration.type)
@@ -3294,8 +3259,6 @@ private struct Compiler {
                         Place.Kind.captured,
                         scalarType(declaration.type), *offset,
                         declaration,
-                        StructField.init,
-                        false,
                         isPointerLikePlaceType(declaration.type),
                         isPointerType(declaration.type)
                             ? pointerElementScalar(declaration.type)
@@ -3384,7 +3347,7 @@ private struct Compiler {
                 !facts.isAggregate)
                 return new Place(
                     Place.Kind.frame, pointer.type, pointer.offset,
-                    null, StructField.init, false,
+                    null,
                     isPointerLikePlaceType(dereference.type),
                     ScalarType.void_,
                 );
@@ -3392,7 +3355,7 @@ private struct Compiler {
                 return pointerPlace(pointer.offset, expression.type);
             return new Place(
                 Place.Kind.pointer, pointer.pointerElement,
-                pointer.offset, null, StructField.init, false,
+                pointer.offset, null,
                 isPointerLikePlaceType(dereference.type),
                 isPointerType(dereference.type)
                     ? pointerElementScalar(dereference.type)
@@ -3527,7 +3490,7 @@ private struct Compiler {
         if (facts.isAggregate)
             return new Place(
                 Place.Kind.pointer, type, pointer,
-                compileSizeConstant(0), StructField.init, false,
+                compileSizeConstant(0),
                 heapEscapingDelegate || isDelegateValueType(type),
             );
         auto result = new Place(
@@ -3535,8 +3498,6 @@ private struct Compiler {
             facts.opcodeType,
             pointer,
             null,
-            StructField.init,
-            false,
             isPointerLikePlaceType(type),
             isPointerType(type)
                 ? pointerElementScalar(type)
@@ -3555,11 +3516,11 @@ private struct Compiler {
         if (facts.isAggregate)
             return new Place(
                 Place.Kind.pointer, type, pointer, index,
-                StructField.init, false, isDelegateValueType(type),
+                isDelegateValueType(type),
             );
         return new Place(
             Place.Kind.pointer, facts.opcodeType, pointer,
-            null, StructField.init, false,
+            null,
             isPointerType(type),
             isPointerType(type)
                 ? pointerElementScalar(type)
@@ -3578,11 +3539,11 @@ private struct Compiler {
             return new Place(
                 Place.Kind.dynamicIndex, type,
                 descriptor.offset, index,
-                StructField.init, false, isDelegateValueType(type),
+                isDelegateValueType(type),
             );
         return new Place(
             Place.Kind.dynamicIndex, facts.opcodeType,
-            descriptor.offset, null, StructField.init, false,
+            descriptor.offset, null,
             isPointerLikePlaceType(type),
             isPointerType(type)
                 ? pointerElementScalar(type)
@@ -3883,49 +3844,6 @@ private struct Compiler {
         return Operand(result, ScalarType.ulong_, true, elementType);
     }
 
-    private Operand addressOfStructField(
-        in StructField field,
-        in ScalarType elementType,
-    ) {
-        final switch (field.writeBack) with (StructField.WriteBack) {
-            case none:
-                return *addressOperand(Op.frameAddress, field.offset, elementType);
-            case dataSegment:
-                return *addressOperand(
-                    Op.moduleAddress, moduleFieldOffset(field), elementType,
-                );
-            case frame:
-                const relative = cast(ushort)
-                    (field.offset - field.target.frame.structOffset);
-                const absolute = allocateBytes(
-                    cast(uint) size_t.sizeof, size_t.sizeof,
-                );
-                _code ~= Instruction(
-                    Op.addInt8, absolute,
-                    field.target.frame.frameIndexOffset,
-                    compileSizeConstant(relative),
-                );
-                const pointer = allocateBytes(
-                    cast(uint) size_t.sizeof, size_t.sizeof,
-                );
-                _code ~= Instruction(Op.frameIndexAddress, pointer, absolute);
-                return Operand(pointer, ScalarType.ulong_, true, elementType);
-            case pointer:
-                const base = pointerPlaceAddress(
-                    field.target.pointer.pointerBaseSlot,
-                    field.target.pointer.pointerIndexSlot,
-                    field.target.pointer.structSize,
-                    ScalarType.ubyte_,
-                );
-                const relative = compileSizeConstant(
-                    field.offset - field.target.pointer.structOffset,
-                );
-                return pointerPlaceAddress(
-                    base.offset, relative, 1, elementType,
-                );
-        }
-    }
-
     private bool isDelegateValueType(Type type) {
         import dmd.astenums: TY;
 
@@ -4173,95 +4091,29 @@ private struct Compiler {
         return *descriptor;
     }
 
-    // `base.field` where `field` resolves to a genuine `Tarray`-typed struct
-    // field, struct-pointer field, or class field: the slice descriptor's
-    // resolution shared by `dynamicArrayDescriptorOrNull`'s own `DotVarExp`
-    // dispatch and `innerArrayDescriptor`'s class/struct-field-base case
-    // (`a.m[0][0] = 99`, where `a.m` is a `DotVarExp` rather than the plain
-    // `VarExp` that case originally required). Deliberately narrower than a
-    // recursive call into `dynamicArrayDescriptorOrNull` itself: it never
-    // reaches that function's later static-array place branch, whose
-    // `isStaticArrayView` result is only valid for a genuine `Tarray`
-    // element (16-byte descriptor stride), not an inline `Tsarray` one. A
-    // prior attempt generalised via that recursive call and corrupted
-    // `nestedStaticArrayFieldElementOfStructElementAddAssigned` (wrong
-    // stride, `Op.indexLoad16` on a static-array view) -- see the removed
-    // "prior attempt" paragraph in `ai/plans/bytecode.md`'s git history.
+    // Resolve a genuine `Tarray` field through the same place pipeline as
+    // every other field consumer. The declaration guard keeps inline
+    // `Tsarray` fields out of descriptor-stride logic.
     private DynamicArrayLocal* dynamicArrayFieldDescriptorOrNull(
         DotVarExp dot,
     ) {
         import dmd.astenums: TY;
 
-        // Reject anything but a genuine `Tarray`-typed field via the field
-        // declaration's own static type, before invoking any of the three
-        // resolvers below -- each has a real fallback for a base that
-        // doesn't match its own particular shape, and `tryClassPointerField`
-        // in particular unconditionally `compileExpression(dot.e1)`s as a
-        // last resort, which throws outright for a bare struct/union-typed
-        // base rather than declining cleanly. Reached with a `Tsarray` field
-        // (`int[1][1] bits` in a union) when called from
-        // `innerArrayDescriptor`'s class/struct-field-base branch:
-        // `dynamicArrayDescriptorOrNull`'s own top-level dispatch never hits
-        // this function for a `Tsarray` field because its earlier, ungated
-        // static-array place branch already claims it first, but
-        // `innerArrayDescriptor` calls straight in here, bypassing that
-        // branch entirely (deliberately, per this function's own doc
-        // comment) -- so the same guard as the place branch's ordering
-        // used to provide has to be reinstated explicitly here instead.
         auto declaredField = dot.var.isVarDeclaration;
         if (declaredField is null ||
             declaredField.type.toBasetype.ty != TY.Tarray)
             return null;
 
-        if (auto field = tryStructField(dot))
-            if (field.type.toBasetype.ty == TY.Tarray) {
-                auto result = new DynamicArrayLocal;
-                *result = DynamicArrayLocal(
-                    field.offset, dynamicArrayElementType(field.type),
-                    arrayElementIsArray(field.type),
-                );
-                return result;
-            }
-
-        if (auto field = tryStructPointerField(dot))
-            if (field.type.toBasetype.ty == TY.Tarray) {
-                const pointer = heapFieldAddress(*field);
-                const offset =
-                    allocateBytes(sliceDescriptorSize, size_t.sizeof);
-                emitPointerLoad(
-                    offset, pointer, compileSizeConstant(0),
-                    sliceDescriptorSize,
-                );
-                auto result = new DynamicArrayLocal;
-                *result = DynamicArrayLocal(
-                    offset,
-                    dynamicArrayElementType(field.type),
-                    arrayElementIsArray(field.type),
-                );
-                return result;
-            }
-
-        // `box.field` where the field is a dynamic array (a `string`
-        // included): its slice descriptor lives at `classPointer +
-        // field.offset`, read through the same `Op.pointerLoad16` path as a
-        // struct-pointer field.
-        if (auto field = tryClassPointerField(dot))
-            if (field.type.toBasetype.ty == TY.Tarray) {
-                const pointer = heapFieldAddress(*field);
-                const offset =
-                    allocateBytes(sliceDescriptorSize, size_t.sizeof);
-                emitPointerLoad(
-                    offset, pointer, compileSizeConstant(0),
-                    sliceDescriptorSize,
-                );
-                auto result = new DynamicArrayLocal;
-                *result = DynamicArrayLocal(
-                    offset,
-                    dynamicArrayElementType(field.type),
-                    arrayElementIsArray(field.type),
-                );
-                return result;
-            }
+        if (auto place = placeOrNull(dot)) {
+            const value = loadPlaceValue(*place);
+            auto result = new DynamicArrayLocal;
+            *result = DynamicArrayLocal(
+                value.offset,
+                dynamicArrayElementType(declaredField.type),
+                arrayElementIsArray(declaredField.type),
+            );
+            return result;
+        }
 
         return null;
     }
@@ -4585,7 +4437,7 @@ private struct Compiler {
         // nested static array (`int[3][2]`) is inline bytes to chain into
         // via the ordinary static-array-element path, not a descriptor to
         // dereference.
-        if (outer is null)
+        if (outer is null && index.e1.type.toBasetype.ty == TY.Tsarray)
             if (auto base = placeOrNull(index.e1))
                 if (index.e1.type.toBasetype.nextOf.toBasetype.ty ==
                         TY.Tarray) {
@@ -5278,64 +5130,19 @@ private struct Compiler {
         return null;
     }
 
-    // The frame offset of a delegate-typed FIELD's `{functionIndex, context}`
-    // value (`s.f`, `c.f`, `p.f`), reached as a plain struct-value field
-    // (local, captured, module, or AA-value-pointer receiver, resolved
-    // through `tryStructField`), a class-reference field, or a
-    // struct-pointer field -- or null if `dot` is not a delegate-typed
-    // field at all. Dispatch on the receiver's own static type first so
-    // only the matching resolver ever runs: the resolvers are not safe to
-    // probe speculatively (e.g. `tryClassPointerField` unconditionally
-    // compiles its receiver).
+    // The frame offset of a delegate-typed field's `{functionIndex, context}`
+    // value, resolved and loaded through the shared place pipeline.
     private ushort* delegateFieldOffsetOf(DotVarExp dot) {
         import dmd.astenums: TY;
 
-        if (dot.e1.type !is null && dot.e1.type.toBasetype.ty == TY.Tclass) {
-            auto classField = tryClassPointerField(dot);
-            if (classField is null ||
-                classField.type.toBasetype.ty != TY.Tdelegate)
-                return null;
-            const destination =
-                allocateBytes(delegateValueSize, size_t.sizeof);
-            emitPointerLoad(
-                destination, heapFieldAddress(*classField),
-                compileSizeConstant(0), delegateValueSize,
-            );
-            auto offset = new ushort;
-            *offset = destination;
-            return offset;
-        }
-
-        // `p.field` arrives as `(*p).field`: DMD inserts a `PtrExp` over the
-        // pointer local before this code ever sees it, so `dot.e1` itself is
-        // the dereferenced struct value, not a pointer-typed expression.
-        // Unwrap it the same way `tryStructPointerField` does before
-        // checking for a pointer type.
-        auto derefBase = dot.e1;
-        if (auto deref = derefBase.isPtrExp)
-            derefBase = deref.e1;
-
-        if (derefBase.type !is null && isPointerType(derefBase.type)) {
-            auto pointerField = tryStructPointerField(dot);
-            if (pointerField is null ||
-                pointerField.type.toBasetype.ty != TY.Tdelegate)
-                return null;
-            const destination =
-                allocateBytes(delegateValueSize, size_t.sizeof);
-            emitPointerLoad(
-                destination, heapFieldAddress(*pointerField),
-                compileSizeConstant(0), delegateValueSize,
-            );
-            auto offset = new ushort;
-            *offset = destination;
-            return offset;
-        }
-
-        auto field = tryStructField(dot);
+        auto field = dot.var.isVarDeclaration;
         if (field is null || field.type.toBasetype.ty != TY.Tdelegate)
             return null;
+        auto place = placeOrNull(dot);
+        if (place is null)
+            return null;
         auto offset = new ushort;
-        *offset = field.offset;
+        *offset = loadPlaceValue(*place).offset;
         return offset;
     }
 
@@ -6223,11 +6030,11 @@ private struct Compiler {
                     if (auto blitTarget = blit.e1.isVarExp)
                         if (blitTarget.var is variable) {
                             if (auto blitSource =
-                                    structBaseOffsetOrMaterialise(blit.e2)) {
+                                    structValueOffsetOrNull(blit.e2)) {
                                 _code ~= Instruction(
                                     Op.copy,
                                     offset,
-                                    blitSource.offset,
+                                    *blitSource,
                                     cast(ushort) typeFacts(variable.type).byteWidth,
                                 );
                                 auto postblitFunction = callFunction(call);
@@ -6241,11 +6048,11 @@ private struct Compiler {
         // `S dest = src` / `S dest = make(...)`: a value-type block copy of the
         // whole struct from its inline base (a local, a nested field, or a
         // materialised struct-valued call) into the declared slot.
-        if (auto sourceOffset = structBaseOffsetOrMaterialise(source)) {
+        if (auto sourceOffset = structValueOffsetOrNull(source)) {
             _code ~= Instruction(
                 Op.copy,
                 offset,
-                sourceOffset.offset,
+                *sourceOffset,
                 cast(ushort) typeFacts(variable.type).byteWidth,
             );
             return;
@@ -6621,37 +6428,6 @@ private struct Compiler {
         return null;
     }
 
-    // The inline frame base offset of a struct lvalue (a struct local, by-value
-    // struct parameter, or the method's hidden `this` receiver), or null if
-    // `expression` is not a known struct.
-    private ushort* structBaseOffsetOrNull(Expression expression) {
-        if (auto variable = expression.isVarExp)
-            if (auto declaration = variable.var.isVarDeclaration)
-                if (auto existing = declaration in _withDerefBases)
-                    return existing;
-
-        if (auto variable = expression.isVarExp)
-            if (auto declaration = variable.var.isVarDeclaration)
-                if (auto existing = declarationRecordView(declaration).struct_OrNull)
-                    return &existing.offset;
-
-        // Inside `with (subject)`, the body's unqualified fields appear as
-        // `(*__withSym).field`, where `__withSym` is a synthetic `S*` bound to
-        // `&subject`. Resolve the dereference back to the subject's inline base.
-        if (auto deref = expression.isPtrExp)
-            if (auto variable = deref.e1.isVarExp)
-                if (auto declaration = variable.var.isVarDeclaration)
-                    if (auto existing = declaration in _withDerefBases)
-                        return existing;
-
-        // An unqualified `this.field` inside a method resolves against the
-        // hidden receiver block.
-        if (_hasThis && expression.isThisExp !is null)
-            return &_thisLocal.offset;
-
-        return null;
-    }
-
     private Operand storageAddressOrValue(Expression expression) {
         import std.conv: text;
 
@@ -6702,49 +6478,40 @@ private struct Compiler {
         ));
     }
 
-    // The inline frame offset of a struct-valued expression: a struct lvalue's
-    // base, or a struct literal materialised into a fresh block.
+    // The inline frame offset of a struct-valued expression. Lvalues resolve
+    // and load through Place; literals materialise directly.
     private ushort structOperandOffset(Expression expression) {
         import std.conv: text;
 
         expression = initializerExpression(expression);
 
-        if (auto variable = expression.isVarExp)
-            if (auto declaration = variable.var.isVarDeclaration)
-                if (declarationRecordView(declaration).refPointerOrNull !is null)
-                    if (auto place = placeOrNull(expression))
-                        return loadPlace(*place).offset;
-
-        if (auto dereference = expression.isPtrExp) {
-            const pointer = compileExpression(dereference.e1);
-            if (pointer.isPointer)
-                return loadStructThroughPointer(
-                    pointer.offset, compileSizeConstant(0), expression.type,
-                );
-        }
-
-        // `p[i]` where `p` is a raw pointer (not an array): the element block
-        // lives at `p + i * structSize` in VM-owned heap memory rather than a
-        // frame offset, so read it through the same shared load as `*p`
-        // above. Gated on `index.e1`'s own static type, matching the place
-        // resolver's pointer check, so a struct array's own `arr[i]` (handled
-        // by `structBaseOffsetOrMaterialise` below) is untouched.
-        if (auto index = expression.isIndexExp)
-            if (isPointerType(index.e1.type)) {
-                const pointer = compileExpression(index.e1);
-                const indexSlot = compileExpression(index.e2);
-                return loadStructThroughPointer(
-                    pointer.offset, indexSlot.offset, expression.type,
-                );
-            }
-
-        if (auto base = structBaseOffsetOrMaterialise(expression))
-            return base.offset;
+        if (auto value = structValueOffsetOrNull(expression))
+            return *value;
 
         throw new Exception(text(
             "Unsupported struct value in bytecode core: ",
             expressionChars(expression),
         ));
+    }
+
+    private ushort* structValueOffsetOrNull(Expression expression) {
+        expression = initializerExpression(expression);
+
+        if (auto comma = expression.isCommaExp) {
+            compileExpression(comma.e1);
+            return structValueOffsetOrNull(comma.e2);
+        }
+        if (auto place = placeOrNull(expression)) {
+            auto result = new ushort;
+            *result = loadPlaceValue(*place).offset;
+            return result;
+        }
+        if (auto literal = expression.isStructLiteralExp) {
+            auto result = new ushort;
+            *result = compileStructLiteralOperand(literal).offset;
+            return result;
+        }
+        return null;
     }
 
     // The inline frame offset of an aggregate-valued expression. Structs use
@@ -6768,390 +6535,6 @@ private struct Compiler {
         }
 
         return structOperandOffset(expression);
-    }
-
-    // Read a struct of any width out of `[pointer + indexSlot * structSize]`
-    // into a fresh inline block, backing both `*p` (`indexSlot` a zero
-    // constant) and `p[i]` (`indexSlot` the compiled index expression) as a
-    // struct rvalue.
-    private ushort loadStructThroughPointer(
-        in ushort pointer,
-        in ushort indexSlot,
-        Type structType,
-    ) {
-        const structSize = typeFacts(structType).byteWidth;
-        const offset = allocateBytes(structSize, staticArrayAlign(structType));
-        emitPointerLoad(offset, pointer, indexSlot, structSize);
-        return offset;
-    }
-
-    // A located struct field: its inline frame offset and DMD type.
-    private static struct StructField {
-        enum WriteBack {
-            none,
-            frame,
-            dataSegment,
-            pointer,
-        }
-
-        ushort offset;
-        Type type;
-        WriteBack writeBack;
-        union WriteBackTarget {
-            FrameWriteBack frame;
-            DataSegmentWriteBack dataSegment;
-            PointerWriteBack pointer;
-        }
-
-        static struct FrameWriteBack {
-            ushort structOffset;
-            ushort frameIndexOffset;
-            ushort structSize;
-        }
-
-        static struct DataSegmentWriteBack {
-            ushort structOffset;
-            ushort moduleOffset;
-        }
-
-        // The pointer variant backs an associative-array rvalue-read field
-        // (`a[1].x`): it carries the whole materialised struct block's frame
-        // offset and byte width plus the runtime AA-value pointer and index
-        // it came from. A write copies that complete updated block back to
-        // the live `_d_aaGetRvalueX` storage, as captured-frame writeback
-        // does for a captured struct receiver.
-        static struct PointerWriteBack {
-            ushort structOffset;
-            ushort structSize;
-            ushort pointerBaseSlot;
-            ushort pointerIndexSlot;
-        }
-
-        WriteBackTarget target;
-    }
-
-    // Resolve `base.field` (a DotVarExp over a struct lvalue) to the field's
-    // inline frame offset (`base + field.offset`) and type, or null if the base
-    // is not a resolvable struct value.
-    private StructField* tryStructField(DotVarExp dot) {
-        auto field = dot.var.isVarDeclaration;
-        if (field is null)
-            return null;
-
-        auto base = structBaseOffsetOrMaterialise(dot.e1);
-        if (base is null)
-            return null;
-
-        const nestedThisFieldOffset =
-            (dot.e1.isThisExp !is null || dot.e1.isSuperExp !is null) &&
-                _hasThis &&
-                _thisLocal.declaration !is null &&
-                _thisLocal.declaration.isNested
-            ? size_t.sizeof
-            : 0;
-        auto result = structFieldAt(base, field, nestedThisFieldOffset);
-        // `dot.e1` resolved through a materialised copy of module storage
-        // (e.g. `go.x` or `go.inner.x`): the field's writeback lands at its
-        // own module slot through the base place's data-segment target.
-        // `dot.e1` resolved through a materialised copy of an
-        // associative-array rvalue-read pointer (`a[1]`, or a field chain
-        // rooted at one, `a[1].inner.x`): the field's writeback must copy
-        // the whole struct block back through that same pointer, the same
-        // whole-block shape used for a captured struct receiver.
-        // `dot.e1` resolved through a materialised copy of an *indirectly*
-        // captured struct receiver (e.g. `o.inner` inside `o.inner.arr[1]`,
-        // where `o` itself -- not `o.inner` -- is the captured outer local):
-        // this function's own bespoke branch above only matches a *direct*
-        // captured receiver (`dot.e1` itself a `VarExp`/`ThisExp`), so a
-        // chain reaches here instead. The writeback is the same whole-block
-        // `Op.frameStore` the direct case already uses, just with the base
-        // offset/frame index/size threaded up from the recursive resolution
-        // of `dot.e1` rather than computed locally.
-        return result;
-    }
-
-    // The enclosing-frame struct variable `expression` reads as a receiver
-    // for field access -- the enclosing method's own `this` (only when this
-    // function has none of its own), or an outer local captured into this
-    // function (a `lazy` argument thunk's struct-typed local) -- or null if
-    // `expression` is not such a receiver. Excludes this function's own
-    // struct locals, which resolve directly through declaration metadata.
-    private VarDeclaration capturedStructReceiver(Expression expression) {
-        import dmd.astenums: TY;
-
-        if (!_hasThis)
-            if (auto this_ = expression.isThisExp)
-                return this_.var;
-
-        if (auto variable = expression.isVarExp)
-            if (auto declaration = variable.var.isVarDeclaration)
-                if (declaration.type.toBasetype.ty == TY.Tstruct)
-                    if (declarationRecordView(declaration).struct_OrNull is null)
-                        return declaration;
-
-        return null;
-    }
-
-    // A data-segment target owns the materialised struct's complete module
-    // location. Derive a nested field's location only from that one target so
-    // every field write uses the same module offset.
-    private ushort moduleFieldOffset(in StructField field) {
-        assert(field.writeBack == StructField.WriteBack.dataSegment);
-        return cast(ushort) (field.target.dataSegment.moduleOffset +
-            (field.offset - field.target.dataSegment.structOffset));
-    }
-
-    private void writeBackStructField(in StructField field) {
-        final switch (field.writeBack) with (StructField.WriteBack) {
-            case frame:
-                _code ~= Instruction(
-                    Op.frameStore,
-                    field.target.frame.structOffset,
-                    field.target.frame.frameIndexOffset,
-                    field.target.frame.structSize,
-                );
-                return;
-            case dataSegment:
-                _code ~= Instruction(
-                    Op.storeModule,
-                    field.offset,
-                    moduleFieldOffset(field),
-                    cast(ushort) typeFacts(cast(Type) field.type).byteWidth,
-                );
-                return;
-            case pointer:
-                emitPointerStore(
-                    field.target.pointer.structOffset,
-                    field.target.pointer.pointerBaseSlot,
-                    field.target.pointer.pointerIndexSlot,
-                    field.target.pointer.structSize,
-                );
-                return;
-            case none:
-                return;
-        }
-    }
-
-    // Add `field` to a resolved struct place while preserving the one
-    // writeback target that owns the materialised base. `receiverOffset` is
-    // the nested-function context word preceding a struct receiver.
-    private StructField* structFieldAt(
-        StructField* base,
-        VarDeclaration field,
-        in ushort receiverOffset = 0,
-    ) {
-        auto result = new StructField;
-        *result = StructField(
-            cast(ushort) (base.offset + receiverOffset + field.offset),
-            field.type,
-            base.writeBack,
-            base.target,
-        );
-        return result;
-    }
-
-    // The inline frame base of any struct-valued expression: a struct lvalue's
-    // base, a nested struct field (`outer.inner` → `base + inner.offset`), or a
-    // struct-valued call / comma materialised into a fresh block. The place's
-    // writeback target follows a materialised module, pointer, or captured
-    // receiver through every nested field level.
-    //
-    // `writeBack` identifies whether `target` is a module-data, AA-pointer,
-    // or captured-frame `StructField.WriteBackTarget`; its matching target
-    // carries the original materialised block's location and any storage
-    // coordinates needed to write that whole block back. Those target fields
-    // remain unchanged as each nested field advances `offset`.
-    private StructField* structBaseOffsetOrMaterialise(Expression expression) {
-        import dmd.astenums: TY;
-
-        if (auto base = structBaseOffsetOrNull(expression)) {
-            auto result = new StructField;
-            *result = StructField(offset: *base, type: expression.type);
-            return result;
-        }
-
-        // A nested function reads an enclosing struct receiver -- either its
-        // enclosing method's `this` or an outer local -- through the parent
-        // frame. Materialise that one base place here so direct and nested
-        // field paths retain the same frame writeback target.
-        if (_hasNestedContext)
-            if (auto receiver = capturedStructReceiver(expression))
-                if (auto captured = receiver in _capturedOffsets) {
-                    const structOffset = allocateStructBlock(expression.type);
-                    const frameIndex = capturedFrameIndex(
-                        _capturedOwners[receiver], *captured,
-                    );
-                    const structSize = cast(ushort)
-                        typeFacts(expression.type).byteWidth;
-                    _code ~= Instruction(
-                        Op.frameLoad,
-                        structOffset,
-                        frameIndex,
-                        structSize,
-                    );
-                    auto result = new StructField;
-                    *result = StructField(
-                        offset: structOffset,
-                        type: expression.type,
-                        writeBack: StructField.WriteBack.frame,
-                        target: StructField.WriteBackTarget(
-                            frame: StructField.FrameWriteBack(
-                                structOffset, frameIndex, structSize,
-                            ),
-                        ),
-                    );
-                    return result;
-                }
-
-        // A bare module-level (`__gshared`/`static`) struct variable
-        // (`go`, as opposed to `go.field`): materialise the whole block from
-        // `_program.moduleData` into a fresh frame slot. Every field lookup,
-        // including `go.field`, then composes through this one base place.
-        if (auto variable = expression.isVarExp)
-            if (auto declaration = variable.var.isVarDeclaration)
-                if (auto moduleVariable = moduleDeclarationRecord(declaration).moduleStructOrNull) {
-                    const structOffset = allocateStructBlock(expression.type);
-                    _code ~= Instruction(
-                        Op.loadModule,
-                        structOffset,
-                        moduleVariable.offset,
-                        moduleVariable.size,
-                    );
-                    auto result = new StructField;
-                    *result = StructField(
-                        offset: structOffset,
-                        type: expression.type,
-                        writeBack: StructField.WriteBack.dataSegment,
-                        target: StructField.WriteBackTarget(
-                            dataSegment: StructField.DataSegmentWriteBack(
-                                structOffset, moduleVariable.offset,
-                            ),
-                        ),
-                    );
-                    return result;
-                }
-
-        // `outer.inner` where `inner` is itself a struct-typed field: the inner
-        // block lives inline at `outerBase + inner.offset`.
-        if (auto dot = expression.isDotVarExp)
-            if (auto field = dot.var.isVarDeclaration)
-                if (field.type.toBasetype.ty == TY.Tstruct) {
-                    if (auto outerBase = structBaseOffsetOrMaterialise(dot.e1))
-                        return structFieldAt(outerBase, field);
-                }
-
-        if (expression.type !is null &&
-            expression.type.toBasetype.ty == TY.Tstruct) {
-            // Materialise a static-array struct element through its aggregate
-            // place. The resolver owns the base location, bounds check, and
-            // index evaluation; this consumer needs only the loaded value.
-            if (auto index = expression.isIndexExp)
-                if (index.e1.type !is null &&
-                    index.e1.type.toBasetype.ty == TY.Tsarray)
-                    if (auto place = placeOrNull(index)) {
-                        const value = loadPlaceValue(*place);
-                        auto result = new StructField;
-                        *result = StructField(
-                            offset: value.offset,
-                            type: expression.type,
-                        );
-                        return result;
-                    }
-
-            // `arr[i]` element of a dynamic array of structs: copy the heap
-            // element into a fresh inline block so struct field reads can use
-            // normal `base + field.offset` addressing.
-            if (auto index = expression.isIndexExp)
-                if (auto descriptor = dynamicArrayDescriptorOrNull(index.e1)) {
-                    auto result = new StructField;
-                    *result = StructField(
-                        offset: loadDynamicArrayElement(
-                            descriptor.offset,
-                            descriptor.elementType,
-                            index.e2,
-                            expression.type,
-                        ).offset,
-                        type: expression.type,
-                    );
-                    return result;
-                }
-
-            // `p[0]` where `p` is a raw pointer to a struct (not an array of
-            // structs, both handled above): DMD's associative-array
-            // rvalue-read lowering (`_d_aaGetRvalueX`) yields exactly this
-            // shape -- an `IndexExp` over the returned pointer -- for a
-            // struct-typed AA value (`Point[int] a; a[1]`), the struct
-            // counterpart of `dynamicArrayDescriptorOrNull`'s identical
-            // `p[0]` branch for an array-typed value. Copy the pointee
-            // through the same `loadStructThroughPointer` helper
-            // `structOperandOffset` already uses for a bare `p[i]`/`*p`
-            // struct rvalue, so a further field access (`a[1].x`) addresses
-            // the materialised copy with ordinary `base + field.offset`
-            // arithmetic.
-            if (auto index = expression.isIndexExp)
-                if (isPointerType(index.e1.type)) {
-                    const pointer = compileExpression(index.e1);
-                    if (pointer.isPointer) {
-                        const indexSlot = compileExpression(index.e2);
-                        const structSize =
-                            cast(ushort) typeFacts(expression.type).byteWidth;
-                        const blockOffset = loadStructThroughPointer(
-                            pointer.offset, indexSlot.offset, expression.type,
-                        );
-                        auto result = new StructField;
-                        *result = StructField(
-                            offset: blockOffset,
-                            type: expression.type,
-                            writeBack: StructField.WriteBack.pointer,
-                            target: StructField.WriteBackTarget(
-                                pointer: StructField.PointerWriteBack(
-                                    blockOffset, structSize, pointer.offset,
-                                    indexSlot.offset,
-                                ),
-                            ),
-                        );
-                        return result;
-                    }
-                }
-
-            if (auto call = expression.isCallExp) {
-                auto function_ = callFunction(call);
-                if (function_ !is null && function_.isCtorDeclaration !is null) {
-                    Operand receiver;
-                    compileCall(call, &receiver);
-                    const value = allocateStructBlock(expression.type);
-                    emitPointerLoad(
-                        value, receiver.offset, compileSizeConstant(0),
-                        typeFacts(expression.type).byteWidth,
-                    );
-                    auto result = new StructField;
-                    *result = StructField(
-                        offset: value, type: expression.type,
-                    );
-                    return result;
-                }
-
-                auto result = new StructField;
-                *result = StructField(
-                    offset: compileCall(call).offset, type: expression.type,
-                );
-                return result;
-            }
-            if (auto literal = expression.isStructLiteralExp) {
-                auto result = new StructField;
-                *result = StructField(
-                    offset: compileStructLiteralOperand(literal).offset,
-                    type: expression.type,
-                );
-                return result;
-            }
-            if (auto comma = expression.isCommaExp) {
-                compileExpression(comma.e1);
-                return structBaseOffsetOrMaterialise(comma.e2);
-            }
-        }
-
-        return null;
     }
 
     // Whether `declaration`'s captured-local access from the function
@@ -7350,253 +6733,6 @@ private struct Compiler {
             Op.addInt8, sourceIndex, contextBase, offsetConstant,
         );
         return sourceIndex;
-    }
-
-    // A field located in native heap storage, whether its root is a struct
-    // pointer or a class reference. Both roots use the same `ptr + offset`
-    // address contract; their only distinction is the class null check at
-    // resolution time.
-    private static struct HeapField {
-        ushort pointerSlot;
-        ushort fieldOffset;
-        Type type;
-    }
-
-    // Resolve `p.field` (a DotVarExp over a struct-pointer local) to the
-    // pointer's frame slot, the field's byte offset, and its type, or null if
-    // `p` is not a known struct-pointer local.
-    private HeapField* tryStructPointerField(DotVarExp dot) {
-        auto field = dot.var.isVarDeclaration;
-        if (field is null)
-            return null;
-
-        // `p.field` arrives as `(*p).field`: the base is a `PtrExp` over the
-        // pointer local, which DMD inserts for member access through a pointer.
-        auto base = dot.e1;
-        if (auto deref = base.isPtrExp)
-            base = deref.e1;
-
-        auto variable = base.isVarExp;
-        auto declaration =
-            variable is null ? null : variable.var.isVarDeclaration;
-        if (structPointerDeclaration(base.type) is null &&
-            (declaration is null ||
-                declarationRecordView(declaration).structPointerOrNull
-                    is null))
-            return null;
-
-        const pointer = compileExpression(base);
-        if (!pointer.isPointer)
-            return null;
-
-        auto result = new HeapField;
-        *result = HeapField(
-            pointer.offset, cast(ushort) field.offset, field.type,
-        );
-        return result;
-    }
-
-    // Materialise the address `pointerSlot + fieldOffset` of a struct-pointer
-    // field into a fresh pointer slot, so the existing `pointerLoad`/
-    // `pointerStore` opcodes (index 0) read and write the heap field.
-    private ushort heapFieldAddress(in HeapField field) {
-        const fieldPointer =
-            allocateBytes(cast(uint) size_t.sizeof, size_t.sizeof);
-        const fieldOffset = compileSizeConstant(field.fieldOffset);
-        _code ~= Instruction(
-            Op.addInt8, fieldPointer, field.pointerSlot, fieldOffset,
-        );
-        return fieldPointer;
-    }
-
-    // `p.field`: read a scalar or dynamic-array field through the struct
-    // pointer at `ptr + field.offset` into a fresh slot.
-    private Operand loadStructPointerField(HeapField field) {
-        import dmd.astenums: TY;
-
-        if (field.type.toBasetype.ty == TY.Tarray) {
-            const destination =
-                allocateBytes(sliceDescriptorSize, size_t.sizeof);
-            emitPointerLoad(
-                destination, heapFieldAddress(field), compileSizeConstant(0),
-                sliceDescriptorSize,
-            );
-            return Operand(destination, ScalarType.void_);
-        }
-
-        // A struct or static-array field lives inline in the pointed-to
-        // block, the same as `loadClassPointerField`'s identical `Tstruct`
-        // branch: its own address is the field's address, with no load to
-        // perform. Mark it as a further-dereferenceable pointer so a nested
-        // `.field` hop (`carrier.value.a`) resolves against it -- that nested
-        // hop is compiled through `tryClassPointerField`'s generic
-        // pointer-receiver mechanism, which only requires `isPointer`, not an
-        // actual class.
-        if (field.type.toBasetype.ty == TY.Tstruct ||
-            field.type.toBasetype.ty == TY.Tsarray)
-            return Operand(
-                heapFieldAddress(field), ScalarType.ulong_, true,
-                ScalarType.void_,
-            );
-
-        // A delegate field (`int delegate(int) f`) is a 16-byte
-        // `{functionIndex, context}` pair, the same aggregate shape as a
-        // slice descriptor -- `scalarType` has no case for `Tdelegate` (it
-        // is not scalar), so the generic fallback below would throw instead
-        // of reading it.
-        if (field.type.toBasetype.ty == TY.Tdelegate) {
-            const destination =
-                allocateBytes(delegateValueSize, size_t.sizeof);
-            emitPointerLoad(
-                destination, heapFieldAddress(field), compileSizeConstant(0),
-                delegateValueSize,
-            );
-            return Operand(destination, ScalarType.void_);
-        }
-
-        const fieldScalar = scalarType(field.type);
-        const elementSize = typeFacts(field.type).byteWidth;
-        const fieldPointer = heapFieldAddress(field);
-        const destination = allocateBytes(elementSize, elementSize);
-        emitPointerLoad(
-            destination, fieldPointer, compileSizeConstant(0), elementSize,
-        );
-        if (field.type.toBasetype.ty == TY.Tclass)
-            return Operand(destination, fieldScalar, true, ScalarType.void_);
-        if (isPointerType(field.type))
-            return Operand(
-                destination, fieldScalar, true,
-                pointerElementScalar(field.type),
-            );
-        return Operand(destination, fieldScalar);
-    }
-
-    // `p.field = value`: write `value` (already in a frame slot) through the
-    // struct pointer at `ptr + field.offset`. A `Tstruct`/`Tsarray` field
-    // lives inline at that address, so it needs its own real byte width from
-    // `TypeFacts.byteWidth`/`staticArrayAlign` instead of the scalar-only
-    // gate. A
-    // `Tdelegate` field is the same 16-byte aggregate shape (`staticArraySize`
-    // -- DMD's own `size()` -- already reports 16 for it, same as a slice
-    // descriptor), so it is grouped with the other aggregates rather than
-    // routed through `scalarType`, which has no `Tdelegate` case. Reuses
-    // `typeFacts`' shared aggregate-vs-scalar classification
-    // (its wider `Tarray`/`Tfunction` aggregate cases never apply here: a
-    // dynamic-array field is written by the caller's own `Tarray` branch
-    // before this ever runs, and a field cannot itself be `Tfunction`).
-    private void storeStructPointerField(
-        HeapField field,
-        in ushort valueSlot,
-    ) {
-        const elementSize = typeFacts(field.type).byteWidth;
-        const fieldPointer = heapFieldAddress(field);
-        emitPointerStore(
-            valueSlot, fieldPointer, compileSizeConstant(0), elementSize,
-        );
-    }
-
-    private HeapField* tryClassPointerField(DotVarExp dot) {
-        import std.conv: text;
-
-        auto field = dot.var.isVarDeclaration;
-        if (field is null)
-            return null;
-
-        const receiver = compileExpression(dot.e1);
-        if (!receiver.isPointer)
-            return null;
-
-        emitNullClassReferenceCheck(
-            receiver.offset,
-            text(
-                "class `", expressionChars(dot.e1),
-                "` is `null` and cannot be dereferenced",
-            ),
-        );
-        auto result = new HeapField;
-        *result = HeapField(
-            receiver.offset, cast(ushort) field.offset, field.type,
-        );
-        return result;
-    }
-
-    private Operand loadClassPointerField(HeapField field) {
-        import dmd.astenums: TY;
-
-        if (field.type.toBasetype.ty == TY.Tarray) {
-            const destination =
-                allocateBytes(sliceDescriptorSize, size_t.sizeof);
-            emitPointerLoad(
-                destination, heapFieldAddress(field), compileSizeConstant(0),
-                sliceDescriptorSize,
-            );
-            return Operand(destination, ScalarType.void_);
-        }
-
-        // A struct-typed field (`MonitorProxy m_proxy` in `Mutex`) lives
-        // inline in the class block rather than behind a separate pointer:
-        // its own address is the field's address, with no load to perform.
-        // Mark it as a further-dereferenceable pointer so a nested `.field`
-        // hop (`this.m_proxy.link`) resolves against it.
-        if (field.type.toBasetype.ty == TY.Tstruct)
-            return Operand(
-                heapFieldAddress(field), ScalarType.ulong_, true,
-                ScalarType.void_,
-            );
-
-        // A delegate field (`int delegate(int) f`), the class-field twin of
-        // `loadStructPointerField`'s identical `Tdelegate` branch: a 16-byte
-        // `{functionIndex, context}` pair `scalarType` cannot size.
-        if (field.type.toBasetype.ty == TY.Tdelegate) {
-            const destination =
-                allocateBytes(delegateValueSize, size_t.sizeof);
-            emitPointerLoad(
-                destination, heapFieldAddress(field), compileSizeConstant(0),
-                delegateValueSize,
-            );
-            return Operand(destination, ScalarType.void_);
-        }
-
-        const fieldScalar = scalarType(field.type);
-        const elementSize = typeFacts(field.type).byteWidth;
-        const fieldPointer = heapFieldAddress(field);
-        const destination = allocateBytes(elementSize, elementSize);
-        emitPointerLoad(
-            destination, fieldPointer, compileSizeConstant(0), elementSize,
-        );
-        if (isPointerType(field.type))
-            return Operand(
-                destination,
-                ScalarType.ulong_,
-                true,
-                pointerElementScalar(field.type),
-            );
-        // A class-reference field (`next` in `Node next;`) loads a real
-        // pointer: mark it so a further `.field` hop (`a.next.value`) can
-        // dereference through it, mirroring how a class-typed local is
-        // exposed as a pointer.
-        if (field.type.toBasetype.ty == TY.Tclass)
-            return Operand(
-                destination, ScalarType.ulong_, true, ScalarType.void_,
-            );
-        return Operand(destination, fieldScalar);
-    }
-
-    // `box.field = value`: write `value` (already in a frame slot) through the
-    // class pointer at `ptr + field.offset`. A `Tstruct`/`Tsarray` field lives
-    // inline at that address, so it needs its own real byte width from
-    // `TypeFacts.byteWidth` instead of the scalar-only gate, mirroring
-    // `storeStructPointerField`'s identical widening -- including its reuse
-    // of `typeFacts`' shared classification.
-    private void storeClassPointerField(
-        HeapField field,
-        in ushort valueSlot,
-    ) {
-        const elementSize = typeFacts(field.type).byteWidth;
-        const fieldPointer = heapFieldAddress(field);
-        emitPointerStore(
-            valueSlot, fieldPointer, compileSizeConstant(0), elementSize,
-        );
     }
 
     private void emitNullClassReferenceCheck(
@@ -9313,7 +8449,7 @@ private struct Compiler {
     // (`__r[i]` inside `foreach (ref e; arr) ...`'s lowered loop): a local's
     // or struct field's base is a frame offset, resolved via
     // `Op.frameAddress` (`staticArrayElementPointer`); a class field's base
-    // is already a runtime pointer (`heapFieldAddress`), used directly.
+    // is already the runtime pointer resolved by its place.
     private Operand staticArrayViewElementPointer(
         in DynamicArrayLocal descriptor,
         Expression indexExpression,
@@ -10949,12 +10085,8 @@ private struct Compiler {
 
     // A module-level struct (`Point p;`) reserves `Type.size()` bytes at
     // `Type.alignsize()` in `_program.moduleData`, the struct counterpart of
-    // `ModuleScalarVariable`/`ModuleDynamicArrayVariable`. Unlike those two,
-    // field access does not resolve through this function's returned offset
-    // directly: `tryStructField` materialises the whole block into a fresh
-    // frame slot (`Op.loadModule`) and writes it back (`Op.storeModule`) after
-    // any field write, the same pattern already used for a captured struct's
-    // context-pointer indirection.
+    // `ModuleScalarVariable`/`ModuleDynamicArrayVariable`. Its module place
+    // owns both reads and writes, including nested field composition.
     private ModuleStructVariable* allocateModuleStructVariable(
         VarDeclaration declaration,
     ) {
@@ -12879,8 +12011,7 @@ private struct Compiler {
         const isArrayReturn = returnType.toBasetype.ty == TY.Tarray;
         // A struct return (e.g. `GC.qalloc`'s `BlkInfo`, libc's `div_t`) is an
         // inline block sized and aligned to the struct's own layout, the same
-        // shape every other struct-by-value result uses
-        // (`structBaseOffsetOrMaterialise`).
+        // shape every other struct-by-value result uses.
         const isStructReturn = returnType.toBasetype.ty == TY.Tstruct;
         const returnScalar = isArrayReturn || isStructReturn
             ? ScalarType.void_
@@ -13603,7 +12734,7 @@ private struct Compiler {
                 return null;
 
             if (call.arguments.length == 2) {
-                auto source = structBaseOffsetOrMaterialise(
+                auto source = structValueOffsetOrNull(
                     (*call.arguments)[1],
                 );
                 if (source is null)
@@ -13613,7 +12744,7 @@ private struct Compiler {
                 _code ~= Instruction(
                     Op.copy,
                     value,
-                    source.offset,
+                    *source,
                     cast(ushort) elementSize,
                 );
                 if (auto postblit = structDeclarationOf(index.type).postblit)
@@ -14612,11 +13743,16 @@ private struct Compiler {
             }
 
         if (auto dot = inner.isDotVarExp)
-            if (auto field = tryStructField(dot)) {
+            if (auto field = dot.var.isVarDeclaration) {
                 import dmd.astenums: TY;
 
                 if (field.type.toBasetype.ty == TY.Taarray)
-                    return AssocArrayHandleResult(field.offset);
+                    if (auto place = placeOrNull(dot))
+                        return AssocArrayHandleResult(
+                            loadPlaceValue(*place).offset,
+                            place.kind == Place.Kind.pointer
+                                ? place.offset : ushort.max,
+                        );
             }
 
         if (staticDelegateAssocArrayDeclaration(inner) !is null) {
@@ -17381,8 +16517,8 @@ private struct DynamicArrayLocal {
     ushort staticArrayOffset;
     // When set, `staticArrayOffset` is not a frame-relative array offset
     // (resolved via `Op.frameAddress`) but a frame slot already holding a
-    // real runtime pointer (`heapFieldAddress`) to the view's first
-    // element, because the underlying static array is a class field living
+    // real runtime pointer resolved by the field place, because the
+    // underlying static array is a class field living
     // in the class's own heap block rather than inline in this frame.
     bool staticArrayViewIsClassField;
 }

@@ -344,7 +344,7 @@ Settled contracts:
 
 - One `TypeFacts` authority supplies the opcode tag, optional byte width, and
   explicit aggregate classification. It serves `dynamicArrayElementSize`,
-  `pointerElementMetadata`, heap-field stores and `ref` arguments, and must be
+  `pointerElementMetadata`, aggregate stores and `ref` arguments, and must be
   extended rather than duplicated when another lowering consumer needs those
   facts. `ScalarType.void_`'s zero size is not an aggregate sentinel; an
   omitted width fails compilation rather than becoming a zero-byte copy.
