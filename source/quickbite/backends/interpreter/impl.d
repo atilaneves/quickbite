@@ -10255,9 +10255,9 @@ private struct Walker {
     // as the array's current block has no spare capacity -- true again
     // immediately for a freshly one-element array's second append -- and
     // copies every existing element's bytes into the new block. That plain
-    // byte copy carries ordinary element bytes fine, but it orphans every
-    // PRIOR element's `nativeDelegateSlots` registration, which is keyed by
-    // that element's own address in the now-freed old block: the same gap
+    // byte copy carries ordinary element bytes fine, but does not duplicate
+    // each PRIOR element's `nativeDelegateSlots` registration at its new
+    // address: the same gap
     // the newly appended element's own registration above needs relocating
     // for, just for every earlier element instead of only the latest one.
     // Detect the reallocation by comparing the slice's data pointer before
@@ -10265,7 +10265,9 @@ private struct Walker {
     // it moved, relocate every one of `previous`'s `count` elements from
     // its old per-element address to its corresponding new one --
     // `copyStoredMetadata` carries every symbolic entry in each element's
-    // byte range, including entries in nested structs and static arrays.
+    // byte range, including entries in nested structs and static arrays. The
+    // old registrations remain because another live slice may still alias
+    // the old allocation.
     private void relocatePriorAppendedElementSlots(
         imported!"dmd.mtype".Type elementType,
         in Value previous,
@@ -10291,7 +10293,6 @@ private struct Walker {
                 elementType,
                 AggregateValue.elementAddress(previous, i),
                 AggregateValue.elementAddress(appended, i),
-                true,
             );
     }
 

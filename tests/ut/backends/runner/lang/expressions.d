@@ -840,6 +840,40 @@ static foreach (backend; Matrix!()) {
     }
 }
 
+// Appending may reallocate one slice's backing storage while another slice
+// still aliases the old allocation. Both allocations retain the values they
+// contain, including symbolic references and callable identity.
+static foreach (backend; Matrix!()) {
+    @("typeid.appendReallocationPreservesAliasedElement." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            class First {}
+
+            struct Observation {
+                TypeInfo type;
+                int delegate() observe;
+            }
+
+            unittest {
+                int seed = 42;
+                Observation[] values = [
+                    Observation(typeid(First), () => seed),
+                ];
+                auto alias_ = values;
+                values ~= Observation();
+
+                assert(alias_[0].type is typeid(First));
+                assert(alias_[0].observe() == 42);
+                assert(values[0].type is typeid(First));
+                assert(values[0].observe() == 42);
+                assert(values[1].type is null);
+                assert(values[1].observe is null);
+            }
+        });
+    }
+}
+
 // Reading and writing through a typed pointer has the same TypeInfo identity
 // and clearing semantics as accessing the pointed-to variable directly.
 static foreach (backend; Matrix!()) {
