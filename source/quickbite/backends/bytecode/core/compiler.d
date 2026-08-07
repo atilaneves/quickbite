@@ -2846,7 +2846,6 @@ private struct Compiler {
                     return *row;
             if (auto place = placeOrNull(index))
                 return loadPlaceValue(*place);
-            return compileStaticArrayIndex(index);
         }
 
         if (expression.isSliceExp !is null)
@@ -2993,15 +2992,6 @@ private struct Compiler {
         zeroFrameBlock(offset, typeFacts(literal.type).byteWidth);
         compileStructLiteralInto(offset, literal, true);
         return offset;
-    }
-
-    // Read an element of a static array at a compile-time-constant index. The
-    // element lives at `slot + index * elementSize` inside the inline block;
-    // a scalar element is returned directly, a sub-array element yields a
-    // static-array operand for further indexing (`matrix[0][1]`).
-    private Operand compileStaticArrayIndex(IndexExp index) {
-        const located = locateStaticArrayElement(index);
-        return Operand(located.offset, located.type);
     }
 
     // `i++` on an integer local, struct field, or dereferenced pointer: copy
@@ -7167,22 +7157,21 @@ private struct Compiler {
 
         if (expression.type !is null &&
             expression.type.toBasetype.ty == TY.Tstruct) {
-            // `arr[i]` element of a static array of structs: the element block
-            // lives inline at `arrayBase + i * elementSize`. Checked before the
-            // dynamic-array branch below because `dynamicArrayDescriptorOrNull`
-            // also accepts a static-array local (as a materialised read-only
-            // view for slicing); resolving through that view here would copy
-            // the element into a throwaway temporary, silently discarding any
-            // write through the returned offset.
+            // Materialise a static-array struct element through its aggregate
+            // place. The resolver owns the base location, bounds check, and
+            // index evaluation; this consumer needs only the loaded value.
             if (auto index = expression.isIndexExp)
-                if (staticArrayOffsetOf(index.e1) !is null) {
-                    auto result = new StructField;
-                    *result = StructField(
-                        offset: locateStaticArrayElement(index).offset,
-                        type: expression.type,
-                    );
-                    return result;
-                }
+                if (index.e1.type !is null &&
+                    index.e1.type.toBasetype.ty == TY.Tsarray)
+                    if (auto place = placeOrNull(index)) {
+                        const value = loadPlaceValue(*place);
+                        auto result = new StructField;
+                        *result = StructField(
+                            offset: value.offset,
+                            type: expression.type,
+                        );
+                        return result;
+                    }
 
             // `arr[i]` element of a dynamic array of structs: copy the heap
             // element into a fresh inline block so struct field reads can use
@@ -9509,73 +9498,6 @@ private struct Compiler {
         return Operand(pointer, ScalarType.ulong_, true, pointerElement);
     }
 
-    // The runtime address of a static-array location: a static-array local's
-    // frame slot, a static-array struct field's inline offset, or
-    // (recursively) a further index into either. Mirrors
-    // `staticArrayBaseOffset`'s walk but computes the address with actual
-    // pointer arithmetic instead of folding into a single compile-time
-    // offset, so a non-constant index anywhere in the chain (`m[i][j]`) is
-    // supported. Null if `expression` does not denote a static-array
-    // location at all.
-    private Operand* tryStaticArrayRuntimeAddress(Expression expression) {
-        if (auto dereference = expression.isPtrExp) {
-            const pointer = compileExpression(dereference.e1);
-            if (pointer.isPointer) {
-                auto result = new Operand;
-                *result = pointer;
-                return result;
-            }
-        }
-
-        if (auto variable = expression.isVarExp)
-            if (auto declaration = variable.var.isVarDeclaration)
-                if (auto offset = declarationRecordView(declaration).staticArrayOrNull)
-                    return frameAddressOperand(*offset);
-
-        // A module-level static-array variable: unlike the whole-block
-        // materialise/writeback `staticArrayBaseOffset` uses for a
-        // compile-time-constant index, a *runtime* index needs a real
-        // address to read or write through directly -- `Op.moduleAddress`
-        // already gives one (the same opcode `symbolAddress` uses for
-        // `&moduleScalar`), so this needs no
-        // separate writeback bookkeeping at all.
-        if (auto variable = expression.isVarExp)
-            if (auto declaration = variable.var.isVarDeclaration)
-                if (auto moduleVariable =
-                        moduleDeclarationRecord(declaration).moduleStaticArrayOrNull)
-                    return moduleAddressOperand(moduleVariable.offset);
-
-        if (auto dot = expression.isDotVarExp)
-            if (auto field = tryStructField(dot))
-                return frameAddressOperand(field.offset);
-
-        if (auto index = expression.isIndexExp) {
-            auto base = tryStaticArrayRuntimeAddress(index.e1);
-            if (base is null)
-                return null;
-
-            auto result = new Operand;
-            *result = advanceStaticArrayPointer(
-                *base, index.e2, index.type,
-                compileSizeConstant(staticArrayLength(index.e1.type)),
-            );
-            return result;
-        }
-
-        return null;
-    }
-
-    private Operand* frameAddressOperand(in ushort offset) {
-        return addressOperand(Op.frameAddress, offset, ScalarType.void_);
-    }
-
-    // The real runtime address of a module-level static array's own
-    // dataseg storage, the module counterpart of `frameAddressOperand`
-    // above (`Op.moduleAddress` instead of `Op.frameAddress`).
-    private Operand* moduleAddressOperand(in ushort offset) {
-        return addressOperand(Op.moduleAddress, offset, ScalarType.void_);
-    }
-
     // Materialise a real address from a frame or module-data offset. Keep
     // address-producing places on this one path so a resolver can select the
     // storage kind without duplicating pointer-slot construction.
@@ -9590,21 +9512,6 @@ private struct Compiler {
         *result =
             Operand(pointer, ScalarType.ulong_, true, elementType);
         return result;
-    }
-
-    // True if any index in a static-array `IndexExp` chain (`m[i]`,
-    // `m[i][j]`) is not a compile-time constant, in which case the element's
-    // address must be computed at runtime (`tryStaticArrayRuntimeAddress`)
-    // rather than folded into a fixed frame offset
-    // (`locateStaticArrayElement`/`staticArrayBaseOffset`).
-    private bool staticArrayChainNeedsRuntimeAddress(IndexExp index) {
-        if (index.e2.isIntegerExp is null)
-            return true;
-
-        if (auto inner = index.e1.isIndexExp)
-            return staticArrayChainNeedsRuntimeAddress(inner);
-
-        return false;
     }
 
     private Operand* symbolAddress(
@@ -11457,11 +11364,8 @@ private struct Compiler {
     }
 
     // Materialise a module-level static-array variable's whole inline block
-    // from `_program.moduleData` into a fresh frame slot, returning the
-    // frame offset -- shared by `staticArrayBaseOffset` (element access,
-    // which also tracks a writeback record for a subsequent write) and
-    // `compileStaticArrayValueInto` (a whole-value read, which never writes
-    // through the returned offset).
+    // from `_program.moduleData` into a fresh frame slot for a whole-value
+    // read.
     private ushort materializeModuleStaticArray(
         Type type, in ModuleStaticArrayVariable moduleVariable,
     ) {
@@ -11890,325 +11794,6 @@ private struct Compiler {
         return result;
     }
 
-    private static struct StaticArrayElement {
-        ushort offset;
-        ScalarType type;
-        // The materialised struct field that owns this element. Null for a
-        // plain local whose inline frame slot already is the real storage.
-        StructField* writeback;
-    }
-
-    // Resolve a static-array element access with compile-time-constant indices
-    // to its inline frame offset, walking the IndexExp chain from a
-    // static-array local. Each level adds `index * Type.size(level.type)` to
-    // the base offset.
-    private StaticArrayElement locateStaticArrayElement(
-        IndexExp index,
-    ) {
-        import dmd.astenums: TY;
-        import std.conv: text;
-
-        StructField* writeback;
-        const baseOffset = staticArrayBaseOffset(index.e1, writeback);
-        auto indexInteger = index.e2.isIntegerExp;
-        if (indexInteger is null)
-            throw new Exception(text(
-                "Unsupported static array index in bytecode core: ",
-                expressionChars(index),
-            ));
-
-        const elementSize = typeFacts(index.type).byteWidth;
-        const offset = cast(ushort)
-            (baseOffset + indexInteger.toInteger * elementSize);
-        // A sub-array, struct, or delegate element has no scalar type;
-        // callers that handle those use only the offset (a static-array
-        // index chain, a struct base, a delegate's own 16-byte pair).
-        const elementType = index.type.toBasetype.ty == TY.Tarray ||
-            index.type.toBasetype.ty == TY.Tsarray ||
-            index.type.toBasetype.ty == TY.Tstruct ||
-            index.type.toBasetype.ty == TY.Tdelegate
-                ? ScalarType.void_
-                : scalarType(index.type);
-        return StaticArrayElement(offset, elementType, writeback);
-    }
-
-    // The inline frame base offset of a static-array sub-expression: either a
-    // static-array local (a VarExp) or a further static-array index. Callers
-    // that only ever read through the offset (e.g. `&arr[i]`) can ignore
-    // `writeback`; a caller writing through the returned offset must check
-    // it -- see `StaticArrayElement.writeback`.
-    private ushort staticArrayBaseOffset(Expression expression) {
-        StructField* writeback;
-        return staticArrayBaseOffset(expression, writeback);
-    }
-
-    private ushort staticArrayBaseOffset(
-        Expression expression, out StructField* writeback,
-    ) {
-        import dmd.astenums: TY;
-        import std.conv: text;
-
-        if (auto variable = expression.isVarExp)
-            if (auto declaration = variable.var.isVarDeclaration)
-                if (auto existing = declarationRecordView(declaration).staticArrayOrNull)
-                    return *existing;
-
-        // A module-level (`__gshared`/`static`) static-array variable
-        // (`int[3] arr;`): materialise the whole inline block into a fresh
-        // frame slot, the Tsarray counterpart of `tryStructField`'s
-        // module-struct branch below. A write through the returned offset
-        // writes the *whole* block back through `Op.storeModule`
-        // (`writeBackStructField`'s `writeBackThroughModule` branch) --
-        // unlike a struct field, there is no narrower sub-range to isolate,
-        // since the touched element IS (a byte range of) the whole
-        // variable.
-        if (auto variable = expression.isVarExp)
-            if (auto declaration = variable.var.isVarDeclaration)
-                if (auto moduleVariable =
-                        moduleDeclarationRecord(declaration).moduleStaticArrayOrNull) {
-                    const structOffset = materializeModuleStaticArray(
-                        declaration.type, *moduleVariable,
-                    );
-                    auto result = new StructField;
-                    *result = StructField(
-                        offset: structOffset,
-                        type: declaration.type,
-                        writeBack: StructField.WriteBack.dataSegment,
-                        target: StructField.WriteBackTarget(
-                            dataSegment: StructField.DataSegmentWriteBack(
-                                structOffset,
-                                moduleVariable.offset,
-                            ),
-                        ),
-                    );
-                    writeback = result;
-                    return structOffset;
-                }
-
-        if (auto index = expression.isIndexExp) {
-            auto located = locateStaticArrayElement(index);
-            writeback = located.writeback;
-            return located.offset;
-        }
-
-        // `base.field` where the field is a static array: its inline block
-        // lives at `base + field.offset`. When `field` resolved through a
-        // materialised copy (a captured struct receiver, a module struct, or
-        // an AA-value-read pointer), `field` itself carries the writeback
-        // info a write through this offset must use instead of silently
-        // landing in the throwaway copy -- the same bug class already fixed
-        // for the dynamic-array field case (`DynamicArrayLocal
-        // .writeBackStructThroughFrame`, set from this same `field`).
-        if (auto dot = expression.isDotVarExp)
-            if (auto field = tryStructField(dot)) {
-                writeback = field;
-                return field.offset;
-            }
-
-        // `p` where `p` is a raw pointer to a static array: DMD's
-        // associative-array rvalue-read lowering (`_d_aaGetRvalueX`) yields
-        // exactly this shape for a static-array-typed AA value
-        // (`int[3][string] rows; rows["a"]` lowers to `(...)[0]`, an
-        // `IndexExp` over this pointer with a constant-zero index -- so a
-        // further source-level index, `rows["a"][1]`, reaches this branch
-        // one level in through the `index.e1.isIndexExp` recursion above),
-        // the Tsarray counterpart of `structBaseOffsetOrMaterialise`'s
-        // `viaPointer` branch for the identical struct-value shape.
-        // Materialise the pointee through the same `loadStructThroughPointer`
-        // helper that branch already uses, and wire up
-        // `writeBackThroughPointer` so a write through the returned offset
-        // (`rows["a"][1] = 99`) copies the whole updated block back to the
-        // real AA slot instead of silently landing on a throwaway copy.
-        if (isPointerType(expression.type) &&
-            expression.type.nextOf !is null &&
-            expression.type.nextOf.toBasetype.ty == TY.Tsarray) {
-            const pointer = compileExpression(expression);
-            if (pointer.isPointer) {
-                const zeroOffset = compileSizeConstant(0);
-                const arraySize = cast(ushort)
-                    typeFacts(expression.type.nextOf).byteWidth;
-                const blockOffset = loadStructThroughPointer(
-                    pointer.offset, zeroOffset, expression.type.nextOf,
-                );
-                auto result = new StructField;
-                *result = StructField(
-                    offset: blockOffset,
-                    type: expression.type.nextOf,
-                    writeBack: StructField.WriteBack.pointer,
-                    target: StructField.WriteBackTarget(
-                        pointer: StructField.PointerWriteBack(
-                            blockOffset,
-                            arraySize,
-                            pointer.offset,
-                            zeroOffset,
-                        ),
-                    ),
-                );
-                writeback = result;
-                return blockOffset;
-            }
-        }
-
-        throw new Exception(text(
-            "Unsupported static array access in bytecode core: ",
-            expressionChars(expression),
-        ));
-    }
-
-    // Locate a static-array element, or null if `index` is not an access into
-    // a known static-array local (so other index forms fall through), or a
-    // nested index in the chain (`m[i][2]`'s `i`) is a runtime value that
-    // `locateStaticArrayElement` cannot fold into a compile-time offset
-    // (the runtime-address place handles that case instead).
-    private StaticArrayElement* tryStaticArrayElement(
-        IndexExp index,
-    ) {
-        if (index.e2.isIntegerExp is null)
-            return null;
-
-        if (!indexesStaticArray(index.e1))
-            return null;
-
-        if (staticArrayChainNeedsRuntimeAddress(index))
-            return null;
-
-        auto result = new StaticArrayElement;
-        *result = locateStaticArrayElement(index);
-        return result;
-    }
-
-    private bool indexesStaticArray(Expression expression) {
-        import dmd.astenums: TY;
-
-        if (auto variable = expression.isVarExp)
-            if (auto declaration = variable.var.isVarDeclaration) {
-                if (declarationRecordView(declaration).staticArrayOrNull
-                        !is null ||
-                    moduleDeclarationRecord(declaration).moduleStaticArrayOrNull
-                        !is null)
-                    return true;
-                if (declarationRecordView(declaration).scalarOrNull
-                        !is null)
-                    if (auto element = declarationRecordView(declaration).refPointerOrNull)
-                        return *element == ScalarType.void_ &&
-                            expression.type.toBasetype.ty == TY.Tsarray;
-            }
-
-        // `expression` itself must genuinely be a static array (`Tsarray`)
-        // before its base is worth chasing further: `a[0]` of a static
-        // array of DYNAMIC arrays (`int[][2]`) recurses through this branch
-        // too (its ultimate root `a` is a static-array local), but `a[0]`'s
-        // own type is `Tarray`, not `Tsarray` -- it is a heap-backed
-        // element read out of `a`'s inline storage, not more inline
-        // static-array storage to chain into. Without this gate,
-        // `tryStaticArrayElement` mistakes `a[0][1] = v` for a nested
-        // static-array element write and computes its offset with the
-        // wrong stride, landing inside `a[0]`'s own slice-descriptor bytes
-        // and corrupting its pointer word.
-        if (auto index = expression.isIndexExp)
-            return expression.type !is null &&
-                expression.type.toBasetype.ty == TY.Tsarray &&
-                indexesStaticArray(index.e1);
-
-        // `base.field` where the field is a static array.
-        if (auto dot = expression.isDotVarExp)
-            if (auto field = tryStructField(dot))
-                return field.type.toBasetype.ty == TY.Tsarray;
-
-        // A raw pointer to a static array: DMD's associative-array
-        // rvalue-read lowering (`_d_aaGetRvalueX`) yields exactly this shape
-        // for a static-array-typed AA value (`int[3][string] rows;
-        // rows["a"]` lowers to `(...)[0]`, an `IndexExp` over this pointer),
-        // the same shape `staticArrayBaseOffset`'s own pointer branch now
-        // resolves. Recognising it here lets the static-array element place
-        // take the indexed-write path
-        // instead of falling through to the generic "unsupported
-        // assignment" refusal.
-        if (isPointerType(expression.type) &&
-            expression.type.nextOf !is null &&
-            expression.type.nextOf.toBasetype.ty == TY.Tsarray)
-            return true;
-
-        return false;
-    }
-
-    private static struct CapturedStaticArrayElement {
-        VarDeclaration declaration;
-        ushort relativeOffset;
-        ScalarType type;
-    }
-
-    // The captured counterpart of `staticArrayBaseOffset`: the relative byte
-    // offset (from the captured base's own frame slot) of a static-array
-    // sub-expression rooted at a static-array local captured from an
-    // enclosing function, or `false` if `expression` does not bottom out at
-    // one. A base tracked in this function's own static-array metadata
-    // declines here (even if also present in `_capturedOffsets` as another
-    // function's capture of it) so the plain in-frame path in
-    // `indexesStaticArray`/`locateStaticArrayElement` is tried instead.
-    private bool capturedStaticArrayBaseOffset(
-        Expression expression,
-        out VarDeclaration declaration,
-        out ushort relativeOffset,
-    ) {
-        import dmd.astenums: TY;
-
-        if (auto variable = expression.isVarExp)
-            if (auto decl = variable.var.isVarDeclaration)
-                if (decl.type.toBasetype.ty == TY.Tsarray)
-                    if (declarationRecordView(decl).staticArrayOrNull
-                            is null)
-                        if (auto captured = decl in _capturedOffsets) {
-                            declaration = decl;
-                            relativeOffset = 0;
-                            return true;
-                        }
-
-        if (auto index = expression.isIndexExp)
-            if (auto element = tryCapturedStaticArrayElement(index)) {
-                declaration = element.declaration;
-                relativeOffset = element.relativeOffset;
-                return true;
-            }
-
-        return false;
-    }
-
-    // Resolve a static-array element access rooted at a captured base to its
-    // relative offset, mirroring `locateStaticArrayElement`'s compile-time
-    // walk. Null if `index.e1` does not bottom out at a captured static-array
-    // local, or the index itself is not a compile-time constant.
-    private CapturedStaticArrayElement* tryCapturedStaticArrayElement(
-        IndexExp index,
-    ) {
-        import dmd.astenums: TY;
-
-        auto indexInteger = index.e2.isIntegerExp;
-        if (indexInteger is null)
-            return null;
-
-        VarDeclaration declaration;
-        ushort baseOffset;
-        if (!capturedStaticArrayBaseOffset(index.e1, declaration, baseOffset))
-            return null;
-
-        const elementSize = typeFacts(index.type).byteWidth;
-        const relativeOffset = cast(ushort)
-            (baseOffset + indexInteger.toInteger * elementSize);
-        // A sub-array, struct, or delegate element has no scalar type,
-        // matching `locateStaticArrayElement`'s identical carve-out.
-        const elementType = index.type.toBasetype.ty == TY.Tarray ||
-            index.type.toBasetype.ty == TY.Tsarray ||
-            index.type.toBasetype.ty == TY.Tstruct ||
-            index.type.toBasetype.ty == TY.Tdelegate
-                ? ScalarType.void_
-                : scalarType(index.type);
-
-        auto result = new CapturedStaticArrayElement;
-        *result = CapturedStaticArrayElement(declaration, relativeOffset, elementType);
-        return result;
-    }
-
     // A real-address slice descriptor over a static-array sub-slice
     // (`arr[lo .. hi]`), sharing `arr`'s own frame or field storage instead of
     // the throwaway heap copy `dynamicArrayDescriptorOrNull` builds
@@ -12221,18 +11806,16 @@ private struct Compiler {
     // `validateSubSlice`, matching compiled D's `RangeError` wording byte for
     // byte). Null if `slice.e1` is not a static-array location.
     private ushort* tryStaticArraySliceDescriptor(SliceExp slice) {
-        // `tryStaticArrayRuntimeAddress` resolves a `DotVarExp` to any
-        // struct field's own frame offset, static array or not (e.g. a
-        // `char*` field): guard with the same static-array type check
-        // the runtime index and place paths already require, or a non-array
-        // field's address would be
-        // misread as if it were the field's own array storage.
-        if (!indexesStaticArray(slice.e1))
+        import dmd.astenums: TY;
+
+        if (slice.e1.type is null ||
+            slice.e1.type.toBasetype.ty != TY.Tsarray)
             return null;
 
-        auto base = tryStaticArrayRuntimeAddress(slice.e1);
+        auto base = placeOrNull(slice.e1);
         if (base is null)
             return null;
+        const address = addressOfPlace(*base);
 
         const elementType = dynamicArrayElementType(slice.e1.type);
         // `dynamicArrayElementSize` derives the real byte width for a
@@ -12265,7 +11848,8 @@ private struct Compiler {
         const sourceDescriptor =
             allocateBytes(sliceDescriptorSize, size_t.sizeof);
         _code ~= Instruction(
-            Op.copy, sourceDescriptor, base.offset, cast(ushort) size_t.sizeof,
+            Op.copy, sourceDescriptor, address.offset,
+            cast(ushort) size_t.sizeof,
         );
         _code ~= Instruction(
             Op.copy,

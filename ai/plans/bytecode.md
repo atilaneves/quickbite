@@ -384,16 +384,12 @@ Settled contracts:
   through the same place pipeline, replacing the per-callee
   mirror/return-writeback convention and its address-identity,
   exceptional-control-flow, and aliasing incoherences.
+- Static-array scalar and aggregate reads, struct-element materialisation,
+  runtime indexing, slicing, address-taking, and writes all compose the same
+  static-array root place. No parallel static-array location walk may classify
+  a root or reconstruct an index chain.
 
-Immediate remaining work:
-
-- Migrate the static-array read and struct-element materialisation fallbacks to
-  `Place`, then delete `StaticArrayElement`, `compileStaticArrayIndex`,
-  `locateStaticArrayElement`, `staticArrayBaseOffset`, and the dead
-  `tryStaticArrayElement`. Runtime-index and slice addressing must compose the
-  same static-array root place rather than retain a parallel root walk.
-
-After that deletion, new lowering work extends the classified roots,
+New lowering work extends the classified roots,
 access-path composition, place primitives, or semantic emitters independently.
 It must not reintroduce parallel declaration tables, shape-specific
 assignment/ref/receiver helpers, or call-return writeback mirrors.
