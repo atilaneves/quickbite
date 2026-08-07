@@ -25,7 +25,7 @@ package(quickbite.backends.bytecode) RunResult run(
     import core.exception: RangeError;
     import quickbite.backends.bytecode.core.program:
         appendElementWidth, CatchClause, ClassInfo,
-        concatArraysWidth, dupArrayWidth, indexElementWidth, Op,
+        concatArraysWidth, dupArrayWidth, indexElementWidth, Op, ScalarType,
         noCatchObjectField, noExceptionClass, noOutParameterOffset,
         pointerElementWidth, size, sliceCopyWidth, sliceDescriptorSize,
         sliceEqualWidth, subSliceElementWidth;
@@ -362,6 +362,17 @@ package(quickbite.backends.bytecode) RunResult run(
                     base + instruction.b,
                     base + instruction.c,
                     sliceEqualWidth(instruction.op),
+                ) ? 1 : 0;
+                ++ip;
+                break;
+
+            case sliceEqualNumeric:
+                stack[base + instruction.a] = numericSlicesEqual(
+                    stack,
+                    base + instruction.b,
+                    base + instruction.c,
+                    cast(ScalarType) instruction.d,
+                    cast(ScalarType) instruction.e,
                 ) ? 1 : 0;
                 ++ip;
                 break;
@@ -2725,6 +2736,95 @@ private bool slicesEqual(
     const byteCount = leftLength * elementSize;
     return (cast(const(ubyte)*) leftPointer)[0 .. byteCount] ==
         (cast(const(ubyte)*) rightPointer)[0 .. byteCount];
+}
+
+private bool numericSlicesEqual(
+    in ubyte[] stack,
+    in size_t leftOffset,
+    in size_t rightOffset,
+    in imported!"quickbite.backends.bytecode.core.program".ScalarType leftType,
+    in imported!"quickbite.backends.bytecode.core.program".ScalarType rightType,
+) @trusted {
+    import quickbite.backends.bytecode.core.program: isSigned, size;
+
+    const leftLength = scalarValue!size_t(stack, leftOffset + size_t.sizeof);
+    const rightLength = scalarValue!size_t(stack, rightOffset + size_t.sizeof);
+    if (leftLength != rightLength)
+        return false;
+
+    const leftPointer = scalarValue!size_t(stack, leftOffset);
+    const rightPointer = scalarValue!size_t(stack, rightOffset);
+    const leftWidth = size(leftType);
+    const rightWidth = size(rightType);
+    foreach (index; 0 .. leftLength) {
+        const left = numericElement(leftPointer, index, leftWidth);
+        const right = numericElement(rightPointer, index, rightWidth);
+        if (!numericElementsEqual(
+                left, leftType, right, rightType,
+            ))
+            return false;
+    }
+    return true;
+}
+
+private ulong numericElement(
+    in size_t pointer,
+    in size_t index,
+    in uint width,
+) @trusted pure {
+    const bytes = (cast(const(ubyte)*) pointer + index * width)[0 .. width];
+    ulong result;
+    foreach_reverse (byte_; bytes)
+        result = (result << 8) | byte_;
+    return result;
+}
+
+private bool numericElementsEqual(
+    in ulong left,
+    in imported!"quickbite.backends.bytecode.core.program".ScalarType leftType,
+    in ulong right,
+    in imported!"quickbite.backends.bytecode.core.program".ScalarType rightType,
+) @safe pure {
+    import quickbite.backends.bytecode.core.program: isSigned, size;
+
+    const leftWidth = size(leftType);
+    const rightWidth = size(rightType);
+    if (leftWidth < int.sizeof && rightWidth < int.sizeof)
+        return signedElement(left, leftType) == signedElement(right, rightType);
+
+    const commonUnsigned = leftWidth == rightWidth
+        ? !isSigned(leftType) || !isSigned(rightType)
+        : leftWidth > rightWidth
+        ? !isSigned(leftType)
+        : !isSigned(rightType);
+    if (commonUnsigned)
+        return extendedUnsignedElement(left, leftType) ==
+            extendedUnsignedElement(right, rightType);
+    return signedElement(left, leftType) == signedElement(right, rightType);
+}
+
+private long signedElement(
+    in ulong value,
+    in imported!"quickbite.backends.bytecode.core.program".ScalarType type,
+) @safe pure {
+    import quickbite.backends.bytecode.core.program: isSigned, size;
+
+    if (!isSigned(type))
+        return cast(long) value;
+    switch (size(type)) {
+        case 1: return cast(byte) value;
+        case 2: return cast(short) value;
+        case 4: return cast(int) value;
+        case 8: return cast(long) value;
+        default: assert(0, "Unsupported numeric array element width");
+    }
+}
+
+private ulong extendedUnsignedElement(
+    in ulong value,
+    in imported!"quickbite.backends.bytecode.core.program".ScalarType type,
+) @safe pure {
+    return cast(ulong) signedElement(value, type);
 }
 
 // True iff two array-of-arrays descriptors are structurally equal, at any

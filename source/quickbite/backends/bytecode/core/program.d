@@ -355,6 +355,10 @@ package(quickbite.backends.bytecode) enum Op: ubyte {
     sliceEqual2, // 2-byte element (wchar/short): backs `wstring == wstring`
     sliceEqual4,
     sliceEqual8, // 8-byte element (long/double/pointer arrays)
+    // Numeric element equality for descriptors whose physical element types
+    // differ. Operands d/e are the left/right ScalarType values; the machine
+    // applies D's integer promotions instead of comparing mismatched bytes.
+    sliceEqualNumeric,
     // Structural comparison for an array-of-arrays, any nesting depth
     // (`int[][] == int[][]`, `int[][][] == int[][][]`, ...): the descriptors
     // at frame offsets b and c hold rows that are themselves 16-byte slice

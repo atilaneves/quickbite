@@ -2996,6 +2996,8 @@ private struct Compiler {
         if (auto vectorArray = expression.isVectorArrayExp)
             return placeOrNull(vectorArray.e1);
         if (auto conditional = expression.isCondExp) {
+            if (!conditional.isLvalue)
+                return null;
             const condition = compileBoolCondition(conditional.econd);
             const pointer = allocateBytes(
                 cast(uint) size_t.sizeof, size_t.sizeof,
@@ -13879,17 +13881,39 @@ private struct Compiler {
         const nested = lhsTy == TY.Tarray && rhsTy == TY.Tarray &&
             arrayElementIsArray(lhs.type) &&
             arrayElementIsArray(rhs.type);
-        const lhsOffset = dynamicArrayDescriptor(lhs).offset;
-        const rhsOffset = dynamicArrayDescriptor(rhs).offset;
+        const lhsElementType = dynamicArrayElementType(lhs.type);
+        const rhsElementType = dynamicArrayElementType(rhs.type);
+        if (lhsElementType != rhsElementType &&
+            ((!isCompoundIntegerScalar(lhsElementType) &&
+                    !isCharacterScalar(lhsElementType)) ||
+                (!isCompoundIntegerScalar(rhsElementType) &&
+                    !isCharacterScalar(rhsElementType))))
+            return false;
+        const lhsDescriptor = dynamicArrayDescriptor(lhs);
+        const rhsDescriptor = dynamicArrayDescriptor(rhs);
+        const lhsOffset = lhsDescriptor.offset;
+        const rhsOffset = rhsDescriptor.offset;
 
         const equal = nested
             ? emitNestedArrayEqual(lhsOffset, rhsOffset, lhs.type)
             : allocateBytes(1, 1);
-        if (!nested)
-            emitSliceEqual(
-                equal, lhsOffset, rhsOffset,
-                dynamicArrayElementSize(lhs.type),
-            );
+        if (!nested) {
+            if (lhsDescriptor.elementType == rhsDescriptor.elementType)
+                emitSliceEqual(
+                    equal, lhsOffset, rhsOffset,
+                    dynamicArrayElementSize(lhs.type),
+                );
+            else {
+                _code ~= Instruction(
+                    Op.sliceEqualNumeric,
+                    equal,
+                    lhsOffset,
+                    rhsOffset,
+                    cast(ushort) lhsDescriptor.elementType,
+                    cast(ushort) rhsDescriptor.elementType,
+                );
+            }
+        }
 
         // `==` holds when the slices are equal; `!=` holds when negated.
         ushort condition = equal;
