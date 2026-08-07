@@ -887,6 +887,93 @@ static foreach (backend; Matrix!()) {
     }
 }
 
+// Writing one union member overwrites the shared storage occupied by every
+// overlapping member, including a class-reference member.
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.diverges,
+        "DMD CTFE rejects reads through an overlapping union member"),
+)) {
+    @("typeid.unionPointerOverwriteClearsReference." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            class Thing {}
+
+            union Slot {
+                TypeInfo type;
+                void* pointer;
+            }
+
+            unittest {
+                Slot slot;
+                slot.type = typeid(Thing);
+                assert(slot.type is typeid(Thing));
+
+                slot.pointer = null;
+                assert(slot.type is null);
+            }
+        });
+    }
+}
+
+// A static-array value copy retains the active union member's reference, and
+// overwriting that member through the copy does not change the source.
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.diverges,
+        "DMD CTFE rejects reads through an overlapping union member"),
+)) {
+    @("typeid.unionArrayCopyRetainsThenClearsReference." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            class Thing {}
+
+            union Slot {
+                TypeInfo type;
+                void* pointer;
+            }
+
+            unittest {
+                Slot[1] source;
+                source[0].type = typeid(Thing);
+                auto copy = source;
+
+                assert(copy[0].type is typeid(Thing));
+                copy[0].pointer = null;
+                assert(copy[0].type is null);
+                assert(source[0].type is typeid(Thing));
+            }
+        });
+    }
+}
+
+// Copying a struct into an array preserves independent symbolic fields even
+// when one is a class reference and another is a callable delegate.
+static foreach (backend; Matrix!()) {
+    @("typeid.structArrayCopyRetainsReferenceAndDelegate." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            class Thing {}
+
+            struct Observation {
+                TypeInfo type;
+                int delegate() observe;
+            }
+
+            unittest {
+                int seed = 40;
+                auto observation = Observation(typeid(Thing), () => seed + 2);
+                Observation[] observations = [observation];
+
+                assert(observations[0].type is typeid(Thing));
+                auto observe = observations[0].observe;
+                assert(observe() == 42);
+            }
+        });
+    }
+}
+
 // A by-value aggregate call result remains a complete value when the language
 // gives its temporary an address for a `ref` input-range element.
 static foreach (backend; Matrix!()) {

@@ -929,135 +929,138 @@ private struct Walker {
             return;
         }
 
-        // A native aggregate rvalue's own bytes may still be the temporary
-        // storage `structLiteralValue`/`AggregateValue` allocated to build
-        // it; `writeValue`'s native-aggregate arm below only copies bytes,
-        // so any Tdelegate-typed (sub)field's live `nativeDelegateSlots`
-        // registration, keyed by that temporary address, would otherwise be
-        // orphaned once `variable`'s own binding address takes over as the
-        // durable location.
-        if (value.isNativeAggregate) {
-            relocateDelegateSlots(
-                variable.type,
-                AggregateValue.native(value).address,
-                bindingPlace(variable).address,
-            );
-        }
-
-        writeStoredValue(bindingPlace(variable), value);
+        writeStoredValue(bindingPlace(variable), value, true);
         mirrorEstablished[variable] = true;
     }
 
-    // Moves any `nativeDelegateSlots` entry for a Tdelegate-typed (sub)field
-    // or STATIC-array element of `type` from `oldAddress` to `newAddress`,
-    // recursing through non-union struct fields and static-array elements
-    // the same way `place_value.writeValue`'s own struct/static-array arms
-    // compose a field-by-field or element-by-element copy -- the
-    // out-of-band counterpart to that byte copy for the one part of the
-    // bytes a plain `memcpy` cannot carry (`nativeDelegateSlots`'s own
-    // field comment: an interpreted delegate has no native ABI function
-    // address). A no-op when the two addresses already coincide, or when
-    // no entry is registered at a given field/element address (an ordinary
-    // null/uninitialized delegate, whose bytes copy correctly on their
-    // own).
-    //
-    // Deliberately NOT extended to a dynamic array (`Tarray`): rebinding a
-    // slice only copies its two-word `{length, ptr}` HEADER to a new
-    // address -- the element bytes `ptr` refers to never move -- so a
-    // dynamic-array element's `nativeDelegateSlots` key (always the
-    // element's own DATA address, from `AggregateValue.elementAddress`,
-    // never the header's address) stays valid without relocation. Reading
-    // `newAddress`'s header to recompute element addresses would also be
-    // wrong here regardless, since this call always runs BEFORE the header
-    // copy that gives `newAddress` its live `{length, ptr}` bytes.
-    private void relocateDelegateSlots(
+    // Out-of-band callable and symbolic-reference entries are part of the
+    // value stored in their native byte range. Copy them by byte offset so
+    // unions, nested aggregates, and mixed metadata fields obey the same
+    // value-copy semantics as the native bytes. Snapshot first because source
+    // and destination ranges may overlap. Callers that replace temporary or
+    // reallocated storage may consume its entries after the copy; ordinary D
+    // value copies retain them at the source.
+    private void copyStoredMetadata(
         imported!"dmd.mtype".Type type,
         void* oldAddress,
         void* newAddress,
+        in bool consumeSource = false,
     ) {
-        import dmd.astenums: TY;
-        import quickbite.backends.interpreter.layout:
-            structFields, declaredType, staticArrayLength;
-        import quickbite.backends.interpreter.place: Place;
+        import quickbite.backends.interpreter.layout: typeByteSize;
 
         if (oldAddress is newAddress)
             return;
 
-        auto base = type.toBasetype;
-        if (base.ty == TY.Tdelegate) {
-            if (auto delegate_ = oldAddress in nativeDelegateSlots) {
-                nativeDelegateSlots[newAddress] = *delegate_;
-                nativeDelegateSlots.remove(oldAddress);
+        const byteLength = typeByteSize(type);
+        const oldStart = cast(size_t) oldAddress;
+        const oldEnd = oldStart + byteLength;
+
+        size_t[] delegateOffsets;
+        Value[] delegateValues;
+        foreach (address, value; nativeDelegateSlots)
+            if (cast(size_t) address >= oldStart && cast(size_t) address < oldEnd) {
+                delegateOffsets ~= cast(size_t) address - oldStart;
+                delegateValues ~= value;
             }
-            return;
-        }
 
-        auto structType = base.isTypeStruct;
-        if (structType !is null && structType.sym.isUnionDeclaration is null) {
-            foreach (field; structFields(structType))
-                relocateDelegateSlots(
-                    declaredType(field),
-                    Place(oldAddress, type).field(field).address,
-                    Place(newAddress, type).field(field).address,
-                );
-            return;
-        }
+        size_t[] functionOffsets;
+        Value[] functionValues;
+        foreach (address, value; nativeFunctionPointerSlots)
+            if (cast(size_t) address >= oldStart && cast(size_t) address < oldEnd) {
+                functionOffsets ~= cast(size_t) address - oldStart;
+                functionValues ~= value;
+            }
 
-        auto staticArray = base.isTypeSArray;
-        if (staticArray !is null)
-            foreach (i; 0 .. staticArrayLength(staticArray))
-                relocateDelegateSlots(
-                    staticArray.next,
-                    Place(oldAddress, type).index(i).address,
-                    Place(newAddress, type).index(i).address,
-                );
+        size_t[] typeInfoOffsets;
+        Value[] typeInfoValues;
+        foreach (address, value; nativeTypeInfoSlots)
+            if (cast(size_t) address >= oldStart && cast(size_t) address < oldEnd) {
+                typeInfoOffsets ~= cast(size_t) address - oldStart;
+                typeInfoValues ~= value;
+            }
+
+        clearStoredMetadata(type, newAddress);
+
+        foreach (index, offset; delegateOffsets)
+            nativeDelegateSlots[cast(void*) (cast(ubyte*) newAddress + offset)] =
+                delegateValues[index];
+        foreach (index, offset; functionOffsets)
+            nativeFunctionPointerSlots[
+                cast(const(void)*) (cast(ubyte*) newAddress + offset)
+            ] = functionValues[index];
+        foreach (index, offset; typeInfoOffsets)
+            nativeTypeInfoSlots[cast(void*) (cast(ubyte*) newAddress + offset)] =
+                typeInfoValues[index];
+
+        if (
+            consumeSource &&
+            !rangesOverlap(
+                oldStart,
+                byteLength,
+                cast(size_t) newAddress,
+                byteLength,
+            )
+        )
+            clearStoredMetadata(type, oldAddress);
     }
 
-    // Copies symbolic TypeInfo slot identity alongside the native bytes of an
-    // aggregate value. Unlike a delegate closure relocation, this is ordinary
-    // D value-copy semantics: the source slot remains a valid TypeInfo
-    // reference after the copy. A missing source entry clears stale metadata
-    // from the destination just as overwriting its native bytes does.
-    private void copyTypeInfoSlots(
+    // Any write invalidates every symbolic entry whose slot overlaps the
+    // overwritten bytes. This is especially important for unions: writing a
+    // non-symbolic sibling still overwrites the active symbolic member.
+    private void clearStoredMetadata(
         imported!"dmd.mtype".Type type,
-        void* oldAddress,
-        void* newAddress,
+        void* address,
     ) {
-        import quickbite.backends.interpreter.layout:
-            structFields, declaredType, staticArrayLength;
-        import quickbite.backends.interpreter.place: Place;
+        import quickbite.backends.interpreter.layout: typeByteSize;
 
-        if (oldAddress is newAddress)
-            return;
+        const start = cast(size_t) address;
+        const end = start + typeByteSize(type);
 
-        auto base = type.toBasetype;
-        if (base.isTypeClass !is null) {
-            if (auto typeInfo = oldAddress in nativeTypeInfoSlots)
-                nativeTypeInfoSlots[newAddress] = *typeInfo;
-            else
-                nativeTypeInfoSlots.remove(newAddress);
-            return;
-        }
+        const(void)*[] delegateAddresses;
+        foreach (slot; nativeDelegateSlots.byKeyValue)
+            if (rangesOverlap(
+                cast(size_t) slot.key,
+                2 * (void*).sizeof,
+                start,
+                end - start,
+            ))
+                delegateAddresses ~= slot.key;
+        foreach (slot; delegateAddresses)
+            nativeDelegateSlots.remove(cast(void*) slot);
 
-        auto structType = base.isTypeStruct;
-        if (structType !is null && structType.sym.isUnionDeclaration is null) {
-            foreach (field; structFields(structType))
-                copyTypeInfoSlots(
-                    declaredType(field),
-                    Place(oldAddress, type).field(field).address,
-                    Place(newAddress, type).field(field).address,
-                );
-            return;
-        }
+        const(void)*[] functionAddresses;
+        foreach (slot; nativeFunctionPointerSlots.byKeyValue)
+            if (rangesOverlap(
+                cast(size_t) slot.key,
+                (void*).sizeof,
+                start,
+                end - start,
+            ))
+                functionAddresses ~= slot.key;
+        foreach (slot; functionAddresses)
+            nativeFunctionPointerSlots.remove(slot);
 
-        auto staticArray = base.isTypeSArray;
-        if (staticArray !is null)
-            foreach (i; 0 .. staticArrayLength(staticArray))
-                copyTypeInfoSlots(
-                    staticArray.next,
-                    Place(oldAddress, type).index(i).address,
-                    Place(newAddress, type).index(i).address,
-                );
+        const(void)*[] typeInfoAddresses;
+        foreach (slot; nativeTypeInfoSlots.byKeyValue)
+            if (rangesOverlap(
+                cast(size_t) slot.key,
+                (void*).sizeof,
+                start,
+                end - start,
+            ))
+                typeInfoAddresses ~= slot.key;
+        foreach (slot; typeInfoAddresses)
+            nativeTypeInfoSlots.remove(cast(void*) slot);
+    }
+
+    private static bool rangesOverlap(
+        in size_t firstStart,
+        in size_t firstLength,
+        in size_t secondStart,
+        in size_t secondLength,
+    ) @safe @nogc nothrow pure {
+        return firstStart < secondStart + secondLength &&
+            secondStart < firstStart + firstLength;
     }
 
     // Writes one typed place and keeps its out-of-band symbolic TypeInfo
@@ -1065,24 +1068,48 @@ private struct Walker {
     private void writeStoredValue(
         imported!"quickbite.backends.interpreter.place".Place place,
         in Value value,
+        in bool consumeMetadata = false,
     ) {
         import quickbite.backends.interpreter.aggregate_value: AggregateValue;
         import quickbite.backends.interpreter.place_value: writeValue;
 
+        import dmd.astenums: TY;
+
         if (place.type.toBasetype.isTypeClass !is null && value.isTypeName) {
+            clearStoredMetadata(place.type, place.address);
             nativeTypeInfoSlots[place.address] = value;
             writeValue(place, Value.null_);
             return;
         }
 
+        if (place.type.toBasetype.ty == TY.Tdelegate && value != Value.null_) {
+            clearStoredMetadata(place.type, place.address);
+            nativeDelegateSlots[place.address] = value;
+            writeValue(place, Value.null_);
+            return;
+        }
+
+        auto pointerType = place.type.toBasetype.isTypePointer;
+        if (
+            pointerType !is null &&
+            pointerType.nextOf.toBasetype.isTypeFunction !is null &&
+            value.isFunctionPointer
+        ) {
+            clearStoredMetadata(place.type, place.address);
+            nativeFunctionPointerSlots[place.address] = value;
+            place.storeReference(null);
+            return;
+        }
+
         if (value.isNativeAggregate)
-            copyTypeInfoSlots(
+            copyStoredMetadata(
                 place.type,
                 AggregateValue.native(value).address,
                 place.address,
+                consumeMetadata,
             );
         else
-            clearTypeInfoSlots(place.type, place.address);
+            clearStoredMetadata(place.type, place.address);
 
         writeValue(place, value);
     }
@@ -1101,45 +1128,12 @@ private struct Walker {
 
         const value = readValue(place);
         if (value.isNativeAggregate)
-            copyTypeInfoSlots(
+            copyStoredMetadata(
                 place.type,
                 place.address,
                 AggregateValue.native(value).address,
             );
         return value;
-    }
-
-    private void clearTypeInfoSlots(
-        imported!"dmd.mtype".Type type,
-        void* address,
-    ) {
-        import quickbite.backends.interpreter.layout:
-            structFields, declaredType, staticArrayLength;
-        import quickbite.backends.interpreter.place: Place;
-
-        auto base = type.toBasetype;
-        if (base.isTypeClass !is null) {
-            nativeTypeInfoSlots.remove(address);
-            return;
-        }
-
-        auto structType = base.isTypeStruct;
-        if (structType !is null && structType.sym.isUnionDeclaration is null) {
-            foreach (field; structFields(structType))
-                clearTypeInfoSlots(
-                    declaredType(field),
-                    Place(address, type).field(field).address,
-                );
-            return;
-        }
-
-        auto staticArray = base.isTypeSArray;
-        if (staticArray !is null)
-            foreach (i; 0 .. staticArrayLength(staticArray))
-                clearTypeInfoSlots(
-                    staticArray.next,
-                    Place(address, type).index(i).address,
-                );
     }
 
     private Value withStoredStructField(
@@ -1149,7 +1143,7 @@ private struct Walker {
         in Value fieldValue,
     ) {
         import quickbite.backends.interpreter.aggregate_value: AggregateValue;
-        import quickbite.backends.interpreter.layout: structFields, declaredType;
+        import quickbite.backends.interpreter.layout: structFields;
         import quickbite.backends.interpreter.place: Place;
 
         auto field = structFields(receiverType.toBasetype.isTypeStruct)[fieldIndex];
@@ -1162,20 +1156,11 @@ private struct Walker {
         );
         auto source = AggregateValue.native(receiver);
         auto destination = AggregateValue.native(result);
-        copyTypeInfoSlots(receiverType, source.address, destination.address);
+        copyStoredMetadata(receiverType, source.address, destination.address);
 
         auto fieldPlace = Place(destination.address, destination.type)
             .field(field);
-        if (symbolicTypeInfo)
-            nativeTypeInfoSlots[fieldPlace.address] = fieldValue;
-        else if (fieldValue.isNativeAggregate)
-            copyTypeInfoSlots(
-                declaredType(field),
-                AggregateValue.native(fieldValue).address,
-                fieldPlace.address,
-            );
-        else
-            clearTypeInfoSlots(declaredType(field), fieldPlace.address);
+        writeStoredValue(fieldPlace, fieldValue);
         return result;
     }
 
@@ -9067,16 +9052,24 @@ private struct Walker {
         in size_t fieldIndex,
         in Value value,
     ) {
+        import dmd.astenums: TY;
         import quickbite.backends.interpreter.layout: structFields;
         import quickbite.backends.interpreter.native_scalar:
             isNativeScalarType, readScalar, writeScalar;
         import quickbite.frontend.dmd.types: isStaticArrayType;
 
-        auto updated = AggregateValue.withStructField(receiver, fieldIndex, value);
-
         auto fields = structFields(unionType);
         if (fieldIndex >= fields.length)
-            return updated;
+            throw new Exception("Unsupported interpreter union field access.");
+        const symbolicValue = value.isTypeName ||
+            value.isFunctionPointer ||
+            (fields[fieldIndex].type.toBasetype.ty == TY.Tdelegate &&
+                value != Value.null_);
+        auto updated = AggregateValue.withStructField(
+            receiver,
+            fieldIndex,
+            symbolicValue ? Value.null_ : value,
+        );
 
         auto writtenType = fields[fieldIndex].type;
         const writtenScalar = isNativeScalarType(writtenType);
@@ -9088,7 +9081,13 @@ private struct Walker {
             && value.isArray;
 
         if (!writtenScalar && !writtenStruct && !writtenArray)
-            return updated;
+            return withUnionStoredField(
+                receiver,
+                unionType,
+                fieldIndex,
+                value,
+                updated,
+            );
 
         auto cell = NativeStruct.allocate(unionType);
 
@@ -9165,6 +9164,34 @@ private struct Walker {
                 structValueFromCell(siblingCurrent, siblingCell));
         }
 
+        return withUnionStoredField(
+            receiver,
+            unionType,
+            fieldIndex,
+            value,
+            updated,
+        );
+    }
+
+    private Value withUnionStoredField(
+        in Value receiver,
+        imported!"dmd.mtype".TypeStruct unionType,
+        in size_t fieldIndex,
+        in Value value,
+        in Value updated,
+    ) {
+        import quickbite.backends.interpreter.layout: structFields;
+        import quickbite.backends.interpreter.place: Place;
+
+        auto source = AggregateValue.native(receiver);
+        auto destination = AggregateValue.native(updated);
+        copyStoredMetadata(unionType, source.address, destination.address);
+        writeStoredValue(
+            Place(destination.address, unionType).field(
+                structFields(unionType)[fieldIndex],
+            ),
+            value,
+        );
         return updated;
     }
 
@@ -9356,14 +9383,18 @@ private struct Walker {
         auto storedValue = isLiveDelegate ? Value.null_ : value;
         if (
             (*current).isNativeAggregate &&
-            canContainTypeInfoSlots(elementType)
+            canContainStoredMetadata(elementType)
         ) {
             import quickbite.backends.interpreter.aggregate_value: AggregateValue;
             import quickbite.backends.interpreter.place: Place;
 
-            auto aggregate = AggregateValue.native(*current);
-            auto destination = Place(aggregate.address, aggregate.type)
-                .index(arrayIndex);
+            auto destination = hasMirrorSlot(variable) &&
+                mirrorEstablished.get(variable, false)
+                ? bindingPlace(variable).index(arrayIndex)
+                : Place(
+                    AggregateValue.native(*current).address,
+                    AggregateValue.native(*current).type,
+                ).index(arrayIndex);
             writeStoredValue(destination, storedValue);
             if (isLiveDelegate)
                 nativeDelegateSlots[destination.address] = value;
@@ -10196,10 +10227,11 @@ private struct Walker {
                     // own (temporary) address, so it needs the same relocation
                     // `setLocal` already does for a whole-value local binding,
                     // here to the newly appended element's real address.
-                    relocateDelegateSlots(
+                    copyStoredMetadata(
                         elementType,
                         AggregateValue.native(element).address,
                         AggregateValue.elementAddress(appended, index),
+                        true,
                     );
             }
             // A native `ref T[]` parameter already names the caller's slice
@@ -10232,9 +10264,8 @@ private struct Walker {
     // (`previous`) and after (`appended`) this iteration's append, and if
     // it moved, relocate every one of `previous`'s `count` elements from
     // its old per-element address to its corresponding new one --
-    // `relocateDelegateSlots`'s existing struct-field/static-array
-    // recursion covers a struct-with-delegate-field element the same way
-    // it covers a bare delegate element.
+    // `copyStoredMetadata` carries every symbolic entry in each element's
+    // byte range, including entries in nested structs and static arrays.
     private void relocatePriorAppendedElementSlots(
         imported!"dmd.mtype".Type elementType,
         in Value previous,
@@ -10256,10 +10287,11 @@ private struct Walker {
             return;
 
         foreach (i; 0 .. count)
-            relocateDelegateSlots(
+            copyStoredMetadata(
                 elementType,
                 AggregateValue.elementAddress(previous, i),
                 AggregateValue.elementAddress(appended, i),
+                true,
             );
     }
 
@@ -10713,7 +10745,7 @@ private struct Walker {
         import quickbite.backends.interpreter.aggregate_value: AggregateValue;
         import quickbite.backends.interpreter.place: Place;
 
-        if (!canContainTypeInfoSlots(type))
+        if (!canContainStoredMetadata(type))
             return AggregateValue.reconstructArray(type, elements);
 
         Value[] nativeElements;
@@ -10728,26 +10760,27 @@ private struct Walker {
         return result;
     }
 
-    private bool canContainTypeInfoSlots(
+    private bool canContainStoredMetadata(
         imported!"dmd.mtype".Type type,
     ) {
+        import dmd.astenums: TY;
         import quickbite.backends.interpreter.layout:
             declaredType, structFields;
 
         auto base = type.toBasetype;
-        if (base.isTypeClass !is null)
+        if (base.isTypeClass !is null || base.ty == TY.Tdelegate)
             return true;
+        if (auto pointer = base.isTypePointer)
+            if (pointer.nextOf.toBasetype.isTypeFunction !is null)
+                return true;
         if (auto array = base.isTypeDArray)
-            return canContainTypeInfoSlots(array.next);
+            return canContainStoredMetadata(array.next);
         if (auto array = base.isTypeSArray)
-            return canContainTypeInfoSlots(array.next);
-        if (auto structType = base.isTypeStruct) {
-            if (structType.sym.isUnionDeclaration !is null)
-                return false;
+            return canContainStoredMetadata(array.next);
+        if (auto structType = base.isTypeStruct)
             foreach (field; structFields(structType))
-                if (canContainTypeInfoSlots(declaredType(field)))
+                if (canContainStoredMetadata(declaredType(field)))
                     return true;
-        }
         return false;
     }
 
@@ -10765,9 +10798,8 @@ private struct Walker {
     // this substitutes `Value.null_` for any live delegate field before
     // that call -- the same bytes the ordinary default-null case already
     // writes -- and registers the live value at the field's own address
-    // once that address exists. `setLocal`'s own `relocateDelegateSlots`
-    // carries the registration forward again when this rvalue's bytes are
-    // later copied into a durable binding.
+    // once that address exists. `writeStoredValue` carries the registration
+    // forward again when this rvalue is copied into durable storage.
     private Value structLiteralValue(
         imported!"dmd.expression".StructLiteralExp literal,
     ) {
@@ -11279,7 +11311,7 @@ private struct Walker {
             return *function_;
         if (
             elementType.isTypeAArray !is null ||
-            canContainTypeInfoSlots(elementType)
+            canContainStoredMetadata(elementType)
         )
             return readStoredValue(Place(address, elementType));
         return unmarshalNative(elementType, address);
@@ -11325,7 +11357,7 @@ private struct Walker {
             }
             nativeFunctionPointerSlots.remove(address);
         }
-        if (canContainTypeInfoSlots(elementType))
+        if (canContainStoredMetadata(elementType))
             writeStoredValue(Place(address, elementType), value);
         else
             marshalNative(elementType, address, value);

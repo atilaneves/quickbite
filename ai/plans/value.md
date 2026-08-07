@@ -247,11 +247,14 @@ deletion (items 2-3).
     handles are separate non-data categories. Boxed values survive only as
     transient rvalues (decisions 7/11), never as storage authority.
 
-    A symbolic `TypeInfo` for an interpreted-only guest type has no resident
-    host object address, so its null ABI slot is accompanied by
-    interpreter-owned metadata keyed by that slot's real address. Typed loads
-    and writes copy or clear this metadata together with the native bytes;
-    ordinary D value copies retain the source slot's identity.
+    A symbolic `TypeInfo` for an interpreted-only guest type, an interpreted
+    delegate, or an interpreted function pointer has no resident native
+    callable/object address, so its null ABI slot is accompanied by
+    interpreter-owned metadata keyed by that slot's real address. Typed value
+    copies preserve every metadata entry in the copied byte range without
+    consuming the source. A write clears every entry whose slot overlaps the
+    written bytes before registering the new value; this applies equally to
+    union members and aggregates containing several metadata kinds.
 
     Rationale: simplicity motivates the design. Boxing earns its keep
     only where the frontend cannot type values (Lox, Python — the
