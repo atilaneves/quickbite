@@ -11324,7 +11324,6 @@ private struct Walker {
         in size_t index,
         in Value value,
     ) {
-        import dmd.astenums: TY;
         import quickbite.backends.interpreter.layout: typeByteSize;
         import quickbite.backends.interpreter.native_call_adapter: marshalNative;
         import quickbite.backends.interpreter.place: Place;
@@ -11335,12 +11334,8 @@ private struct Walker {
             index,
             typeByteSize(elementType),
         );
-        if (elementType.ty == TY.Tdelegate) {
-            if (value == Value.null_)
-                nativeDelegateSlots.remove(address);
-            else
-                nativeDelegateSlots[address] = value;
-            writeStoredValue(Place(address, elementType), Value.null_);
+        if (elementType.isTypeDelegate !is null) {
+            writeStoredValue(Place(address, elementType), value);
             clearUninitializedBindingAddress(pointer.pointerAddress);
             return;
         }

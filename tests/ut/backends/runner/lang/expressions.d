@@ -2070,6 +2070,32 @@ static foreach (backend; Matrix!()) {
     }
 }
 
+// Assigning through a pointer to a delegate updates the delegate value stored
+// in the pointed-to slot. A later null assignment through the same pointer
+// clears both words of that delegate value.
+static foreach (backend; Matrix!()) {
+    @("pointer.delegateAssignmentPreservesCallableAndNull." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct Slot {
+                int delegate() value;
+            }
+
+            unittest {
+                Slot slot;
+                auto pointer = &slot.value;
+
+                *pointer = () => 42;
+                assert(slot.value() == 42);
+
+                *pointer = null;
+                assert(slot.value is null);
+            }
+        });
+    }
+}
+
 // Each recursive activation binds the same declaration AST anew. A pointer
 // saved by the outer activation must keep naming that activation's local when
 // the inner activation binds its own `x`.
