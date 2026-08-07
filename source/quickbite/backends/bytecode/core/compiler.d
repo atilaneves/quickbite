@@ -3371,15 +3371,10 @@ private struct Compiler {
                 if (auto container = placeOrNull(index.e1)) {
                     const handle = loadPlace(*container);
                     auto aaType = index.e1.type.toBasetype;
-                    auto result = new Place(
-                        Place.Kind.assocIndex,
+                    return assocArrayIndexPlace(
+                        container, handle.offset, index.e2, aaType,
                         index.type,
-                        handle.offset,
-                        assocArrayKeyOffset(index.e2, aaType),
                     );
-                    result.keyMeta = assocArrayKeyMeta(aaType);
-                    result.container = container;
-                    return result;
                 }
 
             if (index.e1.type !is null &&
@@ -3550,6 +3545,24 @@ private struct Compiler {
                 : ScalarType.void_,
             index,
         );
+    }
+
+    private Place* assocArrayIndexPlace(
+        Place* container,
+        in ushort handle,
+        Expression key,
+        Type aaType,
+        Type valueType,
+    ) {
+        auto result = new Place(
+            Place.Kind.assocIndex,
+            valueType,
+            handle,
+            assocArrayKeyOffset(key, aaType),
+        );
+        result.keyMeta = assocArrayKeyMeta(aaType);
+        result.container = container;
+        return result;
     }
 
     private bool isPointerLikePlaceType(Type type) {
@@ -5209,7 +5222,7 @@ private struct Compiler {
             // `compileExpression`'s own guard) so the registry's read-side
             // fallback still has a function to find -- `childWriters` itself
             // has no real persistent backing storage under the hack
-            // (`assocArrayHandleOffset`'s `childWriters`-named branch hands
+            // (`resolveAssocArrayOperand`'s `childWriters`-named branch hands
             // out a fresh, empty `Op.aaNew` handle on every access), so a
             // real `_d_aaGetRvalueX` read of it always misses and raises a
             // spurious "Range violation" once this fallback is empty.
@@ -5236,8 +5249,8 @@ private struct Compiler {
 
         // `callbacks[key]` used as a call target (`callbacks[key]()`) for an
         // associative array whose VALUE type is itself `Tdelegate`: DMD
-        // represents the read the same way `assocArrayHandleOffset`'s own
-        // doc comment describes for a nested AA operand (`a[1][2]`) -- an
+        // represents the read the same way a nested AA operand (`a[1][2]`)
+        // reaches the shared place resolver -- an
         // `IndexExp` whose `e1` is the bounds-checked `_d_aaGetRvalueX`
         // pointer-yielding hook glue (already `Tpointer`-typed, the value
         // slot's real address) and whose `e2` is the constant `0` (the same
@@ -9740,7 +9753,7 @@ private struct Compiler {
         // initializer (`= ["a": 1]`) falls through to
         // `moduleScalarInitializerBytes`'s "Unsupported module scalar
         // initializer" throw, same as any other unhandled constant shape.
-        // `assocArrayHandleOffset` (the AA hooks' own handle resolver)
+        // `resolveAssocArrayOperand` (the AA hooks' own handle resolver)
         // reads and, for an insert that autovivifies a still-null handle,
         // writes back this storage; see its own comment.
         if (auto existing = declarationRecordView(declaration).moduleScalarOrNull)
@@ -11189,8 +11202,8 @@ private struct Compiler {
         if (equal.e1.type.toBasetype.ty == TY.Taarray) {
             const width = assocArrayValueWidth(equal.e1.type.toBasetype);
             const keyMeta = assocArrayKeyMeta(equal.e1.type.toBasetype);
-            const left = assocArrayHandleOffset(equal.e1).offset;
-            const right = assocArrayHandleOffset(equal.e2).offset;
+            const left = resolveAssocArrayOperand(equal.e1).handle.offset;
+            const right = resolveAssocArrayOperand(equal.e2).handle.offset;
             const offset = allocate(ScalarType.bool_);
             _code ~= Instruction(
                 Op.aaEqual, offset, left, right, cast(ushort) width, keyMeta,
@@ -13026,9 +13039,8 @@ private struct Compiler {
     ) {
         import std.conv: text;
 
-        const handleResult = assocArrayHandleOffset((*call.arguments)[0]);
-        const handle = handleResult.offset;
-        const handleWriteBackPointer = handleResult.writeBackPointer;
+        auto operand = resolveAssocArrayOperand((*call.arguments)[0]);
+        const handle = operand.handle.offset;
 
         with (AssocArrayHook) final switch (hook) {
             case none:
@@ -13059,9 +13071,14 @@ private struct Compiler {
             }
 
             case getLvalue:
-                return compileAssocArrayGetLvalue(
-                    call, handle, handleWriteBackPointer,
-                );
+                auto aaType = assocArrayType((*call.arguments)[0]);
+                return addressOfPlace(*assocArrayIndexPlace(
+                    operand.container,
+                    handle,
+                    (*call.arguments)[1],
+                    aaType,
+                    aaType.nextOf,
+                ));
 
             case in_: {
                 // `const` fails: `Type` is DMD's mutable AST ref.
@@ -13099,7 +13116,9 @@ private struct Compiler {
                 auto aaType = assocArrayType((*call.arguments)[0]);
                 const width = assocArrayValueWidth(aaType);
                 const keyMeta = assocArrayKeyMeta(aaType);
-                const right = assocArrayHandleOffset((*call.arguments)[1]).offset;
+                const right = resolveAssocArrayOperand(
+                    (*call.arguments)[1],
+                ).handle.offset;
                 const offset = allocate(ScalarType.bool_);
                 _code ~= Instruction(
                     Op.aaEqual, offset, handle, right, cast(ushort) width,
@@ -13299,74 +13318,6 @@ private struct Compiler {
             cast(ushort) TypeFacts.fromOpcode(ScalarType.int_).byteWidth,
         );
         return Operand(result, ScalarType.int_);
-    }
-
-    // `m[k] = v` lowers to `_d_aaGetY(&m, k)` returning a slot pointer, written
-    // through by the surrounding assignment. The core inserts directly and
-    // yields a pointer to the (freshly inserted) value's slot so the write lands.
-    private Operand compileAssocArrayGetLvalue(
-        CallExp call,
-        in ushort handle,
-        in ushort handleWriteBackPointer,
-    ) {
-        // `const` fails: `Type` is DMD's mutable AST ref.
-        auto aaType = assocArrayType((*call.arguments)[0]);
-        const valueType = assocArrayValueScalarType(aaType);
-        const width = assocArrayValueWidth(aaType);
-        const keyMeta = assocArrayKeyMeta(aaType);
-
-        const keyOffset = assocArrayKeyOffset((*call.arguments)[1], aaType);
-        // A fresh, appropriately-sized placeholder, used only if the key
-        // turns out to be absent (`Op.aaGetOrInsert` leaves an
-        // already-present key's value untouched -- see its own doc comment
-        // for why: this call's result can be read back as an intermediate
-        // value for further indexing, e.g. `a[1]` inside `a[1][2] = 3`,
-        // before the surrounding assignment ever writes through the
-        // returned pointer). It must be exactly `width` bytes so a
-        // wider-than-`key`-sized value (e.g. a nested AA handle) never reads
-        // past `key`'s own slot.
-        const placeholder = allocateBytes(width, width);
-        const offset =
-            allocateBytes(cast(uint) size_t.sizeof, size_t.sizeof);
-        _code ~= Instruction(
-            Op.aaGetOrInsert, handle, keyOffset, placeholder,
-            cast(ushort) width, keyMeta,
-        );
-
-        // `aaGetOrInsert` (`machine.d`) may have just autovivified a still-null
-        // handle in place inside the `handle` frame slot (allocating a
-        // fresh map and writing its new handle there). For a module-level
-        // AA, that frame slot is only a materialised copy
-        // (`assocArrayHandleOffset`'s own `Op.loadModule`); write the
-        // (possibly new) handle back to the module's own `moduleData`
-        // storage now, so a later read of the same module variable sees the
-        // freshly-created map rather than the stale null it started from.
-        if (auto declaration =
-                moduleAssocArrayDeclarationOrNull((*call.arguments)[0]))
-            if (auto moduleVariable = moduleDeclarationRecord(declaration).moduleScalarOrNull)
-                _code ~= Instruction(
-                    Op.storeModule, handle, moduleVariable.offset,
-                    cast(ushort) size_t.sizeof,
-                );
-
-        // Same autovivification concern for a nested-AA write into a
-        // brand-new OUTER key (`a[k1][k2] = v` when `a[k1]` does not yet
-        // exist): `handle` here was itself loaded (by
-        // `assocArrayHandleOffset`'s nested-read branch) through a pointer
-        // into the outer map's own storage. Mirror the possibly-new handle
-        // back through that same pointer so the outer map's own entry
-        // (not just this throwaway local) sees the freshly-created inner
-        // map.
-        if (handleWriteBackPointer != ushort.max)
-            emitPointerStore(
-                handle, handleWriteBackPointer, compileSizeConstant(0),
-                cast(uint) size_t.sizeof,
-            );
-
-        _code ~= Instruction(
-            Op.aaIn, offset, handle, keyOffset, cast(ushort) width, keyMeta,
-        );
-        return Operand(offset, ScalarType.ulong_, true, valueType);
     }
 
     // The static `V[K]` type of an associative-array operand (after
@@ -13680,27 +13631,15 @@ private struct Compiler {
         return compileExpression(keyExpression).offset;
     }
 
-    // The result of resolving an associative-array operand's handle: the
-    // frame slot holding the handle value, and -- only for the nested-read
-    // shape below (`a[k1]` used as the AA operand of an outer hook, e.g.
-    // `a[k1][k2]`) -- the frame slot holding the pointer into the OUTER
-    // map's own storage that the handle was just loaded through.
-    // `writeBackPointer` is `ushort.max` for every other shape (a plain
-    // local, a module variable, a struct field): those have their own
-    // resolution/writeback and a caller has no business consulting this
-    // field. Returned by value (never stashed in a member field) so a
-    // caller that has no writeback to do -- e.g. an rvalue comparison's
-    // second operand -- simply lets it go out of scope instead of leaving
-    // stale ambient state for an unrelated later call to pick up.
-    private struct AssocArrayHandleResult {
-        ushort offset;
-        ushort writeBackPointer = ushort.max;
+    private struct AssocArrayOperand {
+        Place* container;
+        Operand handle;
     }
 
-    // The frame offset of an associative-array handle for `expression`: an AA
-    // local VarExp, possibly wrapped in `&aa` (AddrExp) or `*aa` (PtrExp) by the
-    // hook lowering.
-    private AssocArrayHandleResult assocArrayHandleOffset(Expression expression) {
+    // Resolve the AA's authoritative storage once. An lvalue hook can then
+    // write an autovivified handle back through this same place; read-only
+    // hooks use only the loaded handle.
+    private AssocArrayOperand resolveAssocArrayOperand(Expression expression) {
         import std.conv: text;
 
         auto inner = expression;
@@ -13709,123 +13648,24 @@ private struct Compiler {
         if (auto deref = inner.isPtrExp)
             inner = deref.e1;
 
-        if (auto variable = inner.isVarExp)
-            if (auto declaration = variable.var.isVarDeclaration)
-                if (declarationRecordView(declaration).assocArrayOrNull)
-                    if (auto place = placeOrNull(inner)) {
-                        const value = loadPlace(*place);
-                        return AssocArrayHandleResult(
-                            value.offset,
-                            place.kind == Place.Kind.pointer
-                                ? place.offset : ushort.max,
-                        );
-                    }
-
-        // A module-level (`__gshared`/`static`) associative-array variable's
-        // handle lives in `moduleData`, not a frame local: materialise its
-        // current value into a fresh frame slot the same way a module
-        // pointer/class-reference read does (`Op.loadModule`). An insert
-        // (`compileAssocArrayGetLvalue`) may autovivify a still-null handle
-        // in place inside that frame slot -- its own writeback copies the
-        // (possibly new) handle back to `moduleData` right after, so this
-        // materialised copy going stale the moment the frame slot changes
-        // is never observed by a later read.
-        if (auto declaration = moduleAssocArrayDeclarationOrNull(expression))
-            if (auto moduleVariable = moduleDeclarationRecord(declaration).moduleScalarOrNull) {
-                const offset = allocate(ScalarType.ulong_);
-                _code ~= Instruction(
-                    Op.loadModule, offset, moduleVariable.offset,
-                    cast(ushort) TypeFacts.fromOpcode(
-                        ScalarType.ulong_,
-                    ).byteWidth,
-                );
-                return AssocArrayHandleResult(offset);
-            }
-
-        if (auto dot = inner.isDotVarExp)
-            if (auto field = dot.var.isVarDeclaration) {
-                import dmd.astenums: TY;
-
-                if (field.type.toBasetype.ty == TY.Taarray)
-                    if (auto place = placeOrNull(dot))
-                        return AssocArrayHandleResult(
-                            loadPlaceValue(*place).offset,
-                            place.kind == Place.Kind.pointer
-                                ? place.offset : ushort.max,
-                        );
-            }
+        if (auto container = placeOrNull(inner))
+            return AssocArrayOperand(
+                container, loadPlaceValue(*container),
+            );
 
         if (staticDelegateAssocArrayDeclaration(inner) !is null) {
             const offset =
                 allocateBytes(cast(uint) size_t.sizeof, size_t.sizeof);
             _code ~= Instruction(Op.aaNew, offset);
-            return AssocArrayHandleResult(offset);
+            return AssocArrayOperand(
+                null, Operand(offset, ScalarType.ulong_),
+            );
         }
-
-        // A nested associative-array read used as an operand of an outer AA
-        // hook (`a[1][2]`'s outer `_d_aaGetRvalueX(a[1], 2)` takes the raw,
-        // unresolved `a[1]` as its first argument): DMD represents the
-        // rvalue read of an AA-typed sub-expression as an ordinary `IndexExp`
-        // whose `e1` is the bounds-checked pointer-yielding hook glue and
-        // whose `e2` is the constant `0` (the same `*p` == `p[0]` idiom DMD
-        // uses generally), rather than lowering it to a further nested
-        // `CallExp`. The place resolver already compiles this exact shape
-        // correctly for a plain `int x = a[1];`, loading through the pointer
-        // at the value's own scalar width; reuse it here so the loaded
-        // AA-handle value (or ordinary scalar) lands in a real frame slot,
-        // and use that slot as the resolved handle.
-        if (auto index = inner.isIndexExp)
-            if (auto zero = index.e2.isIntegerExp)
-                if (zero.toInteger == 0 &&
-                    isPointerType(index.e1.type)) {
-                    // Keep this shape's pointer available instead of
-                    // delegating to `compileExpression`, so the pointer into
-                    // the OUTER map's own storage stays available below for
-                    // `compileAssocArrayGetLvalue` to write an
-                    // auto-vivified handle back through.
-                    const pointer = compileExpression(index.e1);
-                    const indexSlot = compileExpression(index.e2);
-                    const value = asPointerValue(
-                        loadThroughPointer(pointer, indexSlot.offset),
-                        index.type,
-                    );
-                    return AssocArrayHandleResult(
-                        value.offset, pointer.offset,
-                    );
-                }
 
         throw new Exception(text(
             "Unsupported associative array operand in bytecode core: ",
             expressionChars(expression),
         ));
-    }
-
-    // The module-level (`__gshared`/`static`) associative-array variable
-    // `expression` refers to (after unwrapping `&aa`/`*aa`, the same shapes
-    // `assocArrayHandleOffset` itself unwraps), or `null` if `expression`
-    // does not (directly) refer to one. Shared by `assocArrayHandleOffset`
-    // (reading the handle) and `compileAssocArrayGetLvalue` (writing an
-    // autovivified handle back) so both resolve the same declaration the
-    // same way.
-    private VarDeclaration moduleAssocArrayDeclarationOrNull(
-        Expression expression,
-    ) {
-        import dmd.astenums: TY;
-
-        auto inner = expression;
-        if (auto address = inner.isAddrExp)
-            inner = address.e1;
-        if (auto deref = inner.isPtrExp)
-            inner = deref.e1;
-
-        auto variable = inner.isVarExp;
-        auto declaration =
-            variable is null ? null : variable.var.isVarDeclaration;
-        if (declaration is null ||
-            declaration.type.toBasetype.ty != TY.Taarray)
-            return null;
-
-        return declaration;
     }
 
     private VarDeclaration staticDelegateAssocArrayDeclaration(
@@ -14997,8 +14837,8 @@ private struct Compiler {
 
         const width = assocArrayValueWidth(lhs.type.toBasetype);
         const keyMeta = assocArrayKeyMeta(lhs.type.toBasetype);
-        const left = assocArrayHandleOffset(lhs).offset;
-        const right = assocArrayHandleOffset(rhs).offset;
+        const left = resolveAssocArrayOperand(lhs).handle.offset;
+        const right = resolveAssocArrayOperand(rhs).handle.offset;
         const equal = allocateBytes(1, 1);
         _code ~= Instruction(
             Op.aaEqual, equal, left, right, cast(ushort) width, keyMeta,
