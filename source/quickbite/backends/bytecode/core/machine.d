@@ -2744,8 +2744,8 @@ private bool numericSlicesEqual(
     in size_t rightOffset,
     in imported!"quickbite.backends.bytecode.core.program".ScalarType leftType,
     in imported!"quickbite.backends.bytecode.core.program".ScalarType rightType,
-) @trusted {
-    import quickbite.backends.bytecode.core.program: isSigned, size;
+) @safe {
+    import quickbite.backends.bytecode.core.program: size;
 
     const leftLength = scalarValue!size_t(stack, leftOffset + size_t.sizeof);
     const rightLength = scalarValue!size_t(stack, rightOffset + size_t.sizeof);
@@ -2756,9 +2756,15 @@ private bool numericSlicesEqual(
     const rightPointer = scalarValue!size_t(stack, rightOffset);
     const leftWidth = size(leftType);
     const rightWidth = size(rightType);
+    const leftElements = numericSliceBytes(
+        leftPointer, leftLength, leftWidth,
+    );
+    const rightElements = numericSliceBytes(
+        rightPointer, rightLength, rightWidth,
+    );
     foreach (index; 0 .. leftLength) {
-        const left = numericElement(leftPointer, index, leftWidth);
-        const right = numericElement(rightPointer, index, rightWidth);
+        const left = numericElement(leftElements, index, leftWidth);
+        const right = numericElement(rightElements, index, rightWidth);
         if (!numericElementsEqual(
                 left, leftType, right, rightType,
             ))
@@ -2767,12 +2773,34 @@ private bool numericSlicesEqual(
     return true;
 }
 
-private ulong numericElement(
+// @trusted: compiler-produced numeric slice descriptors point only into the
+// reserved VM stack, VM heap blocks rooted for the duration of `run`, or
+// program-owned storage whose reserved capacity keeps its address stable.
+// Their element count matches the backing allocation and `width` is the
+// descriptor's ScalarType width. The overflow assertion therefore guards the
+// byte-count calculation before constructing the raw-pointer slice; safe
+// callers can subsequently read only within that checked extent. Empty slices
+// return before touching their possibly-null pointer.
+private const(ubyte)[] numericSliceBytes(
     in size_t pointer,
-    in size_t index,
+    in size_t length,
     in uint width,
 ) @trusted pure {
-    const bytes = (cast(const(ubyte)*) pointer + index * width)[0 .. width];
+    if (length == 0)
+        return null;
+
+    assert(width != 0);
+    assert(length <= size_t.max / width);
+    return (cast(const(ubyte)*) pointer)[0 .. length * width];
+}
+
+private ulong numericElement(
+    in ubyte[] elements,
+    in size_t index,
+    in uint width,
+) @safe pure {
+    const offset = index * width;
+    const bytes = elements[offset .. offset + width];
     ulong result;
     foreach_reverse (byte_; bytes)
         result = (result << 8) | byte_;
