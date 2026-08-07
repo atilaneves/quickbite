@@ -1350,16 +1350,12 @@ private struct Compiler {
         } else if (_currentReturnType.isArray && _currentReturnType.isStaticArray) {
             // `return arr;` for a `string[N]`/`wstring[N]`/`dstring[N]` result:
             // the `ret` instruction below copies `staticArraySize` inline bytes
-            // from `result`, not a 16-byte descriptor — `arrayDescriptorOffset`
+            // from `result`, not a 16-byte dynamic-array descriptor
             // (the dynamic-array path) would hand back the wrong shape.
             result = staticArrayReturnOffset(return_.exp);
             hasResult = true;
         } else if (_currentReturnType.isArray) {
-            result = arrayDescriptorOffset(
-                _currentReturnType.elementType,
-                return_.exp,
-                _currentReturnType.arrayElementsAreArrays,
-            );
+            result = dynamicArrayDescriptor(return_.exp).offset;
             hasResult = true;
         } else if (_currentReturnType.isStruct) {
             if (auto place = placeOrNull(return_.exp))
@@ -2192,9 +2188,8 @@ private struct Compiler {
                     messageExpression.type !is null &&
                     isStringType(messageExpression.type))
                 {
-                    const messageOffset = arrayDescriptorOffset(
-                        ScalarType.char_, messageExpression,
-                    );
+                    const messageOffset =
+                        dynamicArrayDescriptor(messageExpression).offset;
                     emitThrowString(messageOffset, registerClass(class_), class_);
                     const type = throwResultType(resultType);
                     return Operand(allocate(type), type);
@@ -2413,8 +2408,11 @@ private struct Compiler {
             if (auto declaration = variable.var.isVarDeclaration)
                 if (auto existing = declarationRecordView(declaration).staticArrayOrNull)
                     return Operand(*existing, ScalarType.void_);
-            if (auto descriptor = dynamicArrayDescriptorOrNull(expression))
-                return Operand(descriptor.offset, ScalarType.void_);
+            if (expression.type !is null &&
+                (isDynamicArrayArgument(expression) ||
+                    isStringType(expression.type)))
+                if (auto place = placeOrNull(expression))
+                    return loadPlaceValue(*place);
             if (auto declaration = variable.var.isVarDeclaration)
                 if (auto moduleVariable =
                         moduleDeclarationRecord(declaration).moduleScalarOrNull) {
@@ -2815,13 +2813,6 @@ private struct Compiler {
                 return loadPlaceValue(*place);
 
         if (auto index = expression.isIndexExp) {
-            import dmd.astenums: TY;
-
-            if (index.type.toBasetype.ty == TY.Tsarray &&
-                index.e1.type.toBasetype.ty == TY.Tarray &&
-                arrayElementIsArray(index.e1.type))
-                if (auto row = tryDynamicArrayIndex(index))
-                    return *row;
             if (auto place = placeOrNull(index))
                 return loadPlaceValue(*place);
         }
@@ -3444,20 +3435,21 @@ private struct Compiler {
                 return result;
             }
 
-            auto descriptor = dynamicArrayDescriptorOrNull(slice.e1);
-            if (descriptor is null && !isPointerType(slice.e1.type))
-                return null;
-            result.sliceElementType = descriptor is null
+            const pointerSlice = isPointerType(slice.e1.type);
+            auto descriptor = pointerSlice
+                ? DynamicArrayLocal.init
+                : dynamicArrayDescriptor(slice.e1);
+            result.sliceElementType = pointerSlice
                 ? dynamicArrayElementType(slice.type)
                 : descriptor.elementType;
-            result.sliceElementIsArray = descriptor is null
+            result.sliceElementIsArray = pointerSlice
                 ? arrayElementIsArray(slice.e1.type)
                 : descriptor.elementIsArray;
             result.sliceElementSize = dynamicArrayElementSize(
                 slice.e1.type, result.sliceElementIsArray,
             );
-            if (descriptor !is null)
-                result.sliceDescriptor = *descriptor;
+            if (!pointerSlice)
+                result.sliceDescriptor = descriptor;
             result.offset = allocateBytes(
                 sliceDescriptorSize, size_t.sizeof,
             );
@@ -3963,526 +3955,105 @@ private struct Compiler {
         }
     }
 
-    // `arr.length` reads the descriptor's length word (a `size_t`) into a fresh
-    // slot. `length.e1` is usually a known descriptor shape
-    // (`dynamicArrayDescriptorOrNull`); when it isn't -- e.g. `arr[0].length`
-    // where `arr` is a module-level `int[][]`, an `IndexExp` whose own base
-    // is a bare module `VarExp` that `innerArrayDescriptor` doesn't resolve
-    // (it only chases local-frame dynamic-array metadata or a
-    // struct/class-field `DotVarExp` base, not a plain module variable) --
-    // fall back to `indexedArrayDescriptor`'s general expression
-    // materialisation, the same fallback `tryDynamicArrayIndex` already uses
-    // for the sibling shape `arr[0][0]`. Scoped to this one call site rather
-    // than folded into `dynamicArrayDescriptor` itself (used by nine other
-    // call sites -- `compileSliceInto`, append, concatenate, and others) to
-    // avoid rippling into an unrelated consumer's assumptions, the same
-    // landmine `dynamicArrayFieldDescriptorOrNull`'s own doc comment warns
-    // about for a blanket recursive-call generalisation.
+    // `arr.length` loads one descriptor value, whether `arr` is an lvalue
+    // place or a once-compiled temporary expression.
     private Operand compileArrayLength(ArrayLengthExp length) {
-        import std.conv: text;
-
-        auto descriptor = dynamicArrayDescriptorOrNull(length.e1);
-        if (descriptor is null)
-            descriptor = indexedArrayDescriptor(length.e1);
-        if (descriptor is null)
-            throw new Exception(text(
-                "Unsupported dynamic array access in bytecode core: ",
-                expressionChars(length.e1),
-            ));
-
+        const descriptor = dynamicArrayDescriptor(length.e1);
         const offset = allocate(ScalarType.ulong_);
         _code ~= Instruction(Op.sliceLength, offset, descriptor.offset);
         return Operand(offset, ScalarType.ulong_);
     }
 
-    // Read element `index` of a dynamic-array local, or null if `index` is not
-    // an access into a known dynamic-array local.
-    private Operand* tryDynamicArrayIndex(IndexExp index) {
-        // `outer[i][j]` / `local[i]` / `s[i]`: the indexed expression is (or
-        // materialises to) a known dynamic-array descriptor — a `string`
-        // included, its real descriptor identical in shape to any other
-        // `T[]`. This also handles `outer[i]` of an array-of-arrays, whose
-        // inner descriptor is materialised here.
-        if (auto descriptor = dynamicArrayDescriptorOrNull(index.e1))
-            return loadDynamicArrayElement(
-                descriptor.offset, descriptor.elementType, index.e2, index.type,
-                descriptor.elementIsArray,
-            );
-
-        // `makeArray(...)[i]`: the indexed expression is an array-valued call,
-        // not a known local. Materialise its descriptor into a fresh slot and
-        // index that.
-        if (auto descriptorOffset = indexedArrayDescriptor(index.e1))
-            return loadDynamicArrayElement(
-                descriptorOffset.offset, descriptorOffset.elementType, index.e2,
-                index.type, descriptorOffset.elementIsArray,
-            );
-
-        return null;
-    }
-
-    // The slice descriptor for an array-valued expression that is not a known
-    // dynamic-array local (today, an array-returning call), materialised into a
-    // fresh frame slot; null otherwise.
-    private DynamicArrayLocal* indexedArrayDescriptor(Expression expression) {
-        if (dynamicArrayDescriptorOrNull(expression) !is null)
-            return null;
-
-        if (!isDynamicArrayArgument(expression))
-            return null;
-
-        const elementType = dynamicArrayElementType(expression.type);
-        const elementIsArray = arrayElementIsArray(expression.type);
-        const offset =
-            arrayDescriptorOffset(elementType, expression, elementIsArray);
-        auto result = new DynamicArrayLocal;
-        *result = DynamicArrayLocal(offset, elementType, elementIsArray);
-        return result;
-    }
-
-    // Read element `indexExpr` of the dynamic-array descriptor at frame offset
-    // `descriptorOffset`, returning the loaded element. `elementIsArray` marks
-    // an array-of-arrays descriptor whose element is itself a 16-byte slice
-    // descriptor rather than the `elementType` scalar (which then names only
-    // the innermost element for further indexing).
-    private Operand* loadDynamicArrayElement(
-        in ushort descriptorOffset,
-        in ScalarType elementType,
-        Expression indexExpr,
-        Type resultType,
-        in bool elementIsArray = false,
-    ) {
-        import dmd.astenums: TY;
-
-        const savedDollarLength = _activeDollarLength;
-        _activeDollarLength = sliceLengthSlot(DynamicArrayLocal(
-            descriptorOffset,
-            elementType,
-        ));
-        const indexSlot = compileExpression(indexExpr);
-        _activeDollarLength = savedDollarLength;
-        const isAggregateElement = resultType.toBasetype.ty == TY.Tstruct ||
-            resultType.toBasetype.ty == TY.Tdelegate;
-        const elementSize = isAggregateElement
-            ? typeFacts(resultType).byteWidth
-            : elementIsArray
-            ? sliceDescriptorSize
-            : size(elementType);
-        const alignment = isAggregateElement
-            ? staticArrayAlign(resultType)
-            : elementIsArray
-            ? size_t.sizeof
-            : elementSize;
-        const offset = allocateBytes(elementSize, alignment);
-        emitIndexLoad(offset, descriptorOffset, indexSlot.offset, elementSize);
-
-        auto result = new Operand;
-        *result = isAggregateElement || elementIsArray
-            ? Operand(offset, ScalarType.void_)
-            : resultType.toBasetype.ty == TY.Tclass
-            ? Operand(offset, ScalarType.ulong_, true, ScalarType.void_)
-            : isPointerType(resultType)
-            ? Operand(
-                offset, ScalarType.ulong_, true,
-                pointerElementScalar(resultType),
-            )
-            : Operand(offset, elementType);
-        return result;
-    }
-
-    // The slice descriptor a dynamic-array expression denotes, throwing if it is
-    // not a known dynamic-array local.
+    // The descriptor value and element metadata of an array expression. An
+    // lvalue is resolved once and loaded through Place; a non-lvalue is
+    // materialised once into a descriptor slot. Static arrays become views
+    // over their real storage rather than heap copies.
     private DynamicArrayLocal dynamicArrayDescriptor(Expression expression) {
+        import dmd.astenums: TY;
         import std.conv: text;
 
-        auto descriptor = dynamicArrayDescriptorOrNull(expression);
-        if (descriptor is null)
+        if (auto dot = expression.isDotVarExp)
+            if (auto name = tryTypeidName(dot))
+                return DynamicArrayLocal(name.offset, ScalarType.char_);
+
+        if (auto dot = expression.isDotVarExp)
+            if (auto field = tryExceptionStringField(dot))
+                return DynamicArrayLocal(field.offset, ScalarType.char_);
+
+        if (expression.type is null)
             throw new Exception(text(
                 "Unsupported dynamic array access in bytecode core: ",
                 expressionChars(expression),
             ));
-        return *descriptor;
-    }
 
-    // Resolve a genuine `Tarray` field through the same place pipeline as
-    // every other field consumer. The declaration guard keeps inline
-    // `Tsarray` fields out of descriptor-stride logic.
-    private DynamicArrayLocal* dynamicArrayFieldDescriptorOrNull(
-        DotVarExp dot,
-    ) {
-        import dmd.astenums: TY;
-
-        auto declaredField = dot.var.isVarDeclaration;
-        if (declaredField is null ||
-            declaredField.type.toBasetype.ty != TY.Tarray)
-            return null;
-
-        if (auto place = placeOrNull(dot)) {
-            const value = loadPlaceValue(*place);
-            auto result = new DynamicArrayLocal;
-            *result = DynamicArrayLocal(
-                value.offset,
-                dynamicArrayElementType(declaredField.type),
-                arrayElementIsArray(declaredField.type),
-            );
-            return result;
-        }
-
-        return null;
-    }
-
-    // `outer` where `outer` is a `Tarray`-typed local captured from an
-    // enclosing function: materialise its 16-byte descriptor from the
-    // captured-frame slot into a fresh local slot, the same descriptor shape
-    // every other dynamic-array source resolves to. Shared by
-    // `dynamicArrayDescriptorOrNull`'s own top-level dispatch and
-    // `innerArrayDescriptor`'s `outer[i]`-of-a-captured-array-of-arrays
-    // base case (`captured[1][0] = rhs`, where `captured` is a captured
-    // `int[][]`): `innerArrayDescriptor`'s own declaration lookup never
-    // matches a captured base, since a captured local's descriptor lives in
-    // the captured-frame slot. Null for
-    // anything but a captured `Tarray`-typed `VarExp`.
-    private DynamicArrayLocal* capturedArrayDescriptorOrNull(
-        Expression expression,
-    ) {
-        import dmd.astenums: TY;
-
-        if (!_hasNestedContext)
-            return null;
-        auto variable = expression.isVarExp;
-        if (variable is null)
-            return null;
-        auto declaration = variable.var.isVarDeclaration;
-        if (declaration is null)
-            return null;
-        auto captured = declaration in _capturedOffsets;
-        if (captured is null || declaration.type.toBasetype.ty != TY.Tarray)
-            return null;
-
-        const offset = allocateBytes(sliceDescriptorSize, size_t.sizeof);
-        const frameIndex =
-            capturedFrameIndex(_capturedOwners[declaration], *captured);
-        _code ~= Instruction(
-            Op.frameLoad, offset, frameIndex, cast(ushort) sliceDescriptorSize,
-        );
-        auto result = new DynamicArrayLocal;
-        *result = DynamicArrayLocal(
-            offset,
-            dynamicArrayElementType(declaration.type),
-            arrayElementIsArray(declaration.type),
-        );
-        return result;
-    }
-
-    private DynamicArrayLocal* dynamicArrayDescriptorOrNull(
-        Expression expression,
-    ) {
-        import dmd.astenums: TY;
-
-        if (auto cast_ = expression.isCastExp)
-            if (isDynamicArrayArgument(cast_.e1) ||
-                isStringType(cast_.e1.type))
-                return dynamicArrayDescriptorOrNull(cast_.e1);
-
-        // `typeid(T).name` / `object.classinfo.name`: computed at compile
-        // time from the type's own declaration, not read out of a class
-        // object's field storage. Checked before the general class-field
-        // case below, matching `compileExpression`'s own dispatch order, so
-        // a `string name = typeid(T).name;`-shaped source still resolves
-        // here rather than falling into a raw field read off whatever
-        // pointer `typeid(T)` happens to compile to.
-        if (auto dot = expression.isDotVarExp)
-            if (auto name = tryTypeidName(dot)) {
-                auto result = new DynamicArrayLocal;
-                *result = DynamicArrayLocal(name.offset, ScalarType.char_);
-                return result;
-            }
-
-        // Catch objects expose synthetic message descriptors maintained by
-        // the exception machinery rather than ordinary class-field storage.
-        // Resolve those before the shared aggregate field place below.
-        if (auto dot = expression.isDotVarExp)
-            if (auto field = tryExceptionStringField(dot)) {
-                auto result = new DynamicArrayLocal;
-                *result = DynamicArrayLocal(field.offset, ScalarType.char_);
-                return result;
-            }
-
-        const refParameter = expression.isVarExp !is null &&
-            expression.isVarExp.var.isVarDeclaration !is null &&
-            expression.isVarExp.var.isVarDeclaration.isParameter &&
-            expression.isVarExp.var.isVarDeclaration.isReference;
-        const refLocal = expression.isVarExp !is null &&
-            expression.isVarExp.var.isVarDeclaration !is null &&
-            declarationRecordView(
-                expression.isVarExp.var.isVarDeclaration,
-            ).refPointerOrNull !is null;
-        if (expression.type !is null &&
-            expression.type.toBasetype.ty == TY.Tarray &&
-            (expression.isDotVarExp !is null || refParameter || refLocal))
-            if (auto place = placeOrNull(expression)) {
-                const address = addressOfPlace(*place);
-                const offset = loadPlace(*place).offset;
-                auto result = new DynamicArrayLocal(
-                    offset,
-                    dynamicArrayElementType(expression.type),
-                    arrayElementIsArray(expression.type),
-                );
-                return result;
-            }
-
-        if (auto variable = expression.isVarExp)
-            if (auto declaration = variable.var.isVarDeclaration)
-                if (auto descriptor = declarationRecordView(declaration).dynamicArrayOrNull)
-                    return descriptor;
-
-        // A module-level dynamic array (`byte[] a;`): materialise its
-        // 16-byte descriptor from `_program.moduleData` into a fresh frame
-        // slot, using the shared module-place read but sized for a whole slice
-        // descriptor.
-        if (auto variable = expression.isVarExp)
-            if (auto declaration = variable.var.isVarDeclaration)
-                if (auto moduleVariable =
-                        moduleDeclarationRecord(declaration).moduleDynamicArrayOrNull) {
-                    const offset =
-                        allocateBytes(sliceDescriptorSize, size_t.sizeof);
-                    _code ~= Instruction(
-                        Op.loadModule,
-                        offset,
-                        moduleVariable.offset,
-                        cast(ushort) sliceDescriptorSize,
-                    );
-                    auto result = new DynamicArrayLocal;
-                    *result = DynamicArrayLocal(
-                        offset,
-                        moduleVariable.elementType,
-                        moduleVariable.elementIsArray,
-                    );
-                    return result;
-                }
-
-        // A string literal: the native {ptr, length} descriptor `Op
-        // .loadStringLiteral` writes is already the ordinary shape every
-        // other dynamic-array source resolves to.
-        if (auto literal = expression.isStringExp)
-            if (isStringType(literal.type)) {
-                auto result = new DynamicArrayLocal;
-                *result = DynamicArrayLocal(
-                    compileStringLiteralPointer(literal),
-                    dynamicArrayElementType(literal.type),
-                );
-                return result;
-            }
-
-        if (auto dereference = expression.isPtrExp)
-            if (expression.type.toBasetype.ty == TY.Tarray) {
-                const pointer = compileExpression(dereference.e1);
-                if (!pointer.isPointer)
-                    return null;
-
-                const offset =
-                    allocateBytes(sliceDescriptorSize, size_t.sizeof);
-                emitPointerLoad(
-                    offset, pointer.offset, compileSizeConstant(0),
-                    sliceDescriptorSize,
-                );
-                auto result = new DynamicArrayLocal;
-                *result = DynamicArrayLocal(
-                    offset,
-                    dynamicArrayElementType(expression.type),
-                    arrayElementIsArray(expression.type),
-                );
-                return result;
-            }
-
-        // `p[0]` where `p` is a pointer to a dynamic array (`int[]*`): DMD's
-        // associative-array rvalue-read lowering (`_d_aaGetRvalueX`) yields
-        // exactly this shape -- an `IndexExp` over the returned pointer, not
-        // the `PtrExp` (`*p`) form above -- for an array-typed AA value
-        // (`int[][int] a; a[1]`). Materialise the pointee's 16-byte
-        // descriptor the same way, indexing through the real (usually
-        // constant-zero, but not assumed so) index expression rather than
-        // the `PtrExp` branch's implicit zero.
-        if (auto index = expression.isIndexExp)
-            if (index.e1.type.toBasetype.ty == TY.Tpointer &&
-                index.e1.type.toBasetype.nextOf.toBasetype.ty == TY.Tarray) {
-                const pointer = compileExpression(index.e1);
-                if (pointer.isPointer) {
-                    const indexSlot = compileExpression(index.e2);
-                    const offset =
-                        allocateBytes(sliceDescriptorSize, size_t.sizeof);
-                    emitPointerLoad(
-                        offset, pointer.offset, indexSlot.offset,
-                        sliceDescriptorSize,
-                    );
-                    auto result = new DynamicArrayLocal;
-                    *result = DynamicArrayLocal(
-                        offset,
-                        dynamicArrayElementType(expression.type),
-                        arrayElementIsArray(expression.type),
-                    );
-                    return result;
-                }
-            }
-
-        if (auto captured = capturedArrayDescriptorOrNull(expression))
-            return captured;
-
-        if (expression.type !is null &&
-            expression.type.toBasetype.ty == TY.Tsarray)
-            if (auto place = placeOrNull(expression)) {
-                const address = addressOfPlace(*place);
+        const kind = expression.type.toBasetype.ty;
+        if (kind == TY.Tsarray) {
+            auto place = placeOrNull(expression);
+            if (place is null) {
+                const elementType = dynamicArrayElementType(expression.type);
+                const elementIsArray = arrayElementIsArray(expression.type);
                 const offset = allocateBytes(
                     sliceDescriptorSize, size_t.sizeof,
                 );
-                _code ~= Instruction(
-                    Op.copy, offset, address.offset,
-                    cast(ushort) size_t.sizeof,
+                compileDynamicArrayInto(
+                    offset, elementType, expression, elementIsArray,
                 );
-                const elementWidth = typeFacts(
-                    cast(Type) expression.type.toBasetype.nextOf,
-                ).byteWidth;
-                _code ~= Instruction(
-                    Op.loadConstant,
-                    cast(ushort) sliceDescriptorLengthOffset(offset),
-                    constantIndex(
-                        typeFacts(expression.type).byteWidth / elementWidth,
-                    ),
-                    cast(ushort) size_t.sizeof,
+                return DynamicArrayLocal(
+                    offset, elementType, elementIsArray,
                 );
-                auto result = new DynamicArrayLocal(
-                    offset,
-                    dynamicArrayElementType(expression.type),
-                    arrayElementIsArray(expression.type),
-                );
-                result.isStaticArrayView = true;
-                result.staticArrayViewIsClassField = true;
-                result.staticArrayOffset = address.offset;
-                return result;
             }
-
-        // `base.field` where the field is a dynamic array: its slice descriptor
-        // lives at `base + field.offset`, so indexing, `.length`, element-assign
-        // and append reuse the existing dynamic-array machinery on that slot.
-        if (auto dot = expression.isDotVarExp)
-            if (auto result = dynamicArrayFieldDescriptorOrNull(dot))
-                return result;
-
-        // `outer[i]` where `outer` is an array-of-arrays (`int[][]`): indexing
-        // yields an inner array. Materialise the inner descriptor into a fresh
-        // slot and treat it as a (scalar-element) dynamic array.
-        if (auto index = expression.isIndexExp)
-            return innerArrayDescriptor(index);
-
-        if (auto slice = expression.isSliceExp) {
-            const elementType = dynamicArrayElementType(expression.type);
-            const offset = allocateBytes(sliceDescriptorSize, size_t.sizeof);
-            compileSliceInto(offset, elementType, slice);
-            auto result = new DynamicArrayLocal;
-            *result = DynamicArrayLocal(offset, elementType);
-            return result;
-        }
-
-        // An array-returning call (`m.keys` / `m.values`, or a `string`
-        // function): materialise its 16-byte slice-descriptor result into a
-        // fresh slot.
-        if (expression.isCallExp !is null &&
-            (isDynamicArrayArgument(expression) ||
-                (expression.type !is null && isStringType(expression.type))))
-        {
-            const elementType = dynamicArrayElementType(expression.type);
-            const elementIsArray = arrayElementIsArray(expression.type);
-            const offset = allocateBytes(sliceDescriptorSize, size_t.sizeof);
-            compileDynamicArrayInto(
-                offset, elementType, expression, elementIsArray,
+            const address = addressOfPlace(*place);
+            const offset = allocateBytes(
+                sliceDescriptorSize, size_t.sizeof,
             );
-            auto result = new DynamicArrayLocal;
-            *result = DynamicArrayLocal(offset, elementType, elementIsArray);
+            _code ~= Instruction(
+                Op.copy, offset, address.offset,
+                cast(ushort) size_t.sizeof,
+            );
+            const elementWidth = typeFacts(
+                cast(Type) expression.type.toBasetype.nextOf,
+            ).byteWidth;
+            _code ~= Instruction(
+                Op.loadConstant,
+                cast(ushort) sliceDescriptorLengthOffset(offset),
+                constantIndex(
+                    typeFacts(expression.type).byteWidth / elementWidth,
+                ),
+                cast(ushort) size_t.sizeof,
+            );
+            auto result = DynamicArrayLocal(
+                offset,
+                dynamicArrayElementType(expression.type),
+                arrayElementIsArray(expression.type),
+            );
+            result.isStaticArrayView = true;
+            result.staticArrayViewIsClassField = true;
+            result.staticArrayOffset = address.offset;
             return result;
         }
 
-        return null;
-    }
+        if (kind != TY.Tarray && !isStringType(expression.type))
+            throw new Exception(text(
+                "Unsupported dynamic array access in bytecode core: ",
+                expressionChars(expression),
+            ));
 
-    // `outer[i]` of an array-of-arrays local: load the 16-byte inner descriptor
-    // at index `i` into a fresh slot and return a DynamicArrayLocal over it; null
-    // if `outer` is not an array-of-arrays local.
-    private DynamicArrayLocal* innerArrayDescriptor(IndexExp index) {
-        import dmd.astenums: TY;
+        const elementType = dynamicArrayElementType(expression.type);
+        const elementIsArray = arrayElementIsArray(expression.type);
+        if (auto place = placeOrNull(expression))
+            return DynamicArrayLocal(
+                loadPlaceValue(*place).offset,
+                elementType,
+                elementIsArray,
+            );
 
-        DynamicArrayLocal* outer;
-
-        if (auto variable = index.e1.isVarExp)
-            if (auto declaration = variable.var.isVarDeclaration)
-                if (auto local = declarationRecordView(declaration).dynamicArrayOrNull)
-                    outer = local;
-
-        // `captured[i]` where `captured` is an array-of-arrays local
-        // captured from an enclosing function: its own descriptor never
-        // lives in current-function dynamic-array metadata, so the plain
-        // `VarExp` branch above never matches it.
-        if (outer is null)
-            outer = capturedArrayDescriptorOrNull(index.e1);
-
-        // `a.m[i]` where `m` is itself a `Tarray`-typed class/struct field of
-        // array-of-arrays element type (`int[][] m;`): resolve the field's
-        // own descriptor through the same Tarray-gated helper a plain field
-        // read uses, rather than a blanket recursive call into
-        // `dynamicArrayDescriptorOrNull` -- see
-        // `dynamicArrayFieldDescriptorOrNull`'s own comment for why that
-        // would corrupt an unrelated static-array-of-structs stride.
-        if (outer is null)
-            if (auto dot = index.e1.isDotVarExp)
-                outer = dynamicArrayFieldDescriptorOrNull(dot);
-
-        // `a[i]` where `a` is a static array whose own element type is
-        // itself a dynamic array (`int[][2]`): each element is an ordinary
-        // 16-byte slice descriptor stored inline in `a`'s own frame block,
-        // not a separately heap-allocated row (contrast a dynamic array of
-        // static-array rows, `T[N][]`, handled by `innerArrayRowPointer`)
-        // and not a frame-resident dynamic-array base, so neither branch
-        // above matches. Take the element's real frame address -- the same
-        // pointer `&a[i]` resolves to through the shared place pipeline --
-        // and read/write through it exactly like the `PtrExp` (`*p`)
-        // branch in `dynamicArrayDescriptorOrNull` above, so a write lands
-        // back in `a`'s own storage instead of a throwaway copy. Gated on
-        // the element type being genuinely `Tarray` (not `Tsarray`): a
-        // nested static array (`int[3][2]`) is inline bytes to chain into
-        // via the ordinary static-array-element path, not a descriptor to
-        // dereference.
-        if (outer is null && index.e1.type.toBasetype.ty == TY.Tsarray)
-            if (auto base = placeOrNull(index.e1))
-                if (index.e1.type.toBasetype.nextOf.toBasetype.ty ==
-                        TY.Tarray) {
-                    const pointer = advanceStaticArrayPointer(
-                        addressOfPlace(*base), index.e2, index.type,
-                        compileSizeConstant(staticArrayLength(index.e1.type)),
-                    );
-                    const offset =
-                        allocateBytes(sliceDescriptorSize, size_t.sizeof);
-                    emitPointerLoad(
-                        offset, pointer.offset, compileSizeConstant(0),
-                        sliceDescriptorSize,
-                    );
-                    auto result = new DynamicArrayLocal;
-                    *result = DynamicArrayLocal(
-                        offset,
-                        dynamicArrayElementType(index.type),
-                        arrayElementIsArray(index.type),
-                    );
-                    return result;
-                }
-
-        if (outer is null || !outer.elementIsArray)
-            return null;
-
-        const indexSlot = compileExpression(index.e2);
         const offset = allocateBytes(sliceDescriptorSize, size_t.sizeof);
-        emitIndexLoad(offset, outer.offset, indexSlot.offset, sliceDescriptorSize);
-        auto result = new DynamicArrayLocal;
-        *result = DynamicArrayLocal(offset, outer.elementType);
-        return result;
+        compileDynamicArrayInto(
+            offset, elementType, expression, elementIsArray,
+        );
+        return DynamicArrayLocal(offset, elementType, elementIsArray);
     }
+
 
     // Compile a string literal directly into an expanded native {ptr, length}
     // descriptor at a fresh frame slot.
@@ -5765,53 +5336,6 @@ private struct Compiler {
         }
 
         if (source.type.toBasetype.ty == TY.Tsarray) {
-            // `T[N] dest = arr[i]` where `arr` is `T[N][]` (a dynamic array
-            // of heap-boxed static-array rows -- `elementIsArray`'s
-            // representation, one 16-byte slice descriptor per row):
-            // `tryDynamicArrayIndex` materialises only the ROW'S OWN
-            // 16-byte descriptor (pointer + length) here, needed as-is for
-            // further chained indexing (`arr[i][j]`), not the row's actual
-            // bytes. The generic block-copy below would blit those
-            // descriptor bytes (an address and a length) straight into
-            // `dest`'s inline slot -- silent garbage, not the row's real
-            // content. Detect this shape first and dereference through the
-            // row's own heap pointer instead (index 0, `totalSize` bytes --
-            // the same `indexLoad` mechanism `loadDynamicArrayElement`
-            // itself uses to read one element out of a descriptor).
-            //
-            // A genuinely inline nested static array (`T[M][N] arr;
-            // arr[i]`) IS an `IndexExp` that reaches here too -- its OWN
-            // type (`source.type`, checked by the outer `if` above) is
-            // `Tsarray` either way, so that alone doesn't distinguish the
-            // two shapes. What actually differs is `index.e1`'s (the
-            // indexed BASE expression's, `arr` itself) own type: `Tarray`
-            // for the heap-boxed-rows shape above, `Tsarray` for a genuinely
-            // inline nested static array. Without this check,
-            // `tryDynamicArrayIndex` still successfully resolves the inline
-            // shape too -- `dynamicArrayDescriptorOrNull`'s own
-            // static-array place branch matches ANY `Tsarray` local,
-            // unconditionally building a slice-descriptor VIEW over `arr`'s
-            // raw inline bytes and tagging it `elementIsArray` (since
-            // `arr`'s own element type, `T[M]`, is itself an array type) --
-            // a lie for this shape: the "elements" this view claims are
-            // heap-boxed row descriptors are actually `arr`'s own raw `T[M]`
-            // bytes with nothing boxed at all. `emitIndexLoad` below would
-            // then dereference those raw bytes as if they were a real
-            // pointer, a wild read that reliably segfaults. Gating on
-            // `index.e1.type` being a genuine `Tarray` keeps this branch
-            // scoped to the shape it is actually sound for; the inline case
-            // instead falls through to the generic block copy below,
-            // unaffected.
-            if (auto index = source.isIndexExp)
-                if (index.e1.type.toBasetype.ty == TY.Tarray)
-                    if (auto rowDescriptor = tryDynamicArrayIndex(index)) {
-                        emitIndexLoad(
-                            offset, rowDescriptor.offset,
-                            compileSizeConstant(0), totalSize,
-                        );
-                        return true;
-                    }
-
             const value = compileExpression(source);
             _code ~= Instruction(
                 Op.copy,
@@ -7490,14 +7014,14 @@ private struct Compiler {
             return;
         }
 
-        // `dest = src` where `src` is another dynamic-array local, parameter, or
-        // `this.field`: copy the 16-byte slice descriptor, sharing the backing
-        // memory (D's reference semantics for dynamic-array assignment).
-        if (auto descriptor = dynamicArrayDescriptorOrNull(source)) {
+        // An lvalue array source loads its descriptor through the same Place
+        // used by mutation, preserving D's shared-backing assignment.
+        if (auto place = placeOrNull(source)) {
+            const value = loadPlaceValue(*place);
             _code ~= Instruction(
                 Op.copy,
                 destination,
-                descriptor.offset,
+                value.offset,
                 cast(ushort) sliceDescriptorSize,
             );
             return;
@@ -7981,23 +7505,6 @@ private struct Compiler {
             (elementSize == 0 ? size(elementType) : elementSize));
     }
 
-    // The frame offset of a 16-byte slice descriptor denoting the value of an
-    // array-valued expression: a dynamic-array local's slot is returned in
-    // place; any other form (slice, literal, call, null) is materialised into a
-    // fresh descriptor slot.
-    private ushort arrayDescriptorOffset(
-        in ScalarType elementType,
-        Expression source,
-        in bool elementIsArray = false,
-    ) {
-        if (auto descriptor = dynamicArrayDescriptorOrNull(source))
-            return descriptor.offset;
-
-        const offset = allocateBytes(sliceDescriptorSize, size_t.sizeof);
-        compileDynamicArrayInto(offset, elementType, source, elementIsArray);
-        return offset;
-    }
-
     // Emit a sub-slice descriptor into frame offset `destination` from a
     // `SliceExp` over a dynamic-array operand. Lower and upper bounds (default
     // `0` and `source.length` for the whole-slice form `arr[]`) are compiled
@@ -8113,7 +7620,7 @@ private struct Compiler {
 
         if (operand.type !is null &&
             operand.type.toBasetype.ty == TY.Tarray)
-            return arrayDescriptorOffset(elementType, operand, elementIsArray);
+            return dynamicArrayDescriptor(operand).offset;
 
         const offset = allocateBytes(sliceDescriptorSize, size_t.sizeof);
         _code ~= Instruction(
@@ -8168,8 +7675,7 @@ private struct Compiler {
         while (auto cast_ = array.isCastExp)
             array = cast_.e1;
 
-        const sourceDescriptor =
-            arrayDescriptorOffset(elementType, array, elementIsArray);
+        const sourceDescriptor = dynamicArrayDescriptor(array).offset;
         const elementSize = dynamicArrayElementSize(
             array.type,
             elementIsArray,
@@ -9207,21 +8713,13 @@ private struct Compiler {
     // truthiness (strings included — a `string` is just a `T[]`) is `ptr !is
     // null` (D's actual rule: a non-null zero-length slice is still true), so
     // the descriptor's pointer word — not its length — feeds
-    // `compileTruthValue`'s pointer branch. `dynamicArrayDescriptorOrNull`
-    // resolves a local, literal, struct field, or `.msg` directly to that
-    // word's offset; any other shape (e.g. a conditional) is compiled first,
-    // which for every `T[]`/string source yields the same {ptr, length}
-    // descriptor at its result offset (`compileExpression`'s dynamic-array and
-    // conditional-expression paths), so the pointer word is still at that
-    // offset. Every other operand goes through `compileTruthValue` directly.
+    // `compileTruthValue`'s pointer branch. `dynamicArrayDescriptor` loads a
+    // resolved place or materialises a non-lvalue once, so every `T[]`/string
+    // source yields the same {ptr, length} descriptor. Every other operand
+    // goes through `compileTruthValue` directly.
     private Operand compileBoolCondition(Expression expression) {
         if (isStringType(expression.type) || isDynamicArrayArgument(expression)) {
-            if (auto descriptor = dynamicArrayDescriptorOrNull(expression))
-                return compileTruthValue(
-                    Operand(descriptor.offset, ScalarType.void_, true),
-                );
-
-            const array = compileExpression(expression);
+            const array = dynamicArrayDescriptor(expression);
             return compileTruthValue(
                 Operand(array.offset, ScalarType.void_, true),
             );
@@ -10654,9 +10152,7 @@ private struct Compiler {
         auto destination = dynamicArrayMutationPlace(concatenate.e1);
         const elementType = dynamicArrayElementType(concatenate.e1.type);
         const elementIsArray = arrayElementIsArray(concatenate.e1.type);
-        const right = arrayDescriptorOffset(
-            elementType, concatenate.e2, elementIsArray,
-        );
+        const right = dynamicArrayDescriptor(concatenate.e2).offset;
         const descriptor = loadDynamicArrayPlace(
             *destination, concatenate.e1.type,
         );
@@ -10703,12 +10199,11 @@ private struct Compiler {
 
     // A real-address slice descriptor over a static-array sub-slice
     // (`arr[lo .. hi]`), sharing `arr`'s own frame or field storage instead of
-    // the throwaway heap copy `dynamicArrayDescriptorOrNull` builds
-    // (`compileStaticArrayAsDynamicInto`). Needed both as a slice-assignment
-    // destination (so the write actually reaches `arr`'s real storage) and as
-    // a slice-assignment source (so `sliceCopyOp`'s pointer-range overlap
-    // check sees genuine aliasing instead of a copy that can never overlap
-    // anything). Bounds-checks `[lo .. hi]` against the array's own known
+    // the heap copy a materialised dynamic-array value would build. Needed as
+    // both a slice-assignment destination (so the write reaches `arr`'s real
+    // storage) and source (so `sliceCopyOp`'s pointer-range overlap check sees
+    // genuine aliasing instead of a copy that cannot overlap). Bounds-checks
+    // `[lo .. hi]` against the array's own known
     // length the same way a dynamic-array sub-slice does (`Op.subSlice*`'s
     // `validateSubSlice`, matching compiled D's `RangeError` wording byte for
     // byte). Null if `slice.e1` is not a static-array location.
@@ -10820,23 +10315,6 @@ private struct Compiler {
         return rhs.type.toBasetype.ty != TY.Tarray;
     }
 
-    // True when `rhs` is an index read into a genuine array-of-arrays
-    // (`outer[i]`, where `outer`'s own elements are each a separately
-    // heap-allocated row): `loadDynamicArrayElement`'s `elementIsArray`
-    // branch always compiles such a read to the row's own 16-byte
-    // descriptor there, never the row's inline bytes, regardless of `rhs`'s
-    // own (row) type matching a broadcast-fill destination's row type. Used
-    // to keep a `T[N][]` row broadcast-fill from treating that descriptor
-    // as if it were row
-    // data.
-    private bool rowBroadcastSourceIsRowDescriptor(Expression rhs) {
-        auto index = rhs.isIndexExp;
-        if (index is null)
-            return false;
-        auto descriptor = dynamicArrayDescriptorOrNull(index.e1);
-        return descriptor !is null && descriptor.elementIsArray;
-    }
-
     private Operand storeDynamicSlice(
         Place place,
         Expression rhs,
@@ -10872,40 +10350,7 @@ private struct Compiler {
             if (rowType.toBasetype.ty == TY.Tsarray) {
                 const rowByteSize = typeFacts(rowType).byteWidth;
 
-                const rhsIsRowDescriptorRead =
-                    rowBroadcastSourceIsRowDescriptor(rhs);
                 if (rhs.type !is null && sameType(rhs.type, rowType)) {
-                    // `other[0]` from another `T[N][]` has the row type,
-                    // but its compiled value is a 16-byte descriptor. Read
-                    // that descriptor's pointee before broadcasting the row
-                    // bytes into each independently allocated destination.
-                    if (rhsIsRowDescriptorRead) {
-                        const sourceDescriptor = compileExpression(rhs);
-                        const rowPointer = allocateBytes(
-                            cast(uint) size_t.sizeof, size_t.sizeof,
-                        );
-                        _code ~= Instruction(
-                            Op.copy,
-                            rowPointer,
-                            sourceDescriptor.offset,
-                            cast(ushort) size_t.sizeof,
-                        );
-                        const value = allocateBytes(
-                            rowByteSize, staticArrayAlign(rowType),
-                        );
-                        emitPointerLoad(
-                            value,
-                            rowPointer,
-                            compileSizeConstant(0),
-                            rowByteSize,
-                        );
-                        emitRowBroadcastFill(
-                            destination, value, rowByteSize,
-                        );
-
-                        return Operand.init;
-                    }
-
                     const value = compileExpression(rhs);
                     emitRowBroadcastFill(
                         destination, value.offset, rowByteSize,
@@ -10926,8 +10371,7 @@ private struct Compiler {
                 // `int[3][3]`) is contiguous inline row bytes rather than row
                 // descriptors. Lower it to the typed row-copy loop below.
                 if (auto rhsSlice = rhs.isSliceExp)
-                    if (auto rhsBase = dynamicArrayDescriptorOrNull(rhsSlice.e1))
-                        if (rhsBase.isStaticArrayView) {
+                    if (rhsSlice.e1.type.toBasetype.ty == TY.Tsarray) {
                             const rangeSource = compileSourceSlice(
                                 elementType, rhs,
                             );
@@ -10936,7 +10380,7 @@ private struct Compiler {
                             );
 
                             return Operand.init;
-                        }
+                    }
 
                 const rangeSource = compileSourceSlice(elementType, rhs);
                 emitRowRangeCopy(destination, rangeSource, rowByteSize);
@@ -10991,7 +10435,7 @@ private struct Compiler {
         // A static-array-backed rhs sub-slice (`buff[0 .. 3]`) shares
         // `buff`'s real frame storage instead of the throwaway heap copy
         // `compileSliceInto` would otherwise resolve it to
-        // (`dynamicArrayDescriptorOrNull`'s static-array branch), so the
+        // (the static-array view produced by `dynamicArrayDescriptor`), so the
         // destination write's own overlap check in `sliceCopyOp` can see a
         // genuine self-aliasing rhs such as `buff[1 .. 4] = buff[0 .. 3]`.
         if (auto slice = rhs.isSliceExp)
@@ -11021,7 +10465,7 @@ private struct Compiler {
         // full slice descriptor; reuse it directly rather than materialising
         // a redundant copy.
         if (rhs.type !is null && rhs.type.toBasetype.ty == TY.Tarray)
-            return compileExpression(rhs).offset;
+            return dynamicArrayDescriptor(rhs).offset;
 
         throw new Exception(text(
             "Unsupported slice-assignment source in bytecode core: ",
@@ -11252,8 +10696,8 @@ private struct Compiler {
             // opcode instead.
             const nested = arrayElementIsArray(equal.e1.type) &&
                 arrayElementIsArray(equal.e2.type);
-            const left = arrayDescriptorOffset(elementType, equal.e1, nested);
-            const right = arrayDescriptorOffset(elementType, equal.e2, nested);
+            const left = dynamicArrayDescriptor(equal.e1).offset;
+            const right = dynamicArrayDescriptor(equal.e2).offset;
             const offset = nested
                 ? emitNestedArrayEqual(left, right, equal.e1.type)
                 : allocate(ScalarType.bool_);
@@ -12100,10 +11544,8 @@ private struct Compiler {
             ? ScalarType.char_
             : ScalarType.dchar_;
         const elementSize = size(elementType);
-        const source = arrayDescriptorOffset(
-            dynamicArrayElementType((*call.arguments)[0].type),
-            (*call.arguments)[0],
-        );
+        const source =
+            dynamicArrayDescriptor((*call.arguments)[0]).offset;
         const elements = allocateBytes(sliceDescriptorSize, size_t.sizeof);
         _code ~= Instruction(
             Op.transcodeUtf, elements, cast(ushort) mode, source,
@@ -12696,16 +12138,19 @@ private struct Compiler {
     }
 
     private Operand* compileEmplaceRef(CallExp call) {
+        import dmd.astenums: TY;
+
         if (call.arguments is null || call.arguments.length == 0)
             return null;
 
         auto index = (*call.arguments)[0].isIndexExp;
-        if (index is null)
+        if (index is null || index.e1.type is null ||
+            index.e1.type.toBasetype.ty != TY.Tarray)
             return null;
 
         if (call.arguments.length == 1) {
-            auto descriptor = dynamicArrayDescriptorOrNull(index.e1);
-            if (descriptor is null || descriptor.elementType == ScalarType.void_)
+            const descriptor = dynamicArrayDescriptor(index.e1);
+            if (descriptor.elementType == ScalarType.void_)
                 return null;
 
             const elementSize = dynamicArrayElementSize(index.e1.type);
@@ -12738,9 +12183,7 @@ private struct Compiler {
         if (index.type !is null &&
             index.type.toBasetype.isTypeStruct !is null)
         {
-            auto descriptor = dynamicArrayDescriptorOrNull(index.e1);
-            if (descriptor is null)
-                return null;
+            const descriptor = dynamicArrayDescriptor(index.e1);
 
             const elementSize = dynamicArrayElementSize(index.e1.type);
             if (elementSize > ulong.sizeof)
@@ -12979,10 +12422,7 @@ private struct Compiler {
                     return;
                 }
 
-            const descriptor = arrayDescriptorOffset(
-                dynamicArrayElementType(argument.type), argument,
-                arrayElementIsArray(argument.type),
-            );
+            const descriptor = dynamicArrayDescriptor(argument).offset;
             _code ~= Instruction(
                 Op.copy,
                 slot,
@@ -14110,7 +13550,7 @@ private struct Compiler {
             if (!isStringType(assert_.msg.type))
                 return false;
             const messageOffset =
-                arrayDescriptorOffset(ScalarType.char_, assert_.msg);
+                dynamicArrayDescriptor(assert_.msg).offset;
             _code ~= Instruction(
                 Op.throwString,
                 messageOffset,
@@ -14122,8 +13562,7 @@ private struct Compiler {
 
         if (!isStringType(assert_.msg.type))
             return false;
-        const messageOffset =
-            arrayDescriptorOffset(ScalarType.char_, assert_.msg);
+        const messageOffset = dynamicArrayDescriptor(assert_.msg).offset;
 
         const condition = compileExpression(assert_.e1);
         const skipJump = emitJumpIfTrue(condition);
@@ -14359,8 +13798,8 @@ private struct Compiler {
         // exact here; `wstring`/`dstring` never reach this function — they
         // fail `isGenuineCharString` and are caught earlier by the generic
         // `tryArrayComparisonAssert`, which sizes the comparison itself.
-        const lhs = arrayDescriptorOffset(ScalarType.char_, lhsExpression);
-        const rhs = arrayDescriptorOffset(ScalarType.char_, rhsExpression);
+        const lhs = dynamicArrayDescriptor(lhsExpression).offset;
+        const rhs = dynamicArrayDescriptor(rhsExpression).offset;
         const condition = allocate(ScalarType.bool_);
         emitSliceEqual(condition, lhs, rhs, 1);
         if (op == "!=")
@@ -14572,7 +14011,7 @@ private struct Compiler {
     // `assert(a == b)` / `assert(a[] != b[])` over dynamic-array operands,
     // and a mixed dynamic/static-array comparison (`staticArray == [a, b]`;
     // DMD hoists the array-literal side into a stack temp and casts it to a
-    // slice, `arrayDescriptorOffset` builds a slice view over the static
+    // slice, `dynamicArrayDescriptor` builds a slice view over the static
     // side): build a slice descriptor for each operand, compare them
     // element-wise, and assert the result; on failure each operand renders
     // as `[e0, e1, ...]`. Null if either operand is not an array value, or
@@ -14596,7 +14035,7 @@ private struct Compiler {
 
         // A mixed Tsarray/Tarray pair where the static side's own elements
         // are themselves arrays (`int[2][2]`): `compileStaticArrayAsDynamicInto`
-        // (via `arrayDescriptorOffset`) stores each row as a raw byte block,
+        // when materialised dynamically stores each row as a raw byte block,
         // not a 16-byte slice descriptor, while the other, dynamic-array side
         // builds proper nested descriptors -- comparing the two would compare
         // unrelated byte shapes. Decline so the caller falls through to
@@ -14627,8 +14066,8 @@ private struct Compiler {
         const nested = lhsTy == TY.Tarray && rhsTy == TY.Tarray &&
             arrayElementIsArray(lhs.type) &&
             arrayElementIsArray(rhs.type);
-        const lhsOffset = arrayDescriptorOffset(elementType, lhs, nested);
-        const rhsOffset = arrayDescriptorOffset(elementType, rhs, nested);
+        const lhsOffset = dynamicArrayDescriptor(lhs).offset;
+        const rhsOffset = dynamicArrayDescriptor(rhs).offset;
 
         const equal = nested
             ? emitNestedArrayEqual(lhsOffset, rhsOffset, lhs.type)
@@ -14752,8 +14191,7 @@ private struct Compiler {
         const rowCount =
             typeFacts(nestedStatic.type).byteWidth / rowByteSize;
 
-        const otherDescriptor =
-            arrayDescriptorOffset(rowElementScalar, other, true);
+        const otherDescriptor = dynamicArrayDescriptor(other).offset;
         const otherLength = allocate(ScalarType.ulong_);
         _code ~= Instruction(Op.sliceLength, otherLength, otherDescriptor);
 

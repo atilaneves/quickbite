@@ -391,6 +391,11 @@ Settled contracts:
   runtime indexing, slicing, address-taking, and writes all compose the same
   static-array root place. No parallel static-array location walk may classify
   a root or reconstruct an index chain.
+- Dynamic-array descriptors are value metadata loaded from a resolved place or
+  attached to one once-compiled non-lvalue. Indexing, slicing, length,
+  truthiness, initialisation, and comparison share that operation. A `T[N][]`
+  element place addresses the separately allocated row's bytes, so whole-row
+  reads and nested element access do not expose its descriptor as the value.
 
 New lowering work extends the classified roots,
 access-path composition, place primitives, or semantic emitters independently.
@@ -498,11 +503,6 @@ reaches them:
 - A `T[N][]`'s rows are separately heap-allocated inner descriptors, so a
   pointer taken into one row (`&outer[i][j]`) is valid within that row, but a
   flat pointer walk across rows diverges from compiled D's contiguous layout.
-- `arr[0][0]` on a `T[N][]` throws "Unsupported static array access": the
-  `Tarray`-gated `tryDynamicArrayIndex`/`indexedArrayDescriptor` decline a
-  `Tsarray` sub-expression, so compilation falls through to the
-  static-array-chain path, which has no notion of a dynamic-array base. A
-  clean diagnostic, not a wrong answer.
 - Captured array support does not yet cover every read, write, slice, append,
   view-preservation, and closure combination.
 - Dynamic-array and string sub-slices bounds-check both ends

@@ -234,6 +234,10 @@
 - Do not omit untested backend rows: verify every mature backend and include
   each one that passes.
 
+- After routing an aggregate rvalue through a shared place, delete downstream
+  predicates that reinterpret its bytes as the old transport metadata. A
+  place load exposes the language value, not a legacy descriptor wrapper.
+
 - An in-process ORC/LLJIT load of a dmd `.o` is not equivalent to dlopen: dmd
   emits weak (COMDAT) druntime/phobos template instances whose bodies can be
   degenerate stubs, and ORC binds calls to the object's own weak definition
