@@ -25,7 +25,7 @@ package(quickbite.backends.bytecode) RunResult run(
     import core.exception: RangeError;
     import quickbite.backends.bytecode.core.program:
         appendElementWidth, CatchClause, ClassInfo,
-        concatArraysWidth, dupArrayWidth, indexElementWidth, Op,
+        concatArraysWidth, dupArrayWidth, indexElementWidth, Op, ScalarType,
         noCatchObjectField, noExceptionClass, noOutParameterOffset,
         pointerElementWidth, size, sliceCopyWidth, sliceDescriptorSize,
         sliceEqualWidth, subSliceElementWidth;
@@ -64,8 +64,6 @@ package(quickbite.backends.bytecode) RunResult run(
 
     while (true) {
         try {
-            if (frames.length != 0)
-                synchronizeRefAliases(stack, frames[$ - 1], base);
             const instruction = program.functions[functionIndex].code[ip];
             final switch (instruction.op) with (Op) {
             case loadConstant:
@@ -368,6 +366,17 @@ package(quickbite.backends.bytecode) RunResult run(
                 ++ip;
                 break;
 
+            case sliceEqualNumeric:
+                stack[base + instruction.a] = numericSlicesEqual(
+                    stack,
+                    base + instruction.b,
+                    base + instruction.c,
+                    cast(ScalarType) instruction.d,
+                    cast(ScalarType) instruction.e,
+                ) ? 1 : 0;
+                ++ip;
+                break;
+
             case sliceEqualNested:
                 stack[base + instruction.a] = nestedSlicesEqual(
                     stack,
@@ -662,13 +671,17 @@ package(quickbite.backends.bytecode) RunResult run(
                 ++ip;
                 break;
 
-            case refParameterAddress:
-                writeFrameAddress(
+            case pointerAddress:
+                const pointer = scalarValue!size_t(
+                    stack, base + instruction.b,
+                );
+                const index = scalarValue!size_t(
+                    stack, base + instruction.c,
+                );
+                writeScalar(
                     stack,
                     base + instruction.a,
-                    base + refParameterIdentitySlot(
-                        frames[$ - 1], instruction.b,
-                    ),
+                    pointer + index * instruction.d,
                 );
                 ++ip;
                 break;
@@ -1689,6 +1702,24 @@ package(quickbite.backends.bytecode) RunResult run(
                 ++ip;
                 break;
 
+            case className:
+                const objectPointer =
+                    scalarValue!size_t(stack, base + instruction.b);
+                const classIndex = objectPointer == 0
+                    ? noExceptionClass
+                    : objectClassIndex(objectPointer);
+                const name = classIndex < program.classes.length
+                    ? program.classes[classIndex].name
+                    : "";
+                writeSliceDescriptorPointer(
+                    stack,
+                    base + instruction.a,
+                    cast(size_t) name.ptr,
+                    name.length,
+                );
+                ++ip;
+                break;
+
             case throwIfNullClassReference:
                 if (scalarValue!size_t(stack, base + instruction.a) == 0)
                     throw new Exception(stringFromData(
@@ -1697,11 +1728,11 @@ package(quickbite.backends.bytecode) RunResult run(
                 ++ip;
                 break;
 
-            case call, callIndirect, callIndirectDynamic:
+            case call, callIndirect:
                 // A direct `call` carries the callee's function index in
-                // `instruction.a`; an indirect `callIndirect`/
-                // `callIndirectDynamic` reads it from the size_t slot at that
-                // frame offset (the function-pointer or delegate value).
+                // `instruction.a`; an indirect `callIndirect` reads it from
+                // the size_t slot at that frame offset (the function-pointer
+                // or delegate value).
                 const calleeIndex = instruction.op == call
                     ? instruction.a
                     : cast(ushort) scalarValue!size_t(
@@ -1710,19 +1741,6 @@ package(quickbite.backends.bytecode) RunResult run(
 
                 if (program.functions[calleeIndex].code.length == 0)
                     compileFunction(calleeIndex);
-
-                // `callIndirectDynamic` built its argument area from a
-                // delegate-typed parameter's declared type alone, assuming a
-                // pointer-sized context word; a struct-receiver callee needs
-                // its whole receiver block there instead, so trusting that
-                // convention would misread the context word as a bogus
-                // caller-frame offset. Reject it rather than corrupt memory.
-                if (instruction.op == callIndirectDynamic &&
-                    program.functions[calleeIndex].hasThis)
-                    throw new Exception(
-                        "Unsupported delegate-parameter call in bytecode " ~
-                        "core: the callee is a struct-receiver method",
-                    );
 
                 const calleeBase =
                     base + program.functions[functionIndex].frameSize;
@@ -1736,35 +1754,8 @@ package(quickbite.backends.bytecode) RunResult run(
                         .. base + instruction.b + callee.parameterBytes
                     ];
 
-                // Each scalar `ref` parameter's slot currently holds the
-                // caller-frame offset of its argument (copied with the rest of
-                // the argument block). Record that offset for writeback on
-                // return, then replace the slot with the referenced value.
-                RefWriteback[] refWritebacks;
-                foreach (refParameter; callee.refParameters) {
-                    const valueSize = refParameter.valueSize;
-                    const callerOffset = cast(size_t) (
-                        cast(ptrdiff_t) base + scalarValue!int(
-                            stack, calleeBase + refParameter.offset,
-                        )
-                    );
-                    refWritebacks ~= RefWriteback(
-                        callerOffset, refParameter.offset, valueSize,
-                    );
-                    stack[
-                        calleeBase + refParameter.offset
-                        .. calleeBase + refParameter.offset + valueSize
-                    ] = stack[callerOffset .. callerOffset + valueSize];
-                }
-
-                // Mutable because execution advances each group's byte image.
-                auto refAliases = refAliasGroups(
-                    stack, refWritebacks, calleeBase,
-                );
-
                 frames ~= Frame(
                     functionIndex, ip + 1, base, instruction.c,
-                    refWritebacks, refAliases,
                 );
                 functionIndex = calleeIndex;
                 base = calleeBase;
@@ -2081,9 +2072,7 @@ package(quickbite.backends.bytecode) RunResult run(
                             base + instruction.c,
                         );
                 }
-                writeBackUnwoundFrames(
-                    stack, frames, base, handler.frameDepth,
-                );
+                frames.length = handler.frameDepth;
                 functionIndex = handler.functionIndex;
                 base = handler.base;
                 ip = clause.handlerIp;
@@ -2127,9 +2116,7 @@ package(quickbite.backends.bytecode) RunResult run(
                         .. handler.base + clause.nextMessageOffset
                             + sliceDescriptorSize
                     ] = 0;
-                writeBackUnwoundFrames(
-                    stack, frames, base, handler.frameDepth,
-                );
+                frames.length = handler.frameDepth;
                 functionIndex = handler.functionIndex;
                 base = handler.base;
                 ip = clause.handlerIp;
@@ -2162,8 +2149,6 @@ package(quickbite.backends.bytecode) RunResult run(
                 const frame = frames[$ - 1];
                 frames.length -= 1;
 
-                writeBackRefParameters(stack, frame, base);
-
                 stack[
                     frame.base + frame.destination
                     .. frame.base + frame.destination + resultSize
@@ -2189,41 +2174,12 @@ package(quickbite.backends.bytecode) RunResult run(
             const clause = selected.clause;
             if (clause.objectOffset != noCatchObjectField)
                 throw error;
-            writeBackUnwoundFrames(stack, frames, base, handler.frameDepth);
+            frames.length = handler.frameDepth;
             functionIndex = handler.functionIndex;
             base = handler.base;
             ip = clause.handlerIp;
         }
     }
-}
-
-private void writeBackUnwoundFrames(
-    ubyte[] stack,
-    ref Frame[] frames,
-    size_t base,
-    in size_t frameDepth,
-) {
-    size_t calleeBase = base;
-    while (frames.length > frameDepth) {
-        const frame = frames[$ - 1];
-        writeBackRefParameters(stack, frame, calleeBase);
-        frames.length -= 1;
-        calleeBase = frame.base;
-    }
-}
-
-private void writeBackRefParameters(
-    ubyte[] stack,
-    in Frame frame,
-    in size_t calleeBase,
-) {
-    foreach (writeback; frame.refWritebacks)
-        stack[
-            writeback.callerOffset .. writeback.callerOffset + writeback.size
-        ] = stack[
-            calleeBase + writeback.calleeOffset
-            .. calleeBase + writeback.calleeOffset + writeback.size
-        ];
 }
 
 private SelectedHandler selectHandler(
@@ -2768,6 +2724,136 @@ private bool slicesEqual(
         (cast(const(ubyte)*) rightPointer)[0 .. byteCount];
 }
 
+private bool numericSlicesEqual(
+    in ubyte[] stack,
+    in size_t leftOffset,
+    in size_t rightOffset,
+    in imported!"quickbite.backends.bytecode.core.program".ScalarType leftType,
+    in imported!"quickbite.backends.bytecode.core.program".ScalarType rightType,
+) @safe {
+    import quickbite.backends.bytecode.core.program: size;
+
+    const leftLength = scalarValue!size_t(stack, leftOffset + size_t.sizeof);
+    const rightLength = scalarValue!size_t(stack, rightOffset + size_t.sizeof);
+    if (leftLength != rightLength)
+        return false;
+
+    const leftPointer = scalarValue!size_t(stack, leftOffset);
+    const rightPointer = scalarValue!size_t(stack, rightOffset);
+    const leftWidth = size(leftType);
+    const rightWidth = size(rightType);
+    const leftElements = numericSliceBytes(
+        leftPointer, leftLength, leftWidth,
+    );
+    const rightElements = numericSliceBytes(
+        rightPointer, rightLength, rightWidth,
+    );
+    foreach (index; 0 .. leftLength) {
+        const left = numericElement(leftElements, index, leftWidth);
+        const right = numericElement(rightElements, index, rightWidth);
+        if (!numericElementsEqual(
+                left, leftType, right, rightType,
+            ))
+            return false;
+    }
+    return true;
+}
+
+// @trusted: compiler-produced numeric slice descriptors point only into the
+// reserved VM stack, VM heap blocks rooted for the duration of `run`, or
+// program-owned storage whose reserved capacity keeps its address stable.
+// Their element count matches the backing allocation and `width` is the
+// descriptor's ScalarType width. The overflow assertion therefore guards the
+// byte-count calculation before constructing the raw-pointer slice; safe
+// callers can subsequently read only within that checked extent. Empty slices
+// return before touching their possibly-null pointer.
+private const(ubyte)[] numericSliceBytes(
+    in size_t pointer,
+    in size_t length,
+    in uint width,
+) @trusted pure {
+    if (length == 0)
+        return null;
+
+    assert(width != 0);
+    assert(length <= size_t.max / width);
+    return (cast(const(ubyte)*) pointer)[0 .. length * width];
+}
+
+private ulong numericElement(
+    in ubyte[] elements,
+    in size_t index,
+    in uint width,
+) @safe pure {
+    const offset = index * width;
+    const bytes = elements[offset .. offset + width];
+    ulong result;
+    foreach_reverse (byte_; bytes)
+        result = (result << 8) | byte_;
+    return result;
+}
+
+private bool numericElementsEqual(
+    in ulong left,
+    in imported!"quickbite.backends.bytecode.core.program".ScalarType leftType,
+    in ulong right,
+    in imported!"quickbite.backends.bytecode.core.program".ScalarType rightType,
+) @safe pure {
+    import quickbite.backends.bytecode.core.program: isSigned, size;
+
+    const leftWidth = size(leftType);
+    const rightWidth = size(rightType);
+    if (leftWidth < int.sizeof && rightWidth < int.sizeof)
+        return signedElement(left, leftType) == signedElement(right, rightType);
+
+    const commonUnsigned = leftWidth == rightWidth
+        ? !isSigned(leftType) || !isSigned(rightType)
+        : leftWidth > rightWidth
+        ? !isSigned(leftType)
+        : !isSigned(rightType);
+    if (commonUnsigned) {
+        // `extendedUnsignedElement` sign-extends a signed side's own value
+        // to 64 bits (via `signedElement`), so `int(-1)` and `uint.max` --
+        // the same bit pattern at the common 32-bit width -- diverge at 64
+        // bits (0xFFFF...FFFF vs 0x0000_0000_FFFF_FFFF). Mask both sides
+        // down to the common width before comparing so only the bits that
+        // actually exist in both operands' representations are compared.
+        import std.algorithm: max;
+
+        const commonWidth = max(leftWidth, rightWidth, uint.sizeof);
+        const mask = commonWidth >= ulong.sizeof
+            ? ulong.max
+            : (1UL << (commonWidth * 8)) - 1;
+        return (extendedUnsignedElement(left, leftType) & mask) ==
+            (extendedUnsignedElement(right, rightType) & mask);
+    }
+    return signedElement(left, leftType) == signedElement(right, rightType);
+}
+
+private long signedElement(
+    in ulong value,
+    in imported!"quickbite.backends.bytecode.core.program".ScalarType type,
+) @safe pure {
+    import quickbite.backends.bytecode.core.program: isSigned, size;
+
+    if (!isSigned(type))
+        return cast(long) value;
+    switch (size(type)) {
+        case 1: return cast(byte) value;
+        case 2: return cast(short) value;
+        case 4: return cast(int) value;
+        case 8: return cast(long) value;
+        default: assert(0, "Unsupported numeric array element width");
+    }
+}
+
+private ulong extendedUnsignedElement(
+    in ulong value,
+    in imported!"quickbite.backends.bytecode.core.program".ScalarType type,
+) @safe pure {
+    return cast(ulong) signedElement(value, type);
+}
+
 // True iff two array-of-arrays descriptors are structurally equal, at any
 // nesting `depth` (2 for `int[][]`, 3 for `int[][][]`, ...): same outer
 // length, and every row (itself a 16-byte `{ptr, length}` slice descriptor,
@@ -3138,8 +3224,6 @@ private struct Frame {
     size_t ip;
     size_t base;
     ushort destination;
-    RefWriteback[] refWritebacks; // empty unless the callee has ref parameters
-    RefAlias[] refAliases;
 }
 
 // An active catch handler: where to resume (the catch body's instruction index
@@ -3157,97 +3241,6 @@ private struct SelectedHandler {
     bool matched;
     Handler handler;
     imported!"quickbite.backends.bytecode.core.program".CatchClause clause;
-}
-
-// A pending scalar `ref` writeback: copy `size` bytes from the callee
-// parameter slot (relative to the callee base) back to an absolute caller-frame
-// offset on return.
-private struct RefWriteback {
-    size_t callerOffset; // absolute stack offset of the referenced caller slot
-    ushort calleeOffset; // the parameter slot's offset within the callee frame
-    uint size;
-}
-
-// The callee-frame-relative slot that stands for a scalar `ref` parameter's
-// identity: its own slot, unless it is grouped with other parameters aliasing
-// the same caller storage (`frame.refAliases`), in which case every member of
-// the group must report the group's first slot so `&first == &second` holds.
-// Reads and writes still go through each parameter's own slot;
-// `synchronizeRefAliases` keeps the group's slots byte-identical between
-// instructions, so redirecting only the address is safe.
-private ushort refParameterIdentitySlot(
-    in Frame frame,
-    in ushort calleeOffset,
-) @safe pure {
-    foreach (group; frame.refAliases)
-        foreach (offset; group.calleeOffsets)
-            if (offset == calleeOffset)
-                return group.calleeOffsets[0];
-    return calleeOffset;
-}
-
-// Parameter slots that denote the same caller storage. The bytecode compiler
-// addresses parameters as frame slots, so keep aliased slots coherent between
-// instructions to give every parameter the identity of that shared storage.
-private struct RefAlias {
-    ushort[] calleeOffsets;
-    ubyte[] bytes;
-}
-
-private RefAlias[] refAliasGroups(
-    in ubyte[] stack,
-    in RefWriteback[] writebacks,
-    in size_t calleeBase,
-) {
-    RefAlias[] aliases;
-    foreach (writebackIndex, writeback; writebacks) {
-        ushort[] offsets;
-        foreach (candidateIndex, candidate; writebacks)
-            if (candidate.callerOffset == writeback.callerOffset &&
-                candidate.size == writeback.size &&
-                candidateIndex >= writebackIndex)
-                offsets ~= candidate.calleeOffset;
-        if (offsets.length < 2)
-            continue;
-
-        bool alreadyGrouped;
-        foreach (previousIndex; 0 .. writebackIndex)
-            if (writebacks[previousIndex].callerOffset ==
-                    writeback.callerOffset &&
-                writebacks[previousIndex].size == writeback.size)
-                alreadyGrouped = true;
-        if (alreadyGrouped)
-            continue;
-
-        aliases ~= RefAlias(
-            offsets,
-            stack[
-                calleeBase + writeback.calleeOffset
-                .. calleeBase + writeback.calleeOffset + writeback.size
-            ].dup,
-        );
-    }
-    return aliases;
-}
-
-private void synchronizeRefAliases(
-    ubyte[] stack,
-    ref Frame frame,
-    in size_t calleeBase,
-) {
-    foreach (ref group; frame.refAliases)
-        foreach (offset; group.calleeOffsets) {
-            const begin = calleeBase + offset;
-            if (stack[begin .. begin + group.bytes.length] == group.bytes)
-                continue;
-
-            group.bytes[] = stack[begin .. begin + group.bytes.length];
-            foreach (destination; group.calleeOffsets)
-                stack[
-                    calleeBase + destination
-                    .. calleeBase + destination + group.bytes.length
-                ] = group.bytes[];
-        }
 }
 
 private uint equalOperandSize(
@@ -3297,7 +3290,10 @@ private string assertMessage(
             invertedOperator(diagnostic.operator),
             " ",
             arrayOperandText(
-                frame, diagnostic.rhs, diagnostic.operandType,
+                frame, diagnostic.rhs,
+                diagnostic.hasDistinctOperandTypes
+                    ? diagnostic.rhsOperandType
+                    : diagnostic.operandType,
                 diagnostic.elementNestingDepth,
             ),
         );

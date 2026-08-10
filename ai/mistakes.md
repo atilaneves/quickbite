@@ -184,6 +184,10 @@
   external symbols with hardcoded "known symbol" lists, and don't probe the
   process loader from diagnostics just to guess symbol availability.
 
+- When an operation accepts operands with different physical representations,
+  preserve each operand's type metadata for diagnostics too. Reusing the
+  execution's common type can select the wrong stride or read past an operand.
+
 - Don't propose adding or enabling dependency-backed tests for new tree walker
   TDD slices; extract dependency-free language or project-inspired tests
   instead.
@@ -213,6 +217,9 @@
 - Do not amend an existing commit unless the user explicitly asks for an
   amend. Make a new commit for follow-up changes.
 
+- Do not use Python scripts to rewrite repository files. Use `apply_patch` for
+  semantic edits and reserve dedicated formatters for bulk formatting.
+
 - For unit-threaded substring assertions, prefer
   `"expected".should.be in actual` over `actual.canFind("expected").should ==
   true`.
@@ -230,6 +237,10 @@
 
 - Do not omit untested backend rows: verify every mature backend and include
   each one that passes.
+
+- After routing an aggregate rvalue through a shared place, delete downstream
+  predicates that reinterpret its bytes as the old transport metadata. A
+  place load exposes the language value, not a legacy descriptor wrapper.
 
 - An in-process ORC/LLJIT load of a dmd `.o` is not equivalent to dlopen: dmd
   emits weak (COMDAT) druntime/phobos template instances whose bodies can be
