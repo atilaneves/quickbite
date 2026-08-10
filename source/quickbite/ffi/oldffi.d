@@ -2,133 +2,14 @@ module quickbite.ffi.oldffi;
 
 private:
 
-
-public enum CompilerAbi {
-    dmd,
-    ldc,
-}
-
-public struct DependencyImage {
-    string path;
-    CompilerAbi compilerAbi;
-}
-
-version (LDC)
-    private enum CompilerAbi hostCompilerAbi = CompilerAbi.ldc;
-else
-    private enum CompilerAbi hostCompilerAbi = CompilerAbi.dmd;
-
-private CompilerAbi[string] _dependencyImageAbis;
-private CompilerAbi[const(void)*] _closureAbis;
-
-
-public void loadDependencyImages(in string[] dependencyImages) {
-    foreach (dependencyImage; dependencyImages) {
-        verifyDependencyImage(dependencyImage);
-        loadDependencyImage(
-            dependencyImage,
-            compilerAbiFromImage(dependencyImage),
-        );
-    }
-}
-
-public void loadDependencyImages(
-    in DependencyImage[] dependencyImages,
-) {
-    foreach (dependencyImage; dependencyImages) {
-        verifyDependencyImage(dependencyImage.path);
-        loadDependencyImage(dependencyImage.path, dependencyImage.compilerAbi);
-    }
-}
-
-public void verifyDependencyImages(in string[] dependencyImages) {
-    foreach (dependencyImage; dependencyImages)
-        verifyDependencyImage(dependencyImage);
-}
-
-private void verifyDependencyImage(in string dependencyImage) {
-    import std.string: endsWith;
-
-    if (!dependencyImage.endsWith(".so"))
-        throw new Exception(
-            "dependency image must be a loadable shared library (.so): "
-            ~ dependencyImage,
-        );
-}
-
-private CompilerAbi compilerAbiFromImage(in string dependencyImage) {
-    import std.algorithm.searching: canFind;
-    import std.file: read;
-
-    const bytes = cast(const(ubyte)[]) dependencyImage.read;
-    const comment = elfCommentSection(bytes);
-    const saysDmd = comment.canFind(cast(const(ubyte)[]) "DMD v");
-    const saysLdc = comment.canFind(cast(const(ubyte)[]) "ldc version ");
-    if (saysDmd == saysLdc)
-        throw new Exception(
-            "dependency image compiler ABI is ambiguous; supply explicit "
-            ~ "compiler provenance: " ~ dependencyImage,
-        );
-    return saysDmd ? CompilerAbi.dmd : CompilerAbi.ldc;
-}
-
-private const(ubyte)[] elfCommentSection(in ubyte[] bytes) {
-    import std.algorithm.searching: countUntil;
-
-    if (bytes.length < 64 || bytes[0 .. 4] != [0x7f, 'E', 'L', 'F'])
-        throw new Exception("dependency image is not a supported ELF image");
-    if (bytes[4] != 2 || bytes[5] != 1)
-        throw new Exception("dependency image is not little-endian ELF64");
-
-    const sectionOffset = readElfWord!ulong(bytes, 40);
-    const sectionEntrySize = readElfWord!ushort(bytes, 58);
-    const sectionCount = readElfWord!ushort(bytes, 60);
-    const namesIndex = readElfWord!ushort(bytes, 62);
-    if (sectionEntrySize < 64 || namesIndex >= sectionCount)
-        throw new Exception("dependency image has an invalid ELF section table");
-
-    const namesHeader = sectionOffset + namesIndex * sectionEntrySize;
-    const namesOffset = readElfWord!ulong(bytes, namesHeader + 24);
-    const namesSize = readElfWord!ulong(bytes, namesHeader + 32);
-    const names = checkedElfSlice(bytes, namesOffset, namesSize);
-
-    foreach (index; 0 .. sectionCount) {
-        const header = sectionOffset + index * sectionEntrySize;
-        const nameOffset = readElfWord!uint(bytes, header);
-        if (nameOffset >= names.length)
-            throw new Exception("dependency image has an invalid ELF section name");
-        const nameTail = names[nameOffset .. $];
-        const nameLength = nameTail.countUntil(0);
-        if (nameLength < 0)
-            throw new Exception("dependency image has an unterminated ELF section name");
-        const name = cast(const(char)[]) nameTail[0 .. nameLength];
-        if (name == ".comment") {
-            const offset = readElfWord!ulong(bytes, header + 24);
-            const size = readElfWord!ulong(bytes, header + 32);
-            return checkedElfSlice(bytes, offset, size);
-        }
-    }
-    throw new Exception("dependency image has no compiler metadata");
-}
-
-private T readElfWord(T)(in ubyte[] bytes, in size_t offset) {
-    if (offset > bytes.length || T.sizeof > bytes.length - offset)
-        throw new Exception("dependency image has a truncated ELF section table");
-    T result;
-    foreach (index; 0 .. T.sizeof)
-        result |= cast(T) bytes[offset + index] << (index * 8);
-    return result;
-}
-
-private const(ubyte)[] checkedElfSlice(
-    in ubyte[] bytes,
-    in size_t offset,
-    in size_t length,
-) {
-    if (offset > bytes.length || length > bytes.length - offset)
-        throw new Exception("dependency image has a truncated ELF section");
-    return bytes[offset .. offset + length];
-}
+public import quickbite.ffi.ffi:
+    CompilerAbi,
+    DependencyImage,
+    compilerAbiFor,
+    loadDependencyImages,
+    registerClosureAbi,
+    unregisterClosureAbi,
+    verifyDependencyImages;
 
 // Returns a diagnostic naming an FFI-uncrossable type in `function_`'s
 // signature (today: an associative array, whose hashing/allocation the bridge
@@ -184,8 +65,6 @@ public class NativeCallException: Exception {
     public string className;
     public Throwable nativeThrowable;
     public const(void)* nativeThrowableObjectPointer;
-    // The native Throwable.next link, captured as another NativeCallException
-    // so the backend can rebuild the chain (ffi.md §34.13). Null at the tail.
     public NativeCallException chainedNext;
 
     public this(
@@ -196,8 +75,19 @@ public class NativeCallException: Exception {
         super(message);
         this.className = className;
         this.nativeThrowable = nativeThrowable;
-        this.nativeThrowableObjectPointer = cast(const(void)*) nativeThrowable;
+        nativeThrowableObjectPointer = cast(const(void)*) nativeThrowable;
     }
+}
+
+private NativeCallException nativeCallExceptionFrom(Throwable throwable) {
+    auto result = new NativeCallException(
+        throwable.msg,
+        throwable.classinfo.name,
+        throwable,
+    );
+    if (throwable.next !is null)
+        result.chainedNext = nativeCallExceptionFrom(throwable.next);
+    return result;
 }
 
 // Optional zero-copy struct receiver capability for native-layout backends.
@@ -325,9 +215,6 @@ public interface NativeMarshaller {
     size_t durableInboundCallbackId(in size_t argumentIndex);
 }
 
-// Backend-neutral re-entry route for durable callbacks. The backend owns the
-// callback-id table and roots its callable values; the bridge owns libffi's
-// executable closure/CIF pair for the same session lifetime.
 public alias DurableInboundInvoker = void delegate(
     in size_t callbackId,
     imported!"dmd.mtype".Type returnType,
@@ -360,14 +247,11 @@ public struct InboundTrampolineRegistry {
         );
     }
 
-    // The owning backend session calls this after native code can no longer
-    // re-enter it. The writable allocation, not the executable code pointer,
-    // is libffi's ownership token.
     public void close() {
         import quickbite.ffi.libffi: ffi_closure_free;
 
         foreach (context; _contexts)
-            _closureAbis.remove(context.code);
+            unregisterClosureAbi(context.code);
         foreach (closure; _closures)
             ffi_closure_free(closure);
         _closures = null;
@@ -595,8 +479,14 @@ private bool callNativeImpl(
         function_._linkage != LINK.c)
         return false;
 
-    const symbol = resolveSymbol(function_, receiver, marshaller);
-    if (symbol is null)
+    import quickbite.ffi.ffi: resolveCallable;
+
+    const callable = resolveCallable(
+        function_,
+        receiver.isClass,
+        marshaller.receiverObjectPointer,
+    );
+    if (callable.address is null)
         throw new Exception(
             "Unsupported native call: symbol `" ~
             fromStringz(mangleExact(function_)).idup ~
@@ -607,8 +497,8 @@ private bool callNativeImpl(
         function_,
         function_._linkage,
         type,
-        symbol,
-        compilerAbiFor(symbol),
+        callable.address,
+        callable.compilerAbi,
         receiver,
         marshaller,
         argumentTypes,
@@ -617,84 +507,6 @@ private bool callNativeImpl(
         refReturnMode,
         refResultAddress,
     );
-}
-
-// Resolve the function pointer to call. A virtual method on a class receiver is
-// read from the object's vtable at the DMD-computed slot so a base-typed handle
-// dispatches to the runtime override (ffi.md §34.12); everything else (and
-// non-virtual class methods) resolves by mangled symbol against the process.
-private const(void)* resolveSymbol(
-    imported!"dmd.func".FuncDeclaration function_,
-    NativeThis receiver,
-    NativeMarshaller marshaller,
-) {
-    import core.sys.posix.dlfcn: dlsym;
-    version (DragonFlyBSD) import core.sys.dragonflybsd.dlfcn: RTLD_DEFAULT;
-    version (FreeBSD) import core.sys.freebsd.dlfcn: RTLD_DEFAULT;
-    version (linux) import core.sys.linux.dlfcn: RTLD_DEFAULT;
-    version (NetBSD) import core.sys.netbsd.dlfcn: RTLD_DEFAULT;
-    version (OpenBSD) import core.sys.openbsd.dlfcn: RTLD_DEFAULT;
-    version (OSX) import core.sys.darwin.dlfcn: RTLD_DEFAULT;
-    version (Solaris) import core.sys.solaris.dlfcn: RTLD_DEFAULT;
-    import dmd.mangle: mangleExact;
-
-    if (receiver.isClass && function_.vtblIndex >= 0) {
-        auto objectPointer = marshaller.receiverObjectPointer;
-        if (objectPointer is null)
-            return null;
-        // The object's first word is __vptr; the vtable slot at vtblIndex holds
-        // the final overrider's function pointer.
-        auto vtable = *cast(const(void*)**) objectPointer;
-        return vtable[function_.vtblIndex];
-    }
-
-    return dlsym(RTLD_DEFAULT, mangleExact(function_));
-}
-
-// Resolve the address of a native `extern __gshared` global data symbol by its
-// mangled name against the process (ffi.md §35.2a). Value-free: core is the
-// backend-neutral bridge, so the caller reifies the bytes through its own
-// marshaller.
-public const(void)* resolveDataSymbol(
-    imported!"dmd.declaration".VarDeclaration variable,
-) {
-    import core.sys.posix.dlfcn: dlsym;
-    version (DragonFlyBSD) import core.sys.dragonflybsd.dlfcn: RTLD_DEFAULT;
-    version (FreeBSD) import core.sys.freebsd.dlfcn: RTLD_DEFAULT;
-    version (linux) import core.sys.linux.dlfcn: RTLD_DEFAULT;
-    version (NetBSD) import core.sys.netbsd.dlfcn: RTLD_DEFAULT;
-    version (OpenBSD) import core.sys.openbsd.dlfcn: RTLD_DEFAULT;
-    version (OSX) import core.sys.darwin.dlfcn: RTLD_DEFAULT;
-    version (Solaris) import core.sys.solaris.dlfcn: RTLD_DEFAULT;
-    import dmd.mangle: mangleToBuffer;
-    import dmd.common.outbuffer: OutBuffer;
-
-    OutBuffer buf;
-    mangleToBuffer(variable, buf);
-    return dlsym(RTLD_DEFAULT, buf.peekChars);
-}
-
-private void loadDependencyImage(
-    in string dependencyImage,
-    in CompilerAbi compilerAbi,
-) {
-    import core.sys.posix.dlfcn: dlerror, dlopen, RTLD_GLOBAL, RTLD_NOW;
-    import std.conv: text;
-    import std.string: fromStringz, toStringz;
-
-    if (dlopen(dependencyImage.toStringz, RTLD_NOW | RTLD_GLOBAL) is null) {
-        auto err = dlerror();
-        throw new Exception(text(
-            "failed to load dependency image: ",
-            dependencyImage,
-            err is null ? "" : text(" :: ", err.fromStringz),
-        ));
-    }
-
-    import std.path: absolutePath, buildNormalizedPath;
-
-    _dependencyImageAbis[dependencyImage.absolutePath.buildNormalizedPath] =
-        compilerAbi;
 }
 
 private bool isSupportedNativeLinkage(
@@ -916,7 +728,7 @@ private bool callViaLibffi(
     ClosureContext*[] closureContexts;
     scope(exit) {
         foreach (context; closureContexts)
-            _closureAbis.remove(context.code);
+            unregisterClosureAbi(context.code);
         foreach (closure; closuresToFree)
             ffi_closure_free(closure);
     }
@@ -1181,21 +993,6 @@ private bool canRepresentCall(
     return true;
 }
 
-// Capture the caught native Throwable and its `.next` chain as a linked
-// NativeCallException, preserving each link's message and dynamic class name so
-// the backend can rebuild the interpreted chain (ffi.md §34.13). Only Exception
-// is caught at the call site; Error stays fatal.
-private NativeCallException nativeCallExceptionFrom(Throwable throwable) {
-    auto result = new NativeCallException(
-        throwable.msg,
-        throwable.classinfo.name,
-        throwable,
-    );
-    if (throwable.next !is null)
-        result.chainedNext = nativeCallExceptionFrom(throwable.next);
-    return result;
-}
-
 private size_t abiSourceIndex(
     imported!"dmd.astenums".LINK linkage,
     in CompilerAbi compilerAbi,
@@ -1207,26 +1004,6 @@ private size_t abiSourceIndex(
     return linkage == LINK.d && compilerAbi == CompilerAbi.dmd
         ? argumentCount - abiIndex - 1
         : abiIndex;
-}
-
-private CompilerAbi compilerAbiFor(in void* symbol) {
-    import core.sys.posix.dlfcn: dladdr, Dl_info;
-    import std.path: absolutePath, buildNormalizedPath;
-    import std.string: fromStringz;
-
-    if (auto compilerAbi = cast(const(void)*) symbol in _closureAbis)
-        return *compilerAbi;
-
-    Dl_info info;
-    if (dladdr(symbol, &info) == 0 || info.dli_fname is null)
-        return hostCompilerAbi;
-
-    const imagePath = info.dli_fname.fromStringz.idup
-        .absolutePath
-        .buildNormalizedPath;
-    if (auto compilerAbi = imagePath in _dependencyImageAbis)
-        return *compilerAbi;
-    return hostCompilerAbi;
 }
 
 // The reverse-bridge routing behind one libffi closure (ffi.md §34.16): which
@@ -1246,9 +1023,6 @@ private struct ClosureContext {
     imported!"quickbite.ffi.libffi".ffi_type*[] argumentFfiTypes;
 }
 
-// Durable counterpart of ClosureContext. It holds no forward-call marshaller or
-// argument index: all re-entry state is resolved from its session registry and
-// opaque callback id (§35.4).
 private struct DurableClosureContext {
     InboundTrampolineRegistry* registry;
     size_t callbackId;
@@ -1353,7 +1127,7 @@ private void setupDelegateArgument(
         code,
     );
     context.code = code;
-    _closureAbis[code] = compilerAbi;
+    registerClosureAbi(code, compilerAbi);
     closuresToFree ~= writable;
 
     // The D delegate: context at offset 0, funcptr at offset 8.
@@ -1377,13 +1151,11 @@ private void setupDurableDelegateArgument(
     auto functionType = cast(TypeFunction) delegateType.nextOf;
     auto returnType = functionType.next.toBasetype;
     auto returnFfi = ffiTypeFor(returnType);
-    const np = functionType.parameterList.parameters is null
-        ? 0
-        : functionType.parameterList.parameters.length;
+    const np = functionType.parameterList.length;
     auto parameterTypes = new Type[](np);
     foreach (index; 0 .. np)
         parameterTypes[index] =
-            (*functionType.parameterList.parameters)[index].type.toBasetype;
+            functionType.parameterList[index].type.toBasetype;
 
     auto argumentFfiTypes = new ffi_type*[](1 + np);
     argumentFfiTypes[0] = &ffi_type_pointer;
@@ -1397,8 +1169,13 @@ private void setupDurableDelegateArgument(
             )]);
 
     auto cif = new ffi_cif;
-    ffi_prep_cif(cif, FFI_DEFAULT_ABI, cast(uint) (1 + np), returnFfi,
-        argumentFfiTypes.ptr);
+    ffi_prep_cif(
+        cif,
+        FFI_DEFAULT_ABI,
+        cast(uint) (1 + np),
+        returnFfi,
+        argumentFfiTypes.ptr,
+    );
 
     auto context = new DurableClosureContext;
     context.registry = registry;
@@ -1413,10 +1190,15 @@ private void setupDurableDelegateArgument(
 
     void* code;
     auto writable = ffi_closure_alloc(ffi_closure.sizeof, &code);
-    ffi_prep_closure_loc(cast(ffi_closure*) writable, cif,
-        &durableClosureTrampoline, cast(void*) context, code);
+    ffi_prep_closure_loc(
+        cast(ffi_closure*) writable,
+        cif,
+        &durableClosureTrampoline,
+        cast(void*) context,
+        code,
+    );
     context.code = code;
-    _closureAbis[code] = compilerAbi;
+    registerClosureAbi(code, compilerAbi);
     registry._closures ~= writable;
 
     *cast(void**) buffer.ptr = cast(void*) context;

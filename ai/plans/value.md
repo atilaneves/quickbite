@@ -6,13 +6,10 @@ This plan records the removal of the shared `quickbite.lang.Value` and the
 tree-walking interpreter's move to native-layout storage. Decisions 15-18
 (July 2026) commit the end state — native-layout storage, one data-pointer
 representation (the host address), no FFI marshalling — with deleting
-`Value` as the completion signal. The governing order is: make the
-Interpreter pass the default LDC-hosted Cerealed suite; immediately remove
-its legacy FFI conversion and obsolete value storage; then execute the
-formatter everywhere and delete the shared `Value`. Broader Interpreter
-language expansion follows those steps. The Bytecode refactor and its new
-address-only FFI proceed in a file-disjoint parallel lane. Current
-capabilities:
+`Value` as the completion signal. The remaining order is: execute the formatter
+everywhere, then delete the shared `Value`. Broader Interpreter language
+expansion follows those steps. The Bytecode refactor and its address-only FFI
+migration proceed in a file-disjoint parallel lane. Current capabilities:
 
 - `EvalResult` carries a display `string` or `Diagnostic`, and `:t` is
   frontend-answered. CTFE and Interpreter execute formatter-wrapped expression
@@ -34,12 +31,12 @@ capabilities:
 - `RuntimeValue` is transient expression currency. Its aggregate arm owns or
   borrows native DMD-layout storage, and its sole data-pointer arm is a host
   address. It is never local, alias, or cross-frame storage authority.
-- The native-call adapter has direct-address argument and result paths, but
-  still accepts `RuntimeValue` inputs and retains buffer-based materialize,
-  reify, and writeback fallbacks. Decision 18's no-marshalling end state is
-  therefore not complete. It temporarily depends on `quickbite.ffi.oldffi`;
-  remaining-work item 5 owns migration to the new address-only
-  `quickbite.ffi.ffi` and deletion of those fallbacks.
+- The Interpreter native-call adapter has one preparation path and one
+  execution path. Preparation selects typed argument, receiver, and result
+  addresses; execution calls the address-only `quickbite.ffi.ffi` bridge.
+  There is no `RuntimeValue`/marshal/reify/writeback fallback. Callback
+  lifetime and re-entry and native exception translation stay adapter-owned
+  because they are Interpreter mechanics, not value conversion.
 
 ## Audit findings (June 2026)
 
@@ -122,13 +119,13 @@ deletion (items 2-3).
    runtime type tag is redundant for type safety here: the DMD frontend
    stamps a static `Type` on every node.
 
-8. This plan owns the Interpreter's value representation and migration away
-   from `quickbite.ffi.oldffi`. The new `quickbite.ffi.ffi` is designed
-   independently for native-layout backends and never sees `RuntimeValue`. The
-   Interpreter migrates to it by handing argument and result addresses across
-   the same pristine contract Bytecode uses; it does not add compatibility
-   methods to the new bridge. Item 5 makes typed addresses the ordinary
-   call-site contract and deletes the legacy adapter.
+8. This plan owns the Interpreter's value representation and native-call
+   adapter. `quickbite.ffi.ffi` is designed independently for native-layout
+   backends and never sees `RuntimeValue`: the Interpreter hands it typed
+   argument and result addresses without compatibility methods or a legacy
+   fallback. `quickbite.ffi.oldffi` remains only for Bytecode's parallel
+   migration lane; `bytecode.md` owns removal of that final consumer and
+   deletion of the legacy package.
 
 9. FFI-crossing and addressable aggregates live in native ABI layout
    behind a thin handle reusing DMD's own offsets. A cross-language
@@ -323,9 +320,10 @@ deletion (items 2-3).
     schedule. If sharing is ever actually wanted, extraction is a
     behavior-neutral move to do then, and that is when the AGENTS.md
     ownership question and the libffi-plumbing home get answered —
-    today the legacy plumbing stays owned by `quickbite.ffi.oldffi`
-    and a memory container knows nothing about libffi. The walker
-    rewire consumes `native_block.d`/`native_array.d`/
+    today the address-only bridge stays owned by `quickbite.ffi.ffi`, backend
+    adapters own their callback and exception mechanics, and a memory
+    container knows nothing about libffi. The walker uses
+    `native_block.d`/`native_array.d`/
     `native_struct.d`/`layout.d` where they already live, inside the
     interpreter package.
 
@@ -342,12 +340,14 @@ deletion (items 2-3).
     an aggregate argument's bytes already sit at a real address and a native
     return is written straight into typed result storage. A small backend
     adapter hands argument and result addresses to the new
-    `quickbite.ffi.ffi`, which owns ABI descriptors, CIF caching, calls,
-    and only callback or exception mechanics demanded by supported behavior.
-    That is call plumbing, not marshalling debt; the irreducible remainder
-    (`ffi_call` dispatch) only a JIT removes. `quickbite.ffi.oldffi` and its
-    marshalling surface are deleted after the Interpreter migrates; none of
-    that surface is copied into the new bridge.
+    `quickbite.ffi.ffi`, which owns ABI descriptors, CIF construction, and
+    calls.
+    Adapter-owned callback lifetime/re-entry and native exception translation
+    remain only where demanded by supported Interpreter behavior. That is call
+    plumbing, not marshalling debt; the irreducible remainder (`ffi_call`
+    dispatch) only a JIT removes. None of `quickbite.ffi.oldffi`'s marshalling
+    surface is copied into the new bridge. Bytecode retains that package until
+    its parallel address-only migration deletes the final legacy consumer.
 
     Preserved evidence (do not re-litigate): a bolt-on native-layout
     marshaller was measured to be the wrong unit of change — its
@@ -360,14 +360,13 @@ deletion (items 2-3).
     boxing's GC alloc + `SumType` tag dispatch) is realizable only
     when aggregates are never boxed.
 
-    This paragraph specifies the target, not master’s present completion
-    status. `backends/interpreter/native_call_adapter.d` still contains the
-    transitional `RuntimeValue` -> ABI-buffer and ABI-buffer -> `RuntimeValue`
-    fallbacks, including aggregate reconstruction and post-call writeback.
-    Item 5 is complete only when those paths are unreachable and deleted. The
-    libffi descriptor, address-array, callback-lifetime, scalar scratch, symbol
-    resolution, and exception machinery remains call plumbing under this
-    decision.
+    The Interpreter adapter has one typed-address preparation path and one
+    execution path. A scalar rvalue may be written into typed scratch storage
+    before preparation completes, but no `RuntimeValue` crosses the bridge and
+    no buffer-based aggregate reconstruction or post-call writeback path
+    exists. The libffi descriptor, argument-address array, scalar scratch, and
+    symbol resolution remain bridge plumbing; callback lifetime/re-entry and
+    native exception translation remain Interpreter-adapter plumbing.
 
 ## Contracts
 
@@ -653,11 +652,11 @@ display tasks below. Item numbers remain stable for existing cross-references.
 
 ### Item 4 — Workingness track
 
-Keep the interpreter advancing toward the cerealed/dub goal: one
-language-surface fix plus its oracle-backed fixture per small, short-lived PR.
-Native storage and calls remain the ordinary execution path; do not restore
-marshalling, cell families, alias maps, or name-based representation shims.
-`interpreter.md` §8 triage remains the partition.
+Keep the Interpreter language surface advancing without regressing the
+Cerealed/dub gate: one language-surface fix plus its oracle-backed fixture per
+small, short-lived PR. Native storage and calls remain the ordinary execution
+path; do not restore marshalling, cell families, alias maps, or name-based
+representation shims. `interpreter.md` §8 triage remains the partition.
 
 Pointer-slice formation past an allocation remains unchecked when its result is
 not dereferenced: this is compiled D's contract and the Interpreter's
@@ -692,14 +691,6 @@ just like other native-layout reference values. Autovivifying a null handle
 writes that handle through the referenced binding before inserting, so the
 caller retains both the allocation and later mutations.
 
-An associative array's dynamic-array-typed VALUE (e.g. `int[][int]`) writes
-through `native_call_adapter.marshalNative`'s legacy boxed `marshalArgument`
-fallback rather than its direct `place_value.writeValue` path, because
-`isPlaceComposable` has no `Tarray` arm; the stored slice header comes out
-wrong. Struct- and static-array-typed AA values already compose correctly.
-Extending `isPlaceComposable`/`valueMatchesComposablePlace` to a `Tarray` arm
-is item 5's fallback-deletion scope, not a standalone language-surface fix.
-
 `lang/archive.d`'s 5 `Omit!(Interpreter, Because.unconfirmed)` rows are not a
 language-surface gap: the Interpreter has no symbol-resolution source for a
 static archive at all (see the fixtures' `Omit` notes for the confirmed
@@ -719,97 +710,13 @@ address it used, the same way the receiver-level
 `PtrExp`/`IndexExp` *receiver* -- not yet threaded through for a target
 recovered by peeling.
 
-### Item 5 — Delete Interpreter FFI marshalling fallbacks
-
-**Next PR: complete this item.** This is one migration PR, not a sequence of
-fallback-preserving PRs split by call shape. It may contain many small,
-independently green commits, but it does not merge until every currently
-supported Interpreter native-call shape uses `quickbite.ffi.ffi` and
-`quickbite.ffi.oldffi` is deleted. Broader Interpreter language expansion and
-formatter work wait for that deletion.
-
-Do not migrate by adding address-only entry points beside legacy entry points,
-whether split into free-function, struct-member, constructor, class-member, or
-delegate shapes. That preserves the architecture being removed and makes each
-legacy distinction part of the new adapter. Historical legacy-bridge
-distinctions do not define the new adapter.
-
-The target has one call-preparation path and one execution path. Preparation
-produces the data accepted by `quickbite.ffi.ffi.call`: a `Callable`, typed
-argument addresses, typed result storage, an optional typed receiver address,
-and optional variadic metadata. Free functions, struct/class members,
-constructors, virtual dispatch, native delegates, `ref` returns, and C/C++/D
-linkage differ only in how those fields are prepared. Shape-specific helpers
-may resolve an address, receiver, vtable slot, or lifetime root; they may not
-perform a call or grow another public `tryCallNative*` family. There is no
-parallel address-only-versus-legacy dispatch and no fallback to oldffi.
-
-Normal outbound calls already recognize scalar `&local`/`SymOffExp` operands
-and direct local/ref `VarExp` receivers and fields as authoritative places.
-Native `ref`/`out` formals use direct local binding addresses; native
-`typeid(T)` operands use the resolved host `TypeInfo` address. The current
-adapter still accepts `RuntimeValue` arguments and returns reconstructed values
-and writeback arrays. Consequently it retains `marshalArgument`,
-`unmarshalValue`, receiver buffers, mutable-slice copy/writeback storage, and
-the remaining `out`-cell reification; all of that is deletion scope for the
-next PR, not scaffolding to preserve behind new entry points.
-
-`PtrExp` `ref`/`out` operands, native class-array argument and receiver places,
-and `reserve`/growth call routes remain pending. Each must expose its ordinary
-typed place before it can bypass a fallback; safe refusal is preferable to a
-copied pointee or an invented writeback path.
-
-Migrate every currently supported outbound family in that PR: C, C++, and D
-linkage; fixed and already-supported variadic calls; free, struct-member,
-constructor, class/virtual, and native-delegate calls; value and `ref` returns;
-and assignment through a native `ref` return. Each call consumes typed
-argument, receiver, `ref`, and `out` places, using a typed native temporary
-only for an rvalue with no existing address. Allocate typed result storage
-before the call and hand its address to `quickbite.ffi.ffi`; bind or load that
-storage afterward rather than reconstructing an aggregate. A native callee
-writes through the caller's supplied `ref`/`out` address, so no return-time
-aggregate reconciliation or writeback array remains.
-
-Callable resolution and compiler-ABI provenance are value-free FFI utilities,
-not oldffi services re-exported for compatibility. Resident and dependency
-image symbols retain the ABI of the code that defines them; virtual dispatch
-retains the ABI of the resolved override. Move that utility outright and make
-both loading and calling use it before deleting oldffi.
-
-Callbacks obey the same representation rule: their native argument addresses
-are borrowed typed places while the callback runs, and their result is written
-to libffi's typed result address. Callback registration, roots, closure
-lifetime, and ABI scalar widening remain in the adapter because they are call
-plumbing, not representation conversion.
-
-Completion requires all of the following:
-
-- exactly one Interpreter native-call execution path invokes
-  `quickbite.ffi.ffi.call`;
-- call-shape helpers only prepare invocation data and never call either bridge;
-- normal outbound arguments and results cross through addresses;
-- receivers and `ref`/`out` parameters use their authoritative places;
-- all previously supported outbound call families and inbound callbacks keep
-  their oracle-backed behavior without an oldffi fallback;
-- no recursive aggregate materialize/reify or post-call reconstruction path
-  exists;
-- the buffer fallback methods and legacy adapter are deleted rather than
-  represented in the new `quickbite.ffi.ffi`; and
-- the adapter that remains contains only address selection, ABI-required
-  scalar scratch, callback lifetime/re-entry, and native exception plumbing.
-
-Delete `quickbite.ffi.oldffi` when its last consumer is gone. Retain the
-pristine `quickbite.ffi.ffi`, CIF construction, `ffi_call`, the ABI
-argument-address array, and only those callback trampolines demanded by
-supported behavior.
-
 ### Item 1 — Prelude formatter wiring
 
-Complete the prelude formatter wiring (decision 3) after the cerealed critical
-path. The formatter surface covers scalars, arrays, structs, enums, AAs, plain
-template structs, and context-free range results. `std.algorithm.map`'s nested
-`MapResult` remains excluded because its behavior-bearing private state cannot
-be reconstructibly displayed. Define the prelude contract for behavior-bearing
+**Next PR:** complete the prelude formatter wiring (decision 3). The formatter
+surface covers scalars, arrays, structs, enums, AAs, plain template structs,
+and context-free range results. `std.algorithm.map`'s nested `MapResult`
+remains excluded because its behavior-bearing private state cannot be
+reconstructibly displayed. Define the prelude contract for behavior-bearing
 templates before admitting them. Then expand the gate per backend (decision 4)
 until every REPL expression is formatter-wrapped and the unformatted evaluator
 paths can be deleted. The interpreter's `std.conv.text` hook is temporary

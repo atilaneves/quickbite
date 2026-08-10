@@ -23,15 +23,15 @@ public class Interpreter: imported!"quickbite.backends".TreeNodeBackend {
     }
 
     public this(const string[] dependencyImages) {
-        import quickbite.ffi.oldffi: loadDependencyImages;
+        import quickbite.ffi.ffi: loadDependencyImages;
 
         loadDependencyImages(dependencyImages);
     }
 
     public this(
-        const imported!"quickbite.ffi.oldffi".DependencyImage[] dependencyImages,
+        const imported!"quickbite.ffi.ffi".DependencyImage[] dependencyImages,
     ) {
-        import quickbite.ffi.oldffi: loadDependencyImages;
+        import quickbite.ffi.ffi: loadDependencyImages;
 
         loadDependencyImages(dependencyImages);
     }
@@ -1527,14 +1527,14 @@ private struct Walker {
     }
 
     private void throwNativeException(
-        imported!"quickbite.ffi".NativeCallException exception,
+        imported!"quickbite.backends.interpreter.native_call_adapter".NativeCallException exception,
     ) {
         rootNativeException(exception);
         throw new InterpretedException(nativeExceptionObject(exception));
     }
 
     private void rootNativeException(
-        imported!"quickbite.ffi".NativeCallException exception,
+        imported!"quickbite.backends.interpreter.native_call_adapter".NativeCallException exception,
     ) {
         if (exception.nativeThrowableObjectPointer !is null)
             nativeThrowableRoots[exception.nativeThrowableObjectPointer] =
@@ -1548,7 +1548,7 @@ private struct Walker {
     // exception objects, threading each `.next` through _nextInChainPtr
     // (ffi.md §34.13).
     private Value nativeExceptionObject(
-        imported!"quickbite.ffi".NativeCallException exception,
+        imported!"quickbite.backends.interpreter.native_call_adapter".NativeCallException exception,
     ) {
         auto object = nativeExceptionBaseObject(
             exception.msg,
@@ -1714,13 +1714,15 @@ private struct Walker {
         imported!"dmd.declaration".VarDeclaration field,
         const(void)* objectPointer,
     ) {
-        import quickbite.backends.interpreter.native_call_adapter: unmarshalNative;
         import quickbite.backends.interpreter.layout: fieldByteOffset;
+        import quickbite.backends.interpreter.place: Place;
+        import quickbite.backends.interpreter.place_value: readValue;
 
-        return unmarshalNative(
-            field.type.toBasetype,
+        auto fieldType = field.type.toBasetype;
+        return readValue(Place(
             cast(void*) (cast(ubyte*) objectPointer + fieldByteOffset(field)),
-        );
+            fieldType,
+        ));
     }
 
     private Value withBorrowedNativeClassPointer(
@@ -2123,7 +2125,11 @@ private struct Walker {
         if (auto string_ = expression.isStringExp) {
             import quickbite.backends.interpreter.runtime_string_literals: stringValue;
 
-            return stringValue(string_);
+            NativeBlock pointerStorage;
+            const value = stringValue(string_, pointerStorage);
+            if (pointerStorage.address !is null)
+                nativePointerRoots[pointerStorage.address] = pointerStorage;
+            return value;
         }
 
         if (auto array = expression.isArrayLiteralExp)
@@ -2501,11 +2507,15 @@ private struct Walker {
             // only interpreter-owned dataseg storage.
             import quickbite.frontend.dmd.functions: isExternDataSymbol;
             if (isExternDataSymbol(variable)) {
-                import quickbite.backends.interpreter.native_call_adapter: unmarshalNative;
-                import quickbite.ffi.oldffi: resolveDataSymbol;
+                import quickbite.backends.interpreter.place: Place;
+                import quickbite.backends.interpreter.place_value: readValue;
+                import quickbite.ffi.ffi: resolveDataSymbol;
 
                 if (auto address = resolveDataSymbol(variable))
-                    return unmarshalNative(variable.type.toBasetype, address);
+                    return readValue(Place(
+                        cast(void*) address,
+                        variable.type.toBasetype,
+                    ));
             }
 
             materializeDatasegInitializer(variable);
@@ -3194,22 +3204,26 @@ private struct Walker {
 
         if (native) {
             import quickbite.backends.interpreter.native_call_adapter:
-                NativeCallException, tryNativeRefReturnAddress;
+                NativeCallException, NativeCallResult;
 
-            void* address;
+            NativeCallResult nativeResult;
             try {
-                if (!tryNativeRefReturnAddress(
+                if (!invokeNativeDeclaration(
                     call.f,
+                    Value.void_,
+                    null,
+                    null,
                     arguments,
-                    nativeArgumentTypes(argumentExpressions),
-                    nativeAddressOfLocalArguments(argumentExpressions),
-                    address,
+                    argumentExpressions,
+                    evaluatedArguments,
+                    false,
+                    nativeResult,
                 ))
                     throw new Exception(unsupported);
             } catch (NativeCallException exception) {
                 throwNativeException(exception);
             }
-            return Value.pointerValue(address);
+            return Value.pointerValue(nativeResult.referenceAddress);
         }
 
         Walker child;
@@ -4965,7 +4979,6 @@ private struct Walker {
 
                 import quickbite.frontend.dmd.functions:
                     hasNoAvailableSource, noAvailableSourceMessage;
-                import quickbite.ffi.oldffi: unsupportedNativeTypeMessage;
 
                 if (
                     call.f.isCtorDeclaration !is null &&
@@ -4992,97 +5005,32 @@ private struct Walker {
                     (!interpreterAllocatedClass || function_.vtblIndex < 0)
                 ) {
                     import quickbite.backends.interpreter.native_call_adapter:
-                        NativeCallException, tryCallNativeConstructor,
-                        tryCallNativeMember, tryCallNativeClassMember;
+                        NativeCallException, NativeCallResult;
 
-                    Value result;
-                    Value[] writebacks;
-                    Value receiverWriteback;
                     try {
-                        // Constructors and postblits build/copy a native struct
-                        // and yield the (post-call) receiver as the expression
-                        // value, not their ABI return (ffi.md §34.13).
-                        if (auto structType = receiverStructType(dot.e1)) {
-                            // A body-less constructor: the receiver `tracked` is
-                            // not yet a struct (it is the variable being
-                            // constructed), so seed `this` from the struct's
-                            // default `.init` and reify the constructed struct
-                            // from the receiver buffer.
-                            if (function_.isCtorDeclaration !is null) {
-                                if (tryCallNativeConstructor(
-                                    function_,
-                                    structType,
-                                    nativeConstructorReceiver(function_, receiver),
-                                    arguments,
-                                    nativeArgumentTypes(argumentExpressions),
-                                    nativeAddressOfLocalArguments(argumentExpressions),
-                                    result,
-                                    writebacks,
-                                )) {
-                                    applyNativeWritebacks(writebacks, argumentExpressions);
-                                    return result;
-                                }
-                            }
-                            // A body-less postblit runs on the freshly blitted
-                            // copy (already evaluated as `receiver`) and returns
-                            // void; the value of `copy = original` is the
-                            // postblit-mutated receiver, not that void return.
-                            else if (function_.isPostBlitDeclaration !is null) {
-                                if (tryCallNativeMember(
-                                    function_,
-                                    structType,
-                                    receiver,
-                                    nativeStructReceiverOperand(dot.e1),
-                                    arguments,
-                                    nativeArgumentTypes(argumentExpressions),
-                                    nativeAddressOfLocalArguments(argumentExpressions),
-                                    result,
-                                    writebacks,
-                                    receiverWriteback,
-                                )) {
-                                    applyNativeWritebacks(writebacks, argumentExpressions);
-                                    return receiverWriteback == Value.void_
-                                        ? receiver
-                                        : receiverWriteback;
-                                }
-                            }
-                        }
-
-                        // A native class receiver dispatches virtually through
-                        // the object's vtable and is mutated in place, so it has
-                        // no receiver writeback (ffi.md §34.12). A struct
-                        // receiver marshals its bytes and may write them back
-                        // (§34.9).
-                        if (auto classType = receiverClassType(dot.e1)) {
-                            if (tryCallNativeClassMember(
-                                function_,
-                                classType,
-                                receiver,
-                                arguments,
-                                nativeArgumentTypes(argumentExpressions),
-                                nativeAddressOfLocalArguments(argumentExpressions),
-                                result,
-                                writebacks,
-                            )) {
-                                applyNativeWritebacks(writebacks, argumentExpressions);
-                                return result;
-                            }
-                        } else if (tryCallNativeMember(
+                        imported!"dmd.mtype".Type receiverType =
+                            receiverClassType(dot.e1);
+                        if (receiverType is null)
+                            receiverType = receiverStructType(dot.e1);
+                        const returnsReceiver =
+                            function_.isCtorDeclaration !is null ||
+                            function_.isPostBlitDeclaration !is null;
+                        auto nativeReceiver = function_.isCtorDeclaration !is null
+                            ? nativeConstructorReceiver(function_, receiver)
+                            : receiver;
+                        NativeCallResult nativeResult;
+                        if (invokeNativeDeclaration(
                             function_,
-                            receiverStructType(dot.e1),
-                            receiver,
-                            nativeStructReceiverOperand(dot.e1),
+                            nativeReceiver,
+                            receiverType,
+                            dot.e1,
                             arguments,
-                            nativeArgumentTypes(argumentExpressions),
-                            nativeAddressOfLocalArguments(argumentExpressions),
-                            result,
-                            writebacks,
-                            receiverWriteback,
-                        )) {
-                            applyNativeWritebacks(writebacks, argumentExpressions);
-                            applyReceiverWriteback(dot.e1, receiverWriteback);
-                            return result;
-                        }
+                            argumentExpressions,
+                            evaluatedArguments,
+                            returnsReceiver,
+                            nativeResult,
+                        ))
+                            return nativeResult.value;
                     } catch (NativeCallException exception) {
                         throwNativeException(exception);
                     }
@@ -5110,14 +5058,10 @@ private struct Walker {
         if (call.f !is null) {
             import quickbite.frontend.dmd.functions:
                 hasNoAvailableSource, noAvailableSourceMessage;
-            import quickbite.ffi.oldffi: unsupportedNativeTypeMessage;
             import quickbite.backends.interpreter.native_call_adapter:
-                InterpreterInboundTrampolineSession, NativeCallException,
-                tryCallNative;
+                NativeCallException, NativeCallResult;
 
             if (nativeCall) {
-                Value result;
-                Value[] writebacks;
                 try {
                     // A native callback may have hydrated a native-backed
                     // class for interpreted field access. Native calls consume
@@ -5125,36 +5069,19 @@ private struct Walker {
                     // DMD retained a parameter declaration we can classify.
                     foreach (ref argument; arguments)
                         argument = preservedNativeClassIdentity(argument);
-                    // Mutable because the native-call interfaces accept Type[].
-                    auto argumentTypes =
-                        nativeArgumentTypes(argumentExpressions);
-                    if (durableInboundSession is null)
-                        durableInboundSession = new InterpreterInboundTrampolineSession(
-                            &invokeNativeCallback,
-                        );
-                    if (
-                        !call.f.needThis &&
-                        tryCallNative(
+                    NativeCallResult nativeResult;
+                    if (!call.f.needThis && invokeNativeDeclaration(
                             call.f,
+                            Value.void_,
+                            null,
+                            null,
                             arguments,
-                            argumentTypes,
-                            nativeAddressOfLocalArguments(argumentExpressions),
-                            nativeOutParameterInputValues(argumentExpressions),
-                            nativeDirectAddressOperands(
-                                argumentExpressions,
-                                argumentTypes,
-                                arguments,
-                                evaluatedArguments,
-                            ),
-                            &invokeNativeCallback,
-                            durableInboundSession,
-                            result,
-                            writebacks,
-                        )
-                    ) {
-                        applyNativeWritebacks(writebacks, argumentExpressions);
-                        return result;
-                    }
+                            argumentExpressions,
+                            evaluatedArguments,
+                            false,
+                            nativeResult,
+                        ))
+                        return nativeResult.value;
                 } catch (NativeCallException exception) {
                     throwNativeException(exception);
                 }
@@ -5403,8 +5330,8 @@ private struct Walker {
     }
 
     // Call a native delegate the interpreter holds as an opaque
-    // {context, funcptr} value reified from a native return (ffi.md §35.8),
-    // the inverse of the §34.16 callback bridge.
+    // {context, funcptr} value read from a native typed result place, the
+    // inverse of the §34.16 callback bridge.
     private Value runNativeDelegateCall(
         in Value callee,
         imported!"dmd.expression".CallExp call,
@@ -5412,31 +5339,39 @@ private struct Walker {
         imported!"dmd.expression".Expression[] argumentExpressions,
     ) {
         import quickbite.backends.interpreter.native_call_adapter:
-            NativeCallException, tryCallNativeDelegate;
+            InterpreterInboundTrampolineSession, NativeCallException,
+            NativeCallRequest, NativeCallResult, invokeNative;
         import dmd.mtype: TypeFunction;
 
         auto delegateType = call.e1.type.toBasetype;
         auto functionType = delegateType.nextOf is null
             ? null
             : cast(TypeFunction) delegateType.nextOf;
+        auto argumentTypes = nativeArgumentTypes(argumentExpressions);
 
-        Value result;
-        Value[] writebacks;
         try {
-            if (tryCallNativeDelegate(
-                functionType,
-                callee,
-                arguments,
-                nativeArgumentTypes(argumentExpressions),
-                nativeAddressOfLocalArguments(argumentExpressions),
-                nativeOutParameterInputValues(argumentExpressions),
-                &invokeNativeCallback,
-                result,
-                writebacks,
-            )) {
-                applyNativeWritebacks(writebacks, argumentExpressions);
-                return result;
-            }
+            if (durableInboundSession is null)
+                durableInboundSession = new InterpreterInboundTrampolineSession(
+                    &invokeNativeCallback,
+                );
+            auto request = NativeCallRequest(
+                delegateSignature: functionType,
+                delegateAddress: callee.nativeDelegateFuncptr,
+                delegateContext: callee.nativeDelegateContext,
+                arguments: arguments.dup,
+                argumentTypes: argumentTypes,
+                argumentOperands: nativeCallOperands(
+                    null,
+                    arguments,
+                    argumentExpressions,
+                    argumentTypes,
+                    null,
+                ),
+                callbackSession: durableInboundSession,
+            );
+            NativeCallResult nativeResult;
+            if (invokeNative(request, nativeResult))
+                return nativeResult.value;
         } catch (NativeCallException exception) {
             throwNativeException(exception);
         }
@@ -8288,18 +8223,21 @@ private struct Walker {
             // A native extern __gshared global's memory is the single source of
             // truth (ffi.md §35.2): write through to the resolved symbol and do
             // NOT cache in `locals`, or a later native mutation would be
-            // shadowed by a stale copy. The read path (§35.2a) reifies from
-            // native memory on every read.
+            // shadowed by a stale copy. The read path (§35.2a) reads the
+            // native symbol's typed place on every access.
             import quickbite.frontend.dmd.functions: isExternDataSymbol;
             if (isExternDataSymbol(variable)) {
-                import quickbite.backends.interpreter.native_call_adapter: marshalNative;
-                import quickbite.ffi.oldffi: resolveDataSymbol;
+                import quickbite.backends.interpreter.place: Place;
+                import quickbite.backends.interpreter.place_value: writeValue;
+                import quickbite.ffi.ffi: resolveDataSymbol;
 
                 if (auto address = resolveDataSymbol(variable)) {
                     // A writable process-memory address belonging to the loaded
                     // dependency image, so the cast to a mutable pointer is safe.
-                    marshalNative(variable.type.toBasetype, cast(void*) address,
-                        storageValue(variable.type, value));
+                    writeValue(
+                        Place(cast(void*) address, variable.type.toBasetype),
+                        storageValue(variable.type, value),
+                    );
                     return;
                 }
             }
@@ -8705,16 +8643,30 @@ private struct Walker {
 
         if (hasNoAvailableSource(call.f)) {
             import quickbite.backends.interpreter.native_call_adapter:
-                NativeCallException, tryAssignNativeRefReturn;
+                NativeCallException, NativeCallResult;
+            import quickbite.backends.interpreter.place: Place;
 
             try {
-                return tryAssignNativeRefReturn(
+                NativeCallResult nativeResult;
+                if (!invokeNativeDeclaration(
                     call.f,
+                    Value.void_,
+                    null,
+                    null,
                     arguments,
-                    nativeArgumentTypes(argumentExpressions),
-                    nativeAddressOfLocalArguments(argumentExpressions),
+                    argumentExpressions,
+                    evaluatedArguments,
+                    false,
+                    nativeResult,
+                ))
+                    return false;
+                auto returnType = call.f.type.toBasetype.isTypeFunction
+                    .next.toBasetype;
+                writeStoredValue(
+                    Place(nativeResult.referenceAddress, returnType),
                     value,
                 );
+                return true;
             } catch (NativeCallException exception) {
                 throwNativeException(exception);
             }
@@ -11296,8 +11248,8 @@ private struct Walker {
     ) {
         import dmd.astenums: TY;
         import quickbite.backends.interpreter.layout: typeByteSize;
-        import quickbite.backends.interpreter.native_call_adapter: unmarshalNative;
         import quickbite.backends.interpreter.place: Place;
+        import quickbite.backends.interpreter.place_value: readValue;
 
         auto elementType = pointerType.toBasetype.nextOf.toBasetype;
         auto address = nativeElementAddress(
@@ -11315,7 +11267,7 @@ private struct Walker {
             canContainStoredMetadata(elementType)
         )
             return readStoredValue(Place(address, elementType));
-        return unmarshalNative(elementType, address);
+        return readValue(Place(address, elementType));
     }
 
     private void storeNativePointerElement(
@@ -11325,8 +11277,8 @@ private struct Walker {
         in Value value,
     ) {
         import quickbite.backends.interpreter.layout: typeByteSize;
-        import quickbite.backends.interpreter.native_call_adapter: marshalNative;
         import quickbite.backends.interpreter.place: Place;
+        import quickbite.backends.interpreter.place_value: writeValue;
 
         auto elementType = pointerType.toBasetype.nextOf.toBasetype;
         auto address = nativeElementAddress(
@@ -11356,7 +11308,7 @@ private struct Walker {
         if (canContainStoredMetadata(elementType))
             writeStoredValue(Place(address, elementType), value);
         else
-            marshalNative(elementType, address, value);
+            writeValue(Place(address, elementType), value);
         // A native pointer can denote a still-void frame binding directly.
         // Once the first element is written, a later aggregate read must use
         // those frame bytes rather than materializing `.init` over them.
@@ -11374,52 +11326,10 @@ private struct Walker {
         return cast(void*) (cast(ubyte*) base + index * elementSize);
     }
 
-    // Apply writebacks reported by a native call to their source argument
-    // variables: `&local` out-parameters (such as strtol's `char** endptr`) and
-    // mutable slice arguments the callee wrote through (ffi.md §34.10).
-    private void applyNativeWritebacks(
-        in Value[] writebacks,
-        imported!"dmd.expression".Expression[] argumentExpressions,
-    ) {
-        foreach (index, writeback; writebacks) {
-            if (writeback == Value.void_)
-                continue;
-
-            auto variable = nativeOutParameterVariable(argumentExpressions[index]);
-            if (variable is null)
-                throw new Exception("Unsupported native out-parameter target.");
-
-            storeBinding(variable, writeback);
-        }
-    }
-
-    // Write a mutating native member's receiver back into the caller's variable
-    // (ffi.md §34.9). Gated to addressable locals; non-lvalue receivers are out
-    // of scope and silently keep their pre-call value.
-    private void applyReceiverWriteback(
-        imported!"dmd.expression".Expression receiverExpression,
-        in Value receiverWriteback,
-    ) {
-        if (receiverWriteback == Value.void_)
-            return;
-
-        auto receiver = receiverExpression.isVarExp;
-        if (receiver is null)
-            return;
-
-        auto variable = receiver.var.isVarDeclaration;
-        if (variable is null)
-            return;
-
-        setLocal(variable, receiverWriteback);
-        uninitializedLocals.remove(variable);
-    }
-
-    // A plain local/ref struct receiver already has one authoritative typed
-    // frame place. Let the native call use it directly; globals, expression
-    // temporaries, fields, constructors, and all other lvalue shapes retain
-    // the transitional receiver-buffer/writeback path.
-    private imported!"quickbite.backends.interpreter.native_call_adapter".NativeOperand nativeStructReceiverOperand(
+    // A stable local/ref receiver or one of its fields lends the native call
+    // its authoritative typed place. Other receiver expressions are
+    // materialized once in a typed temporary by the call adapter.
+    private imported!"quickbite.backends.interpreter.native_call_adapter".NativeOperand nativeReceiverOperand(
         imported!"dmd.expression".Expression receiver,
     ) {
         import dmd.tokens: EXP;
@@ -11445,11 +11355,7 @@ private struct Walker {
         }
 
         auto field = receiver.isDotVarExp;
-        if (
-            field is null ||
-            receiver.type is null ||
-            receiver.type.toBasetype.isTypeStruct is null
-        )
+        if (field is null || receiver.type is null)
             return NativeOperand.init;
 
         auto fieldReceiver = field.e1.isVarExp;
@@ -11471,104 +11377,110 @@ private struct Walker {
             : NativeOperand.init;
     }
 
-    // Flag each argument that is `&local`, so the FFI core can treat a
-    // single-level pointer-to-scalar at that slot as an out parameter rather
-    // than an in-pointer (ffi.md §34.8).
-    private bool[] nativeAddressOfLocalArguments(
+    // Returns a diagnostic naming a top-level associative-array type which
+    // cannot cross the native ABI, or null when this call is representable.
+    private string unsupportedNativeTypeMessage(
+        imported!"dmd.func".FuncDeclaration function_,
+    ) {
+        import dmd.astenums: TY;
+        import dmd.mtype: TypeFunction;
+        import std.conv: text;
+
+        auto type = cast(TypeFunction) function_.type;
+        if (type is null)
+            return null;
+
+        auto offending = type.next is null
+            ? null
+            : type.next.toBasetype.ty == TY.Taarray
+                ? type.next.toBasetype
+                : null;
+        if (offending is null && type.parameterList.parameters !is null)
+            foreach (parameter; *type.parameterList.parameters)
+                if (
+                    parameter.type !is null &&
+                    parameter.type.toBasetype.ty == TY.Taarray
+                ) {
+                    offending = parameter.type.toBasetype;
+                    break;
+                }
+
+        return offending is null
+            ? null
+            : text(
+                "`",
+                function_.toChars,
+                "` cannot be called natively: the associative array type `",
+                offending.toChars,
+                "` cannot cross the FFI boundary",
+            );
+    }
+
+    private bool invokeNativeDeclaration(
+        imported!"dmd.func".FuncDeclaration function_,
+        Value receiver,
+        imported!"dmd.mtype".Type receiverType,
+        imported!"dmd.expression".Expression receiverExpression,
+        Value[] arguments,
         imported!"dmd.expression".Expression[] argumentExpressions,
+        in EvaluatedReferenceArgument[] evaluatedArguments,
+        in bool returnsReceiver,
+        out imported!"quickbite.backends.interpreter.native_call_adapter".NativeCallResult result,
     ) {
-        auto flags = new bool[](argumentExpressions.length);
-        foreach (index, argument; argumentExpressions)
-            flags[index] = isNativeAddressOfLocal(argument);
-        return flags;
+        import quickbite.backends.interpreter.native_call_adapter:
+            InterpreterInboundTrampolineSession, NativeCallRequest,
+            NativeOperand, invokeNative;
+
+        auto argumentTypes = nativeArgumentTypes(argumentExpressions);
+        if (durableInboundSession is null)
+            durableInboundSession = new InterpreterInboundTrampolineSession(
+                &invokeNativeCallback,
+            );
+        auto request = NativeCallRequest(
+            declaration: function_,
+            receiverType: receiverType,
+            receiver: receiver,
+            receiverOperand: receiverExpression is null
+                ? NativeOperand.init
+                : nativeReceiverOperand(receiverExpression),
+            virtualDispatch: receiverType !is null &&
+                receiverType.toBasetype.isTypeClass !is null,
+            returnsReceiver: returnsReceiver,
+            arguments: arguments,
+            argumentTypes: argumentTypes,
+            argumentOperands: nativeCallOperands(
+                function_,
+                arguments,
+                argumentExpressions,
+                argumentTypes,
+                evaluatedArguments,
+            ),
+            callbackSession: durableInboundSession,
+        );
+        return invokeNative(request, result);
     }
 
-    private bool isNativeAddressOfLocal(
-        imported!"dmd.expression".Expression argument,
-    ) {
-        import quickbite.frontend.dmd.types: isStaticArrayType;
-
-        if (auto address = argument.isAddrExp)
-            if (auto var = address.e1.isVarExp)
-                if (auto variable = var.var.isVarDeclaration)
-                    return !isStaticArrayType(variable.type);
-
-        // A pointer into a static-array local (`&buf[i]`, folded to a
-        // SymOffExp) is an in-pointer to the array's elements, not an out
-        // slot for the callee to fill.
-        if (auto symbol = argument.isSymOffExp)
-            if (auto variable = symbol.var.isVarDeclaration)
-                return !isStaticArrayType(variable.type);
-
-        return argument.isSymOffExp !is null;
-    }
-
-    private imported!"dmd.declaration".VarDeclaration nativeOutParameterVariable(
-        imported!"dmd.expression".Expression argument,
-    ) {
-        if (auto address = argument.isAddrExp)
-            if (auto var = address.e1.isVarExp)
-                return var.var.isVarDeclaration;
-
-        if (auto symbol = argument.isSymOffExp)
-            return symbol.var.isVarDeclaration;
-
-        // A mutable slice argument is passed as the plain variable; its
-        // writeback targets that same local (ffi.md §34.10).
-        if (auto var = argument.isVarExp)
-            return var.var.isVarDeclaration;
-
-        return null;
-    }
-
-    // The current value behind each `&local` argument (Value.void_ elsewhere):
-    // the FFI core marshals it into the out-parameter cell so an in-out callee
-    // reads the caller's value instead of a zeroed cell (ffi.md §35.6). A
-    // void-initialized local marshals its default value, matching the zeroed
-    // cell compiled code cannot improve on deterministically.
-    private Value[] nativeOutParameterInputValues(
-        imported!"dmd.expression".Expression[] argumentExpressions,
-    ) {
-        auto values = new Value[](argumentExpressions.length);
-        foreach (index, argument; argumentExpressions) {
-            if (!isNativeAddressOfLocal(argument))
-                continue;
-
-            auto variable = nativeOutParameterVariable(argument);
-            if (variable is null)
-                continue;
-
-            if (variable in uninitializedLocals)
-                values[index] = defaultValue(variable);
-            else if (auto current = variable in locals)
-                values[index] = *current;
-        }
-        return values;
-    }
-
-    // The frontend preserves `&local` as an AddrExp or SymOffExp. For scalar
-    // pointees its evaluated pointer already names the binding's authoritative
-    // native place. Hand libffi a typed ABI slot containing that pointer rather
-    // than asking the core to allocate an out cell and later write it back.
+    // Existing lvalues and retained C-string pointers cross as typed
+    // addresses. Other rvalues become typed NativeBlock temporaries in the
+    // adapter.
     private imported!"quickbite.backends.interpreter.native_call_adapter".NativeOperand[]
-    nativeDirectAddressOperands(
+    nativeCallOperands(
+        imported!"dmd.func".FuncDeclaration function_,
+        in Value[] arguments,
         imported!"dmd.expression".Expression[] argumentExpressions,
         imported!"dmd.mtype".Type[] argumentTypes,
-        in Value[] arguments,
         in EvaluatedReferenceArgument[] evaluatedArguments,
     ) {
         import quickbite.backends.interpreter.native_block: NativeBlock;
         import quickbite.backends.interpreter.native_call_adapter: NativeOperand;
-        import quickbite.backends.interpreter.native_scalar: isNativeScalarType;
-        import quickbite.backends.interpreter.place: Place;
-        import quickbite.backends.interpreter.place_value: writeValue;
+        import dmd.tokens: EXP;
 
         NativeOperand[] operands;
         operands.length = argumentExpressions.length;
         foreach (index, expression; argumentExpressions) {
             if (auto typeid_ = expression.isTypeidExp)
                 if (auto typeInfo = typeidDeclaration(typeid_)) {
-                    import quickbite.ffi.oldffi: resolveDataSymbol;
+                    import quickbite.ffi.ffi: resolveDataSymbol;
 
                     if (auto address = resolveDataSymbol(typeInfo)) {
                         auto scratch = NativeBlock.allocate(
@@ -11586,62 +11498,116 @@ private struct Walker {
                 }
 
             if (
+                nativeReferenceParameter(function_, index) &&
                 index < evaluatedArguments.length &&
                 evaluatedArguments[index].address !is null
             ) {
-                auto scratch = NativeBlock.allocate(
-                    (void*).sizeof,
-                    NativeBlock.Scan.conservative,
-                );
-                *cast(void**) scratch.address =
-                    cast(void*) evaluatedArguments[index].address;
                 operands[index] = NativeOperand(
-                    argumentTypes[index],
-                    scratch.address,
-                    scratch,
+                    nativeParameterType(function_, index),
+                    cast(void*) evaluatedArguments[index].address,
                 );
                 continue;
             }
 
             if (
-                !isNativeAddressOfLocal(expression) ||
+                index < arguments.length &&
+                index < argumentTypes.length &&
+                isCharacterPointer(argumentTypes[index]) &&
+                (arguments[index].isPointer || arguments[index] == Value.null_)
+            ) {
+                import quickbite.backends.interpreter.place: Place;
+
+                auto scratch = NativeBlock.allocate(
+                    (void*).sizeof,
+                    NativeBlock.Scan.conservative,
+                );
+                auto pointer = arguments[index] == Value.null_
+                    ? null
+                    : arguments[index].pointerAddress;
+                Place(scratch.address, argumentTypes[index])
+                    .storeReference(pointer);
+                NativeBlock retained;
+                if (pointer !is null)
+                    if (auto root = pointer in nativePointerRoots)
+                        retained = *root;
+                operands[index] = NativeOperand(
+                    argumentTypes[index],
+                    scratch.address,
+                    scratch,
+                    retained,
+                );
+                continue;
+            }
+
+            if (
                 index >= argumentTypes.length ||
-                index >= arguments.length ||
-                !arguments[index].isPointer
+                expression.type is null ||
+                !expression.type.toBasetype.equals(
+                    argumentTypes[index].toBasetype,
+                ) ||
+                !hasStableLocalFieldPlace(expression)
             )
                 continue;
-
-            auto pointer = argumentTypes[index].toBasetype.isTypePointer;
-            if (pointer is null || !isNativeScalarType(pointer.next))
-                continue;
-
-            auto scratch = NativeBlock.allocate(
-                (void*).sizeof,
-                NativeBlock.Scan.conservative,
-            );
-            writeValue(
-                Place(scratch.address, argumentTypes[index]),
-                arguments[index],
-            );
-            operands[index] = NativeOperand(
-                argumentTypes[index],
-                scratch.address,
-                scratch,
-            );
+            const address = addressOfExpression(expression, EXP.address);
+            if (address.isPointer)
+                operands[index] = NativeOperand(
+                    nativeReferenceParameter(function_, index)
+                        ? nativeParameterType(function_, index)
+                        : argumentTypes[index],
+                    address.pointerAddress,
+                );
         }
         return operands;
+    }
+
+    private bool isCharacterPointer(imported!"dmd.mtype".Type type) {
+        import dmd.astenums: TY;
+
+        return type !is null &&
+            type.toBasetype.ty == TY.Tpointer &&
+            type.toBasetype.nextOf.toBasetype.ty == TY.Tchar;
+    }
+
+    private bool hasStableLocalFieldPlace(
+        imported!"dmd.expression".Expression expression,
+    ) {
+        if (auto variableExpression = expression.isVarExp) {
+            auto variable = variableExpression.var.isVarDeclaration;
+            return variable !is null && !variable.isDataseg &&
+                (_activationFrame.hasOwningSlot(variable) ||
+                    _activationFrame.hasReferenceSlot(variable));
+        }
+        if (auto field = expression.isDotVarExp)
+            return field.var.isVarDeclaration !is null &&
+                hasStableLocalFieldPlace(field.e1);
+        return false;
     }
 
     private bool nativeReferenceParameter(
         imported!"dmd.func".FuncDeclaration function_,
         in size_t index,
     ) {
-        import quickbite.ffi.oldffi: isNativeReferenceParameter;
+        import dmd.astenums: STC;
 
         auto type = function_ is null || function_.type is null
             ? null
             : function_.type.toBasetype.isTypeFunction;
-        return isNativeReferenceParameter(type, index);
+        if (type is null || index >= type.parameterList.length)
+            return false;
+        return (type.parameterList[index].storageClass &
+            (STC.ref_ | STC.out_)) != STC.none;
+    }
+
+    private imported!"dmd.mtype".Type nativeParameterType(
+        imported!"dmd.func".FuncDeclaration function_,
+        in size_t index,
+    ) {
+        auto type = function_ is null || function_.type is null
+            ? null
+            : function_.type.toBasetype.isTypeFunction;
+        return type is null || index >= type.parameterList.length
+            ? null
+            : type.parameterList[index].type.toBasetype;
     }
 
     private imported!"dmd.declaration".TypeInfoDeclaration typeidDeclaration(
@@ -12053,7 +12019,7 @@ private struct Walker {
     ) {
         import quickbite.frontend.dmd.functions: noAvailableSourceMessage;
         import quickbite.backends.interpreter.native_call_adapter:
-            NativeCallException, tryCallNativeConstructor;
+            NativeCallException, NativeCallResult;
         import dmd.expression: Expression;
 
         Value[] arguments;
@@ -12064,22 +12030,20 @@ private struct Walker {
                 argumentExpressions ~= argument;
             }
 
-        Value constructed;
-        Value[] writebacks;
         try {
-            if (tryCallNativeConstructor(
+            NativeCallResult nativeResult;
+            if (invokeNativeDeclaration(
                 new_.member,
-                targetType.isTypeStruct,
                 nativeConstructorReceiver(new_.member, initValue),
+                targetType.isTypeStruct,
+                null,
                 arguments,
-                nativeArgumentTypes(argumentExpressions),
-                nativeAddressOfLocalArguments(argumentExpressions),
-                constructed,
-                writebacks,
-            )) {
-                applyNativeWritebacks(writebacks, argumentExpressions);
-                return allocateNativePointer(targetType, constructed);
-            }
+                argumentExpressions,
+                null,
+                true,
+                nativeResult,
+            ))
+                return allocateNativePointer(targetType, nativeResult.value);
         } catch (NativeCallException exception) {
             throwNativeException(exception);
         }
