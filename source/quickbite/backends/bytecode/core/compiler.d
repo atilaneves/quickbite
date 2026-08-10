@@ -2753,8 +2753,7 @@ private struct Compiler {
 
         if (auto call = expression.isCallExp) {
             auto function_ = callFunction(call);
-            auto functionType = function_ is null
-                ? null : function_.type.isTypeFunction;
+            auto functionType = callTypeFunction(call);
             const result = compileCall(call);
             if (result.isPointer &&
                 functionType !is null && functionType.isRef &&
