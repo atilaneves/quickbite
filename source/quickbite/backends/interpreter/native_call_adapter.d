@@ -660,6 +660,110 @@ public bool tryCallNativeDelegate(
     return true;
 }
 
+// A native class object remains an opaque pointer throughout this call. A
+// virtual declaration resolves from its runtime vtable, while a nonvirtual one
+// resolves normally; either resolved address supplies its own compiler ABI.
+public bool tryCallNativeClassMemberAddressOnly(
+    imported!"dmd.func".FuncDeclaration function_,
+    imported!"dmd.mtype".TypeClass receiverType,
+    in imported!"quickbite.backends.interpreter.runtime_value".Value receiver,
+    in imported!"quickbite.backends.interpreter.runtime_value".Value[] arguments,
+    imported!"dmd.mtype".Type[] argumentTypes,
+    NativeOperand[] directAddressOperands,
+    out imported!"quickbite.backends.interpreter.runtime_value".Value result,
+) {
+    import dmd.astenums: LINK, STC, VarArg;
+    import dmd.mtype: TypeFunction;
+    import quickbite.backends.interpreter.layout: typeByteSize, typeHasPointers;
+    import quickbite.backends.interpreter.native_block: NativeBlock;
+    import quickbite.backends.interpreter.place: Place;
+    import quickbite.backends.interpreter.place_value:
+        isPlaceComposable, readValue, valueMatchesPlace, writeValue;
+    import quickbite.ffi.ffi: Callable, TypedAddress, call;
+    import quickbite.ffi.symbol: resolveClassMemberSymbol;
+
+    if (
+        function_ is null || receiverType is null || !receiver.isPointer ||
+        function_._linkage != LINK.d
+    )
+        return false;
+
+    auto signature = cast(TypeFunction) function_.type;
+    if (signature is null || signature.parameterList.varargs != VarArg.none ||
+        signature.isRef)
+        return false;
+
+    auto parameters = signature.parameterList.parameters;
+    if (
+        parameters is null && arguments.length != 0 ||
+        parameters !is null && arguments.length != parameters.length ||
+        argumentTypes.length != arguments.length
+    )
+        return false;
+
+    auto returnType = signature.next.toBasetype;
+    if (!isPlaceComposable(returnType))
+        return false;
+
+    auto operandTypes = new TypedAddress[](arguments.length);
+    NativeBlock[] operandOwners;
+    foreach (index, argument; arguments) {
+        auto parameter = (*parameters)[index];
+        auto parameterType = parameter.type.toBasetype;
+        const isReference =
+            (parameter.storageClass & (STC.ref_ | STC.out_)) != STC.none;
+        if (
+            !isPlaceComposable(parameterType) || argumentTypes[index] is null ||
+            !argumentTypes[index].toBasetype.equals(parameterType)
+        )
+            return false;
+
+        if (
+            index < directAddressOperands.length &&
+            directAddressOperands[index].address !is null &&
+            directAddressOperands[index].type !is null &&
+            directAddressOperands[index].type.equals(parameterType)
+        ) {
+            operandTypes[index] = TypedAddress(
+                parameterType,
+                directAddressOperands[index].address,
+            );
+            continue;
+        }
+        if (isReference || !valueMatchesPlace(parameterType, argument))
+            return false;
+
+        auto owner = NativeBlock.allocate(
+            typeByteSize(parameterType),
+            typeHasPointers(parameterType)
+                ? NativeBlock.Scan.conservative
+                : NativeBlock.Scan.no,
+        );
+        writeValue(Place(owner.address, parameterType), argument);
+        operandTypes[index] = TypedAddress(parameterType, owner.address);
+        operandOwners ~= owner;
+    }
+
+    auto resultOwner = NativeBlock.allocate(
+        typeByteSize(returnType),
+        typeHasPointers(returnType)
+            ? NativeBlock.Scan.conservative
+            : NativeBlock.Scan.no,
+    );
+    auto symbol = resolveClassMemberSymbol(function_, receiver.pointerAddress);
+    auto receiverAddress = TypedAddress(receiverType, receiver.pointerAddress);
+    if (symbol.address is null || !call(
+        Callable(symbol.address, signature, symbol.compilerAbi, function_),
+        operandTypes,
+        TypedAddress(returnType, resultOwner.address),
+        &receiverAddress,
+    ))
+        return false;
+
+    result = readValue(Place(resultOwner.address, returnType));
+    return true;
+}
+
 // A member call on a native class reference (ffi.md §34.12). The receiver is an
 // opaque native handle (Pointer); virtual dispatch happens in the core via
 // the object's vtable. The object is mutated in place through the shared pointer,

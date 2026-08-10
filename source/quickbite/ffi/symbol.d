@@ -69,6 +69,29 @@ public ResolvedSymbol resolveFunctionSymbol(
     return ResolvedSymbol(address, compilerAbiFor(address));
 }
 
+// A native class receiver is an opaque object pointer. For a virtual member,
+// DMD's slot identifies the final override in the object's resident vtable;
+// provenance belongs to that resolved override rather than the declaration
+// through which the caller was statically typed.
+public ResolvedSymbol resolveClassMemberSymbol(
+    imported!"dmd.func".FuncDeclaration function_,
+    in void* receiver,
+) @trusted {
+    if (function_ is null || receiver is null)
+        return ResolvedSymbol.init;
+
+    if (function_.vtblIndex < 0)
+        return resolveFunctionSymbol(function_);
+
+    // `receiver` is a live native D class object, whose first word is its
+    // vtable pointer; the DMD-computed slot is within that table.
+    auto vtable = *cast(void***) receiver;
+    if (vtable is null)
+        return ResolvedSymbol.init;
+    auto address = vtable[function_.vtblIndex];
+    return ResolvedSymbol(address, compilerAbiFor(address));
+}
+
 public CompilerAbi compilerAbiFor(in void* symbol) {
     import core.sys.posix.dlfcn: dladdr, Dl_info;
     import std.path: absolutePath, buildNormalizedPath;

@@ -4994,6 +4994,7 @@ private struct Walker {
                     import quickbite.backends.interpreter.native_call_adapter:
                         NativeCallException, tryCallNativeConstructor,
                         tryCallNativeMember, tryCallNativeClassMember,
+                        tryCallNativeClassMemberAddressOnly,
                         tryCallNativeStructConstructorAddressOnly,
                         tryCallNativeStructMemberAddressOnly;
 
@@ -5092,6 +5093,23 @@ private struct Walker {
                         // receiver marshals its bytes and may write them back
                         // (§34.9).
                         if (auto classType = receiverClassType(dot.e1)) {
+                            auto argumentTypes = nativeArgumentTypes(
+                                argumentExpressions,
+                            );
+                            if (tryCallNativeClassMemberAddressOnly(
+                                function_,
+                                classType,
+                                receiver,
+                                arguments,
+                                argumentTypes,
+                                nativeAddressOnlyOperands(
+                                    function_,
+                                    argumentExpressions,
+                                    argumentTypes,
+                                ),
+                                result,
+                            ))
+                                return result;
                             if (tryCallNativeClassMember(
                                 function_,
                                 classType,
