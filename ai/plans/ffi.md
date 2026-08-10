@@ -15,34 +15,24 @@ writes the result into caller-provided typed storage. It never converts a
 backend value representation into an ABI representation because there is only
 one representation.
 
-The existing marshaller-based implementation lives in
-`quickbite.ffi.oldffi` so the Interpreter and its other current consumers
-remain operational during migration. It is not the starting point for this
-design. Do not copy its interfaces, work order, or supported-shape taxonomy
-into the new package.
-
 ## Module boundary
 
 ```text
 quickbite.ffi.libffi   declaration-only libffi binding
-quickbite.ffi.oldffi   legacy marshaller-based implementation
-quickbite.ffi.ffi      new native-layout call mechanism
+quickbite.ffi.ffi      native-layout call mechanism
 quickbite.ffi.sysv_call private vector-capable x86-64 SysV transport
 ```
 
 `quickbite.ffi.libffi` stays in its current module. It contains only translated
 libffi declarations, constants, and platform assertions. It contains no D type
-mapping, symbol policy, CIF cache, backend concept, or value conversion. Both
-FFI implementations may import it. `quickbite.ffi.sysv_call` contains only the
-private invocation frame and architecture-specific register transfer needed
-when libffi cannot express a vector call.
+mapping, symbol policy, CIF cache, backend concept, or value conversion.
+`quickbite.ffi.sysv_call` contains only the private invocation frame and
+architecture-specific register transfer needed when libffi cannot express a
+vector call.
 
-`quickbite.ffi.oldffi` is migration debt, not a second supported design.
-Existing consumers may remain on it temporarily. No new backend may import it,
-and it gains no new feature unless a correctness fix is required to reach the
-Interpreter's Cerealed gate. Its remaining consumers and deletion conditions
-belong to `interpreter.md` and `value.md`; it needs no architecture plan of its
-own.
+`quickbite.ffi.ffi` is the only native-call mechanism. A second one may not be
+reintroduced as a fallback for a backend that finds address-only storage
+inconvenient, nor as a staging area for a shape this one cannot yet compose.
 
 ## Public contract
 
@@ -107,7 +97,7 @@ The boundary obeys these invariants:
   those pointers or placing their bytes in ABI registers and stack slots does
   not change the values' representation.
 
-The new package must not expose or contain:
+The package must not expose or contain:
 
 ```text
 Value or RuntimeValue
@@ -116,7 +106,6 @@ marshal, unmarshal, materialize, reify, fill, or writeback operations
 aggregate reconstruction
 mutable-slice copy-in/copy-out
 slice word swapping or any other representation repair
-compatibility fallbacks to quickbite.ffi.oldffi
 ```
 
 An unavoidable libffi scratch slot is not representation conversion. For
@@ -189,11 +178,6 @@ outbound call mechanism. Their eventual design must preserve typed-address
 storage and callable-specific ABI provenance rather than growing a marshalling
 seam into this API.
 
-Backend migration is not work in this plan. `bytecode.md` owns Bytecode's
-native-layout correction, legacy-marshaller deletion, and switch to the new
-module. `value.md` owns the later Interpreter migration and deletion of
-`quickbite.ffi.oldffi`.
-
 Symbol resolution, dependency images, and any future CIF cache must preserve
 the callable's compiler-ABI and declaration provenance without changing the
 call boundary.
@@ -203,8 +187,8 @@ call boundary.
 - `quickbite.ffi.libffi` remains declaration-only.
 - `quickbite.ffi.ffi` imports no backend and exposes no backend conversion
   interface.
-- Neither the new public API nor its implementation contains slice swapping,
-  representation repair, or a compatibility path to `quickbite.ffi.oldffi`.
+- Neither the public API nor its implementation contains slice swapping or
+  representation repair.
 - Native arguments, receivers, `ref`/`out` values, and results cross as typed
   addresses to existing storage.
 - The semantic-to-physical lowering is shared by libffi and vector-containing
@@ -222,8 +206,7 @@ call boundary.
 - The exhaustive x86-64 SysV outbound matrix agrees with compiled-D oracles
   under both DMD- and LDC-hosted execution where compiler provenance applies.
 
-The bridge is not complete merely because it can imitate every feature of
-`quickbite.ffi.oldffi`, nor because a current backend happens to use a subset.
-It is complete when the exhaustive x86-64 SysV outbound contract above is
-proved without adding representation conversion. Other platform ABIs and
-inbound callbacks require their own explicit contracts.
+The bridge is not complete merely because a current backend happens to use a
+subset of it. It is complete when the exhaustive x86-64 SysV outbound contract
+above is proved without adding representation conversion. Other platform ABIs
+and inbound callbacks require their own explicit contracts.

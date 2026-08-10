@@ -87,9 +87,7 @@ image built for the host compiler. C symbols continue to use the platform C
 ABI and need no D-compiler ordering metadata.
 
 `quickbite.ffi.ffi` consumes this provenance and only orders addresses for the
-actual callable. It never rewrites the value layout. The temporary
-`quickbite.ffi.oldffi` must obey the same correctness fact while it remains in
-the Interpreter path.
+actual callable. It never rewrites the value layout.
 
 ### Dependency preparation owns archives
 

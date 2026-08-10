@@ -236,9 +236,8 @@ rendering knowledge beyond "these bytes at this type".
   floor for the latency goal — ranges, capturing lambdas, classes, and
   exceptions arrive with the first `std.algorithm`-using test, regardless of
   slice order.
-- Bytecode imports `quickbite.ffi.ffi`, never `quickbite.ffi.oldffi`. Data
-  crosses unchanged, so per-signature conversion or wrapper codegen buys
-  nothing.
+- Bytecode calls native leaves through `quickbite.ffi.ffi`. Data crosses
+  unchanged, so per-signature conversion or wrapper codegen buys nothing.
 - Druntime lowering hooks (`_d_arrayappendT`, the AA runtime,
   `_d_newclassT`, ...) are templates whose bodies the VM executes; the
   native leaves they bottom out in require the runtime type metadata

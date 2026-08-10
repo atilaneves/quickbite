@@ -4677,8 +4677,8 @@ unittest {
 // (native_call_adapter.d wraps the native call in `catch (Exception)` and
 // rethrows it; an Error stays fatal), so an Error can only reach
 // `nativeExceptionRoot` (interpreter.md §9.10) indirectly, via the `.next`
-// chain of a caught Exception (ffi.md §34.13's chainedNext recursion follows
-// `.next` regardless of its dynamic type). The chained class's
+// chain of a caught Exception: the rethrow copies that chain, following
+// `.next` regardless of its dynamic type. The chained class's
 // fully-qualified name does not match
 // "core.exception."/"object." + "Error", so the name-prefix heuristic
 // misclassifies it as Exception, and catch(Error) on the rethrown link
