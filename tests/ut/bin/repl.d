@@ -106,6 +106,13 @@ unittest {
     assertFormatterBackendOutput(["null"], ["null"]);
 }
 
+@("repl.frontend.nullInterfaceReferenceUsesPreludeFormatter")
+unittest {
+    assertFormatterBackendOutput([
+        "({ interface I {} return cast(I) null; })()",
+    ], ["null"]);
+}
+
 @("repl.frontend.typeofExpressionWithTrailingTokensIsNotTypeCell")
 unittest {
     import quickbite.frontend.repl: ReplCellKind, ReplSession;

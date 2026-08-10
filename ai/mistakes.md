@@ -238,6 +238,10 @@
 - Do not omit untested backend rows: verify every mature backend and include
   each one that passes.
 
+- In `@safe pure` generic guest formatters, dispatch class and interface
+  references before falling back to `std.conv.text`; its reference formatting
+  is `@system` and impure even when the runtime reference is null.
+
 - When replacing a boxed value store with typed native places, handle DMD's
   `Tnull` as its own place-composable leaf. Supporting null only for
   pointer-like destinations does not cover `auto value = null`.
