@@ -355,6 +355,10 @@ package(quickbite.backends.bytecode) enum Op: ubyte {
     sliceEqual2, // 2-byte element (wchar/short): backs `wstring == wstring`
     sliceEqual4,
     sliceEqual8, // 8-byte element (long/double/pointer arrays)
+    // Numeric element equality for descriptors whose physical element types
+    // differ. Operands d/e are the left/right ScalarType values; the machine
+    // applies D's integer promotions instead of comparing mismatched bytes.
+    sliceEqualNumeric,
     // Structural comparison for an array-of-arrays, any nesting depth
     // (`int[][] == int[][]`, `int[][][] == int[][][]`, ...): the descriptors
     // at frame offsets b and c hold rows that are themselves 16-byte slice
@@ -471,6 +475,11 @@ package(quickbite.backends.bytecode) enum Op: ubyte {
     // width is operand d instead of being implied by the opcode. Backs `*p
     // = v` and `p[i] = v` for such a pointee.
     pointerStoreN,
+    // Write `[pointer + index * elementSize]` as a raw native address into
+    // frame offset a. The pointer value lives at b, the size_t index at c,
+    // and d is the element byte width. This is the address primitive shared
+    // by pointer- and slice-backed compiler places.
+    pointerAddress,
     // Form a slice descriptor {pointer + lo * elementSize, hi - lo} at frame
     // offset a from the raw `size_t` pointer value at frame offset b and an
     // adjacent {lo, hi} pair of `size_t` bounds at frame offset c. Backs
@@ -525,15 +534,6 @@ package(quickbite.backends.bytecode) enum Op: ubyte {
     // Write the native address of the absolute stack index held in frame slot b
     // into frame slot a. Backs `.ptr` of a captured static array.
     frameIndexAddress,
-    // Write the native address of a scalar `ref` parameter's identity slot as
-    // a raw `size_t` pointer word into frame offset a; b is the parameter's
-    // own frame offset (`RefParameter.offset`). When the currently executing
-    // call groups this parameter with others aliasing the same caller
-    // storage, the identity slot is the group's first parameter's frame
-    // offset instead of its own, so `&first == &second` holds for two `ref`
-    // parameters bound to the same lvalue even though each keeps its own
-    // frame slot for reads and writes.
-    refParameterAddress,
     signExtend1to2, // a: destination frame offset, b: source frame offset
     zeroExtend1to2, // a: destination frame offset, b: source frame offset
     signExtend1to4, // a: destination frame offset, b: source frame offset
@@ -663,17 +663,12 @@ package(quickbite.backends.bytecode) enum Op: ubyte {
     call, // a: function index, b: argument area frame offset, c: destination
     // a: frame offset of a size_t slot holding the callee's function index,
     // b: argument area frame offset, c: destination. Backs an indirect call
-    // through a function pointer (`fp()`), where the callee is not known until
-    // run time; otherwise identical to `call`.
+    // through a function pointer (`fp()`) or a delegate-typed value
+    // (a local, a PARAMETER, or `d()` on a delegate local), where the callee
+    // is not known until run time; otherwise identical to `call`. A
+    // struct-receiver callee's whole receiver block travels as the pair's
+    // pointer-width context word, matching every other delegate shape.
     callIndirect,
-    // Same operands as `callIndirect`. Backs a call through a delegate-typed
-    // PARAMETER, whose actual callee is a run-time value: the caller built
-    // the argument area from the delegate's declared type alone, assuming a
-    // pointer-sized context word (correct for a nested function/lambda or a
-    // class method). A struct-receiver method instead needs its whole
-    // receiver block, which that argument area does not provide, so this
-    // rejects such a callee instead of misreading its context word as one.
-    callIndirectDynamic,
     // a: destination size_t slot, b: class-object pointer slot, c: statically
     // selected function index. Looks up the object's dynamic class and writes
     // the overriding function index, or c when no override is registered.
@@ -681,6 +676,9 @@ package(quickbite.backends.bytecode) enum Op: ubyte {
     // a: destination size_t slot, b: class-object pointer slot. Reads the
     // object's dynamic VM class and writes its host TypeInfo mirror.
     classTypeInfo,
+    // a: destination string descriptor, b: class-object pointer slot. Reads
+    // the object's dynamic VM class and writes its fully qualified D name.
+    className,
     // a: class-object pointer slot, b: diagnostic data offset, c: data length.
     throwIfNullClassReference,
     nativeCall, // a: native-call index, b: argument area, c: destination
@@ -710,7 +708,7 @@ package(quickbite.backends.bytecode) enum Op: ubyte {
     // created the entry; an existing entry must survive being read back as an
     // intermediate value for further indexing (`a[1][2] = 3` reads `a[1]`
     // through this same hook to reach the inner map). Used by the get-lvalue
-    // path (`compileAssocArrayGetLvalue`); `aaInsert` itself is still correct
+    // associative-index place address path; `aaInsert` itself is still correct
     // for a direct `m[k] = v` and a literal's per-key values, which always
     // mean to (over)write that exact value.
     aaGetOrInsert,
@@ -1275,26 +1273,11 @@ package(quickbite.backends.bytecode) struct Instruction {
     ushort e;
 }
 
-// A pass-by-reference parameter: its slot in the callee frame holds the
-// referenced value (a scalar, or a 16-byte slice descriptor for a `ref T[]`),
-// but the matching word in the caller's argument area holds the signed offset
-// from the immediate caller frame to the argument. The machine dereferences
-// that offset on entry and writes the slot back to it on return.
-package(quickbite.backends.bytecode) struct RefParameter {
-    ushort offset; // the parameter's frame offset (also its argument-area word)
-    uint valueSize; // bytes of the referenced value, copied in and written back
-}
-
 package(quickbite.backends.bytecode) struct CompiledFunction {
     Instruction[] code; // empty until the function is (lazily) compiled
     uint frameSize;
     uint parameterBytes;
     ResultType returnType;
-    RefParameter[] refParameters; // empty for functions with no ref parameters
-    // A struct method's hidden receiver occupies the argument area's first
-    // slot as a whole block (via `refParameters`), not a plain context word;
-    // `callIndirectDynamic` checks this before trusting a delegate-typed
-    // parameter's uniform pointer-sized context convention.
     bool hasThis;
 }
 
@@ -1343,6 +1326,12 @@ package(quickbite.backends.bytecode) struct AssertDiagnostic {
     // rhsIsNull positionally and would silently shift onto the wrong field
     // otherwise.
     uint elementNestingDepth;
+    // Mixed numeric array equality permits distinct element types. Retain the
+    // RHS type separately so a failed assertion uses that operand's physical
+    // stride and signedness instead of reading both arrays as `operandType`.
+    // Appended to preserve every positional construction above.
+    ScalarType rhsOperandType;
+    bool hasDistinctOperandTypes;
 }
 
 package(quickbite.backends.bytecode) struct VirtualFunction {
@@ -1355,6 +1344,7 @@ package(quickbite.backends.bytecode) struct ClassInfo {
     ushort msgOffset = ushort.max;
     size_t nativeTypeInfo;
     VirtualFunction[] virtualFunctions;
+    string name;
 }
 
 package(quickbite.backends.bytecode) struct CatchClause {

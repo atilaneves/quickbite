@@ -913,6 +913,30 @@ static foreach (backend; Matrix!()) {
     }
 }
 
+// A `T[N][]` row appended from a static-array VARIABLE (not a literal) must
+// copy the variable's elements into the row's own storage; reinterpreting the
+// element bytes as a slice descriptor makes the next row read dereference
+// element data as a pointer.
+static foreach (backend; Matrix!()) {
+    @("dynamicArray.appendStaticArrayVariableRowThenReadElements." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            unittest {
+                int[3][] rows;
+                int[3] row = [7, 8, 9];
+
+                rows ~= row;
+
+                assert(rows.length == 1);
+                assert(rows[0][0] == 7);
+                assert(rows[0][2] == 9);
+            }
+        });
+    }
+}
+
 // The not-equal sibling of the test above, guarding against a fix that
 // makes `int[2][] == int[2][]` vacuously true instead of comparing content.
 static foreach (backend; Matrix!()) {
@@ -997,6 +1021,65 @@ static foreach (backend; Matrix!()) {
                 assert(a[] == b[]);
             }
         }).shouldThrowWithMessage("[1, 2, 3] != [1, 2, 4]");
+    }
+}
+
+static foreach (backend; Matrix!()) {
+    @("assertDiagnostic.mixedWidthArrayElementMismatch." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            unittest {
+                ubyte[] bytes = [1, 2, 3];
+                int[] integers = [1, 2, 400];
+
+                assert(bytes == integers);
+            }
+        }).shouldThrowWithMessage("[1, 2, 3] != [1, 2, 400]");
+    }
+}
+
+static foreach (backend; Matrix!()) {
+    @("assertDiagnostic.mixedWidthSignedArrayElementMismatch." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            unittest {
+                int[] integers = [-400, 2, 3];
+                ubyte[] bytes = [1, 2, 3];
+
+                assert(integers == bytes);
+            }
+        }).shouldThrowWithMessage("[-400, 2, 3] != [1, 2, 3]");
+    }
+}
+
+// Mixed-width equality compares at D's common type: `int -1` and `uint.max`
+// are the same 32-bit pattern, and the common type `uint` makes them equal.
+// Comparing sign/zero-extended 64-bit values instead would diverge from dmd.
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.diverges,
+        "same mismatched-width comparison bug in its own numeric-equality " ~
+        "code ([-1] != [4294967295]) -- a separate, pre-existing backend " ~
+        "gap outside this PR's bytecode-backend diff"),
+    Omit!(Interpreter, Because.diverges,
+        "same mismatched-width comparison bug in its own numeric-equality " ~
+        "code ([-1] != [4294967295]) -- a separate, pre-existing backend " ~
+        "gap outside this PR's bytecode-backend diff"),
+)) {
+    @("dynamicArray.mixedWidthEqualityComparesAtCommonType." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            unittest {
+                int[] integers = [-1];
+                uint[] unsigneds = [uint.max];
+
+                assert(integers == unsigneds);
+            }
+        });
     }
 }
 
@@ -2171,6 +2254,106 @@ static foreach (backend; Matrix!(
         }).shouldThrowWithMessage(
             "index [3] is out of bounds for array of length 2",
         );
+    }
+}
+
+// The field-access sibling of the test above: `pairs[i].b` must bounds-check
+// `i` exactly as `pairs[i]` does, not address past the array's end and read
+// whatever heap bytes live there.
+static foreach (backend; AliasSeq!(Ctfe, Interpreter)) {
+    @("dynamicArray.fieldOfIndexedElementPastLengthDiagnostic." ~
+        backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct Pair {
+                int a;
+                int b;
+            }
+
+            int value(int seed) {
+                return seed;
+            }
+
+            unittest {
+                int first = value(10);
+                Pair[] pairs = [Pair(first, first + 1)];
+                size_t index = cast(size_t) value(5);
+
+                assert(pairs[index].b == first);
+            }
+        }).shouldThrowWithMessage("array index 5 is out of bounds `[0..1]`");
+    }
+}
+
+// Compiled bounds checks raise druntime's ArrayIndexError text; the
+// backtick-range wording is CTFE-only.
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.diverges, "see sibling pin above (Ctfe, Interpreter)"),
+    Omit!(Interpreter, Because.diverges, "see sibling pin above (Ctfe, Interpreter)"),
+)) {
+    @("dynamicArray.fieldOfIndexedElementPastLengthDiagnostic." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct Pair {
+                int a;
+                int b;
+            }
+
+            int value(int seed) {
+                return seed;
+            }
+
+            unittest {
+                int first = value(10);
+                Pair[] pairs = [Pair(first, first + 1)];
+                size_t index = cast(size_t) value(5);
+
+                assert(pairs[index].b == first);
+            }
+        }).shouldThrowWithMessage(
+            "index [5] is out of bounds for array of length 1",
+        );
+    }
+}
+
+// A conditional whose arms mix a string literal and a string variable is an
+// ordinary rvalue index: whichever arm the runtime condition selects supplies
+// the character, and the condition runs exactly once.
+static foreach (backend; Matrix!(
+    Omit!(Interpreter, Because.diverges,
+        "double-evaluates the condition through this shape (calls == 2, " ~
+        "not 1) -- a separate, pre-existing backend gap"),
+)) {
+    @("dynamicArray.indexIntoConditionalWithStringLiteralArm." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            bool chooseLiteral(bool choice, ref int calls) {
+                ++calls;
+                return choice;
+            }
+
+            unittest {
+                int calls;
+                string variable = "xy";
+
+                assert((chooseLiteral(false, calls) ? "ab" : variable)[0] ==
+                    'x');
+                assert(calls == 1);
+            }
+
+            unittest {
+                int calls;
+                string variable = "xy";
+
+                assert((chooseLiteral(true, calls) ? "ab" : variable)[0] ==
+                    'a');
+                assert(calls == 1);
+            }
+        });
     }
 }
 
@@ -4390,6 +4573,35 @@ static foreach (backend; Matrix!()) {
                 a[1].x = 5;
                 assert(a[1].x == 5);
                 assert(a[1].y == 20);
+            }
+        });
+    }
+}
+
+// A struct-typed AA value whose byte width (12, three ints) is not a power
+// of two, unlike the two-int `Point` above: the address computation this
+// composes through must align by the struct's own alignment, not by its raw
+// byte width used as an alignment mask.
+static foreach (backend; Matrix!()) {
+    @("assocArray.nonPowerOfTwoWidthStructValueFieldReadWrite." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct Triple { int a; int b; int c; }
+            unittest {
+                Triple[int] entries;
+                entries[1] = Triple(10, 20, 30);
+                entries[2] = Triple(40, 50, 60);
+
+                entries[1].b = 99;
+
+                assert(entries[1].a == 10);
+                assert(entries[1].b == 99);
+                assert(entries[1].c == 30);
+                assert(entries[2].a == 40);
+                assert(entries[2].b == 50);
+                assert(entries[2].c == 60);
             }
         });
     }

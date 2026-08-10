@@ -32,9 +32,9 @@ interpreter GC-used-size delta    about 8.42 GiB
 system-linker post-parse          about 1.17 s
 ```
 
-The post-parse numbers above use `-w 0 -r 1 --skip-check` to avoid the current
-benchmark driver's duplicate untimed execution. They are single samples, so
-they establish scale rather than an acceptance threshold.
+At that commit, the post-parse numbers used `-w 0 -r 1 --skip-check` to avoid
+the benchmark driver's then-separate untimed execution. They are single
+samples, so they establish scale rather than an acceptance threshold.
 
 A whole-process `perf` profile of the same Interpreter command showed
 substantial time in druntime allocation machinery and these Interpreter-owned
@@ -131,38 +131,22 @@ command separately to establish agreement with the oracle.
 - `--skip-check` remains the explicit way to bypass result validation. It does
   not add any execution.
 
-The obsolete sequence was:
-
-```text
-verify every backend -> run every backend again under the timer
-```
-
 The required sequence is:
 
 ```text
 measure and retain results -> compare retained results -> publish valid rows
 ```
 
-The timing harness must therefore accept a delegate returning `TestResult[]`
-and retain one result set alongside each sample instead of accepting a `void`
-delegate and discarding every result.
+The timing harness retains warmup and measured `TestResult[]` values alongside
+the timing samples so callers can validate every execution before publishing a
+row.
 
 ## Optimisation Order
 
-### 1. Finish The Measurement Foundation
+### 1. Add An Attachable Post-Parse Profiling Boundary
 
-Result capture and validation belong to the measured executions as specified
-above; no separate backend execution precedes them. This is harness latency,
-not an Interpreter speedup, but it reduces command edit-to-result latency and
-makes later profiling cheaper and less ambiguous.
-
-Do not weaken the check rule. A row is printed only after the retained timed
-results satisfy the same single-backend or cross-backend correctness contract
-that the separate pass enforces today.
-
-The remaining measurement prerequisite is an attachable post-parse profiling
-boundary. Report whether GC collection remained enabled during each row.
-GC-disabled diagnostic profiles may guide `value.md` deletion before the
+Add the attachable boundary specified by the measurement contract. A
+GC-disabled diagnostic profile may guide `value.md` deletion before the
 boundary exists, but cannot close a performance item. Re-baseline after
 representation completion and before changing surviving Interpreter machinery
 for speed.

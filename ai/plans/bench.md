@@ -557,52 +557,7 @@ that returns no `TestResult[]` entries is recorded as one failing self-check
 with `backend reported zero unittest results`, so the timing loop skips it with
 a useful reason instead of silently carrying an empty result set.
 
-Still open: item 7 backend-neutrality upkeep, plus any remaining item 1/2
-single-vs-multi-backend check polish where not already covered.
-
-### 1. Single-Backend Checks Come From Measured Execution
-
-Exactly one selected backend does not imply `skipCheck`. The contract is:
-
-- `--skip-check` means exactly what it says and is the only implicit-pass path.
-- `-b interpreter --dub cerealed` uses its first measured execution as the
-  self-check; it does not execute the package once before timing.
-- A single selected backend's row is published only if that measured
-  execution returns passing nonempty `TestResult[]`.
-- The timed row reports how many tests were returned and how many passed.
-
-The first test should use fake runners: one runner reports a failing
-`TestResult`, and a single selected backend must not be marked passing unless
-`--skip-check` is set.
-
-### 2. Compare Results Only For Multi-Backend Runs
-
-Do not compare a single selected backend with an implicit oracle backend.
-Cross-backend agreement is useful only when the user explicitly selected more
-than one backend to time.
-
-For one backend, validate the retained first measured result:
-
-- collect the returned `TestResult[]`;
-- discard the measured row if the result count is zero; the existing
-  normalisation of an empty result to a failing self-check supplies the reason;
-- discard the measured row if any result failed; and
-- print the pass count in the timed row.
-
-For multiple backends, measure every selected backend, retain the first
-`TestResult[]` from each, and require those values to agree on:
-
-- result count;
-- test names; and
-- pass/fail outcomes.
-
-Failure messages may differ. A mismatch means at least one timed backend did
-not run the same benchmark, so reject the provisional measured rows before
-publishing them.
-
-For standalone fixtures, the unit has one module. For dub packages, the unit is
-the prepared package module group if the runner supports grouped execution, or
-the existing `runTests(Runner, Module[])` fallback otherwise.
+Still open: item 7 backend-neutrality upkeep.
 
 ### 3. Count Runnable Unittests - complete
 

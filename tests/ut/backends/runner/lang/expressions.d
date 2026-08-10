@@ -2096,6 +2096,116 @@ static foreach (backend; Matrix!()) {
     }
 }
 
+// Interpreter declines indirect calls used as assignment targets with
+// "Unsupported interpreter assignment target: call". That is a separate
+// backend gap from the Bytecode result ABI exercised here.
+static foreach (backend; Matrix!(
+    Omit!(Interpreter, Because.unconfirmed),
+)) {
+    @("refCall.assignmentThroughKnownDelegateWritesReturnedLocation." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            unittest {
+                int value = 1;
+
+                ref int slot() {
+                    return value;
+                }
+
+                // Preserve the nested function's inferred attributes.
+                auto getter = &slot;
+                getter() = 42;
+
+                assert(value == 42);
+            }
+        });
+    }
+}
+
+static foreach (backend; Matrix!(
+    Omit!(Interpreter, Because.unconfirmed),
+)) {
+    @("refCall.assignmentThroughDelegateParameterWritesReturnedLocation." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            void assign(Getter)(Getter getter, int value) {
+                getter() = value;
+            }
+
+            unittest {
+                int value = 1;
+
+                ref int slot() {
+                    return value;
+                }
+
+                // Preserve the nested function's inferred attributes.
+                auto getter = &slot;
+                assign(getter, 42);
+
+                assert(value == 42);
+            }
+        });
+    }
+}
+
+static foreach (backend; Matrix!(
+    Omit!(Interpreter, Because.unconfirmed),
+)) {
+    @("refCall.assignmentThroughFunctionPointerWritesReturnedLocation." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            ref int slot(ref int value) {
+                return value;
+            }
+
+            unittest {
+                int value = 1;
+                alias Getter = ref int function(ref int);
+                Getter getter = &slot;
+                getter(value) = 42;
+
+                assert(value == 42);
+            }
+        });
+    }
+}
+
+// The read twin of the test above: using an indirect ref-returning call as a
+// VALUE must load through the returned address, exactly as the direct-call
+// path does, not hand back the raw address bits.
+static foreach (backend; Matrix!()) {
+    @("refCall.readThroughKnownDelegateLoadsReturnedLocation." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct Counter {
+                int value;
+
+                ref int slot() {
+                    return value;
+                }
+            }
+
+            unittest {
+                auto counter = Counter(5);
+                auto getter = &counter.slot;
+
+                int read = getter();
+
+                assert(read == 5);
+            }
+        });
+    }
+}
+
 // Each recursive activation binds the same declaration AST anew. A pointer
 // saved by the outer activation must keep naming that activation's local when
 // the inner activation binds its own `x`.
@@ -2872,14 +2982,59 @@ static foreach (backend; Matrix!()) {
     }
 }
 
-// A struct method's delegate (`&receiver.value`) passed through a
-// delegate-typed PARAMETER carries a caller-frame-relative receiver offset,
-// not the pointer-sized context word `callIndirectDynamic`'s argument area
-// assumes for a nested function or lambda; the VM checks the resolved
-// callee's `hasThis` and refuses the call instead of misreading that offset
-// as a bogus caller-frame reference.
+// Two delegates stored into associative-array elements may capture the same
+// local; both entries observe the shared captured variable while the
+// declaring frame is live. The bytecode core heap-boxes AA-stored delegate
+// contexts (a frame-relative context would dangle past the frame), but its
+// boxed environments are per-delegate, so a local captured by more than one
+// stored delegate declines rather than share an environment.
 static foreach (backend; AliasSeq!(Bytecode)) {
-    @("delegate.structReceiverPassedAsParameterIsRejected." ~ backend.stringof)
+    @ShouldFail(
+        "bytecode heap-boxed closure environments are per-delegate; a " ~
+        "local captured by a second AA-stored delegate declines the store",
+    )
+    @("delegate.assocArrayElementsSharingACapturedLocal." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            unittest {
+                int captured = 2;
+                int delegate(int)[string] operations;
+
+                operations["add"] = (int x) => x + captured;
+                operations["mul"] = (int x) => x * captured;
+
+                assert(operations["add"](3) == 5);
+                assert(operations["mul"](3) == 6);
+            }
+        });
+    }
+}
+
+static foreach (backend; Matrix!(
+    Omit!(Bytecode, Because.diverges, "see the @ShouldFail pin above"),
+)) {
+    @("delegate.assocArrayElementsSharingACapturedLocal." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            unittest {
+                int captured = 2;
+                int delegate(int)[string] operations;
+
+                operations["add"] = (int x) => x + captured;
+                operations["mul"] = (int x) => x * captured;
+
+                assert(operations["add"](3) == 5);
+                assert(operations["mul"](3) == 6);
+            }
+        });
+    }
+}
+
+static foreach (backend; Matrix!()) {
+    @("delegate.structReceiverPassedAsParameter." ~ backend.stringof)
+    @Tags(backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
             struct Counter {
@@ -2890,22 +3045,35 @@ static foreach (backend; AliasSeq!(Bytecode)) {
                 }
             }
 
+            struct Holder {
+                int delegate(int) value;
+            }
+
+            int delegate(int) bind(ref Counter counter) {
+                return &counter.value;
+            }
+
             int applyOnce(int delegate(int) f) {
                 return f(5);
             }
 
             int callStructMethodDelegate(int seed) {
                 Counter counter = Counter(seed + 2);
-                return applyOnce(&counter.value);
+                auto returned = bind(counter);
+                assert(applyOnce(returned) == 10);
+
+                Holder holder;
+                holder.value = returned;
+                assert(holder.value(6) == 11);
+
+                int delegate(int) copied = holder.value;
+                return copied(7);
             }
 
             unittest {
-                assert(callStructMethodDelegate(3) == 10);
+                assert(callStructMethodDelegate(3) == 12);
             }
-        }).shouldThrowWithMessage(
-            "Unsupported delegate-parameter call in bytecode core: the " ~
-                "callee is a struct-receiver method",
-        );
+        });
     }
 }
 
@@ -4873,12 +5041,7 @@ static foreach (backend; Matrix!(
 // from inside a called function, mirroring back to the module's own
 // authoritative storage rather than a throwaway copy (verified via `!is
 // null`, since the module value is read again from a separately-compiled
-// context after the call returns). Calling through a struct-receiver
-// method delegate reached via this dynamic (no-statically-known-callee)
-// dispatch path is a separate, already-documented, pre-existing limitation
-// (`delegate.structReceiverPassedAsParameterIsRejected`,
-// `Op.callIndirectDynamic`'s `hasThis` rejection) shared by a delegate-typed
-// PARAMETER, not attempted here. `Ctfe` cannot read or write dataseg
+// context after the call returns). `Ctfe` cannot read or write dataseg
 // storage at all (compile-time execution has no such storage to access).
 // `Interpreter` declines this shape outright, the same pre-existing "does
 // not mirror a dataseg write back through a called function" gap already
@@ -6983,6 +7146,88 @@ static foreach (backend; Matrix!()) {
     }
 }
 
+// The minimal shape behind the test above: a scalar field of a class
+// reference held in a `ref` class parameter passed on as a `ref` argument.
+// The receiver chain is field -> class dereference -> ref-parameter slot.
+static foreach (backend; Matrix!()) {
+    @("classField.refArgumentThroughRefClassParameter." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            class Payload {
+                int value;
+
+                this(int value) {
+                    this.value = value;
+                }
+            }
+
+            void bump(ref int value) {
+                value += 1;
+            }
+
+            void via(ref Payload payload) {
+                bump(payload.value);
+            }
+
+            unittest {
+                auto payload = new Payload(5);
+                via(payload);
+                assert(payload.value == 6);
+            }
+        });
+    }
+}
+
+// A `ref` class parameter is one address indirection away from the class
+// handle, but the handle it holds names the same object: plain field reads,
+// assignments, and compound assignments through it must all reach the
+// object's storage.
+static foreach (backend; Matrix!()) {
+    @("classField.accessThroughRefClassParameter." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            class Payload {
+                int value;
+
+                this(int value) {
+                    this.value = value;
+                }
+            }
+
+            int read(ref Payload payload) {
+                return payload.value;
+            }
+
+            void write(ref Payload payload) {
+                payload.value = 9;
+            }
+
+            void add(ref Payload payload) {
+                payload.value += 5;
+            }
+
+            unittest {
+                auto payload = new Payload(7);
+                assert(read(payload) == 7);
+            }
+
+            unittest {
+                auto payload = new Payload(1);
+                write(payload);
+                assert(payload.value == 9);
+            }
+
+            unittest {
+                auto payload = new Payload(1);
+                add(payload);
+                assert(payload.value == 6);
+            }
+        });
+    }
+}
+
 // A class cell promoted by taking a field's address is authoritative for the
 // whole object, not only for later field reads. Passing the class value onward
 // must therefore reconstruct the argument from the cell after a pointer write,
@@ -8755,6 +9000,45 @@ static foreach (backend; AliasSeq!(Bytecode, SystemLinker)) {
                 assert(v.data[0] == 1);
                 assert(v.data[1] == 42);
                 assert(v.data[2] == 3);
+            }
+        });
+    }
+}
+
+// D evaluates an assignment's operands left to right: the lvalue's
+// subexpressions run before the right-hand side, for compound assignment
+// exactly as for plain assignment.
+static foreach (backend; Matrix!(
+    Omit!(Interpreter, Because.diverges,
+        "also evaluates the RHS before the lvalue's index subexpression " ~
+        "(indexStamp == 4, not 1) -- a separate, pre-existing backend gap"),
+)) {
+    @("compoundAssignment.indexedTargetEvaluatesLvalueBeforeRhs." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            int index(ref int stamp, ref int indexStamp) {
+                indexStamp = ++stamp;
+                return 1;
+            }
+
+            int five(ref int stamp, ref int rhsStamp) {
+                rhsStamp = ++stamp;
+                return 5;
+            }
+
+            unittest {
+                int stamp;
+                int indexStamp;
+                int rhsStamp;
+                int[] values = [0, 0];
+
+                values[index(stamp, indexStamp)] += five(stamp, rhsStamp);
+
+                assert(indexStamp == 1);
+                assert(rhsStamp == 2);
+                assert(values[1] == 5);
             }
         });
     }
@@ -11519,8 +11803,6 @@ static foreach (backend; Matrix!(
         "Ctfe runs the unittest body through DMD's own CTFE interpreter, " ~
         "which cannot read the mutable module-scope variable `calls` at " ~
         "compile time"),
-    Omit!(Bytecode, Because.unconfirmed,
-        "bytecode core does not yet support `++` on a module-scope variable"),
     Omit!(LLVMJit, Because.unconfirmed,
         "returns a stale 0 for `calls`; root cause not investigated, " ~
         "independent of the Interpreter-only fix this fixture targets"),
@@ -11554,8 +11836,6 @@ static foreach (backend; Matrix!(
         "Ctfe runs the unittest body through DMD's own CTFE interpreter, " ~
         "which cannot read the mutable module-scope variable `i` at " ~
         "compile time"),
-    Omit!(Bytecode, Because.unconfirmed,
-        "bytecode core does not yet support `++` on a module-scope variable"),
     Omit!(LLVMJit, Because.unconfirmed,
         "JIT child segfaults (signal 11) on this shape; root cause not " ~
         "investigated, independent of the Interpreter-only fix this " ~
@@ -12531,5 +12811,66 @@ static foreach (backend; Matrix!(
                 assert(arr[0].x == 11);
             }
         });
+    }
+}
+
+// `null.classinfo.name` on a null class reference: previously mapped to
+// `noExceptionClass` -> `""`, a silent success where real D crashes (a
+// genuine null-vtable dereference). SystemLinker/LLVMJit are real compiled
+// code and segfault for this shape -- not something a unittest can assert
+// against, and not a diagnostic worth reproducing -- so this pins the two
+// backends that raise a catchable diagnostic instead: CTFE's own wording,
+// and the bytecode core's `emitNullClassReferenceCheck`, matching every
+// other null-class-dereference site in the backend.
+static foreach (backend; AliasSeq!(Ctfe)) {
+    @("classField.nullClassinfoNameDiagnostic." ~ backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            class C {}
+            unittest {
+                C c;
+                auto name = c.classinfo.name;
+            }
+        }).shouldThrowWithMessage("dereference of null pointer `c`");
+    }
+}
+
+// Interpreter declines `classinfo.name` entirely today ("Unsupported
+// interpreter field read"), a pre-existing gap unrelated to null-handling.
+static foreach (backend; AliasSeq!(Bytecode)) {
+    @("classField.nullClassinfoNameDiagnostic." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            class C {}
+            unittest {
+                C c;
+                auto name = c.classinfo.name;
+            }
+        }).shouldThrowWithMessage(
+            "class `c` is `null` and cannot be dereferenced",
+        );
+    }
+}
+
+// An array-typed ternary's `null` arm reaches compileConditionalExpression's
+// generic result-copy path exactly like any other array arm (not the
+// array-aware `compileDynamicArrayInto`/`Op.nullSlice` path a declaration
+// initializer takes): the null arm's own operand must be a real 16-byte
+// descriptor, not an 8-byte pointer widened by copying past its allocation.
+static foreach (backend; AliasSeq!(Bytecode)) {
+    @("dynamicArray.indexIntoConditionalWithNullArm." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            unittest {
+                bool cond = true;
+                string arr = "hi";
+
+                auto value = (cond ? null : arr)[0];
+            }
+        }).shouldThrowWithMessage(
+            "index [0] is out of bounds for array of length 0",
+        );
     }
 }

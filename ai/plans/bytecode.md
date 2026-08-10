@@ -322,19 +322,13 @@ The current `Bytecode` backend is the typed-frame, native-layout VM. Extend
 that backend directly. There is no narrow promotion frontier: the product
 target is arbitrary D code reached from real unittest blocks.
 
-### Immediate gate: one compositional lowering pipeline
+### One compositional lowering pipeline
 
-Declaration classification is smeared over parallel per-type-kind side
-tables in `compiler.d` (`_locals`, `_staticArrayLocals`,
-`_dynamicArrayLocals`, `_pointerLocals`, `_structLocals`, `_delegateLocals`,
-the `_module*Variables` family, and kin). Emit sites repeatedly cross four
-independent concerns: semantic operation, lvalue AST shape, storage kind, and
-value representation. Each operator family therefore re-derives "what is
-this declaration?" by probing tables in its own ad-hoc order, and each lvalue
-operation is copied per storage kind (`compilePostIncrement` carries an arm
-per storage kind; plain assignment probes a sibling `try*Assign` helper per
-storage kind for the one shape `a[i] = v`; `/=` reaches fewer storage kinds
-than `+=` for no semantic reason).
+Declaration classification, value representation, storage location, and
+lvalue access are separate concerns. `compiler.d` classifies each declaration
+once, attaches shared `TypeFacts`, and resolves lvalue expressions to places.
+Semantic emitters consume values and places without reconstructing those
+decisions from AST shapes or parallel per-type side tables.
 
 Duplication is an architectural failure, including duplicated decisions
 rather than only copied lines: repeated declaration classification, width or
@@ -343,35 +337,44 @@ materialisation, writeback, and diagnostics all mean the composition boundary
 is wrong. Stop feature work and establish the missing shared abstraction when
 two sites encode the same decision. A green matrix does not justify the
 duplication. This consolidation is the serial bytecode track's sole work until
-the pipeline below owns all existing pairings; the row-driven baseline gate is
-paused and resumes on top of it.
+the pipeline below owns all existing pairings. Once established, these
+composition boundaries remain invariants for subsequent baseline work.
 
-Target state:
+Settled contracts:
 
 - One `TypeFacts` authority supplies the opcode tag, optional byte width, and
   explicit aggregate classification. It serves `dynamicArrayElementSize`,
-  `pointerElementMetadata`, heap-field stores and `ref` arguments, and must be
-  extended rather than duplicated when another lowering consumer needs those
-  facts. `ScalarType.void_`'s zero size is not an aggregate sentinel; an
+  `pointerElementMetadata`, aggregate stores, call arguments, and call-result
+  representation, and must be extended rather than duplicated when another
+  lowering consumer needs those facts. `ScalarType.void_`'s zero size is not
+  an aggregate sentinel; an
   omitted width fails compilation rather than becoming a zero-byte copy.
-- Declaration classification happens once. One classifier replaces the
-  parallel tables and the per-kind `module<Kind>VariableOrNull` and
-  initializer-byte resolver families, and supplies a root place carrying the
-  same `TypeFacts`. Declaration-rooted values and every remaining raw
-  `size(...)`-at-emit-site consumer use that authority.
-- Every lvalue-capable expression resolves through one place path. Using it as
-  an rvalue loads that place; assignment stores it; taking its address asks the
-  same place for its address. Non-lvalue expressions produce values directly.
-  A place composes a storage locator with an access path (field, index,
-  dereference, slice, or returned reference), evaluates every contributing
-  expression once, and supplies the primitive load, store, and address
-  operations for the value's true storage.
-- Semantic emitters consume values and places. They do not inspect lvalue AST
-  shapes, probe declaration tables, select storage kinds, or implement
-  materialisation and writeback. Assignment stores once; compound and
-  prefix/postfix operations compose load/operation/store; address-of and
-  `ref`/`out` consume the place's address. Method receivers and calls returning
-  `ref` use the same path.
+- One `DeclarationRecord` authority owns each declaration's `TypeFacts`,
+  storage owner, and representation-specific metadata. Module registration
+  and local, parameter, or synthetic-local registration dispatch solely on
+  that representation; representation-specific initializer encoders populate
+  the record but do not classify the declaration again.
+  Associative-array entries, including delegate-valued entries, use the shared
+  place and AA storage paths; no parallel registry may become their storage
+  authority.
+- Every supported lvalue-capable expression resolves through `Place`. Using it
+  as an rvalue loads that place; assignment stores it; taking its address asks
+  the same place for its address. Non-lvalue expressions produce values
+  directly. A place composes a storage locator with an access path (field,
+  index, dereference, slice, or returned reference), evaluates every
+  contributing expression once, and supplies the primitive load, store, and
+  address operations for the value's true storage.
+- Semantic mutation emitters consume values and places instead of selecting
+  storage from declaration maps or reconstructing an lvalue access path.
+  Assignment stores once; compound and prefix/postfix operations compose
+  load/operation/store; address-of and `ref`/`out` consume the place's address.
+  Method receivers and calls returning `ref` use the same path. Specialized
+  multi-element operations, such as slice fill/copy and array resizing, may
+  retain semantic emitters, but their destination and write-through authority
+  remains the resolved place. Dynamic-array length assignment, append, and
+  concatenation resolve that destination once, evaluate the right-hand side,
+  load the current descriptor through the place, and store the updated
+  descriptor through the same place.
 - The axes remain independent. A new semantic operation is implemented once
   for every compatible place; a new lvalue shape resolves once for every
   compatible operation; a new storage kind implements its primitives once;
@@ -379,37 +382,31 @@ Target state:
   Adding any one of them must not modify the pairings with the others.
 - Places exist only while the compiler emits bytecode. They add no runtime
   boxing, polymorphism, or generic place opcode.
-- An unclassifiable declaration or unsupported lvalue shape is declined by
-  the resolver, in one place, with the usual explicit diagnostic.
-- Scalar `ref` parameters end as real pointers into caller storage resolved
+- An unclassifiable declaration is represented as unavailable by the shared
+  declaration authority. An unsupported lvalue shape is declined by the place
+  resolver and its semantic caller emits the operation-specific diagnostic.
+- Direct `ref`/`out` parameters of every value type occupy exactly one native
+  pointer-width argument slot and resolve as real pointers into caller storage
   through the same place pipeline, replacing the per-callee
   mirror/return-writeback convention and its address-identity,
-  exceptional-control-flow, and aliasing incoherences. The support-boundary
-  text below describing mirrors stays accurate until that final migration
-  stage lands.
+  exceptional-control-flow, and aliasing incoherences.
+- Static-array scalar and aggregate reads, struct-element materialisation,
+  runtime indexing, slicing, address-taking, and writes all compose the same
+  static-array root place. No parallel static-array location walk may classify
+  a root or reconstruct an index chain.
+- Dynamic-array descriptors are value metadata loaded from a resolved place or
+  attached to one once-compiled non-lvalue. Indexing, slicing, length,
+  truthiness, initialisation, and comparison share that operation. A `T[N][]`
+  element place addresses the separately allocated row's bytes, so whole-row
+  reads and nested element access do not expose its descriptor as the value.
 
-Sequencing: next replace the parallel declaration tables with one classifier
-that attaches the existing `TypeFacts` to a root place, then establish place
-resolution and its primitive operations. Migrate one consumer family per
-commit, with the enabled matrix green after each commit: assignment, all
-compound and prefix/postfix operations, field/index/slice/dereference access,
-address-of, `ref`/`out`, method receivers, and calls returning `ref`. A
-migrated emitter must become storage- and lvalue-shape-agnostic; delete each
-side table, probe, special writeback, and per-pair helper when its last
-consumer disappears. Route remaining raw width choices through `TypeFacts`,
-then replace scalar-`ref` mirrors through place addresses. Row promotions
-resume only when all existing consumers use the pipeline and pre-PR review
-finds no duplicated classification, access, width, materialisation, or
-writeback decision.
-
-The two omitted module-scalar rows in
-`tests/ut/backends/runner/lang/expressions.d`
-(`methodCallThroughReturnedPointerEvaluatesReceiverOnce`,
-`methodCallThroughIndexedReceiverEvaluatesIndexOnce`) are pipeline work: close
-them through the shared primitives, never with new per-operator storage arms.
-The first additionally needs `&s` on a module-scope struct, which the resolver
-should classify like any other declaration rather than decline as a special
-case.
+New lowering work extends the classified roots,
+access-path composition, place primitives, or semantic emitters independently.
+It must not reintroduce parallel declaration tables, shape-specific
+assignment/ref/receiver helpers, or call-return writeback mirrors.
+Representation-specific module initializer encoders and specialized array
+algorithms remain implementation details under these authorities; they are not
+alternative declaration classifiers or lvalue resolvers.
 
 ### Paused until the pipeline lands: complete the existing Bytecode baseline
 
@@ -432,8 +429,10 @@ in-repo `SystemLinker`-oracle test include `Bytecode` and pass. In particular:
   A broad dependency path may be decomposed into bounded language or runtime
   semantics, but it must not be dismissed as speculative merely because it is
   broad.
-- Keep every enabled Bytecode row green. `ninja bin/ut` and repeated
-  `bin/ut --random` runs must be green and stable. An order-dependent crash or
+- Keep every enabled Bytecode row green. During implementation, use focused
+  Bytecode rows and at most the complete Bytecode matrix. Run `ci.sh` once,
+  immediately before creating the PR; its randomized unit-test run is the
+  full-suite verification. An order-dependent crash or
   hang is a blocker to reproduce with the reported seed and fix; it is not
   acceptable handoff noise.
 - A regression in an enabled row blocks the next promotion. Diagnose it from
@@ -471,16 +470,16 @@ row, not a guarantee. Reconfirm against the source before relying on it.
   and `cdouble`. Dynamic-array literal initializers cover constant scalar and
   struct elements at any nesting depth, plus `[]`; the other kinds take only
   their default initializer, and a struct/array/delegate/complex *element* of a
-  module static array declines. Field and element access materialises a block
-  and writes back only the bytes it touched. `Ctfe` cannot read or write
-  dataseg storage at all; `Interpreter` has a separate pre-existing gap where a
-  write through a pointer into dataseg storage does not mirror back.
+  module static array declines. Field and element access resolves a place over
+  the module data's real address. `Ctfe` cannot read or write dataseg storage at
+  all; `Interpreter` has a separate pre-existing gap where a write through a
+  pointer into dataseg storage does not mirror back.
 - Whole static-array values use `compileStaticArrayValueInto` at every
   aggregate store boundary; do not route a `Tsarray` literal through the
   struct-only operand resolver.
 - An ordinary scalar local's address is its native frame address, so a
-  same-sized pointer reinterpretation observes the local's raw bytes. This
-  does not make a scalar `ref` parameter's mirror into the caller's address.
+  same-sized pointer reinterpretation observes the local's raw bytes. A direct
+  `ref`/`out` parameter instead holds the real address of caller storage.
 - Inline asm has no general x86 contract. The supported atomic subset is the
   complete DRuntime `core.internal.atomic` lowering for 4-/8-byte load,
   fetch-add, and 4-byte exchange, each translated to its one corresponding
@@ -496,12 +495,10 @@ row, not a guarantee. Reconfirm against the source before relying on it.
   `TypeInfo!int` without display-value substitution.
 - Delegates and closures: see the Closures section.
 
-Scalar `ref` parameters retain per-callee mirrors with return writeback. Their
-address identity is coherent only with other parameters bound to the same
-caller lvalue; `&refParameter` cannot expose the caller's storage without
-letting direct pointer writes race the final mirror writeback. A direct-place
-calling convention must replace the mirror/writeback pair before promoting
-shared caller-storage address identity.
+Scalar and aggregate `ref` parameters hold pointers to caller storage. Loads,
+stores, address-of, forwarding, and returned references use that address
+directly, including exceptional exits and repeated arguments that alias the
+same caller place.
 
 Live hazards and divergences to reconfirm against current source when a row
 reaches them:
@@ -509,11 +506,6 @@ reaches them:
 - A `T[N][]`'s rows are separately heap-allocated inner descriptors, so a
   pointer taken into one row (`&outer[i][j]`) is valid within that row, but a
   flat pointer walk across rows diverges from compiled D's contiguous layout.
-- `arr[0][0]` on a `T[N][]` throws "Unsupported static array access": the
-  `Tarray`-gated `tryDynamicArrayIndex`/`indexedArrayDescriptor` decline a
-  `Tsarray` sub-expression, so compilation falls through to the
-  static-array-chain path, which has no notion of a dynamic-array base. A
-  clean diagnostic, not a wrong answer.
 - Captured array support does not yet cover every read, write, slice, append,
   view-preservation, and closure combination.
 - Dynamic-array and string sub-slices bounds-check both ends
@@ -522,25 +514,10 @@ reaches them:
   `T*` has no runtime bounds check either (verified against `dmd`, including
   `-boundscheck=on` and `-release`; a raw pointer carries no length metadata to
   check against). Do not add one; it would diverge from the oracle.
-- A struct-receiver method delegate cannot be called through a delegate
-  parameter: its context is a caller-frame-relative offset into a receiver
-  block, not the single pointer word a lambda or nested function carries, so
-  `Op.callIndirectDynamic` rejects it on `CompiledFunction.hasThis`
-  (`delegate.structReceiverPassedAsParameterIsRejected`). Making it callable
-  needs the receiver encoded frame-independently -- a real pointer to the
-  receiver block -- which changes how every struct method receives `this`.
-- The static-delegate-registry hack (`_staticDelegateAssocArrays`,
-  `tryStaticDelegateAssocArrayAssign`, `tryStaticDelegateAssocArrayCall`,
-  `staticDelegateAssocArrayDeclaration`, `compiler.d`) exists to pass one
-  `cerealed.d` row (`classSerialisationReadsStaticChildRegistry`,
-  `Writer.childWriters`, a `Taarray`-of-delegate static struct field). It
-  matches any module/static `Taarray`-of-delegate declaration, ignores the key
-  (one global slot per declaration, last-write-wins), and falls back to a
-  cross-call-site global (`_latestStaticDelegateAssocArrayFunction`). The
-  general delegate-AA path is confirmed NOT yet a superset of it -- forcing
-  both entry points to decline still fails that row -- so do not remove or
-  narrow it without a real fix backing it, and note that any change to how a
-  delegate-typed store resolves can starve that fallback and break the row.
+- A struct-receiver method delegate carries the receiver's runtime address in
+  its pointer-width context word. Dynamic delegate calls copy that word into
+  the callee's hidden `this` slot, the same receiver ABI used by direct and
+  statically resolved delegate calls.
 - A `throw`'s exception-chaining (`.next`) only threads through
   `_pendingFinallyExceptionMessageOffset` on the `emitThrowString` (string
   `new Exception(...)`) path. An object throw (`throw e;`, or any non-string-
@@ -773,8 +750,8 @@ lifetime as the dependency bytecode cache.
   field after its declared fields (`AggregateDeclaration.isNested`) that this
   path's frame layout does not account for, so a function-nested struct falls
   back to the plain unsupported diagnostic. A direct unqualified call to such a
-  nested function gets a call-site receiver branch in `methodReceiverOffset`
-  for the plain `VarExp` callee shape. This is a `this`-receiver question, not
+  nested function passes the enclosing method's existing `this` storage as
+  its hidden argument. This is a `this`-receiver question, not
   captured-locals-environment work, and needs no closure environment.
 - Frame-escaping capture. A delegate that captures a local and outlives the
   declaring frame needs a real GC-heap environment, since the frame-relative
