@@ -267,92 +267,12 @@ public struct DVariadicMetadata {
 }
 
 
-// A native exception must retain the host Throwable while the backend rebuilds
-// its guest exception. This is call plumbing: it records no backend value
-// representation and preserves the native `.next` chain verbatim.
-public class NativeCallException: Exception {
-    public string className;
-    public Throwable nativeThrowable;
-    public const(void)* nativeThrowableObjectPointer;
-    public NativeCallException chainedNext;
-
-    public this(
-        in string message,
-        in string className,
-        Throwable nativeThrowable,
-    ) {
-        super(message);
-        this.className = className;
-        this.nativeThrowable = nativeThrowable;
-        this.nativeThrowableObjectPointer = cast(const(void)*) nativeThrowable;
-    }
-}
-
-
-// Convert an Exception thrown across `ffi_call` into bridge-owned mechanics.
-// Errors are deliberately not caught by callers.
-public NativeCallException nativeCallExceptionFrom(Throwable throwable) {
-    auto result = new NativeCallException(
-        throwable.msg,
-        throwable.classinfo.name,
-        throwable,
-    );
-    if (throwable.next !is null)
-        result.chainedNext = nativeCallExceptionFrom(throwable.next);
-    return result;
-}
-
-
-// A backend owns callback identity and converts between its private execution
-// currency and these typed native buffers. The bridge owns only the libffi
-// closure/CIF lifetime and ABI ordering.
-public alias InboundCallbackInvoker = void delegate(
-    in size_t callbackId,
-    imported!"dmd.mtype".Type returnType,
-    imported!"dmd.mtype".Type[] parameterTypes,
-    void*[] argumentBuffers,
-    ubyte[] resultBuffer,
-);
-
-
-public struct InboundTrampolineRegistry {
-    private InboundCallbackInvoker _invoke;
-    private InboundClosureContext*[] _contexts;
-    private void*[] _closures;
-
-    public this(InboundCallbackInvoker invoke) {
-        _invoke = invoke;
-    }
-
-    public void setupDelegateArgument(
-        ubyte[] buffer,
-        imported!"dmd.mtype".Type delegateType,
-        in size_t callbackId,
-        in CompilerAbi compilerAbi,
-    ) {
-        setupInboundDelegateArgument(
-            buffer,
-            delegateType,
-            callbackId,
-            compilerAbi,
-            &this,
-        );
-    }
-
-    // The owning backend session calls this after native code can no longer
-    // re-enter it. The writable allocation, rather than executable code, is
-    // libffi's ownership token.
-    public void close() {
-        import quickbite.ffi.libffi: ffi_closure_free;
-
-        foreach (context; _contexts)
-            unregisterClosureAbi(context.code);
-        foreach (closure; _closures)
-            ffi_closure_free(closure);
-        _closures = null;
-        _contexts = null;
-        _invoke = null;
-    }
+// CIF construction metadata shared with backend-owned callback plumbing.
+// It exposes no callback identity, lifetime, trampoline, or value conversion.
+public imported!"quickbite.ffi.libffi".ffi_type* libffiTypeFor(
+    imported!"dmd.mtype".Type type,
+) {
+    return ffiTypeFor(type).type;
 }
 
 
@@ -362,143 +282,6 @@ private enum PhysicalReturn {
     cppNonPod,
     cppConstructor,
 }
-
-
-private struct InboundClosureContext {
-    private InboundTrampolineRegistry* registry;
-    private size_t callbackId;
-    private imported!"dmd.mtype".Type returnType;
-    private imported!"dmd.mtype".Type[] parameterTypes;
-    private size_t returnSize;
-    private CompilerAbi compilerAbi;
-    private const(void)* code;
-    private imported!"quickbite.ffi.libffi".ffi_cif* cif;
-    private imported!"quickbite.ffi.libffi".ffi_type*[] argumentFfiTypes;
-}
-
-
-private void setupInboundDelegateArgument(
-    ubyte[] buffer,
-    imported!"dmd.mtype".Type delegateType,
-    in size_t callbackId,
-    in CompilerAbi compilerAbi,
-    InboundTrampolineRegistry* registry,
-) {
-    import quickbite.ffi.libffi:
-        ffi_cif, ffi_type, ffi_type_pointer, ffi_prep_cif, ffi_closure,
-        ffi_closure_alloc, ffi_prep_closure_loc, FFI_DEFAULT_ABI;
-    import dmd.astenums: LINK;
-    import dmd.mtype: Type, TypeFunction;
-
-    auto functionType = delegateType is null
-        ? null
-        : cast(TypeFunction) delegateType.nextOf;
-    if (functionType is null || registry is null)
-        return;
-    auto returnType = functionType.next.toBasetype;
-    auto returnFfi = ffiTypeFor(returnType);
-    if (returnFfi.type is null)
-        return;
-
-    const parameterCount = functionType.parameterList.parameters is null
-        ? 0
-        : functionType.parameterList.parameters.length;
-    auto parameterTypes = new Type[](parameterCount);
-    foreach (index; 0 .. parameterCount) {
-        parameterTypes[index] =
-            (*functionType.parameterList.parameters)[index].type.toBasetype;
-        if (ffiTypeFor(parameterTypes[index]).type is null)
-            return;
-    }
-
-    auto argumentFfiTypes = new ffi_type*[](1 + parameterCount);
-    argumentFfiTypes[0] = &ffi_type_pointer;
-    foreach (abiIndex; 0 .. parameterCount)
-        argumentFfiTypes[1 + abiIndex] = ffiTypeFor(parameterTypes[
-            callbackSourceIndex(compilerAbi, parameterCount, abiIndex),
-        ]).type;
-
-    auto cif = new ffi_cif;
-    if (ffi_prep_cif(
-        cif,
-        FFI_DEFAULT_ABI,
-        cast(uint) (1 + parameterCount),
-        returnFfi.type,
-        argumentFfiTypes.ptr,
-    ) != 0)
-        return;
-
-    auto context = new InboundClosureContext;
-    context.registry = registry;
-    context.callbackId = callbackId;
-    context.returnType = returnType;
-    context.parameterTypes = parameterTypes;
-    context.returnSize = returnFfi.type.size < 8 ? 8 : returnFfi.type.size;
-    context.compilerAbi = compilerAbi;
-    context.cif = cif;
-    context.argumentFfiTypes = argumentFfiTypes;
-    registry._contexts ~= context;
-
-    void* code;
-    auto writable = ffi_closure_alloc(ffi_closure.sizeof, &code);
-    if (writable is null)
-        return;
-    if (ffi_prep_closure_loc(
-        cast(ffi_closure*) writable,
-        cif,
-        &inboundClosureTrampoline,
-        cast(void*) context,
-        code,
-    ) != 0) {
-        import quickbite.ffi.libffi: ffi_closure_free;
-
-        ffi_closure_free(writable);
-        return;
-    }
-    context.code = code;
-    registerClosureAbi(code, compilerAbi);
-    registry._closures ~= writable;
-
-    *cast(void**) buffer.ptr = cast(void*) context;
-    *cast(void**) (buffer.ptr + (void*).sizeof) = code;
-}
-
-
-private extern(C) void inboundClosureTrampoline(
-    imported!"quickbite.ffi.libffi".ffi_cif* cif,
-    void* result,
-    void** arguments,
-    void* userData,
-) {
-    auto context = cast(InboundClosureContext*) userData;
-    const parameterCount = context.parameterTypes.length;
-    auto sourceArguments = new void*[](parameterCount);
-    foreach (abiIndex; 0 .. parameterCount)
-        sourceArguments[callbackSourceIndex(
-            context.compilerAbi,
-            parameterCount,
-            abiIndex,
-        )] = arguments[1 + abiIndex];
-    context.registry._invoke(
-        context.callbackId,
-        context.returnType,
-        context.parameterTypes,
-        sourceArguments,
-        (cast(ubyte*) result)[0 .. context.returnSize],
-    );
-}
-
-
-private size_t callbackSourceIndex(
-    in CompilerAbi compilerAbi,
-    in size_t argumentCount,
-    in size_t abiIndex,
-) @safe @nogc nothrow pure {
-    return compilerAbi == CompilerAbi.dmd
-        ? argumentCount - abiIndex - 1
-        : abiIndex;
-}
-
 
 private struct PhysicalArgument {
     private imported!"dmd.mtype".Type type;
@@ -687,13 +470,9 @@ private PhysicalCall physicalCallFor(
         return physical;
     if (!hasValidCppReceiverPresence(callable, receiver))
         return physical;
-    const isCppConstructor = callable.declaration !is null &&
-        callable.declaration.isCtorDeclaration !is null;
-    const isCppSpecialMember = isCppConstructor ||
+    const isCppConstructor = callable.signature.linkage == LINK.cpp &&
         callable.declaration !is null &&
-        callable.declaration.isDtorDeclaration !is null;
-    if (isCppSpecialMember && callable.signature.linkage != LINK.cpp)
-        return physical;
+        callable.declaration.isCtorDeclaration !is null;
 
     const isCKRVariadic = hasKRVariadicArguments(callable.signature);
     const numFixedArguments = isCKRVariadic

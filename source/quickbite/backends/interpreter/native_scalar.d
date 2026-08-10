@@ -23,18 +23,11 @@ private:
 // requires `real`; excluding it keeps this codec's claims honest rather
 // than silently wrong on a host whose padding differs.
 //
-// `native_call_adapter.d`'s `marshalArgument`/`unmarshalValue` route their
-// exact-size scalar arms through `writeScalar`/`readScalar` too, so this is
-// the interpreter's single scalar<->bytes authority across both the
-// native-layout container call site above and the FFI marshaller: the
-// interpreter must not grow a second set of D layout rules. One case stays
-// on `native_call_adapter.d`'s own byte splat: a native
-// closure/callback result buffer for a narrow scalar return type is widened
-// by libffi to its `ffi_arg` width and must carry a sign/zero-extended copy
-// of the value across the WHOLE widened buffer for ABI correctness, which
-// this codec's fixed-width `writeScalar` (exactly `layout.typeByteSize(type)`
-// bytes, no more) cannot produce; that narrow ABI concern belongs to the
-// libffi seam, not this leaf codec.
+// Native-call operands and results now cross the FFI seam as typed places, so
+// this codec remains the interpreter's single scalar<->bytes authority there
+// too. A closure/callback result for a narrow scalar is first written through
+// that ordinary typed place, then `native_call_adapter.d` extends only the
+// libffi `ffi_arg` scratch tail for ABI correctness.
 
 
 // `dmd.mtype.Type.toBasetype` is not `@safe`; this is the `@trusted`
@@ -168,12 +161,7 @@ private void writeScalarBits(
 
 
 // The integer bits behind an integral/`bool`/character `Value`, widened to
-// `long` -- agrees with `native_call_adapter.d`'s own local `scalarBits` helper
-// (still used there for its one remaining unconsolidated case, the widened
-// closure-result buffer -- see this module's header comment) for every
-// input both can receive: a character value's bits are its code point
-// (`castTo!long`), matching that module's own scalar marshalling so the two
-// helpers stay in agreement rather than silently drifting.
+// `long`. A character value's bits are its code point (`castTo!long`).
 private long scalarLong(in imported!"quickbite.backends.interpreter.runtime_value".Value value) @safe {
     return value.isCharacter ? value.castTo!long.asLong : value.asLong;
 }
