@@ -785,8 +785,9 @@ public DubInfo dubInfoFromDescribeData(
 void printHeader() {
     import std.stdio: writefln, writeln;
     writefln(
-        "%-32s %-14s %-10s %10s %10s %10s %10s",
-        "fixture", "backend", "tests", "min", "median", "stddev", "max ram",
+        "%-32s %-14s %-10s %-8s %10s %10s %10s %10s",
+        "fixture", "backend", "tests", "GC", "min", "median", "stddev",
+        "GC used ram delta",
     );
     writeln;
 }
@@ -801,10 +802,11 @@ public void printRow(
 
     enum hnsecsPerMs = 10_000.0;
     writefln(
-        "%-32s %-14s %-10s %7.3f ms %7.3f ms %7.3f ms %7.1f KiB",
+        "%-32s %-14s %-10s %-8s %7.3f ms %7.3f ms %7.3f ms %7.1f KiB",
         fixture,
         backendName,
         tests,
+        "enabled",
         result.min.total!"hnsecs" / hnsecsPerMs,
         result.median.total!"hnsecs" / hnsecsPerMs,
         result.stddevHnsecs / hnsecsPerMs,
@@ -822,22 +824,18 @@ public string renderBenchmarkSection(
     auto output = appender!string;
     output.put("== " ~ title ~ " ==\n");
     output.put(format(
-        "%-32s %-14s %-10s %10s %10s %10s %10s\n\n",
-        "fixture",
-        "backend",
-        "tests",
-        "min",
-        "median",
-        "stddev",
-        "max ram",
+        "%-32s %-14s %-10s %-8s %10s %10s %10s %10s\n\n",
+        "fixture", "backend", "tests", "GC", "min", "median", "stddev",
+        "GC used ram delta",
     ));
     foreach (row; rows) {
         enum hnsecsPerMs = 10_000.0;
         output.put(format(
-            "%-32s %-14s %-10s %7.3f ms %7.3f ms %7.3f ms %7.1f KiB\n",
+            "%-32s %-14s %-10s %-8s %7.3f ms %7.3f ms %7.3f ms %7.1f KiB\n",
             row.fixture,
             row.backend,
             row.tests,
+            "enabled",
             row.result.min.total!"hnsecs" / hnsecsPerMs,
             row.result.median.total!"hnsecs" / hnsecsPerMs,
             row.result.stddevHnsecs / hnsecsPerMs,
@@ -849,7 +847,7 @@ public string renderBenchmarkSection(
 }
 
 private double ramKiB(in Result result) {
-    return result.maxRamBytes / 1024.0;
+    return result.maxGcUsedSizeDelta / 1024.0;
 }
 
 public struct PreparedFixtures {
