@@ -41,6 +41,322 @@ private auto runDependencyImage(alias backend)(
     }
 }
 
+// A dependency is compiled under its own compiler flags. Enabling DIP1000 for
+// the importing project cannot retroactively reject a dependency method that
+// was already compiled without it; calls resolve to the dependency image.
+static foreach (backend; AliasSeq!(Interpreter, Bytecode, LLVMJit)) {
+@("dependencyImage.projectPreviewDoesNotReanalyseDependencyBody." ~
+    backend.stringof)
+@Tags(backend.stringof)
+unittest {
+    import quickbite.frontend.compiler:
+        FrontendFlags,
+        parseRootModules;
+    import std.path: buildPath;
+
+    const sandbox = immutable Sandbox();
+    with(sandbox) {
+        const importPath = "imports";
+        const moduleName =
+            "dep_image_project_preview_fixture_" ~ backend.stringof;
+        const dependencyPath = buildPath(importPath, moduleName ~ ".d");
+        writeFile(dependencyPath, q{
+            module dep_image_project_preview_fixture;
+
+            struct ByteRange {
+                void* pointer;
+                size_t length;
+            }
+
+            struct Ranges {
+                ByteRange[] entries;
+
+                bool discard(void[] bytes) scope @safe {
+                    import std.algorithm: remove;
+
+                    bool matches(ByteRange other) {
+                        return other.pointer == bytes.ptr &&
+                            other.length == bytes.length;
+                    }
+
+                    entries = entries.remove!matches;
+                    return true;
+                }
+            }
+        }.uniqueDepModule(
+            "dep_image_project_preview_fixture",
+            backend.stringof,
+        ));
+
+        const imagePath = buildSharedLibrary(
+            sandbox,
+            moduleName,
+            [dependencyPath],
+        );
+
+        const projectPath = buildPath("project", "fixture.d");
+        writeFile(projectPath, q{
+            module root_preview_fixture;
+
+            import dep_image_project_preview_fixture;
+
+            unittest {
+                ubyte[2] first;
+                ubyte[3] second;
+                auto ranges = Ranges([
+                    ByteRange(first.ptr, first.length),
+                    ByteRange(second.ptr, second.length),
+                ]);
+                assert(ranges.discard(first[]));
+                assert(ranges.entries.length == 1);
+                assert(ranges.entries[0].pointer == second.ptr);
+            }
+        }.uniqueDepModule(
+            "dep_image_project_preview_fixture",
+            backend.stringof,
+        ).uniqueDepModule(
+            "root_preview_fixture",
+            backend.stringof,
+        ));
+
+        auto moduleResult = parseRootModules(
+            [inSandboxPath(projectPath)],
+            [inSandboxPath(importPath)],
+            FrontendFlags(["-preview=dip1000"]),
+        )[0];
+
+        const oracle = (new SystemLinker(
+            [imagePath],
+            [inSandboxPath(importPath)],
+        )).runTests(moduleResult.module_);
+        oracle.length.should == 1;
+        oracle[0].passed.should == true;
+
+        const actual = runDependencyImage!backend(
+            [imagePath],
+            [inSandboxPath(importPath)],
+            moduleResult.module_,
+        );
+        actual.length.should == 1;
+        static if (is(backend == Bytecode)) {
+            // Bytecode's dependency boundary currently refuses the lazily
+            // rejected source body instead of calling the compiled image.
+            actual[0].passed.should == false;
+            actual[0].message.should ==
+                "Unsupported statement in bytecode core: Error";
+        } else
+            actual[0].passed.should == true;
+    }
+}
+}
+
+
+// Mutating a dependency struct through a pointer runs against the pointed-to
+// object. If a later dependency method must execute from the compiled image,
+// it must receive that same object, including slice fields changed by the
+// interpreted method.
+static foreach (backend; AliasSeq!(Interpreter, Bytecode, LLVMJit)) {
+@("dependencyImage.nativeMethodSeesInterpretedPointerReceiverState." ~
+    backend.stringof)
+@Tags(backend.stringof)
+unittest {
+    import quickbite.frontend.compiler:
+        FrontendFlags,
+        parseRootModules;
+    import std.path: buildPath;
+
+    const sandbox = immutable Sandbox();
+    with(sandbox) {
+        const importPath = "imports";
+        const moduleName =
+            "dep_image_pointer_receiver_fixture_" ~ backend.stringof;
+        const dependencyPath = buildPath(importPath, moduleName ~ ".d");
+        writeFile(dependencyPath, q{
+            module dep_image_pointer_receiver_fixture;
+
+            struct ByteRange {
+                void* pointer;
+                size_t length;
+            }
+
+            struct Ranges {
+                ByteRange[] entries;
+
+                void remember(void* pointer, size_t length) scope @safe {
+                    entries ~= ByteRange(pointer, length);
+                }
+
+                bool discard(void[] bytes) scope @safe {
+                    import std.algorithm: remove;
+
+                    bool matches(ByteRange other) {
+                        return other.pointer == bytes.ptr &&
+                            other.length == bytes.length;
+                    }
+
+                    entries = entries.remove!matches;
+                    return true;
+                }
+            }
+        }.uniqueDepModule(
+            "dep_image_pointer_receiver_fixture",
+            backend.stringof,
+        ));
+
+        const imagePath = buildSharedLibrary(
+            sandbox,
+            moduleName,
+            [dependencyPath],
+        );
+
+        const projectPath = buildPath("project", "fixture.d");
+        writeFile(projectPath, q{
+            module root_pointer_receiver_fixture;
+
+            import dep_image_pointer_receiver_fixture;
+
+            unittest {
+                ubyte[2] first;
+                ubyte[3] second;
+                Ranges ranges;
+                auto pointer = &ranges;
+                pointer.remember(first.ptr, first.length);
+                pointer.remember(second.ptr, second.length);
+                assert(pointer.entries.length == 2);
+                assert(pointer.discard(first[]));
+                assert(pointer.entries.length == 1);
+                assert(pointer.entries[0].pointer == second.ptr);
+            }
+        }.uniqueDepModule(
+            "dep_image_pointer_receiver_fixture",
+            backend.stringof,
+        ).uniqueDepModule(
+            "root_pointer_receiver_fixture",
+            backend.stringof,
+        ));
+
+        auto moduleResult = parseRootModules(
+            [inSandboxPath(projectPath)],
+            [inSandboxPath(importPath)],
+            FrontendFlags(["-preview=dip1000"]),
+        )[0];
+
+        const oracle = (new SystemLinker(
+            [imagePath],
+            [inSandboxPath(importPath)],
+        )).runTests(moduleResult.module_);
+        oracle.length.should == 1;
+        oracle[0].passed.should == true;
+
+        const actual = runDependencyImage!backend(
+            [imagePath],
+            [inSandboxPath(importPath)],
+            moduleResult.module_,
+        );
+        actual.length.should == 1;
+        static if (is(backend == Bytecode)) {
+            // Bytecode's dependency boundary currently refuses the lazily
+            // rejected source body instead of calling the compiled image.
+            actual[0].passed.should == false;
+            actual[0].message.should ==
+                "Unsupported statement in bytecode core: Error";
+        } else
+            actual[0].passed.should == true;
+    }
+}
+}
+
+
+// A local declared inside a try statement is destroyed before control leaves
+// that statement. If its dependency-image destructor throws, the following
+// catch handles that exception just as it handles one thrown by the body.
+static foreach (backend; AliasSeq!(Interpreter, Bytecode, LLVMJit)) {
+@("dependencyImage.nativeDestructorExceptionIsCaughtAtTryScopeExit." ~
+    backend.stringof)
+@Tags(backend.stringof)
+unittest {
+    import quickbite.frontend.compiler: parseSnippetWithCheckActionContext;
+    import std.path: buildPath;
+
+    const sandbox = immutable Sandbox();
+    with(sandbox) {
+        const importPath = "imports";
+        const moduleName =
+            "dep_image_destructor_exception_fixture_" ~ backend.stringof;
+        const dependencyPath = buildPath(importPath, moduleName ~ ".d");
+        writeFile(dependencyPath, q{
+            module dep_image_destructor_exception_fixture;
+
+            struct Resource {
+                ~this() {
+                    assert(false, "expected destructor failure");
+                }
+            }
+        }.uniqueDepModule(
+            "dep_image_destructor_exception_fixture",
+            backend.stringof,
+        ));
+
+        const imagePath = buildSharedLibrary(
+            sandbox,
+            moduleName,
+            [dependencyPath],
+        );
+
+        writeFile(dependencyPath, q{
+            module dep_image_destructor_exception_fixture;
+
+            struct Resource {
+                ~this();
+            }
+        }.uniqueDepModule(
+            "dep_image_destructor_exception_fixture",
+            backend.stringof,
+        ));
+
+        auto moduleResult = parseSnippetWithCheckActionContext(q{
+            import core.exception: AssertError;
+            import dep_image_destructor_exception_fixture;
+
+            unittest {
+                bool caught;
+                try {
+                    Resource resource;
+                } catch (AssertError) {
+                    caught = true;
+                }
+                assert(caught);
+            }
+        }.uniqueDepModule(
+            "dep_image_destructor_exception_fixture",
+            backend.stringof,
+        ), [inSandboxPath(importPath)]);
+
+        const oracle = (new SystemLinker(
+            [imagePath],
+            [inSandboxPath(importPath)],
+        )).runTests(moduleResult.module_);
+        oracle.length.should == 1;
+        oracle[0].passed.should == true;
+
+        const actual = runDependencyImage!backend(
+            [imagePath],
+            [inSandboxPath(importPath)],
+            moduleResult.module_,
+        );
+        actual.length.should == 1;
+        static if (is(backend == Bytecode)) {
+            // Bytecode reaches the native destructor, but reports its
+            // exception as an uncaught test failure.
+            actual[0].passed.should == false;
+            actual[0].message.should == "expected destructor failure";
+        } else
+            actual[0].passed.should == true;
+    }
+}
+}
+
+
 private struct CtorOrderingFixture {
     string[] imagePaths;
     string[] importPaths;
@@ -182,6 +498,7 @@ unittest {
         actual[0].passed.should == true;
     }
 }
+
 
 @("dependencyImage.externDTwoArgumentFunction." ~ backend.stringof)
 @Tags(backend.stringof)

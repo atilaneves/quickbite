@@ -56,6 +56,56 @@ static foreach (backend; Matrix!()) {
     }
 }
 
+// A synchronized statement lowers to druntime monitor calls. Its receiver must
+// therefore be a runtime-valid class object, including its hidden header, not
+// merely a body with the declared fields written into it.
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.inexpressible,
+        "CTFE cannot execute the body-less _d_monitorenter runtime hook"),
+    Omit!(Bytecode, Because.refusal,
+        "SIGSEGV in the native _d_monitorenter runtime hook"),
+)) {
+    @("synchronized.objectMonitor." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            unittest {
+                auto lock = new Object;
+                synchronized (lock) {
+                    assert(true);
+                }
+            }
+        });
+    }
+}
+
+// Synchronization must preserve the object's dynamic class identity. DMD
+// lowers the block to runtime monitor calls, after which the same reference
+// must still support an ordinary checked downcast.
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.inexpressible,
+        "CTFE cannot execute the body-less _d_monitorenter runtime hook"),
+    Omit!(Bytecode, Because.refusal,
+        "SIGSEGV in the native _d_monitorenter runtime hook"),
+)) {
+    @("synchronized.preservesDynamicClassIdentity." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            class Lock: Object {
+            }
+
+            unittest {
+                Object lock = new Lock;
+
+                synchronized (lock) {
+                    assert(cast(Lock) lock !is null);
+                }
+            }
+        });
+    }
+}
+
 static foreach (backend; Matrix!()) {
     @("function.inParameters." ~ backend.stringof)
     @Tags(backend.stringof)
