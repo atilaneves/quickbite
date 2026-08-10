@@ -23,15 +23,15 @@ public class Interpreter: imported!"quickbite.backends".TreeNodeBackend {
     }
 
     public this(const string[] dependencyImages) {
-        import quickbite.ffi.oldffi: loadDependencyImages;
+        import quickbite.ffi.ffi: loadDependencyImages;
 
         loadDependencyImages(dependencyImages);
     }
 
     public this(
-        const imported!"quickbite.ffi.oldffi".DependencyImage[] dependencyImages,
+        const imported!"quickbite.ffi.ffi".DependencyImage[] dependencyImages,
     ) {
-        import quickbite.ffi.oldffi: loadDependencyImages;
+        import quickbite.ffi.ffi: loadDependencyImages;
 
         loadDependencyImages(dependencyImages);
     }

@@ -2,133 +2,14 @@ module quickbite.ffi.oldffi;
 
 private:
 
-
-public enum CompilerAbi {
-    dmd,
-    ldc,
-}
-
-public struct DependencyImage {
-    string path;
-    CompilerAbi compilerAbi;
-}
-
-version (LDC)
-    private enum CompilerAbi hostCompilerAbi = CompilerAbi.ldc;
-else
-    private enum CompilerAbi hostCompilerAbi = CompilerAbi.dmd;
-
-private CompilerAbi[string] _dependencyImageAbis;
-private CompilerAbi[const(void)*] _closureAbis;
-
-
-public void loadDependencyImages(in string[] dependencyImages) {
-    foreach (dependencyImage; dependencyImages) {
-        verifyDependencyImage(dependencyImage);
-        loadDependencyImage(
-            dependencyImage,
-            compilerAbiFromImage(dependencyImage),
-        );
-    }
-}
-
-public void loadDependencyImages(
-    in DependencyImage[] dependencyImages,
-) {
-    foreach (dependencyImage; dependencyImages) {
-        verifyDependencyImage(dependencyImage.path);
-        loadDependencyImage(dependencyImage.path, dependencyImage.compilerAbi);
-    }
-}
-
-public void verifyDependencyImages(in string[] dependencyImages) {
-    foreach (dependencyImage; dependencyImages)
-        verifyDependencyImage(dependencyImage);
-}
-
-private void verifyDependencyImage(in string dependencyImage) {
-    import std.string: endsWith;
-
-    if (!dependencyImage.endsWith(".so"))
-        throw new Exception(
-            "dependency image must be a loadable shared library (.so): "
-            ~ dependencyImage,
-        );
-}
-
-private CompilerAbi compilerAbiFromImage(in string dependencyImage) {
-    import std.algorithm.searching: canFind;
-    import std.file: read;
-
-    const bytes = cast(const(ubyte)[]) dependencyImage.read;
-    const comment = elfCommentSection(bytes);
-    const saysDmd = comment.canFind(cast(const(ubyte)[]) "DMD v");
-    const saysLdc = comment.canFind(cast(const(ubyte)[]) "ldc version ");
-    if (saysDmd == saysLdc)
-        throw new Exception(
-            "dependency image compiler ABI is ambiguous; supply explicit "
-            ~ "compiler provenance: " ~ dependencyImage,
-        );
-    return saysDmd ? CompilerAbi.dmd : CompilerAbi.ldc;
-}
-
-private const(ubyte)[] elfCommentSection(in ubyte[] bytes) {
-    import std.algorithm.searching: countUntil;
-
-    if (bytes.length < 64 || bytes[0 .. 4] != [0x7f, 'E', 'L', 'F'])
-        throw new Exception("dependency image is not a supported ELF image");
-    if (bytes[4] != 2 || bytes[5] != 1)
-        throw new Exception("dependency image is not little-endian ELF64");
-
-    const sectionOffset = readElfWord!ulong(bytes, 40);
-    const sectionEntrySize = readElfWord!ushort(bytes, 58);
-    const sectionCount = readElfWord!ushort(bytes, 60);
-    const namesIndex = readElfWord!ushort(bytes, 62);
-    if (sectionEntrySize < 64 || namesIndex >= sectionCount)
-        throw new Exception("dependency image has an invalid ELF section table");
-
-    const namesHeader = sectionOffset + namesIndex * sectionEntrySize;
-    const namesOffset = readElfWord!ulong(bytes, namesHeader + 24);
-    const namesSize = readElfWord!ulong(bytes, namesHeader + 32);
-    const names = checkedElfSlice(bytes, namesOffset, namesSize);
-
-    foreach (index; 0 .. sectionCount) {
-        const header = sectionOffset + index * sectionEntrySize;
-        const nameOffset = readElfWord!uint(bytes, header);
-        if (nameOffset >= names.length)
-            throw new Exception("dependency image has an invalid ELF section name");
-        const nameTail = names[nameOffset .. $];
-        const nameLength = nameTail.countUntil(0);
-        if (nameLength < 0)
-            throw new Exception("dependency image has an unterminated ELF section name");
-        const name = cast(const(char)[]) nameTail[0 .. nameLength];
-        if (name == ".comment") {
-            const offset = readElfWord!ulong(bytes, header + 24);
-            const size = readElfWord!ulong(bytes, header + 32);
-            return checkedElfSlice(bytes, offset, size);
-        }
-    }
-    throw new Exception("dependency image has no compiler metadata");
-}
-
-private T readElfWord(T)(in ubyte[] bytes, in size_t offset) {
-    if (offset > bytes.length || T.sizeof > bytes.length - offset)
-        throw new Exception("dependency image has a truncated ELF section table");
-    T result;
-    foreach (index; 0 .. T.sizeof)
-        result |= cast(T) bytes[offset + index] << (index * 8);
-    return result;
-}
-
-private const(ubyte)[] checkedElfSlice(
-    in ubyte[] bytes,
-    in size_t offset,
-    in size_t length,
-) {
-    if (offset > bytes.length || length > bytes.length - offset)
-        throw new Exception("dependency image has a truncated ELF section");
-    return bytes[offset .. offset + length];
-}
+public import quickbite.ffi.ffi:
+    CompilerAbi,
+    DependencyImage,
+    compilerAbiFor,
+    loadDependencyImages,
+    registerClosureAbi,
+    unregisterClosureAbi,
+    verifyDependencyImages;
 
 // Returns a diagnostic naming an FFI-uncrossable type in `function_`'s
 // signature (today: an associative array, whose hashing/allocation the bridge
@@ -367,7 +248,7 @@ public struct InboundTrampolineRegistry {
         import quickbite.ffi.libffi: ffi_closure_free;
 
         foreach (context; _contexts)
-            _closureAbis.remove(context.code);
+            unregisterClosureAbi(context.code);
         foreach (closure; _closures)
             ffi_closure_free(closure);
         _closures = null;
@@ -674,29 +555,6 @@ public const(void)* resolveDataSymbol(
     return dlsym(RTLD_DEFAULT, buf.peekChars);
 }
 
-private void loadDependencyImage(
-    in string dependencyImage,
-    in CompilerAbi compilerAbi,
-) {
-    import core.sys.posix.dlfcn: dlerror, dlopen, RTLD_GLOBAL, RTLD_NOW;
-    import std.conv: text;
-    import std.string: fromStringz, toStringz;
-
-    if (dlopen(dependencyImage.toStringz, RTLD_NOW | RTLD_GLOBAL) is null) {
-        auto err = dlerror();
-        throw new Exception(text(
-            "failed to load dependency image: ",
-            dependencyImage,
-            err is null ? "" : text(" :: ", err.fromStringz),
-        ));
-    }
-
-    import std.path: absolutePath, buildNormalizedPath;
-
-    _dependencyImageAbis[dependencyImage.absolutePath.buildNormalizedPath] =
-        compilerAbi;
-}
-
 private bool isSupportedNativeLinkage(
     imported!"dmd.astenums".LINK linkage,
 ) @safe @nogc nothrow pure {
@@ -916,7 +774,7 @@ private bool callViaLibffi(
     ClosureContext*[] closureContexts;
     scope(exit) {
         foreach (context; closureContexts)
-            _closureAbis.remove(context.code);
+            unregisterClosureAbi(context.code);
         foreach (closure; closuresToFree)
             ffi_closure_free(closure);
     }
@@ -1209,26 +1067,6 @@ private size_t abiSourceIndex(
         : abiIndex;
 }
 
-private CompilerAbi compilerAbiFor(in void* symbol) {
-    import core.sys.posix.dlfcn: dladdr, Dl_info;
-    import std.path: absolutePath, buildNormalizedPath;
-    import std.string: fromStringz;
-
-    if (auto compilerAbi = cast(const(void)*) symbol in _closureAbis)
-        return *compilerAbi;
-
-    Dl_info info;
-    if (dladdr(symbol, &info) == 0 || info.dli_fname is null)
-        return hostCompilerAbi;
-
-    const imagePath = info.dli_fname.fromStringz.idup
-        .absolutePath
-        .buildNormalizedPath;
-    if (auto compilerAbi = imagePath in _dependencyImageAbis)
-        return *compilerAbi;
-    return hostCompilerAbi;
-}
-
 // The reverse-bridge routing behind one libffi closure (ffi.md §34.16): which
 // interpreted delegate argument to invoke, the call's types, and the return
 // width to write back. Held in a GC-scanned array across the call so the
@@ -1353,7 +1191,7 @@ private void setupDelegateArgument(
         code,
     );
     context.code = code;
-    _closureAbis[code] = compilerAbi;
+    registerClosureAbi(code, compilerAbi);
     closuresToFree ~= writable;
 
     // The D delegate: context at offset 0, funcptr at offset 8.
@@ -1416,7 +1254,7 @@ private void setupDurableDelegateArgument(
     ffi_prep_closure_loc(cast(ffi_closure*) writable, cif,
         &durableClosureTrampoline, cast(void*) context, code);
     context.code = code;
-    _closureAbis[code] = compilerAbi;
+    registerClosureAbi(code, compilerAbi);
     registry._closures ~= writable;
 
     *cast(void**) buffer.ptr = cast(void*) context;
