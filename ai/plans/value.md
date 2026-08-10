@@ -6,17 +6,18 @@ This plan records the removal of the shared `quickbite.lang.Value` and the
 tree-walking interpreter's move to native-layout storage. Decisions 15-18
 (July 2026) commit the end state — native-layout storage, one data-pointer
 representation (the host address), no FFI marshalling — with deleting
-`Value` as the completion signal. The remaining order is: execute the formatter
-everywhere, delete the shared `Value`, and remove the Interpreter's transitional
-representation machinery before optimising Interpreter execution. Broader
+`Value` as the completion signal. The remaining order is: delete the shared
+`Value` and remove the Interpreter's transitional representation machinery
+before optimising Interpreter execution. Broader
 Interpreter language expansion follows those steps. The Bytecode refactor and
 its address-only FFI migration proceed in a file-disjoint parallel lane.
 Current capabilities:
 
 - `EvalResult` carries a display `string` or `Diagnostic`, and `:t` is
-  frontend-answered. CTFE and Interpreter execute formatter-wrapped expression
-  cells and unittests without rendering; range/template structs and the IR and
-  Bytecode paths still use interim `Value` display scaffolding.
+  frontend-answered. CTFE and Interpreter execute every semantically valid
+  expression cell through the prelude formatter and execute unittests without
+  rendering; the IR and Bytecode paths still use interim `Value` display
+  scaffolding.
 - `NativeBlock`/`NativeArray`/`NativeStruct` compose structs, static arrays,
   slices, and their elements using DMD layout. They own real GC storage,
   growth, slice headers, and the interpreter side of the FFI seam.
@@ -73,9 +74,10 @@ deletion (items 2-3).
 
 3. The canonical formatter's end state is an in-program prelude template,
    `string __quickbiteFormat(T)(T value)`, written once in ordinary D
-   with `static if` introspection. The frontend synthesizes expression
-   cells as `__quickbiteFormat(expr)`; semantic analysis — shared by all
-   backends — instantiates the template against the real static type, so
+   with `static if` introspection. For a formatter-capable backend, the frontend
+   synthesizes every semantically valid expression cell as
+   `__quickbiteFormat(expr)`; semantic analysis — shared by all backends —
+   instantiates the template against the real static type, so
    type-directed dispatch is resolved before any backend runs and
    backends only execute code. Consistency across backends by
    construction; the native backend ships a plain `string` across the
@@ -87,7 +89,10 @@ deletion (items 2-3).
    as each becomes able to execute the prelude formatter. The formatter
    is an early, demanding test program for the bytecode and IR cores, not
    a new requirement. During the interim the formatter-wrapped synthesis
-   applies only to views consumed by backends that can execute it.
+   applies to every semantically valid expression consumed by a backend that
+   can execute it. A cell that already fails semantic analysis retains its
+   unwrapped source solely to preserve the primary diagnostic; no value path
+   can execute it.
 
 5. REPL mechanics survive without `Value`: void suppression is decided at
    synthesis time (the frontend knows when `typeof(expr)` is `void`, and
@@ -597,13 +602,15 @@ Conventions, in order:
    for characters it does not (all widths render `'a'`, disambiguated by
    `typeof`). Type qualifiers (`const`/`immutable`) and mutability are
    not displayed.
-7. `void` results display nothing (REPL suppression). Functions,
-   delegates, pointers, and other values with no D expression form cannot
-   round-trip; there is no contract to honour, so render whatever is most
-   useful to the reader (e.g. `<function int(int)>`, `&name`, `null` for
-   null callables) — optimise for convenience, not parseability. Pointer
-   display is otherwise unspecified until pointers become a displayable
-   feature — spec it then.
+7. `void` results display nothing (REPL suppression). Functions, delegates,
+   pointers, behaviour-bearing template results, and other values with no D
+   expression form cannot round-trip; there is no contract to honour, so
+   render whatever is most useful to the reader. Non-null callables render
+   `<undisplayable>` and null callables render `null`. A template result whose
+   behaviour cannot be reconstructed from a D expression renders its template
+   struct name and declared state, such as `MapResult([1, 2, 3])`; this is an
+   inspection form, not a constructor expression. Pointer display is otherwise
+   unspecified until pointers become a displayable feature — spec it then.
 
 ## Test strategy
 
@@ -660,7 +667,7 @@ The native authority switch is the standing interpreter contract, not pending
 work. The remaining value-track work begins with the language-surface and
 display tasks below. Item numbers remain stable for existing cross-references.
 `interpreter-performance.md` may improve measurement in parallel, but its
-production optimisation order begins only after items 1-3 and removal of the
+production optimisation order begins only after items 2-3 and removal of the
 Interpreter's transitional allocation/declaration identity maps. This prevents
 performance work from entrenching representation machinery already scheduled
 for deletion.
@@ -724,19 +731,6 @@ address it used, the same way the receiver-level
 `precomputedReceiverPointerAddress` precompute does for a bare
 `PtrExp`/`IndexExp` *receiver* -- not yet threaded through for a target
 recovered by peeling.
-
-### Item 1 — Prelude formatter wiring
-
-**Next PR:** complete the prelude formatter wiring (decision 3). The formatter
-surface covers scalars, arrays, structs, enums, AAs, plain template structs,
-and context-free range results. `std.algorithm.map`'s nested `MapResult`
-remains excluded because its behavior-bearing private state cannot be
-reconstructibly displayed. Define the prelude contract for behavior-bearing
-templates before admitting them. Then expand the gate per backend (decision 4)
-until every REPL expression is formatter-wrapped and the unformatted evaluator
-paths can be deleted. The interpreter's `std.conv.text` hook is temporary
-formatter scaffolding, not a general Phobos builtin: remove it once the
-formatter no longer needs that escape hatch.
 
 ### Item 2 — Unittest/expression split
 

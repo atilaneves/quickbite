@@ -12,6 +12,7 @@ public struct Cell {
 
     public Kind kind;
     public string source;
+    public string diagnosticSource;
     public imported!"dmd.func".FuncDeclaration function_;
     private EvalHistoryTarget historyTarget;
     private string history;
@@ -164,23 +165,21 @@ public struct EvalSession {
             );
         }
 
-        const rawSource = evalSource(
+        const diagnosticSource = evalSource(
             moduleSource,
-            localTranscriptSource ~ expressionReturnSource(
-                input,
-                false,
-            ),
+            localTranscriptSource ~ expressionReturnSource(input, false),
             evalFunctionName,
         );
         const formatExpression = formatExpressionCells &&
-            expressionReturnNeedsPreludeFormat(rawSource, importPaths);
-        const source = formatExpression
-            ? evalSource(
-                moduleSource,
-                localTranscriptSource ~ expressionReturnSource(input, true),
-                evalFunctionName,
-            )
-            : rawSource;
+            expressionCanUsePreludeFormat(diagnosticSource, importPaths);
+        const source = evalSource(
+            moduleSource,
+            localTranscriptSource ~ expressionReturnSource(
+                input,
+                formatExpression,
+            ),
+            evalFunctionName,
+        );
         return evalCellFromSource(
             Cell.Kind.expression,
             source,
@@ -192,6 +191,7 @@ public struct EvalSession {
             [],
             [],
             formatExpression,
+            diagnosticSource,
         );
     }
 
@@ -326,141 +326,18 @@ private string expressionReturnSource(
         "return __quickbiteFormat(" ~ input ~ ");";
 }
 
-private bool expressionReturnNeedsPreludeFormat(
+private bool expressionCanUsePreludeFormat(
     in string source,
     in string[] importPaths,
 ) {
-    import dmd.astenums: TY;
-    import dmd.dmodule: Module;
     import quickbite.frontend.compiler: parseSnippet;
 
-    Module module_;
     try {
-        module_ = parseSnippet(source, importPaths).module_;
+        parseSnippet(source, importPaths);
+        return true;
     } catch (Exception) {
         return false;
     }
-
-    auto type = evalFunction(module_).type;
-    auto functionType = type is null ? null : type.isTypeFunction;
-    if (functionType is null || functionType.next is null)
-        return false;
-
-    auto returnType = functionType.next;
-    if (returnType is null)
-        return false;
-
-    return typeNeedsPreludeFormat(returnType);
-}
-
-private bool typeNeedsPreludeFormat(imported!"dmd.mtype".Type type) {
-    import dmd.astenums: TY;
-
-    if (type.ty == TY.Tenum)
-        return true;
-
-    auto baseType = type.toBasetype;
-    with (TY) switch (baseType.ty) {
-        case Tbool,
-             Tchar, Twchar, Tdchar,
-             Tint8, Tuns8, Tint16, Tuns16, Tint32, Tuns32, Tint64, Tuns64,
-             Tfloat32, Tfloat64, Tfloat80:
-            return true;
-        case Taarray:
-            return true;
-        case Tarray, Tsarray:
-            return arrayElementCanUsePreludeFormat(baseType);
-        case Tstruct:
-            return structTypeNeedsPreludeFormat(baseType);
-        default:
-            return false;
-    }
-}
-
-private bool structTypeNeedsPreludeFormat(imported!"dmd.mtype".Type type) {
-    auto structType = type.isTypeStruct;
-    if (structType is null)
-        return false;
-
-    if (structType.sym.isInstantiated !is null)
-        return instantiatedStructNeedsPreludeFormat(type);
-
-    return structNeedsPreludeFormat(type) || ordinaryStructNeedsPreludeFormat(type);
-}
-
-private bool instantiatedStructNeedsPreludeFormat(
-    imported!"dmd.mtype".Type type,
-) {
-    import dmd.id: Id;
-    import dmd.location: Loc;
-    import dmd.dsymbolsem: search;
-
-    auto structType = type.isTypeStruct;
-    if (structType is null || structType.sym.isNested ||
-        structType.sym.vthis !is null || structType.sym.vthis2 !is null)
-        return false;
-
-    if (search(structType.sym, Loc.initial, Id.opCall) !is null ||
-        search(structType.sym, Loc.initial, Id.apply) !is null)
-        return false;
-
-    foreach (field; structType.sym.fields) {
-        if (field is null || field.type is null ||
-            field.isThisDeclaration !is null ||
-            !typeNeedsPreludeFormat(field.type))
-            return false;
-    }
-
-    return true;
-}
-
-private bool structNeedsPreludeFormat(imported!"dmd.mtype".Type type) {
-    import dmd.astenums: TY;
-
-    auto structType = type.isTypeStruct;
-    foreach (field; structType.sym.fields)
-        if (field !is null && field.type !is null) {
-            if (field.type.ty == TY.Tenum)
-                return true;
-
-            auto fieldType = field.type.toBasetype;
-            with (TY) switch (fieldType.ty) {
-                case Tint64, Tuns64:
-                    return true;
-                case Tclass:
-                    return true;
-                case Tdelegate:
-                    return true;
-                case Taarray:
-                    return true;
-                case Tarray, Tsarray:
-                    return arrayElementCanUsePreludeFormat(fieldType);
-                case Tpointer:
-                    if (field.isThisDeclaration is null)
-                        return true;
-                    break;
-                default:
-                    break;
-            }
-        }
-
-    return false;
-}
-
-private bool ordinaryStructNeedsPreludeFormat(imported!"dmd.mtype".Type type) {
-    auto structType = type.isTypeStruct;
-    if (structType is null || structType.sym.isInstantiated !is null)
-        return false;
-
-    return true;
-}
-
-private bool arrayElementCanUsePreludeFormat(imported!"dmd.mtype".Type type) {
-    auto elementType = type.nextOf;
-    if (elementType is null)
-        return false;
-
-    return typeNeedsPreludeFormat(elementType);
 }
 
 private string[] withReplPreludeImportPath(in string[] importPaths) @safe pure {
@@ -727,6 +604,7 @@ private Cell evalCellFromSource(
     in string[] promotedLocalNames,
     in TranscriptCell[] promotedLocalCells,
     in bool displayIsFormatted = false,
+    in string diagnosticSource = null,
 ) {
     import quickbite.frontend.compiler: parseSnippet;
 
@@ -735,6 +613,7 @@ private Cell evalCellFromSource(
         return Cell(
             kind,
             source,
+            diagnosticSource.length == 0 ? source : diagnosticSource,
             evalFunction(moduleResult.module_),
             historyTarget,
             history,
@@ -745,7 +624,10 @@ private Cell evalCellFromSource(
             displayIsFormatted,
         );
     } catch (Exception exception) {
-        throw new Exception(withCandidateSignatures(source, exception.msg));
+        throw new Exception(withCandidateSignatures(
+            diagnosticSource.length == 0 ? source : diagnosticSource,
+            exception.msg,
+        ));
     }
 }
 

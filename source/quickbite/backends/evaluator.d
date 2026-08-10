@@ -53,7 +53,10 @@ public interface Evaluator {
                 return result.failed
                     ? EvalResult(
                           EvalResult.Diagnostic(
-                              withCandidateSignatures(cell.source, result.diagnostic),
+                              withCandidateSignatures(
+                                  cell.diagnosticSource,
+                                  result.diagnostic,
+                              ),
                           )
                       )
                     : result;

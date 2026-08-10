@@ -130,9 +130,7 @@ private string assocArrayDisplay(T)(in T value) @safe pure {
 }
 
 private string callableDisplay(T)(in T value) @safe pure {
-    import std.conv: text;
-
-    return value is null ? "null" : text(value);
+    return value is null ? "null" : "<undisplayable>";
 }
 
 private string pointerDisplay(T)(in T value) @safe pure {
