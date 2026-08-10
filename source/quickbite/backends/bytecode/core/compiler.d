@@ -3781,6 +3781,18 @@ private struct Compiler {
                     place.offset, place.indexOffset, width, operandType,
                 );
             case dynamicIndex:
+                // `loadPlace`'s dynamicIndex case bounds-checks through
+                // `emitIndexLoad`'s opcode; an address consumer bypasses that
+                // opcode entirely; so check explicitly here, before the raw
+                // pointer arithmetic below loses the descriptor's length.
+                const lengthSlot = allocate(ScalarType.ulong_);
+                _code ~= Instruction(
+                    Op.sliceLength, lengthSlot, place.offset,
+                );
+                _code ~= Instruction(
+                    Op.checkStaticArrayIndex, place.indexOffset, lengthSlot,
+                );
+
                 const pointer = allocateBytes(
                     cast(uint) size_t.sizeof, size_t.sizeof,
                 );
