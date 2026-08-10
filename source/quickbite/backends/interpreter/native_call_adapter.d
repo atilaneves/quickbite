@@ -129,6 +129,7 @@ public bool tryCallNativeAddressOnly(
     imported!"dmd.func".FuncDeclaration function_,
     in imported!"quickbite.backends.interpreter.runtime_value".Value[] arguments,
     imported!"dmd.mtype".Type[] argumentTypes,
+    NativeOperand[] directAddressOperands,
     out imported!"quickbite.backends.interpreter.runtime_value".Value result,
 ) {
     import core.sys.posix.dlfcn: dlsym;
@@ -184,6 +185,21 @@ public bool tryCallNativeAddressOnly(
             !valueMatchesPlace(parameterType, argument)
         )
             return false;
+
+        // A local or field lvalue already has the one storage place that
+        // represents it to the interpreter. Its bytes are current there, so
+        // borrow that place instead of taking a snapshot in a scratch block.
+        if (
+            index < directAddressOperands.length &&
+            directAddressOperands[index].address !is null &&
+            directAddressOperands[index].type.equals(parameterType)
+        ) {
+            operandTypes[index] = TypedAddress(
+                parameterType,
+                directAddressOperands[index].address,
+            );
+            continue;
+        }
 
         auto owner = NativeBlock.allocate(
             typeByteSize(parameterType),

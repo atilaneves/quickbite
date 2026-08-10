@@ -5132,6 +5132,10 @@ private struct Walker {
                         call.f,
                         arguments,
                         argumentTypes,
+                        nativeAddressOnlyOperands(
+                            argumentExpressions,
+                            argumentTypes,
+                        ),
                         result,
                     ))
                         return result;
@@ -11553,10 +11557,60 @@ private struct Walker {
         return values;
     }
 
-    // The frontend preserves `&local` as an AddrExp or SymOffExp. For scalar
-    // pointees its evaluated pointer already names the binding's authoritative
-    // native place. Hand libffi a typed ABI slot containing that pointer rather
-    // than asking the core to allocate an out cell and later write it back.
+    // A by-value local/ref binding or composable field can lend the native
+    // call its existing typed place. Rvalues continue through typed scratch.
+    private imported!"quickbite.backends.interpreter.native_call_adapter".NativeOperand[]
+    nativeAddressOnlyOperands(
+        imported!"dmd.expression".Expression[] argumentExpressions,
+        imported!"dmd.mtype".Type[] argumentTypes,
+    ) {
+        import dmd.tokens: EXP;
+        import quickbite.backends.interpreter.native_call_adapter: NativeOperand;
+
+        NativeOperand[] operands;
+        operands.length = argumentExpressions.length;
+        foreach (index, expression; argumentExpressions) {
+            if (index >= argumentTypes.length || argumentTypes[index] is null)
+                continue;
+
+            // `auto`: DMD returns a mutable Type pointer.
+            auto type = argumentTypes[index].toBasetype;
+            if (
+                expression.type is null ||
+                !expression.type.toBasetype.equals(type) ||
+                !hasStableLocalFieldPlace(expression)
+            )
+                continue;
+
+            const address = addressOfExpression(expression, EXP.address);
+            if (address.isPointer)
+                operands[index] = NativeOperand(type, address.pointerAddress);
+        }
+        return operands;
+    }
+
+    // An already-evaluated plain local/ref binding, or a DotVarExp chain
+    // rooted in one, can be addressed without evaluating an operand again.
+    // Do not broaden this to PtrExp, IndexExp, or calls: their address walk
+    // could repeat a source side effect after argument evaluation.
+    private bool hasStableLocalFieldPlace(
+        imported!"dmd.expression".Expression expression,
+    ) {
+        if (auto variable = expression.isVarExp) {
+            auto declaration = variable.var.isVarDeclaration;
+            return declaration !is null &&
+                !declaration.isDataseg &&
+                (_activationFrame.hasOwningSlot(declaration) ||
+                    _activationFrame.hasReferenceSlot(declaration));
+        }
+
+        if (auto field = expression.isDotVarExp)
+            return field.var.isVarDeclaration !is null &&
+                hasStableLocalFieldPlace(field.e1);
+
+        return false;
+    }
+
     private imported!"quickbite.backends.interpreter.native_call_adapter".NativeOperand[]
     nativeDirectAddressOperands(
         imported!"dmd.expression".Expression[] argumentExpressions,
