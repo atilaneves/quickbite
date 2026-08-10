@@ -484,41 +484,7 @@ private struct Walker {
                 else if (addressOfRefReturn)
                     result = refReturnAddress(return_.exp);
                 else {
-                    // A bare `return () => ...;` is a FuncExp as the direct
-                    // return expression, never first assigned to a local;
-                    // ordinary `runExpression` has no general case for one
-                    // (it answers `Value.undisplayable`) -- the same gap
-                    // `runDeclarationExpression`/`runAssignExpression`/
-                    // `structLiteralValue` already route around via
-                    // `runFunctionLiteralDeclaration`. Scoped to a literal
-                    // that actually CAPTURES an outer variable
-                    // (`frame_layout.capturedVariables`, the same source
-                    // `closureCapturedAddresses` already reads) only:
-                    // `FuncLiteralDeclaration.isNested` answers true for
-                    // any `delegate`-token literal regardless of whether
-                    // it captures anything, so it can't tell a capturing
-                    // literal apart from a non-capturing one -- and a
-                    // non-capturing bare return needs no closure machinery
-                    // in the first place. Keeping the non-capturing case on
-                    // the `Value.undisplayable` placeholder path preserves
-                    // the REPL's own synthetic top-level eval wrapper
-                    // (`auto __quickbite_repl_eval_N__() { return <input>;
-                    // }`, `frontend/cell.d`), which is the SAME `return
-                    // FuncExp;` shape and whose undisplayable-placeholder
-                    // rendering `tests/ut/bin/repl.d`'s
-                    // `displaysUndisplayablePlaceholderForFunctionLiterals`
-                    // pins on purpose (commit d8206025).
-                    auto literal = return_.exp.isFuncExp;
-                    bool captures = false;
-                    if (literal !is null && literal.fd !is null) {
-                        import quickbite.backends.interpreter.frame_layout:
-                            capturedVariables;
-
-                        captures = capturedVariables(literal.fd).length != 0;
-                    }
-                    result = !captures
-                        ? runExpression(return_.exp)
-                        : runFunctionLiteralDeclaration(literal);
+                    result = runExpression(return_.exp);
                     if (return_.exp.type.toBasetype.isTypeClass !is null)
                         result = rootedNativeClassValue(return_.exp, result);
                 }
@@ -1858,8 +1824,8 @@ private struct Walker {
         if (auto delegate_ = expression.isDelegateExp)
             return runDelegateExpression(delegate_);
 
-        if (expression.isFuncExp)
-            return Value.undisplayable;
+        if (auto literal = expression.isFuncExp)
+            return runFunctionLiteralDeclaration(literal);
 
         if (auto arrayLength = expression.isArrayLengthExp)
             return Value(AggregateValue.length(runExpression(arrayLength.e1)));
@@ -3881,7 +3847,9 @@ private struct Walker {
                     : (*call.f.parameters)[index];
                 EvaluatedReferenceArgument evaluated;
                 if (parameter !is null && parameterIsLazy(parameter))
-                    arguments ~= Value.undisplayable;
+                    // The lazy argument is captured as an expression below;
+                    // this aligned entry is never bound or evaluated.
+                    arguments ~= Value.void_;
                 else if (nativeCall && nativeReferenceParameter(call.f, index))
                     arguments ~= runRefArgumentExpression(argument, evaluated);
                 else if (parameter !is null &&
@@ -3904,19 +3872,15 @@ private struct Walker {
                 isStdConvText, stdConvTextCall;
 
             if (isStdConvText(call.f)) {
+                import dmd.mtype: Type;
                 import quickbite.backends.interpreter.interception_guard:
                     enforceInterceptionPolicy;
-                import quickbite.frontend.dmd.types: isCharacterArrayType;
 
                 enforceInterceptionPolicy(call.f, "isStdConvText");
-                // Value no longer preserves the source expression type, but
-                // std.conv.text renders char[] arguments as raw string text.
-                bool[] rawStringArguments;
+                Type[] argumentTypes;
                 foreach (argumentExpression; argumentExpressions)
-                    rawStringArguments ~= isCharacterArrayType(
-                        argumentExpression.type,
-                    );
-                return stdConvTextCall(arguments, rawStringArguments, call.type);
+                    argumentTypes ~= argumentExpression.type;
+                return stdConvTextCall(arguments, argumentTypes, call.type);
             }
         }
 
@@ -6715,11 +6679,7 @@ private struct Walker {
         }
 
         // A fresh closure RHS (`c.f = (int x) => x + captured;`) is a bare
-        // `FuncExp`; ordinary `runExpression` has no general case for one
-        // (it answers `Value.undisplayable`) -- the same gap
-        // `runDeclarationExpression`/`runIndexAssignExpression`/
-        // `structLiteralValue` already route around via
-        // `runFunctionLiteralDeclaration`.
+        // `FuncExp`; construct its callable before writing the destination.
         auto literal = assign.e2.isFuncExp;
         auto value = literal is null
             ? runExpression(assign.e2)
@@ -7684,10 +7644,7 @@ private struct Walker {
             checkStaticArrayIndexInBounds(current, arrayIndex);
 
         // A fresh closure RHS (`dgs[0] = () => 1;`) is a bare `FuncExp`;
-        // ordinary `runExpression` has no general case for one (it answers
-        // `Value.undisplayable`) -- the same gap this module's other
-        // delegate-write call sites already route around via
-        // `runFunctionLiteralDeclaration`.
+        // construct its callable before writing the destination.
         auto literal = rhs.isFuncExp;
         const value = literal is null
             ? runExpression(rhs)
@@ -8790,10 +8747,7 @@ private struct Walker {
     }
 
     // An array-literal element typed `delegate` (`[() => 42]`) may carry a
-    // LIVE callable value rather than `null`, the same gap
-    // `structLiteralValue` already routes around: a bare `FuncExp` element
-    // needs `runFunctionLiteralDeclaration` (ordinary `runExpression`
-    // answers `Value.undisplayable` for one), and `AggregateValue.
+    // LIVE callable value rather than `null`. `AggregateValue.
     // reconstructArray`'s `writeValue` call only ever accepts `Value.null_`
     // for a Tdelegate element, so every live entry is substituted with
     // `Value.null_` for the reconstruction and then re-registered in
@@ -8915,13 +8869,8 @@ private struct Walker {
                     && index < (*literal.elements).length;
                 auto element = hasElement ? (*literal.elements)[index] : null;
                 // A fresh closure element (`() => 42`) is a bare `FuncExp`,
-                // not a `DelegateExp` -- ordinary `runExpression` has no
-                // general case for one (it is only ever meaningful at a
-                // declaration/assignment seam that can register the fresh
-                // function pointer) and answers `Value.undisplayable`
-                // instead, the same gap `runIndexAssignExpression` and
-                // `runDeclarationExpression` already route around via
-                // `runFunctionLiteralDeclaration`.
+                // not a `DelegateExp`; construct the callable before
+                // registering it in the field's metadata slot.
                 auto elementLiteral = element is null ? null : element.isFuncExp;
                 auto value = element is null
                     ? structLiteralDefaultFieldValue(literal, index, fields)

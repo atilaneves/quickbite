@@ -155,12 +155,13 @@ for speed.
 ### 2. Finish The Value-Representation End State
 
 Complete `value.md` before production performance changes. Delete the shared
-`Value`, the existing broad Interpreter `RuntimeValue`, formatting/reification
-scaffolding, and remaining transitional representation maps. Pointer
-lifetimes use ordinary GC scanning from native frames and blocks, with a scoped
-temporary owner only while a newly produced raw address has not yet reached
-scanned storage; an execution-wide root registry is not an optimisation
-target and must not return.
+`Value`, replace the historical broad Interpreter `RuntimeValue` name with the
+narrow `ExpressionResult`, and delete remaining formatting/reification
+scaffolding and transitional representation maps. Pointer lifetimes use
+ordinary GC scanning from native frames and blocks, with a scoped temporary
+owner only while a newly produced raw address has not yet reached scanned
+storage; an execution-wide root registry is not an optimisation target and
+must not return.
 
 Completion means the Interpreter satisfies `value.md`'s end-state criteria and
 the performance profile contains only machinery intended to survive. Do not

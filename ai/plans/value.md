@@ -42,9 +42,12 @@ Current capabilities:
 - `RuntimeValue` is transient expression currency. Its sole aggregate arm owns
   or borrows typed native DMD-layout storage, and its sole data-pointer arm is
   a host address. It has no structural array, struct, associative-array, entry,
-  or class-object arms. Aggregate construction always has a DMD type, and
-  aggregate place writes copy the complete typed byte span. `RuntimeValue` is
-  never local, alias, or cross-frame storage authority.
+  class-object, undisplayable, formatting, or string-display-metadata arms.
+  Aggregate construction always has a DMD type, and aggregate place writes
+  copy the complete typed byte span. `RuntimeValue` is never local, alias, or
+  cross-frame storage authority. Diagnostics and the temporary
+  `std.conv.text` interceptor render from the expression's DMD type and typed
+  scalar accessors at their consumer sites.
 - The Interpreter native-call adapter has one preparation path and one
   execution path. Preparation selects typed argument, receiver, and result
   addresses; execution calls the address-only `quickbite.ffi.ffi` bridge.
@@ -776,12 +779,13 @@ fork/return reconciliation are gone: `FrameBlock`, `ModuleTable`, and typed
 symbolic-reference metadata may accompany native byte ranges, but may not
 become a second binding store.
 
-Delete the remaining broad `RuntimeValue` type rather than retaining it under
-its private alias `Value`. If recursive AST evaluation still needs a carrier,
-replace it with the smallest non-owning scalar/address/callable carrier allowed
-by decisions 7 and 11; it must contain no formatting model, recursively boxed
-aggregate, class-object snapshot, or storage authority. A class expression is
-only a native aggregate owner or its object-body address.
+Rename the remaining narrow carrier from the historical `RuntimeValue`/`Value`
+spellings to `ExpressionResult`. It already has the smallest non-owning
+scalar/address/callable shape allowed by decisions 7 and 11: no formatting
+model, recursively boxed aggregate, class-object snapshot, or storage
+authority. A class expression is only a native aggregate owner or its
+object-body address. The rename must be mechanical; it must not grow a new
+abstraction or change this arm set.
 
 ### Item 6 — Open design questions
 

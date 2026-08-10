@@ -238,6 +238,9 @@
 - Do not omit untested backend rows: verify every mature backend and include
   each one that passes.
 
+- In zsh, do not assign to reserved readonly parameters such as `status`; use
+  a task-specific variable name.
+
 - After routing an aggregate rvalue through a shared place, delete downstream
   predicates that reinterpret its bytes as the old transport metadata. A
   place load exposes the language value, not a legacy descriptor wrapper.

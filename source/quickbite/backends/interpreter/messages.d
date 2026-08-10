@@ -291,9 +291,6 @@ public string equalityOperandMessage(
     if (isIntegralExpression(expression))
         return text(value.asLong);
 
-    if (value.isFloatingScalar)
-        return value.dText;
-
     if (AggregateValue.isArray(value) &&
         isCharacterArrayType(expression.type)) {
         string characters;
@@ -303,27 +300,82 @@ public string equalityOperandMessage(
     }
 
     if (AggregateValue.isArray(value))
-        return nativeArrayText(value);
+        return nativeArrayText(value, expression.type);
 
-    return text(value);
+    return scalarText(value, expression.type);
 }
 
 
 private string nativeArrayText(
     in imported!"quickbite.backends.interpreter.runtime_value".Value value,
+    imported!"dmd.mtype".Type type,
 ) {
     import quickbite.backends.interpreter.aggregate_value: AggregateValue;
 
+    auto elementType = type.toBasetype.nextOf;
     string result = "[";
     foreach (index; 0 .. AggregateValue.elementCount(value)) {
         if (index)
             result ~= ", ";
         const element = AggregateValue.elementAt(value, index);
         result ~= AggregateValue.isArray(element)
-            ? nativeArrayText(element)
-            : element.dText;
+            ? nativeArrayText(element, elementType)
+            : scalarText(element, elementType);
     }
     return result ~ "]";
+}
+
+
+private string scalarText(
+    in imported!"quickbite.backends.interpreter.runtime_value".Value value,
+    imported!"dmd.mtype".Type type,
+) {
+    import dmd.astenums: TY;
+    import quickbite.backends.interpreter.runtime_value: Value;
+    import std.conv: text;
+
+    if (value == Value.null_)
+        return "null";
+    if (value.isEnumScalar)
+        return value.enumName;
+    if (value.isImaginaryScalar)
+        return text(value.imaginaryPart, "i");
+    if (value.isComplexScalar)
+        return text(
+            value.complexRealPart.asReal,
+            "+",
+            value.complexImaginaryPart.asReal,
+            "i",
+        );
+    if (value.isTypeName)
+        return value.asTypeNameString;
+    if (value.isFunctionPointer)
+        return text("<function pointer ", value.functionPointerId, ">");
+    if (value.isPointer)
+        return text(value.pointerAddress);
+    if (value.isNativeDelegate)
+        return text(value.nativeDelegateFuncptr);
+    if (value.isNativeAggregate)
+        return "<native aggregate>";
+
+    switch (type.toBasetype.ty) with (TY) {
+        case Tbool:
+            return text(value == Value(true));
+        case Tchar, Twchar, Tdchar:
+            return value.asUtf8Character;
+        case Tint8, Tint16, Tint32, Tint64:
+            return text(value.asLong);
+        case Tuns8, Tuns16, Tuns32, Tuns64:
+            return text(value.asUnsignedLong);
+        case Tfloat32:
+            return text(cast(float) value.asReal);
+        case Tfloat64:
+            return text(cast(double) value.asReal);
+        case Tfloat80:
+            return text(value.asReal);
+        default:
+            throw new Exception("Unsupported diagnostic operand type.");
+    }
 }
 
 public string assertMessage(

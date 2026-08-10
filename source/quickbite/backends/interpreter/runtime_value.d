@@ -38,7 +38,6 @@ public struct RuntimeValue {
         TypeName,
         EnumValue,
         FunctionPointer,
-        Undisplayable,
     );
 
     private Data data = Data(Void.init);
@@ -90,10 +89,6 @@ public struct RuntimeValue {
         return Value(ImaginaryScalar(value));
     }
 
-    public static Value undisplayable() @safe pure {
-        return Value(Undisplayable.init);
-    }
-
     private this(in Void value) @safe pure {
         data = Data(value);
     }
@@ -138,10 +133,6 @@ public struct RuntimeValue {
         data = Data(value);
     }
 
-    private this(in Undisplayable value) @safe pure {
-        data = Data(value);
-    }
-
     public this(T)(in T value) @safe pure
     if (
         !is(T == E[], E) &&
@@ -156,24 +147,6 @@ public struct RuntimeValue {
 
     public bool opEquals(in Value other) const @safe pure {
         return data == other.data;
-    }
-
-    public size_t toHash() const @safe pure nothrow {
-        return 0;
-    }
-
-    private dchar asDchar() const @safe pure {
-        import std.sumtype: match;
-
-        return data.match!(
-            (const(char) value) => cast(dchar) value,
-            (const(wchar) value) => cast(dchar) value,
-            (const(dchar) value) => value,
-            (_) {
-                throw new Exception("Expected character.");
-                return dchar.init;
-            },
-        );
     }
 
     public string asUtf8Character() const @safe pure {
@@ -199,15 +172,6 @@ public struct RuntimeValue {
         );
     }
 
-    public bool isChar() const @safe pure {
-        import std.sumtype: match;
-
-        return data.match!(
-            (const(char) value) => true,
-            (_) => false,
-        );
-    }
-
     public bool isCharacter() const @safe pure {
         import std.sumtype: match;
 
@@ -227,38 +191,6 @@ public struct RuntimeValue {
             (_) {
                 throw new Exception("Expected char.");
                 return char.init;
-            },
-        );
-    }
-
-    public string dText() const @safe pure {
-        import std.conv: text;
-        import std.sumtype: match;
-
-        return data.match!(
-            (value) {
-                alias T = typeof(value);
-                static if (is(T == const(TypeName)) || is(T == TypeName)) {
-                    return value.toString;
-                } else static if (is(T == const(EnumValue)) || is(T == EnumValue)) {
-                    return value.toString;
-                } else static if (is(T == const(FunctionPointer)) || is(T == FunctionPointer)) {
-                    return value.toString;
-                } else static if (is(T == const(Pointer)) || is(T == Pointer)) {
-                    return value.toString;
-                } else static if (is(T == const(NativeAggregate)) ||
-                    is(T == NativeAggregate))
-                {
-                    return "<native aggregate>";
-                } else static if (is(T == const(Undisplayable)) ||
-                    is(T == Undisplayable))
-                {
-                    return "<undisplayable>";
-                } else static if (is(T == const(Null)) || is(T == Null)) {
-                    return "null";
-                } else {
-                    return text(value);
-                }
             },
         );
     }
@@ -390,6 +322,68 @@ public struct RuntimeValue {
         );
     }
 
+    public ulong asUnsignedLong() const @safe pure {
+        import std.sumtype: match;
+        import std.traits: Unqual, isIntegral, isSomeChar;
+
+        return data.match!(
+            (value) {
+                alias T = Unqual!(typeof(value));
+
+                static if (isIntegral!T || isSomeChar!T || is(T == bool)) {
+                    return cast(ulong) value;
+                } else static if (is(T == EnumValue)) {
+                    return cast(ulong) value.value;
+                } else {
+                    throw new Exception("Expected integer-compatible scalar.");
+                    return 0UL;
+                }
+            },
+        );
+    }
+
+    public bool isEnumScalar() const @safe pure nothrow {
+        import std.sumtype: match;
+
+        return data.match!(
+            (const(EnumValue) value) => true,
+            (_) => false,
+        );
+    }
+
+    public string enumName() const @safe pure {
+        import std.sumtype: match;
+
+        return data.match!(
+            (const(EnumValue) value) => value.name,
+            (_) {
+                throw new Exception("Expected enum scalar.");
+                return null;
+            },
+        );
+    }
+
+    public bool isImaginaryScalar() const @safe pure nothrow {
+        import std.sumtype: match;
+
+        return data.match!(
+            (const(ImaginaryScalar) value) => true,
+            (_) => false,
+        );
+    }
+
+    public real imaginaryPart() const @safe pure {
+        import std.sumtype: match;
+
+        return data.match!(
+            (const(ImaginaryScalar) value) => value.value,
+            (_) {
+                throw new Exception("Expected imaginary scalar.");
+                return real.nan;
+            },
+        );
+    }
+
     public bool isIntegerCompatibleScalar() const @safe pure nothrow {
         import std.sumtype: match;
         import std.traits: Unqual, isIntegral, isSomeChar;
@@ -408,19 +402,6 @@ public struct RuntimeValue {
                 } else {
                     return false;
                 }
-            },
-        );
-    }
-
-    public bool isFloatingScalar() const @safe pure nothrow {
-        import std.sumtype: match;
-        import std.traits: Unqual, isFloatingPoint;
-
-        return data.match!(
-            (value) {
-                alias T = Unqual!(typeof(value));
-
-                return isFloatingPoint!T;
             },
         );
     }
@@ -892,11 +873,6 @@ private struct ImaginaryScalar {
         this.value = value;
     }
 
-    public string toString() const @safe pure {
-        import std.conv: text;
-
-        return text(value, "i");
-    }
 }
 
 
@@ -936,11 +912,6 @@ private struct ComplexScalar {
             );
     }
 
-    public string toString() const @safe pure {
-        import std.conv: text;
-
-        return text(realPart, "+", imaginaryPart, "i");
-    }
 }
 
 
@@ -951,9 +922,6 @@ private struct TypeName {
         this.name = name;
     }
 
-    public string toString() const @safe pure {
-        return name;
-    }
 }
 
 
@@ -966,9 +934,6 @@ private struct EnumValue {
         this.value = value;
     }
 
-    public string toString() const @safe pure {
-        return name;
-    }
 }
 
 
@@ -979,25 +944,11 @@ private struct FunctionPointer {
         this.id = id;
     }
 
-    public string toString() const @safe pure {
-        import std.conv: text;
-
-        return text("<function pointer ", id, ">");
-    }
 }
-
-
-private struct Undisplayable {}
 
 
 private struct Pointer {
     public void* address;
-
-    public string toString() const @safe pure {
-        import std.conv: text;
-
-        return text(address);
-    }
 }
 
 
@@ -1007,12 +958,6 @@ private struct Pointer {
 private struct NativeDelegate {
     public const(void)* context;
     public const(void)* funcptr;
-
-    public string toString() const @safe pure {
-        import std.conv: text;
-
-        return text(funcptr);
-    }
 }
 
 
