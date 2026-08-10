@@ -309,8 +309,9 @@ private struct Walker {
     // Heap allocations made by interpreted `new T` own native guest bytes.
     // A native pointer is intentionally only a host address, so this table is
     // the host-only root that keeps each allocation live for the execution.
-    // Every child walker shares this execution-wide table; the guest pointer
-    // never carries an allocation id or a boxed snapshot.
+    // Child walkers copy and merge it with the other execution-wide native
+    // roots; the guest pointer never carries an allocation id or a boxed
+    // snapshot.
     private NativeBlock[const(void)*] nativePointerRoots;
 
     // Interpreted function declarations have no host code address. A guest
@@ -3302,7 +3303,7 @@ private struct Walker {
         child.moduleTable = moduleTable;
         child.nativeThrowableRoots = nativeThrowableRoots.dup;
         child.nativeThrowableNext = nativeThrowableNext.dup;
-        child.nativePointerRoots = nativePointerRoots;
+        child.nativePointerRoots = nativePointerRoots.dup;
         child.nativeFunctionPointerSlots = nativeFunctionPointerSlots.dup;
         child.nativeTypeInfoSlots = nativeTypeInfoSlots.dup;
         child.nextClassObjectId = nextClassObjectId;
@@ -6429,6 +6430,7 @@ private struct Walker {
         in bool captureLocals = false,
     ) {
         mergeNativeThrowableRoots(child);
+        mergeNativePointerRoots(child);
         nextFunctionPointerId = child.nextFunctionPointerId;
         nextClassObjectId = child.nextClassObjectId;
         functionPointers = child.functionPointers;
@@ -6454,6 +6456,7 @@ private struct Walker {
         in Value[] arguments,
     ) {
         mergeNativeThrowableRoots(child);
+        mergeNativePointerRoots(child);
         nextFunctionPointerId = child.nextFunctionPointerId;
         nextClassObjectId = child.nextClassObjectId;
         functionPointers = child.functionPointers;
@@ -6475,6 +6478,11 @@ private struct Walker {
     private void mergeNativeThrowableRoots(ref Walker child) {
         foreach (pointer, throwable; child.nativeThrowableRoots)
             nativeThrowableRoots[pointer] = throwable;
+    }
+
+    private void mergeNativePointerRoots(ref Walker child) {
+        foreach (address, block; child.nativePointerRoots)
+            nativePointerRoots[address] = block;
     }
 
     /*
@@ -11993,6 +12001,7 @@ private struct Walker {
     // value does not merely answer staler -- the next read of that global
     // compares the two and asserts.
     private void mergeNewStructConstructorState(ref Walker child) {
+        mergeNativePointerRoots(child);
         nextClassObjectId = child.nextClassObjectId;
         nativeClassTypes = child.nativeClassTypes;
         nativeClassOwners = child.nativeClassOwners;
@@ -12099,6 +12108,7 @@ private struct Walker {
     }
 
     private void mergeNewClassExpressionState(ref Walker child) {
+        mergeNativePointerRoots(child);
         nextFunctionPointerId = child.nextFunctionPointerId;
         nextClassObjectId = child.nextClassObjectId;
         functionPointers = child.functionPointers;
