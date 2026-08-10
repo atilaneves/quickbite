@@ -3014,14 +3014,26 @@ private struct Compiler {
         if (auto conditional = expression.isCondExp) {
             if (!conditional.isLvalue)
                 return null;
+            // A resolver that can decline must look side-effect-free to its
+            // caller: the caller's fallback recompiles `expression` from
+            // scratch as an rvalue on a decline, and that fallback's own
+            // ternary codegen is a real, working, independent path (it does
+            // not require both arms to have a Place -- a string-literal arm
+            // is a perfectly good rvalue). So a decline here rewinds `_code`
+            // to its pre-emission length rather than leaving the condition
+            // eval and an unpatched jump as live, permanent instructions in
+            // the compiled function for the fallback to land on top of.
+            const savedCodeLength = _code.length;
             const condition = compileBoolCondition(conditional.econd);
             const pointer = allocateBytes(
                 cast(uint) size_t.sizeof, size_t.sizeof,
             );
             const falseJump = emitJumpIfFalse(condition);
             auto whenTrue = placeOrNull(conditional.e1);
-            if (whenTrue is null)
+            if (whenTrue is null) {
+                _code.length = savedCodeLength;
                 return null;
+            }
             const whenTrueAddress = addressOfPlace(*whenTrue);
             _code ~= Instruction(
                 Op.copy, pointer, whenTrueAddress.offset,
@@ -3030,8 +3042,10 @@ private struct Compiler {
             const endJump = emitJump;
             patchJump(falseJump);
             auto whenFalse = placeOrNull(conditional.e2);
-            if (whenFalse is null)
+            if (whenFalse is null) {
+                _code.length = savedCodeLength;
                 return null;
+            }
             const whenFalseAddress = addressOfPlace(*whenFalse);
             _code ~= Instruction(
                 Op.copy, pointer, whenFalseAddress.offset,
@@ -8711,15 +8725,38 @@ private struct Compiler {
     private Operand compileConditionalExpression(
         imported!"dmd.expression".CondExp conditional,
     ) {
+        import dmd.astenums: TY;
+
         const condition = compileBoolCondition(conditional.econd);
-        const result = allocateBytes(cast(uint) size_t.sizeof, size_t.sizeof);
+        // A dynamic-array-typed result (string included) is a 16-byte
+        // {ptr, length} descriptor, not the 8-byte pointer/scalar
+        // `operandSize` computes for every other result kind (this
+        // function's original design, per the comment below, was a
+        // pointer-valued conditional -- an 8-byte value). Reinterpreting an
+        // array descriptor as 8 bytes copies only its pointer word and
+        // leaves `result`'s length word at its zeroed frame default, so a
+        // later consumer reads a well-formed-looking but null/zero-length
+        // descriptor.
+        const isArrayResult = conditional.type !is null &&
+            conditional.type.toBasetype.ty == TY.Tarray;
+        const result = allocateBytes(
+            isArrayResult ? sliceDescriptorSize : cast(uint) size_t.sizeof,
+            size_t.sizeof,
+        );
 
         const falseJump = emitJumpIfFalse(condition);
         const whenTrue = compileExpression(conditional.e1);
-        const trueHasValue = hasValue(whenTrue);
+        // An array-typed arm's descriptor Operand is untagged (`void_`
+        // type, not `isPointer`) -- the same shape `hasValue` treats as "no
+        // value" for a void call result. Every array arm genuinely has a
+        // descriptor to copy (even a null/empty one), so bypass `hasValue`
+        // for an array result rather than let it read as valueless.
+        const trueHasValue = isArrayResult || hasValue(whenTrue);
         uint valueSize;
         if (trueHasValue) {
-            valueSize = operandSize(whenTrue);
+            valueSize = isArrayResult
+                ? sliceDescriptorSize
+                : operandSize(whenTrue);
             _code ~= Instruction(
                 Op.copy, result, whenTrue.offset, cast(ushort) valueSize,
             );
@@ -8729,8 +8766,10 @@ private struct Compiler {
         patchJump(falseJump);
         const whenFalse = compileExpression(conditional.e2);
         if (!trueHasValue)
-            valueSize = operandSize(whenFalse);
-        if (hasValue(whenFalse))
+            valueSize = isArrayResult
+                ? sliceDescriptorSize
+                : operandSize(whenFalse);
+        if (isArrayResult || hasValue(whenFalse))
             _code ~= Instruction(
                 Op.copy, result, whenFalse.offset, cast(ushort) valueSize,
             );
