@@ -5113,7 +5113,7 @@ private struct Walker {
             import quickbite.ffi.oldffi: unsupportedNativeTypeMessage;
             import quickbite.backends.interpreter.native_call_adapter:
                 InterpreterInboundTrampolineSession, NativeCallException,
-                tryCallNative;
+                tryCallNative, tryCallNativeAddressOnly;
 
             if (nativeCall) {
                 Value result;
@@ -5128,6 +5128,13 @@ private struct Walker {
                     // Mutable because the native-call interfaces accept Type[].
                     auto argumentTypes =
                         nativeArgumentTypes(argumentExpressions);
+                    if (!call.f.needThis && tryCallNativeAddressOnly(
+                        call.f,
+                        arguments,
+                        argumentTypes,
+                        result,
+                    ))
+                        return result;
                     if (durableInboundSession is null)
                         durableInboundSession = new InterpreterInboundTrampolineSession(
                             &invokeNativeCallback,
