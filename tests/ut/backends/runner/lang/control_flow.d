@@ -56,9 +56,13 @@ static foreach (backend; Matrix!()) {
     }
 }
 
-// A synchronized statement lowers to druntime monitor calls. Its receiver must
-// therefore be a runtime-valid class object, including its hidden header, not
-// merely a body with the declared fields written into it.
+// DMD lowers a synchronized statement to `_d_monitorenter`/`_d_monitorexit`
+// calls. This backend intercepts both as no-ops rather than dispatching them
+// to druntime, since a guest object has no native monitor header for druntime
+// to lock; guest code already executes serially inside one Walker, so the
+// statement's block still runs with the same control flow a real lock would
+// give it. This test only exercises that no-op interception path, not any
+// native object-layout guarantee.
 static foreach (backend; Matrix!(
     Omit!(Ctfe, Because.inexpressible,
         "CTFE cannot execute the body-less _d_monitorenter runtime hook"),
@@ -71,9 +75,11 @@ static foreach (backend; Matrix!(
         runBackendSourceFixtureTests!backend(q{
             unittest {
                 auto lock = new Object;
+                int entered;
                 synchronized (lock) {
-                    assert(true);
+                    entered = 1;
                 }
+                assert(entered == 1);
             }
         });
     }

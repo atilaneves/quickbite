@@ -83,6 +83,12 @@ static foreach (backend; Matrix!(
                                     other.length == bytes.length;
                                 }
 
+                                // @trusted: `&this` is disallowed in @safe
+                                // code because the compiler cannot verify a
+                                // taken address of `this` never escapes; the
+                                // pointer here is only ever compared to
+                                // `null` in this same expression and never
+                                // stored or returned.
                                 const isNull = () @trusted {
                                     return &this is null;
                                 }();
@@ -92,6 +98,12 @@ static foreach (backend; Matrix!(
                                     const index = pureSprintf(
                                         &textBuffer[0],
                                         "unknown range: %p %ld",
+                                        // @trusted: `bytes` is `scope`, so
+                                        // @safe code cannot take `.ptr` off
+                                        // it; the pointer is only ever
+                                        // handed to `pureSprintf`'s `%p`
+                                        // formatting below, never
+                                        // dereferenced or retained.
                                         () @trusted { return bytes.ptr; }(),
                                         bytes.length,
                                     );
@@ -104,10 +116,18 @@ static foreach (backend; Matrix!(
                                 foreach (i; index .. entries.length - 1)
                                     entries[i] = entries[i + 1];
                                 entries = entries[0 .. $ - 1];
-                                return () @trusted { return true; }();
+                                return true;
                             }
                         }
 
+                        // @trusted: calls the @system extern(C) bindings
+                        // below. Every call site in this fixture passes
+                        // `&textBuffer[0]` (a fixed 1024-byte buffer) as
+                        // `output` together with the hardcoded
+                        // `"unknown range: %p %ld"` format, whose two `%p`/
+                        // `%ld` conversions match `arguments`' two callers
+                        // exactly, so this can neither overflow the buffer
+                        // nor read past `arguments`.
                         private int pureSprintf(A...)(
                             scope char* output,
                             scope const(char*) format,

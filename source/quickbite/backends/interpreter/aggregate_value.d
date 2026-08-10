@@ -842,6 +842,11 @@ private ubyte[] bytesAt(void* address, in size_t length) pure nothrow @trusted {
 }
 
 
+// `elementAt`, this function's one caller, only ever passes the address
+// `Place.index` returned for a `void[]` slice place. `Place.index` already
+// bounds-checked the index against the slice header's own `length` field
+// (place.d's `index` doc comment) before computing that address, so it names
+// one live byte within the slice's established extent.
 private ubyte byteAt(void* address) pure nothrow @trusted {
     return *cast(ubyte*) address;
 }

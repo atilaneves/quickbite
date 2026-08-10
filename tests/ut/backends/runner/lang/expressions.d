@@ -946,9 +946,8 @@ static foreach (backend; Matrix!(
     }
 }
 
-// Bytecode currently exposes an empty initializer for a class TypeInfo. Keep
-// that divergence explicit until Bytecode can match compiled D's instance
-// initializer bytes.
+// The Bytecode divergence characterized here is the one the `Omit!` above
+// points at.
 @("typeid.classReferenceInitializerIsEmpty.Bytecode")
 @Tags(Bytecode.stringof)
 unittest {
@@ -9313,9 +9312,12 @@ private enum destructorTryScopeExitSource = q{
     }
 };
 
-// CTFE and Bytecode diverge from compiled D: both report the destructor's
-// AssertError as an uncaught test failure instead of entering the catch.
-static foreach (backend; AliasSeq!(Ctfe, Bytecode)) {
+// CTFE cannot unwind through a scope-exit destructor's exception the way
+// runtime execution does: it reports the destructor's AssertError as an
+// uncaught test failure instead of entering the catch. This is a structural
+// CTFE limitation, not a Bytecode one -- Bytecode's omission below is a
+// promotion-backlog gap, not a pinned divergence.
+static foreach (backend; AliasSeq!(Ctfe)) {
     @("destructor.tryScopeExitExceptionIsCaught." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -9335,8 +9337,9 @@ static foreach (backend; AliasSeq!(Ctfe, Bytecode)) {
 static foreach (backend; Matrix!(
     Omit!(Ctfe, Because.diverges,
         "see sibling pin above (scope-exit AssertError is uncaught)"),
-    Omit!(Bytecode, Because.diverges,
-        "see sibling pin above (scope-exit AssertError is uncaught)"),
+    Omit!(Bytecode, Because.unconfirmed,
+        "the bytecode core does not yet propagate a scope-exit destructor's "
+        ~ "exception to an enclosing catch"),
 )) {
     @("destructor.tryScopeExitExceptionIsCaught." ~ backend.stringof)
     @Tags(backend.stringof)
@@ -9358,6 +9361,10 @@ static foreach (backend; Matrix!(
         runBackendSourceFixtureTests!backend(q{
             unittest {
                 char[3] storage;
+                // `view` is cast to `immutable` only to give the assignment
+                // below something to cast away; it still aliases the mutable
+                // local `storage`, which is never actually shared as
+                // immutable, so writing through it here is safe in practice.
                 immutable(char)[] view = cast(immutable(char)[]) storage[];
                 () @trusted { (cast(char[]) view)[] = "foo"; }();
                 assert(storage[] == "foo");
@@ -9367,16 +9374,16 @@ static foreach (backend; Matrix!(
 }
 
 // `void[]` still denotes byte-addressable storage: its slice bounds and
-// assignment length are measured in bytes. Copying between two native-backed
-// `void[]` slices must therefore copy those bytes despite the element type
-// having no independently representable D value. SystemLinker is the oracle.
+// assignment length are measured in bytes. Copying between two `void[]`
+// slices must therefore copy those bytes despite the element type having no
+// independently representable D value. SystemLinker is the oracle.
 static foreach (backend; Matrix!(
     Omit!(Ctfe, Because.inexpressible,
         "Ctfe cannot read Mallocator.instance at compile time"),
     Omit!(Bytecode, Because.unconfirmed,
         "the bytecode core cannot assign fakePureErrno while allocating"),
 )) {
-    @("assign.nativeVoidSlicesCopyBytes." ~ backend.stringof)
+    @("assign.voidSlicesCopyBytes." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
