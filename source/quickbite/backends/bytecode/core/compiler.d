@@ -2363,8 +2363,8 @@ private struct Compiler {
                             true,
                             ScalarType.void_,
                         );
-                    if (auto element = declarationRecordView(declaration).refPointerOrNull)
-                        return loadThroughPointer(
+                    if (auto element = declarationRecordView(declaration).refPointerOrNull) {
+                        const loaded = loadThroughPointer(
                             Operand(
                                 *existing,
                                 ScalarType.ulong_,
@@ -2373,6 +2373,23 @@ private struct Compiler {
                             ),
                             compileSizeConstant(0),
                         );
+                        // A `ref` parameter to a class-typed value: the frame
+                        // slot holds the address of the caller's class
+                        // reference, so `loadThroughPointer` reads the
+                        // reference itself. Mark it a pointer, matching the
+                        // representation a by-value class parameter gets
+                        // below, so field access through it dereferences the
+                        // object rather than treating the reference bits as
+                        // an opaque scalar.
+                        if (declarationRecordView(declaration).classPointerOrNull)
+                            return Operand(
+                                loaded.offset,
+                                ScalarType.ulong_,
+                                true,
+                                ScalarType.void_,
+                            );
+                        return loaded;
+                    }
                     if (declarationRecordView(declaration).complexDoubleOrNull)
                         return Operand(
                             *existing,
