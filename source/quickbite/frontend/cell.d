@@ -171,8 +171,9 @@ public struct EvalSession {
             localTranscriptSource ~ expressionReturnSource(input, false),
             evalFunctionName,
         );
+        const resultKind = expressionResultKind(diagnosticSource, importPaths);
         const formatExpression = formatExpressionCells &&
-            expressionCanUsePreludeFormat(diagnosticSource, importPaths);
+            resultKind == ExpressionResultKind.value;
         const source = evalSource(
             moduleSource,
             localTranscriptSource ~ expressionReturnSource(
@@ -182,11 +183,15 @@ public struct EvalSession {
             evalFunctionName,
         );
         return evalCellFromSource(
-            Cell.Kind.expression,
+            resultKind == ExpressionResultKind.void_
+                ? Cell.Kind.noDisplay
+                : Cell.Kind.expression,
             source,
             importPaths,
             EvalHistoryTarget.local,
-            expressionHistory(input, valueCellCount),
+            resultKind == ExpressionResultKind.void_
+                ? input ~ ";\n"
+                : expressionHistory(input, valueCellCount),
             [],
             [],
             [],
@@ -327,18 +332,36 @@ private string expressionReturnSource(
         "return __quickbiteFormat(" ~ input ~ ");";
 }
 
-private bool expressionCanUsePreludeFormat(
+private enum ExpressionResultKind {
+    invalid,
+    void_,
+    value,
+}
+
+private ExpressionResultKind expressionResultKind(
     in string source,
     in string[] importPaths,
 ) {
     import quickbite.frontend.compiler: parseSnippet;
 
     try {
-        parseSnippet(source, importPaths);
-        return true;
+        auto moduleResult = parseSnippet(source, importPaths);
+        return functionReturnsVoid(evalFunction(moduleResult.module_))
+            ? ExpressionResultKind.void_
+            : ExpressionResultKind.value;
     } catch (Exception) {
-        return false;
+        return ExpressionResultKind.invalid;
     }
+}
+
+private bool functionReturnsVoid(
+    imported!"dmd.func".FuncDeclaration function_,
+) {
+    import dmd.astenums: TY;
+
+    return function_.type !is null &&
+        function_.type.nextOf !is null &&
+        function_.type.nextOf.toBasetype.ty == TY.Tvoid;
 }
 
 private string[] withReplPreludeImportPath(in string[] importPaths) @safe pure {
@@ -571,10 +594,11 @@ public EvalSourceParseResult parseEvalSource(
     const diagnosticSource = completeEvalSource(source, false);
     try {
         auto moduleResult = parseSnippet(diagnosticSource);
-        if (!formatExpression)
+        auto function_ = evalFunction(moduleResult.module_);
+        if (!formatExpression || functionReturnsVoid(function_))
             return EvalSourceParseResult(
                 diagnosticSource,
-                evalFunction(moduleResult.module_),
+                function_,
                 false,
             );
 

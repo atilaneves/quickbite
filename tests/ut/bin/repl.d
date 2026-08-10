@@ -322,6 +322,20 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode)) {
     }
 }
 
+static foreach (backend; AliasSeq!(Ctfe, Interpreter)) {
+    @("repl.backend.voidExpressionProducesNoDisplay." ~ backend.stringof)
+    unittest {
+        import quickbite.repl: runReplLoop;
+
+        const output = runReplLoop(
+            newBackend!backend,
+            ["({ void f() {} f(); })()", ":q"],
+        );
+
+        output.should == [];
+    }
+}
+
 static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode)) {
     @("repl.backend.skipsCommentOnlyLines." ~ backend.stringof)
     unittest {
