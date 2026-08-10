@@ -721,33 +721,60 @@ recovered by peeling.
 
 ### Item 5 — Delete Interpreter FFI marshalling fallbacks
 
-Finish decision 18 immediately after the Cerealed gate and before broader
-Interpreter language expansion. A correctness fix required to reach Cerealed
-may bring part of this work forward, but must not expand
-`quickbite.ffi.oldffi`. Normal outbound calls recognize scalar
-`&local`/`SymOffExp` operands and direct local/ref
-`VarExp` receivers and fields as authoritative places. Native `ref`/`out`
-formals use pointer CIF entries and direct local binding addresses; native
-`typeid(T)` operands use the resolved host `TypeInfo` address. The adapter's
-public entry points still accept `RuntimeValue` arguments and return
-reconstructed values and writeback arrays. Consequently it retains
-`marshalArgument`, `unmarshalValue`, receiver buffers, mutable-slice
-copy/writeback storage, and the remaining `out`-cell reification.
+**Next PR: complete this item.** This is one migration PR, not a sequence of
+fallback-preserving PRs split by call shape. It may contain many small,
+independently green commits, but it does not merge until every currently
+supported Interpreter native-call shape uses `quickbite.ffi.ffi` and
+`quickbite.ffi.oldffi` is deleted. Broader Interpreter language expansion and
+formatter work wait for that deletion.
+
+Do not migrate by adding address-only entry points beside legacy entry points,
+whether split into free-function, struct-member, constructor, class-member, or
+delegate shapes. That preserves the architecture being removed and makes each
+legacy distinction part of the new adapter. Historical legacy-bridge
+distinctions do not define the new adapter.
+
+The target has one call-preparation path and one execution path. Preparation
+produces the data accepted by `quickbite.ffi.ffi.call`: a `Callable`, typed
+argument addresses, typed result storage, an optional typed receiver address,
+and optional variadic metadata. Free functions, struct/class members,
+constructors, virtual dispatch, native delegates, `ref` returns, and C/C++/D
+linkage differ only in how those fields are prepared. Shape-specific helpers
+may resolve an address, receiver, vtable slot, or lifetime root; they may not
+perform a call or grow another public `tryCallNative*` family. There is no
+parallel address-only-versus-legacy dispatch and no fallback to oldffi.
+
+Normal outbound calls already recognize scalar `&local`/`SymOffExp` operands
+and direct local/ref `VarExp` receivers and fields as authoritative places.
+Native `ref`/`out` formals use direct local binding addresses; native
+`typeid(T)` operands use the resolved host `TypeInfo` address. The current
+adapter still accepts `RuntimeValue` arguments and returns reconstructed values
+and writeback arrays. Consequently it retains `marshalArgument`,
+`unmarshalValue`, receiver buffers, mutable-slice copy/writeback storage, and
+the remaining `out`-cell reification; all of that is deletion scope for the
+next PR, not scaffolding to preserve behind new entry points.
 
 `PtrExp` `ref`/`out` operands, native class-array argument and receiver places,
 and `reserve`/growth call routes remain pending. Each must expose its ordinary
 typed place before it can bypass a fallback; safe refusal is preferable to a
 copied pointee or an invented writeback path.
 
-Move each ordinary native call from `quickbite.ffi.oldffi` to the new
-address-only `quickbite.ffi.ffi`. Make each call consume typed argument,
-receiver, `ref`, and `out` places, using a fixed-width native scratch cell only
-for an rvalue that has no existing address. Allocate typed result storage
+Migrate every currently supported outbound family in that PR: C, C++, and D
+linkage; fixed and already-supported variadic calls; free, struct-member,
+constructor, class/virtual, and native-delegate calls; value and `ref` returns;
+and assignment through a native `ref` return. Each call consumes typed
+argument, receiver, `ref`, and `out` places, using a typed native temporary
+only for an rvalue with no existing address. Allocate typed result storage
 before the call and hand its address to `quickbite.ffi.ffi`; bind or load that
 storage afterward rather than reconstructing an aggregate. A native callee
 writes through the caller's supplied `ref`/`out` address, so no return-time
-aggregate
-reconciliation or writeback array remains.
+aggregate reconciliation or writeback array remains.
+
+Callable resolution and compiler-ABI provenance are value-free FFI utilities,
+not oldffi services re-exported for compatibility. Resident and dependency
+image symbols retain the ABI of the code that defines them; virtual dispatch
+retains the ABI of the resolved override. Move that utility outright and make
+both loading and calling use it before deleting oldffi.
 
 Callbacks obey the same representation rule: their native argument addresses
 are borrowed typed places while the callback runs, and their result is written
@@ -757,8 +784,13 @@ plumbing, not representation conversion.
 
 Completion requires all of the following:
 
+- exactly one Interpreter native-call execution path invokes
+  `quickbite.ffi.ffi.call`;
+- call-shape helpers only prepare invocation data and never call either bridge;
 - normal outbound arguments and results cross through addresses;
 - receivers and `ref`/`out` parameters use their authoritative places;
+- all previously supported outbound call families and inbound callbacks keep
+  their oracle-backed behavior without an oldffi fallback;
 - no recursive aggregate materialize/reify or post-call reconstruction path
   exists;
 - the buffer fallback methods and legacy adapter are deleted rather than
