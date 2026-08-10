@@ -9851,6 +9851,28 @@ static foreach (backend; Matrix!()) {
     }
 }
 
+static foreach (backend; AliasSeq!(Interpreter, SystemLinker)) {
+    @("class.constructorArrayResizePreservesAssignedElements." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            class Holder {
+                int[] values;
+
+                this() {
+                    values = [1, 2];
+                    values.length = 3;
+                }
+            }
+
+            unittest {
+                auto holder = new Holder;
+                assert(holder.values == [1, 2, 0]);
+            }
+        });
+    }
+}
+
 static foreach (backend; Matrix!()) {
     @("vector.scalarCastSplatsToStaticArray." ~ backend.stringof)
     @Tags(backend.stringof)
