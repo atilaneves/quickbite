@@ -150,6 +150,17 @@ private struct UninitializedBindings {
     public bool[void*] addresses;
 }
 
+// Owners for raw addresses produced during one recursive expression walk.
+// Child walkers share the active scope so a callee can return a newly
+// allocated address to its caller. Once the outer expression has stored that
+// address in a scanned frame, module, object, or aggregate block, ordinary GC
+// scanning supplies the durable root and the temporary owner is released.
+private struct TemporaryPointerOwners {
+    public imported!"quickbite.backends.interpreter.native_block".NativeBlock[]
+        blocks;
+    public size_t expressionDepth;
+}
+
 // Native places for class array-literal `.init` fields, keyed by the address
 // of DMD's initializer node. The pointer indirection keeps the table shared
 // when the first insertion happens in a child walker.
@@ -213,13 +224,7 @@ private struct Walker {
     // that captured authority without reinterpreting druntime's tagged link.
     private Value[void*] nativeThrowableNext;
 
-    // Heap allocations made by interpreted `new T` own native guest bytes.
-    // A native pointer is intentionally only a host address, so this table is
-    // the host-only root that keeps each allocation live for the execution.
-    // Child walkers copy and merge it with the other execution-wide native
-    // roots; the guest pointer never carries an allocation id or a boxed
-    // snapshot.
-    private NativeBlock[const(void)*] nativePointerRoots;
+    private TemporaryPointerOwners* _temporaryPointerOwners;
 
     // Interpreted function declarations have no host code address. A guest
     // function-pointer slot therefore retains the interpreter callable in a
@@ -1013,7 +1018,7 @@ private struct Walker {
         auto carrier = NativeArray.allocate(arrayType.next, elements.length);
         foreach (index, element; elements)
             writeValue(Place(carrier.element(index).ptr, arrayType.next), element);
-        nativePointerRoots[carrier.block.address] = carrier.block;
+        retainTemporaryPointerOwner(carrier.block);
 
         const offset = value.arrayAllocationOffset;
         if (offset > carrier.length || value.length > carrier.length - offset)
@@ -1024,6 +1029,15 @@ private struct Walker {
             cast(ubyte*) carrier.block.address +
                 offset * typeByteSize(arrayType.next),
         );
+    }
+
+    private void retainTemporaryPointerOwner(NativeBlock owner) @safe {
+        assert(
+            _temporaryPointerOwners !is null &&
+                _temporaryPointerOwners.expressionDepth != 0,
+            "raw pointer owner escaped its expression scope",
+        );
+        _temporaryPointerOwners.blocks ~= owner;
     }
 
     private void storeBinding(VarDeclaration variable, in Value value) {
@@ -1829,6 +1843,24 @@ private struct Walker {
     }
 
     private Value runExpression(imported!"dmd.expression".Expression expression) {
+        if (_temporaryPointerOwners is null)
+            _temporaryPointerOwners = new TemporaryPointerOwners;
+
+        const firstOwner = _temporaryPointerOwners.blocks.length;
+        const outermost = _temporaryPointerOwners.expressionDepth == 0;
+        ++_temporaryPointerOwners.expressionDepth;
+        scope(exit) {
+            --_temporaryPointerOwners.expressionDepth;
+            if (outermost)
+                _temporaryPointerOwners.blocks.length = firstOwner;
+        }
+
+        return runExpressionImpl(expression);
+    }
+
+    private Value runExpressionImpl(
+        imported!"dmd.expression".Expression expression,
+    ) {
         import dmd.astenums: TY;
         import dmd.tokens: EXP;
         import quickbite.backends.interpreter.runtime_values: integerValue, realValue;
@@ -1865,7 +1897,7 @@ private struct Walker {
             NativeBlock pointerStorage;
             const value = stringValue(string_, pointerStorage);
             if (pointerStorage.address !is null)
-                nativePointerRoots[pointerStorage.address] = pointerStorage;
+                retainTemporaryPointerOwner(pointerStorage);
             return value;
         }
 
@@ -2653,17 +2685,16 @@ private struct Walker {
                     );
             }
 
-            // A field of an aggregate call result has no variable binding,
-            // but the NativeAggregate itself owns typed DMD-layout storage.
-            // Retain that storage in the execution roots before returning a
-            // plain host address into it.
+            // A field of an aggregate call result has no binding whose block
+            // can root it. Keep its typed storage alive until the enclosing
+            // expression stores or discards the returned address.
             if (dot.e1.isCallExp !is null) {
                 const receiver = nativeClassReceiver;
                 if (receiver.isNativeAggregate) {
                     import quickbite.backends.interpreter.place: Place;
 
                     auto aggregate = AggregateValue.native(receiver);
-                    nativePointerRoots[aggregate.storage.address] = aggregate.storage;
+                    retainTemporaryPointerOwner(aggregate.storage);
                     auto field = dot.var.isVarDeclaration;
                     if (field !is null)
                         return Value.pointerValue(
@@ -2859,7 +2890,7 @@ private struct Walker {
             : NativeBlock.Scan.no;
         auto temporary = NativeBlock.allocate(typeByteSize(call.type), scan);
         writeStoredValue(Place(temporary.address, call.type), value);
-        nativePointerRoots[temporary.address] = temporary;
+        retainTemporaryPointerOwner(temporary);
         return Value.pointerValue(temporary.address);
     }
 
@@ -2881,9 +2912,9 @@ private struct Walker {
         // Shared for the identical reason, and by the identical shape --
         // see `moduleTable`'s own field comment.
         child.moduleTable = moduleTable;
+        child._temporaryPointerOwners = _temporaryPointerOwners;
         child.nativeThrowableRoots = nativeThrowableRoots.dup;
         child.nativeThrowableNext = nativeThrowableNext.dup;
-        child.nativePointerRoots = nativePointerRoots.dup;
         child.nativeFunctionPointerSlots = nativeFunctionPointerSlots.dup;
         child.nativeTypeInfoSlots = nativeTypeInfoSlots.dup;
         child.nextClassObjectId = nextClassObjectId;
@@ -3432,14 +3463,11 @@ private struct Walker {
                     if (arrayValue.isNativeAggregate) {
                         // `index.e1` had no VarExp/DotVarExp receiver, so it
                         // was just re-evaluated above as a second, independent
-                        // call/index. That result's native storage has no
-                        // durable root; retain it in the execution roots
-                        // before returning a bare address
-                        // into it, matching the DotVarExp call-result fix
-                        // above (`nativePointerRoots`) -- without this, the
-                        // composed address can outlive its backing block.
+                        // call/index. Keep that result's storage alive until
+                        // the enclosing expression stores or discards the
+                        // composed address.
                         auto aggregate = AggregateValue.native(arrayValue);
-                        nativePointerRoots[aggregate.storage.address] = aggregate.storage;
+                        retainTemporaryPointerOwner(aggregate.storage);
                         auto elementAddress = AggregateValue.elementAddress(
                             arrayValue,
                             cast(size_t) outerOffset,
@@ -5637,7 +5665,6 @@ private struct Walker {
         in bool captureLocals = false,
     ) {
         mergeNativeThrowableRoots(child);
-        mergeNativePointerRoots(child);
         nextFunctionPointerId = child.nextFunctionPointerId;
         nextClassObjectId = child.nextClassObjectId;
         functionPointers = child.functionPointers;
@@ -5662,7 +5689,6 @@ private struct Walker {
         in Value[] arguments,
     ) {
         mergeNativeThrowableRoots(child);
-        mergeNativePointerRoots(child);
         nextFunctionPointerId = child.nextFunctionPointerId;
         nextClassObjectId = child.nextClassObjectId;
         functionPointers = child.functionPointers;
@@ -5683,11 +5709,6 @@ private struct Walker {
     private void mergeNativeThrowableRoots(ref Walker child) {
         foreach (pointer, throwable; child.nativeThrowableRoots)
             nativeThrowableRoots[pointer] = throwable;
-    }
-
-    private void mergeNativePointerRoots(ref Walker child) {
-        foreach (address, block; child.nativePointerRoots)
-            nativePointerRoots[address] = block;
     }
 
     /*
@@ -5915,9 +5936,9 @@ private struct Walker {
     }
 
     // A synthesized call has no source lvalue to borrow. Give its reference
-    // parameter one ordinary native allocation keyed only by that allocation's
-    // address; calls with real source expressions always take the direct
-    // caller-place path above.
+    // parameter one ordinary native allocation. The reference slot is scanned
+    // and becomes the durable root before the temporary owner is released;
+    // calls with real source expressions take the direct caller-place path.
     private void bindSyntheticReferenceSlot(
         VarDeclaration parameter,
         in Value value,
@@ -5937,7 +5958,7 @@ private struct Walker {
             Place(block.address, parameter.type),
             storageValue(parameter.type, value),
         );
-        nativePointerRoots[block.address] = block;
+        retainTemporaryPointerOwner(block);
         _activationFrame.setReferenceSlot(parameter, block.address);
     }
 
@@ -10118,15 +10139,10 @@ private struct Walker {
                     : arguments[index].pointerAddress;
                 Place(scratch.address, argumentTypes[index])
                     .storeReference(pointer);
-                NativeBlock retained;
-                if (pointer !is null)
-                    if (auto root = pointer in nativePointerRoots)
-                        retained = *root;
                 operands[index] = NativeOperand(
                     argumentTypes[index],
                     scratch.address,
                     scratch,
-                    retained,
                 );
                 continue;
             }
@@ -10540,9 +10556,9 @@ private struct Walker {
     }
 
     // `new T` establishes one GC-owned native object and returns its address.
-    // The root table is host-only lifetime retention; guest pointer identity is
-    // exactly the allocation address, with no boxed element array or synthetic
-    // allocation id left to reconcile on dereference or assignment.
+    // Its owner remains in the enclosing expression's lexical owner scope
+    // until that address reaches scanned guest storage. Guest pointer identity
+    // is exactly the allocation address.
     private Value allocateNativePointer(
         imported!"dmd.mtype".Type targetType,
         in Value value,
@@ -10558,7 +10574,7 @@ private struct Walker {
                 : NativeBlock.Scan.no,
         );
         writeValue(Place(block.address, targetType), value);
-        nativePointerRoots[block.address] = block;
+        retainTemporaryPointerOwner(block);
         return Value.pointerValue(block.address);
     }
 
@@ -10570,16 +10586,7 @@ private struct Walker {
     // this activation free to re-mint an identity the child already handed
     // out, and `object_table.ObjectTable.storageFor` throws outright the
     // moment the two objects sharing it disagree on size.
-    //
-    // `writeBackGlobals` belongs here for the same reason it belongs in
-    // every other call site's write-back: a dataseg variable the
-    // constructor assigns to lands in the ONE `module_table.ModuleTable`
-    // block every frame resolves through (`forkLegacyFrameStateInto` shares it
-    // by pointer), so leaving this activation's boxed copy at the pre-call
-    // value does not merely answer staler -- the next read of that global
-    // compares the two and asserts.
     private void mergeNewStructConstructorState(ref Walker child) {
-        mergeNativePointerRoots(child);
         nextClassObjectId = child.nextClassObjectId;
         nativeClassTypes = child.nativeClassTypes;
         nativeClassOwners = child.nativeClassOwners;
@@ -10685,7 +10692,6 @@ private struct Walker {
     }
 
     private void mergeNewClassExpressionState(ref Walker child) {
-        mergeNativePointerRoots(child);
         nextFunctionPointerId = child.nextFunctionPointerId;
         nextClassObjectId = child.nextClassObjectId;
         functionPointers = child.functionPointers;

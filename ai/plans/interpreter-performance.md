@@ -155,11 +155,11 @@ for speed.
 
 Complete `value.md` before production performance changes. Delete the shared
 `Value`, the existing broad Interpreter `RuntimeValue`, formatting/reification
-scaffolding, and transitional allocation/declaration identity maps.
-`nativePointerRoots` is specifically not an optimisation target: replace it
-with ordinary GC scanning from native frames and blocks, using a scoped
+scaffolding, and transitional allocation/declaration identity maps. Pointer
+lifetimes use ordinary GC scanning from native frames and blocks, with a scoped
 temporary owner only while a newly produced raw address has not yet reached
-scanned storage.
+scanned storage; an execution-wide root registry is not an optimisation
+target and must not return.
 
 Completion means the Interpreter satisfies `value.md`'s end-state criteria and
 the performance profile contains only machinery intended to survive. Do not

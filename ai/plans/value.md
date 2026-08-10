@@ -32,6 +32,10 @@ Current capabilities:
 - Rebinding stores a new value or address in the binding place; same-storage
   mutation updates the existing bytes. Casts and slices retain their native
   backing and compose from its address across bindings and calls.
+- Raw addresses produced by an expression retain their owning blocks only for
+  that recursive expression walk. Once stored, conservative scanning of the
+  native destination keeps the allocation live; no allocation-identity root
+  registry crosses calls or activations.
 - `RuntimeValue` is transient expression currency. Its aggregate arm owns or
   borrows native DMD-layout storage, and its sole data-pointer arm is a host
   address. It is never local, alias, or cross-frame storage authority.
@@ -497,6 +501,11 @@ checked fact; do not relearn them.
   address-taking, indexing, and field access compose from that place.
 - Each activation owns a fresh frame block. Captures and calls borrow addresses;
   they do not copy storage authority into a child or reconcile it on return.
+- A raw address whose owner has not yet reached native storage has an owner in
+  the current recursive expression scope. Callees share that lexical scope so
+  returned addresses remain live; the outer expression releases it after the
+  address reaches a conservatively scanned frame, module, object, aggregate,
+  or native-call scratch block. No address-to-allocation registry participates.
 - Native class references carry only their body address. VM-owned allocations
   retain their storage in an ownership table; borrowed native exceptions keep
   their hydrated `Throwable` metadata in a separate table keyed by object
@@ -764,11 +773,6 @@ its private alias `Value`. If recursive AST evaluation still needs a carrier,
 replace it with the smallest non-owning scalar/address/callable carrier allowed
 by decisions 7 and 11; it must contain no formatting model, recursively boxed
 aggregate, or storage authority.
-
-Replace `nativePointerRoots` with ordinary scanning from native frames and
-blocks plus explicitly scoped temporary owners at raw-pointer construction
-boundaries. Delete allocation/declaration identity maps rather than moving
-them into a shared execution context or optimising their fork/merge behavior.
 
 ### Item 6 — Open design questions
 

@@ -320,7 +320,6 @@ public struct NativeOperand {
     public imported!"dmd.mtype".Type type;
     public void* address;
     public imported!"quickbite.backends.interpreter.native_block".NativeBlock owner;
-    public imported!"quickbite.backends.interpreter.native_block".NativeBlock retained;
 }
 
 // The address-only bridge's complete call shape. Preparation owns selecting
@@ -546,8 +545,6 @@ private bool prepareNativeOperand(
         result = TypedAddress(type, supplied.address);
         if (supplied.owner.address !is null)
             invocation.roots ~= supplied.owner;
-        if (supplied.retained.address !is null)
-            invocation.roots ~= supplied.retained;
         return true;
     }
     if (value.isNativeAggregate) {
