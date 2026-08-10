@@ -196,6 +196,66 @@ public struct Callable {
 }
 
 
+// Resolve a native declaration without involving a backend value representation.
+// Class virtual dispatch reads the final overrider from the receiver object's
+// vtable, so provenance must be captured from that resolved code address rather
+// than from the base declaration's image.
+public Callable resolveCallable(
+    imported!"dmd.func".FuncDeclaration declaration,
+    in bool virtualDispatch,
+    const(void)* receiverObject = null,
+) {
+    import core.sys.posix.dlfcn: dlsym;
+    version (DragonFlyBSD) import core.sys.dragonflybsd.dlfcn: RTLD_DEFAULT;
+    version (FreeBSD) import core.sys.freebsd.dlfcn: RTLD_DEFAULT;
+    version (linux) import core.sys.linux.dlfcn: RTLD_DEFAULT;
+    version (NetBSD) import core.sys.netbsd.dlfcn: RTLD_DEFAULT;
+    version (OpenBSD) import core.sys.openbsd.dlfcn: RTLD_DEFAULT;
+    version (OSX) import core.sys.darwin.dlfcn: RTLD_DEFAULT;
+    version (Solaris) import core.sys.solaris.dlfcn: RTLD_DEFAULT;
+    import dmd.mangle: mangleExact;
+    import dmd.mtype: TypeFunction;
+
+    Callable result;
+    result.declaration = declaration;
+    result.signature = cast(TypeFunction) declaration.type;
+    if (virtualDispatch && declaration.vtblIndex >= 0) {
+        if (receiverObject is null)
+            return result;
+        // The object's first word is __vptr; the DMD-computed slot names the
+        // final overrider, whose image determines the compiler ABI.
+        const vtable = *cast(const(void*)**) receiverObject;
+        result.address = cast(void*) vtable[declaration.vtblIndex];
+    } else
+        result.address = dlsym(RTLD_DEFAULT, mangleExact(declaration));
+    if (result.address !is null)
+        result.compilerAbi = compilerAbiFor(result.address);
+    return result;
+}
+
+
+// Resolve an `extern __gshared` global by its mangled process symbol. The
+// caller owns reading or writing its bytes through the returned address.
+public const(void)* resolveDataSymbol(
+    imported!"dmd.declaration".VarDeclaration variable,
+) {
+    import core.sys.posix.dlfcn: dlsym;
+    version (DragonFlyBSD) import core.sys.dragonflybsd.dlfcn: RTLD_DEFAULT;
+    version (FreeBSD) import core.sys.freebsd.dlfcn: RTLD_DEFAULT;
+    version (linux) import core.sys.linux.dlfcn: RTLD_DEFAULT;
+    version (NetBSD) import core.sys.netbsd.dlfcn: RTLD_DEFAULT;
+    version (OpenBSD) import core.sys.openbsd.dlfcn: RTLD_DEFAULT;
+    version (OSX) import core.sys.darwin.dlfcn: RTLD_DEFAULT;
+    version (Solaris) import core.sys.solaris.dlfcn: RTLD_DEFAULT;
+    import dmd.common.outbuffer: OutBuffer;
+    import dmd.mangle: mangleToBuffer;
+
+    OutBuffer buffer;
+    mangleToBuffer(variable, buffer);
+    return dlsym(RTLD_DEFAULT, buffer.peekChars);
+}
+
+
 public struct TypedAddress {
     public imported!"dmd.mtype".Type type;
     public void* address;

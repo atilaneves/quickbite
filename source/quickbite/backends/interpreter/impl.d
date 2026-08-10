@@ -2502,7 +2502,7 @@ private struct Walker {
             import quickbite.frontend.dmd.functions: isExternDataSymbol;
             if (isExternDataSymbol(variable)) {
                 import quickbite.backends.interpreter.native_call_adapter: unmarshalNative;
-                import quickbite.ffi.oldffi: resolveDataSymbol;
+                import quickbite.ffi.ffi: resolveDataSymbol;
 
                 if (auto address = resolveDataSymbol(variable))
                     return unmarshalNative(variable.type.toBasetype, address);
@@ -8293,7 +8293,7 @@ private struct Walker {
             import quickbite.frontend.dmd.functions: isExternDataSymbol;
             if (isExternDataSymbol(variable)) {
                 import quickbite.backends.interpreter.native_call_adapter: marshalNative;
-                import quickbite.ffi.oldffi: resolveDataSymbol;
+                import quickbite.ffi.ffi: resolveDataSymbol;
 
                 if (auto address = resolveDataSymbol(variable)) {
                     // A writable process-memory address belonging to the loaded
@@ -11568,7 +11568,7 @@ private struct Walker {
         foreach (index, expression; argumentExpressions) {
             if (auto typeid_ = expression.isTypeidExp)
                 if (auto typeInfo = typeidDeclaration(typeid_)) {
-                    import quickbite.ffi.oldffi: resolveDataSymbol;
+                    import quickbite.ffi.ffi: resolveDataSymbol;
 
                     if (auto address = resolveDataSymbol(typeInfo)) {
                         auto scratch = NativeBlock.allocate(

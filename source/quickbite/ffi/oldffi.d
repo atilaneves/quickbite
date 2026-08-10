@@ -476,8 +476,14 @@ private bool callNativeImpl(
         function_._linkage != LINK.c)
         return false;
 
-    const symbol = resolveSymbol(function_, receiver, marshaller);
-    if (symbol is null)
+    import quickbite.ffi.ffi: resolveCallable;
+
+    const callable = resolveCallable(
+        function_,
+        receiver.isClass,
+        marshaller.receiverObjectPointer,
+    );
+    if (callable.address is null)
         throw new Exception(
             "Unsupported native call: symbol `" ~
             fromStringz(mangleExact(function_)).idup ~
@@ -488,8 +494,8 @@ private bool callNativeImpl(
         function_,
         function_._linkage,
         type,
-        symbol,
-        compilerAbiFor(symbol),
+        callable.address,
+        callable.compilerAbi,
         receiver,
         marshaller,
         argumentTypes,
@@ -498,61 +504,6 @@ private bool callNativeImpl(
         refReturnMode,
         refResultAddress,
     );
-}
-
-// Resolve the function pointer to call. A virtual method on a class receiver is
-// read from the object's vtable at the DMD-computed slot so a base-typed handle
-// dispatches to the runtime override (ffi.md §34.12); everything else (and
-// non-virtual class methods) resolves by mangled symbol against the process.
-private const(void)* resolveSymbol(
-    imported!"dmd.func".FuncDeclaration function_,
-    NativeThis receiver,
-    NativeMarshaller marshaller,
-) {
-    import core.sys.posix.dlfcn: dlsym;
-    version (DragonFlyBSD) import core.sys.dragonflybsd.dlfcn: RTLD_DEFAULT;
-    version (FreeBSD) import core.sys.freebsd.dlfcn: RTLD_DEFAULT;
-    version (linux) import core.sys.linux.dlfcn: RTLD_DEFAULT;
-    version (NetBSD) import core.sys.netbsd.dlfcn: RTLD_DEFAULT;
-    version (OpenBSD) import core.sys.openbsd.dlfcn: RTLD_DEFAULT;
-    version (OSX) import core.sys.darwin.dlfcn: RTLD_DEFAULT;
-    version (Solaris) import core.sys.solaris.dlfcn: RTLD_DEFAULT;
-    import dmd.mangle: mangleExact;
-
-    if (receiver.isClass && function_.vtblIndex >= 0) {
-        auto objectPointer = marshaller.receiverObjectPointer;
-        if (objectPointer is null)
-            return null;
-        // The object's first word is __vptr; the vtable slot at vtblIndex holds
-        // the final overrider's function pointer.
-        auto vtable = *cast(const(void*)**) objectPointer;
-        return vtable[function_.vtblIndex];
-    }
-
-    return dlsym(RTLD_DEFAULT, mangleExact(function_));
-}
-
-// Resolve the address of a native `extern __gshared` global data symbol by its
-// mangled name against the process (ffi.md §35.2a). Value-free: core is the
-// backend-neutral bridge, so the caller reifies the bytes through its own
-// marshaller.
-public const(void)* resolveDataSymbol(
-    imported!"dmd.declaration".VarDeclaration variable,
-) {
-    import core.sys.posix.dlfcn: dlsym;
-    version (DragonFlyBSD) import core.sys.dragonflybsd.dlfcn: RTLD_DEFAULT;
-    version (FreeBSD) import core.sys.freebsd.dlfcn: RTLD_DEFAULT;
-    version (linux) import core.sys.linux.dlfcn: RTLD_DEFAULT;
-    version (NetBSD) import core.sys.netbsd.dlfcn: RTLD_DEFAULT;
-    version (OpenBSD) import core.sys.openbsd.dlfcn: RTLD_DEFAULT;
-    version (OSX) import core.sys.darwin.dlfcn: RTLD_DEFAULT;
-    version (Solaris) import core.sys.solaris.dlfcn: RTLD_DEFAULT;
-    import dmd.mangle: mangleToBuffer;
-    import dmd.common.outbuffer: OutBuffer;
-
-    OutBuffer buf;
-    mangleToBuffer(variable, buf);
-    return dlsym(RTLD_DEFAULT, buf.peekChars);
 }
 
 private bool isSupportedNativeLinkage(
