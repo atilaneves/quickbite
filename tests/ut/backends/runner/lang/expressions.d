@@ -12813,3 +12813,42 @@ static foreach (backend; Matrix!(
         });
     }
 }
+
+// `null.classinfo.name` on a null class reference: previously mapped to
+// `noExceptionClass` -> `""`, a silent success where real D crashes (a
+// genuine null-vtable dereference). SystemLinker/LLVMJit are real compiled
+// code and segfault for this shape -- not something a unittest can assert
+// against, and not a diagnostic worth reproducing -- so this pins the two
+// backends that raise a catchable diagnostic instead: CTFE's own wording,
+// and the bytecode core's `emitNullClassReferenceCheck`, matching every
+// other null-class-dereference site in the backend.
+static foreach (backend; AliasSeq!(Ctfe)) {
+    @("classField.nullClassinfoNameDiagnostic." ~ backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            class C {}
+            unittest {
+                C c;
+                auto name = c.classinfo.name;
+            }
+        }).shouldThrowWithMessage("dereference of null pointer `c`");
+    }
+}
+
+// Interpreter declines `classinfo.name` entirely today ("Unsupported
+// interpreter field read"), a pre-existing gap unrelated to null-handling.
+static foreach (backend; AliasSeq!(Bytecode)) {
+    @("classField.nullClassinfoNameDiagnostic." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            class C {}
+            unittest {
+                C c;
+                auto name = c.classinfo.name;
+            }
+        }).shouldThrowWithMessage(
+            "class `c` is `null` and cannot be dereferenced",
+        );
+    }
+}

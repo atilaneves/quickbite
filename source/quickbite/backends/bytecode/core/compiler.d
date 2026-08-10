@@ -4352,6 +4352,8 @@ private struct Compiler {
     }
 
     private Operand* tryTypeidName(DotVarExp dot) {
+        import std.conv: text;
+
         if (!isDeclarationNamed(dot.var.isVarDeclaration, "name"))
             return null;
 
@@ -4376,6 +4378,14 @@ private struct Compiler {
                 if (inner.e1.type !is null &&
                     inner.e1.type.toBasetype.isTypeClass !is null) {
                     const object = compileExpression(inner.e1);
+                    if (object.isPointer)
+                        emitNullClassReferenceCheck(
+                            object.offset,
+                            text(
+                                "class `", expressionChars(inner.e1),
+                                "` is `null` and cannot be dereferenced",
+                            ),
+                        );
                     const offset = allocateBytes(
                         sliceDescriptorSize, size_t.sizeof,
                     );
@@ -4390,6 +4400,14 @@ private struct Compiler {
                 classinfo.var.ident !is null &&
                 classinfo.var.ident.toString == "classinfo") {
                 const object = compileExpression(classinfo.e1);
+                if (object.isPointer)
+                    emitNullClassReferenceCheck(
+                        object.offset,
+                        text(
+                            "class `", expressionChars(classinfo.e1),
+                            "` is `null` and cannot be dereferenced",
+                        ),
+                    );
                 const offset = allocateBytes(
                     sliceDescriptorSize, size_t.sizeof,
                 );
