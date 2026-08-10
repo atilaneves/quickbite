@@ -7014,17 +7014,59 @@ private struct Compiler {
             }
 
         // An lvalue array source loads its descriptor through the same Place
-        // used by mutation, preserving D's shared-backing assignment.
-        if (auto place = placeOrNull(source)) {
-            const value = loadPlaceValue(*place);
-            _code ~= Instruction(
-                Op.copy,
-                destination,
-                value.offset,
-                cast(ushort) sliceDescriptorSize,
-            );
-            return;
-        }
+        // used by mutation, preserving D's shared-backing assignment. Scoped
+        // to `Tarray` sources only: a `Tsarray` lvalue's storage is `dim`
+        // consecutive elements, not a {ptr, length} descriptor, so
+        // reinterpreting it here would copy element bytes as if they were a
+        // pointer and length.
+        if (source.type !is null && source.type.toBasetype.ty == TY.Tarray)
+            if (auto place = placeOrNull(source)) {
+                const value = loadPlaceValue(*place);
+                _code ~= Instruction(
+                    Op.copy,
+                    destination,
+                    value.offset,
+                    cast(ushort) sliceDescriptorSize,
+                );
+                return;
+            }
+
+        // A `Tsarray` source used as a dynamic-array value (`outer ~= row;`
+        // boxing a static-array row, or a static-array-variable element of
+        // an array-of-arrays literal): copy its `dim` elements into a fresh
+        // heap block. Scoped to plain scalar elements (`elementType` is
+        // `void_` for a struct/nested-array element, which this loop's
+        // scalar `loadThroughPointer` cannot widen for) -- the untested
+        // aggregate-row shape falls through to the explicit decline below
+        // rather than risk mis-copying it silently.
+        if (!elementIsArray &&
+            elementType != ScalarType.void_ &&
+            source.type !is null &&
+            source.type.toBasetype.ty == TY.Tsarray)
+            if (auto place = placeOrNull(source)) {
+                const dim = staticArrayLength(source.type);
+                const elementSize =
+                    dynamicArrayElementSize(source.type, elementIsArray);
+                _code ~= Instruction(
+                    Op.allocArray,
+                    destination,
+                    cast(ushort) elementSize,
+                    cast(ushort) dim,
+                );
+                const address = addressOfPlace(*place);
+                foreach (elementIndex; 0 .. dim) {
+                    const index = compileSizeConstant(elementIndex);
+                    const value = loadThroughPointer(
+                        Operand(
+                            address.offset, ScalarType.ulong_, true,
+                            elementType,
+                        ),
+                        index,
+                    );
+                    emitIndexStore(value.offset, destination, index, elementSize);
+                }
+                return;
+            }
 
         if (source.isIndexExp !is null &&
             source.type.toBasetype.ty == TY.Tarray) {
