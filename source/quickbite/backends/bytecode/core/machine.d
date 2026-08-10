@@ -26,7 +26,7 @@ package(quickbite.backends.bytecode) RunResult run(
     import quickbite.backends.bytecode.core.program:
         appendElementWidth, CatchClause, ClassInfo,
         concatArraysWidth, dupArrayWidth, indexElementWidth, Op, ScalarType,
-        noCatchObjectField, noExceptionClass, noOutParameterOffset,
+        noCatchObjectField, noExceptionClass,
         pointerElementWidth, size, sliceCopyWidth, sliceDescriptorLengthOffset,
         sliceDescriptorPtrOffset, sliceDescriptorSize,
         sliceEqualWidth, subSliceElementWidth;
@@ -1768,43 +1768,17 @@ package(quickbite.backends.bytecode) RunResult run(
             case nativeCall:
                 import quickbite.frontend.dmd.functions:
                     noAvailableSourceMessage;
-                import quickbite.ffi.oldffi:
-                    callNative, callNativeClassMember, callNativeMember;
+                import quickbite.backends.bytecode.core.native_call: callNative;
 
-                auto native = program.nativeCalls[instruction.a];
-                auto marshaller = new BytecodeNativeMarshaller(
-                    stack,
-                    base + instruction.b,
-                    base + instruction.c,
-                    base,
-                    native.outParameterOffsets,
-                    native.nativeClassReceiverOffset,
-                    native.nativeStructReceiverOffset,
-                );
-                bool[] addressOfLocalArguments;
-                addressOfLocalArguments.length = native.outParameterOffsets.length;
-                foreach (index, offset; native.outParameterOffsets)
-                    addressOfLocalArguments[index] =
-                        offset != noOutParameterOffset;
-                const called = native.nativeStructReceiverType !is null
-                    ? callNativeMember(
-                        native.function_, native.nativeStructReceiverType,
-                        marshaller, native.argumentTypes,
-                        addressOfLocalArguments,
-                    )
-                    : native.nativeClassReceiverType is null
-                        ? callNative(
-                            native.function_, marshaller, native.argumentTypes,
-                            addressOfLocalArguments,
-                        )
-                        : callNativeClassMember(
-                        native.function_, native.nativeClassReceiverType,
-                        marshaller, native.argumentTypes,
-                        addressOfLocalArguments,
-                        );
-                if (!called)
+                if (!callNative(
+                        program.nativeCalls[instruction.a],
+                        stack,
+                        base,
+                        base + instruction.b,
+                        base + instruction.c,
+                    ))
                     throw new Exception(noAvailableSourceMessage(
-                        native.function_,
+                        program.nativeCalls[instruction.a].function_,
                     ));
                 ++ip;
                 break;
@@ -3850,266 +3824,6 @@ private bool descriptorContentEqual(
     const rightPointer = scalarValue!size_t(right, sliceDescriptorPtrOffset(0));
     return (cast(const(ubyte)*) leftPointer)[0 .. leftLength] ==
         (cast(const(ubyte)*) rightPointer)[0 .. leftLength];
-}
-
-private final class BytecodeNativeMarshaller:
-    imported!"quickbite.ffi".NativeMarshaller,
-    imported!"quickbite.ffi".NativeReceiverAddressMarshaller
-{
-    import dmd.mtype: Type;
-    import quickbite.ffi.oldffi: NativeMarshaller;
-
-    private ubyte[] _stack;
-    private size_t _argument;
-    private size_t _destination;
-    private size_t _base;
-    private const(ushort)[] _outParameterOffsets;
-    private ushort _nativeClassReceiverOffset;
-    private ushort _nativeStructReceiverOffset;
-
-    public this(
-        ubyte[] stack,
-        in size_t argument,
-        in size_t destination,
-        in size_t base,
-        in ushort[] outParameterOffsets,
-        in ushort nativeClassReceiverOffset,
-        in ushort nativeStructReceiverOffset,
-    ) {
-        _stack = stack;
-        _argument = argument;
-        _destination = destination;
-        _base = base;
-        _outParameterOffsets = outParameterOffsets;
-        _nativeClassReceiverOffset = nativeClassReceiverOffset;
-        _nativeStructReceiverOffset = nativeStructReceiverOffset;
-    }
-
-    public bool canRepresent(Type type, in NativeMarshaller.Direction direction) {
-        import dmd.astenums: TY;
-        const ty = type.toBasetype.ty;
-        if (ty == TY.Tvoid)
-            return direction == NativeMarshaller.Direction.fromNative;
-        if (ty == TY.Tstruct)
-            return true;
-        return ty == TY.Tbool || ty == TY.Tint32 || ty == TY.Tuns32 ||
-            ty == TY.Tint64 || ty == TY.Tuns64 || ty == TY.Tfloat64 ||
-            ty == TY.Tpointer || ty == TY.Tclass || ty == TY.Tarray;
-    }
-
-    public bool canRepresentOutCell(Type pointedToType) {
-        // The bytecode marshaller has no special out-cell handling (ffi.md
-        // §35.10), so require the pointed-to type to cross both directions.
-        with (NativeMarshaller.Direction)
-            return canRepresent(pointedToType, toNative) &&
-                canRepresent(pointedToType, fromNative);
-    }
-
-    public void fillArgument(
-        ubyte[] buffer,
-        Type type,
-        in size_t index,
-        in bool stableString,
-        ref const(char)*[] keepAlive,
-        ref ubyte[][] keepAliveBuffers,
-    ) {
-        import quickbite.backends.bytecode.core.program:
-            nativeArgumentSlotSize;
-
-        // The argument area is N contiguous fixed-stride slots (see
-        // `nativeArgumentSlotSize` in program.d, established by
-        // `allocateNativeArgumentArea` in compiler.d); argument `index` lives
-        // at `_argument + index * nativeArgumentSlotSize` regardless of its
-        // own width. `buffer` is sized to the argument type's native ABI
-        // width (4 bytes for `int`, 8 for a pointer, 16 for a dynamic-array
-        // descriptor); copy exactly that many, not a fixed 8. The VM's own
-        // slice descriptor (`writeSliceDescriptor`, machine.d) is already in
-        // native `{length, pointer}` order, so a `Tarray` argument needs no
-        // conversion beyond the straight copy every other type gets.
-        const slot = _argument + index * nativeArgumentSlotSize;
-        import dmd.astenums: TY;
-        assert(
-            type.toBasetype.ty != TY.Tarray || buffer.length == 2 * size_t.sizeof,
-        );
-        buffer[] = _stack[slot .. slot + buffer.length];
-    }
-
-    // @trusted: the stack reserve at run start prevents reallocation while the
-    // native call is active, so these frame-slot pointers stay valid for
-    // libffi. The compiler allocates one in-frame, word-aligned fixed-stride
-    // slot per native argument, and ffi/oldffi.d supplies only its corresponding
-    // index, so `slot` is within that layout. Out parameters point directly at
-    // the target local; ordinary arguments point at their argument slot.
-    public const(void)* argumentAddress(in size_t index, Type type) @trusted {
-        import dmd.astenums: TY;
-        import quickbite.backends.bytecode.core.program:
-            nativeArgumentSlotSize, noOutParameterOffset;
-
-        const outParameter = _outParameterOffsets[index];
-        if (outParameter != noOutParameterOffset)
-            return null;
-        if (type.toBasetype.ty == TY.Tarray)
-            return null;
-
-        const slot = _argument + index * nativeArgumentSlotSize;
-        if (isPointerToPointer(type)) {
-            auto target = *cast(void**) &_stack[slot];
-            if (target !is null)
-                return target;
-        }
-
-        return &_stack[slot];
-    }
-
-    public void readResult(Type type, in ubyte[] buffer) {
-        import dmd.astenums: TY;
-
-        // The FFI slice layout (`ffiSliceType`, ffi/oldffi.d) and the VM's
-        // own slice descriptor (`writeSliceDescriptor`, machine.d) are both
-        // native `{length, pointer}` order, so a `Tarray` result is a
-        // straight copy, matching `fillArgument`'s straight copy for a
-        // `void[]`-typed argument.
-        if (type.toBasetype.ty == TY.Tarray) {
-            _stack[_destination .. _destination + 2 * size_t.sizeof] =
-                buffer[0 .. 2 * size_t.sizeof];
-            return;
-        }
-
-        // `buffer` is padded to at least ffi_arg width (8 bytes); copy exactly
-        // the return type's native size (4 for `int`, 8 for `long`), not a
-        // fixed 4.
-        const resultSize = nativeResultSize(type);
-        _stack[_destination .. _destination + resultSize] =
-            buffer[0 .. resultSize];
-    }
-
-    // @trusted: for direct handoff, libffi writes no more than the result slot
-    // can hold. Narrow results use the core's padded buffer and copy-out path.
-    public void* resultAddress(Type type) @trusted {
-        import dmd.astenums: TY;
-        import quickbite.ffi.libffi: ffi_arg;
-
-        // A slice return always goes through the padded-buffer path and
-        // `readResult`'s copy above, never the direct zero-copy handoff
-        // below; nothing about that requires the buffer indirection anymore,
-        // it is just the narrower change this boundary needs right now.
-        if (type.toBasetype.ty == TY.Tarray)
-            return null;
-
-        // A struct return's destination is already sized and aligned to the
-        // struct's own layout (`emitNativeCall`); libffi copies back exactly
-        // that many bytes for a struct return, unlike a narrow scalar return,
-        // which needs the padded `ffi_arg`-wide buffer below.
-        if (type.toBasetype.ty == TY.Tstruct)
-            return &_stack[_destination];
-
-        if (nativeResultSize(type) < ffi_arg.sizeof)
-            return null;
-
-        return &_stack[_destination];
-    }
-
-    private static size_t nativeResultSize(Type type) {
-        import dmd.astenums: TY;
-        switch (type.toBasetype.ty) with (TY) {
-            case Tvoid:
-                // `callNativeImpl` (ffi/oldffi.d) calls `readResult` even for a
-                // void-returning callee; there is no result to copy back.
-                return 0;
-            case Tbool:
-                return bool.sizeof;
-            case Tint32:
-                return int.sizeof;
-            case Tuns32:
-                return uint.sizeof;
-            case Tint64:
-                return long.sizeof;
-            case Tuns64:
-                return ulong.sizeof;
-            case Tfloat64:
-                return double.sizeof;
-            case Tpointer:
-                return (void*).sizeof;
-            case Tarray:
-                return 2 * size_t.sizeof;
-            default:
-                throw new Exception("Unsupported native result type.");
-        }
-    }
-
-    private static bool isPointerToPointer(Type type) {
-        import dmd.astenums: TY;
-
-        auto basetype = type.toBasetype;
-        return basetype.ty == TY.Tpointer &&
-            basetype.nextOf.toBasetype.ty == TY.Tpointer;
-    }
-
-    public void fillReceiver(ubyte[] buffer, Type type, in bool stableString,
-        ref const(char)*[] keepAlive, ref ubyte[][] keepAliveBuffers)
-    { unsupportedNativeCall; }
-
-    public void writeRefResult(Type type, void* address, in bool stableString,
-        ref const(char)*[] keepAlive, ref ubyte[][] keepAliveBuffers)
-    { unsupportedNativeCall; }
-
-    // Write the callee's out-cell bytes back into the pointed-to local's
-    // frame slot (`_outParameterOffsets[index]`, set by `emitNativeCall`).
-    public void writeOutParameter(in size_t index, Type pointedToType,
-        in ubyte[] cell)
-    {
-        const slot = _base + outParameterOffset(index);
-        _stack[slot .. slot + cell.length] = cell[];
-    }
-
-    // Seed the out cell with the pointed-to local's current value (ffi.md
-    // §35.6), e.g. `endptr`'s null pre-call value, which strtod ignores.
-    public void fillOutParameterCell(ubyte[] cell, Type pointedToType,
-        in size_t index, in bool stableString, ref const(char)*[] keepAlive,
-        ref ubyte[][] keepAliveBuffers)
-    {
-        const slot = _base + outParameterOffset(index);
-        cell[] = _stack[slot .. slot + cell.length];
-    }
-
-    // `noOutParameterOffset` marks an argument that isn't an out parameter;
-    // used as a frame offset it would silently corrupt the stack.
-    private size_t outParameterOffset(in size_t index) {
-        import quickbite.backends.bytecode.core.program: noOutParameterOffset;
-
-        if (_outParameterOffsets[index] == noOutParameterOffset)
-            unsupportedNativeCall;
-        return _outParameterOffsets[index];
-    }
-
-    public const(void)* receiverObjectPointer() {
-        import quickbite.backends.bytecode.core.program: noOutParameterOffset;
-
-        if (_nativeClassReceiverOffset == noOutParameterOffset)
-            return null;
-        return cast(const(void)*) scalarValue!size_t(
-            _stack, _base + _nativeClassReceiverOffset,
-        );
-    }
-
-    public void* receiverAddress(Type type) @trusted {
-        import quickbite.backends.bytecode.core.program: noOutParameterOffset;
-
-        return _nativeStructReceiverOffset == noOutParameterOffset
-            ? null
-            : &_stack[_base + _nativeStructReceiverOffset];
-    }
-
-    public void invokeClosure(in size_t argumentIndex, Type returnType,
-        Type[] parameterTypes, void*[] argumentBuffers, ubyte[] resultBuffer)
-    { unsupportedNativeCall; }
-
-    public size_t durableInboundCallbackId(in size_t argumentIndex)
-    { unsupportedNativeCall; return 0; }
-
-    private void unsupportedNativeCall() {
-        throw new Exception("Unsupported bytecode native call shape.");
-    }
 }
 
 private AssocArray copyAssocArray(AssocArray source) @safe nothrow pure {

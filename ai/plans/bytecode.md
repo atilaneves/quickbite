@@ -70,8 +70,8 @@ This is the load-bearing decision; everything else follows from it.
   (`int[]*` advances by a slice descriptor and `S*` by `S.sizeof`). Never infer
   byte stride from the scalar opcode type.
 - The slice descriptor is native `{length, ptr}`, the same layout compiled D
-  uses, so `quickbite.ffi.ffi` must contain no swap or compatibility path when
-  it is integrated. Every descriptor field offset comes from
+  uses, so `quickbite.ffi.ffi` must contain no swap or compatibility path.
+  Every descriptor field offset comes from
   `sliceDescriptorPtrOffset`/`sliceDescriptorLengthOffset` (program.d); a site
   that opens a descriptor with a bare offset instead is a latent bug, since
   neither accessor is the identity any more.
@@ -236,10 +236,9 @@ rendering knowledge beyond "these bytes at this type".
   floor for the latency goal — ranges, capturing lambdas, classes, and
   exceptions arrive with the first `std.algorithm`-using test, regardless of
   slice order.
-- Bytecode eventually imports `quickbite.ffi.ffi`, never
-  `quickbite.ffi.oldffi`. The new module is designed from native-layout
-  requirements rather than adapted from the Interpreter bridge. Data crosses
-  unchanged, so per-signature conversion or wrapper codegen buys nothing.
+- Bytecode imports `quickbite.ffi.ffi`, never `quickbite.ffi.oldffi`. Data
+  crosses unchanged, so per-signature conversion or wrapper codegen buys
+  nothing.
 - Druntime lowering hooks (`_d_arrayappendT`, the AA runtime,
   `_d_newclassT`, ...) are templates whose bodies the VM executes; the
   native leaves they bottom out in require the runtime type metadata
@@ -564,9 +563,9 @@ Otherwise take an "Architecture work forced by the baseline" front.
   the integration row in the commit that makes it green.
 - Work serially in `source/quickbite/backends/bytecode/core/**`; adjacent
   features converge on the compiler, machine, and program modules. Parallel
-  work belongs only to file-disjoint tracks. This plan owns the eventual
-  `quickbite.ffi.ffi` integration and slice flip; `ffi.md` supplies the bridge
-  without editing Bytecode core.
+  work belongs only to file-disjoint tracks. This plan owns Bytecode's use of
+  `quickbite.ffi.ffi`; `ffi.md` supplies the bridge without editing Bytecode
+  core.
 - After each editing session, run the repository-mandated
   `ninja bin/ut` and `bin/ut --random`. Replay a failing random order with its
   `--seed` before deciding whether the failure is related.
@@ -584,8 +583,9 @@ paths are expected to exercise these architectural fronts:
    native-layout storage and aliases.
 2. Execute available Phobos and druntime source, including templates,
    delegates, closures, classes, exceptions, and module initialization.
-3. Integrate the address-only `quickbite.ffi.ffi` for body-less leaves,
-   aggregate returns, and host resources. Keep typed storage and address
+3. Widen the body-less-leaf call surface the compiler will emit:
+   `tryCompileNativeCall` still declines any argument or return type outside
+   its scalar/pointer/slice/struct list. Keep typed storage and address
    selection in this plan; keep CIF and callable-ABI mechanics in `ffi.md`.
 4. Synthesize runtime type metadata and inbound VM entry thunks when druntime,
    callbacks, finalizers, associative-array methods, or virtual dispatch force

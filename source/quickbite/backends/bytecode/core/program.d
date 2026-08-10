@@ -1284,23 +1284,18 @@ package(quickbite.backends.bytecode) struct CompiledFunction {
 package(quickbite.backends.bytecode) struct NativeCall {
     imported!"dmd.func".FuncDeclaration function_;
     imported!"dmd.mtype".Type[] argumentTypes;
-    // Per-argument frame offset of the pointed-to local for an out-parameter
-    // argument (e.g. strtod's `&endptr`); `noOutParameterOffset` marks an
-    // argument that is not one.
-    ushort[] outParameterOffsets;
     // A host class receiver crosses the FFI boundary as its raw object pointer.
     // `nativeClassReceiverType` is null for an ordinary native function call.
-    ushort nativeClassReceiverOffset = noOutParameterOffset;
+    ushort nativeClassReceiverOffset = noReceiverOffset;
     imported!"dmd.mtype".TypeClass nativeClassReceiverType;
     // A native struct method receives a pointer to the VM's inline receiver
     // block as its hidden `this` argument.
-    ushort nativeStructReceiverOffset = noOutParameterOffset;
+    ushort nativeStructReceiverOffset = noReceiverOffset;
     imported!"dmd.mtype".TypeStruct nativeStructReceiverType;
 }
 
-// Sentinel `NativeCall.outParameterOffsets` entry for an argument that is not
-// an out parameter.
-package(quickbite.backends.bytecode) enum noOutParameterOffset = ushort.max;
+// Sentinel `NativeCall` receiver offset for a call with no hidden receiver.
+package(quickbite.backends.bytecode) enum noReceiverOffset = ushort.max;
 
 // How to render a failed assertion: read both operands from the frame and
 // format them per their static type around the inverted operator.

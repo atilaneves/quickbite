@@ -39,7 +39,7 @@ private struct Compiler {
         assocArrayKeyIsStructLayoutFlag, concatArraysOp, dupArrayOp,
         indexLoadOp, indexStoreOp, isSigned,
         nativeArgumentSlotSize, noCatchObjectField, noExceptionClass,
-        noOutParameterOffset, pointerLoadOp, pointerSliceOp, pointerStoreOp,
+        noReceiverOffset, pointerLoadOp, pointerSliceOp, pointerStoreOp,
         size, sliceCopyOp, sliceDescriptorLengthOffset,
         sliceDescriptorPtrOffset, sliceDescriptorSize,
         sliceEqualOp, sliceFillOp, subSliceOp;
@@ -11273,7 +11273,7 @@ private struct Compiler {
         CallExp call,
         FuncDeclaration function_,
         in ParameterLayout layout,
-        in ushort nativeStructReceiverOffset = noOutParameterOffset,
+        in ushort nativeStructReceiverOffset = noReceiverOffset,
         imported!"dmd.mtype".TypeStruct nativeStructReceiverType = null,
     ) {
         import dmd.astenums: TY;
@@ -11291,7 +11291,6 @@ private struct Compiler {
         const argumentCount = call.arguments is null ? 0 : call.arguments.length;
         const argumentArea = allocateNativeArgumentArea(argumentCount);
         auto argumentTypes = new Type[argumentCount];
-        auto outParameterOffsets = new ushort[argumentCount];
         // Every argument must be a scalar `int`/`long`/`size_t`, a
         // string-literal `const(char)*`, a `&local` out parameter, or a
         // pointer local passed by value; any other shape bails.
@@ -11300,7 +11299,6 @@ private struct Compiler {
             const slot = cast(ushort)
                 (argumentArea + index * nativeArgumentSlotSize);
             argumentTypes[index] = argument.type.toBasetype;
-            outParameterOffsets[index] = noOutParameterOffset;
 
             const argumentTy = argument.type.toBasetype.ty;
             if (argumentTy == TY.Tint32 || argumentTy == TY.Tint64 ||
@@ -11360,19 +11358,15 @@ private struct Compiler {
                 continue;
             }
 
-            // `&local` out parameter: `SymOffExp` (as `symbolAddress`
-            // also matches), zero offset, tracked pointer local. Slot is
-            // never read (ffi.md §34.8: type is unconditionally an out
-            // parameter); only the frame offset is recorded.
+            // `&local` out parameter (e.g. strtod's `&endptr`): the slot holds
+            // the local's own frame address, which the callee writes through,
+            // so it needs nothing the ordinary argument path does not do.
             emitCallArgument(slot, false, argument);
-            auto outLocal = addressOfLocalOffset(argument);
-            if (outLocal !is null)
-                outParameterOffsets[index] = *outLocal;
         }
 
         return emitNativeCall(
-            function_, argumentTypes, argumentArea, outParameterOffsets,
-            noOutParameterOffset, null, nativeStructReceiverOffset,
+            function_, argumentTypes, argumentArea,
+            noReceiverOffset, null, nativeStructReceiverOffset,
             nativeStructReceiverType,
         );
     }
@@ -11403,7 +11397,6 @@ private struct Compiler {
         const argumentCount = call.arguments is null ? 0 : call.arguments.length;
         const argumentArea = allocateNativeArgumentArea(argumentCount);
         auto argumentTypes = new Type[argumentCount];
-        auto outParameterOffsets = new ushort[argumentCount];
         foreach (index; 0 .. argumentCount) {
             auto argument = (*call.arguments)[index];
             if (argument.type is null)
@@ -11415,7 +11408,6 @@ private struct Compiler {
                 return null;
 
             argumentTypes[index] = argument.type.toBasetype;
-            outParameterOffsets[index] = noOutParameterOffset;
             emitCallArgument(
                 cast(ushort) (argumentArea + index * nativeArgumentSlotSize),
                 false,
@@ -11427,43 +11419,9 @@ private struct Compiler {
             function_,
             argumentTypes,
             argumentArea,
-            outParameterOffsets,
             receiver.offset,
             receiverType,
         );
-    }
-
-    private ushort* addressOfLocalOffset(Expression argument) {
-        auto target = argument;
-        while (auto cast_ = target.isCastExp)
-            target = cast_.e1;
-
-        if (auto symOff = target.isSymOffExp) {
-            if (symOff.offset != 0)
-                return null;
-            auto declaration = symOff.var.isVarDeclaration;
-            return declaration is null ? null : declarationRecordView(declaration).scalarOrNull;
-        }
-
-        auto address = target.isAddrExp;
-        if (address is null)
-            return null;
-
-        target = address.e1;
-        while (auto cast_ = target.isCastExp)
-            target = cast_.e1;
-
-        auto variable = target.isVarExp;
-        auto declaration = variable is null
-            ? null
-            : variable.var.isVarDeclaration;
-        if (declaration is null)
-            return null;
-        if (auto local = declarationRecordView(declaration).scalarOrNull)
-            return local;
-        if (auto struct_ = declarationRecordView(declaration).struct_OrNull)
-            return &struct_.offset;
-        return null;
     }
 
     // Emit a string literal's bytes plus a NUL terminator into a fresh,
@@ -11512,10 +11470,9 @@ private struct Compiler {
         FuncDeclaration function_,
         Type[] argumentTypes,
         in ushort argumentArea,
-        in ushort[] outParameterOffsets,
-        in ushort nativeClassReceiverOffset = noOutParameterOffset,
+        in ushort nativeClassReceiverOffset = noReceiverOffset,
         imported!"dmd.mtype".TypeClass nativeClassReceiverType = null,
-        in ushort nativeStructReceiverOffset = noOutParameterOffset,
+        in ushort nativeStructReceiverOffset = noReceiverOffset,
         imported!"dmd.mtype".TypeStruct nativeStructReceiverType = null,
     ) {
         import dmd.astenums: TY;
@@ -11547,7 +11504,6 @@ private struct Compiler {
             NativeCall(
                 function_,
                 argumentTypes,
-                outParameterOffsets.dup,
                 nativeClassReceiverOffset,
                 nativeClassReceiverType,
                 nativeStructReceiverOffset,
