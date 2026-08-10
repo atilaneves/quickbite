@@ -4874,9 +4874,9 @@ private auto runDependencyImageFixture(alias backend)(
 }
 
 // A struct-typed native-call return whose field layout mixes a scalar with
-// a dynamic-array (`string`) field: the field's own bytes must land in the
-// bridge's real ABI order regardless of the VM's own internal descriptor
-// order, unlike every all-scalar struct-return fixture above. The expected
+// a dynamic-array (`string`) field, unlike every all-scalar struct-return
+// fixture above: both fields of the returned value must read back with the
+// same contents the callee gave them. The expected
 // values are D's real compiled-code semantics, checked directly in the
 // asserted source rather than diffed against a separately computed oracle
 // result, so `SystemLinker` running the same asserts through the matrix

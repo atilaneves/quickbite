@@ -3939,7 +3939,7 @@ static foreach (backend; AliasSeq!(Bytecode)) {
 // (`assocArrayKeyMeta`/`assocArrayKeyOffset`, raw-byte comparison, no string
 // member) is supported (`structKeyRawBytesConstructLookupAndIterate` above).
 // A struct key that is itself nothing but a single plain-`string` field has
-// the exact same {ptr, length} byte layout as a bare `string` -- no
+// the exact same {length, ptr} byte layout as a bare `string` -- no
 // interleaved scalar fields to keep raw -- so `assocArrayKeyIsArray`
 // (compiler.d) now recognises that shape and routes it through the same
 // content, not descriptor-byte, comparison a bare `string` key already gets
@@ -6620,7 +6620,7 @@ static foreach (backend; AliasSeq!(Interpreter)) {
 /++
     Plain reassignment of an already-declared `string` local from another
     `string` local (`b = a;`) must copy the full slice descriptor. A `string`
-    local's slot holds the same native 16-byte {ptr, length} descriptor as any
+    local's slot holds the same native 16-byte {length, ptr} descriptor as any
     other dynamic array, which the scalar type mapping reports as size 0, so a
     naive scalar-sized copy would silently write nothing and leave `b`
     unchanged.
@@ -6678,7 +6678,7 @@ static foreach (backend; Matrix!()) {
 /++
     Plain reassignment of an already-declared `string` local from a sub-slice
     of another `string` local (`b = a[lo .. hi];`) exercises the same
-    reassignment path with a native {ptr, length}-descriptor sub-slice
+    reassignment path with a native {length, ptr}-descriptor sub-slice
     right-hand side.
 +/
 static foreach (backend; Matrix!()) {
@@ -6708,7 +6708,7 @@ static foreach (backend; Matrix!()) {
 /++
     A sub-slice of a heap-backed `string` (produced by `.idup`, not a
     data-segment literal) reads the sliced bytes and length by resolving the
-    source's native {ptr, length} descriptor to its real heap block, not the
+    source's native {length, ptr} descriptor to its real heap block, not the
     program's read-only data segment.
 +/
 static foreach (backend; Matrix!()) {
@@ -6744,7 +6744,7 @@ static foreach (backend; Matrix!()) {
 /++
     Reassigning an already-declared `string` local (`b = "x";`) from a
     heap-backed `string` source (`.idup`) must copy the full 16-byte
-    {ptr, length} descriptor; a partial copy would silently drop bytes of the
+    {length, ptr} descriptor; a partial copy would silently drop bytes of the
     pointer or the length.
 +/
 static foreach (backend; Matrix!()) {

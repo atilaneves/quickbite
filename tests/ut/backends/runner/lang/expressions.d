@@ -11643,7 +11643,7 @@ static foreach (backend; Matrix!()) {
 }
 
 // A `string` is just an `immutable(char)[]`, so a `string*` dereference must
-// read the same 16-byte {ptr, length} descriptor a `T[]*` dereference (e.g.
+// read the same 16-byte {length, ptr} descriptor a `T[]*` dereference (e.g.
 // `int[]*`) already does: `.length` and whole-array equality through the
 // deref both work.
 static foreach (backend; Matrix!()) {

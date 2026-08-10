@@ -105,7 +105,7 @@ package(quickbite.backends.bytecode) RunResult run(
 
             case allocArray:
                 // Allocate writable backing memory, root it in `heap`, and
-                // write the descriptor {ptr, length} into the frame slot.
+                // write the descriptor {length, ptr} into the frame slot.
                 auto block = new ubyte[](instruction.b * instruction.c);
                 heap ~= block;
                 writeSliceDescriptor(
@@ -1770,16 +1770,20 @@ package(quickbite.backends.bytecode) RunResult run(
                     noAvailableSourceMessage;
                 import quickbite.backends.bytecode.core.native_call: callNative;
 
+                // A pointer, not `const`: `callNative` takes the call by
+                // mutable ref, since it reads the callee's type through
+                // dmd's non-const `Type` accessors.
+                auto native = &program.nativeCalls[instruction.a];
                 if (!callNative(
-                        program.nativeCalls[instruction.a],
+                        *native,
                         stack,
                         base,
                         base + instruction.b,
                         base + instruction.c,
                     ))
-                    throw new Exception(noAvailableSourceMessage(
-                        program.nativeCalls[instruction.a].function_,
-                    ));
+                    throw new Exception(
+                        noAvailableSourceMessage(native.function_),
+                    );
                 ++ip;
                 break;
 
@@ -2223,7 +2227,7 @@ private ushort virtualFunction(
 // Decode/transcode the string slice descriptor at `sourceOffset` per `mode`
 // into a fresh heap block of target code units, mirroring druntime's `_aApply*`
 // foreach helpers. Returns the block (for rooting in `heap`) and the element
-// count. The source descriptor is a native {ptr, length}; `length` is the
+// count. The source descriptor is a native {length, ptr}; `length` is the
 // source code-unit count, scaled by the mode's source element size.
 private auto transcodeUtfString(
     in ubyte[] stack,
@@ -2293,7 +2297,7 @@ private auto transcodeUtfString(
     return Block(result, count);
 }
 
-// `offset` holds an ordinary {ptr, length} descriptor, so the string's bytes
+// `offset` holds an ordinary {length, ptr} descriptor, so the string's bytes
 // are read straight through the pointer, exactly like any other array read.
 // Safe because `pointer`/`length` were themselves produced by the VM's own
 // slice-descriptor writers (heap allocation or the program's data segment),
@@ -2393,7 +2397,7 @@ private void writeStringSliceFromObject(
     ] = descriptor[0 .. sliceDescriptorSize];
 }
 
-// Copy a real {ptr, length} string descriptor into a frame slot.
+// Copy a real {length, ptr} string descriptor into a frame slot.
 private void writeStringSliceFromData(
     ref ubyte[] destination,
     in size_t destinationOffset,
@@ -2407,8 +2411,8 @@ private void writeStringSliceFromData(
     ] = source[sourceOffset .. sourceOffset + sliceDescriptorSize];
 }
 
-// Write a slice descriptor {ptr, length} at `offset`: the heap block's native
-// address followed by the element count, each a little-endian size_t.
+// Write a slice descriptor {length, ptr} at `offset`: the element count
+// followed by the heap block's native address, each a little-endian size_t.
 private void writeSliceDescriptor(
     ref ubyte[] stack,
     in size_t offset,
@@ -2465,7 +2469,7 @@ private void writeFrameAddress(
         nativeToLittleEndian(cast(size_t) &stack[slotOffset]);
 }
 
-// Write a slice descriptor {ptr, length} at `offset` from an already-computed
+// Write a slice descriptor {length, ptr} at `offset` from an already-computed
 // native pointer (a sub-slice into an existing block), rather than a fresh
 // heap block. The backing memory is rooted by the original block's `heap`
 // entry, so the sub-slice shares and stays alive through that root.
@@ -2514,7 +2518,7 @@ private void validateSubSlice(
 
 // Duplicate the slice descriptor at `sourceOffset` into a fresh heap block
 // holding an independent copy of its elements, and write the descriptor
-// {newPtr, length} at `descriptorOffset`. Returns the new block so the caller
+// {length, newPtr} at `descriptorOffset`. Returns the new block so the caller
 // can root it in `heap`.
 private ubyte[] dupArray(
     ref ubyte[] stack,
@@ -2540,7 +2544,7 @@ private ubyte[] dupArray(
 
 // Concatenate the slice descriptors at `leftOffset` and `rightOffset` into a
 // fresh heap block of `len(left) + len(right)` elements, copying both operands'
-// elements in order, and write the descriptor {newPtr, total} at
+// elements in order, and write the descriptor {total, newPtr} at
 // `descriptorOffset`. Returns the new block so the caller can root it in `heap`.
 // Both operands are copied, leaving the originals untouched.
 private ubyte[] concatArrays(
@@ -2664,7 +2668,7 @@ private bool containsPointer(in size_t[] pointers, in size_t pointer)
 // Resize the dynamic array at `descriptorOffset` to `newLength` elements
 // (`arr.length = n`). A fresh block is allocated, the `min(oldLength, newLength)`
 // existing elements copied in, and any growth filled with the element's
-// default-init byte; the descriptor is overwritten with {newPtr, newLength}.
+// default-init byte; the descriptor is overwritten with {newLength, newPtr}.
 // Returns the new block so the caller can root it in `heap`.
 private ubyte[] resizeArray(
     ref ubyte[] stack,
@@ -2888,7 +2892,7 @@ private ulong extendedUnsignedElement(
 
 // True iff two array-of-arrays descriptors are structurally equal, at any
 // nesting `depth` (2 for `int[][]`, 3 for `int[][][]`, ...): same outer
-// length, and every row (itself a 16-byte `{ptr, length}` slice descriptor,
+// length, and every row (itself a 16-byte `{length, ptr}` slice descriptor,
 // separately heap-allocated on each side) recursively equal one level
 // deeper, down to the innermost row's element bytes (`innerElementSize`
 // each). Unlike `slicesEqual`, this never compares a row's raw descriptor
@@ -2929,7 +2933,7 @@ private bool nestedSlicesEqual(
 // whatever `innerElementSize` measures) and this is a flat byte compare:
 // the base case, identical to `nestedSlicesEqual`'s original one-level
 // body. Otherwise each of the `length` elements is itself a 16-byte
-// `{ptr, length}` row descriptor -- independently lengthed, since arrays
+// `{length, ptr}` row descriptor -- independently lengthed, since arrays
 // can be ragged at every level -- so each row's own length is checked
 // before recursing one level deeper into it.
 private bool nestedRowsEqual(
@@ -3021,7 +3025,7 @@ private void copySlice(
 // Copy a range of `T[N][]` rows: write each source row's `rowByteSize`
 // bytes of content into the matching destination row's own existing
 // heap-allocated block, one row at a time. The destination and source
-// "elements" here are 16-byte `{ptr, length}` row descriptors pointing at
+// "elements" here are 16-byte `{length, ptr}` row descriptors pointing at
 // separately heap-allocated `T[N]` blocks (this VM's `T[N][]` row
 // representation, not compiled D's contiguous layout -- see "Live hazards
 // and divergences" in ai/plans/bytecode.md), so `copySlice`'s flat by-value
@@ -3613,7 +3617,7 @@ private void writeScalar(T)(
 // How to compare a key block, decoded from an AA opcode's `Instruction.e`
 // operand (`assocArrayKeyMeta`, compiler.d): either the two simple whole-key
 // modes `assocArrayKeyIsArrayFlag` already distinguished (all raw bytes, or
-// one whole {ptr, length} descriptor compared by content), or -- when
+// one whole {length, ptr} descriptor compared by content), or -- when
 // `assocArrayKeyIsStructLayoutFlag` is set -- a struct key mixing both kinds
 // of field in one block, whose per-field layout lives in
 // `Program.assocArrayKeyLayouts` (too much to fit in the operand itself).
@@ -3763,7 +3767,7 @@ private struct AssocArray {
 // key. A scalar key (bool/int/long/double/...) compares its raw bytes
 // directly -- exactly how a plain `int` key always compared. A `string` key
 // (`keyIsArray`, set only by `assocArrayKeyIsArray` in compiler.d) instead
-// compares the bytes its {ptr, length} descriptor points at: two
+// compares the bytes its {length, ptr} descriptor points at: two
 // separately-constructed but content-equal strings have different backing
 // pointers, so a raw descriptor-byte compare would wrongly treat them as
 // distinct keys, silently miscomparing.
@@ -3802,7 +3806,7 @@ private bool keysEqual(
     return descriptorContentEqual(left, right);
 }
 
-// True iff the {ptr, length} slice descriptors at the start of `left`/
+// True iff the {length, ptr} slice descriptors at the start of `left`/
 // `right` point at equal-content byte ranges -- content, not identity: two
 // separately-constructed but content-equal strings/arrays have different
 // backing pointers, so a raw descriptor-byte compare would wrongly treat

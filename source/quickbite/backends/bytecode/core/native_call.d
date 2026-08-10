@@ -149,7 +149,7 @@ private bool executeNativeInvocation(ref NativeInvocation invocation) {
 private void writeNativeInvocationResult(
     ref NativeInvocation invocation,
     ubyte[] stack,
-) {
+) @safe {
     if (!invocation.returnsRef)
         return;
     if (invocation.reference is null)

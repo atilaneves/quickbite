@@ -82,7 +82,7 @@ private struct Compiler {
     private DeclarationRecord[VarDeclaration] _declarations;
     private DeclarationRecord _unavailableDeclaration;
     // Named catch variables for the narrow Exception/Throwable object surface:
-    // each synthetic object exposes native {ptr, length} string descriptors
+    // each synthetic object exposes native {length, ptr} string descriptors
     // for `msg` and, when a finally throw chains a body exception, `next.msg`.
     private ExceptionObjectLocal[VarDeclaration] _exceptionObjectLocals;
     // The receiver of the method currently being compiled, if any: the base
@@ -2553,10 +2553,11 @@ private struct Compiler {
         // an 8-byte zero pointer slot. The throw in the comma's first operand
         // aborts before this is read. An array-typed `null` (e.g. a ternary
         // arm retyped to the ternary's own array type, `cond ? null : arr`)
-        // is a genuine {ptr, length} descriptor that IS read, so it gets a
-        // full 16-byte zeroed slot via `Op.nullSlice` instead -- an 8-byte
-        // pointer-only slot would leave whatever a consumer widens it to
-        // read the frame bytes just past this allocation as the length word.
+        // is a genuine {length, ptr} descriptor that IS read, so it gets a
+        // full 16-byte zeroed slot via `Op.nullSlice` instead -- a single
+        // 8-byte word covers only the descriptor's length, leaving whatever
+        // a consumer widens it to read the frame bytes just past this
+        // allocation as the pointer word.
         if (expression.isNullExp !is null) {
             import dmd.astenums: TY;
 
@@ -4127,7 +4128,7 @@ private struct Compiler {
     }
 
 
-    // Compile a string literal directly into an expanded native {ptr, length}
+    // Compile a string literal directly into an expanded native {length, ptr}
     // descriptor at a fresh frame slot.
     private ushort compileStringLiteralPointer(StringExp string_) {
         const offset = allocateBytes(sliceDescriptorSize, size_t.sizeof);
@@ -4161,7 +4162,7 @@ private struct Compiler {
     }
 
     // Emit a string literal's bytes into a fresh literal block and an
-    // `Op.loadStringLiteral` writing the expanded {ptr, length} descriptor
+    // `Op.loadStringLiteral` writing the expanded {length, ptr} descriptor
     // directly into the existing frame slot `destination` (as opposed to
     // `compileStringLiteralPointer`'s fresh one).
     private void emitLoadStringLiteral(
@@ -4265,7 +4266,7 @@ private struct Compiler {
     }
 
     // Write a compile-time string into a fresh, stable `literalBlocks` entry
-    // and emit its native {ptr, length} descriptor, returning the
+    // and emit its native {length, ptr} descriptor, returning the
     // descriptor's frame offset. Used for synthesised diagnostic messages
     // (`throwString`), whose descriptor a later `throw` dereferences, so it
     // needs the same stable-address storage as a source-level string
@@ -5547,7 +5548,7 @@ private struct Compiler {
     // A struct `S` local occupies `Type.size()` inline frame bytes at its
     // DMD-computed alignment, each field at `base + field.offset`. The block is
     // zeroed first (scalar fields default to 0, dynamic-array fields to an empty
-    // `{null, 0}` descriptor), then a struct-literal initializer stores its
+    // `{0, null}` descriptor), then a struct-literal initializer stores its
     // per-field values; a bare `S s;` leaves the zeroed block.
     private void compileStructDeclaration(VarDeclaration variable) {
         import std.conv: text;
@@ -7086,9 +7087,9 @@ private struct Compiler {
         // An lvalue array source loads its descriptor through the same Place
         // used by mutation, preserving D's shared-backing assignment. Scoped
         // to `Tarray` sources only: a `Tsarray` lvalue's storage is `dim`
-        // consecutive elements, not a {ptr, length} descriptor, so
+        // consecutive elements, not a {length, ptr} descriptor, so
         // reinterpreting it here would copy element bytes as if they were a
-        // pointer and length.
+        // length and pointer.
         if (source.type !is null && source.type.toBasetype.ty == TY.Tarray)
             if (auto place = placeOrNull(source)) {
                 const value = loadPlaceValue(*place);
@@ -7153,7 +7154,7 @@ private struct Compiler {
         // Any other string source reaching this far (a runtime
         // `object.classinfo.name`): none of the dedicated cases above
         // matched, and it is not a known dynamic-array descriptor either, so
-        // copy the ordinary {ptr, length} descriptor `compileExpression`
+        // copy the ordinary {length, ptr} descriptor `compileExpression`
         // already resolves it to.
         if (isStringType(source.type)) {
             _code ~= Instruction(
@@ -7670,7 +7671,7 @@ private struct Compiler {
     }
 
     // `p[lo .. hi]` over a pointer: write a slice descriptor
-    // {p + lo * elementSize, hi - lo} at `destination`, sharing the heap block
+    // {hi - lo, p + lo * elementSize} at `destination`, sharing the heap block
     // `p` addresses. lo and hi are element indices (not pre-scaled), compiled
     // into an adjacent {lo, hi} size_t pair the pointerSlice opcode reads.
     private void compilePointerSliceInto(
@@ -7824,7 +7825,7 @@ private struct Compiler {
         // pointer word. `cast(U*)p` repaints an existing pointer value with the
         // target element type without changing the raw address. A string's
         // basetype is also `Tarray` and its descriptor is the ordinary
-        // {ptr, length} form, so it takes the same path as any other `T[]`.
+        // {length, ptr} form, so it takes the same path as any other `T[]`.
         if (isPointerType(cast_.to)) {
             if (isDynamicArrayArgument(cast_.e1) || isStringType(cast_.e1.type))
                 return compileArrayPointer(cast_);
@@ -8777,14 +8778,14 @@ private struct Compiler {
 
         const condition = compileBoolCondition(conditional.econd);
         // A dynamic-array-typed result (string included) is a 16-byte
-        // {ptr, length} descriptor, not the 8-byte pointer/scalar
+        // {length, ptr} descriptor, not the 8-byte pointer/scalar
         // `operandSize` computes for every other result kind (this
         // function's original design, per the comment below, was a
         // pointer-valued conditional -- an 8-byte value). Reinterpreting an
-        // array descriptor as 8 bytes copies only its pointer word and
-        // leaves `result`'s length word at its zeroed frame default, so a
-        // later consumer reads a well-formed-looking but null/zero-length
-        // descriptor.
+        // array descriptor as 8 bytes copies only its length word and
+        // leaves `result`'s pointer word at its zeroed frame default, so a
+        // later consumer reads a descriptor whose length looks right over a
+        // null pointer.
         const isArrayResult = conditional.type !is null &&
             conditional.type.toBasetype.ty == TY.Tarray;
         const result = allocateBytes(
@@ -8854,7 +8855,7 @@ private struct Compiler {
     // the descriptor's pointer word — not its length — feeds
     // `compileTruthValue`'s pointer branch. `dynamicArrayDescriptor` loads a
     // resolved place or materialises a non-lvalue once, so every `T[]`/string
-    // source yields the same {ptr, length} descriptor. Every other operand
+    // source yields the same {length, ptr} descriptor. Every other operand
     // goes through `compileTruthValue` directly.
     private Operand compileBoolCondition(Expression expression) {
         if (isStringType(expression.type) || isDynamicArrayArgument(expression)) {
@@ -9389,7 +9390,7 @@ private struct Compiler {
     // (`int[] arr = [1, 2, 3];`) compiles its bytes into a fresh
     // `_program.literalBlocks` entry -- a GC-rooted block that never moves,
     // the same stable-address mechanism `appendStringLiteral` already uses
-    // -- and writes {blockPointer, count} directly into the descriptor's
+    // -- and writes {count, blockPointer} directly into the descriptor's
     // moduleData bytes right now, at registration time, exactly as
     // `moduleScalarInitializerBytes` writes a scalar's bytes directly: no
     // bytecode instruction is needed, since the compiler and the machine
@@ -9503,8 +9504,8 @@ private struct Compiler {
     // so on) -- each inner array is built into its own stable
     // `literalBlocks` entry first, the same way `compileDynamicArrayInto`'s
     // own array-of-arrays literal branch builds each row into its own heap
-    // block at runtime, so the outer bytes hold one 16-byte `{pointer,
-    // count}` descriptor per row rather than raw scalar bytes. The
+    // block at runtime, so the outer bytes hold one 16-byte `{count,
+    // pointer}` descriptor per row rather than raw scalar bytes. The
     // recursive call below re-derives `elementIsArray` from each row's own
     // `Expression.type` (`arrayElementIsArray`) rather than being told a
     // fixed depth by its caller, so a row that is itself another
@@ -10323,7 +10324,7 @@ private struct Compiler {
             cast(ushort) size_t.sizeof,
         );
 
-        // Build a throwaway {pointer, length} descriptor over `base` and go
+        // Build a throwaway {length, pointer} descriptor over `base` and go
         // through `subSliceOp` instead of the unchecked `pointerSliceOp`, so
         // an out-of-range bound throws instead of silently reading or
         // writing past the array's frame storage.
@@ -10471,7 +10472,7 @@ private struct Compiler {
             }
 
             // `T[][]` (`Tarray`-row): unlike a `T[N]` row, a `T[]` row is
-            // itself just a 16-byte `{ptr, length}` descriptor, the same
+            // itself just a 16-byte `{length, ptr}` descriptor, the same
             // reference-semantics value every other broadcast-fill element
             // is. There is no separately heap-allocated row block to write
             // through -- broadcasting the rhs row means writing its own
@@ -10608,7 +10609,7 @@ private struct Compiler {
         // A string element (`string[2]`) is checked before the general
         // Tarray case below, whose element basetype a string also matches:
         // each element must be a literal (`stringLiteralOf` throws
-        // otherwise), expanded directly into the native {ptr, length}
+        // otherwise), expanded directly into the native {length, ptr}
         // descriptor its 16-byte slot holds, the same width every other
         // dynamic-array element uses.
         if (isStringType(elementType)) {
@@ -11544,7 +11545,7 @@ private struct Compiler {
         // `Type` and DMD's `toBasetype`/`nextOf` are non-const methods.
         auto returnType = function_.type.toBasetype.nextOf;
         // A dynamic-array return (e.g. `gc_getArrayUsed`'s `void[]`) has no
-        // scalar tag; it is a 16-byte {ptr, length} slice descriptor, the same
+        // scalar tag; it is a 16-byte {length, ptr} slice descriptor, the same
         // shape every other array-typed frame slot uses.
         const isArrayReturn = returnType.toBasetype.ty == TY.Tarray;
         // A struct return (e.g. `GC.qalloc`'s `BlkInfo`, libc's `div_t`) is an
@@ -12861,7 +12862,7 @@ private struct Compiler {
     }
 
     // True when the associative array's key is compared by the content its
-    // {ptr, length} descriptor points at (`keysEqual`'s `keyIsArray`,
+    // {length, ptr} descriptor points at (`keysEqual`'s `keyIsArray`,
     // machine.d), rather than by the descriptor's own bytes --
     // two separately-constructed but content-equal `string`s have different
     // backing pointers, so a raw descriptor compare would wrongly treat them
@@ -12870,8 +12871,8 @@ private struct Compiler {
     // miscompare by the wrong element width.
     //
     // A struct key that is itself nothing but a single plain-`string`
-    // field (`struct Name { string text; }`) has the exact same {ptr,
-    // length} byte layout as a bare `string` -- there are no interleaved
+    // field (`struct Name { string text; }`) has the exact same {length,
+    // ptr} byte layout as a bare `string` -- there are no interleaved
     // scalar fields to keep raw, so it is content-compared the same way
     // (`assocArray.structKeyWithStringMemberComparesStructurally`,
     // `tests/ut/backends/runner/lang/arrays.d`). A struct with any other
@@ -13527,7 +13528,7 @@ private struct Compiler {
 
     // `assert(cond, message)` with an explicit string message that is neither
     // a `_d_assert_fail` call nor the verbatim-logical-expression form: throw
-    // the message string itself on failure, its native {ptr, length}
+    // the message string itself on failure, its native {length, ptr}
     // descriptor materialised the same way any other string source is — a
     // `StringExp` literal (`assert(1 == 2, "oops")`, folded to
     // `assert(false, "oops")`), a struct field, or a `string` local. A
@@ -14552,7 +14553,7 @@ private struct Compiler {
     // Broadcast one already-compiled row value (`value`, `rowByteSize`
     // bytes) into every element of a `[lo .. hi)` range of a `T[N][]`
     // destination (`destination`, a slice descriptor over that range). Each
-    // destination slot is its own 16-byte `{ptr, length}` row descriptor
+    // destination slot is its own 16-byte `{length, ptr}` row descriptor
     // pointing at a separately heap-allocated block (`Op.allocArray2D`), so
     // this writes through each row's existing `.ptr` in a runtime loop --
     // `emitSliceFill`'s flat byte-fill would instead overwrite the row
@@ -15157,7 +15158,7 @@ private struct Compiler {
         // A static-array-typed literal (`[value, value]` assigned into an
         // `int[2]*` dereference, e.g.) is an inline value block, like a
         // struct literal — not a heap-backed slice, which would materialise
-        // a throwaway {ptr, length} descriptor instead of the array's own
+        // a throwaway {length, ptr} descriptor instead of the array's own
         // bytes.
         if (array.type.toBasetype.ty == TY.Tsarray) {
             const offset = allocateStructBlock(array.type);
@@ -15822,7 +15823,7 @@ private struct DeclarationRecord {
 
 // A string literal's stable-block placement: `blockIndex` into
 // `Program.literalBlocks`, `length` in elements (code units), matching the
-// native {ptr, length} descriptor's own {index, length} literal-load operand
+// native {length, ptr} descriptor's own {index, length} literal-load operand
 // pair.
 private struct StringLiteralData {
     ushort blockIndex;
