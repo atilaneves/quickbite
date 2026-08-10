@@ -11,6 +11,13 @@ public struct Result {
     public size_t maxRamBytes;
 }
 
+public struct Measurement(T) {
+    public Result timing;
+    // Values returned by every timed iteration, in iteration order. Warmup
+    // values deliberately stay out of this record.
+    public T[] results;
+}
+
 public Result measure(
     scope void delegate() runTests,
     in size_t warmup,
@@ -65,4 +72,60 @@ public Result measure(
              + timings[iterations / 2].total!"hnsecs") / 2,
         );
     return Result(timings[0], median, stddev, maxRamBytes);
+}
+
+public Measurement!T measureWithResults(T)(
+    scope T delegate() operation,
+    in size_t warmup,
+    in size_t iterations,
+) {
+    import core.memory: GC;
+    import core.time: Duration, MonoTime, hnsecs;
+    import std.algorithm.sorting: sort;
+    import std.math: sqrt;
+
+    auto timings = new Duration[](iterations);
+    auto results = new T[](iterations);
+    size_t maxRamBytes;
+
+    foreach (i; 0 .. warmup)
+        operation();
+
+    GC.disable;
+    scope(exit) GC.enable;
+
+    foreach (i; 0 .. iterations) {
+        GC.collect;
+        const baselineRam = GC.stats.usedSize;
+        const start = MonoTime.currTime;
+        results[i] = operation();
+        timings[i] = MonoTime.currTime - start;
+        const usedRam = GC.stats.usedSize;
+        if (usedRam > baselineRam && usedRam - baselineRam > maxRamBytes)
+            maxRamBytes = usedRam - baselineRam;
+    }
+
+    double sum = 0;
+    foreach (t; timings)
+        sum += t.total!"hnsecs";
+    const mean = sum / iterations;
+
+    double sqDiffSum = 0;
+    foreach (t; timings) {
+        const diff = t.total!"hnsecs" - mean;
+        sqDiffSum += diff * diff;
+    }
+    const stddev = iterations > 1 ? sqrt(sqDiffSum / (iterations - 1)) : 0.0;
+
+    timings.sort;
+    const median = iterations % 2 == 1
+        ? timings[iterations / 2]
+        : hnsecs(
+            (timings[iterations / 2 - 1].total!"hnsecs"
+             + timings[iterations / 2].total!"hnsecs") / 2,
+        );
+    return Measurement!T(
+        Result(timings[0], median, stddev, maxRamBytes),
+        results,
+    );
 }
