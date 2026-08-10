@@ -1366,6 +1366,14 @@ public struct RuntimeValue {
         );
     }
 
+    public bool isComplexScalar() const @safe pure nothrow {
+        import std.sumtype: match;
+
+        return data.match!(
+            (value) => is(typeof(value) == const(ComplexScalar)),
+        );
+    }
+
     public Value complexRealPart() const @safe pure {
         import std.sumtype: match;
 

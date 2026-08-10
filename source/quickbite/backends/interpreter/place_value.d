@@ -113,6 +113,12 @@ public imported!"quickbite.backends.interpreter.runtime_value".Value readValue(
     if (isRealType(type))
         return Value(readRealBits(place.address, typeByteSize(type)));
 
+    if (auto componentType = complexComponentType(type))
+        return Value.complexValue(
+            readValue(complexComponentPlace(place, componentType, 0)).asReal,
+            readValue(complexComponentPlace(place, componentType, 1)).asReal,
+        );
+
     auto structType = nonUnionStructOf(type);
     if (structType !is null)
         return AggregateValue.copyFromAddress(type, place.address);
@@ -317,6 +323,43 @@ public bool isRealType(imported!"dmd.mtype".Type type) @trusted {
 }
 
 
+// A complex scalar is laid out as two adjacent components of its matching
+// real type. Keep that type relationship in one place so reads, writes, and
+// composability cannot disagree about the native representation.
+private imported!"dmd.mtype".Type complexComponentType(
+    imported!"dmd.mtype".Type type,
+) @trusted {
+    import dmd.astenums: TY;
+    import dmd.mtype: Type;
+
+    switch (type.toBasetype.ty) {
+    case TY.Tcomplex32:
+        return Type.tfloat32;
+    case TY.Tcomplex64:
+        return Type.tfloat64;
+    case TY.Tcomplex80:
+        return Type.tfloat80;
+    default:
+        return null;
+    }
+}
+
+
+private imported!"quickbite.backends.interpreter.place".Place complexComponentPlace(
+    imported!"quickbite.backends.interpreter.place".Place place,
+    imported!"dmd.mtype".Type componentType,
+    in size_t index,
+) @trusted {
+    import quickbite.backends.interpreter.layout: typeByteSize;
+    import quickbite.backends.interpreter.place: Place;
+
+    return Place(
+        cast(void*) (cast(ubyte*) place.address + index * typeByteSize(componentType)),
+        componentType,
+    );
+}
+
+
 // `Type.toBasetype` is not @safe; this keeps the class-reference check at the
 // same narrow DMD boundary as `isRealType` above.
 private bool isClassType(imported!"dmd.mtype".Type type) @trusted {
@@ -432,6 +475,9 @@ private bool valueMatchesComposablePlace(
     // `writeValue`'s `writeRealBits` arm.
     if (isRealType(type))
         return value.isNumericScalar;
+
+    if (complexComponentType(type) !is null)
+        return value.isComplexScalar;
 
     auto structType = type.isTypeStruct;
     if (structType !is null) {
@@ -678,6 +724,18 @@ public void writeValue(
 
     if (isRealType(type)) {
         writeRealBits(place.address, typeByteSize(type), value.asReal);
+        return;
+    }
+
+    if (auto componentType = complexComponentType(type)) {
+        writeValue(
+            complexComponentPlace(place, componentType, 0),
+            value.complexRealPart,
+        );
+        writeValue(
+            complexComponentPlace(place, componentType, 1),
+            value.complexImaginaryPart,
+        );
         return;
     }
 
@@ -1045,7 +1103,10 @@ private bool writeCoversWholeType(imported!"dmd.mtype".Type type) @safe {
     import quickbite.backends.interpreter.layout:
         structFields, declaredType, fieldByteOffset, typeByteSize;
 
-    if (isWritableNativeScalar(type) || isRealType(type) || type.isTypePointer !is null)
+    if (
+        isWritableNativeScalar(type) || isRealType(type) ||
+        complexComponentType(type) !is null || type.isTypePointer !is null
+    )
         return true;
 
     auto arrayType = type.isTypeSArray;
@@ -1188,6 +1249,9 @@ public bool isPlaceComposable(imported!"dmd.mtype".Type type) @safe {
         return true;
 
     if (isRealType(type))
+        return true;
+
+    if (complexComponentType(type) !is null)
         return true;
 
     auto structType = nonUnionStructOf(type);

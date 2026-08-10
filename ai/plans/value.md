@@ -752,12 +752,18 @@ formatter migrations leave no consumers. This deletion is decision 15's
 completion signal.
 
 For the Interpreter, also delete transient storage-authority scaffolding that
-the native-layout end state makes unnecessary. Delete the existing broad
-`RuntimeValue` type rather than retaining it under its private alias `Value`.
-If recursive AST evaluation still needs a carrier, replace it with the smallest
-non-owning scalar/address/callable carrier allowed by decisions 7 and 11; it
-must contain no formatting model, recursively boxed aggregate, or storage
-authority.
+the native-layout end state makes unnecessary. Declaration-keyed
+`RuntimeValue` locals, lazy-argument snapshots, fallback blocks, and
+fork/return reconciliation are gone: `FrameBlock`, `ModuleTable`, and typed
+`Place` composition are the binding authority. Address-keyed callable and
+symbolic-reference metadata may accompany native byte ranges, but may not
+become a second binding store.
+
+Delete the remaining broad `RuntimeValue` type rather than retaining it under
+its private alias `Value`. If recursive AST evaluation still needs a carrier,
+replace it with the smallest non-owning scalar/address/callable carrier allowed
+by decisions 7 and 11; it must contain no formatting model, recursively boxed
+aggregate, or storage authority.
 
 Replace `nativePointerRoots` with ordinary scanning from native frames and
 blocks plus explicitly scoped temporary owners at raw-pointer construction
@@ -777,12 +783,6 @@ before; it dies with the legacy executors. Bytecode/interpreter
 native-layout deduplication and any shared-substrate extraction are out
 of scope (decision 16): later, if ever, and subordinate to finishing the
 bytecode VM.
-
-Restructuring the Walker's mirror/writeback machinery behind an internal
-seam (for example, funnelling all mirror access through the binding
-helpers) is likewise out of scope until the mirrored `Value` storage is
-gone: a clean, tested interface would entrench machinery scheduled for
-deletion.
 
 ## Guardrails
 

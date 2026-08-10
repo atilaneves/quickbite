@@ -8,17 +8,16 @@ private:
 // a local that owns its own storage (a value parameter or a body-declared
 // variable), sized/aligned to that local's own declared type -- or a
 // pointer-width REFERENCE slot holding an address rather than a rendition
-// of the local's own declared type: for a `ref`/`out` parameter, the
-// caller-supplied address it binds to; for a captured outer variable (a
-// nested function's own `FuncDeclaration.outerVars`, see `capturedVariables`
-// below), the enclosing activation's own address for that variable. The two
-// kinds are deliberately distinguishable (`Slot.kind`) so nothing composing
+// of the local's own declared type: for a `ref`/`out` parameter or body
+// local, the address it binds to; for a captured outer variable (a nested
+// function's own `FuncDeclaration.outerVars`, see `capturedVariables` below),
+// the enclosing activation's own address for that variable; and for `vthis`,
+// the receiver address. The two kinds are deliberately distinguishable
+// (`Slot.kind`) so nothing composing
 // a `Place` from a slot's raw bytes at the local's own declared type could
 // mistake a reference slot's stored ADDRESS for inline storage of that
-// type. A `lazy` parameter and a `ref` body local still get no slot of
-// either kind: a `lazy` parameter is a delegate over the caller's own live
-// frame, not an address of its own, and a `ref` body local's binding
-// machinery is unchanged by this slice -- neither ever appears here.
+// type. A `lazy` parameter gets no slot: it is a thunk over the caller's live
+// frame, not an address of its own.
 public struct FrameLayout {
     import dmd.declaration: VarDeclaration;
 
@@ -62,21 +61,23 @@ public struct FrameLayout {
 // since what it holds is an address, never a rendition of the
 // parameter's own declared type; nothing at all for a `lazy` parameter,
 // which aliases the caller's live frame through a delegate instead of an
-// address of its own), then -- for a nested function only -- one more
-// pointer-width REFERENCE slot per outer variable it captures
-// (`capturedVariables` below; empty for a non-nested function, so this
-// adds nothing for one), then every OWNING variable declared in the body
-// (`isAliasingLocal` below still excludes a `ref` body local, a
-// `static`/`__gshared` variable, and an `enum` manifest constant -- this
-// slice only gives `ref`/`out` PARAMETERS a slot of their own; a `ref`
-// body local remains untouched). Each slot's offset is packed at the
-// current cursor aligned up to that slot's own alignment; `FrameLayout.
-// byteLength` is the final cursor aligned up to the largest alignment any
-// slot used.
+// address of its own), then a REFERENCE slot for `vthis`, then -- for a
+// function with an out contract -- an OWNING slot for DMD's synthetic
+// `__result`, then -- for a nested function only -- one more pointer-width
+// REFERENCE slot per outer
+// variable it captures (`capturedVariables` below; empty for a non-nested
+// function, so this adds nothing for one), then every variable declared in
+// the body
+// (`isStorageFreeLocal` below excludes a `static`/`__gshared` variable and an
+// `enum` manifest constant; a `ref` body local receives a reference slot).
+// Each slot's offset is packed at the current cursor aligned up to that slot's
+// own alignment; `FrameLayout.byteLength` is the final cursor aligned up to
+// the largest alignment any slot used.
 public FrameLayout computeFrameLayout(
     imported!"dmd.func".FuncDeclaration function_,
 ) @trusted {
-    import quickbite.backends.interpreter.layout: typeByteSize, typeAlignment, typeIsSized, declaredType;
+    import quickbite.backends.interpreter.layout:
+        declaredType, typeAlignment, typeByteSize, typeIsSized;
     import dmd.declaration: VarDeclaration;
 
     FrameLayout.Slot[VarDeclaration] slots;
@@ -89,6 +90,9 @@ public FrameLayout computeFrameLayout(
         in size_t alignment,
         FrameLayout.Slot.Kind kind,
     ) {
+        if (variable in slots)
+            return;
+
         cursor = alignedUp(cursor, alignment);
         slots[variable] = FrameLayout.Slot(cursor, size, kind);
         cursor += size;
@@ -111,21 +115,63 @@ public FrameLayout computeFrameLayout(
         if (!typeIsSized(type))
             continue;
 
-        place(parameter, typeByteSize(type), typeAlignment(type), FrameLayout.Slot.Kind.owning);
+        place(
+            parameter,
+            typeByteSize(type),
+            typeAlignment(type),
+            FrameLayout.Slot.Kind.owning,
+        );
+    }
+
+    if (
+        function_.vthis !is null &&
+        function_.vthis.isThisDeclaration !is null
+    )
+        place(
+            function_.vthis,
+            (void*).sizeof,
+            (void*).alignof,
+            FrameLayout.Slot.Kind.reference,
+        );
+
+    if (function_.vresult !is null) {
+        auto type = declaredType(function_.vresult);
+        if (typeIsSized(type))
+            place(
+                function_.vresult,
+                typeByteSize(type),
+                typeAlignment(type),
+                FrameLayout.Slot.Kind.owning,
+            );
     }
 
     foreach (variable; capturedVariables(function_))
         place(variable, (void*).sizeof, (void*).alignof, FrameLayout.Slot.Kind.reference);
 
     foreach (variable; bodyLocals(function_.fbody)) {
-        if (isAliasingLocal(variable))
+        if (isStorageFreeLocal(variable))
             continue;
+
+        if (variable.isReference) {
+            place(
+                variable,
+                (void*).sizeof,
+                (void*).alignof,
+                FrameLayout.Slot.Kind.reference,
+            );
+            continue;
+        }
 
         auto type = declaredType(variable);
         if (!typeIsSized(type))
             continue;
 
-        place(variable, typeByteSize(type), typeAlignment(type), FrameLayout.Slot.Kind.owning);
+        place(
+            variable,
+            typeByteSize(type),
+            typeAlignment(type),
+            FrameLayout.Slot.Kind.owning,
+        );
     }
 
     return FrameLayout(slots, alignedUp(cursor, maxAlignment));
@@ -139,13 +185,14 @@ public FrameLayout computeFrameLayout(
 // enclosing function gets recorded here, deduplicated, and already
 // flattened across however many enclosing scopes it crosses (a doubly-
 // nested function's `outerVars` names a grandparent's local directly, not
-// just its immediate parent's -- `impl.d`'s capture binding resolves only
-// ONE level, against ITS OWN caller's frame, so a capture that needs a
-// relay through an intermediate activation that never itself references
-// the variable still declines; see that function's own header). Empty for
-// a non-nested function. Never includes a `dataseg`/`__gshared`/`static`
+// just its immediate parent's; `impl.d` resolves that declaration through
+// the native static-link chain. A method of a function-local aggregate may
+// also have `outerVars` even though `FuncDeclaration.isNested` is false, so
+// callers must use this list itself as the capture authority. Empty when a
+// function captures no enclosing declaration. Never includes a
+// `dataseg`/`__gshared`/`static`
 // or `enum manifest` variable: `checkNestedReference` excludes both before
-// ever touching `outerVars`, matching `isAliasingLocal`'s identical
+// ever touching `outerVars`, matching `isStorageFreeLocal`'s identical
 // exclusion for a body local -- this is DMD's OWN capture analysis, not a
 // re-derivation of it: this module must never walk `function_.fbody`
 // itself to decide what it captures.
@@ -285,139 +332,46 @@ public bool isReferenceParameter(
 // module table instead of any one activation's frame, or an `enum`
 // manifest constant (`STC.manifest`), which has no storage at all: DMD
 // substitutes its value at every use rather than allocating it anywhere.
-private bool isAliasingLocal(imported!"dmd.declaration".VarDeclaration variable) @trusted {
+private bool isStorageFreeLocal(imported!"dmd.declaration".VarDeclaration variable) @trusted {
     import dmd.astenums: STC;
 
-    if ((variable.storage_class & (STC.ref_ | STC.out_ | STC.lazy_ | STC.manifest)) != STC.none)
+    if ((variable.storage_class & (STC.lazy_ | STC.manifest)) != STC.none)
         return true;
 
     return variable.isDataseg;
 }
 
 
-// Every `VarDeclaration` a `DeclarationExp` introduces within `statement`'s
-// subtree, in the order the statement tree declares them. Mirrors the
-// statement-tree recursion the interpreter's own walker uses to run a
-// function body (`Walker.runStatement`): compound and compound-declaration
-// blocks, scope statements, if conditions and branches, for/do bodies
-// (`while`/`foreach` are
-// lowered to `ForStatement` by DMD's own semantic pass, so no separate
-// case is needed for them), try/finally/catch, unrolled loop bodies,
-// labels, switch/case/default, and with-statements.
+// Every body variable DMD's own visitor observes, including synthetic
+// declarations such as `$` length variables and `with` receivers. Preserve
+// encounter order and deduplicate variables reached through both the
+// statement and expression callbacks.
 private imported!"dmd.declaration".VarDeclaration[] bodyLocals(
     imported!"dmd.statement".Statement statement,
 ) @trusted {
     import dmd.declaration: VarDeclaration;
-
-    if (statement is null)
-        return null;
+    import dmd.expression: Expression;
+    import dmd.visitor.foreachvar: foreachExpAndVar, foreachVar;
 
     VarDeclaration[] locals;
-
-    if (auto compound = statement.isCompoundDeclarationStatement) {
-        if (compound.statements !is null)
-            foreach (child; *compound.statements)
-                locals ~= bodyLocals(child);
-        return locals;
+    bool[VarDeclaration] seen;
+    void append(VarDeclaration variable) {
+        if (variable is null || variable in seen)
+            return;
+        seen[variable] = true;
+        locals ~= variable;
+    }
+    void appendExpression(Expression expression) {
+        expression.foreachVar(&append);
+        if (auto index = expression.isIndexExp)
+            append(index.lengthVar);
+        if (auto slice = expression.isSliceExp)
+            append(slice.lengthVar);
     }
 
-    if (auto compound = statement.isCompoundStatement) {
-        if (compound.statements !is null)
-            foreach (child; *compound.statements)
-                locals ~= bodyLocals(child);
-        return locals;
-    }
-
-    if (auto scope_ = statement.isScopeStatement)
-        return bodyLocals(scope_.statement);
-
-    if (auto tryFinally = statement.isTryFinallyStatement)
-        return bodyLocals(tryFinally._body) ~ bodyLocals(tryFinally.finalbody);
-
-    if (auto tryCatch = statement.isTryCatchStatement) {
-        locals = bodyLocals(tryCatch._body);
-        if (tryCatch.catches !is null)
-            foreach (catch_; *tryCatch.catches) {
-                if (catch_.var !is null)
-                    locals ~= catch_.var;
-                locals ~= bodyLocals(catch_.handler);
-            }
-        return locals;
-    }
-
-    if (auto unrolled = statement.isUnrolledLoopStatement) {
-        if (unrolled.statements !is null)
-            foreach (child; *unrolled.statements)
-                locals ~= bodyLocals(child);
-        return locals;
-    }
-
-    if (auto label = statement.isLabelStatement)
-        return bodyLocals(label.statement);
-
-    if (auto for_ = statement.isForStatement)
-        return bodyLocals(for_._init) ~ bodyLocals(for_._body);
-
-    if (auto do_ = statement.isDoStatement)
-        return bodyLocals(do_._body);
-
-    if (auto switch_ = statement.isSwitchStatement)
-        return bodyLocals(switch_._body);
-
-    if (auto case_ = statement.isCaseStatement)
-        return case_.statement is statement ? null : bodyLocals(case_.statement);
-
-    if (auto default_ = statement.isDefaultStatement)
-        return default_.statement is statement ? null : bodyLocals(default_.statement);
-
-    if (auto caseRange = statement.isCaseRangeStatement)
-        return caseRange.statement is statement ? null : bodyLocals(caseRange.statement);
-
-    if (auto if_ = statement.isIfStatement)
-        return declaredVariables(if_.condition) ~ bodyLocals(if_.ifbody) ~
-            bodyLocals(if_.elsebody);
-
-    if (auto with_ = statement.isWithStatement)
-        return bodyLocals(with_._body);
-
-    if (auto expression = statement.isExpStatement)
-        return declaredVariable(expression.exp);
-
-    return null;
-}
-
-
-// The `VarDeclaration` a bare `DeclarationExp` introduces, if `expression`
-// is one; `null` (as an empty array) for anything else, including a
-// declaration of a non-variable symbol (e.g. `alias`).
-private imported!"dmd.declaration".VarDeclaration[] declaredVariable(
-    imported!"dmd.expression".Expression expression,
-) @trusted {
-    import dmd.declaration: VarDeclaration;
-
-    if (expression is null)
-        return null;
-
-    auto declaration = expression.isDeclarationExp;
-    if (declaration is null)
-        return null;
-
-    auto variable = declaration.declaration.isVarDeclaration;
-    return variable is null ? null : [variable];
-}
-
-
-// Every `VarDeclaration` a `DeclarationExp` introduces within `expression`.
-// DMD lowers `if (T name = value)` to a `CommaExp` whose left operand is the
-// declaration and whose right operand reads the new local.
-private imported!"dmd.declaration".VarDeclaration[] declaredVariables(
-    imported!"dmd.expression".Expression expression,
-) @trusted {
-    if (auto variable = declaredVariable(expression))
-        return variable;
-
-    if (auto comma = expression.isCommaExp)
-        return declaredVariables(comma.e1) ~ declaredVariables(comma.e2);
-
-    return null;
+    statement.foreachExpAndVar(
+        &appendExpression,
+        &append,
+    );
+    return locals;
 }
