@@ -2177,6 +2177,35 @@ static foreach (backend; Matrix!(
     }
 }
 
+// The read twin of the test above: using an indirect ref-returning call as a
+// VALUE must load through the returned address, exactly as the direct-call
+// path does, not hand back the raw address bits.
+static foreach (backend; AliasSeq!(Bytecode, SystemLinker)) {
+    @("refCall.readThroughKnownDelegateLoadsReturnedLocation." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct Counter {
+                int value;
+
+                ref int slot() {
+                    return value;
+                }
+            }
+
+            unittest {
+                auto counter = Counter(5);
+                auto getter = &counter.slot;
+
+                int read = getter();
+
+                assert(read == 5);
+            }
+        });
+    }
+}
+
 // Each recursive activation binds the same declaration AST anew. A pointer
 // saved by the outer activation must keep naming that activation's local when
 // the inner activation binds its own `x`.
