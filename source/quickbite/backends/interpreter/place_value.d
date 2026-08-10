@@ -59,6 +59,13 @@ public imported!"quickbite.backends.interpreter.expression_result".ExpressionRes
             if (isRealType(baseType))
                 return ExpressionResult(readRealBits(place.address, typeByteSize(baseType)));
 
+            if (auto componentType = imaginaryComponentType(baseType)) {
+                import quickbite.backends.interpreter.place: Place;
+                return ExpressionResult.imaginaryValue(
+                    Place(place.address, componentType).loadScalar.asReal,
+                );
+            }
+
             import quickbite.backends.interpreter.place: Place;
             return Place(place.address, baseType).loadScalar;
         }
@@ -77,10 +84,15 @@ public imported!"quickbite.backends.interpreter.expression_result".ExpressionRes
     if (isRealType(type))
         return ExpressionResult(readRealBits(place.address, typeByteSize(type)));
 
+    if (auto componentType = imaginaryComponentType(type))
+        return ExpressionResult.imaginaryValue(
+            readValue(componentPlace(place, componentType, 0)).asReal,
+        );
+
     if (auto componentType = complexComponentType(type))
         return ExpressionResult.complexValue(
-            readValue(complexComponentPlace(place, componentType, 0)).asReal,
-            readValue(complexComponentPlace(place, componentType, 1)).asReal,
+            readValue(componentPlace(place, componentType, 0)).asReal,
+            readValue(componentPlace(place, componentType, 1)).asReal,
         );
 
     auto structType = nonUnionStructOf(type);
@@ -172,6 +184,28 @@ public bool isRealType(imported!"dmd.mtype".Type type) @trusted {
 }
 
 
+// An imaginary scalar has the native layout of its matching floating
+// component. Keeping that relationship typed lets the ordinary float codecs
+// own the bytes while ExpressionResult retains the imaginary value category.
+private imported!"dmd.mtype".Type imaginaryComponentType(
+    imported!"dmd.mtype".Type type,
+) @trusted {
+    import dmd.astenums: TY;
+    import dmd.mtype: Type;
+
+    switch (type.toBasetype.ty) with (TY) {
+    case Timaginary32:
+        return Type.tfloat32;
+    case Timaginary64:
+        return Type.tfloat64;
+    case Timaginary80:
+        return Type.tfloat80;
+    default:
+        return null;
+    }
+}
+
+
 // A complex scalar is laid out as two adjacent components of its matching
 // real type. Keep that type relationship in one place so reads, writes, and
 // composability cannot disagree about the native representation.
@@ -194,7 +228,7 @@ private imported!"dmd.mtype".Type complexComponentType(
 }
 
 
-private imported!"quickbite.backends.interpreter.place".Place complexComponentPlace(
+private imported!"quickbite.backends.interpreter.place".Place componentPlace(
     imported!"quickbite.backends.interpreter.place".Place place,
     imported!"dmd.mtype".Type componentType,
     in size_t index,
@@ -317,6 +351,9 @@ public bool valueMatchesPlace(
     // `writeValue`'s `writeRealBits` arm.
     if (isRealType(type))
         return value.isNumericScalar;
+
+    if (imaginaryComponentType(type) !is null)
+        return value.isImaginaryScalar;
 
     if (complexComponentType(type) !is null)
         return value.isComplexScalar;
@@ -475,6 +512,11 @@ public void writeValue(
         auto baseType = floatingEnumBaseType(enumType);
         if (isRealType(baseType))
             writeRealBits(place.address, typeByteSize(baseType), value.asReal);
+        else if (auto componentType = imaginaryComponentType(baseType))
+            writeValue(
+                Place(place.address, componentType),
+                ExpressionResult(value.imaginaryPart),
+            );
         else
             place.storeScalar(value);
         return;
@@ -490,13 +532,21 @@ public void writeValue(
         return;
     }
 
+    if (auto componentType = imaginaryComponentType(type)) {
+        writeValue(
+            componentPlace(place, componentType, 0),
+            ExpressionResult(value.imaginaryPart),
+        );
+        return;
+    }
+
     if (auto componentType = complexComponentType(type)) {
         writeValue(
-            complexComponentPlace(place, componentType, 0),
+            componentPlace(place, componentType, 0),
             value.complexRealPart,
         );
         writeValue(
-            complexComponentPlace(place, componentType, 1),
+            componentPlace(place, componentType, 1),
             value.complexImaginaryPart,
         );
         return;
@@ -704,6 +754,9 @@ public bool isPlaceComposable(imported!"dmd.mtype".Type type) @safe {
         return true;
 
     if (isRealType(type))
+        return true;
+
+    if (imaginaryComponentType(type) !is null)
         return true;
 
     if (complexComponentType(type) !is null)

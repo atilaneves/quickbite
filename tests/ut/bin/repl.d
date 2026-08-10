@@ -106,6 +106,11 @@ unittest {
     assertFormatterBackendOutput(["null"], ["null"]);
 }
 
+@("repl.frontend.imaginaryLiteralUsesPreludeFormatter")
+unittest {
+    assertFormatterBackendOutput(["1.5i"], ["1.5i"]);
+}
+
 @("repl.frontend.nullInterfaceReferenceUsesPreludeFormatter")
 unittest {
     assertFormatterBackendOutput([
