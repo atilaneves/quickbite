@@ -8,7 +8,7 @@ import quickbite.backends.interpreter.layout: classFields, fieldByteOffset, stru
 import quickbite.backends.interpreter.native_block: NativeBlock;
 import quickbite.backends.interpreter.frame_layout: computeFrameLayout;
 import quickbite.backends.interpreter.frame_block: FrameBlock;
-import quickbite.backends.interpreter.runtime_value: Value;
+import quickbite.backends.interpreter.expression_result: ExpressionResult;
 
 private:
 
@@ -49,21 +49,21 @@ unittest {
     (cast(size_t) yPlace.address).should == cast(size_t) block.address + fieldByteOffset(yField);
     fieldByteOffset(yField).should == P.y.offsetof;
 
-    // Runtime-computed, not bare literals passed straight to `Value`.
+    // Runtime-computed, not bare literals passed straight to `ExpressionResult`.
     int writtenX = 3;
     writtenX = writtenX * 5 + 1;
     long writtenY = 1000L;
     writtenY = writtenY * 7 + 2;
 
-    xPlace.storeScalar(Value(writtenX));
-    yPlace.storeScalar(Value(writtenY));
+    xPlace.storeScalar(ExpressionResult(writtenX));
+    yPlace.storeScalar(ExpressionResult(writtenY));
 
     xPlace.loadScalar.asLong.should == writtenX;
     yPlace.loadScalar.asLong.should == writtenY;
 
     // Overwriting `y` must leave `x`'s already-stored bytes untouched.
     long overwrittenY = writtenY + 11;
-    yPlace.storeScalar(Value(overwrittenY));
+    yPlace.storeScalar(ExpressionResult(overwrittenY));
 
     xPlace.loadScalar.asLong.should == writtenX;
     yPlace.loadScalar.asLong.should == overwrittenY;
@@ -86,7 +86,7 @@ unittest {
 
     int written = 6;
     written = written * 9 + 4;
-    root.index(2).storeScalar(Value(written));
+    root.index(2).storeScalar(ExpressionResult(written));
 
     root.index(2).loadScalar.asLong.should == written;
 
@@ -116,7 +116,7 @@ unittest {
 
     int written = 6;
     written = written * 9 + 4;
-    root.index(2).storeScalar(Value(written));
+    root.index(2).storeScalar(ExpressionResult(written));
 
     root.index(2).loadScalar.asLong.should == written;
 
@@ -146,7 +146,7 @@ unittest {
 
     int written = 4;
     written = written * 5 + 3;
-    dereffed.storeScalar(Value(written));
+    dereffed.storeScalar(ExpressionResult(written));
 
     root.index(0).loadScalar.asLong.should == written;
 }
@@ -210,8 +210,8 @@ unittest {
     long writtenY = 100L;
     writtenY = writtenY * 3 + 4;
 
-    dereffed.field(xField).storeScalar(Value(writtenX));
-    dereffed.field(yField).storeScalar(Value(writtenY));
+    dereffed.field(xField).storeScalar(ExpressionResult(writtenX));
+    dereffed.field(yField).storeScalar(ExpressionResult(writtenY));
 
     (cast(size_t) dereffed.field(xField).address).should == cast(size_t) body_.address + fieldByteOffset(xField);
     (cast(size_t) dereffed.field(yField).address).should == cast(size_t) body_.address + fieldByteOffset(yField);
@@ -259,7 +259,7 @@ unittest {
 
     int written = 3;
     written = written * 8 + 5;
-    root.index(1).storeScalar(Value(written));
+    root.index(1).storeScalar(ExpressionResult(written));
 
     root.index(1).loadScalar.asLong.should == written;
 
@@ -293,7 +293,7 @@ unittest {
     auto block = NativeBlock.allocate(typeByteSize(type), NativeBlock.Scan.no);
     auto root = placeAt(block, type);
 
-    root.storeScalar(Value(1)).shouldThrowWithMessage(
+    root.storeScalar(ExpressionResult(1)).shouldThrowWithMessage(
         "quickbite.backends.interpreter.place.Place.storeScalar: "
         ~ "type is not a native scalar type",
     );
@@ -320,17 +320,17 @@ unittest {
     aPlace.address.should == frame.bindingAddress(a);
     bPlace.address.should == frame.bindingAddress(b);
 
-    // Runtime-computed, not a bare literal passed straight to `Value`.
+    // Runtime-computed, not a bare literal passed straight to `ExpressionResult`.
     int writtenA = 2;
     writtenA = writtenA * 21;
 
-    aPlace.storeScalar(Value(writtenA));
+    aPlace.storeScalar(ExpressionResult(writtenA));
 
     aPlace.loadScalar.asLong.should == writtenA;
 
     long writtenB = 5;
     writtenB = writtenB * 13;
-    bPlace.storeScalar(Value(writtenB));
+    bPlace.storeScalar(ExpressionResult(writtenB));
 
     target.should == writtenB;
 }

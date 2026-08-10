@@ -7,7 +7,7 @@ private:
 // Reads scalars through their codecs and copies aggregate places as complete
 // native-layout values. Struct padding, union overlap, inline arrays, slice
 // headers, and AA handles therefore stay bytes rather than being decomposed
-// into RuntimeValue trees. A class place is a reference slot, so its
+// into ExpressionResult trees. A class place is a reference slot, so its
 // arm returns the stored object-body address.
 // A pointer (`Type.isTypePointer`) is a composable
 // LEAF, not a recursion: this place's own bytes ARE the host address
@@ -28,19 +28,19 @@ private:
 // honest here). See `readRealBits`/`writeRealBits`'s own header comments
 // for the padding-determinism argument the verified frame mirror's
 // whole-slot byte comparison depends on.
-public imported!"quickbite.backends.interpreter.runtime_value".Value readValue(
+public imported!"quickbite.backends.interpreter.expression_result".ExpressionResult readValue(
     imported!"quickbite.backends.interpreter.place".Place place,
 ) @safe {
     import quickbite.backends.interpreter.native_scalar: isNativeScalarType;
     import quickbite.backends.interpreter.layout:
         staticArrayLength, enumMemberQualifiedName, typeByteSize;
     import quickbite.backends.interpreter.aggregate_value: AggregateValue;
-    import quickbite.backends.interpreter.runtime_value: Value;
+    import quickbite.backends.interpreter.expression_result: ExpressionResult;
 
     auto type = place.type;
 
-    // An enum-typed place must come back tagged (`Value.enumValue`), not as
-    // the plain integral `Value` `native_scalar.readScalar` returns for it
+    // An enum-typed place must come back tagged (`ExpressionResult.enumValue`), not as
+    // the plain integral `ExpressionResult` `native_scalar.readScalar` returns for it
     // (it dispatches on the resolved base type, so an enum's own tagging is
     // invisible to that codec) -- checked before the `isNativeScalarType`
     // arm below, which would otherwise catch every enum type first since an
@@ -55,7 +55,7 @@ public imported!"quickbite.backends.interpreter.runtime_value".Value readValue(
         if (isFloatingBaseEnum(type)) {
             auto baseType = floatingEnumBaseType(enumType);
             if (isRealType(baseType))
-                return Value(readRealBits(place.address, typeByteSize(baseType)));
+                return ExpressionResult(readRealBits(place.address, typeByteSize(baseType)));
 
             import quickbite.backends.interpreter.place: Place;
             return Place(place.address, baseType).loadScalar;
@@ -63,7 +63,7 @@ public imported!"quickbite.backends.interpreter.runtime_value".Value readValue(
 
         const bits = place.loadScalar.asLong;
         const qualifiedName = enumMemberQualifiedName(enumType, bits);
-        return Value.enumValue(
+        return ExpressionResult.enumValue(
             qualifiedName.length != 0 ? qualifiedName : nonMemberEnumName(enumType, bits),
             bits,
         );
@@ -73,10 +73,10 @@ public imported!"quickbite.backends.interpreter.runtime_value".Value readValue(
         return place.loadScalar;
 
     if (isRealType(type))
-        return Value(readRealBits(place.address, typeByteSize(type)));
+        return ExpressionResult(readRealBits(place.address, typeByteSize(type)));
 
     if (auto componentType = complexComponentType(type))
-        return Value.complexValue(
+        return ExpressionResult.complexValue(
             readValue(complexComponentPlace(place, componentType, 0)).asReal,
             readValue(complexComponentPlace(place, componentType, 1)).asReal,
         );
@@ -105,13 +105,13 @@ public imported!"quickbite.backends.interpreter.runtime_value".Value readValue(
     // lookup/mutation stays in the interpreter's native_assoc_array hooks.
     if (type.isTypeAArray !is null)
         return bytesAreZero(place.address, typeByteSize(type))
-            ? Value.null_
+            ? ExpressionResult.null_
             : AggregateValue.copyFromAddress(type, place.address);
 
     // A class slot's stored body address is the class value's identity.
     if (type.isTypeClass !is null) {
         auto body = place.deref.address;
-        return body is null ? Value.null_ : Value.pointerValue(body);
+        return body is null ? ExpressionResult.null_ : ExpressionResult.pointerValue(body);
     }
 
     // A pointer place's own bytes are the stored host address itself
@@ -119,20 +119,20 @@ public imported!"quickbite.backends.interpreter.runtime_value".Value readValue(
     // exactly that address back out (its pointer arm returns a `Place` at
     // the pointee whose OWN `.address` is that stored value), so reusing it
     // needs no parallel raw-address accessor. A stored `null` address reads
-    // back as `Value.null_`, matching `impl.d`'s own null-pointer-literal
+    // back as `ExpressionResult.null_`, matching `impl.d`'s own null-pointer-literal
     // value (`isNullExp`'s non-array arm) rather than inventing a
     // `pointerValue(null)` shape nothing else in the walker produces.
     auto pointerType = type.isTypePointer;
     if (pointerType !is null) {
         auto address = place.deref.address;
-        return address is null ? Value.null_ : Value.pointerValue(address);
+        return address is null ? ExpressionResult.null_ : ExpressionResult.pointerValue(address);
     }
 
     if (type.isTypeDelegate !is null && bytesAreZero(
         place.address,
         typeByteSize(type),
     ))
-        return Value.null_;
+        return ExpressionResult.null_;
 
     throw new Exception(
         "quickbite.backends.interpreter.place_value.readValue: unsupported at place",
@@ -157,10 +157,10 @@ private bool bytesAreZero(
 // `enum E : real` answer `true` here as well, which is a fact about the
 // BITS, not a claim that such an enum composes: `isFloatingBaseEnum` below
 // declines it before this is consulted, because the read side has no enum
-// `Value` to give back for a floating one. `@trusted`: `Type.
+// `ExpressionResult` to give back for a floating one. `@trusted`: `Type.
 // toBasetype` is not `@safe`, mirroring `native_scalar.d`'s identical
 // boundary for the identical call. `public`: `impl.d`'s `placeShapeMatches`
-// needs the identical check, to decide whether a transient `Value` reaching a
+// needs the identical check, to decide whether a transient `ExpressionResult` reaching a
 // `real`-typed place is itself a numeric scalar before calling `writeValue`
 // -- reusing this rather than growing a second `Tfloat80` check keeps the
 // two from drifting apart the same way `isNativeScalarType` already does
@@ -284,18 +284,18 @@ private string typeName(imported!"dmd.mtype".Type type) @trusted {
 }
 
 
-// Whether a non-aggregate RuntimeValue can be encoded at `type`. Native
+// Whether a non-aggregate ExpressionResult can be encoded at `type`. Native
 // aggregates use their typed storage directly and are handled before this
 // scalar compatibility gate at execution boundaries.
 public bool valueMatchesPlace(
     imported!"dmd.mtype".Type type,
-    in imported!"quickbite.backends.interpreter.runtime_value".Value value,
+    in imported!"quickbite.backends.interpreter.expression_result".ExpressionResult value,
 ) @safe {
     if (!isPlaceComposable(type))
         return false;
 
     import quickbite.backends.interpreter.native_scalar: isNativeScalarType;
-    import quickbite.backends.interpreter.runtime_value: Value;
+    import quickbite.backends.interpreter.expression_result: ExpressionResult;
 
     if (isNativeScalarType(type))
         return value.isNumericScalar || value.isCharacter;
@@ -310,14 +310,14 @@ public bool valueMatchesPlace(
         return value.isComplexScalar;
 
     if (type.isTypePointer !is null)
-        return value.isPointer || value == Value.null_;
+        return value.isPointer || value == ExpressionResult.null_;
 
     return false;
 }
 
 
 // True for an enum whose base type is a floating one -- `enum E : double`
-// and `enum E : real` are both legal D. RuntimeValue has no floating enum
+// and `enum E : real` are both legal D. ExpressionResult has no floating enum
 // tag, so typed places carry their underlying floating scalar directly; that
 // is still a complete and lossless guest representation for reads, writes,
 // and union overlap.
@@ -404,18 +404,18 @@ in (length == real.sizeof)
 
 
 // Writes native aggregates as complete byte spans and scalar carriers through
-// their codecs. Aggregate layout never comes from RuntimeValue structure.
+// their codecs. Aggregate layout never comes from ExpressionResult structure.
 // Null slices, AAs, delegates, pointers, and class references retain their
 // ABI all-zero or address representation.
 public void writeValue(
     imported!"quickbite.backends.interpreter.place".Place place,
-    in imported!"quickbite.backends.interpreter.runtime_value".Value value,
+    in imported!"quickbite.backends.interpreter.expression_result".ExpressionResult value,
 ) @safe {
     import quickbite.backends.interpreter.native_scalar: isNativeScalarType;
     import quickbite.backends.interpreter.layout: typeByteSize;
     import quickbite.backends.interpreter.aggregate_value: AggregateValue;
     import quickbite.backends.interpreter.place: Place;
-    import quickbite.backends.interpreter.runtime_value: Value;
+    import quickbite.backends.interpreter.expression_result: ExpressionResult;
 
     auto type = place.type;
 
@@ -480,17 +480,17 @@ public void writeValue(
         return;
     }
 
-    if (type.isTypeDArray !is null && value == Value.null_) {
+    if (type.isTypeDArray !is null && value == ExpressionResult.null_) {
         zeroBytes(place.address, typeByteSize(type));
         return;
     }
 
     auto pointerType = type.isTypePointer;
     if (pointerType !is null) {
-        if (!value.isPointer && value != Value.null_)
+        if (!value.isPointer && value != ExpressionResult.null_)
             throw new Exception(
                 "quickbite.backends.interpreter.place_value.writeValue: "
-                ~ "pointer place requires a pointer Value or null",
+                ~ "pointer place requires a pointer ExpressionResult or null",
             );
 
         place.storeReference(pointerAddress(value));
@@ -499,7 +499,7 @@ public void writeValue(
 
     auto classType = type.isTypeClass;
     if (classType !is null) {
-        if (!value.isPointer && value != Value.null_)
+        if (!value.isPointer && value != ExpressionResult.null_)
             throw new Exception(
                 "quickbite.backends.interpreter.place_value.writeValue: "
                 ~ "class place requires an object pointer or null",
@@ -508,12 +508,12 @@ public void writeValue(
         return;
     }
 
-    if (type.isTypeAArray !is null && value == Value.null_) {
+    if (type.isTypeAArray !is null && value == ExpressionResult.null_) {
         zeroBytes(place.address, typeByteSize(type));
         return;
     }
 
-    if (type.isTypeDelegate !is null && value == Value.null_) {
+    if (type.isTypeDelegate !is null && value == ExpressionResult.null_) {
         zeroBytes(place.address, typeByteSize(type));
         return;
     }
@@ -535,12 +535,12 @@ private void zeroBytes(void* address, in size_t length) pure nothrow @trusted {
 }
 
 
-// `Value.pointerAddress` is not `@safe`; this is the `@trusted` boundary.
+// `ExpressionResult.pointerAddress` is not `@safe`; this is the `@trusted` boundary.
 // Called only once `writeValue`'s pointer or class arm has already checked
-// `value` is `isPointer` or `Value.null_`, so this never reaches
+// `value` is `isPointer` or `ExpressionResult.null_`, so this never reaches
 // `pointerAddress`'s own throwing arm -- it always returns a real host
 // address, or `null`.
-private void* pointerAddress(in imported!"quickbite.backends.interpreter.runtime_value".Value value) @trusted {
+private void* pointerAddress(in imported!"quickbite.backends.interpreter.expression_result".ExpressionResult value) @trusted {
     return value.pointerAddress;
 }
 
@@ -839,8 +839,8 @@ private void copyAggregateBytes(
 
 // `structType`'s own declared name (`StructDeclaration.ident`), verbatim --
 // the same derivation `quickbite.frontend.dmd.values`'s struct default-value
-// builder already uses to name a struct `Value` built straight from a
-// `TypeStruct`, with no existing `Value` to borrow a type name from.
+// builder already uses to name a struct `ExpressionResult` built straight from a
+// `TypeStruct`, with no existing `ExpressionResult` to borrow a type name from.
 // The non-member enum rendering `value.md`'s Display format spec rule 5
 // gives for a `value` that matches no member of `enumType`: `cast(E)N`.
 // `readValue`'s enum arm falls back to this once `layout.

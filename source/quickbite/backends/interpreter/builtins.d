@@ -186,32 +186,32 @@ package bool isStdConvText(imported!"dmd.func".FuncDeclaration function_) {
         declaration.packages[0].toString == "std";
 }
 
-package imported!"quickbite.backends.interpreter.runtime_value".Value stdConvTextCall(
-    in imported!"quickbite.backends.interpreter.runtime_value".Value[] arguments,
+package imported!"quickbite.backends.interpreter.expression_result".ExpressionResult stdConvTextCall(
+    in imported!"quickbite.backends.interpreter.expression_result".ExpressionResult[] arguments,
     imported!"dmd.mtype".Type[] argumentTypes,
     imported!"dmd.mtype".Type resultType,
 ) {
     import quickbite.backends.interpreter.aggregate_value: AggregateValue;
-    import quickbite.backends.interpreter.runtime_value: Value;
+    import quickbite.backends.interpreter.expression_result: ExpressionResult;
 
     string rendered;
     foreach (index, ref argument; arguments)
         rendered ~= stdConvTextArgument(argument, argumentTypes[index]);
 
-    Value[] characters;
+    ExpressionResult[] characters;
     foreach (character; rendered)
-        characters ~= Value(character);
+        characters ~= ExpressionResult(character);
     return AggregateValue.reconstructArray(resultType, characters);
 }
 
 private string stdConvTextArgument(
-    in imported!"quickbite.backends.interpreter.runtime_value".Value argument,
+    in imported!"quickbite.backends.interpreter.expression_result".ExpressionResult argument,
     imported!"dmd.mtype".Type argumentType,
 ) {
     import quickbite.backends.interpreter.aggregate_value: AggregateValue;
     import quickbite.frontend.dmd.types: isCharacterArrayType;
 
-    // RuntimeValue intentionally carries no display metadata. The original
+    // ExpressionResult intentionally carries no display metadata. The original
     // expression type supplies std.conv.text's scalar and array rendering
     // rules at this consumer.
     if (AggregateValue.isArray(argument)) {
@@ -230,7 +230,7 @@ private string stdConvTextArgument(
 
 
 private string nativeArrayText(
-    in imported!"quickbite.backends.interpreter.runtime_value".Value value,
+    in imported!"quickbite.backends.interpreter.expression_result".ExpressionResult value,
     imported!"dmd.mtype".Type type,
 ) {
     import quickbite.backends.interpreter.aggregate_value: AggregateValue;
@@ -250,14 +250,14 @@ private string nativeArrayText(
 
 
 private string scalarText(
-    in imported!"quickbite.backends.interpreter.runtime_value".Value value,
+    in imported!"quickbite.backends.interpreter.expression_result".ExpressionResult value,
     imported!"dmd.mtype".Type type,
 ) {
     import dmd.astenums: TY;
-    import quickbite.backends.interpreter.runtime_value: Value;
+    import quickbite.backends.interpreter.expression_result: ExpressionResult;
     import std.conv: text;
 
-    if (value == Value.null_)
+    if (value == ExpressionResult.null_)
         return "null";
     if (value.isEnumScalar)
         return value.enumName;
@@ -283,7 +283,7 @@ private string scalarText(
 
     switch (type.toBasetype.ty) with (TY) {
         case Tbool:
-            return text(value == Value(true));
+            return text(value == ExpressionResult(true));
         case Tchar, Twchar, Tdchar:
             return value.asUtf8Character;
         case Tint8, Tint16, Tint32, Tint64:
@@ -316,9 +316,9 @@ package size_t interpreterBuiltinArgumentCount(
     }
 }
 
-package imported!"quickbite.backends.interpreter.runtime_value".Value unaryBuiltinCall(
+package imported!"quickbite.backends.interpreter.expression_result".ExpressionResult unaryBuiltinCall(
     in InterpreterBuiltin builtin,
-    in imported!"quickbite.backends.interpreter.runtime_value".Value value,
+    in imported!"quickbite.backends.interpreter.expression_result".ExpressionResult value,
 ) {
     import std.math: mathFabs = fabs;
     import std.math: mathIsInfinity = isInfinity;
@@ -345,10 +345,10 @@ package imported!"quickbite.backends.interpreter.runtime_value".Value unaryBuilt
     throw new Exception("Unsupported interpreter unary builtin call.");
 }
 
-package imported!"quickbite.backends.interpreter.runtime_value".Value binaryBuiltinCall(
+package imported!"quickbite.backends.interpreter.expression_result".ExpressionResult binaryBuiltinCall(
     in InterpreterBuiltin builtin,
-    in imported!"quickbite.backends.interpreter.runtime_value".Value lhs,
-    in imported!"quickbite.backends.interpreter.runtime_value".Value rhs,
+    in imported!"quickbite.backends.interpreter.expression_result".ExpressionResult lhs,
+    in imported!"quickbite.backends.interpreter.expression_result".ExpressionResult rhs,
 ) {
     import std.math: mathPow = pow;
 

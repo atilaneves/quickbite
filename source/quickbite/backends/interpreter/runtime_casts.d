@@ -113,8 +113,8 @@ public bool tryCastTarget(
     }
 }
 
-public imported!"quickbite.backends.interpreter.runtime_value".Value castValue(
-    in imported!"quickbite.backends.interpreter.runtime_value".Value value,
+public imported!"quickbite.backends.interpreter.expression_result".ExpressionResult castValue(
+    in imported!"quickbite.backends.interpreter.expression_result".ExpressionResult value,
     in CastTarget target,
 ) {
     final switch (target) with (CastTarget) {

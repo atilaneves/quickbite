@@ -6,7 +6,7 @@ import ut.backends.interpreter: enumTypeOf;
 import quickbite.backends.interpreter.native_scalar:
     isNativeScalarType, readScalar, writeScalar;
 import quickbite.backends.interpreter.layout: typeByteSize;
-import quickbite.backends.interpreter.runtime_value: Value;
+import quickbite.backends.interpreter.expression_result: ExpressionResult;
 import dmd.mtype: Type;
 
 private:
@@ -76,7 +76,7 @@ unittest {
         Type.tint64, Type.tuns64,
     ]) {
         auto bytes = new ubyte[](typeByteSize(type));
-        writeScalar(type, bytes, Value(42));
+        writeScalar(type, bytes, ExpressionResult(42));
 
         readScalar(type, bytes).asLong.should == 42;
     }
@@ -95,7 +95,7 @@ unittest {
 unittest {
     uint u = 0x1122_3344;
     auto bytes = new ubyte[](typeByteSize(Type.tuns32));
-    writeScalar(Type.tuns32, bytes, Value(u));
+    writeScalar(Type.tuns32, bytes, ExpressionResult(u));
 
     bytes.should == (cast(ubyte*) &u)[0 .. uint.sizeof];
 }
@@ -104,7 +104,7 @@ unittest {
 @("writeScalar.thenReadScalar.roundTripsBool")
 unittest {
     auto bytes = new ubyte[](1);
-    writeScalar(Type.tbool, bytes, Value(true));
+    writeScalar(Type.tbool, bytes, ExpressionResult(true));
 
     readScalar(Type.tbool, bytes).asLong.should == 1;
 }
@@ -113,7 +113,7 @@ unittest {
 @("writeScalar.thenReadScalar.roundTripsChar")
 unittest {
     auto bytes = new ubyte[](1);
-    writeScalar(Type.tchar, bytes, Value('x'));
+    writeScalar(Type.tchar, bytes, ExpressionResult('x'));
 
     readScalar(Type.tchar, bytes).asChar.should == 'x';
 }
@@ -122,7 +122,7 @@ unittest {
 @("writeScalar.thenReadScalar.roundTripsWchar")
 unittest {
     auto bytes = new ubyte[](2);
-    writeScalar(Type.twchar, bytes, Value(cast(wchar) 0x1234));
+    writeScalar(Type.twchar, bytes, ExpressionResult(cast(wchar) 0x1234));
 
     readScalar(Type.twchar, bytes).asLong.should == 0x1234;
 }
@@ -131,7 +131,7 @@ unittest {
 @("writeScalar.thenReadScalar.roundTripsDchar")
 unittest {
     auto bytes = new ubyte[](4);
-    writeScalar(Type.tdchar, bytes, Value(cast(dchar) 0x1F600));
+    writeScalar(Type.tdchar, bytes, ExpressionResult(cast(dchar) 0x1F600));
 
     readScalar(Type.tdchar, bytes).asLong.should == 0x1F600;
 }
@@ -140,7 +140,7 @@ unittest {
 @("writeScalar.thenReadScalar.roundTripsFloat")
 unittest {
     auto bytes = new ubyte[](4);
-    writeScalar(Type.tfloat32, bytes, Value(1.5f));
+    writeScalar(Type.tfloat32, bytes, ExpressionResult(1.5f));
 
     readScalar(Type.tfloat32, bytes).asReal.should == cast(real) 1.5f;
 }
@@ -149,7 +149,7 @@ unittest {
 @("writeScalar.thenReadScalar.roundTripsDouble")
 unittest {
     auto bytes = new ubyte[](8);
-    writeScalar(Type.tfloat64, bytes, Value(1.5));
+    writeScalar(Type.tfloat64, bytes, ExpressionResult(1.5));
 
     readScalar(Type.tfloat64, bytes).asReal.should == cast(real) 1.5;
 }
@@ -160,7 +160,7 @@ unittest {
     auto type = enumTypeOf(q{ enum E : int { a, b, c } }, "E");
 
     auto bytes = new ubyte[](4);
-    writeScalar(type, bytes, Value(2));
+    writeScalar(type, bytes, ExpressionResult(2));
 
     readScalar(type, bytes).asLong.should == 2;
 }
@@ -175,7 +175,7 @@ unittest {
     const expected = *cast(uint*) &f;
 
     auto bytes = new ubyte[](4);
-    writeScalar(Type.tfloat32, bytes, Value(f));
+    writeScalar(Type.tfloat32, bytes, ExpressionResult(f));
 
     readScalar(Type.tuns32, bytes).asLong.should == expected;
 }
@@ -189,7 +189,7 @@ unittest {
     const expected = *cast(ulong*) &d;
 
     auto bytes = new ubyte[](8);
-    writeScalar(Type.tfloat64, bytes, Value(d));
+    writeScalar(Type.tfloat64, bytes, ExpressionResult(d));
 
     readScalar(Type.tuns64, bytes).asLong.should == expected;
 }
@@ -206,7 +206,7 @@ unittest {
     const expected = *cast(ushort*) &i;
 
     auto bytes = new ubyte[](typeByteSize(Type.tuns32));
-    writeScalar(Type.tuns32, bytes, Value(i));
+    writeScalar(Type.tuns32, bytes, ExpressionResult(i));
 
     readScalar(Type.tuns16, bytes[0 .. typeByteSize(Type.tuns16)])
         .asLong.should == expected;
@@ -217,7 +217,7 @@ unittest {
 unittest {
     auto bytes = new ubyte[](3);
 
-    writeScalar(Type.tint32, bytes, Value(1)).shouldThrow!Exception;
+    writeScalar(Type.tint32, bytes, ExpressionResult(1)).shouldThrow!Exception;
 }
 
 
@@ -233,7 +233,7 @@ unittest {
 unittest {
     auto bytes = new ubyte[](8);
 
-    writeScalar(Type.tvoidptr, bytes, Value.pointerValue(null))
+    writeScalar(Type.tvoidptr, bytes, ExpressionResult.pointerValue(null))
         .shouldThrow!Exception;
 }
 
@@ -247,7 +247,7 @@ unittest {
 
 
 // `impl.d`'s `scalarBytes`/`scalarFromBytes` splat a scalar's native bytes
-// out into a `Value[]` of individually-boxed `ubyte` bytes (for pointer byte
+// out into a `ExpressionResult[]` of individually-boxed `ubyte` bytes (for pointer byte
 // slices and single-byte pointer writebacks) and reassemble the same way;
 // these tests exercise that exact splat/reassemble composition on top of
 // `writeScalar`/`readScalar` directly, one byte-boxing step removed from
@@ -255,11 +255,11 @@ unittest {
 @("writeScalar.thenReadScalar.roundTripsThroughAnIndividuallyBoxedByteArray")
 unittest {
     auto raw = new ubyte[](typeByteSize(Type.tint32));
-    writeScalar(Type.tint32, raw, Value(0x1234_5678));
+    writeScalar(Type.tint32, raw, ExpressionResult(0x1234_5678));
 
-    Value[] boxedBytes;
+    ExpressionResult[] boxedBytes;
     foreach (byte_; raw)
-        boxedBytes ~= Value(byte_);
+        boxedBytes ~= ExpressionResult(byte_);
 
     auto reassembled = new ubyte[](boxedBytes.length);
     foreach (index, byte_; boxedBytes)
@@ -278,11 +278,11 @@ unittest {
 unittest {
     foreach (type; [Type.tfloat32, Type.tfloat64]) {
         auto raw = new ubyte[](typeByteSize(type));
-        writeScalar(type, raw, Value(1.5));
+        writeScalar(type, raw, ExpressionResult(1.5));
 
-        Value[] boxedBytes;
+        ExpressionResult[] boxedBytes;
         foreach (byte_; raw)
-            boxedBytes ~= Value(byte_);
+            boxedBytes ~= ExpressionResult(byte_);
 
         auto reassembled = new ubyte[](boxedBytes.length);
         foreach (index, byte_; boxedBytes)

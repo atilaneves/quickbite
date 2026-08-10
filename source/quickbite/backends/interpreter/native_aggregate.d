@@ -50,7 +50,7 @@ public struct NativeAggregate {
     }
 
     // Native aggregate display is owned by AggregateValue's typed consumers;
-    // the recursive RuntimeValue formatter must never walk raw guest bytes.
+    // the recursive ExpressionResult formatter must never walk raw guest bytes.
     public string toString() const pure nothrow @safe {
         return "<native aggregate>";
     }

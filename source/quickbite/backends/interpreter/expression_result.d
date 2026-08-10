@@ -1,9 +1,9 @@
-module quickbite.backends.interpreter.runtime_value;
+module quickbite.backends.interpreter.expression_result;
 
 private:
 
 
-public struct RuntimeValue {
+public struct ExpressionResult {
     private alias NativeAggregate = imported!"quickbite.backends.interpreter.native_aggregate".NativeAggregate;
 
     private alias Data = imported!"std.sumtype".SumType!(
@@ -42,58 +42,58 @@ public struct RuntimeValue {
 
     private Data data = Data(Void.init);
 
-    public static Value void_() @safe pure {
-        return Value(Void.init);
+    public static ExpressionResult void_() @safe pure {
+        return ExpressionResult(Void.init);
     }
 
-    public static Value null_() @safe pure {
-        return Value(Null.init);
+    public static ExpressionResult null_() @safe pure {
+        return ExpressionResult(Null.init);
     }
 
-    public static Value nativeAggregateValue(
+    public static ExpressionResult nativeAggregateValue(
         NativeAggregate aggregate,
     ) @safe pure {
-        return Value(aggregate);
+        return ExpressionResult(aggregate);
     }
 
-    public static Value pointerValue(void* pointer) @safe pure {
-        return Value(Pointer(pointer));
+    public static ExpressionResult pointerValue(void* pointer) @safe pure {
+        return ExpressionResult(Pointer(pointer));
     }
 
     // A delegate returned by native code: an opaque {context, funcptr} pair
     // callable through the FFI bridge (ffi.md §35.8).
-    public static Value nativeDelegateValue(
+    public static ExpressionResult nativeDelegateValue(
         const(void)* context,
         const(void)* funcptr,
     ) @safe pure {
-        return Value(NativeDelegate(context, funcptr));
+        return ExpressionResult(NativeDelegate(context, funcptr));
     }
 
-    public static Value functionPointerValue(in size_t id) @safe pure {
-        return Value(FunctionPointer(id));
+    public static ExpressionResult functionPointerValue(in size_t id) @safe pure {
+        return ExpressionResult(FunctionPointer(id));
     }
 
-    public static Value typeName(in string name) @safe pure {
-        return Value(TypeName(name));
+    public static ExpressionResult typeName(in string name) @safe pure {
+        return ExpressionResult(TypeName(name));
     }
 
-    public static Value enumValue(in string name, in long value = 0) @safe pure {
-        return Value(EnumValue(name, value));
+    public static ExpressionResult enumValue(in string name, in long value = 0) @safe pure {
+        return ExpressionResult(EnumValue(name, value));
     }
 
-    public static Value complexValue(in real realPart, in real imaginaryPart) @safe pure {
-        return Value(ComplexScalar(realPart, imaginaryPart));
+    public static ExpressionResult complexValue(in real realPart, in real imaginaryPart) @safe pure {
+        return ExpressionResult(ComplexScalar(realPart, imaginaryPart));
     }
 
-    public static Value imaginaryValue(in real value) @safe pure {
-        return Value(ImaginaryScalar(value));
+    public static ExpressionResult imaginaryValue(in real value) @safe pure {
+        return ExpressionResult(ImaginaryScalar(value));
     }
 
     private this(in Void value) @safe pure {
         data = Data(value);
     }
 
-    public this(in Value value) @safe pure {
+    public this(in ExpressionResult value) @safe pure {
         data = value.data;
     }
 
@@ -145,7 +145,7 @@ public struct RuntimeValue {
         data = Data(cast(Unqual!T) value);
     }
 
-    public bool opEquals(in Value other) const @safe pure {
+    public bool opEquals(in ExpressionResult other) const @safe pure {
         return data == other.data;
     }
 
@@ -195,7 +195,7 @@ public struct RuntimeValue {
         );
     }
 
-    public Value castTo(T)() const @safe pure {
+    public ExpressionResult castTo(T)() const @safe pure {
         import std.sumtype: match;
         import std.traits: Unqual, isFloatingPoint, isIntegral, isSomeChar;
 
@@ -209,13 +209,13 @@ public struct RuntimeValue {
                     isIntegral!U ||
                     isFloatingPoint!U
                 ) {
-                    return Value(cast(T) value);
+                    return ExpressionResult(cast(T) value);
                 } else static if (is(U == ImaginaryScalar)) {
-                    return Value(cast(T) value.value);
+                    return ExpressionResult(cast(T) value.value);
                 } else static if (is(U == ComplexScalar)) {
-                    return Value(cast(T) value.realPart);
+                    return ExpressionResult(cast(T) value.realPart);
                 } else static if (is(U == EnumValue)) {
-                    return Value(cast(T) value.value);
+                    return ExpressionResult(cast(T) value.value);
                 } else static if (is(U == Pointer)) {
                     // `cast(ulong)ptr`/`cast(long)ptr` etc.: druntime's
                     // Throwable chaining (object.d, dip1008 scope-catch-var
@@ -230,25 +230,25 @@ public struct RuntimeValue {
                     // and stops there, with no dereference on either side of
                     // the cast.
                     return () @trusted {
-                        return Value(cast(T) cast(size_t) value.address);
+                        return ExpressionResult(cast(T) cast(size_t) value.address);
                     }();
                 } else static if (is(U == Null)) {
                     // A default-initialized pointer/class/delegate field is
                     // `Null`, not a zero-valued `Pointer`; the same
                     // pointer-to-integer cast must see it as address zero.
-                    return Value(cast(T) 0);
+                    return ExpressionResult(cast(T) 0);
                 } else {
                     import std.conv: text;
                     throw new Exception(
                         text("Unsupported cast to ", T.stringof, " from ", U.stringof),
                     );
-                    return Value.void_;
+                    return ExpressionResult.void_;
                 }
             },
         );
     }
 
-    public Value castToComplex() const @safe pure {
+    public ExpressionResult castToComplex() const @safe pure {
         import std.sumtype: match;
         import std.traits: Unqual, isFloatingPoint, isIntegral, isSomeChar;
 
@@ -262,20 +262,20 @@ public struct RuntimeValue {
                     isIntegral!U ||
                     isFloatingPoint!U
                 ) {
-                    return Value.complexValue(cast(real) value, 0.0L);
+                    return ExpressionResult.complexValue(cast(real) value, 0.0L);
                 } else static if (is(U == ImaginaryScalar)) {
-                    return Value.complexValue(0.0L, value.value);
+                    return ExpressionResult.complexValue(0.0L, value.value);
                 } else static if (is(U == ComplexScalar)) {
-                    return Value(value);
+                    return ExpressionResult(value);
                 } else {
                     throw new Exception("Unsupported complex cast.");
-                    return Value.void_;
+                    return ExpressionResult.void_;
                 }
             },
         );
     }
 
-    public Value castToImaginary() const @safe pure {
+    public ExpressionResult castToImaginary() const @safe pure {
         import std.sumtype: match;
         import std.traits: Unqual, isFloatingPoint, isIntegral, isSomeChar;
 
@@ -289,14 +289,14 @@ public struct RuntimeValue {
                     isIntegral!U ||
                     isFloatingPoint!U
                 ) {
-                    return Value.imaginaryValue(cast(real) value);
+                    return ExpressionResult.imaginaryValue(cast(real) value);
                 } else static if (is(U == ImaginaryScalar)) {
-                    return Value(value);
+                    return ExpressionResult(value);
                 } else static if (is(U == ComplexScalar)) {
-                    return Value.imaginaryValue(value.imaginaryPart);
+                    return ExpressionResult.imaginaryValue(value.imaginaryPart);
                 } else {
                     throw new Exception("Unsupported imaginary cast.");
-                    return Value.void_;
+                    return ExpressionResult.void_;
                 }
             },
         );
@@ -527,21 +527,21 @@ public struct RuntimeValue {
         );
     }
 
-    public Value pointerOffsetBy(in long delta) const @safe pure {
+    public ExpressionResult pointerOffsetBy(in long delta) const @safe pure {
         import std.sumtype: match;
 
         return data.match!(
-            (const(Pointer) pointer) => Value(Pointer(
+            (const(Pointer) pointer) => ExpressionResult(Pointer(
                 cast(void*) (cast(size_t) pointer.address + delta),
             )),
             // A default-initialized pointer-typed field/local is `Null`, the
             // same zero address `pointerAddress` already reads it as (e.g.
             // druntime's dip1008 Throwable chain-link arithmetic reads and
             // offsets its own default-null `_nextInChainPtr`).
-            (const(Null) null_) => Value(Pointer(cast(void*) delta)),
+            (const(Null) null_) => ExpressionResult(Pointer(cast(void*) delta)),
             (_) {
                 throw new Exception("Expected pointer.");
-                return Value.void_;
+                return ExpressionResult.void_;
             },
         );
     }
@@ -551,14 +551,14 @@ public struct RuntimeValue {
     // must agree so a never-assigned pointer compares/subtracts like the
     // zero-valued `Pointer` it represents.
     private bool isPointerOrNull() const @safe pure {
-        return isPointer || this == Value.null_;
+        return isPointer || this == ExpressionResult.null_;
     }
 
-    public bool pointerSameAllocation(in Value other) const @safe pure {
+    public bool pointerSameAllocation(in ExpressionResult other) const @safe pure {
         return isPointerOrNull && other.isPointerOrNull;
     }
 
-    public long pointerOffsetDifference(in Value other) const @safe pure {
+    public long pointerOffsetDifference(in ExpressionResult other) const @safe pure {
         if (isPointerOrNull && other.isPointerOrNull)
             return cast(long) cast(size_t) pointerAddress -
                 cast(long) cast(size_t) other.pointerAddress;
@@ -626,7 +626,7 @@ public struct RuntimeValue {
         );
     }
 
-    public Value complexRealPart() const @safe pure {
+    public ExpressionResult complexRealPart() const @safe pure {
         import std.sumtype: match;
 
         return data.match!(
@@ -634,16 +634,16 @@ public struct RuntimeValue {
                 alias T = typeof(value);
 
                 static if (is(T == const(ComplexScalar))) {
-                    return Value(value.realPart);
+                    return ExpressionResult(value.realPart);
                 } else {
                     throw new Exception("Expected complex scalar.");
-                    return Value.void_;
+                    return ExpressionResult.void_;
                 }
             },
         );
     }
 
-    public Value complexImaginaryPart() const @safe pure {
+    public ExpressionResult complexImaginaryPart() const @safe pure {
         import std.sumtype: match;
 
         return data.match!(
@@ -651,16 +651,16 @@ public struct RuntimeValue {
                 alias T = typeof(value);
 
                 static if (is(T == const(ComplexScalar))) {
-                    return Value(value.imaginaryPart);
+                    return ExpressionResult(value.imaginaryPart);
                 } else {
                     throw new Exception("Expected complex scalar.");
-                    return Value.void_;
+                    return ExpressionResult.void_;
                 }
             },
         );
     }
 
-    public Value opBinary(string op)(in Value rhs) const @safe pure
+    public ExpressionResult opBinary(string op)(in ExpressionResult rhs) const @safe pure
         if (op == "+" || op == "-" || op == "*" || op == "/" || op == "%")
     {
         import std.sumtype: match;
@@ -678,13 +678,13 @@ public struct RuntimeValue {
                     return rhs.binaryComplex!op(lhs);
                 } else {
                     throw new Exception("Unsupported binary lhs type.");
-                    return Value.void_;
+                    return ExpressionResult.void_;
                 }
             },
         );
     }
 
-    public Value opUnary(string op)() const @safe pure
+    public ExpressionResult opUnary(string op)() const @safe pure
         if (op == "-")
     {
         import std.sumtype: match;
@@ -695,16 +695,16 @@ public struct RuntimeValue {
                 alias T = Unqual!(typeof(value));
 
                 static if (isIntegral!T || isFloatingPoint!T) {
-                    return Value(cast(T) -value);
+                    return ExpressionResult(cast(T) -value);
                 } else {
                     throw new Exception("Unsupported unary operand type.");
-                    return Value.void_;
+                    return ExpressionResult.void_;
                 }
             },
         );
     }
 
-    public Value unaryFloating(alias operation)() const @safe pure {
+    public ExpressionResult unaryFloating(alias operation)() const @safe pure {
         import std.sumtype: match;
         import std.traits: Unqual, isFloatingPoint;
 
@@ -713,16 +713,16 @@ public struct RuntimeValue {
                 alias T = Unqual!(typeof(value));
 
                 static if (isFloatingPoint!T) {
-                    return Value(operation(cast(T) value));
+                    return ExpressionResult(operation(cast(T) value));
                 } else {
                     throw new Exception("Unsupported unary floating operand type.");
-                    return Value.void_;
+                    return ExpressionResult.void_;
                 }
             },
         );
     }
 
-    public Value binaryFloating(alias operation)(in Value rhs) const @safe pure {
+    public ExpressionResult binaryFloating(alias operation)(in ExpressionResult rhs) const @safe pure {
         import std.sumtype: match;
         import std.traits: Unqual, isFloatingPoint;
 
@@ -736,7 +736,7 @@ public struct RuntimeValue {
                             alias R = Unqual!(typeof(rhsValue));
 
                             static if (isFloatingPoint!R) {
-                                return Value(cast(L) operation(
+                                return ExpressionResult(cast(L) operation(
                                     cast(L) lhs,
                                     cast(R) rhsValue,
                                 ));
@@ -744,19 +744,19 @@ public struct RuntimeValue {
                                 throw new Exception(
                                     "Unsupported binary floating rhs type.",
                                 );
-                                return Value.void_;
+                                return ExpressionResult.void_;
                             }
                         },
                     );
                 } else {
                     throw new Exception("Unsupported binary floating lhs type.");
-                    return Value.void_;
+                    return ExpressionResult.void_;
                 }
             },
         );
     }
 
-    private Value binaryInteger(string op, L)(const L lhs) const @safe pure {
+    private ExpressionResult binaryInteger(string op, L)(const L lhs) const @safe pure {
         import std.sumtype: match;
         import std.traits: Unqual, isIntegral;
 
@@ -766,24 +766,24 @@ public struct RuntimeValue {
 
                 static if (isIntegral!L && isIntegral!R) {
                     static if (op == "+")
-                        return Value(cast(L) lhs + cast(R) rhs);
+                        return ExpressionResult(cast(L) lhs + cast(R) rhs);
                     else static if (op == "-")
-                        return Value(cast(L) lhs - cast(R) rhs);
+                        return ExpressionResult(cast(L) lhs - cast(R) rhs);
                     else static if (op == "*")
-                        return Value(cast(L) lhs * cast(R) rhs);
+                        return ExpressionResult(cast(L) lhs * cast(R) rhs);
                     else static if (op == "/")
-                        return Value(cast(L) lhs / cast(R) rhs);
+                        return ExpressionResult(cast(L) lhs / cast(R) rhs);
                     else static if (op == "%")
-                        return Value(cast(L) lhs % cast(R) rhs);
+                        return ExpressionResult(cast(L) lhs % cast(R) rhs);
                 } else {
                     throw new Exception("Unsupported binary rhs type.");
-                    return Value.void_;
+                    return ExpressionResult.void_;
                 }
             },
         );
     }
 
-    private Value binaryFloatingPoint(string op, L)(const L lhs) const @safe pure {
+    private ExpressionResult binaryFloatingPoint(string op, L)(const L lhs) const @safe pure {
         import std.sumtype: match;
         import std.traits: Unqual, isFloatingPoint;
 
@@ -793,24 +793,24 @@ public struct RuntimeValue {
 
                 static if (isFloatingPoint!L && isFloatingPoint!R) {
                     static if (op == "+")
-                        return Value(cast(L) lhs + cast(R) rhs);
+                        return ExpressionResult(cast(L) lhs + cast(R) rhs);
                     else static if (op == "-")
-                        return Value(cast(L) lhs - cast(R) rhs);
+                        return ExpressionResult(cast(L) lhs - cast(R) rhs);
                     else static if (op == "*")
-                        return Value(cast(L) lhs * cast(R) rhs);
+                        return ExpressionResult(cast(L) lhs * cast(R) rhs);
                     else static if (op == "/")
-                        return Value(cast(L) lhs / cast(R) rhs);
+                        return ExpressionResult(cast(L) lhs / cast(R) rhs);
                     else static if (op == "%")
-                        return Value(cast(L) lhs % cast(R) rhs);
+                        return ExpressionResult(cast(L) lhs % cast(R) rhs);
                 } else {
                     throw new Exception("Unsupported binary rhs type.");
-                    return Value.void_;
+                    return ExpressionResult.void_;
                 }
             },
         );
     }
 
-    private Value binaryComplex(string op, L)(const L lhs) const @safe pure {
+    private ExpressionResult binaryComplex(string op, L)(const L lhs) const @safe pure {
         import std.sumtype: match;
         import std.traits: Unqual, isFloatingPoint, isIntegral;
 
@@ -827,20 +827,20 @@ public struct RuntimeValue {
                     const left = complexScalar(lhs);
                     const right = complexScalar(rhs);
                     static if (op == "+")
-                        return Value(left + right);
+                        return ExpressionResult(left + right);
                     else static if (op == "-")
-                        return Value(left - right);
+                        return ExpressionResult(left - right);
                     else static if (op == "*")
-                        return Value(left * right);
+                        return ExpressionResult(left * right);
                     else static if (op == "/")
-                        return Value(left / right);
+                        return ExpressionResult(left / right);
                     else {
                         throw new Exception("Unsupported complex binary operator.");
-                        return Value.void_;
+                        return ExpressionResult.void_;
                     }
                 } else {
                     throw new Exception("Unsupported binary rhs type.");
-                    return Value.void_;
+                    return ExpressionResult.void_;
                 }
             },
         );
@@ -859,12 +859,6 @@ private ComplexScalar complexScalar(T)(in T value) @safe pure {
     else
         return ComplexScalar(cast(real) value, 0.0L);
 }
-
-// Kept while the walker migration still uses the historical local spelling.
-// This alias is interpreter-private: no shared `quickbite.lang.Value`
-// implementation participates in execution.
-public alias Value = RuntimeValue;
-
 
 private struct ImaginaryScalar {
     public real value;

@@ -13,7 +13,7 @@ public class Interpreter: imported!"quickbite.backends".TreeNodeBackend {
     import quickbite.backends.interpreter.frame_block: FrameBlock;
     import quickbite.backends.interpreter.frame_layout: cachedFrameLayout;
     import quickbite.backends.interpreter.module_table: ModuleTable;
-    import quickbite.backends.interpreter.runtime_value: Value;
+    import quickbite.backends.interpreter.expression_result: ExpressionResult;
     import dmd.func: FuncDeclaration, UnitTestDeclaration;
 
     public alias eval = Evaluator.eval;
@@ -115,7 +115,7 @@ private bool isTransparentArrayCastTarget(imported!"dmd.mtype".Type type) {
 }
 
 private string formattedDisplay(
-    in imported!"quickbite.backends.interpreter.runtime_value".Value value,
+    in imported!"quickbite.backends.interpreter.expression_result".ExpressionResult value,
 ) {
     import quickbite.backends.interpreter.aggregate_value: AggregateValue;
 
@@ -126,16 +126,16 @@ private string formattedDisplay(
 }
 
 
-private imported!"quickbite.backends.interpreter.runtime_value".Value characterArrayValue(
+private imported!"quickbite.backends.interpreter.expression_result".ExpressionResult characterArrayValue(
     imported!"dmd.mtype".Type type,
     in string characters,
 ) {
     import quickbite.backends.interpreter.aggregate_value: AggregateValue;
-    import quickbite.backends.interpreter.runtime_value: Value;
+    import quickbite.backends.interpreter.expression_result: ExpressionResult;
 
-    Value[] elements;
+    ExpressionResult[] elements;
     foreach (character; characters)
-        elements ~= Value(character);
+        elements ~= ExpressionResult(character);
     return AggregateValue.reconstructArray(type, elements);
 }
 
@@ -180,10 +180,10 @@ private struct ClassArrayFieldDefaults {
 }
 
 private class InterpretedException: Exception {
-    public imported!"quickbite.backends.interpreter.runtime_value".Value object;
+    public imported!"quickbite.backends.interpreter.expression_result".ExpressionResult object;
 
     public this(
-        in imported!"quickbite.backends.interpreter.runtime_value".Value object,
+        in imported!"quickbite.backends.interpreter.expression_result".ExpressionResult object,
         in string message,
     ) {
         super(message);
@@ -193,7 +193,7 @@ private class InterpretedException: Exception {
 
 
 private string exceptionMessage(
-    in imported!"quickbite.backends.interpreter.runtime_value".Value value,
+    in imported!"quickbite.backends.interpreter.expression_result".ExpressionResult value,
 ) {
     import quickbite.backends.interpreter.aggregate_value: AggregateValue;
 
@@ -222,13 +222,13 @@ private struct Walker {
     import quickbite.backends.interpreter.module_table: ModuleTable;
     import quickbite.backends.interpreter.place: Place;
     import quickbite.backends.interpreter.runtime_values: defaultValue;
-    import quickbite.backends.interpreter.runtime_value: Value;
+    import quickbite.backends.interpreter.expression_result: ExpressionResult;
 
     private Throwable[const(void)*] nativeThrowableRoots;
     // Captured native Throwable chains outlive the call bridge as rooted
     // interpreter values. Keying by the native body lets Throwable.next use
     // that captured authority without reinterpreting druntime's tagged link.
-    private Value[void*] nativeThrowableNext;
+    private ExpressionResult[void*] nativeThrowableNext;
 
     private TemporaryPointerOwners* _temporaryPointerOwners;
 
@@ -237,13 +237,13 @@ private struct Walker {
     // host-only side table keyed by its real native slot address, exactly as
     // an interpreted delegate does. The slot itself stays a valid null host
     // pointer; no symbolic pointer carrier is ever written into guest bytes.
-    private Value[const(void)*] nativeFunctionPointerSlots;
+    private ExpressionResult[const(void)*] nativeFunctionPointerSlots;
 
     // TypeInfo values for interpreted-only guest types have no resident host
     // object address. Their class-reference slots keep null ABI bytes while
     // this table retains the symbolic singleton keyed by the real slot
     // address, matching interpreted delegates and function pointers.
-    private Value[void*] nativeTypeInfoSlots;
+    private ExpressionResult[void*] nativeTypeInfoSlots;
 
     // Non-null only while `runRefArgumentExpression` is walking one call
     // argument.  `runIndexExpression` records its already-evaluated result in
@@ -264,15 +264,15 @@ private struct Walker {
     // A VM-allocated class reference exposes only its body address. Keep its
     // allocation handle by that address so later aliases retain the storage
     // that owns the body.
-    private Value[void*] nativeClassOwners;
+    private ExpressionResult[void*] nativeClassOwners;
     // A borrowed native Throwable reference carries only its object address.
     // Its interpreter-visible fields live in a native aggregate keyed by that
     // real address; the host object remains opaque ABI-owned storage.
-    private Value[void*] nativeExceptionMetadata;
+    private ExpressionResult[void*] nativeExceptionMetadata;
     // Interpreted delegates have no guest ABI function pointer. Native
-    // delegate slots retain their callable Value out-of-band while their
+    // delegate slots retain their callable ExpressionResult out-of-band while their
     // ordinary `{context, function}` guest bytes remain ABI-shaped.
-    private Value[void*] nativeDelegateSlots;
+    private ExpressionResult[void*] nativeDelegateSlots;
     private imported!"quickbite.backends.interpreter.native_call_adapter".
         InterpreterInboundTrampolineSession* durableInboundSession;
     private Expression[VarDeclaration] lazyArgumentExpressions;
@@ -287,7 +287,7 @@ private struct Walker {
     private size_t[const(void)*] _syntheticDollarValues;
     // `= void` is state attached to the authoritative binding address.
     private UninitializedBindings* uninitializedBindingAddresses;
-    private Value result;
+    private ExpressionResult result;
     private bool runningCalledFunction;
     private bool inUnitTest;
     private FuncDeclaration currentFunction;
@@ -304,16 +304,16 @@ private struct Walker {
     // All child walkers share the same table by pointer.
     private ModuleTable* moduleTable;
 
-    private Value thisValue;
+    private ExpressionResult thisValue;
     private void* thisAddress;
     private bool hasThis;
-    private Value pendingFinallyBodyException;
+    private ExpressionResult pendingFinallyBodyException;
     private bool hasPendingFinallyBodyException;
 
     private bool returned;
     private bool addressOfRefReturn;
     private bool assignToRefReturn;
-    private Value refReturnAssignedValue;
+    private ExpressionResult refReturnAssignedValue;
     private Statement pendingGotoTarget;
     private Statement pendingSwitchTarget;
     private LoopControl loopControl;
@@ -601,7 +601,7 @@ private struct Walker {
 
     private imported!"dmd.statement".Catch matchingCatch(
         imported!"dmd.statement".TryCatchStatement tryCatch,
-        in Value object,
+        in ExpressionResult object,
     ) {
         if (tryCatch.catches is null || tryCatch.catches.length == 0)
             return null;
@@ -615,7 +615,7 @@ private struct Walker {
 
     private bool catchMatches(
         imported!"dmd.statement".Catch catch_,
-        in Value object,
+        in ExpressionResult object,
     ) {
         if (catch_.type is null)
             return true;
@@ -629,7 +629,7 @@ private struct Walker {
 
     // Single write path for a binding. Native bytes and address-keyed
     // callable/symbolic metadata are the entire stored value.
-    private void setLocal(VarDeclaration variable, Value value) {
+    private void setLocal(VarDeclaration variable, ExpressionResult value) {
         import std.conv: text;
 
         if (
@@ -655,14 +655,14 @@ private struct Walker {
         if (variable.type.toBasetype.ty == TY.Tdelegate) {
             nativeDelegateSlots[bindingPlace(variable).address] = value;
             import quickbite.backends.interpreter.place_value: writeValue;
-            writeValue(bindingPlace(variable), Value.null_);
+            writeValue(bindingPlace(variable), ExpressionResult.null_);
             return;
         }
 
         if (value.isFunctionPointer) {
             nativeFunctionPointerSlots[bindingPlace(variable).address] = value;
             import quickbite.backends.interpreter.place_value: writeValue;
-            writeValue(bindingPlace(variable), Value.null_);
+            writeValue(bindingPlace(variable), ExpressionResult.null_);
             return;
         }
 
@@ -671,7 +671,7 @@ private struct Walker {
 
         if (
             variable.type.toBasetype.isTypeAArray !is null &&
-            value == Value.null_
+            value == ExpressionResult.null_
         ) {
             writeValue(bindingPlace(variable), value);
             return;
@@ -687,7 +687,7 @@ private struct Walker {
 
         if (
             variable.type.toBasetype.isTypeClass !is null &&
-            value == Value.null_
+            value == ExpressionResult.null_
         ) {
             writeStoredValue(bindingPlace(variable), value);
             return;
@@ -737,7 +737,7 @@ private struct Walker {
         const oldEnd = oldStart + byteLength;
 
         size_t[] delegateOffsets;
-        Value[] delegateValues;
+        ExpressionResult[] delegateValues;
         foreach (address, value; nativeDelegateSlots)
             if (cast(size_t) address >= oldStart && cast(size_t) address < oldEnd) {
                 delegateOffsets ~= cast(size_t) address - oldStart;
@@ -745,7 +745,7 @@ private struct Walker {
             }
 
         size_t[] functionOffsets;
-        Value[] functionValues;
+        ExpressionResult[] functionValues;
         foreach (address, value; nativeFunctionPointerSlots)
             if (cast(size_t) address >= oldStart && cast(size_t) address < oldEnd) {
                 functionOffsets ~= cast(size_t) address - oldStart;
@@ -753,7 +753,7 @@ private struct Walker {
             }
 
         size_t[] typeInfoOffsets;
-        Value[] typeInfoValues;
+        ExpressionResult[] typeInfoValues;
         foreach (address, value; nativeTypeInfoSlots)
             if (cast(size_t) address >= oldStart && cast(size_t) address < oldEnd) {
                 typeInfoOffsets ~= cast(size_t) address - oldStart;
@@ -848,7 +848,7 @@ private struct Walker {
     // identity under the same value-copy rules as the place's native bytes.
     private void writeStoredValue(
         imported!"quickbite.backends.interpreter.place".Place place,
-        in Value value,
+        in ExpressionResult value,
         in bool consumeMetadata = false,
     ) {
         import quickbite.backends.interpreter.aggregate_value: AggregateValue;
@@ -859,14 +859,14 @@ private struct Walker {
         if (place.type.toBasetype.isTypeClass !is null && value.isTypeName) {
             clearStoredMetadata(place.type, place.address);
             nativeTypeInfoSlots[place.address] = value;
-            writeValue(place, Value.null_);
+            writeValue(place, ExpressionResult.null_);
             return;
         }
 
-        if (place.type.toBasetype.ty == TY.Tdelegate && value != Value.null_) {
+        if (place.type.toBasetype.ty == TY.Tdelegate && value != ExpressionResult.null_) {
             clearStoredMetadata(place.type, place.address);
             nativeDelegateSlots[place.address] = value;
-            writeValue(place, Value.null_);
+            writeValue(place, ExpressionResult.null_);
             return;
         }
 
@@ -897,7 +897,7 @@ private struct Walker {
 
     // A by-value load materializes fresh aggregate storage. Copy the symbolic
     // slot identity into that value while retaining it at the source place.
-    private Value readStoredValue(
+    private ExpressionResult readStoredValue(
         imported!"quickbite.backends.interpreter.place".Place place,
     ) {
         import quickbite.backends.interpreter.aggregate_value: AggregateValue;
@@ -917,11 +917,11 @@ private struct Walker {
         return value;
     }
 
-    private Value withStoredStructField(
-        in Value receiver,
+    private ExpressionResult withStoredStructField(
+        in ExpressionResult receiver,
         imported!"dmd.mtype".Type receiverType,
         in size_t fieldIndex,
-        in Value fieldValue,
+        in ExpressionResult fieldValue,
     ) {
         import quickbite.backends.interpreter.aggregate_value: AggregateValue;
         import quickbite.backends.interpreter.layout: structFields;
@@ -933,7 +933,7 @@ private struct Walker {
         auto result = AggregateValue.withStructField(
             receiver,
             fieldIndex,
-            symbolicTypeInfo ? Value.null_ : fieldValue,
+            symbolicTypeInfo ? ExpressionResult.null_ : fieldValue,
         );
         auto source = AggregateValue.native(receiver);
         auto destination = AggregateValue.native(result);
@@ -954,7 +954,7 @@ private struct Walker {
         _temporaryPointerOwners.blocks ~= owner;
     }
 
-    private void storeBinding(VarDeclaration variable, in Value value) {
+    private void storeBinding(VarDeclaration variable, in ExpressionResult value) {
         setLocal(variable, value);
         clearUninitializedBindingAddress(bindingPlace(variable).address);
     }
@@ -1033,7 +1033,7 @@ private struct Walker {
     }
 
 
-    private bool storeSliceBinding(VarDeclaration variable, in Value value) {
+    private bool storeSliceBinding(VarDeclaration variable, in ExpressionResult value) {
         import quickbite.backends.interpreter.native_array: NativeArray;
 
         if (!AggregateValue.isArray(value))
@@ -1053,7 +1053,7 @@ private struct Walker {
 
     private void bindCatchVariable(
         imported!"dmd.statement".Catch catch_,
-        in Value object,
+        in ExpressionResult object,
     ) {
         if (catch_.var is null)
             return;
@@ -1111,7 +1111,7 @@ private struct Walker {
     // identity. Interpreter-visible fields live in a native aggregate keyed
     // by that address, while `.next` stays address-keyed because the host link
     // is runtime-owned storage rather than a guest-layout object body.
-    private Value nativeExceptionObject(
+    private ExpressionResult nativeExceptionObject(
         imported!"quickbite.backends.interpreter.native_call_adapter".NativeCallException exception,
     ) {
         const object = nativeExceptionBaseObject(
@@ -1127,7 +1127,7 @@ private struct Walker {
         return object;
     }
 
-    private Value nativeExceptionBaseObject(
+    private ExpressionResult nativeExceptionBaseObject(
         in string message,
         in string className,
         in const(void)* nativeObjectPointer = null,
@@ -1176,11 +1176,11 @@ private struct Walker {
         auto address = cast(void*) nativeObjectPointer;
         nativeClassTypes[address] = class_.type;
         nativeExceptionMetadata[address] = metadata;
-        return Value.pointerValue(address);
+        return ExpressionResult.pointerValue(address);
     }
 
     private void hydrateNativeExceptionMetadata(
-        ref Value metadata,
+        ref ExpressionResult metadata,
         imported!"dmd.dclass".ClassDeclaration class_,
         void* nativeObjectPointer,
     ) {
@@ -1201,7 +1201,7 @@ private struct Walker {
         }
     }
 
-    private Value* classMetadata(in Value object) {
+    private ExpressionResult* classMetadata(in ExpressionResult object) {
         if (object.isNativeAggregate)
             return null;
         const address = classIdentityAddress(object);
@@ -1212,7 +1212,7 @@ private struct Walker {
         return address in nativeClassOwners;
     }
 
-    private bool classHasFieldNamed(in Value object, in string name) {
+    private bool classHasFieldNamed(in ExpressionResult object, in string name) {
         if (object.isNativeAggregate)
             return AggregateValue.hasClassFieldNamed(object, name);
         if (auto metadata = classMetadata(object))
@@ -1220,7 +1220,7 @@ private struct Walker {
         return false;
     }
 
-    private Value classFieldNamed(in Value object, in string name) {
+    private ExpressionResult classFieldNamed(in ExpressionResult object, in string name) {
         if (object.isNativeAggregate)
             return AggregateValue.classFieldNamed(object, name);
         if (auto metadata = classMetadata(object))
@@ -1228,10 +1228,10 @@ private struct Walker {
         throw new Exception("Class field metadata is unavailable.");
     }
 
-    private Value withClassFieldNamed(
-        in Value object,
+    private ExpressionResult withClassFieldNamed(
+        in ExpressionResult object,
         in string name,
-        in Value field,
+        in ExpressionResult field,
     ) {
         if (object.isNativeAggregate)
             return AggregateValue.withClassFieldNamed(object, name, field);
@@ -1242,13 +1242,13 @@ private struct Walker {
         throw new Exception("Class field metadata is unavailable.");
     }
 
-    private string exceptionObjectMessage(in Value object) {
+    private string exceptionObjectMessage(in ExpressionResult object) {
         return classHasFieldNamed(object, "msg")
             ? exceptionMessage(classFieldNamed(object, "msg"))
             : "";
     }
 
-    private Value chainExceptionObject(in Value thrown, in Value next) {
+    private ExpressionResult chainExceptionObject(in ExpressionResult thrown, in ExpressionResult next) {
         if (!classHasFieldNamed(thrown, "_nextInChainPtr"))
             return thrown;
 
@@ -1273,9 +1273,9 @@ private struct Walker {
         return false;
     }
 
-    private Value applyThrowableConstructor(
-        in Value object,
-        in Value[] arguments,
+    private ExpressionResult applyThrowableConstructor(
+        in ExpressionResult object,
+        in ExpressionResult[] arguments,
     ) {
         if (dynamicClass(object) is null || arguments.length == 0)
             return object;
@@ -1295,9 +1295,9 @@ private struct Walker {
         return result;
     }
 
-    private Value runThisConstructorCall(
+    private ExpressionResult runThisConstructorCall(
         imported!"dmd.func".FuncDeclaration function_,
-        in Value[] arguments,
+        in ExpressionResult[] arguments,
         imported!"dmd.expression".Expression[] argumentExpressions,
         in EvaluatedReferenceArgument[] evaluatedArguments,
     ) {
@@ -1512,7 +1512,7 @@ private struct Walker {
 
     private bool caseMatches(
         imported!"dmd.statement".CaseStatement case_,
-        in Value condition,
+        in ExpressionResult condition,
     ) {
         if (case_.exp !is null) {
             const candidate = runExpression(case_.exp);
@@ -1590,7 +1590,7 @@ private struct Walker {
         loopControlLabel = null;
     }
 
-    private Value runExpression(imported!"dmd.expression".Expression expression) {
+    private ExpressionResult runExpression(imported!"dmd.expression".Expression expression) {
         if (_temporaryPointerOwners is null)
             _temporaryPointerOwners = new TemporaryPointerOwners;
 
@@ -1606,7 +1606,7 @@ private struct Walker {
         return runExpressionImpl(expression);
     }
 
-    private Value runExpressionImpl(
+    private ExpressionResult runExpressionImpl(
         imported!"dmd.expression".Expression expression,
     ) {
         import dmd.astenums: TY;
@@ -1615,7 +1615,7 @@ private struct Walker {
 
         if (auto integer = expression.isIntegerExp) {
             if (integer.type !is null && integer.type.ty == TY.Tenum)
-                return Value.enumValue(
+                return ExpressionResult.enumValue(
                     expressionChars(integer),
                     cast(long) integer.getInteger,
                 );
@@ -1636,7 +1636,7 @@ private struct Walker {
             if (null_.type !is null && null_.type.toBasetype.ty == TY.Tarray)
                 return reconstructStoredArray(null_.type, []);
 
-            return Value.null_;
+            return ExpressionResult.null_;
         }
 
         if (auto string_ = expression.isStringExp) {
@@ -1666,11 +1666,11 @@ private struct Walker {
                 throw new Exception(
                     assertFailureMessage(assert_, runningCalledFunction, inUnitTest, &runExpression),
                 );
-            return Value(true);
+            return ExpressionResult(true);
         }
 
         if (auto not = expression.isNotExp) {
-            return Value(!isTruthy(runExpression(not.e1)));
+            return ExpressionResult(!isTruthy(runExpression(not.e1)));
         }
 
         if (auto logical = expression.isLogicalExp) {
@@ -1709,7 +1709,7 @@ private struct Walker {
 
         if (auto throw_ = expression.isThrowExp) {
             throwInterpretedException(throw_.e1);
-            return Value.void_;
+            return ExpressionResult.void_;
         }
 
         if (auto post = expression.isPostExp)
@@ -1828,7 +1828,7 @@ private struct Walker {
             return runFunctionLiteralDeclaration(literal);
 
         if (auto arrayLength = expression.isArrayLengthExp)
-            return Value(AggregateValue.length(runExpression(arrayLength.e1)));
+            return ExpressionResult(AggregateValue.length(runExpression(arrayLength.e1)));
 
         if (auto slice = expression.isSliceExp)
             return runSliceExpression(slice);
@@ -1900,7 +1900,7 @@ private struct Walker {
             // This arm is defensive dead code kept in the same shape as the
             // `VarExp` arm below rather than assumed unreachable forever.
             if (name == "__ctfe")
-                return Value(false);
+                return ExpressionResult(false);
 
             // Constructor and member-method `this` is the native body
             // pointer. Resolve an unqualified class field through that body.
@@ -1938,7 +1938,7 @@ private struct Walker {
             // `__ctfe` flag must therefore read `false` here, matching
             // `SystemLinker`.
             if (variable.ident is Id.ctfe)
-                return Value(false);
+                return ExpressionResult(false);
 
             if (isManifestVariable(variable)) {
                 if (auto initializer = variable._init.isExpInitializer)
@@ -1950,7 +1950,7 @@ private struct Walker {
                 auto length = cast(const(void)*) variable
                     in _syntheticDollarValues
             )
-                return Value(*length);
+                return ExpressionResult(*length);
 
             if (isUninitializedBinding(variable)) {
                 import quickbite.backends.interpreter.messages: uninitializedVariableMessage;
@@ -2044,7 +2044,7 @@ private struct Walker {
         scope_.pop;
     }
 
-    private Value runTupleExpression(imported!"dmd.expression".TupleExp tuple) {
+    private ExpressionResult runTupleExpression(imported!"dmd.expression".TupleExp tuple) {
         // DMD lowers a tuple assignment (`target.tupleof = source.tupleof`, or a
         // `Tuple` constructor's `field[] = values[]`) into a `TupleExp`: an
         // optional side-effect prefix `e0` followed by the per-element
@@ -2055,14 +2055,14 @@ private struct Walker {
         if (tuple.e0 !is null)
             runExpression(tuple.e0);
 
-        auto result = Value.void_;  // mutated below; `const` cannot express the fold
+        auto result = ExpressionResult.void_;  // mutated below; `const` cannot express the fold
         if (tuple.exps !is null)
             foreach (element; *tuple.exps)
                 result = runExpression(element);
         return result;
     }
 
-    private Value runSymbolDeclarationVarExpression(
+    private ExpressionResult runSymbolDeclarationVarExpression(
         imported!"dmd.expression".VarExp var,
     ) {
         import dmd.typesem: defaultInitLiteral;
@@ -2079,29 +2079,29 @@ private struct Walker {
         return runExpression(structType.defaultInitLiteral(var.loc));
     }
 
-    private Value runLogicalAndExpression(
+    private ExpressionResult runLogicalAndExpression(
         imported!"dmd.expression".LogicalExp logical,
     ) {
         const left = isTruthy(runExpression(logical.e1));
         if (!left)
-            return Value(false);
+            return ExpressionResult(false);
 
         const right = isTruthy(runExpression(logical.e2));
-        return Value(right);
+        return ExpressionResult(right);
     }
 
-    private Value runLogicalOrExpression(
+    private ExpressionResult runLogicalOrExpression(
         imported!"dmd.expression".LogicalExp logical,
     ) {
         const left = isTruthy(runExpression(logical.e1));
         if (left)
-            return Value(true);
+            return ExpressionResult(true);
 
         const right = isTruthy(runExpression(logical.e2));
-        return Value(right);
+        return ExpressionResult(right);
     }
 
-    private Value runComparisonExpression(
+    private ExpressionResult runComparisonExpression(
         imported!"dmd.expression".CmpExp comparison,
     ) {
         import dmd.tokens: EXP;
@@ -2116,9 +2116,9 @@ private struct Walker {
         import quickbite.frontend.dmd.types: isPointerType;
 
         const leftIsPointer = leftValue.isPointer ||
-            (leftValue == Value.null_ && isPointerType(comparison.e1.type));
+            (leftValue == ExpressionResult.null_ && isPointerType(comparison.e1.type));
         const rightIsPointer = rightValue.isPointer ||
-            (rightValue == Value.null_ && isPointerType(comparison.e2.type));
+            (rightValue == ExpressionResult.null_ && isPointerType(comparison.e2.type));
 
         if (leftIsPointer && rightIsPointer)
             return runPointerComparison(comparison.op, leftValue, rightValue);
@@ -2127,38 +2127,38 @@ private struct Walker {
         const right = rightValue.asReal;
 
         if (comparison.op == EXP.lessThan)
-            return Value(left < right);
+            return ExpressionResult(left < right);
         if (comparison.op == EXP.lessOrEqual)
-            return Value(left <= right);
+            return ExpressionResult(left <= right);
         if (comparison.op == EXP.greaterThan)
-            return Value(left > right);
-        return Value(left >= right);
+            return ExpressionResult(left > right);
+        return ExpressionResult(left >= right);
     }
 
     // ordered comparisons between pointers into unrelated allocations are
     // false both ways, matching CTFE
-    private Value runPointerComparison(
+    private ExpressionResult runPointerComparison(
         in imported!"dmd.tokens".EXP op,
-        in Value left,
-        in Value right,
+        in ExpressionResult left,
+        in ExpressionResult right,
     ) {
         import dmd.tokens: EXP;
 
         if (!left.pointerSameAllocation(right))
-            return Value(false);
+            return ExpressionResult(false);
 
         const difference = left.pointerOffsetDifference(right);
 
         if (op == EXP.lessThan)
-            return Value(difference < 0);
+            return ExpressionResult(difference < 0);
         if (op == EXP.lessOrEqual)
-            return Value(difference <= 0);
+            return ExpressionResult(difference <= 0);
         if (op == EXP.greaterThan)
-            return Value(difference > 0);
-        return Value(difference >= 0);
+            return ExpressionResult(difference > 0);
+        return ExpressionResult(difference >= 0);
     }
 
-    private Value runAddExpression(imported!"dmd.expression".AddExp add) {
+    private ExpressionResult runAddExpression(imported!"dmd.expression".AddExp add) {
         import quickbite.frontend.dmd.types: isPointerType;
 
         const left = runExpression(add.e1);
@@ -2169,9 +2169,9 @@ private struct Walker {
         // `_nextInChainPtr`) reads as `Null`, not a zero-valued `Pointer`;
         // the static operand type still marks it as pointer arithmetic.
         const leftIsPointer = left.isPointer ||
-            (left == Value.null_ && isPointerType(add.e1.type));
+            (left == ExpressionResult.null_ && isPointerType(add.e1.type));
         const rightIsPointer = right.isPointer ||
-            (right == Value.null_ && isPointerType(add.e2.type));
+            (right == ExpressionResult.null_ && isPointerType(add.e2.type));
 
         if (leftIsPointer) {
             const offset = leftIsPointer
@@ -2194,7 +2194,7 @@ private struct Walker {
         return left + right;
     }
 
-    private Value runMinExpression(imported!"dmd.expression".MinExp sub) {
+    private ExpressionResult runMinExpression(imported!"dmd.expression".MinExp sub) {
         import quickbite.frontend.dmd.types: isPointerType;
 
         const left = runExpression(sub.e1);
@@ -2203,9 +2203,9 @@ private struct Walker {
         // See `runAddExpression`: a default-null pointer operand reads as
         // `Null`, not a zero-valued `Pointer`.
         const leftIsPointer = left.isPointer ||
-            (left == Value.null_ && isPointerType(sub.e1.type));
+            (left == ExpressionResult.null_ && isPointerType(sub.e1.type));
         const rightIsPointer = right.isPointer ||
-            (right == Value.null_ && isPointerType(sub.e2.type));
+            (right == ExpressionResult.null_ && isPointerType(sub.e2.type));
 
         // DMD lowers `p - q` to `(p - q) / elementSize`; return the byte
         // difference so the lowered division yields the element difference
@@ -2213,7 +2213,7 @@ private struct Walker {
             const scale = leftIsPointer && rightIsPointer
                 ? 1
                 : pointerElementSize(sub.e1.type);
-            return Value(
+            return ExpressionResult(
                 left.pointerOffsetDifference(right) * scale,
             );
         }
@@ -2230,14 +2230,14 @@ private struct Walker {
         return left - right;
     }
 
-    private Value runDivExpression(DivExp div) {
+    private ExpressionResult runDivExpression(DivExp div) {
         const left = runExpression(div.e1);
         const right = runExpression(div.e2);
         rejectIntMinMinusOneOverflow(left, right, "/");
         return left / right;
     }
 
-    private Value runModExpression(ModExp mod) {
+    private ExpressionResult runModExpression(ModExp mod) {
         const left = runExpression(mod.e1);
         const right = runExpression(mod.e2);
         rejectIntMinMinusOneOverflow(left, right, "%");
@@ -2245,13 +2245,13 @@ private struct Walker {
     }
 
     private void rejectIntMinMinusOneOverflow(
-        in Value left,
-        in Value right,
+        in ExpressionResult left,
+        in ExpressionResult right,
         in string operator,
     ) const {
         import std.conv: text;
 
-        if (left != Value(int.min) || right != Value(-1))
+        if (left != ExpressionResult(int.min) || right != ExpressionResult(-1))
             return;
 
         throw new Exception(text(
@@ -2286,13 +2286,13 @@ private struct Walker {
         return elementSize;
     }
 
-    private Value runAddressExpression(
+    private ExpressionResult runAddressExpression(
         imported!"dmd.expression".AddrExp address,
     ) {
         return addressOfExpression(address.e1, address.op);
     }
 
-    private Value addressOfExpression(
+    private ExpressionResult addressOfExpression(
         imported!"dmd.expression".Expression e1,
         in imported!"dmd.tokens".EXP op,
     ) {
@@ -2346,7 +2346,7 @@ private struct Walker {
                         // class-reference field `parent.child`; compose `x`
                         // from the referenced body, not from that slot's bytes.
                         if (innerDot.type.toBasetype.isTypeClass !is null)
-                            return Value.pointerValue(
+                            return ExpressionResult.pointerValue(
                                 Place(receiverPointer.pointerAddress, innerDot.type)
                                     .deref.field(field).address,
                             );
@@ -2381,7 +2381,7 @@ private struct Walker {
                         if (auto receiverVar = index.e1.isVarExp)
                             setLocal(
                                 index.lengthVar,
-                                Value(AggregateValue.length(runExpression(receiverVar))),
+                                ExpressionResult(AggregateValue.length(runExpression(receiverVar))),
                             );
                     const elementIndex = runExpression(index.e2).asLong;
                     const elementPointer = arrayPointer(index.e1, elementIndex, op);
@@ -2399,7 +2399,7 @@ private struct Walker {
                             auto place = bindingPlace(variable);
                             if (place.type.toBasetype.isTypeClass !is null)
                                 place = place.deref;
-                            return Value.pointerValue(place.field(field).address);
+                            return ExpressionResult.pointerValue(place.field(field).address);
                         }
 
             // A class read carries its native body address. Compose the field
@@ -2412,11 +2412,11 @@ private struct Walker {
                 nativeClassReceiver.isNativeAggregate &&
                 dot.e1.type.toBasetype.isTypeClass !is null
             )
-                nativeClassReceiver = Value.pointerValue(
+                nativeClassReceiver = ExpressionResult.pointerValue(
                     AggregateValue.nativeClassBodyAddress(nativeClassReceiver),
                 );
             else if (auto metadata = classMetadata(nativeClassReceiver))
-                nativeClassReceiver = Value.pointerValue(
+                nativeClassReceiver = ExpressionResult.pointerValue(
                     AggregateValue.nativeClassBodyAddress(*metadata),
                 );
             if (
@@ -2427,7 +2427,7 @@ private struct Walker {
 
                 auto field = dot.var.isVarDeclaration;
                 if (field !is null)
-                    return Value.pointerValue(
+                    return ExpressionResult.pointerValue(
                         Place(nativeClassReceiver.pointerAddress, dot.e1.type)
                             .field(field)
                             .address,
@@ -2446,7 +2446,7 @@ private struct Walker {
                     retainTemporaryPointerOwner(aggregate.storage);
                     auto field = dot.var.isVarDeclaration;
                     if (field !is null)
-                        return Value.pointerValue(
+                        return ExpressionResult.pointerValue(
                             Place(aggregate.address, aggregate.type)
                                 .field(field)
                                 .address,
@@ -2460,7 +2460,7 @@ private struct Walker {
             try {
                 import quickbite.backends.interpreter.lvalue_place: placeOfLvalue;
 
-                return Value.pointerValue(placeOfLvalue(
+                return ExpressionResult.pointerValue(placeOfLvalue(
                     dot,
                     (variable) @safe => addressableBindingBase(variable),
                     (expression) @system => cast(size_t)
@@ -2510,7 +2510,7 @@ private struct Walker {
 
     // The address of a ref return's lvalue, evaluated in the returning
     // function's own frame (`addressOfRefReturn` mode).
-    private Value refReturnAddress(
+    private ExpressionResult refReturnAddress(
         imported!"dmd.expression".Expression expression,
     ) {
         import dmd.tokens: EXP;
@@ -2523,7 +2523,7 @@ private struct Walker {
         return addressOfExpression(expression, EXP.address);
     }
 
-    private Value refReturningCallAddress(
+    private ExpressionResult refReturningCallAddress(
         imported!"dmd.expression".CallExp call,
         in imported!"dmd.tokens".EXP op,
     ) {
@@ -2547,7 +2547,7 @@ private struct Walker {
             throw new Exception(unsupported);
         const native = hasNoAvailableSource(call.f);
 
-        Value[] arguments;
+        ExpressionResult[] arguments;
         Expression[] argumentExpressions;
         EvaluatedReferenceArgument[] evaluatedArguments;
         if (call.arguments !is null)
@@ -2578,7 +2578,7 @@ private struct Walker {
             try {
                 if (!invokeNativeDeclaration(
                     call.f,
-                    Value.void_,
+                    ExpressionResult.void_,
                     null,
                     null,
                     arguments,
@@ -2591,7 +2591,7 @@ private struct Walker {
             } catch (NativeCallException exception) {
                 throwNativeException(exception);
             }
-            return Value.pointerValue(nativeResult.referenceAddress);
+            return ExpressionResult.pointerValue(nativeResult.referenceAddress);
         }
 
         Walker child;
@@ -2600,7 +2600,7 @@ private struct Walker {
         auto layout = cachedFrameLayout(call.f);
         child._activationFrame = FrameBlock.allocate(layout);
         child.addressOfRefReturn = true;
-        child.result = Value(false);
+        child.result = ExpressionResult(false);
         bindCapturedReferenceSlots(call.f, child);
         forkExecutionStateInto(child);
         child.bindFunctionParameters(
@@ -2625,7 +2625,7 @@ private struct Walker {
     // result returned by value. DMD represents its per-iteration temporary as
     // `AddrExp(CallExp)`: evaluate the call once into typed native storage and
     // return that ordinary temporary's address.
-    private Value addressOfCallResultTemporary(
+    private ExpressionResult addressOfCallResultTemporary(
         imported!"dmd.expression".CallExp call,
     ) {
         import quickbite.backends.interpreter.layout:
@@ -2640,7 +2640,7 @@ private struct Walker {
         auto temporary = NativeBlock.allocate(typeByteSize(call.type), scan);
         writeStoredValue(Place(temporary.address, call.type), value);
         retainTemporaryPointerOwner(temporary);
-        return Value.pointerValue(temporary.address);
+        return ExpressionResult.pointerValue(temporary.address);
     }
 
     // Forks execution metadata. Binding storage is never copied: each child
@@ -2678,7 +2678,7 @@ private struct Walker {
     // `ref` parameter's slot must become the caller's argument lvalue so
     // writes through it reach the argument; any other variable's pointer id
     // is registered here so this frame can resolve it.
-    private Value returnedLvalueAddress(
+    private ExpressionResult returnedLvalueAddress(
         imported!"dmd.func".FuncDeclaration function_,
         imported!"dmd.expression".Expression[] argumentExpressions,
         ref Walker child,
@@ -2741,7 +2741,7 @@ private struct Walker {
     // place. Both nested-index and nested-field receivers take this route:
     // keeping the `$` binding, outer-index evaluation, and final-offset
     // composition together ensures each expression is evaluated once.
-    private Value nestedIndexPointer(
+    private ExpressionResult nestedIndexPointer(
         Expression expression,
         Place receiverPlace,
         in long offset,
@@ -2754,22 +2754,22 @@ private struct Walker {
         if (index.lengthVar !is null)
             setLocal(
                 index.lengthVar,
-                Value(AggregateValue.length(readValue(receiverPlace))),
+                ExpressionResult(AggregateValue.length(readValue(receiverPlace))),
             );
         const outerOffset = runExpression(index.e2).asLong;
-        const pointer = Value.pointerValue(
+        const pointer = ExpressionResult.pointerValue(
             receiverPlace.index(cast(size_t) outerOffset).address,
         );
         if (selfAddress)
             return pointer;
-        return Value.pointerValue(
+        return ExpressionResult.pointerValue(
             Place(cast(void*) pointer.pointerAddress, expression.type)
                 .index(cast(size_t) offset)
                 .address,
         );
     }
 
-    private Value arrayPointer(
+    private ExpressionResult arrayPointer(
         imported!"dmd.expression".Expression array,
         in long offset,
         in imported!"dmd.tokens".EXP op,
@@ -2800,7 +2800,7 @@ private struct Walker {
                 const source = runExpression(call);
                 const arrayValue = source;
                 if (AggregateValue.isArray(arrayValue))
-                    return Value.pointerValue(
+                    return ExpressionResult.pointerValue(
                         AggregateValue.elementAddress(
                             arrayValue,
                             cast(size_t) offset,
@@ -2839,7 +2839,7 @@ private struct Walker {
                                     if (chainIndex.lengthVar !is null)
                                         setLocal(
                                             chainIndex.lengthVar,
-                                            Value(
+                                            ExpressionResult(
                                                 AggregateValue.length(readValue(base)),
                                             ),
                                         );
@@ -2863,7 +2863,7 @@ private struct Walker {
 
                             const rowLength = staticArrayLength(rowArray);
                             if (index.lengthVar !is null)
-                                setLocal(index.lengthVar, Value(rowLength));
+                                setLocal(index.lengthVar, ExpressionResult(rowLength));
                             const elementOffset = runExpression(index.e2).asLong;
                             if (cast(size_t) elementOffset >= rowLength)
                                 throwRangeError(
@@ -2872,14 +2872,14 @@ private struct Walker {
                                 );
 
                             try {
-                                const pointer = Value.pointerValue(
+                                const pointer = ExpressionResult.pointerValue(
                                     resolveInnerPlace()
                                         .index(cast(size_t) elementOffset)
                                         .address,
                                 );
                                 if (selfAddress)
                                     return pointer;
-                                return Value.pointerValue(
+                                return ExpressionResult.pointerValue(
                                     Place(cast(void*) pointer.pointerAddress, array.type)
                                         .index(cast(size_t) offset)
                                         .address,
@@ -2982,7 +2982,7 @@ private struct Walker {
                                     if (chainIndex.lengthVar !is null)
                                         setLocal(
                                             chainIndex.lengthVar,
-                                            Value(AggregateValue.length(readValue(base))),
+                                            ExpressionResult(AggregateValue.length(readValue(base))),
                                         );
                                 },
                             );
@@ -3037,7 +3037,7 @@ private struct Walker {
                 const arrayValue = source;
                 if (index.lengthVar !is null) {
                     const sourceLength = AggregateValue.length(arrayValue);
-                    setLocal(index.lengthVar, Value(sourceLength));
+                    setLocal(index.lengthVar, ExpressionResult(sourceLength));
                 }
 
                 const outerOffset = runExpression(index.e2).asLong;
@@ -3066,7 +3066,7 @@ private struct Walker {
                         // address), it is one dereference further in.
                         import quickbite.backends.interpreter.place: Place;
 
-                        return Value.pointerValue(
+                        return ExpressionResult.pointerValue(
                             Place(cast(void*) element.pointerAddress, array.type)
                                 .index(cast(size_t) offset)
                                 .address,
@@ -3091,7 +3091,7 @@ private struct Walker {
                             // `offset == 0`.
                             import quickbite.backends.interpreter.place: Place;
 
-                            return Value.pointerValue(
+                            return ExpressionResult.pointerValue(
                                 Place(cast(void*) pointer.pointerAddress, array.type)
                                     .index(cast(size_t) offset)
                                     .address,
@@ -3126,13 +3126,13 @@ private struct Walker {
                                 (expression) @system =>
                                     cast(size_t) runExpression(expression).asLong,
                             );
-                            const pointer = Value.pointerValue(
+                            const pointer = ExpressionResult.pointerValue(
                                 fieldPlace.index(cast(size_t) outerOffset).address,
                             );
                             if (selfAddress)
                                 return pointer;
                             // Same hazard as the `VarExp` arm above.
-                            return Value.pointerValue(
+                            return ExpressionResult.pointerValue(
                                 Place(cast(void*) pointer.pointerAddress, array.type)
                                     .index(cast(size_t) offset)
                                     .address,
@@ -3189,7 +3189,7 @@ private struct Walker {
                         // header address, not `a[0][1][0]`'s data address).
                         import quickbite.backends.interpreter.place: Place;
 
-                        return Value.pointerValue(
+                        return ExpressionResult.pointerValue(
                             Place(cast(void*) element.pointerAddress, array.type)
                                 .index(cast(size_t) offset)
                                 .address,
@@ -3209,10 +3209,10 @@ private struct Walker {
                         cast(size_t) outerOffset,
                     );
                     if (selfAddress)
-                        return Value.pointerValue(elementAddress);
+                        return ExpressionResult.pointerValue(elementAddress);
                     import quickbite.backends.interpreter.place: Place;
 
-                    return Value.pointerValue(
+                    return ExpressionResult.pointerValue(
                         Place(elementAddress, array.type)
                             .index(cast(size_t) offset)
                             .address,
@@ -3259,7 +3259,7 @@ private struct Walker {
                                 auto place = bindingPlace(variable);
                                 if (place.type.toBasetype.isTypeClass !is null)
                                     place = place.deref;
-                                return Value.pointerValue(
+                                return ExpressionResult.pointerValue(
                                     place.field(field).index(cast(size_t) offset).address,
                                 );
                             }
@@ -3268,7 +3268,7 @@ private struct Walker {
                 auto structType = elementType.isTypeStruct;
 
                 const value = runExpression(array);
-                return Value.pointerValue(
+                return ExpressionResult.pointerValue(
                     AggregateValue.elementAddress(value, cast(size_t) offset),
                 );
             }
@@ -3287,7 +3287,7 @@ private struct Walker {
 
         if (!hasBindingPlace(variable))
             throw new Exception(text("Unsupported eval expression: ", op));
-        return Value.pointerValue(
+        return ExpressionResult.pointerValue(
             bindingPlace(variable).index(cast(size_t) offset).address,
         );
     }
@@ -3296,7 +3296,7 @@ private struct Walker {
     // SymOffExp(buf, byteOffset): a pointer into a static array's elements
     // mirrors the unfolded `&buf[i]` IndexExp shape; anything else points at
     // the local's slot.
-    private Value symbolOffsetLocalValue(
+    private ExpressionResult symbolOffsetLocalValue(
         imported!"dmd.expression".SymOffExp symbol,
         VarDeclaration variable,
     ) {
@@ -3308,16 +3308,16 @@ private struct Walker {
             throw new Exception("Symbol offset has no native binding place.");
         if (isStaticArrayType(variable.type) &&
             isStaticArrayType(symbol.type.toBasetype.nextOf))
-            return Value.pointerValue(bindingPlace(variable).address);
-        return Value.pointerValue(bindingPlace(variable).address)
+            return ExpressionResult.pointerValue(bindingPlace(variable).address);
+        return ExpressionResult.pointerValue(bindingPlace(variable).address)
             .pointerOffsetBy(cast(long) symbol.offset);
     }
 
-    private Value bindingPointerValue(VarDeclaration variable) {
+    private ExpressionResult bindingPointerValue(VarDeclaration variable) {
         materializeDatasegInitializer(variable);
         if (!hasBindingPlace(variable))
             throw new Exception("Binding has no native address.");
-        return Value.pointerValue(bindingPlace(variable).address);
+        return ExpressionResult.pointerValue(bindingPlace(variable).address);
     }
 
     private void materializeDatasegInitializer(VarDeclaration variable) {
@@ -3370,7 +3370,7 @@ private struct Walker {
     }
 
     // Write scalar leaves of a struct cell into its native layout.
-    private void writeStructCellScalarFields(ref NativeStruct cell, in Value structValue) {
+    private void writeStructCellScalarFields(ref NativeStruct cell, in ExpressionResult structValue) {
         import quickbite.backends.interpreter.aggregate_value: AggregateValue;
         import quickbite.backends.interpreter.layout: fieldByteOffset;
         import quickbite.backends.interpreter.native_scalar:
@@ -3451,7 +3451,7 @@ private struct Walker {
         }
     }
 
-    private Value readBindingValue(VarDeclaration variable) {
+    private ExpressionResult readBindingValue(VarDeclaration variable) {
         materializeDatasegInitializer(variable);
 
         import dmd.astenums: TY;
@@ -3470,23 +3470,23 @@ private struct Walker {
         return defaultValue(variable);
     }
 
-    private Value functionPointerValue(FuncDeclaration function_) {
+    private ExpressionResult functionPointerValue(FuncDeclaration function_) {
         if (auto id = function_ in functionPointerIds)
-            return Value.functionPointerValue(*id);
+            return ExpressionResult.functionPointerValue(*id);
 
         const id = ++nextFunctionPointerId;
         functionPointerIds[function_] = id;
         functionPointers[id] = function_;
-        return Value.functionPointerValue(id);
+        return ExpressionResult.functionPointerValue(id);
     }
 
-    private Value newFunctionPointerValue(FuncDeclaration function_) {
+    private ExpressionResult newFunctionPointerValue(FuncDeclaration function_) {
         const id = ++nextFunctionPointerId;
         functionPointers[id] = function_;
-        return Value.functionPointerValue(id);
+        return ExpressionResult.functionPointerValue(id);
     }
 
-    private Value runDelegateExpression(
+    private ExpressionResult runDelegateExpression(
         imported!"dmd.expression".DelegateExp delegate_,
     ) {
         if (delegate_.func is null)
@@ -3512,7 +3512,7 @@ private struct Walker {
         return functionPointer;
     }
 
-    private Value runFunctionLiteralDeclaration(
+    private ExpressionResult runFunctionLiteralDeclaration(
         imported!"dmd.expression".FuncExp literal,
     ) {
         if (literal.fd is null)
@@ -3523,7 +3523,7 @@ private struct Walker {
         RuntimeDelegate runtime;
         runtime.function_ = literal.fd;
         runtime.functionPointerId = functionPointer.functionPointerId;
-        runtime.contextPointer = Value.pointerValue(null);
+        runtime.contextPointer = ExpressionResult.pointerValue(null);
         runtime.capturedAddresses = closureCapturedAddresses(literal.fd);
         if (literal.fd.isNested && hasThis) {
             runtime.receiver = thisValue;
@@ -3566,7 +3566,7 @@ private struct Walker {
         return addresses;
     }
 
-    private Value delegateContextPointer(
+    private ExpressionResult delegateContextPointer(
         imported!"dmd.expression".DelegateExp delegate_,
     ) {
         import quickbite.backends.interpreter.frame_layout: capturedVariables;
@@ -3583,10 +3583,10 @@ private struct Walker {
                 return bindingPointerValue(captures[0]);
         }
 
-        return Value.pointerValue(null);
+        return ExpressionResult.pointerValue(null);
     }
 
-    private Value runPointerExpression(
+    private ExpressionResult runPointerExpression(
         imported!"dmd.expression".PtrExp pointer,
     ) {
         return dereferencePointerValue(pointer, runExpression(pointer.e1));
@@ -3597,9 +3597,9 @@ private struct Walker {
     // address for a later use, e.g. a member-call receiver rebind) can reuse
     // that single evaluation instead of running the -- possibly
     // side-effecting -- pointer operand a second time.
-    private Value dereferencePointerValue(
+    private ExpressionResult dereferencePointerValue(
         imported!"dmd.expression".PtrExp pointer,
-        in Value value,
+        in ExpressionResult value,
     ) {
         import quickbite.frontend.dmd.types: isStaticArrayType;
 
@@ -3618,8 +3618,8 @@ private struct Walker {
         );
     }
 
-    private Value staticArrayPointerView(
-        in Value pointer,
+    private ExpressionResult staticArrayPointerView(
+        in ExpressionResult pointer,
         imported!"dmd.mtype".Type pointerType,
         imported!"dmd.mtype".Type staticArrayType,
     ) {
@@ -3634,23 +3634,23 @@ private struct Walker {
         throw new Exception("Static-array pointer did not address an array value.");
     }
 
-    private Value[] arrayElements(in Value value) {
-        Value[] elements;
+    private ExpressionResult[] arrayElements(in ExpressionResult value) {
+        ExpressionResult[] elements;
         foreach (index; 0 .. AggregateValue.length(value))
             elements ~= AggregateValue.elementAt(value, index);
 
         return elements;
     }
 
-    private Value[] arrayPointerElements(in Value value) {
+    private ExpressionResult[] arrayPointerElements(in ExpressionResult value) {
         return arrayElements(value);
     }
 
-    private long arrayPointerOffset(in Value value, in long offset) {
+    private long arrayPointerOffset(in ExpressionResult value, in long offset) {
         return offset;
     }
 
-    private Value runConditionalExpression(
+    private ExpressionResult runConditionalExpression(
         imported!"dmd.expression".CondExp conditional,
     ) {
         return isTruthy(runExpression(conditional.econd)) ?
@@ -3658,7 +3658,7 @@ private struct Walker {
             runExpression(conditional.e2);
     }
 
-    private Value runIdentityExpression(
+    private ExpressionResult runIdentityExpression(
         imported!"dmd.expression".IdentityExp identity,
     ) {
         import dmd.tokens: EXP;
@@ -3669,10 +3669,10 @@ private struct Walker {
         // `is` expression (`IdentityExp`), since memberwise equality and
         // bitwise identity coincide for such structs. Route that case through
         // `equalValues` (the same field-recursive, numeric-scalar-coercing
-        // comparison a direct `==` uses) instead of a raw `Value` compare: a
+        // comparison a direct `==` uses) instead of a raw `ExpressionResult` compare: a
         // struct field written by anything other than an enum-typed literal
         // `IntegerExp` (default-init, a decoded value, ...) keeps a plain
-        // scalar `Value` rather than the `EnumValue` variant `runExpression`
+        // scalar `ExpressionResult` rather than the `EnumValue` variant `runExpression`
         // tags a literal `Enum.Member` reference with, so a raw compare of
         // two otherwise-identical structs falsely disagrees whenever one
         // side's enum field took a different path to the same value. Other
@@ -3687,9 +3687,9 @@ private struct Walker {
             AggregateValue.isArray(left) && AggregateValue.isArray(right);
         const nullPointerIdentity =
             left.isPointer && left.pointerAddress is null &&
-                right == Value.null_ ||
+                right == ExpressionResult.null_ ||
             right.isPointer && right.pointerAddress is null &&
-                left == Value.null_;
+                left == ExpressionResult.null_;
         const same =
             left.isTypeName || right.isTypeName
             ? left == right
@@ -3702,15 +3702,15 @@ private struct Walker {
             ? true
             : left == right;
         if (identity.op == EXP.notIdentity)
-            return Value(!same);
+            return ExpressionResult(!same);
 
-        return Value(same);
+        return ExpressionResult(same);
     }
 
-    private void* classIdentityAddress(in Value value) {
+    private void* classIdentityAddress(in ExpressionResult value) {
         import quickbite.backends.interpreter.aggregate_value: AggregateValue;
 
-        if (value == Value.null_)
+        if (value == ExpressionResult.null_)
             return null;
 
         if (value.isNativeAggregate) {
@@ -3724,7 +3724,7 @@ private struct Walker {
         return null;
     }
 
-    private Value runCallExpression(imported!"dmd.expression".CallExp call) {
+    private ExpressionResult runCallExpression(imported!"dmd.expression".CallExp call) {
         import dmd.expression: Expression;
         import quickbite.backends.interpreter.builtins:
             binaryBuiltinCall,
@@ -3835,7 +3835,7 @@ private struct Walker {
             return runStringForeachApplyCall(call, stringForeachApply);
         }
 
-        Value[] arguments;
+        ExpressionResult[] arguments;
         Expression[] argumentExpressions;
         EvaluatedReferenceArgument[] evaluatedArguments;
         if (call.arguments !is null) {
@@ -3849,7 +3849,7 @@ private struct Walker {
                 if (parameter !is null && parameterIsLazy(parameter))
                     // The lazy argument is captured as an expression below;
                     // this aligned entry is never bound or evaluated.
-                    arguments ~= Value.void_;
+                    arguments ~= ExpressionResult.void_;
                 else if (nativeCall && nativeReferenceParameter(call.f, index))
                     arguments ~= runRefArgumentExpression(argument, evaluated);
                 else if (parameter !is null &&
@@ -3896,9 +3896,9 @@ private struct Walker {
             // (`a[i++].method()`) has the identical hazard: compose its
             // address once here too, and read the receiver from that
             // address rather than through a second independent evaluation.
-            Value receiverPointerAddress;
+            ExpressionResult receiverPointerAddress;
             bool hasReceiverPointerAddress;
-            Value receiver;
+            ExpressionResult receiver;
             if (auto pointerReceiver = dot.e1.isPtrExp) {
                 receiverPointerAddress = runExpression(pointerReceiver.e1);
                 hasReceiverPointerAddress = true;
@@ -3924,7 +3924,7 @@ private struct Walker {
             receiver = rootedNativeClassValue(dot.e1, receiver);
             const interpreterAllocatedClass = receiver.isNativeAggregate &&
                 dot.e1.type.toBasetype.isTypeClass !is null;
-            if (receiver == Value.null_)
+            if (receiver == ExpressionResult.null_)
                 throw new Exception(
                     "function call through null class reference `null`",
                 );
@@ -3938,9 +3938,9 @@ private struct Walker {
                     receiver.isTypeName &&
                     functionName(call.f) == "opEquals" &&
                     arguments.length == 1 &&
-                    (arguments[0].isTypeName || arguments[0] == Value.null_)
+                    (arguments[0].isTypeName || arguments[0] == ExpressionResult.null_)
                 )
-                    return Value(receiver == arguments[0]);
+                    return ExpressionResult(receiver == arguments[0]);
 
                 import quickbite.frontend.dmd.functions:
                     hasNoAvailableSource, noAvailableSourceMessage;
@@ -3958,7 +3958,7 @@ private struct Walker {
 
                 auto function_ = resolveMemberFunction(call.f, receiver);
                 if (interpreterAllocatedClass)
-                    receiver = Value.pointerValue(
+                    receiver = ExpressionResult.pointerValue(
                         AggregateValue.nativeClassBodyAddress(receiver),
                     );
                 // An interpreter-allocated class has no synthesized vtable
@@ -4031,7 +4031,7 @@ private struct Walker {
                     NativeCallResult nativeResult;
                     if (!call.f.needThis && invokeNativeDeclaration(
                             call.f,
-                            Value.void_,
+                            ExpressionResult.void_,
                             null,
                             null,
                             arguments,
@@ -4095,7 +4095,7 @@ private struct Walker {
                         function_,
                         "enforceRawArraysConformableNogc",
                     );
-                    return Value(false);
+                    return ExpressionResult(false);
                 }
 
                 throw new Exception("Unsupported eval call.");
@@ -4155,7 +4155,7 @@ private struct Walker {
         throw new Exception("Unsupported eval call.");
     }
 
-    private Value runRefArgumentExpression(
+    private ExpressionResult runRefArgumentExpression(
         imported!"dmd.expression".Expression argument,
         out EvaluatedReferenceArgument evaluated,
     ) {
@@ -4192,7 +4192,7 @@ private struct Walker {
         auto var = argument.isVarExp;
         auto variable = var is null ? null : var.var.isVarDeclaration;
         if (variable !is null && isUninitializedBinding(variable))
-            return Value.void_;
+            return ExpressionResult.void_;
         if (variable !is null) {
             const address = bindingPointerValue(variable);
             if (address.isPointer)
@@ -4211,18 +4211,18 @@ private struct Walker {
     // FFI reverse bridge (ffi.md §34.16). The callback supplies only values (no
     // source argument expressions), so synthesise null placeholders, as the
     // static-initialiser delegate path does.
-    private Value invokeNativeCallback(
-        in Value callee,
-        in Value[] arguments,
+    private ExpressionResult invokeNativeCallback(
+        in ExpressionResult callee,
+        in ExpressionResult[] arguments,
     ) {
         import dmd.expression: Expression;
 
         return runDelegateCall(callee, arguments, new Expression[](arguments.length));
     }
 
-    private Value runDelegateCall(
-        in Value callee,
-        in Value[] arguments,
+    private ExpressionResult runDelegateCall(
+        in ExpressionResult callee,
+        in ExpressionResult[] arguments,
         imported!"dmd.expression".Expression[] argumentExpressions,
         in EvaluatedReferenceArgument[] evaluatedArguments = null,
     ) {
@@ -4265,10 +4265,10 @@ private struct Walker {
     // Call a native delegate the interpreter holds as an opaque
     // {context, funcptr} value read from a native typed result place, the
     // inverse of the §34.16 callback bridge.
-    private Value runNativeDelegateCall(
-        in Value callee,
+    private ExpressionResult runNativeDelegateCall(
+        in ExpressionResult callee,
         imported!"dmd.expression".CallExp call,
-        in Value[] arguments,
+        in ExpressionResult[] arguments,
         imported!"dmd.expression".Expression[] argumentExpressions,
     ) {
         import quickbite.backends.interpreter.native_call_adapter:
@@ -4312,17 +4312,17 @@ private struct Walker {
         throw new Exception("Unsupported eval call.");
     }
 
-    private Value delegateReceiver(in RuntimeDelegate runtime) {
+    private ExpressionResult delegateReceiver(in RuntimeDelegate runtime) {
         return runtime.receiver;
     }
 
-    private Value runDelegatePointerExpression(
+    private ExpressionResult runDelegatePointerExpression(
         imported!"dmd.expression".DelegatePtrExp expression,
     ) {
         return delegateProperty(runExpression(expression.e1), "ptr");
     }
 
-    private Value runDelegateFunctionPointerExpression(
+    private ExpressionResult runDelegateFunctionPointerExpression(
         imported!"dmd.expression".DelegateFuncptrExp expression,
     ) {
         return delegateProperty(runExpression(expression.e1), "funcptr");
@@ -4348,7 +4348,7 @@ private struct Walker {
         return functionPointerExpressionFunction(expression);
     }
 
-    private Value runStringForeachApplyCall(
+    private ExpressionResult runStringForeachApplyCall(
         imported!"dmd.expression".CallExp call,
         FuncDeclaration function_,
     ) {
@@ -4364,16 +4364,16 @@ private struct Walker {
             runExpression((*call.arguments)[0]),
         )) {
             const result = runFunction(body, [value], [null]);
-            if (result != Value.void_ && result.asLong != 0)
+            if (result != ExpressionResult.void_ && result.asLong != 0)
                 return result;
         }
 
-        return Value(0);
+        return ExpressionResult(0);
     }
 
-    private Value[] stringForeachApplyElements(
+    private ExpressionResult[] stringForeachApplyElements(
         in string helper,
-        in Value source,
+        in ExpressionResult source,
     ) {
         import std.algorithm: canFind, reverse;
 
@@ -4395,7 +4395,7 @@ private struct Walker {
         throw new Exception("Unsupported eval call.");
     }
 
-    private Value[] decodedUtf8Dchars(in Value source) {
+    private ExpressionResult[] decodedUtf8Dchars(in ExpressionResult source) {
         import std.utf: decode;
 
         string encoded;
@@ -4403,15 +4403,15 @@ private struct Walker {
             encoded ~= cast(char) AggregateValue.elementAt(source, index)
                 .castTo!long.asLong;
 
-        Value[] values;
+        ExpressionResult[] values;
         size_t index;
         while (index < encoded.length)
-            values ~= Value(decode(encoded, index));
+            values ~= ExpressionResult(decode(encoded, index));
 
         return values;
     }
 
-    private Value[] decodedUtf16Dchars(in Value source) {
+    private ExpressionResult[] decodedUtf16Dchars(in ExpressionResult source) {
         import std.utf: decode;
 
         wstring encoded;
@@ -4419,18 +4419,18 @@ private struct Walker {
             encoded ~= cast(wchar) AggregateValue.elementAt(source, index)
                 .castTo!long.asLong;
 
-        Value[] values;
+        ExpressionResult[] values;
         size_t index;
         while (index < encoded.length)
-            values ~= Value(decode(encoded, index));
+            values ~= ExpressionResult(decode(encoded, index));
 
         return values;
     }
 
-    private Value[] utf8EncodedDstringChars(in Value source) {
+    private ExpressionResult[] utf8EncodedDstringChars(in ExpressionResult source) {
         import std.utf: encode;
 
-        Value[] values;
+        ExpressionResult[] values;
         foreach (index; 0 .. AggregateValue.length(source)) {
             char[4] encoded;
             const length = encode(
@@ -4439,7 +4439,7 @@ private struct Walker {
                     .castTo!long.asLong,
             );
             foreach (unit; encoded[0 .. length])
-                values ~= Value(unit);
+                values ~= ExpressionResult(unit);
         }
 
         return values;
@@ -4447,7 +4447,7 @@ private struct Walker {
 
     private FuncDeclaration resolveMemberFunction(
         FuncDeclaration function_,
-        in Value receiver,
+        in ExpressionResult receiver,
     ) {
         if (dynamicClass(receiver) is null)
             return function_;
@@ -4468,7 +4468,7 @@ private struct Walker {
         return function_;
     }
 
-    private imported!"dmd.dclass".ClassDeclaration dynamicClass(in Value value) {
+    private imported!"dmd.dclass".ClassDeclaration dynamicClass(in ExpressionResult value) {
         const address = classIdentityAddress(value);
         if (address !is null)
             if (auto type = address in nativeClassTypes) {
@@ -4484,7 +4484,7 @@ private struct Walker {
         return null;
     }
 
-    private bool classHasType(in Value value, in string name) {
+    private bool classHasType(in ExpressionResult value, in string name) {
         auto class_ = dynamicClass(value);
         if (class_ is null)
             return false;
@@ -4495,7 +4495,7 @@ private struct Walker {
         return false;
     }
 
-    private string dynamicClassName(in Value value) {
+    private string dynamicClassName(in ExpressionResult value) {
         auto class_ = dynamicClass(value);
         return class_ is null ? "" : classInfoName(class_);
     }
@@ -4579,7 +4579,7 @@ private struct Walker {
         return operators == ["+", "="];
     }
 
-    private Value runArrayOpAddAssignCall(
+    private ExpressionResult runArrayOpAddAssignCall(
         imported!"dmd.expression".CallExp call,
     ) {
         if (call.arguments is null || call.arguments.length != 3)
@@ -4594,7 +4594,7 @@ private struct Walker {
         if (AggregateValue.length(left) != AggregateValue.length(right))
             throw new Exception("Unsupported eval call.");
 
-        Value[] elements;
+        ExpressionResult[] elements;
         foreach (index; 0 .. AggregateValue.length(left))
             elements ~= AggregateValue.elementAt(left, index) +
                 AggregateValue.elementAt(right, index);
@@ -4602,9 +4602,9 @@ private struct Walker {
         return writeBackSliceElements(target, elements);
     }
 
-    private Value writeBackSliceElements(
+    private ExpressionResult writeBackSliceElements(
         imported!"dmd.expression".SliceExp slice,
-        Value[] elements,
+        ExpressionResult[] elements,
     ) {
         auto var = slice.e1.isVarExp;
         if (var is null)
@@ -4625,7 +4625,7 @@ private struct Walker {
         if (upper - lower != elements.length)
             throw new Exception("Unsupported eval call.");
 
-        Value[] updated;
+        ExpressionResult[] updated;
         foreach (index; 0 .. AggregateValue.length(current))
             updated ~= index >= lower && index < upper
                 ? elements[index - lower]
@@ -4639,7 +4639,7 @@ private struct Walker {
     // core.internal.atomic implements these with inline asm the interpreter
     // cannot execute. Interpretation is single-threaded, so plain reads and
     // writes of the pointed-at value are observably equivalent.
-    private Value runAtomicHookCall(
+    private ExpressionResult runAtomicHookCall(
         imported!"dmd.expression".CallExp call,
         in imported!"quickbite.backends.interpreter.builtins".AtomicHook hook,
     ) {
@@ -4651,7 +4651,7 @@ private struct Walker {
         auto destinationExpression = (*call.arguments)[0];
         const destination = runExpression(destinationExpression);
 
-        Value operand() {
+        ExpressionResult operand() {
             if (call.arguments.length < 2)
                 throw new Exception("Unsupported eval call.");
             return runExpression((*call.arguments)[1]);
@@ -4659,14 +4659,14 @@ private struct Walker {
 
         with (AtomicHook) final switch (hook) {
             case aligned:
-                return Value(true);
+                return ExpressionResult(true);
 
             case load:
                 return readPointerTarget(destinationExpression, destination);
 
             case store:
                 writePointerTarget(destinationExpression, destination, operand);
-                return Value.void_;
+                return ExpressionResult.void_;
 
             case exchange: {
                 const previous =
@@ -4687,7 +4687,7 @@ private struct Walker {
                     destination,
                     storageValue(
                         destinationExpression.type.toBasetype.nextOf,
-                        Value(previous.asLong + delta),
+                        ExpressionResult(previous.asLong + delta),
                     ),
                 );
                 return previous;
@@ -4695,9 +4695,9 @@ private struct Walker {
         }
     }
 
-    private Value readPointerTarget(
+    private ExpressionResult readPointerTarget(
         imported!"dmd.expression".Expression pointerExpression,
-        in Value pointer,
+        in ExpressionResult pointer,
     ) {
         return loadNativePointerElement(pointerExpression.type, pointer, 0);
     }
@@ -4705,7 +4705,7 @@ private struct Walker {
     // DMD lowers associative array operations to druntime template hooks in
     // `core.internal.newaa` and `object`; interpret the semantics directly
     // instead of executing the druntime hook bodies.
-    private Value runAssocArrayHookCall(
+    private ExpressionResult runAssocArrayHookCall(
         imported!"dmd.expression".CallExp call,
         in imported!"quickbite.backends.interpreter.builtins".AssocArrayHook hook,
     ) {
@@ -4717,7 +4717,7 @@ private struct Walker {
         with (AssocArrayHook) final switch (hook) {
             case length:
                 requireArgumentCount(call, 1);
-                return Value(assocArrayLength(assocArrayArgumentValue(
+                return ExpressionResult(assocArrayLength(assocArrayArgumentValue(
                     (*call.arguments)[0],
                 )));
 
@@ -4739,7 +4739,7 @@ private struct Walker {
 
             case equal:
                 requireArgumentCount(call, 2);
-                return Value(assocArrayEqual(
+                return ExpressionResult(assocArrayEqual(
                     assocArrayArgumentValue((*call.arguments)[0]),
                     assocArrayArgumentValue((*call.arguments)[1]),
                 ));
@@ -4776,7 +4776,7 @@ private struct Walker {
             throw new Exception("Unsupported eval call.");
     }
 
-    private Value runAssocArrayReadCall(
+    private ExpressionResult runAssocArrayReadCall(
         imported!"dmd.expression".CallExp call,
     ) {
         import quickbite.backends.interpreter.messages: missingKeyMessage;
@@ -4796,21 +4796,21 @@ private struct Walker {
                 (*call.arguments)[1],
                 (*call.arguments)[0],
             ));
-        return Value.pointerValue(valueAddress);
+        return ExpressionResult.pointerValue(valueAddress);
     }
 
     // `aa[key] = value` lowers to a write through the slot pointer returned
     // by `_d_aaGetY(aa, key, found)`; the write-back happens via the slot
     // alias recorded for the pointer variable
-    private Value runAssocArrayLvalueCall(
+    private ExpressionResult runAssocArrayLvalueCall(
         imported!"dmd.expression".CallExp call,
     ) {
         auto aaArgument = (*call.arguments)[0];
         auto aa = assocArrayArgumentValue(aaArgument);
-        if (aa == Value.null_) {
+        if (aa == ExpressionResult.null_) {
             import quickbite.backends.interpreter.native_assoc_array: allocateValue;
 
-            aa = Value.nativeAggregateValue(allocateValue(
+            aa = ExpressionResult.nativeAggregateValue(allocateValue(
                 aaArgument.type,
             ));
             auto variableExpression = aaArgument.isVarExp;
@@ -4828,24 +4828,24 @@ private struct Walker {
         auto valueAddress = header.getOrAdd(keySlot.address, found);
         if (auto foundVariable = (*call.arguments)[2].isVarExp)
             if (auto variable = foundVariable.var.isVarDeclaration)
-                setLocal(variable, Value(found));
-        return Value.pointerValue(valueAddress);
+                setLocal(variable, ExpressionResult(found));
+        return ExpressionResult.pointerValue(valueAddress);
     }
 
-    private Value runAssocArrayInCall(
+    private ExpressionResult runAssocArrayInCall(
         imported!"dmd.expression".CallExp call,
     ) {
         const aa = assocArrayArgumentValue((*call.arguments)[0]);
         const key = runExpression((*call.arguments)[1]);
 
         if (!isNativeAssocArray(aa))
-            return Value.null_;
+            return ExpressionResult.null_;
         auto keySlot = nativeAssocKeySlot(nativeAssocArray(aa), key);
         auto valueAddress = nativeAssocArray(aa).valueAddress(keySlot.address);
-        return valueAddress is null ? Value.null_ : Value.pointerValue(valueAddress);
+        return valueAddress is null ? ExpressionResult.null_ : ExpressionResult.pointerValue(valueAddress);
     }
 
-    private Value runAssocArrayRemoveCall(
+    private ExpressionResult runAssocArrayRemoveCall(
         imported!"dmd.expression".CallExp call,
     ) {
         auto var = (*call.arguments)[0].isVarExp;
@@ -4860,13 +4860,13 @@ private struct Walker {
 
         const key = runExpression((*call.arguments)[1]);
         if (!isNativeAssocArray(current))
-            return Value(false);
+            return ExpressionResult(false);
         auto header = nativeAssocArray(current);
         auto keySlot = nativeAssocKeySlot(header, key);
-        return Value(header.remove(keySlot.address));
+        return ExpressionResult(header.remove(keySlot.address));
     }
 
-    private Value runAssocArrayApply2Call(
+    private ExpressionResult runAssocArrayApply2Call(
         imported!"dmd.expression".CallExp call,
     ) {
         import quickbite.backends.interpreter.aggregate_value: AggregateValue;
@@ -4877,7 +4877,7 @@ private struct Walker {
         auto body = functionPointerExpressionFunction((*call.arguments)[1]);
         const delegate_ = body is null
             ? runExpression((*call.arguments)[1])
-            : Value.void_;
+            : ExpressionResult.void_;
 
         foreach (index; 0 .. AggregateValue.length(keys)) {
             const arguments = [
@@ -4891,16 +4891,16 @@ private struct Walker {
                 return result;
         }
 
-        return Value(0);
+        return ExpressionResult(0);
     }
 
     // `AggregateValue.elementAt`'s plain memory read sees a delegate-typed
-    // element's zeroed bytes, not its live callable Value -- `assocArrayValues`
+    // element's zeroed bytes, not its live callable ExpressionResult -- `assocArrayValues`
     // registers a live delegate entry out-of-band in `nativeDelegateSlots`,
     // keyed by the RESULT array's own element address, exactly the same gap
     // `loadNativePointerElement`'s identical `TY.Tdelegate` arm checks
     // before falling through to a plain read.
-    private Value nativeArrayElementAt(in Value array, in size_t index) {
+    private ExpressionResult nativeArrayElementAt(in ExpressionResult array, in size_t index) {
         import dmd.astenums: TY;
         import quickbite.backends.interpreter.aggregate_value: AggregateValue;
         import quickbite.backends.interpreter.place: Place;
@@ -4913,14 +4913,14 @@ private struct Walker {
         return readStoredValue(Place(aggregate.address, aggregate.type).index(index));
     }
 
-    private size_t assocArrayLength(in Value value) {
-        return value == Value.null_ ? 0 : nativeAssocArray(value).length;
+    private size_t assocArrayLength(in ExpressionResult value) {
+        return value == ExpressionResult.null_ ? 0 : nativeAssocArray(value).length;
     }
 
     // Druntime AA hooks receive the address of the guest AA handle. A native
     // pointer therefore denotes the handle slot, not the associative-array
     // value itself; recover the typed slot before interpreting the argument.
-    private Value assocArrayArgumentValue(
+    private ExpressionResult assocArrayArgumentValue(
         imported!"dmd.expression".Expression expression,
     ) {
         import quickbite.backends.interpreter.place: Place;
@@ -4939,8 +4939,8 @@ private struct Walker {
         ));
     }
 
-    private Value duplicateAssocArray(in Value value) {
-        if (value == Value.null_)
+    private ExpressionResult duplicateAssocArray(in ExpressionResult value) {
+        if (value == ExpressionResult.null_)
             return value;
 
         import quickbite.backends.interpreter.aggregate_value: AggregateValue;
@@ -4948,8 +4948,8 @@ private struct Walker {
         import quickbite.backends.interpreter.place_value: readValue;
 
         auto source = nativeAssocArray(value);
-        Value[] keys;
-        Value[] values;
+        ExpressionResult[] keys;
+        ExpressionResult[] values;
         foreach (index; 0 .. source.length) {
             keys ~= readValue(Place(source.keyAt(index).address, source.keyType));
             values ~= readValue(Place(source.valueAt(index).address, source.valueType));
@@ -4961,18 +4961,18 @@ private struct Walker {
         );
     }
 
-    private bool assocArrayEqual(in Value left, in Value right) {
-        if (left == Value.null_ || right == Value.null_)
+    private bool assocArrayEqual(in ExpressionResult left, in ExpressionResult right) {
+        if (left == ExpressionResult.null_ || right == ExpressionResult.null_)
             return assocArrayLength(left) == 0 && assocArrayLength(right) == 0;
 
         return equalAssocArrayValues(left, right);
     }
 
-    private Value assocArrayKeys(in Value value, imported!"dmd.mtype".Type resultType) {
+    private ExpressionResult assocArrayKeys(in ExpressionResult value, imported!"dmd.mtype".Type resultType) {
         import quickbite.backends.interpreter.aggregate_value: AggregateValue;
 
-        if (value == Value.null_) {
-            Value[] keys;
+        if (value == ExpressionResult.null_) {
+            ExpressionResult[] keys;
             return reconstructStoredArray(resultType, keys);
         }
         import dmd.mtype: TypeDArray;
@@ -4980,7 +4980,7 @@ private struct Walker {
         import quickbite.backends.interpreter.place_value: readValue;
 
         auto header = nativeAssocArray(value);
-        Value[] keys;
+        ExpressionResult[] keys;
         foreach (index; 0 .. header.length)
             keys ~= readValue(Place(header.keyAt(index).address, header.keyType));
         return reconstructStoredArray(
@@ -4993,40 +4993,40 @@ private struct Walker {
     // gap `nativeDelegateSlots`'s own field comment documents, and the
     // reason `loadNativePointerElement`'s identical `TY.Tdelegate` arm
     // checks this table before falling through to a plain memory read): the
-    // entry's live callable Value lives out-of-band, keyed by the value
+    // entry's live callable ExpressionResult lives out-of-band, keyed by the value
     // slot's own address, exactly as `runAssocArrayLvalueCall`'s
     // pointer-index write path (`storeNativePointerElement`) already
     // registers it. `AggregateValue.reconstructArray`'s `writeValue` call
-    // below only ever accepts `Value.null_` for a Tdelegate element (an
+    // below only ever accepts `ExpressionResult.null_` for a Tdelegate element (an
     // interpreted delegate is not native-composable bytes), so every live
-    // entry is substituted with `Value.null_` for the reconstruction and
+    // entry is substituted with `ExpressionResult.null_` for the reconstruction and
     // then re-registered at the RESULT array's own element address --
     // mirroring `structLiteralValue`'s identical substitute-then-register
     // handling of a live delegate struct-literal field.
-    private Value assocArrayValues(in Value value, imported!"dmd.mtype".Type resultType) {
+    private ExpressionResult assocArrayValues(in ExpressionResult value, imported!"dmd.mtype".Type resultType) {
         import dmd.astenums: TY;
         import dmd.mtype: TypeDArray;
         import quickbite.backends.interpreter.aggregate_value: AggregateValue;
         import quickbite.backends.interpreter.place: Place;
         import quickbite.backends.interpreter.place_value: readValue;
 
-        if (value == Value.null_) {
-            Value[] values;
+        if (value == ExpressionResult.null_) {
+            ExpressionResult[] values;
             return reconstructStoredArray(resultType, values);
         }
 
         auto header = nativeAssocArray(value);
         const isDelegateValue = header.valueType.toBasetype.ty == TY.Tdelegate;
-        Value[] values;
+        ExpressionResult[] values;
         size_t[] liveDelegateIndices;
-        Value[] liveDelegateValues;
+        ExpressionResult[] liveDelegateValues;
         foreach (index; 0 .. header.length) {
             auto address = header.valueAt(index).address;
             if (isDelegateValue)
                 if (auto delegate_ = address in nativeDelegateSlots) {
                     liveDelegateIndices ~= index;
                     liveDelegateValues ~= *delegate_;
-                    values ~= Value.null_;
+                    values ~= ExpressionResult.null_;
                     continue;
                 }
             values ~= readValue(Place(address, header.valueType));
@@ -5041,7 +5041,7 @@ private struct Walker {
         return result;
     }
 
-    private bool isNativeAssocArray(in Value value) {
+    private bool isNativeAssocArray(in ExpressionResult value) {
         import quickbite.backends.interpreter.aggregate_value: AggregateValue;
 
         return value.isNativeAggregate &&
@@ -5049,7 +5049,7 @@ private struct Walker {
     }
 
     private imported!"quickbite.backends.interpreter.native_assoc_array".NativeAssocArray* nativeAssocArray(
-        in Value value,
+        in ExpressionResult value,
     ) {
         import quickbite.backends.interpreter.aggregate_value: AggregateValue;
         import quickbite.backends.interpreter.native_assoc_array: headerAt;
@@ -5059,7 +5059,7 @@ private struct Walker {
 
     private imported!"quickbite.backends.interpreter.native_block".NativeBlock nativeAssocKeySlot(
         imported!"quickbite.backends.interpreter.native_assoc_array".NativeAssocArray* header,
-        in Value key,
+        in ExpressionResult key,
     ) {
         import quickbite.backends.interpreter.layout: typeByteSize, typeHasPointers;
         import quickbite.backends.interpreter.native_block: NativeBlock;
@@ -5074,9 +5074,9 @@ private struct Walker {
         return slot;
     }
 
-    private Value runFunction(
+    private ExpressionResult runFunction(
         imported!"dmd.func".FuncDeclaration function_,
-        in Value[] arguments,
+        in ExpressionResult[] arguments,
         imported!"dmd.expression".Expression[] argumentExpressions,
         in bool captureLocals = false,
         in EvaluatedReferenceArgument[] evaluatedArguments = null,
@@ -5087,7 +5087,7 @@ private struct Walker {
         child.currentFunction = function_;
         auto layout = cachedFrameLayout(function_);
         child._activationFrame = FrameBlock.allocate(layout);
-        child.result = Value(false);
+        child.result = ExpressionResult(false);
         bindCapturedReferenceSlots(function_, child, closureAddresses);
         forkExecutionStateInto(child);
         child.bindFunctionParameters(
@@ -5120,9 +5120,9 @@ private struct Walker {
         return child.result;
     }
 
-    private Value nativeMemberReceiver(
+    private ExpressionResult nativeMemberReceiver(
         FuncDeclaration function_,
-        in Value receiver,
+        in ExpressionResult receiver,
     ) {
         import quickbite.backends.interpreter.aggregate_value: AggregateValue;
 
@@ -5133,7 +5133,7 @@ private struct Walker {
         if (vthis is null || !AggregateValue.isStruct(receiver))
             return receiver;
 
-        Value[] fields;
+        ExpressionResult[] fields;
         foreach (index; 0 .. AggregateValue.fieldCount(receiver))
             fields ~= AggregateValue.fieldAt(receiver, index);
         return AggregateValue.reconstructStruct(vthis.type, fields);
@@ -5145,7 +5145,7 @@ private struct Walker {
     // parameter binding (which may clear a stale entry for that declaration).
     private void bindThisReferenceAddress(
         FuncDeclaration function_,
-        in Value receiver,
+        in ExpressionResult receiver,
     ) {
         import quickbite.backends.interpreter.aggregate_value: AggregateValue;
 
@@ -5165,11 +5165,11 @@ private struct Walker {
             _activationFrame.setReferenceSlot(vthis, thisAddress);
     }
 
-    private Value runMemberFunction(
+    private ExpressionResult runMemberFunction(
         imported!"dmd.func".FuncDeclaration function_,
         imported!"dmd.expression".Expression receiverExpression,
-        in Value receiver,
-        in Value[] arguments,
+        in ExpressionResult receiver,
+        in ExpressionResult[] arguments,
         imported!"dmd.expression".Expression[] argumentExpressions,
         in EvaluatedReferenceArgument[] evaluatedArguments = null,
         // Set by a caller that already evaluated a `PtrExp` or `IndexExp`
@@ -5179,7 +5179,7 @@ private struct Walker {
         // re-deriving it from `receiverExpression` -- keeps a side-effecting
         // operand (e.g. `p()` in `p().get()`, or `i++` in `a[i++].method()`)
         // evaluated exactly once.
-        const(Value)* precomputedReceiverPointerAddress = null,
+        const(ExpressionResult)* precomputedReceiverPointerAddress = null,
     ) {
         const memberReceiver = nativeMemberReceiver(function_, receiver);
 
@@ -5202,7 +5202,7 @@ private struct Walker {
         child.currentFunction = function_;
         auto layout = cachedFrameLayout(function_);
         child._activationFrame = FrameBlock.allocate(layout);
-        child.result = Value(false);
+        child.result = ExpressionResult(false);
         bindCapturedReferenceSlots(function_, child);
         forkExecutionStateInto(child);
         // For constructor calls, DMD may blit the target variable to zero
@@ -5267,12 +5267,12 @@ private struct Walker {
             if (placeExpression is null)
                 placeExpression = receiverExpression;
 
-            Value address;
+            ExpressionResult address;
             if (
                 placeExpression.isThisExp !is null &&
                 thisAddress !is null
             ) {
-                address = Value.pointerValue(thisAddress);
+                address = ExpressionResult.pointerValue(thisAddress);
             } else if (
                 placeExpression.isDotVarExp !is null &&
                 placeExpression.isDotVarExp.e1.isThisExp !is null &&
@@ -5280,7 +5280,7 @@ private struct Walker {
             ) {
                 import quickbite.backends.interpreter.place: Place;
 
-                address = Value.pointerValue(Place(
+                address = ExpressionResult.pointerValue(Place(
                     thisAddress,
                     placeExpression.isDotVarExp.e1.type,
                 ).field(placeExpression.isDotVarExp.var.isVarDeclaration).address);
@@ -5305,7 +5305,7 @@ private struct Walker {
                 auto receiverType = child.thisValue.isNativeAggregate
                     ? AggregateValue.native(child.thisValue).type
                     : function_.vthis.type;
-                child.thisValue = Value.nativeAggregateValue(NativeAggregate(
+                child.thisValue = ExpressionResult.nativeAggregateValue(NativeAggregate(
                     receiverType,
                     NativeBlock.borrow(
                         address.pointerAddress,
@@ -5345,7 +5345,7 @@ private struct Walker {
         imported!"dmd.func".FuncDeclaration function_,
         imported!"dmd.expression".Expression[] argumentExpressions,
         ref Walker child,
-        in Value[] arguments,
+        in ExpressionResult[] arguments,
         in bool captureLocals = false,
     ) {
         mergeNativeThrowableRoots(child);
@@ -5368,7 +5368,7 @@ private struct Walker {
         imported!"dmd.expression".Expression receiverExpression,
         imported!"dmd.expression".Expression[] argumentExpressions,
         ref Walker child,
-        in Value[] arguments,
+        in ExpressionResult[] arguments,
     ) {
         mergeNativeThrowableRoots(child);
         nextFunctionPointerId = child.nextFunctionPointerId;
@@ -5391,14 +5391,14 @@ private struct Walker {
             nativeThrowableRoots[pointer] = throwable;
     }
 
-    private Value structValueFromCell(in Value current, ref NativeStruct cell) {
+    private ExpressionResult structValueFromCell(in ExpressionResult current, ref NativeStruct cell) {
         import quickbite.backends.interpreter.aggregate_value: AggregateValue;
         import quickbite.backends.interpreter.native_scalar:
             isNativeScalarType, readScalar;
         import quickbite.frontend.dmd.types:
             isDynamicArrayType, isStaticArrayType;
 
-        Value value = current;
+        ExpressionResult value = current;
         foreach (index; 0 .. cell.fieldCount) {
             auto fieldType = cell.fieldDeclaration(index).type;
 
@@ -5423,7 +5423,7 @@ private struct Walker {
 
                 auto arrayCell = cell.arrayField(index);
                 foreach (elementIndex; 0 .. AggregateValue.elementCount(fieldValue)) {
-                    Value elementValue;
+                    ExpressionResult elementValue;
                     if (structType !is null) {
                         auto elementCell = arrayCell.structElement(elementIndex);
                         elementValue = structValueFromCell(
@@ -5547,7 +5547,7 @@ private struct Walker {
 
     private void bindFunctionParameters(
         imported!"dmd.func".FuncDeclaration function_,
-        in Value[] arguments,
+        in ExpressionResult[] arguments,
         imported!"dmd.expression".Expression[] argumentExpressions = null,
         FrameBlock callerFrame = FrameBlock.init,
         in EvaluatedReferenceArgument[] evaluatedArguments = null,
@@ -5619,7 +5619,7 @@ private struct Walker {
     // calls with real source expressions take the direct caller-place path.
     private void bindSyntheticReferenceSlot(
         VarDeclaration parameter,
-        in Value value,
+        in ExpressionResult value,
     ) {
         import quickbite.backends.interpreter.layout:
             typeByteSize, typeHasPointers;
@@ -5811,7 +5811,7 @@ private struct Walker {
         lazyArgumentFrames[parameter] = callerFrame;
     }
 
-    private Value runLazyArgument(VarDeclaration variable) {
+    private ExpressionResult runLazyArgument(VarDeclaration variable) {
         auto expression = variable in lazyArgumentExpressions;
         if (expression is null)
             throw new Exception("Unsupported eval call.");
@@ -5828,7 +5828,7 @@ private struct Walker {
         return runLazyArgumentExpression(*expression);
     }
 
-    private Value runLazyArgumentExpression(Expression expression) {
+    private ExpressionResult runLazyArgumentExpression(Expression expression) {
         if (auto function_ = functionPointerExpressionFunction(expression))
             return runFunction(function_, [], [], true);
 
@@ -5862,18 +5862,18 @@ private struct Walker {
         return (parameter.storage_class & STC.lazy_) != STC.none;
     }
 
-    private Value runEqualExpression(imported!"dmd.expression".EqualExp equal) {
+    private ExpressionResult runEqualExpression(imported!"dmd.expression".EqualExp equal) {
         import dmd.tokens: EXP;
 
         const left = runExpression(equal.e1);
         const right = runExpression(equal.e2);
         const same = equalValues(left, right);
         if (equal.op == EXP.notEqual)
-            return Value(!same);
-        return Value(same);
+            return ExpressionResult(!same);
+        return ExpressionResult(same);
     }
 
-    private bool equalValues(in Value left, in Value right) {
+    private bool equalValues(in ExpressionResult left, in ExpressionResult right) {
         // A character compares with a numeric scalar by code point, as D's
         // integral promotions do: bytes read from native memory keep their
         // integer kind through `cast(string)`, e.g. in std.file.readText.
@@ -5896,8 +5896,8 @@ private struct Walker {
         const leftIsAssocArray = AggregateValue.isAssocArray(left);
         const rightIsAssocArray = AggregateValue.isAssocArray(right);
         if (
-            (leftIsAssocArray && (rightIsAssocArray || right == Value.null_)) ||
-            (rightIsAssocArray && left == Value.null_)
+            (leftIsAssocArray && (rightIsAssocArray || right == ExpressionResult.null_)) ||
+            (rightIsAssocArray && left == ExpressionResult.null_)
         )
             return equalAssocArrayValues(left, right);
 
@@ -5911,7 +5911,7 @@ private struct Walker {
     // context}` pair (D's builtin delegate equality) -- not by the internal
     // `functionPointerId` this walker mints fresh for every delegate
     // EXPRESSION evaluation. `&s1.get` evaluated twice yields two different
-    // ids for the identical function+receiver, so the raw `Value == Value`
+    // ids for the identical function+receiver, so the raw `ExpressionResult == ExpressionResult`
     // fallback (still correct for two Values that are literal copies of the
     // same id, e.g. plain assignment) answers unequal for the exact case D
     // requires equal. `contextPointer` already carries the receiver's own
@@ -5921,7 +5921,7 @@ private struct Walker {
     // sufficient for a NON-capturing delegate (bound method or plain
     // function pointer) -- no separate receiver-identity tracking is
     // needed there. A CAPTURING closure literal is different: every
-    // literal-created delegate shares the same `contextPointer` (`Value.
+    // literal-created delegate shares the same `contextPointer` (`ExpressionResult.
     // pointerValue(null)`, set in `runFunctionLiteralDeclaration`), so two
     // closures of the identical lambda over two different activations
     // (`make(1)` and `make(2)` each returning `() => y`) would otherwise
@@ -5935,7 +5935,7 @@ private struct Walker {
     // comparison unchanged. A `functionPointerId` with no registered
     // runtime (a plain function pointer, never registered in `delegates`)
     // falls back to the raw comparison unchanged.
-    private bool equalDelegateValues(in Value left, in Value right) {
+    private bool equalDelegateValues(in ExpressionResult left, in ExpressionResult right) {
         if (!left.isFunctionPointer || !right.isFunctionPointer)
             return left == right;
 
@@ -5965,7 +5965,7 @@ private struct Walker {
         return true;
     }
 
-    private bool equalArrayValues(in Value left, in Value right) {
+    private bool equalArrayValues(in ExpressionResult left, in ExpressionResult right) {
         if (AggregateValue.length(left) != AggregateValue.length(right))
             return false;
 
@@ -5979,7 +5979,7 @@ private struct Walker {
         return true;
     }
 
-    private Value arrayElementForEquality(in Value value, in size_t index) {
+    private ExpressionResult arrayElementForEquality(in ExpressionResult value, in size_t index) {
         import quickbite.backends.interpreter.place: Place;
 
         if (!value.isNativeAggregate)
@@ -5993,14 +5993,14 @@ private struct Walker {
 
     // A struct field written by anything other than an enum-typed literal
     // `IntegerExp` (default-init, arithmetic, a cast/pointer write-back, ...)
-    // keeps its plain scalar `Value` kind instead of `runExpression`'s
-    // `Value.enumValue` tagging, so a raw `Value == Value` compare (the
+    // keeps its plain scalar `ExpressionResult` kind instead of `runExpression`'s
+    // `ExpressionResult.enumValue` tagging, so a raw `ExpressionResult == ExpressionResult` compare (the
     // `left == right` fallback above) never considers it equal to a
     // same-valued `EnumValue`-tagged field, even though real D's memberwise
     // struct equality does. Recurse field-by-field through `equalValues`
     // (mirroring `equalArrayValues`) so each field gets the same
     // numeric-scalar coercion a top-level `==` already applies.
-    private bool equalStructValues(in Value left, in Value right) {
+    private bool equalStructValues(in ExpressionResult left, in ExpressionResult right) {
         const count = AggregateValue.fieldCount(left);
         if (count != AggregateValue.fieldCount(right))
             return false;
@@ -6015,7 +6015,7 @@ private struct Walker {
         return true;
     }
 
-    private Value structFieldForEquality(in Value value, in size_t index) {
+    private ExpressionResult structFieldForEquality(in ExpressionResult value, in size_t index) {
         import quickbite.backends.interpreter.layout: structFields;
         import quickbite.backends.interpreter.place: Place;
 
@@ -6029,15 +6029,15 @@ private struct Walker {
         );
     }
 
-    private bool equalAssocArrayValues(in Value left, in Value right) {
+    private bool equalAssocArrayValues(in ExpressionResult left, in ExpressionResult right) {
         import quickbite.backends.interpreter.native_assoc_array: headerAt;
         import quickbite.backends.interpreter.place: Place;
         import quickbite.backends.interpreter.place_value: readValue;
 
-        auto leftHeader = left == Value.null_
+        auto leftHeader = left == ExpressionResult.null_
             ? null
             : headerAt(AggregateValue.native(left).address);
-        auto rightHeader = right == Value.null_
+        auto rightHeader = right == ExpressionResult.null_
             ? null
             : headerAt(AggregateValue.native(right).address);
         const leftLength = leftHeader is null ? 0 : leftHeader.length;
@@ -6084,7 +6084,7 @@ private struct Walker {
         }
     }
 
-    private Value runCompoundAssignExpression(
+    private ExpressionResult runCompoundAssignExpression(
         imported!"dmd.expression".BinExp assign,
     ) {
         const left = runExpression(assign.e1);
@@ -6094,10 +6094,10 @@ private struct Walker {
         return runExpression(assign.e1);
     }
 
-    private Value compoundAssignedValue(
+    private ExpressionResult compoundAssignedValue(
         imported!"dmd.expression".BinExp assignment,
-        in Value left,
-        in Value right,
+        in ExpressionResult left,
+        in ExpressionResult right,
     ) {
         import dmd.tokens: EXP;
 
@@ -6146,7 +6146,7 @@ private struct Walker {
         }
     }
 
-    private Value runPowExpression(imported!"dmd.expression".PowExp pow) {
+    private ExpressionResult runPowExpression(imported!"dmd.expression".PowExp pow) {
         import quickbite.backends.interpreter.runtime_casts:
             backendCastTarget = castTarget,
             backendCastValue = castValue;
@@ -6156,8 +6156,8 @@ private struct Walker {
         if (exponent < 0)
             throw new Exception("Unsupported negative integer exponent.");
 
-        Value result = backendCastValue(Value(1), backendCastTarget(pow.type));
-        Value factor = backendCastValue(base, backendCastTarget(pow.type));
+        ExpressionResult result = backendCastValue(ExpressionResult(1), backendCastTarget(pow.type));
+        ExpressionResult factor = backendCastValue(base, backendCastTarget(pow.type));
         while (exponent != 0) {
             if ((exponent & 1) != 0)
                 result = result * factor;
@@ -6169,7 +6169,7 @@ private struct Walker {
         return backendCastValue(result, backendCastTarget(pow.type));
     }
 
-    private Value runIntegerComplementExpression(
+    private ExpressionResult runIntegerComplementExpression(
         imported!"dmd.expression".ComExp complement,
     ) {
         import quickbite.backends.interpreter.runtime_casts:
@@ -6177,12 +6177,12 @@ private struct Walker {
             backendCastValue = castValue;
 
         return backendCastValue(
-            Value(~runExpression(complement.e1).asLong),
+            ExpressionResult(~runExpression(complement.e1).asLong),
             backendCastTarget(complement.type),
         );
     }
 
-    private Value runIntegerBinaryExpression(
+    private ExpressionResult runIntegerBinaryExpression(
         imported!"dmd.expression".BinExp expression,
         in string operator,
     ) {
@@ -6194,10 +6194,10 @@ private struct Walker {
         );
     }
 
-    private Value runIntegerBinaryValue(
+    private ExpressionResult runIntegerBinaryValue(
         imported!"dmd.expression".BinExp expression,
-        in Value leftValue,
-        in Value rightValue,
+        in ExpressionResult leftValue,
+        in ExpressionResult rightValue,
         in string operator,
     ) {
         import quickbite.backends.interpreter.runtime_casts:
@@ -6218,7 +6218,7 @@ private struct Walker {
 
             case ">>>":
                 return backendCastValue(
-                    Value(unsignedShiftRight(leftValue, expression.e1.type, right)),
+                    ExpressionResult(unsignedShiftRight(leftValue, expression.e1.type, right)),
                     backendCastTarget(expression.type),
                 );
 
@@ -6238,11 +6238,11 @@ private struct Walker {
                 assert(0, "unsupported integer binary operator");
         }
 
-        return backendCastValue(Value(result), backendCastTarget(expression.type));
+        return backendCastValue(ExpressionResult(result), backendCastTarget(expression.type));
     }
 
     private ulong unsignedShiftRight(
-        in Value value,
+        in ExpressionResult value,
         imported!"dmd.mtype".Type type,
         in long shift,
     ) {
@@ -6277,7 +6277,7 @@ private struct Walker {
         }
     }
 
-    private Value runDotVarExpression(imported!"dmd.expression".DotVarExp dot) {
+    private ExpressionResult runDotVarExpression(imported!"dmd.expression".DotVarExp dot) {
         import quickbite.backends.interpreter.messages: receiverName;
         import std.conv: text;
 
@@ -6365,7 +6365,7 @@ private struct Walker {
                 return runClassInfoNameOwnerExpression(dot.e1, dot.type);
 
         const receiver = runExpression(dot.e1);
-        if (receiver == Value.null_)
+        if (receiver == ExpressionResult.null_)
             throw new Exception(text(
                 "class `",
                 receiverName(dot.e1),
@@ -6385,11 +6385,11 @@ private struct Walker {
             (AggregateValue.isArray(receiver) || isNativeAssocArray(receiver)) &&
             declarationName(dot.var) == "length"
         )
-            return Value(AggregateValue.length(receiver));
+            return ExpressionResult(AggregateValue.length(receiver));
 
         if (dot.var.isVarDeclaration !is null) {
             const target = receiver.isNativeAggregate && dot.e1.type.toBasetype.isTypeClass !is null
-                ? Value.pointerValue(AggregateValue.nativeClassBodyAddress(receiver))
+                ? ExpressionResult.pointerValue(AggregateValue.nativeClassBodyAddress(receiver))
                 : receiver;
             if (target.isPointer && dot.e1.type.toBasetype.isTypeClass !is null) {
                 import dmd.astenums: TY;
@@ -6412,10 +6412,10 @@ private struct Walker {
                         return *typeInfo;
                     auto address = fieldPlace.deref.address;
                     if (address is null)
-                        return Value.null_;
+                        return ExpressionResult.null_;
                     if (auto object = address in nativeClassOwners)
                         return *object;
-                    return Value.pointerValue(address);
+                    return ExpressionResult.pointerValue(address);
                 }
                 // A live delegate value has no native ABI function address
                 // (the same gap `nativeDelegateSlots`'s own field comment
@@ -6477,19 +6477,19 @@ private struct Walker {
         return NativeArray.borrow(arrayType.next, header.ptr, header.length);
     }
 
-    private Value runClassInfoExpression(
+    private ExpressionResult runClassInfoExpression(
         imported!"dmd.expression".DotVarExp classInfo,
     ) {
         if (classInfo.e1.isTypeExp is null) {
             const receiver = runExpression(classInfo.e1);
             if (dynamicClass(receiver) !is null)
-                return Value.typeName(dynamicClassName(receiver));
+                return ExpressionResult.typeName(dynamicClassName(receiver));
         }
 
-        return Value.typeName(typeInfoName(classInfo.e1.type));
+        return ExpressionResult.typeName(typeInfoName(classInfo.e1.type));
     }
 
-    private Value runClassInfoNameOwnerExpression(
+    private ExpressionResult runClassInfoNameOwnerExpression(
         imported!"dmd.expression".Expression ownerExpression,
         imported!"dmd.mtype".Type resultType,
     ) {
@@ -6517,7 +6517,7 @@ private struct Walker {
         return expression;
     }
 
-    private Value runDotIdentifierExpression(
+    private ExpressionResult runDotIdentifierExpression(
         imported!"dmd.expression".DotIdExp dot,
     ) {
         const receiver = runExpression(dot.e1);
@@ -6530,7 +6530,7 @@ private struct Walker {
         throw new Exception("Unsupported interpreter property read.");
     }
 
-    private Value delegateProperty(in Value receiver, in string name) {
+    private ExpressionResult delegateProperty(in ExpressionResult receiver, in string name) {
         auto runtime = receiver.functionPointerId in delegates;
         if (runtime is null)
             throw new Exception("Unsupported interpreter field read.");
@@ -6539,12 +6539,12 @@ private struct Walker {
             return runtime.contextPointer;
 
         if (name == "funcptr")
-            return Value.functionPointerValue(runtime.functionPointerId);
+            return ExpressionResult.functionPointerValue(runtime.functionPointerId);
 
         throw new Exception("Unsupported interpreter field read.");
     }
 
-    private Value runTypeidExpression(
+    private ExpressionResult runTypeidExpression(
         imported!"dmd.expression".TypeidExp typeid_,
     ) {
         import dmd.dtemplate: isExpression;
@@ -6564,8 +6564,8 @@ private struct Walker {
         auto value = runExpression(expression);
         if (isClassExpression(expression))
             value = rootedNativeClassValue(expression, value);
-        if (value == Value.null_ || (isClassExpression(expression) &&
-            value == Value(false)))
+        if (value == ExpressionResult.null_ || (isClassExpression(expression) &&
+            value == ExpressionResult(false)))
             throw new Exception(text(
                 "null pointer dereference evaluating typeid. `",
                 receiverName(expression),
@@ -6578,7 +6578,7 @@ private struct Walker {
         return typeidValue(typeid_, typeInfoName(expression.type));
     }
 
-    private Value typeidValue(
+    private ExpressionResult typeidValue(
         imported!"dmd.expression".TypeidExp typeid_,
         in string name,
     ) {
@@ -6586,10 +6586,10 @@ private struct Walker {
 
         return isCharacterArrayType(typeid_.type)
             ? characterArrayValue(typeid_.type, name)
-            : Value.typeName(name);
+            : ExpressionResult.typeName(name);
     }
 
-    private Value runVectorExpression(
+    private ExpressionResult runVectorExpression(
         imported!"dmd.expression".VectorExp vector,
     ) {
         import quickbite.backends.interpreter.aggregate_value: AggregateValue;
@@ -6603,20 +6603,20 @@ private struct Walker {
         const value = runExpression(vector.e1);
         const length = staticArrayLength(staticArray);
 
-        Value[] elements;
+        ExpressionResult[] elements;
         foreach (_; 0 .. length)
             elements ~= value;
 
         const array = reconstructStoredArray(vector.to.basetype, elements);
         auto native = AggregateValue.native(array);
-        return Value.nativeAggregateValue(NativeAggregate(
+        return ExpressionResult.nativeAggregateValue(NativeAggregate(
             vector.type,
             native.storage,
             native.retained,
         ));
     }
 
-    private Value runVectorArrayExpression(
+    private ExpressionResult runVectorArrayExpression(
         imported!"dmd.expression".VectorArrayExp vectorArray,
     ) {
         import quickbite.backends.interpreter.aggregate_value: AggregateValue;
@@ -6624,14 +6624,14 @@ private struct Walker {
 
         const vector = runExpression(vectorArray.e1);
         auto native = AggregateValue.native(vector);
-        return Value.nativeAggregateValue(NativeAggregate(
+        return ExpressionResult.nativeAggregateValue(NativeAggregate(
             vectorArray.type,
             native.storage,
             native.retained,
         ));
     }
 
-    private Value runAssignExpression(imported!"dmd.expression".BinExp assign) {
+    private ExpressionResult runAssignExpression(imported!"dmd.expression".BinExp assign) {
         if (auto index = assign.e1.isIndexExp)
             return runIndexAssignExpression(index, assign.e2);
 
@@ -6650,7 +6650,7 @@ private struct Walker {
         // initializer is a bare top-level assignment, not wrapped in a
         // `DeclarationExp`, so it never reached that check and instead fell
         // through to `runExpression(assign.e2)` below, which evaluated the
-        // `IntegerExp` as a scalar `Value(0)` and tried to clobber the
+        // `IntegerExp` as a scalar `ExpressionResult(0)` and tried to clobber the
         // parameter's native struct value with a bare int.
         //
         // The identical synthesized zero-init blit precedes a whole-struct
@@ -6702,7 +6702,7 @@ private struct Walker {
 
     private void writeLocation(
         imported!"dmd.expression".Expression target,
-        in Value value,
+        in ExpressionResult value,
         in bool arrayRefWriteback = false,
     ) {
         if (auto cast_ = target.isCastExp) {
@@ -6779,7 +6779,7 @@ private struct Walker {
                         if (hasBindingPlace(variable)) {
                             auto fieldPlace = bindingPlace(variable).field(field);
                             nativeDelegateSlots[fieldPlace.address] = value;
-                            writeValue(fieldPlace, Value.null_);
+                            writeValue(fieldPlace, ExpressionResult.null_);
                             return;
                         }
                 }
@@ -6804,8 +6804,8 @@ private struct Walker {
             const nativeClassReceiver = receiver.isPointer
                 ? receiver
                 : receiver.isNativeAggregate && dot.e1.type.toBasetype.isTypeClass !is null
-                ? Value.pointerValue(AggregateValue.nativeClassBodyAddress(receiver))
-                : Value.null_;
+                ? ExpressionResult.pointerValue(AggregateValue.nativeClassBodyAddress(receiver))
+                : ExpressionResult.null_;
             if (
                 nativeClassReceiver.isPointer &&
                 dot.e1.type.toBasetype.isTypeClass !is null
@@ -6834,7 +6834,7 @@ private struct Walker {
                 // binding requires.
                 if (field !is null && field.type.toBasetype.ty == TY.Tdelegate) {
                     nativeDelegateSlots[fieldPlace.address] = value;
-                    writeValue(fieldPlace, Value.null_);
+                    writeValue(fieldPlace, ExpressionResult.null_);
                     return;
                 }
                 writeStoredValue(fieldPlace, value);
@@ -6921,7 +6921,7 @@ private struct Walker {
     // of `addressOfRefReturn`).
     private bool writeRefReturningCallLocation(
         imported!"dmd.expression".CallExp call,
-        in Value value,
+        in ExpressionResult value,
     ) {
         import dmd.funcsem: functionSemantic3;
         import quickbite.backends.interpreter.frame_layout:
@@ -6936,7 +6936,7 @@ private struct Walker {
             return writeFreeRefReturningCallLocation(call, value);
 
         const receiver = runExpression(dot.e1);
-        if (receiver == Value.null_)
+        if (receiver == ExpressionResult.null_)
             throw new Exception("function call through null class reference `null`");
 
         auto function_ = resolveMemberFunction(call.f, receiver);
@@ -6944,7 +6944,7 @@ private struct Walker {
         if (hasNoAvailableSource(function_))
             return false;
 
-        Value[] arguments;
+        ExpressionResult[] arguments;
         imported!"dmd.expression".Expression[] argumentExpressions;
         EvaluatedReferenceArgument[] evaluatedArguments;
         if (call.arguments !is null)
@@ -6969,7 +6969,7 @@ private struct Walker {
         child._activationFrame = FrameBlock.allocate(layout);
         child.assignToRefReturn = true;
         child.refReturnAssignedValue = value;
-        child.result = Value(false);
+        child.result = ExpressionResult(false);
         bindCapturedReferenceSlots(function_, child);
         forkExecutionStateInto(child);
         child.thisValue = receiver;
@@ -7003,7 +7003,7 @@ private struct Walker {
                     import quickbite.backends.interpreter.native_block:
                         NativeBlock;
 
-                    child.thisValue = Value.nativeAggregateValue(NativeAggregate(
+                    child.thisValue = ExpressionResult.nativeAggregateValue(NativeAggregate(
                         function_.vthis.type,
                         NativeBlock.borrow(
                             receiverAddress.pointerAddress,
@@ -7038,7 +7038,7 @@ private struct Walker {
 
     private bool writeFreeRefReturningCallLocation(
         imported!"dmd.expression".CallExp call,
-        in Value value,
+        in ExpressionResult value,
     ) {
         import dmd.funcsem: functionSemantic3;
         import quickbite.backends.interpreter.frame_layout:
@@ -7049,7 +7049,7 @@ private struct Walker {
         if (call.f.needThis)
             return false;
 
-        Value[] arguments;
+        ExpressionResult[] arguments;
         imported!"dmd.expression".Expression[] argumentExpressions;
         EvaluatedReferenceArgument[] evaluatedArguments;
         if (call.arguments !is null)
@@ -7076,7 +7076,7 @@ private struct Walker {
                 NativeCallResult nativeResult;
                 if (!invokeNativeDeclaration(
                     call.f,
-                    Value.void_,
+                    ExpressionResult.void_,
                     null,
                     null,
                     arguments,
@@ -7105,7 +7105,7 @@ private struct Walker {
         child._activationFrame = FrameBlock.allocate(layout);
         child.assignToRefReturn = true;
         child.refReturnAssignedValue = value;
-        child.result = Value(false);
+        child.result = ExpressionResult(false);
         bindCapturedReferenceSlots(call.f, child);
         forkExecutionStateInto(child);
         child.bindFunctionParameters(
@@ -7128,16 +7128,16 @@ private struct Walker {
 
     private void writeArrayLengthLocation(
         imported!"dmd.expression".ArrayLengthExp target,
-        in Value value,
+        in ExpressionResult value,
     ) {
         import quickbite.backends.interpreter.aggregate_value: AggregateValue;
         import quickbite.frontend.dmd.types: arrayElementType;
 
         const current = runExpression(target.e1);
-        const oldLength = current == Value.null_ ? 0 : AggregateValue.length(current);
+        const oldLength = current == ExpressionResult.null_ ? 0 : AggregateValue.length(current);
         const newLength = cast(size_t) value.asLong;
 
-        Value[] elements;
+        ExpressionResult[] elements;
         foreach (index; 0 .. newLength)
             elements ~= index < oldLength
                 ? AggregateValue.elementAt(current, index)
@@ -7146,16 +7146,16 @@ private struct Walker {
         writeLocation(target.e1, reconstructStoredArray(target.e1.type, elements));
     }
 
-    private Value runDefaultValue(imported!"dmd.mtype".Type type) {
+    private ExpressionResult runDefaultValue(imported!"dmd.mtype".Type type) {
         import dmd.location: Loc;
         import dmd.typesem: defaultInitLiteral;
 
         return runExpression(type.defaultInitLiteral(Loc.initial));
     }
 
-    private Value storageValue(
+    private ExpressionResult storageValue(
         imported!"dmd.mtype".Type type,
-        in Value value,
+        in ExpressionResult value,
     ) {
         import quickbite.backends.interpreter.runtime_casts:
             backendCastValue = castValue,
@@ -7180,9 +7180,9 @@ private struct Walker {
     // authority -- rather than re-deriving a
     // scalar's byte width and bit pattern here; this module must not grow
     // its own second set of D layout rules alongside that codec's.
-    private Value[] scalarBytes(
+    private ExpressionResult[] scalarBytes(
         imported!"dmd.mtype".Type type,
-        in Value value,
+        in ExpressionResult value,
     ) {
         import quickbite.backends.interpreter.layout: typeByteSize;
         import quickbite.backends.interpreter.native_scalar: writeScalar;
@@ -7190,17 +7190,17 @@ private struct Walker {
         auto raw = new ubyte[](typeByteSize(type));
         writeScalar(type, raw, value);
 
-        Value[] bytes;
+        ExpressionResult[] bytes;
         foreach (byte_; raw)
-            bytes ~= Value(byte_);
+            bytes ~= ExpressionResult(byte_);
         return bytes;
     }
 
-    private Value scalarWithByte(
+    private ExpressionResult scalarWithByte(
         imported!"dmd.mtype".Type type,
-        in Value current,
+        in ExpressionResult current,
         in size_t index,
-        in Value byte_,
+        in ExpressionResult byte_,
     ) {
         import std.conv: text;
 
@@ -7208,7 +7208,7 @@ private struct Walker {
         if (index >= bytes.length)
             throw new Exception(text("Scalar byte index out of bounds: ", index));
 
-        bytes[index] = Value(cast(ubyte) byte_.asLong);
+        bytes[index] = ExpressionResult(cast(ubyte) byte_.asLong);
         return scalarFromBytes(type, bytes);
     }
 
@@ -7216,9 +7216,9 @@ private struct Walker {
     // This also now succeeds for `float`/`double`: routing through the
     // single scalar<->bytes codec dropped the old name-matched `switch`'s
     // throw on those two types.
-    private Value scalarFromBytes(
+    private ExpressionResult scalarFromBytes(
         imported!"dmd.mtype".Type type,
-        in Value[] bytes,
+        in ExpressionResult[] bytes,
     ) {
         import quickbite.backends.interpreter.native_scalar: readScalar;
 
@@ -7231,7 +7231,7 @@ private struct Walker {
 
     private void writeIndexLocation(
         imported!"dmd.expression".IndexExp index,
-        in Value value,
+        in ExpressionResult value,
     ) {
         import quickbite.frontend.dmd.types: isPointerType;
 
@@ -7315,8 +7315,8 @@ private struct Walker {
                 const nativeClassReceiver = receiver.isPointer
                     ? receiver
                     : receiver.isNativeAggregate
-                    ? Value.pointerValue(AggregateValue.nativeClassBodyAddress(receiver))
-                    : Value.null_;
+                    ? ExpressionResult.pointerValue(AggregateValue.nativeClassBodyAddress(receiver))
+                    : ExpressionResult.null_;
                 if (nativeClassReceiver.isPointer) {
                     import quickbite.backends.interpreter.place: Place;
                     import quickbite.backends.interpreter.place_value: readValue, writeValue;
@@ -7376,11 +7376,11 @@ private struct Walker {
         throw new Exception("Unsupported interpreter field access.");
     }
 
-    private Value withUnionFieldWrite(
-        in Value receiver,
+    private ExpressionResult withUnionFieldWrite(
+        in ExpressionResult receiver,
         imported!"dmd.mtype".TypeStruct unionType,
         in size_t fieldIndex,
-        in Value value,
+        in ExpressionResult value,
     ) {
         import dmd.astenums: TY;
         import quickbite.backends.interpreter.layout: structFields;
@@ -7394,11 +7394,11 @@ private struct Walker {
         const symbolicValue = value.isTypeName ||
             value.isFunctionPointer ||
             (fields[fieldIndex].type.toBasetype.ty == TY.Tdelegate &&
-                value != Value.null_);
+                value != ExpressionResult.null_);
         auto updated = AggregateValue.withStructField(
             receiver,
             fieldIndex,
-            symbolicValue ? Value.null_ : value,
+            symbolicValue ? ExpressionResult.null_ : value,
         );
 
         auto writtenType = fields[fieldIndex].type;
@@ -7503,12 +7503,12 @@ private struct Walker {
         );
     }
 
-    private Value withUnionStoredField(
-        in Value receiver,
+    private ExpressionResult withUnionStoredField(
+        in ExpressionResult receiver,
         imported!"dmd.mtype".TypeStruct unionType,
         in size_t fieldIndex,
-        in Value value,
-        in Value updated,
+        in ExpressionResult value,
+        in ExpressionResult updated,
     ) {
         import quickbite.backends.interpreter.layout: structFields;
         import quickbite.backends.interpreter.place: Place;
@@ -7525,7 +7525,7 @@ private struct Walker {
         return updated;
     }
 
-    private Value runIndexAssignExpression(
+    private ExpressionResult runIndexAssignExpression(
         imported!"dmd.expression".IndexExp index,
         imported!"dmd.expression".Expression rhs,
     ) {
@@ -7585,8 +7585,8 @@ private struct Walker {
                 const nativeClassReceiver = receiver.isPointer
                     ? receiver
                     : receiver.isNativeAggregate
-                    ? Value.pointerValue(AggregateValue.nativeClassBodyAddress(receiver))
-                    : Value.null_;
+                    ? ExpressionResult.pointerValue(AggregateValue.nativeClassBodyAddress(receiver))
+                    : ExpressionResult.null_;
                 if (nativeClassReceiver.isPointer) {
                     import quickbite.backends.interpreter.place: Place;
 
@@ -7600,7 +7600,7 @@ private struct Walker {
                         .field(dot.var.isVarDeclaration);
                     const source = readStoredValue(fieldPlace);
                     if (index.lengthVar !is null)
-                        setLocal(index.lengthVar, Value(AggregateValue.length(source)));
+                        setLocal(index.lengthVar, ExpressionResult(AggregateValue.length(source)));
                     const arrayIndex = cast(size_t) runExpression(index.e2).asLong;
                     const value = runExpression(rhs);
                     writeStoredValue(fieldPlace.index(arrayIndex), value);
@@ -7620,7 +7620,7 @@ private struct Walker {
             const receiver = runExpression(dot.e1);
             const source = AggregateValue.fieldAt(receiver, fieldIndex);
             if (index.lengthVar !is null)
-                setLocal(index.lengthVar, Value(AggregateValue.length(source)));
+                setLocal(index.lengthVar, ExpressionResult(AggregateValue.length(source)));
             const arrayIndex = cast(size_t) runExpression(index.e2).asLong;
             const value = runExpression(rhs);
             const updatedArray = AggregateValue.withArrayElement(source, arrayIndex, value);
@@ -7652,7 +7652,7 @@ private struct Walker {
 
         // A live delegate element has no native ABI function address --
         // `place_value.writeValue`'s Tdelegate arm only ever accepts
-        // `Value.null_` -- so substitute null bytes for the write and
+        // `ExpressionResult.null_` -- so substitute null bytes for the write and
         // register the live value out-of-band in `nativeDelegateSlots`,
         // keyed by the element's own address, mirroring the append and
         // struct/class-field write sites.
@@ -7661,8 +7661,8 @@ private struct Walker {
         auto elementType = index.e1.type.toBasetype.nextOf;
         const isLiveDelegate = elementType !is null
             && elementType.toBasetype.ty == TY.Tdelegate
-            && value != Value.null_;
-        const storedValue = isLiveDelegate ? Value.null_ : value;
+            && value != ExpressionResult.null_;
+        const storedValue = isLiveDelegate ? ExpressionResult.null_ : value;
         auto destination = bindingPlace(variable).index(arrayIndex);
         writeStoredValue(destination, storageValue(elementType, storedValue));
         if (isLiveDelegate)
@@ -7680,7 +7680,7 @@ private struct Walker {
     // this forces `indexOutOfBoundsMessage`'s `runningCalledFunction` arm
     // unconditionally rather than threading the Walker's own flag through.
     private void checkStaticArrayIndexInBounds(
-        in Value array,
+        in ExpressionResult array,
         in size_t index,
     ) {
         import quickbite.backends.interpreter.aggregate_value: AggregateValue;
@@ -7699,7 +7699,7 @@ private struct Walker {
     private void writeArrayCellElement(
         ref NativeArray cell,
         in size_t index,
-        in Value value,
+        in ExpressionResult value,
     ) {
         if (cell.elementType.isTypeStruct) {
             auto elementCell = cell.structElement(index);
@@ -7730,7 +7730,7 @@ private struct Walker {
     // `writeStructCellScalarFields`'s static-array-field branch).
     private void writeStaticArrayCellScalarElements(
         ref NativeArray cell,
-        in Value arrayValue,
+        in ExpressionResult arrayValue,
     ) {
         import quickbite.backends.interpreter.aggregate_value: AggregateValue;
         import quickbite.backends.interpreter.native_scalar: writeScalar;
@@ -7759,7 +7759,7 @@ private struct Walker {
         }
     }
 
-    private Value arrayValueFromCell(
+    private ExpressionResult arrayValueFromCell(
         imported!"dmd.mtype".Type type,
         ref NativeArray cell,
     ) {
@@ -7774,7 +7774,7 @@ private struct Walker {
         return AggregateValue.copyFromAddress(type, cell.block.address);
     }
 
-    private Value runNestedIndexAssignExpression(
+    private ExpressionResult runNestedIndexAssignExpression(
         imported!"dmd.expression".IndexExp outer,
         imported!"dmd.expression".IndexExp inner,
         imported!"dmd.expression".Expression rhs,
@@ -7848,8 +7848,8 @@ private struct Walker {
                 const nativeClassReceiver = receiver.isPointer
                     ? receiver
                     : receiver.isNativeAggregate
-                    ? Value.pointerValue(AggregateValue.nativeClassBodyAddress(receiver))
-                    : Value.null_;
+                    ? ExpressionResult.pointerValue(AggregateValue.nativeClassBodyAddress(receiver))
+                    : ExpressionResult.null_;
                 if (!nativeClassReceiver.isPointer)
                     throw new Exception("Unsupported interpreter assignment target.");
 
@@ -7915,7 +7915,7 @@ private struct Walker {
         return value;
     }
 
-    private Value runSliceAssignExpression(
+    private ExpressionResult runSliceAssignExpression(
         imported!"dmd.expression".SliceExp slice,
         imported!"dmd.expression".Expression rhs,
     ) {
@@ -8002,7 +8002,7 @@ private struct Walker {
         // `value.isArray` distinguishes the remaining two: a genuine array
         // copy vs. a scalar-element fill, which must reuse `value` itself at
         // every position instead of indexing into it.
-        Value[] elements;
+        ExpressionResult[] elements;
         foreach (index; 0 .. AggregateValue.length(current))
             elements ~= index < lower || index >= upper
                 ? AggregateValue.elementAt(current, index)
@@ -8023,7 +8023,7 @@ private struct Walker {
     // addressable slice header.  Keep that native header and write its
     // elements in place; rebuilding its enclosing array would create a second
     // storage authority for this lvalue shape.
-    private Value runIndexedSliceAssignExpression(
+    private ExpressionResult runIndexedSliceAssignExpression(
         imported!"dmd.expression".SliceExp slice,
         imported!"dmd.expression".IndexExp index,
         imported!"dmd.expression".Expression rhs,
@@ -8062,7 +8062,7 @@ private struct Walker {
     // element by element through the pointer — native memory via the FFI
     // store, D array storage via the tracked pointer — and never converts
     // the lvalue to a detached Array, which would silently sever aliasing.
-    private Value runPointerSliceAssignExpression(
+    private ExpressionResult runPointerSliceAssignExpression(
         imported!"dmd.expression".SliceExp slice,
         imported!"dmd.expression".Expression rhs,
     ) {
@@ -8088,7 +8088,7 @@ private struct Walker {
         if (upper == lower)
             return value;
 
-        Value elementAt(in size_t index) {
+        ExpressionResult elementAt(in size_t index) {
             return block
                 ? copyArrayValue(value, slice.type.toBasetype.nextOf)
                 : AggregateValue.elementAt(value, index);
@@ -8143,7 +8143,7 @@ private struct Walker {
     // A slice assignment through a struct field (`s.buf[i .. j] = source[]`):
     // splice the written elements into the field's current array and write
     // the updated struct back through the field's location.
-    private Value runFieldSliceAssignExpression(
+    private ExpressionResult runFieldSliceAssignExpression(
         imported!"dmd.expression".SliceExp slice,
         imported!"dmd.expression".DotVarExp dot,
         imported!"dmd.expression".Expression rhs,
@@ -8162,7 +8162,7 @@ private struct Walker {
         const block = isBlockSliceAssignment(slice, rhs);
         const value = runExpression(rhs);
 
-        Value[] elements;
+        ExpressionResult[] elements;
         foreach (index; 0 .. AggregateValue.length(current))
             elements ~= index < lower || index >= upper
                 ? AggregateValue.elementAt(current, index)
@@ -8190,20 +8190,20 @@ private struct Walker {
             rhs.type.toBasetype.equals(elementType.toBasetype);
     }
 
-    private Value copyArrayValue(
-        in Value value,
+    private ExpressionResult copyArrayValue(
+        in ExpressionResult value,
         imported!"dmd.mtype".Type type,
     ) {
         import quickbite.backends.interpreter.aggregate_value: AggregateValue;
 
-        Value[] elements;
+        ExpressionResult[] elements;
         foreach (index; 0 .. AggregateValue.length(value))
             elements ~= AggregateValue.elementAt(value, index);
 
         return reconstructStoredArray(AggregateValue.native(value).type, elements);
     }
 
-    private Value runLoweredAssignExpression(
+    private ExpressionResult runLoweredAssignExpression(
         imported!"dmd.expression".LoweredAssignExp assign,
     ) {
         import quickbite.frontend.dmd.types: arrayElementType, isDynamicArrayType;
@@ -8231,7 +8231,7 @@ private struct Walker {
 
         const newLength = cast(size_t) lengthValue.asLong;
 
-        Value[] elements;
+        ExpressionResult[] elements;
         foreach (index; 0 .. newLength)
             elements ~= index < AggregateValue.length(current)
                 ? AggregateValue.elementAt(current, index)
@@ -8243,7 +8243,7 @@ private struct Walker {
         return lengthValue;
     }
 
-    private Value runConcatenateExpression(imported!"dmd.expression".CatExp cat) {
+    private ExpressionResult runConcatenateExpression(imported!"dmd.expression".CatExp cat) {
         return reconstructStoredArray(
             cat.type,
             concatenationElements(cat.type, cat.e1) ~
@@ -8251,7 +8251,7 @@ private struct Walker {
         );
     }
 
-    private Value[] concatenationElements(
+    private ExpressionResult[] concatenationElements(
         imported!"dmd.mtype".Type resultType,
         imported!"dmd.expression".Expression operand,
     ) {
@@ -8261,14 +8261,14 @@ private struct Walker {
         if (!isArrayType(operand.type))
             return nativeAppendElements(resultType, value);
 
-        Value[] elements;
+        ExpressionResult[] elements;
         foreach (index; 0 .. AggregateValue.elementCount(value))
             elements ~= AggregateValue.elementAt(value, index);
 
         return elements;
     }
 
-    private Value runArrayAppendAssignExpression(
+    private ExpressionResult runArrayAppendAssignExpression(
         imported!"dmd.expression".BinExp assign,
     ) {
         import quickbite.backends.interpreter.aggregate_value: AggregateValue;
@@ -8304,8 +8304,8 @@ private struct Walker {
 
             // Begin each append from the binding's current native slice
             // header so captured slices observe prior iterations.
-            Value[] noElements;
-            auto appended = current == Value.null_
+            ExpressionResult[] noElements;
+            auto appended = current == ExpressionResult.null_
                 ? reconstructStoredArray(variable.type, noElements)
                 : runExpression(assign.e1);
             auto elementType = variable.type.toBasetype.isTypeDArray !is null
@@ -8317,7 +8317,7 @@ private struct Walker {
                 // The appended element itself may be a live delegate value
                 // (a fresh closure or a copied delegate local), which has no
                 // native ABI function address -- `place_value.writeValue`'s
-                // Tdelegate arm only ever accepts `Value.null_`. Substitute
+                // Tdelegate arm only ever accepts `ExpressionResult.null_`. Substitute
                 // null bytes for the write and register the live value
                 // out-of-band in `nativeDelegateSlots`, keyed by the newly
                 // appended element's own address, mirroring the sub-field
@@ -8325,8 +8325,8 @@ private struct Walker {
                 // substitute-then-register handling.
                 const isLiveDelegate = elementType !is null
                     && elementType.toBasetype.ty == TY.Tdelegate
-                    && rawElement != Value.null_;
-                auto element = isLiveDelegate ? Value.null_ : rawElement;
+                    && rawElement != ExpressionResult.null_;
+                auto element = isLiveDelegate ? ExpressionResult.null_ : rawElement;
                 appended = AggregateValue.withAppendedArrayElement(appended, element);
                 if (elementType !is null)
                     relocatePriorAppendedElementSlots(elementType, previous, appended, index);
@@ -8380,8 +8380,8 @@ private struct Walker {
     // the old allocation.
     private void relocatePriorAppendedElementSlots(
         imported!"dmd.mtype".Type elementType,
-        in Value previous,
-        in Value appended,
+        in ExpressionResult previous,
+        in ExpressionResult appended,
         in size_t count,
     ) {
         import quickbite.backends.interpreter.place: Place;
@@ -8409,9 +8409,9 @@ private struct Walker {
     // Appending a wide character to `string` writes its UTF-8 code units,
     // not the low byte of the code point. Native element writes require
     // spelling that conversion out before storing char-sized slots.
-    private Value[] nativeAppendElements(
+    private ExpressionResult[] nativeAppendElements(
         imported!"dmd.mtype".Type arrayType,
-        in Value value,
+        in ExpressionResult value,
     ) {
         import dmd.astenums: TY;
 
@@ -8419,13 +8419,13 @@ private struct Walker {
         if (array is null || array.next.toBasetype.ty != TY.Tchar || !value.isCharacter)
             return [value];
 
-        Value[] elements;
+        ExpressionResult[] elements;
         foreach (character; value.asUtf8Character)
-            elements ~= Value(character);
+            elements ~= ExpressionResult(character);
         return elements;
     }
 
-    private Value runArrayConcatenateAssignExpression(
+    private ExpressionResult runArrayConcatenateAssignExpression(
         imported!"dmd.expression".BinExp assign,
     ) {
         if (assign.e1.isDotVarExp !is null) {
@@ -8457,7 +8457,7 @@ private struct Walker {
         throw new Exception("Unsupported interpreter array concatenate target.");
     }
 
-    private Value runIndexedArrayAppendAssignExpression(
+    private ExpressionResult runIndexedArrayAppendAssignExpression(
         imported!"dmd.expression".IndexExp index,
         imported!"dmd.expression".Expression rhs,
     ) {
@@ -8479,7 +8479,7 @@ private struct Walker {
         return appended;
     }
 
-    private Value castValue(imported!"dmd.expression".CastExp cast_) {
+    private ExpressionResult castValue(imported!"dmd.expression".CastExp cast_) {
         import quickbite.backends.interpreter.runtime_casts:
             backendCastTarget = castTarget,
             backendCastValue = castValue;
@@ -8492,14 +8492,14 @@ private struct Walker {
 
         if (type.ty == TY.Tvoid) {
             runExpression(cast_.e1);
-            return Value.void_;
+            return ExpressionResult.void_;
         }
 
         if (type.ty == TY.Tclass)
             return classCastValue(cast_);
 
         if (type.ty == TY.Tident) {
-            Value value;
+            ExpressionResult value;
             if (tryIdentifierClassCastValue(cast_, value))
                 return value;
         }
@@ -8525,7 +8525,7 @@ private struct Walker {
         }
 
         if (isTransparentArrayCastTarget(type)) {
-            Value reinterpreted;
+            ExpressionResult reinterpreted;
             if (reinterpretScalarArrayCast(cast_, reinterpreted))
                 return reinterpreted;
 
@@ -8580,7 +8580,7 @@ private struct Walker {
 
     private bool reinterpretScalarArrayCast(
         imported!"dmd.expression".CastExp cast_,
-        out Value result,
+        out ExpressionResult result,
     ) {
         import std.conv: text;
         import quickbite.backends.interpreter.layout: typeByteSize;
@@ -8611,7 +8611,7 @@ private struct Walker {
         return true;
     }
 
-    private Value boolCastValue(imported!"dmd.expression".CastExp cast_) {
+    private ExpressionResult boolCastValue(imported!"dmd.expression".CastExp cast_) {
         import quickbite.backends.interpreter.aggregate_value: AggregateValue;
         import quickbite.backends.interpreter.runtime_casts:
             backendCastTarget = castTarget,
@@ -8619,29 +8619,29 @@ private struct Walker {
 
         const value = runExpression(cast_.e1);
         if (value.isPointer)
-            return Value(true);
-        if (value == Value.null_)
-            return Value(false);
+            return ExpressionResult(true);
+        if (value == ExpressionResult.null_)
+            return ExpressionResult(false);
         if (value.isNativeAggregate && AggregateValue.isArray(value))
-            return Value(isTruthy(value));
+            return ExpressionResult(isTruthy(value));
 
         return backendCastValue(value, backendCastTarget(cast_.to));
     }
 
-    private Value delegateCastValue(imported!"dmd.expression".CastExp cast_) {
+    private ExpressionResult delegateCastValue(imported!"dmd.expression".CastExp cast_) {
         import std.conv: text;
 
         const value = runExpression(cast_.e1);
-        if (value == Value.null_ || value.isFunctionPointer)
+        if (value == ExpressionResult.null_ || value.isFunctionPointer)
             return value;
 
         throw new Exception(text("Unsupported eval expression: ", cast_.op));
     }
 
-    private Value classCastValue(imported!"dmd.expression".CastExp cast_) {
+    private ExpressionResult classCastValue(imported!"dmd.expression".CastExp cast_) {
         auto value = runExpression(cast_.e1);
         value = rootedNativeClassValue(cast_.e1, value);
-        if (value == Value.null_)
+        if (value == ExpressionResult.null_)
             return value;
 
         auto classType = cast_.to.toBasetype.isTypeClass;
@@ -8649,14 +8649,14 @@ private struct Walker {
             throw new Exception("Unsupported class cast target.");
 
         if (!classHasType(value, className(classType.sym)))
-            return Value.null_;
+            return ExpressionResult.null_;
 
         return value;
     }
 
     private bool tryIdentifierClassCastValue(
         imported!"dmd.expression".CastExp cast_,
-        out Value result,
+        out ExpressionResult result,
     ) {
         import std.algorithm: canFind;
 
@@ -8665,7 +8665,7 @@ private struct Walker {
 
         auto value = runExpression(cast_.e1);
         value = rootedNativeClassValue(cast_.e1, value);
-        if (value == Value.null_) {
+        if (value == ExpressionResult.null_) {
             result = value;
             return true;
         }
@@ -8675,12 +8675,12 @@ private struct Walker {
 
         result = classHasType(value, "Throwable")
             ? value
-            : Value.null_;
+            : ExpressionResult.null_;
         return true;
     }
 
     // DMD semantic lowers `array.ptr` to `cast(T*) array`
-    private Value pointerCastValue(imported!"dmd.expression".CastExp cast_) {
+    private ExpressionResult pointerCastValue(imported!"dmd.expression".CastExp cast_) {
         import quickbite.frontend.dmd.types: isArrayType;
         import std.conv: text;
 
@@ -8693,7 +8693,7 @@ private struct Walker {
             if (auto var = cast_.e1.isVarExp)
                 if (auto variable = var.var.isVarDeclaration) {
                     if (hasBindingPlace(variable))
-                        return Value.pointerValue(
+                        return ExpressionResult.pointerValue(
                             bindingPlace(variable).sliceDataPointer,
                         );
                 }
@@ -8709,7 +8709,7 @@ private struct Walker {
                 if (auto var = pointer.e1.isVarExp)
                     if (auto variable = var.var.isVarDeclaration) {
                         if (hasBindingPlace(variable))
-                            return Value.pointerValue(
+                            return ExpressionResult.pointerValue(
                                 bindingPlace(variable).deref.sliceDataPointer,
                             );
                     }
@@ -8730,15 +8730,15 @@ private struct Walker {
                 if (aggregate.type.toBasetype.isTypeDArray !is null) {
                     const address = AggregateValue.nativeArrayAddress(value);
                     return address is null
-                        ? Value.null_
-                        : Value.pointerValue(cast(void*) address);
+                        ? ExpressionResult.null_
+                        : ExpressionResult.pointerValue(cast(void*) address);
                 }
             }
             return arrayPointer(cast_.e1, 0, cast_.op);
         }
 
         const value = runExpression(cast_.e1);
-        if (value == Value.null_)
+        if (value == ExpressionResult.null_)
             return value;
         if (value.isPointer)
             return value;
@@ -8748,13 +8748,13 @@ private struct Walker {
 
     // An array-literal element typed `delegate` (`[() => 42]`) may carry a
     // LIVE callable value rather than `null`. `AggregateValue.
-    // reconstructArray`'s `writeValue` call only ever accepts `Value.null_`
+    // reconstructArray`'s `writeValue` call only ever accepts `ExpressionResult.null_`
     // for a Tdelegate element, so every live entry is substituted with
-    // `Value.null_` for the reconstruction and then re-registered in
+    // `ExpressionResult.null_` for the reconstruction and then re-registered in
     // `nativeDelegateSlots`, keyed by the RESULT array's own element
     // address -- mirroring `structLiteralValue`'s identical
     // substitute-then-register handling.
-    private Value arrayValue(
+    private ExpressionResult arrayValue(
         imported!"dmd.expression".ArrayLiteralExp array,
     ) {
         import dmd.astenums: TY;
@@ -8763,9 +8763,9 @@ private struct Walker {
         const isDelegateArray = elementType !is null
             && elementType.toBasetype.ty == TY.Tdelegate;
 
-        Value[] values;
+        ExpressionResult[] values;
         size_t[] liveDelegateIndices;
-        Value[] liveDelegateValues;
+        ExpressionResult[] liveDelegateValues;
         if (array.elements !is null)
             // DMD's sparse form: a null element means the value is in `basis`
             // (see ArrayLiteralExp.getElement).
@@ -8775,10 +8775,10 @@ private struct Walker {
                 auto value = literal is null
                     ? runExpression(source)
                     : runFunctionLiteralDeclaration(literal);
-                if (isDelegateArray && value != Value.null_) {
+                if (isDelegateArray && value != ExpressionResult.null_) {
                     liveDelegateIndices ~= index;
                     liveDelegateValues ~= value;
-                    value = Value.null_;
+                    value = ExpressionResult.null_;
                 }
                 values ~= value;
             }
@@ -8790,9 +8790,9 @@ private struct Walker {
         return result;
     }
 
-    private Value reconstructStoredArray(
+    private ExpressionResult reconstructStoredArray(
         imported!"dmd.mtype".Type type,
-        in Value[] elements,
+        in ExpressionResult[] elements,
     ) {
         import quickbite.backends.interpreter.aggregate_value: AggregateValue;
         import quickbite.backends.interpreter.place: Place;
@@ -8800,10 +8800,10 @@ private struct Walker {
         if (!canContainStoredMetadata(type))
             return AggregateValue.reconstructArray(type, elements);
 
-        Value[] nativeElements;
+        ExpressionResult[] nativeElements;
         nativeElements.reserve(elements.length);
         foreach (element; elements)
-            nativeElements ~= element.isTypeName ? Value.null_ : element;
+            nativeElements ~= element.isTypeName ? ExpressionResult.null_ : element;
 
         auto result = AggregateValue.reconstructArray(type, nativeElements);
         auto destination = Place(AggregateValue.native(result).address, type);
@@ -8839,30 +8839,30 @@ private struct Walker {
     // A struct-literal field typed `delegate` may carry a LIVE callable
     // value (a fresh closure, or an existing delegate local) rather than
     // `null`. `place_value.writeValue`'s Tdelegate arm only ever accepts
-    // `Value.null_` -- by design, an interpreted delegate has no native ABI
-    // function address, so its callable Value lives out-of-band in
+    // `ExpressionResult.null_` -- by design, an interpreted delegate has no native ABI
+    // function address, so its callable ExpressionResult lives out-of-band in
     // `nativeDelegateSlots`, keyed by the FIELD's own address, exactly as
     // the direct field-assignment path (`s.f = &add;`, this module's
     // `DotVarExp` write arm) and a delegate-typed local's own declaration
     // (`setLocal`'s `TY.Tdelegate` branch) already register it. A struct
     // literal has no field address of its own until
     // `AggregateValue.reconstructStruct` allocates its native storage, so
-    // this substitutes `Value.null_` for any live delegate field before
+    // this substitutes `ExpressionResult.null_` for any live delegate field before
     // that call -- the same bytes the ordinary default-null case already
     // writes -- and registers the live value at the field's own address
     // once that address exists. `writeStoredValue` carries the registration
     // forward again when this rvalue is copied into durable storage.
-    private Value structLiteralValue(
+    private ExpressionResult structLiteralValue(
         imported!"dmd.expression".StructLiteralExp literal,
     ) {
         import dmd.astenums: TY;
         import quickbite.backends.interpreter.place: Place;
 
-        Value[] fields;
+        ExpressionResult[] fields;
         imported!"dmd.declaration".VarDeclaration[] liveDelegateFields;
-        Value[] liveDelegateValues;
+        ExpressionResult[] liveDelegateValues;
         imported!"dmd.declaration".VarDeclaration[] symbolicTypeInfoFields;
-        Value[] symbolicTypeInfoValues;
+        ExpressionResult[] symbolicTypeInfoValues;
         if (literal.sd !is null)
             foreach (index; 0 .. literal.sd.fields.length) {
                 const hasElement = literal.elements !is null
@@ -8882,11 +8882,11 @@ private struct Walker {
                 if (
                     field !is null &&
                     field.type.toBasetype.ty == TY.Tdelegate &&
-                    value != Value.null_
+                    value != ExpressionResult.null_
                 ) {
                     liveDelegateFields ~= field;
                     liveDelegateValues ~= value;
-                    value = Value.null_;
+                    value = ExpressionResult.null_;
                 }
                 if (
                     field !is null &&
@@ -8895,7 +8895,7 @@ private struct Walker {
                 ) {
                     symbolicTypeInfoFields ~= field;
                     symbolicTypeInfoValues ~= value;
-                    value = Value.null_;
+                    value = ExpressionResult.null_;
                 }
 
                 fields ~= value;
@@ -8934,16 +8934,16 @@ private struct Walker {
     // a later index is processed, index 0's value has already been
     // computed and appended, so it is always available here without a
     // second pass.
-    private Value structLiteralDefaultFieldValue(
+    private ExpressionResult structLiteralDefaultFieldValue(
         imported!"dmd.expression".StructLiteralExp literal,
         in size_t index,
-        in Value[] fieldsSoFar,
+        in ExpressionResult[] fieldsSoFar,
     ) {
         auto field = structLiteralField(literal, index);
         if (field is null)
-            return Value.void_;
+            return ExpressionResult.void_;
 
-        Value reinterpreted;
+        ExpressionResult reinterpreted;
         if (unionSiblingDefaultFieldValue(literal, index, field, fieldsSoFar, reinterpreted))
             return reinterpreted;
 
@@ -8973,8 +8973,8 @@ private struct Walker {
         imported!"dmd.expression".StructLiteralExp literal,
         in size_t index,
         imported!"dmd.declaration".VarDeclaration field,
-        in Value[] fieldsSoFar,
-        out Value value,
+        in ExpressionResult[] fieldsSoFar,
+        out ExpressionResult value,
     ) {
         import quickbite.backends.interpreter.aggregate_value: AggregateValue;
         import quickbite.backends.interpreter.native_scalar:
@@ -9078,7 +9078,7 @@ private struct Walker {
     // `NativeStruct` field writer can seed each plain-struct leaf.
     private void writeStaticArrayCellStructElements(
         ref NativeArray cell,
-        in Value arrayValue,
+        in ExpressionResult arrayValue,
     ) {
         import quickbite.backends.interpreter.aggregate_value: AggregateValue;
 
@@ -9133,10 +9133,10 @@ private struct Walker {
             structType.sym.isUnionDeclaration is null;
     }
 
-    private Value structLiteralFieldValue(
+    private ExpressionResult structLiteralFieldValue(
         imported!"dmd.expression".StructLiteralExp literal,
         in size_t index,
-        in Value value,
+        in ExpressionResult value,
     ) {
         import quickbite.frontend.dmd.types: isAssocArrayType;
         import quickbite.backends.interpreter.aggregate_value: AggregateValue;
@@ -9146,11 +9146,11 @@ private struct Walker {
         if (field is null)
             return value;
 
-        if (value == Value.null_ && isAssocArrayType(field.type))
+        if (value == ExpressionResult.null_ && isAssocArrayType(field.type))
         {
             import quickbite.backends.interpreter.native_assoc_array: allocateValue;
 
-            return Value.nativeAggregateValue(allocateValue(field.type));
+            return ExpressionResult.nativeAggregateValue(allocateValue(field.type));
         }
 
         auto staticArray = field.type is null ? null : field.type.toBasetype.isTypeSArray;
@@ -9158,7 +9158,7 @@ private struct Walker {
             return value;
 
         const length = staticArrayLength(staticArray);
-        Value[] elements;
+        ExpressionResult[] elements;
         foreach (_; 0 .. length)
             elements ~= value;
 
@@ -9166,13 +9166,13 @@ private struct Walker {
     }
 
     // duplicate keys keep the last value, as in compiled D
-    private Value assocArrayValue(
+    private ExpressionResult assocArrayValue(
         imported!"dmd.expression".AssocArrayLiteralExp assocArray,
     ) {
         import quickbite.backends.interpreter.aggregate_value: AggregateValue;
 
-        Value[] keys;
-        Value[] values;
+        ExpressionResult[] keys;
+        ExpressionResult[] values;
         foreach (index; 0 .. assocArray.keys.length) {
             keys ~= runExpression((*assocArray.keys)[index]);
             values ~= runExpression((*assocArray.values)[index]);
@@ -9180,18 +9180,18 @@ private struct Walker {
         return AggregateValue.reconstructAssocArray(assocArray.type, keys, values);
     }
 
-    private Value runSliceExpression(imported!"dmd.expression".SliceExp slice) {
+    private ExpressionResult runSliceExpression(imported!"dmd.expression".SliceExp slice) {
         size_t lower;
         return runSliceExpression(slice, lower);
     }
 
-    private Value runSliceExpression(
+    private ExpressionResult runSliceExpression(
         imported!"dmd.expression".SliceExp slice,
         out size_t lower,
     ) {
         const source = runExpression(slice.e1);
         if (slice.lengthVar !is null)
-            setLocal(slice.lengthVar, Value(AggregateValue.length(source)));
+            setLocal(slice.lengthVar, ExpressionResult(AggregateValue.length(source)));
         lower = slice.lwr is null
             ? 0
             : cast(size_t) runExpression(slice.lwr).asLong;
@@ -9302,18 +9302,18 @@ private struct Walker {
         return AggregateValue.slice(source, slice.type, lower, upper);
     }
 
-    private Value runIndexExpression(imported!"dmd.expression".IndexExp index) {
+    private ExpressionResult runIndexExpression(imported!"dmd.expression".IndexExp index) {
         size_t arrayIndex;
         return runIndexExpression(index, arrayIndex);
     }
 
     // Read an element from native (C heap) memory addressed by a
-    // Pointer: a snapshot Value built from the pointee's bytes (a
+    // Pointer: a snapshot ExpressionResult built from the pointee's bytes (a
     // scalar, a pointer, or a whole struct such as std.stdio.File's malloc'd
     // Impl).
-    private Value loadNativePointerElement(
+    private ExpressionResult loadNativePointerElement(
         imported!"dmd.mtype".Type pointerType,
-        in Value pointer,
+        in ExpressionResult pointer,
         in size_t index,
     ) {
         import dmd.astenums: TY;
@@ -9342,9 +9342,9 @@ private struct Walker {
 
     private void storeNativePointerElement(
         imported!"dmd.mtype".Type pointerType,
-        in Value pointer,
+        in ExpressionResult pointer,
         in size_t index,
-        in Value value,
+        in ExpressionResult value,
     ) {
         import quickbite.backends.interpreter.layout: typeByteSize;
         import quickbite.backends.interpreter.place: Place;
@@ -9488,10 +9488,10 @@ private struct Walker {
 
     private bool invokeNativeDeclaration(
         imported!"dmd.func".FuncDeclaration function_,
-        Value receiver,
+        ExpressionResult receiver,
         imported!"dmd.mtype".Type receiverType,
         imported!"dmd.expression".Expression receiverExpression,
-        Value[] arguments,
+        ExpressionResult[] arguments,
         imported!"dmd.expression".Expression[] argumentExpressions,
         in EvaluatedReferenceArgument[] evaluatedArguments,
         in bool returnsReceiver,
@@ -9536,7 +9536,7 @@ private struct Walker {
     private imported!"quickbite.backends.interpreter.native_call_adapter".NativeOperand[]
     nativeCallOperands(
         imported!"dmd.func".FuncDeclaration function_,
-        in Value[] arguments,
+        in ExpressionResult[] arguments,
         imported!"dmd.expression".Expression[] argumentExpressions,
         imported!"dmd.mtype".Type[] argumentTypes,
         in EvaluatedReferenceArgument[] evaluatedArguments,
@@ -9583,7 +9583,7 @@ private struct Walker {
                 index < arguments.length &&
                 index < argumentTypes.length &&
                 isCharacterPointer(argumentTypes[index]) &&
-                (arguments[index].isPointer || arguments[index] == Value.null_)
+                (arguments[index].isPointer || arguments[index] == ExpressionResult.null_)
             ) {
                 import quickbite.backends.interpreter.place: Place;
 
@@ -9591,7 +9591,7 @@ private struct Walker {
                     (void*).sizeof,
                     NativeBlock.Scan.conservative,
                 );
-                auto pointer = arguments[index] == Value.null_
+                auto pointer = arguments[index] == ExpressionResult.null_
                     ? null
                     : arguments[index].pointerAddress;
                 Place(scratch.address, argumentTypes[index])
@@ -9683,7 +9683,7 @@ private struct Walker {
         return type is null ? null : type.vtinfo;
     }
 
-    private Value runIndexExpression(
+    private ExpressionResult runIndexExpression(
         imported!"dmd.expression".IndexExp index,
         out size_t arrayIndex,
     ) {
@@ -9736,7 +9736,7 @@ private struct Walker {
 
         const sourceLength = AggregateValue.length(source);
         if (index.lengthVar !is null)
-            setLocal(index.lengthVar, Value(sourceLength));
+            setLocal(index.lengthVar, ExpressionResult(sourceLength));
 
         // matches CTFE, which formats the index as unsigned
         arrayIndex = cast(size_t) cast(ulong) runExpression(index.e2).asLong;
@@ -9763,9 +9763,9 @@ private struct Walker {
                     import dmd.astenums: TY;
                     // A live delegate element's bytes are the all-zero ABI
                     // value (`place_value.writeValue`'s Tdelegate arm only
-                    // ever accepts `Value.null_`), so a plain `readValue`
+                    // ever accepts `ExpressionResult.null_`), so a plain `readValue`
                     // here cannot tell a genuinely null element from one
-                    // whose live callable Value was substituted out-of-band
+                    // whose live callable ExpressionResult was substituted out-of-band
                     // -- check `nativeDelegateSlots`, keyed by the element's
                     // own address, first, exactly as `nativeArrayElementAt`
                     // already does for the native-aggregate branch below.
@@ -9832,8 +9832,8 @@ private struct Walker {
 
     private void writePointerTarget(
         imported!"dmd.expression".Expression expression,
-        in Value pointer,
-        in Value value,
+        in ExpressionResult pointer,
+        in ExpressionResult value,
     ) {
         // A native pointer (e.g. into a malloc'd struct like std.stdio.File's
         // Impl): write straight into native memory.
@@ -9853,8 +9853,8 @@ private struct Walker {
     // they cannot update different interim authorities.
     private void writePointerElements(
         imported!"dmd.expression".Expression expression,
-        in Value pointer,
-        in Value[] values,
+        in ExpressionResult pointer,
+        in ExpressionResult[] values,
     ) {
         if (auto cast_ = expression.isCastExp) {
             writePointerElements(cast_.e1, pointer, values);
@@ -9877,7 +9877,7 @@ private struct Walker {
         return null;
     }
 
-    private Value runNewExpression(imported!"dmd.expression".NewExp new_) {
+    private ExpressionResult runNewExpression(imported!"dmd.expression".NewExp new_) {
         import dmd.astenums: TY;
         import quickbite.frontend.dmd.types: isDynamicArrayType, isPointerType, isStructType;
         import std.conv: text;
@@ -9912,7 +9912,7 @@ private struct Walker {
         return newArrayValue(new_.type, lengths);
     }
 
-    private Value runNewScalarPointerExpression(
+    private ExpressionResult runNewScalarPointerExpression(
         imported!"dmd.expression".NewExp new_,
     ) {
         import std.conv: text;
@@ -9921,7 +9921,7 @@ private struct Walker {
             throw new Exception(text("Unsupported eval expression: ", new_.op));
 
         auto targetType = new_.type.toBasetype.nextOf;
-        Value value = defaultValue(targetType);
+        ExpressionResult value = defaultValue(targetType);
         if (new_.arguments !is null) {
             if (new_.arguments.length != 1)
                 throw new Exception(text("Unsupported eval expression: ", new_.op));
@@ -9937,13 +9937,13 @@ private struct Walker {
     // used as positional aggregate field initialisers.  When new_.member is a
     // constructor the constructor body is executed with a default-initialised
     // receiver and the post-construction `this` value is used.
-    private Value runNewStructPointerExpression(
+    private ExpressionResult runNewStructPointerExpression(
         imported!"dmd.expression".NewExp new_,
     ) {
         import std.conv: text;
 
         auto targetType = new_.type.toBasetype.nextOf;
-        Value structVal = defaultValue(targetType);
+        ExpressionResult structVal = defaultValue(targetType);
 
         if (new_.member !is null) {
             import quickbite.frontend.dmd.functions: hasNoAvailableSource;
@@ -9963,7 +9963,7 @@ private struct Walker {
             }
 
             // User-defined constructor: run it and capture the resulting this.
-            Value[] arguments;
+            ExpressionResult[] arguments;
             if (new_.arguments !is null)
                 foreach (argument; *new_.arguments)
                     arguments ~= runExpression(argument);
@@ -9973,7 +9973,7 @@ private struct Walker {
             child.currentFunction = new_.member;
             auto layout = cachedFrameLayout(new_.member);
             child._activationFrame = FrameBlock.allocate(layout);
-            child.result = Value(false);
+            child.result = ExpressionResult(false);
             child.thisValue = structVal;
             child.hasThis = true;
             forkExecutionStateInto(child);
@@ -10010,9 +10010,9 @@ private struct Walker {
     // Its owner remains in the enclosing expression's lexical owner scope
     // until that address reaches scanned guest storage. Guest pointer identity
     // is exactly the allocation address.
-    private Value allocateNativePointer(
+    private ExpressionResult allocateNativePointer(
         imported!"dmd.mtype".Type targetType,
-        in Value value,
+        in ExpressionResult value,
     ) {
         import quickbite.backends.interpreter.layout: typeByteSize, typeHasPointers;
         import quickbite.backends.interpreter.place: Place;
@@ -10026,7 +10026,7 @@ private struct Walker {
         );
         writeValue(Place(block.address, targetType), value);
         retainTemporaryPointerOwner(block);
-        return Value.pointerValue(block.address);
+        return ExpressionResult.pointerValue(block.address);
     }
 
     // `runNewStructPointerExpression`'s own constructor-call merge, the heap
@@ -10042,17 +10042,17 @@ private struct Walker {
     // `new T(args)` where T's constructor is a body-less native leaf: construct
     // the struct through the FFI bridge (seeding `this` from `.init`) and return
     // a pointer to the constructed value (ffi.md §34.13).
-    private Value runNewStructNativeConstructor(
+    private ExpressionResult runNewStructNativeConstructor(
         imported!"dmd.expression".NewExp new_,
         imported!"dmd.mtype".Type targetType,
-        in Value initValue,
+        in ExpressionResult initValue,
     ) {
         import quickbite.frontend.dmd.functions: noAvailableSourceMessage;
         import quickbite.backends.interpreter.native_call_adapter:
             NativeCallException, NativeCallResult;
         import dmd.expression: Expression;
 
-        Value[] arguments;
+        ExpressionResult[] arguments;
         Expression[] argumentExpressions;
         if (new_.arguments !is null)
             foreach (argument; *new_.arguments) {
@@ -10081,7 +10081,7 @@ private struct Walker {
         throw new Exception(noAvailableSourceMessage(new_.member));
     }
 
-    private Value runNewClassExpression(
+    private ExpressionResult runNewClassExpression(
         imported!"dmd.expression".NewExp new_,
     ) {
         import std.conv: text;
@@ -10091,7 +10091,7 @@ private struct Walker {
         if (classType is null || classType.sym is null)
             throw new Exception(text("Unsupported eval expression: ", new_.op));
 
-        Value[] arguments;
+        ExpressionResult[] arguments;
         if (new_.arguments !is null)
             foreach (argument; *new_.arguments)
                 arguments ~= runExpression(argument);
@@ -10119,9 +10119,9 @@ private struct Walker {
         child.currentFunction = new_.member;
         auto layout = cachedFrameLayout(new_.member);
         child._activationFrame = FrameBlock.allocate(layout);
-        child.result = Value(false);
+        child.result = ExpressionResult(false);
         forkExecutionStateInto(child);
-        child.thisValue = Value.pointerValue(
+        child.thisValue = ExpressionResult.pointerValue(
             AggregateValue.nativeClassBodyAddress(object),
         );
         child.hasThis = true;
@@ -10151,7 +10151,7 @@ private struct Walker {
         lazyArgumentFrames = child.lazyArgumentFrames;
     }
 
-    private Value newArrayValue(
+    private ExpressionResult newArrayValue(
         imported!"dmd.mtype".Type type,
         in size_t[] lengths,
     ) {
@@ -10165,7 +10165,7 @@ private struct Walker {
         if (elementType is null)
             throw new Exception(text("Unsupported eval expression: ", EXP.new_));
 
-        Value[] elements;
+        ExpressionResult[] elements;
         foreach (_; 0 .. lengths[0])
             elements ~= lengths.length > 1
                 ? newArrayValue(elementType, lengths[1 .. $])
@@ -10174,12 +10174,12 @@ private struct Walker {
         return reconstructStoredArray(type, elements);
     }
 
-    private Value runDeclarationExpression(
+    private ExpressionResult runDeclarationExpression(
         imported!"dmd.expression".DeclarationExp declaration,
     ) {
         auto variable = declaration.declaration.isVarDeclaration;
         if (variable is null)
-            return Value(false);
+            return ExpressionResult(false);
 
         if (isManifestVariable(variable)) {
             if (auto initializer = variable._init.isExpInitializer)
@@ -10192,7 +10192,7 @@ private struct Walker {
 
         if (variable._init !is null && variable._init.isVoidInitializer !is null) {
             markUninitializedBinding(variable);
-            return Value.void_;
+            return ExpressionResult.void_;
         }
 
         if (variable._init is null || variable._init.isExpInitializer is null) {
@@ -10235,7 +10235,7 @@ private struct Walker {
 
         if (initializer.isVoidInitExp !is null) {
             markUninitializedBinding(variable);
-            return Value.void_;
+            return ExpressionResult.void_;
         }
 
         // `auto copy = original;` for a struct with a postblit lowers to
@@ -10307,7 +10307,7 @@ private struct Walker {
                         staticArrayLength(variable.type.toBasetype.isTypeSArray);
                     foreach (i; 0 .. count) {
                         auto elementPlace = bindingPlace(variable).index(i);
-                        const elementReceiver = Value.nativeAggregateValue(
+                        const elementReceiver = ExpressionResult.nativeAggregateValue(
                             NativeAggregate(
                                 elementPlace.type,
                                 NativeBlock.borrow(
@@ -10344,7 +10344,7 @@ private struct Walker {
         }
 
         if (initializer.isNullExp !is null && isAssocArrayType(variable.type)) {
-            auto value = Value.null_;
+            auto value = ExpressionResult.null_;
             setLocal(variable, value);
             return value;
         }
@@ -10374,9 +10374,9 @@ private struct Walker {
     // A binding read may expose only the native body pointer. Preserve the
     // owning aggregate when the binding still has that allocation handle;
     // borrowed host objects remain their real address.
-    private Value rootedNativeClassValue(
+    private ExpressionResult rootedNativeClassValue(
         imported!"dmd.expression".Expression expression,
-        in Value evaluated,
+        in ExpressionResult evaluated,
     ) {
         if (auto cast_ = expression.isCastExp)
             return rootedNativeClassValue(cast_.e1, evaluated);
@@ -10391,7 +10391,7 @@ private struct Walker {
         return evaluated;
     }
 
-    private Value defaultLocalValue(VarDeclaration variable) {
+    private ExpressionResult defaultLocalValue(VarDeclaration variable) {
         return defaultValue(variable);
     }
 
@@ -10407,17 +10407,17 @@ private struct Walker {
         return (variable.storage_class & STC.manifest) != STC.none;
     }
 
-    private Value runPostIncrementExpression(
+    private ExpressionResult runPostIncrementExpression(
         imported!"dmd.expression".PostExp post,
     ) {
         import dmd.tokens: EXP;
 
         const delta = post.op == EXP.plusPlus
-            ? Value(cast(int) 1)
+            ? ExpressionResult(cast(int) 1)
             : post.op == EXP.minusMinus
-                ? Value(cast(int) -1)
-                : Value.void_;
-        if (delta == Value.void_)
+                ? ExpressionResult(cast(int) -1)
+                : ExpressionResult.void_;
+        if (delta == ExpressionResult.void_)
             throw new Exception("Unsupported eval post expression.");
 
         if (auto var = post.e1.isVarExp) {
@@ -10461,7 +10461,7 @@ private struct Walker {
         throw new Exception("Unsupported eval post expression target.");
     }
 
-    private Value runAddAssignExpression(
+    private ExpressionResult runAddAssignExpression(
         imported!"dmd.expression".BinExp assign,
     ) {
         return runCompoundAssignExpression(assign);
@@ -10479,13 +10479,13 @@ private imported!"dmd.mtype".TypeStruct receiverStructType(
 }
 
 
-private bool isTruthy(in imported!"quickbite.backends.interpreter.runtime_value".Value value) {
+private bool isTruthy(in imported!"quickbite.backends.interpreter.expression_result".ExpressionResult value) {
     import dmd.astenums: TY;
     import quickbite.backends.interpreter.aggregate_value: AggregateValue;
     import quickbite.backends.interpreter.native_array: readSliceHeaderBytes;
-    import quickbite.backends.interpreter.runtime_value: Value;
+    import quickbite.backends.interpreter.expression_result: ExpressionResult;
 
-    if (value == Value.null_)
+    if (value == ExpressionResult.null_)
         return false;
 
     if (value.isPointer)
@@ -10499,13 +10499,13 @@ private bool isTruthy(in imported!"quickbite.backends.interpreter.runtime_value"
         return AggregateValue.length(value) != 0;
     }
 
-    if (value == Value(false))
+    if (value == ExpressionResult(false))
         return false;
 
-    if (value == Value(true))
+    if (value == ExpressionResult(true))
         return true;
 
-    return value.castTo!bool == Value(true);
+    return value.castTo!bool == ExpressionResult(true);
 }
 
 
@@ -10528,9 +10528,9 @@ private bool returnsRef(imported!"dmd.func".FuncDeclaration function_) {
 // The `this` a native constructor initialises: the struct's default `.init`.
 // The variable being constructed has no usable value yet, so the evaluated
 // receiver is not a struct (mirrors runMemberFunction's ctor seeding).
-private imported!"quickbite.backends.interpreter.runtime_value".Value nativeConstructorReceiver(
+private imported!"quickbite.backends.interpreter.expression_result".ExpressionResult nativeConstructorReceiver(
     imported!"dmd.func".FuncDeclaration function_,
-    in imported!"quickbite.backends.interpreter.runtime_value".Value receiver,
+    in imported!"quickbite.backends.interpreter.expression_result".ExpressionResult receiver,
 ) {
     import quickbite.backends.interpreter.runtime_values: defaultValue;
 
@@ -10548,7 +10548,7 @@ private imported!"quickbite.backends.interpreter.runtime_value".Value nativeCons
 private void initializeNativeClassBody(
     ref Walker walker,
     imported!"dmd.mtype".Type type,
-    in imported!"quickbite.backends.interpreter.runtime_value".Value object,
+    in imported!"quickbite.backends.interpreter.expression_result".ExpressionResult object,
 ) {
     import quickbite.backends.interpreter.aggregate_value: AggregateValue;
     import quickbite.backends.interpreter.layout: classFields;
@@ -10583,10 +10583,10 @@ private void initializeNativeClassBody(
 // class's static `.init` data, and every `new` that does not override the
 // field shares that one backing array: mutating it through one instance is
 // visible through another. Evaluate the literal once per field declaration
-// and cache the resulting native array `Value`, so every later instance's
+// and cache the resulting native array `ExpressionResult`, so every later instance's
 // field descriptor points at the same backing storage instead of a fresh
 // per-object copy.
-private imported!"quickbite.backends.interpreter.runtime_value".Value
+private imported!"quickbite.backends.interpreter.expression_result".ExpressionResult
 classFieldArrayLiteralDefault(
     ref Walker walker,
     imported!"dmd.declaration".VarDeclaration field,
@@ -10917,8 +10917,8 @@ private string functionName(imported!"dmd.func".FuncDeclaration function_) @trus
 private struct RuntimeDelegate {
     public imported!"dmd.func".FuncDeclaration function_;
     public size_t functionPointerId;
-    public imported!"quickbite.backends.interpreter.runtime_value".Value contextPointer;
-    public imported!"quickbite.backends.interpreter.runtime_value".Value receiver;
+    public imported!"quickbite.backends.interpreter.expression_result".ExpressionResult contextPointer;
+    public imported!"quickbite.backends.interpreter.expression_result".ExpressionResult receiver;
     public bool hasReceiver;
 
     // The enclosing activation's own frame address for each of

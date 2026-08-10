@@ -6,12 +6,13 @@ This plan records the removal of the shared `quickbite.lang.Value` and the
 tree-walking interpreter's move to native-layout storage. Decisions 15-18
 (July 2026) commit the end state — native-layout storage, one data-pointer
 representation (the host address), no FFI marshalling — with deleting
-`Value` as the completion signal. The remaining order is: remove the
-Interpreter's remaining transient carrier machinery, then delete the shared
-`Value` once every backend has completed its formatter migration, before
-optimising Interpreter execution. Broader Interpreter language expansion
-follows those steps. The Bytecode refactor and its address-only FFI migration
-proceed in a file-disjoint parallel lane.
+`Value` as the completion signal. The Interpreter's value removal is complete:
+its remaining narrow expression currency is `ExpressionResult`, and its
+package and tests contain no `Value` or `RuntimeValue` compatibility spelling.
+The shared `Value` deletion remains gated by the IR and Bytecode formatter
+migrations. Production Interpreter optimisation waits for that deletion;
+broader language expansion may proceed independently. The Bytecode refactor
+and its address-only FFI migration proceed in a file-disjoint parallel lane.
 Current capabilities:
 
 - `EvalResult` carries a display `string` or `Diagnostic`, and `:t` is
@@ -39,19 +40,19 @@ Current capabilities:
   that recursive expression walk. Once stored, conservative scanning of the
   native destination keeps the allocation live; no allocation-identity root
   registry crosses calls or activations.
-- `RuntimeValue` is transient expression currency. Its sole aggregate arm owns
-  or borrows typed native DMD-layout storage, and its sole data-pointer arm is
-  a host address. It has no structural array, struct, associative-array, entry,
-  class-object, undisplayable, formatting, or string-display-metadata arms.
-  Aggregate construction always has a DMD type, and aggregate place writes
-  copy the complete typed byte span. `RuntimeValue` is never local, alias, or
-  cross-frame storage authority. Diagnostics and the temporary
+- `ExpressionResult` is transient expression currency. Its sole aggregate arm
+  owns or borrows typed native DMD-layout storage, and its sole data-pointer arm
+  is a host address. It has no structural array, struct, associative-array,
+  entry, class-object, undisplayable, formatting, or string-display-metadata
+  arms. Aggregate construction always has a DMD type, and aggregate place
+  writes copy the complete typed byte span. `ExpressionResult` is never local,
+  alias, or cross-frame storage authority. Diagnostics and the temporary
   `std.conv.text` interceptor render from the expression's DMD type and typed
   scalar accessors at their consumer sites.
 - The Interpreter native-call adapter has one preparation path and one
   execution path. Preparation selects typed argument, receiver, and result
   addresses; execution calls the address-only `quickbite.ffi.ffi` bridge.
-  There is no `RuntimeValue`/marshal/reify/writeback fallback. Callback
+  There is no expression-result marshal/reify/writeback fallback. Callback
   lifetime and re-entry and native exception translation stay adapter-owned
   because they are Interpreter mechanics, not value conversion.
 
@@ -64,8 +65,8 @@ replayed from source); benchmarks compare strings; the bytecode and IR
 cores exclude a universal runtime value type by design
 (`ai/plans/bytecode.md` "No universal runtime value type";
 `ai/plans/ir.md`). The struct's remaining customers are its own unit tests
-and the interpreter's internal execution scaffolding, both scheduled for
-deletion (items 2-3).
+and the IR and Bytecode backends' formatting scaffolding. The Interpreter no
+longer imports or aliases it.
 
 ## Approved decisions
 
@@ -142,7 +143,7 @@ deletion (items 2-3).
 
 8. This plan owns the Interpreter's value representation and native-call
    adapter. `quickbite.ffi.ffi` is designed independently for native-layout
-   backends and never sees `RuntimeValue`: the Interpreter hands it typed
+   backends and never sees `ExpressionResult`: the Interpreter hands it typed
    argument and result addresses without compatibility methods or a legacy
    fallback. `quickbite.ffi.oldffi` remains only for Bytecode's parallel
    migration lane; `bytecode.md` owns removal of that final consumer and
@@ -199,10 +200,11 @@ deletion (items 2-3).
     evaluation. The walker needs a recursive expression-result operation
     (unittests execute expressions; nested calls return results), but its
     carrier is interpreter-private execution machinery, not a display
-    value — `RuntimeValue` is a descriptive name, not a prescribed shared
-    type. Top-level unittest execution needs only success or a diagnostic
-    and must not render the walker's final result; expression-display entry
-    points synthesize `__quickbiteFormat(expr)` and return that guest-produced
+    value. `ExpressionResult` names that narrow currency rather than a shared
+    runtime abstraction. Top-level unittest execution needs only success or a
+    diagnostic and must not render the walker's final result;
+    expression-display entry points synthesize `__quickbiteFormat(expr)` and
+    return that guest-produced
     string through `EvalResult`. Replace the interim
     `runUnitTest -> eval(FuncDeclaration) -> displayString` bridge with a
     direct unittest execution entry point plus a separate REPL evaluation
@@ -393,8 +395,8 @@ deletion (items 2-3).
 
     The Interpreter adapter has one typed-address preparation path and one
     execution path. A scalar rvalue may be written into typed scratch storage
-    before preparation completes, but no `RuntimeValue` crosses the bridge and
-    no buffer-based aggregate reconstruction or post-call writeback path
+    before preparation completes, but no `ExpressionResult` crosses the bridge
+    and no buffer-based aggregate reconstruction or post-call writeback path
     exists. The libffi descriptor, argument-address array, scalar scratch, and
     symbol resolution remain bridge plumbing; callback lifetime/re-entry and
     native exception translation remain Interpreter-adapter plumbing.
@@ -526,11 +528,12 @@ checked fact; do not relearn them.
   crosses a native boundary or replaces the host address as identity.
 - A field slice borrows bytes composed from its receiver place; an aggregate
   expression snapshot is never the backing storage for an lvalue-derived view.
-- `RuntimeValue.NativeAggregate` owns or borrows DMD-layout bytes for a
+- `ExpressionResult.NativeAggregate` owns or borrows DMD-layout bytes for a
   transient aggregate result. Once stored, the destination place is
   authoritative.
-- `RuntimeValue.Pointer` contains only a host address. Pointer arithmetic and
-  subtraction, equality, and relational comparison operate on that address; no
+- `ExpressionResult.Pointer` contains only a host address. Pointer arithmetic
+  and subtraction, equality, and relational comparison operate on that
+  address; no
   allocation identity, declaration identity, or pointer-kind predicate
   participates in execution.
 - Class identity is the object-body address. All aliases, fields, casts, member
@@ -684,14 +687,13 @@ All test additions/changes require approval first (AGENTS.md).
 
 ## Remaining work
 
-The native authority switch is the standing interpreter contract, not pending
-work. The remaining value-track work begins with the language-surface and
-display tasks below. Item numbers remain stable for existing cross-references.
-`interpreter-performance.md` may improve measurement in parallel, but its
-production optimisation order begins only after items 2-3 and removal of the
-Interpreter's remaining transitional representation maps. This prevents
-performance work from entrenching representation machinery already scheduled
-for deletion.
+The native authority switch and Interpreter value removal are standing
+contracts, not pending work. The remaining value-track work is the IR and
+Bytecode formatter migration followed by shared-`Value` deletion, alongside
+the language-surface tasks below. Item numbers remain stable for existing
+cross-references. `interpreter-performance.md` may improve measurement in
+parallel, but production optimisation begins only after items 2-3 delete the
+shared representation.
 
 ### Item 4 — Workingness track
 
@@ -769,23 +771,16 @@ just to reuse the evaluator path.
 
 Delete the shared `quickbite.lang.Value` and its unit tests once per-backend
 formatter migrations leave no consumers. This deletion is decision 15's
-completion signal.
+completion signal. IR and Bytecode formatter execution are the remaining
+prerequisites; the Interpreter no longer consumes or aliases the shared type.
 
-For the Interpreter, also delete transient storage-authority scaffolding that
-the native-layout end state makes unnecessary. Declaration-keyed
-`RuntimeValue` locals, lazy-argument snapshots, fallback blocks, and
-fork/return reconciliation are gone: `FrameBlock`, `ModuleTable`, and typed
-`Place` composition are the binding authority. Address-keyed callable and
-symbolic-reference metadata may accompany native byte ranges, but may not
-become a second binding store.
-
-Rename the remaining narrow carrier from the historical `RuntimeValue`/`Value`
-spellings to `ExpressionResult`. It already has the smallest non-owning
+The Interpreter's `ExpressionResult` has the smallest non-owning
 scalar/address/callable shape allowed by decisions 7 and 11: no formatting
 model, recursively boxed aggregate, class-object snapshot, or storage
-authority. A class expression is only a native aggregate owner or its
-object-body address. The rename must be mechanical; it must not grow a new
-abstraction or change this arm set.
+authority. `FrameBlock`, `ModuleTable`, and typed `Place` composition are the
+binding authority. Address-keyed callable and symbolic-reference metadata may
+accompany native byte ranges, but may not become a second binding store. A
+class expression is only a native aggregate owner or its object-body address.
 
 ### Item 6 — Open design questions
 

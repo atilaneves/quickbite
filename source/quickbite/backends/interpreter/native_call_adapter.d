@@ -37,9 +37,9 @@ private NativeCallException nativeCallExceptionFrom(Throwable throwable) {
 // Runs an interpreted delegate that native code called back into (ffi.md
 // §34.16). The Walker supplies it so callback plumbing can re-enter the
 // interpreter without this module importing the Walker.
-public alias DelegateInvoker = imported!"quickbite.backends.interpreter.runtime_value".Value delegate(
-    in imported!"quickbite.backends.interpreter.runtime_value".Value callee,
-    in imported!"quickbite.backends.interpreter.runtime_value".Value[] arguments,
+public alias DelegateInvoker = imported!"quickbite.backends.interpreter.expression_result".ExpressionResult delegate(
+    in imported!"quickbite.backends.interpreter.expression_result".ExpressionResult callee,
+    in imported!"quickbite.backends.interpreter.expression_result".ExpressionResult[] arguments,
 );
 
 private alias InboundCallbackInvoker = void delegate(
@@ -224,9 +224,9 @@ private size_t callbackSourceIndex(
 // trampolines. The registry owns libffi closure memory; this session owns
 // interpreter Values and remains valid for the Walker session (§35.4).
 public struct InterpreterInboundTrampolineSession {
-    import quickbite.backends.interpreter.runtime_value: Value;
+    import quickbite.backends.interpreter.expression_result: ExpressionResult;
 
-    private Value[] _callbacks;
+    private ExpressionResult[] _callbacks;
     private DelegateInvoker _invokeDelegate;
     private InboundTrampolineRegistry* _registry;
 
@@ -239,7 +239,7 @@ public struct InterpreterInboundTrampolineSession {
         return _registry;
     }
 
-    public size_t register(in Value callback) {
+    public size_t register(in ExpressionResult callback) {
         _callbacks ~= callback;
         return _callbacks.length - 1;
     }
@@ -268,7 +268,7 @@ public struct InterpreterInboundTrampolineSession {
         import quickbite.backends.interpreter.place_value: readValue, writeValue;
 
         assert(callbackId < _callbacks.length, "unknown durable callback id");
-        Value[] callbackArguments;
+        ExpressionResult[] callbackArguments;
         foreach (index, parameterType; parameterTypes)
             callbackArguments ~= readValue(Place(
                 argumentBuffers[index],
@@ -364,18 +364,18 @@ public struct NativeCallRequest {
     public const(void)* delegateAddress;
     public const(void)* delegateContext;
     public imported!"dmd.mtype".Type receiverType;
-    public imported!"quickbite.backends.interpreter.runtime_value".Value receiver;
+    public imported!"quickbite.backends.interpreter.expression_result".ExpressionResult receiver;
     public NativeOperand receiverOperand;
     public bool virtualDispatch;
     public bool returnsReceiver;
-    public imported!"quickbite.backends.interpreter.runtime_value".Value[] arguments;
+    public imported!"quickbite.backends.interpreter.expression_result".ExpressionResult[] arguments;
     public imported!"dmd.mtype".Type[] argumentTypes;
     public NativeOperand[] argumentOperands;
     public InterpreterInboundTrampolineSession* callbackSession;
 }
 
 public struct NativeCallResult {
-    public imported!"quickbite.backends.interpreter.runtime_value".Value value;
+    public imported!"quickbite.backends.interpreter.expression_result".ExpressionResult value;
     public void* referenceAddress;
 }
 
@@ -523,7 +523,7 @@ private bool prepareNativeInvocation(
 
 private bool prepareNativeOperand(
     imported!"dmd.mtype".Type type,
-    in imported!"quickbite.backends.interpreter.runtime_value".Value value,
+    in imported!"quickbite.backends.interpreter.expression_result".ExpressionResult value,
     NativeOperand supplied,
     InterpreterInboundTrampolineSession* callbackSession,
     ref NativeInvocation invocation,
@@ -535,11 +535,11 @@ private bool prepareNativeOperand(
     import quickbite.backends.interpreter.native_block: NativeBlock;
     import quickbite.backends.interpreter.place: Place;
     import quickbite.backends.interpreter.place_value: valueMatchesPlace, writeValue;
-    import quickbite.backends.interpreter.runtime_value: Value;
+    import quickbite.backends.interpreter.expression_result: ExpressionResult;
     import quickbite.ffi.ffi: TypedAddress;
 
     const interpretedDelegate = type.toBasetype.ty == TY.Tdelegate &&
-        value != Value.null_ &&
+        value != ExpressionResult.null_ &&
         !value.isNativeDelegate;
     if (!interpretedDelegate && operandMatches(supplied, type)) {
         result = TypedAddress(type, supplied.address);
@@ -561,7 +561,7 @@ private bool prepareNativeOperand(
             ? NativeBlock.Scan.conservative
             : NativeBlock.Scan.no,
     );
-    if (type.toBasetype.ty == TY.Tdelegate && value != Value.null_) {
+    if (type.toBasetype.ty == TY.Tdelegate && value != ExpressionResult.null_) {
         if (value.isNativeDelegate) {
             *cast(const(void)**) owner.address = value.nativeDelegateContext;
             *cast(const(void)**) (cast(ubyte*) owner.address + (void*).sizeof) =
@@ -578,8 +578,8 @@ private bool prepareNativeOperand(
         }
     } else if (valueMatchesPlace(type, value) ||
         type.toBasetype.ty == TY.Tclass &&
-            (value.isPointer || value == Value.null_) ||
-        type.toBasetype.ty == TY.Tdelegate && value == Value.null_)
+            (value.isPointer || value == ExpressionResult.null_) ||
+        type.toBasetype.ty == TY.Tdelegate && value == ExpressionResult.null_)
     {
         writeValue(Place(owner.address, type), value);
     } else
@@ -661,7 +661,7 @@ private NativeCallResult readNativeInvocationResult(
     import dmd.astenums: TY;
     import quickbite.backends.interpreter.place: Place;
     import quickbite.backends.interpreter.place_value: readValue;
-    import quickbite.backends.interpreter.runtime_value: Value;
+    import quickbite.backends.interpreter.expression_result: ExpressionResult;
 
     NativeCallResult result;
     if (invocation.returnsReceiver) {
@@ -681,10 +681,10 @@ private NativeCallResult readNativeInvocationResult(
     }
     switch (invocation.result.type.toBasetype.ty) with (TY) {
         case Tvoid, Tnoreturn:
-            result.value = Value.void_;
+            result.value = ExpressionResult.void_;
             break;
         case Tdelegate:
-            result.value = Value.nativeDelegateValue(
+            result.value = ExpressionResult.nativeDelegateValue(
                 loadReference(invocation.result.address),
                 loadReference(cast(ubyte*) invocation.result.address +
                     (void*).sizeof),

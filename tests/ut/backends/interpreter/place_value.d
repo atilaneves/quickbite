@@ -11,15 +11,15 @@ import quickbite.backends.interpreter.layout:
 import quickbite.backends.interpreter.native_block: NativeBlock;
 import quickbite.backends.interpreter.native_scalar: writeScalar;
 import quickbite.backends.interpreter.aggregate_value: AggregateValue;
-import quickbite.backends.interpreter.runtime_value: Value;
+import quickbite.backends.interpreter.expression_result: ExpressionResult;
 import dmd.mtype: Type;
 import dmd.typesem: sarrayOf, pointerTo;
 
 private:
 
 
-// An enum-typed place must read back as a `Value.enumValue` qualified with
-// the member's own name (`Colour.green`), not the plain integral `Value`
+// An enum-typed place must read back as a `ExpressionResult.enumValue` qualified with
+// the member's own name (`Colour.green`), not the plain integral `ExpressionResult`
 // `native_scalar.readScalar` alone would give -- the enum-tagging gap this
 // slice closes (`ai/plans/value.md` "Remaining work" item 5).
 @("place_value.readValue.enumMemberValueReadsBackTaggedWithItsQualifiedName")
@@ -28,9 +28,9 @@ unittest {
     auto block = NativeBlock.allocate(typeByteSize(type), NativeBlock.Scan.no);
     auto root = placeAt(block, type);
 
-    writeScalar(type, block.bytes, Value(1));
+    writeScalar(type, block.bytes, ExpressionResult(1));
 
-    readValue(root).should == Value.enumValue("Colour.green", 1);
+    readValue(root).should == ExpressionResult.enumValue("Colour.green", 1);
 }
 
 
@@ -43,15 +43,15 @@ unittest {
     auto block = NativeBlock.allocate(typeByteSize(type), NativeBlock.Scan.no);
     auto root = placeAt(block, type);
 
-    writeScalar(type, block.bytes, Value(5));
+    writeScalar(type, block.bytes, ExpressionResult(5));
 
-    readValue(root).should == Value.enumValue("cast(Colour)5", 5);
+    readValue(root).should == ExpressionResult.enumValue("cast(Colour)5", 5);
 }
 
 
 // `writeValue` already stores an enum's underlying bits correctly (its
 // `isNativeScalarType` arm goes through `native_scalar.writeScalar` ->
-// `scalarLong` -> `Value.asLong`'s `EnumValue` arm); this pins the full
+// `scalarLong` -> `ExpressionResult.asLong`'s `EnumValue` arm); this pins the full
 // round trip through the now enum-aware `readValue`.
 @("place_value.writeValue.readValue.enumValueRoundTrips")
 unittest {
@@ -59,7 +59,7 @@ unittest {
     auto block = NativeBlock.allocate(typeByteSize(type), NativeBlock.Scan.no);
     auto root = placeAt(block, type);
 
-    auto written = Value.enumValue("Colour.blue", 2);
+    auto written = ExpressionResult.enumValue("Colour.blue", 2);
 
     writeValue(root, written);
 
@@ -84,7 +84,7 @@ unittest {
     writtenY = writtenY * 11 + 3;
 
     const offset = fieldByteOffset(yField);
-    writeScalar(yField.type, block.bytes[offset .. offset + typeByteSize(yField.type)], Value(writtenY));
+    writeScalar(yField.type, block.bytes[offset .. offset + typeByteSize(yField.type)], ExpressionResult(writtenY));
 
     AggregateValue.fieldAt(readValue(root), 1).asLong.should == writtenY;
 }
@@ -97,7 +97,7 @@ unittest {
     auto classType = classTypeOf(q{ class C { int x; } }, "C");
     auto place = Place(null, classType);
 
-    writeValue(place, Value.void_).shouldThrowWithMessage(
+    writeValue(place, ExpressionResult.void_).shouldThrowWithMessage(
         "quickbite.backends.interpreter.place_value.writeValue: class place "
         ~ "requires an object pointer or null",
     );
@@ -105,7 +105,7 @@ unittest {
 
 
 // A null stored reference -- the zero-filled default `NativeBlock.allocate`
-// gives every fresh slot -- reads back as `Value.null_`, not an attempt to
+// gives every fresh slot -- reads back as `ExpressionResult.null_`, not an attempt to
 // read fields through a null object-body address.
 @("place_value.readValue.classReferenceNullReadsBackAsNull")
 unittest {
@@ -113,7 +113,7 @@ unittest {
     auto referenceSlot = NativeBlock.allocate((void*).sizeof, NativeBlock.Scan.conservative);
     auto place = placeAt(referenceSlot, classType);
 
-    readValue(place).should == Value.null_;
+    readValue(place).should == ExpressionResult.null_;
 }
 
 
@@ -136,9 +136,9 @@ unittest {
     int third = 9;
     third = third * 2 + 3;
 
-    writeScalar(sliceType.nextOf, elementsArray.element(0), Value(first));
-    writeScalar(sliceType.nextOf, elementsArray.element(1), Value(second));
-    writeScalar(sliceType.nextOf, elementsArray.element(2), Value(third));
+    writeScalar(sliceType.nextOf, elementsArray.element(0), ExpressionResult(first));
+    writeScalar(sliceType.nextOf, elementsArray.element(1), ExpressionResult(second));
+    writeScalar(sliceType.nextOf, elementsArray.element(2), ExpressionResult(third));
 
     auto headerBlock = NativeBlock.allocate(NativeArray.sliceHeaderByteLength, NativeBlock.Scan.conservative);
     elementsArray.writeSliceHeader(headerBlock, 0);
@@ -147,9 +147,9 @@ unittest {
 
     auto readBack = readValue(root);
     AggregateValue.elementCount(readBack).should == 3;
-    AggregateValue.elementAt(readBack, 0).should == Value(first);
-    AggregateValue.elementAt(readBack, 1).should == Value(second);
-    AggregateValue.elementAt(readBack, 2).should == Value(third);
+    AggregateValue.elementAt(readBack, 0).should == ExpressionResult(first);
+    AggregateValue.elementAt(readBack, 1).should == ExpressionResult(second);
+    AggregateValue.elementAt(readBack, 2).should == ExpressionResult(third);
 }
 
 
@@ -184,11 +184,11 @@ unittest {
 
     const firstPoint = AggregateValue.reconstructStruct(
         sliceType.nextOf,
-        [Value(firstX), Value(firstY)],
+        [ExpressionResult(firstX), ExpressionResult(firstY)],
     );
     const secondPoint = AggregateValue.reconstructStruct(
         sliceType.nextOf,
-        [Value(secondX), Value(secondY)],
+        [ExpressionResult(secondX), ExpressionResult(secondY)],
     );
 
     writeValue(root.index(0), firstPoint);
@@ -199,11 +199,11 @@ unittest {
     AggregateValue.elementCount(readBack).should == 2;
 
     auto readFirst = AggregateValue.elementAt(readBack, 0);
-    AggregateValue.fieldAt(readFirst, 0).should == Value(firstX);
-    AggregateValue.fieldAt(readFirst, 1).should == Value(firstY);
+    AggregateValue.fieldAt(readFirst, 0).should == ExpressionResult(firstX);
+    AggregateValue.fieldAt(readFirst, 1).should == ExpressionResult(firstY);
     auto readSecond = AggregateValue.elementAt(readBack, 1);
-    AggregateValue.fieldAt(readSecond, 0).should == Value(secondX);
-    AggregateValue.fieldAt(readSecond, 1).should == Value(secondY);
+    AggregateValue.fieldAt(readSecond, 0).should == ExpressionResult(secondX);
+    AggregateValue.fieldAt(readSecond, 1).should == ExpressionResult(secondY);
 }
 
 
@@ -219,7 +219,7 @@ unittest {
     int writtenI = 7;
     writtenI = writtenI * 100_000 + 3;
 
-    writeValue(root.field(fields[0]), Value(writtenI));
+    writeValue(root.field(fields[0]), ExpressionResult(writtenI));
 
     AggregateValue.fieldAt(readValue(root), 1).asLong.should == cast(short) writtenI;
 }
@@ -241,7 +241,7 @@ unittest {
     short writtenS = -3;
     writtenS = cast(short)(writtenS * 1000 - 7);
 
-    writeValue(root.field(fields[1]), Value(writtenS));
+    writeValue(root.field(fields[1]), ExpressionResult(writtenS));
 
     AggregateValue.fieldAt(readValue(root), 0).asLong.should == cast(int) cast(ushort) writtenS;
     AggregateValue.fieldAt(readValue(root), 0).asLong.shouldNotEqual(cast(int) writtenS);
@@ -348,7 +348,7 @@ unittest {
 
 
 // A pointer place's own bytes ARE the host address (`ai/plans/value.md`
-// decision 15) -- writing a `Value.pointerValue` and reading it back
+// decision 15) -- writing a `ExpressionResult.pointerValue` and reading it back
 // must round-trip that exact address, with no element recursion at all.
 @("place_value.writeValue.readValue.pointerRoundTripsHostAddress")
 unittest {
@@ -357,7 +357,7 @@ unittest {
     auto root = placeAt(block, pointerType);
 
     auto pointee = NativeBlock.allocate(int.sizeof, NativeBlock.Scan.no);
-    auto written = Value.pointerValue(pointee.address);
+    auto written = ExpressionResult.pointerValue(pointee.address);
 
     writeValue(root, written);
 
@@ -365,7 +365,7 @@ unittest {
 }
 
 
-// A stored `null` address reads back as `Value.null_` -- the same value
+// A stored `null` address reads back as `ExpressionResult.null_` -- the same value
 // `impl.d` produces for a `null` pointer literal (`isNullExp`'s non-array
 // arm) -- not an invented `pointerValue(null)` shape.
 @("place_value.writeValue.readValue.pointerRoundTripsNull")
@@ -374,9 +374,9 @@ unittest {
     auto block = NativeBlock.allocate(typeByteSize(pointerType), NativeBlock.Scan.conservative);
     auto root = placeAt(block, pointerType);
 
-    writeValue(root, Value.null_);
+    writeValue(root, ExpressionResult.null_);
 
-    readValue(root).should == Value.null_;
+    readValue(root).should == ExpressionResult.null_;
 }
 
 
@@ -389,7 +389,7 @@ unittest {
     auto root = placeAt(block, pointerType);
 
     auto pointee = NativeBlock.allocate(int.sizeof, NativeBlock.Scan.no);
-    auto pointer = Value.pointerValue(pointee.address);
+    auto pointer = ExpressionResult.pointerValue(pointee.address);
     writeValue(root, pointer);
 
     readValue(root).should == pointer;
@@ -411,9 +411,9 @@ unittest {
     auto pointee = NativeBlock.allocate(int.sizeof, NativeBlock.Scan.no);
     int writtenPointee = 9;
     writtenPointee = writtenPointee * 3 + 2;
-    writeScalar(pointerType.nextOf, pointee.bytes, Value(writtenPointee));
+    writeScalar(pointerType.nextOf, pointee.bytes, ExpressionResult(writtenPointee));
 
-    writeValue(root, Value.pointerValue(pointee.address));
+    writeValue(root, ExpressionResult.pointerValue(pointee.address));
 
     auto readBack = readValue(root);
     auto pointeePlace = Place(readBack.pointerAddress, pointerType.nextOf);
@@ -446,9 +446,9 @@ unittest {
     const back = cast(real) narrowed;
     (written == back).should == false;
 
-    writeValue(root, Value(written));
+    writeValue(root, ExpressionResult(written));
 
-    readValue(root).should == Value(written);
+    readValue(root).should == ExpressionResult(written);
 }
 
 
@@ -456,7 +456,7 @@ unittest {
 // depends on (`ai/plans/value.md`'s Layout authority contract): writing
 // the SAME `real` value twice must produce IDENTICAL bytes, padding
 // included, not merely an equal `real` on read-back. Asserted directly on
-// the block's own raw bytes, not only on the round-tripped `Value`, since
+// the block's own raw bytes, not only on the round-tripped `ExpressionResult`, since
 // two different padding patterns could still both read back correctly
 // (`readRealBits` never inspects the padding) while still breaking the
 // mirror's byte-for-byte comparison.
@@ -480,11 +480,11 @@ unittest {
     real written = one + real.epsilon;
 
     block.bytes[] = ubyte(0xab);
-    writeValue(root, Value(written));
+    writeValue(root, ExpressionResult(written));
     auto firstBytes = block.bytes.dup;
 
     block.bytes[] = ubyte(0xcd);
-    writeValue(root, Value(written));
+    writeValue(root, ExpressionResult(written));
 
     block.bytes.should == firstBytes;
     firstBytes[significantByteLength .. $].should ==
@@ -502,7 +502,7 @@ unittest {
 // Floating-base enums use their underlying floating scalar as the execution
 // carrier. Typed native storage retains the enum type, so reads and writes
 // still preserve the complete guest representation without forcing the
-// integral-only `Value.enumValue` tag.
+// integral-only `ExpressionResult.enumValue` tag.
 @("place_value.isPlaceComposable.trueForRealBasedEnum")
 unittest {
     auto enumType = enumTypeOf(q{ enum E: real { a = 1.0L } }, "E");
@@ -523,7 +523,7 @@ unittest {
     auto block = NativeBlock.allocate(typeByteSize(enumType), NativeBlock.Scan.no);
     auto root = placeAt(block, enumType);
 
-    readValue(root).should == Value(0.0L);
+    readValue(root).should == ExpressionResult(0.0L);
 }
 
 
@@ -536,9 +536,9 @@ unittest {
     double written = 0.5;
     written = written + 0.5;
 
-    writeValue(root, Value(written));
+    writeValue(root, ExpressionResult(written));
 
-    readValue(root).should == Value(written);
+    readValue(root).should == ExpressionResult(written);
 }
 
 
@@ -661,14 +661,14 @@ unittest {
     *cast(void**) referenceSlot.address = bodyBlock.address;
     auto referencePlace = placeAt(referenceSlot, classType);
 
-    readValue(referencePlace).should == Value.pointerValue(bodyBlock.address);
+    readValue(referencePlace).should == ExpressionResult.pointerValue(bodyBlock.address);
 }
 
 
-// A boxed null slice is a length of zero, not an error. `Value.length`
-// itself throws "Expected array." for `Value.null_`, which would otherwise
+// A boxed null slice is a length of zero, not an error. `ExpressionResult.length`
+// itself throws "Expected array." for `ExpressionResult.null_`, which would otherwise
 // make `writeValue` refuse a value the read side hands straight back: a
-// `{ 0, null }` header reads as an empty array, never as `Value.null_`.
+// `{ 0, null }` header reads as an empty array, never as `ExpressionResult.null_`.
 @("place_value.writeValue.readValue.nullSliceWritesAnEmptySlice")
 unittest {
     auto holderType = structTypeOf(q{ struct SliceHolder { int[] xs; } }, "SliceHolder");
@@ -676,7 +676,7 @@ unittest {
     auto block = NativeBlock.allocate(typeByteSize(sliceType), NativeBlock.Scan.conservative);
     auto root = placeAt(block, sliceType);
 
-    writeValue(root, Value.null_);
+    writeValue(root, ExpressionResult.null_);
 
     AggregateValue.length(readValue(root)).should == 0;
 }
