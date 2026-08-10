@@ -4,7 +4,7 @@
 
 Benchmark output must make two things mechanically clear:
 
-1. which unittest bodies were checked before timing; and
+1. which unittest bodies were checked by measured executions; and
 2. which exact unit was timed.
 
 Fast numbers are useful only after that. A row such as:
@@ -55,17 +55,20 @@ Bench is not a language-correctness oracle, but it still needs enough checking
 to avoid timing nothing, timing a backend that already reported failed
 unittests, or comparing timings for backends that did not run the same tests.
 
-Before timing, run the selected backend or backends once on the benchmark unit
-and inspect their `TestResult[]`.
+The first measured execution is the correctness execution. Retain its
+`TestResult[]`, validate it, and publish the timing only after validation. Do
+not run the same benchmark unit in a separate untimed verification pass.
 
-For a single selected backend, time the unit only when:
+For a single selected backend, publish the measured unit only when:
 
 - the backend reports at least one unittest result; and
 - every reported unittest passes.
 
-For multiple selected backends, time the unit only when every backend returns
-the same `TestResult[]`: same count, same test names, and same pass/fail
-outcomes. Failure messages may differ.
+For multiple selected backends, collect provisional measurements and publish
+them only when every backend's retained `TestResult[]` agrees: same count, same
+test names, and same pass/fail outcomes. Failure messages may differ. Every
+later measured iteration must reproduce its backend's retained result shape
+and outcomes; otherwise discard the row as nondeterministic.
 
 `--skip-check` means exactly what it says and bypasses these checks. The
 timed row should show the reported pass count so the output proves that the
@@ -495,9 +498,9 @@ Then use that same unit for:
 - timing.
 
 The driver should not claim full language correctness. A single-backend row
-only needs to prove that this backend ran at least one unittest before timing,
-and that none of those reported tests failed. A multi-backend run should also
-prove that all timed backends reported the same test results.
+only needs to prove that this backend ran at least one unittest in the measured
+execution, and that none of those reported tests failed. A multi-backend run
+should also prove that all timed backends reported the same test results.
 
 ## Work Items
 
@@ -557,9 +560,10 @@ Remove the rule that a single selected backend forces `skipCheck = true`.
 Instead:
 
 - `--skip-check` means exactly what it says and is the only implicit-pass path.
-- `-b interpreter --dub cerealed` still runs `interpreter` once before timing.
-- A single selected backend is timed only if its self-check returns passing
-  nonempty `TestResult[]`.
+- `-b interpreter --dub cerealed` uses its first measured execution as the
+  self-check; it does not execute the package once before timing.
+- A single selected backend's row is published only if that measured
+  execution returns passing nonempty `TestResult[]`.
 - The timed row reports how many tests were returned and how many passed.
 
 The first test should use fake runners: one runner reports a failing
@@ -572,24 +576,24 @@ Do not compare a single selected backend with an implicit oracle backend.
 Cross-backend agreement is useful only when the user explicitly selected more
 than one backend to time.
 
-For one backend, keep only a same-backend preflight:
+For one backend, validate the retained first measured result:
 
-- run the selected backend once on the unit that will be timed;
 - collect the returned `TestResult[]`;
-- skip timing if the result count is zero; done 2026-06-20 by normalising the
-  empty result to a failing self-check;
-- skip timing if any result failed; and
+- discard the measured row if the result count is zero; the existing
+  normalisation of an empty result to a failing self-check supplies the reason;
+- discard the measured row if any result failed; and
 - print the pass count in the timed row.
 
-For multiple backends, run every selected backend once on the unit that will be
-timed and require all returned `TestResult[]` values to agree on:
+For multiple backends, measure every selected backend, retain the first
+`TestResult[]` from each, and require those values to agree on:
 
 - result count;
 - test names; and
 - pass/fail outcomes.
 
 Failure messages may differ. A mismatch means at least one timed backend did
-not run the same benchmark, so skip or reject that row before measuring.
+not run the same benchmark, so reject the provisional measured rows before
+publishing them.
 
 For standalone fixtures, the unit has one module. For dub packages, the unit is
 the prepared package module group if the runner supports grouped execution, or
@@ -784,7 +788,8 @@ Covered by `dubInfoUsesDependencyImageInsteadOfRawArchives`. Smoke:
 `156/156` timed row through the image-backed path. At the time, the interpreter
 smoke skipped cerealed with `Unsupported interpreter assignment target`. That
 assignment gap is historical; the current mixed `interpreter`/`system-linker`
-run rejects a signed-byte array reinterpretation disagreement before timing.
+run rejects provisional measured rows when it finds a signed-byte array
+reinterpretation disagreement.
 See `interpreter.md` §9.10 and the signed-byte frontier near the end of §9.
 
 The `--dub` cold path should build one `lib<pkg>_dub_deps.so` from dub's
@@ -1254,14 +1259,15 @@ failure and are evidence to print, not portable equality keys.
    dependency preparation and frontend parse remain excluded as documented.
 
 6. Capture output during warmup and measurement so framework output does not
-   bury benchmark rows. Print captured diagnostics when the untimed check fails;
-   discard successful warmup/measurement output unless a diagnostic mode is
-   deliberately added later.
+   bury benchmark rows. Print captured diagnostics when a retained measured
+   execution fails validation; discard successful warmup/measurement output
+   unless a diagnostic mode is deliberately added later.
 
-7. Run the test program once before timing. Time it only when that check exits
-   successfully. `--skip-check` retains its existing meaning and bypasses the
-   untimed check, but the timed invocation must still fail the row honestly if
-   the program exits unsuccessfully.
+7. Use the first measured test-program execution as its check. Retain its exit
+   status and output, and publish its timing only when it succeeds. Do not run
+   a separate untimed check. `--skip-check` retains its existing meaning, but
+   a timed invocation must still fail the row honestly if the program exits
+   unsuccessfully.
 
 ### TDD And Approval Gates
 
