@@ -11917,13 +11917,13 @@ private struct Compiler {
     // value, so there is no specific `FuncDeclaration` whose own frame layout
     // the argument area could be built from (as `compileDelegateCall` does
     // for a delegate local). Every callee reachable through a delegate VALUE
-    // is either a struct method (a receiver-block context, not modelled
-    // here), a class method, or a nested function/lambda -- the latter two
-    // both carry a single pointer-sized context word at frame offset 0,
-    // ahead of the declared parameters, matching the delegate pair's own
-    // `context` word verbatim. Building the argument area from the declared
-    // delegate type alone therefore lines up with the real callee's own
-    // registered layout for those two shapes.
+    // -- a struct method, a class method, or a nested function/lambda --
+    // carries a single pointer-sized context word at frame offset 0, ahead of
+    // the declared parameters, matching the delegate pair's own `context`
+    // word verbatim (a struct method's receiver address there, same as any
+    // other pointer-width context). Building the argument area from the
+    // declared delegate type alone therefore lines up with the real callee's
+    // own registered layout for every shape.
     private Operand compileDynamicDelegateCall(
         in ushort descriptorOffset,
         CallExp call,
@@ -11970,7 +11970,7 @@ private struct Compiler {
             returnType, functionType.isRef,
         );
         _code ~= Instruction(
-            Op.callIndirectDynamic, descriptorOffset, argumentArea, destination,
+            Op.callIndirect, descriptorOffset, argumentArea, destination,
         );
         return callResultOperand(
             destination, call.type, functionType.isRef, returnType,

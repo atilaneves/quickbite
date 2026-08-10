@@ -1728,11 +1728,11 @@ package(quickbite.backends.bytecode) RunResult run(
                 ++ip;
                 break;
 
-            case call, callIndirect, callIndirectDynamic:
+            case call, callIndirect:
                 // A direct `call` carries the callee's function index in
-                // `instruction.a`; an indirect `callIndirect`/
-                // `callIndirectDynamic` reads it from the size_t slot at that
-                // frame offset (the function-pointer or delegate value).
+                // `instruction.a`; an indirect `callIndirect` reads it from
+                // the size_t slot at that frame offset (the function-pointer
+                // or delegate value).
                 const calleeIndex = instruction.op == call
                     ? instruction.a
                     : cast(ushort) scalarValue!size_t(

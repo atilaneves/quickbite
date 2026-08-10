@@ -663,17 +663,12 @@ package(quickbite.backends.bytecode) enum Op: ubyte {
     call, // a: function index, b: argument area frame offset, c: destination
     // a: frame offset of a size_t slot holding the callee's function index,
     // b: argument area frame offset, c: destination. Backs an indirect call
-    // through a function pointer (`fp()`), where the callee is not known until
-    // run time; otherwise identical to `call`.
+    // through a function pointer (`fp()`) or a delegate-typed value
+    // (a local, a PARAMETER, or `d()` on a delegate local), where the callee
+    // is not known until run time; otherwise identical to `call`. A
+    // struct-receiver callee's whole receiver block travels as the pair's
+    // pointer-width context word, matching every other delegate shape.
     callIndirect,
-    // Same operands as `callIndirect`. Backs a call through a delegate-typed
-    // PARAMETER, whose actual callee is a run-time value: the caller built
-    // the argument area from the delegate's declared type alone, assuming a
-    // pointer-sized context word (correct for a nested function/lambda or a
-    // class method). A struct-receiver method instead needs its whole
-    // receiver block, which that argument area does not provide, so this
-    // rejects such a callee instead of misreading its context word as one.
-    callIndirectDynamic,
     // a: destination size_t slot, b: class-object pointer slot, c: statically
     // selected function index. Looks up the object's dynamic class and writes
     // the overriding function index, or c when no override is registered.
