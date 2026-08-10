@@ -120,14 +120,16 @@ public struct NativeOperand {
     public imported!"quickbite.backends.interpreter.native_block".NativeBlock retained;
 }
 
-// Plain fixed-arity extern(C), extern(D), and extern(C++) calls whose values
-// compose through typed places use this path. It writes rvalues into
+// Plain extern(C), extern(D), and extern(C++) calls whose values compose
+// through typed places use this path. C `...` arguments retain the call
+// expression's semantic types; `ffi.call` owns their ABI promotion check and
+// variadic CIF setup. It writes rvalues into
 // short-lived typed storage and lends local/ref bindings and fields their
 // existing places. A native `ref`/`out`
 // formal must borrow such a place: `ffi.call` turns that address into its ABI
 // pointer cell, so the native callee writes the caller's binding directly.
-// Receivers, variadics, and lvalues without an already-addressable place
-// continue through the legacy adapter.
+// Receivers, unsupported variadics, and lvalues without an already-addressable
+// place continue through the legacy adapter.
 public bool tryCallNativeAddressOnly(
     imported!"dmd.func".FuncDeclaration function_,
     in imported!"quickbite.backends.interpreter.runtime_value".Value[] arguments,
@@ -153,17 +155,19 @@ public bool tryCallNativeAddressOnly(
         return false;
 
     auto signature = cast(TypeFunction) function_.type;
-    if (
-        signature is null ||
-        signature.parameterList.varargs != VarArg.none ||
-        signature.isRef
-    )
+    if (signature is null || signature.isRef)
         return false;
 
+    const isCVariadic = function_._linkage == LINK.c &&
+        signature.parameterList.varargs == VarArg.variadic;
+    if (signature.parameterList.varargs != VarArg.none && !isCVariadic)
+        return false;
+
+    const fixedArgumentCount = signature.parameterList.length;
     auto parameters = signature.parameterList.parameters;
     if (
-        parameters is null && arguments.length != 0 ||
-        parameters !is null && arguments.length != parameters.length ||
+        isCVariadic && arguments.length < fixedArgumentCount ||
+        !isCVariadic && arguments.length != fixedArgumentCount ||
         argumentTypes.length != arguments.length
     )
         return false;
@@ -175,14 +179,18 @@ public bool tryCallNativeAddressOnly(
     auto operandTypes = new TypedAddress[](arguments.length);
     NativeBlock[] operandOwners;
     foreach (index, argument; arguments) {
-        auto parameter = (*parameters)[index];
-        auto parameterType = parameter.type.toBasetype;
-        const isReference =
-            (parameter.storageClass & (STC.ref_ | STC.out_)) != STC.none;
+        const isFixedArgument = index < fixedArgumentCount;
+        auto parameterType = isFixedArgument
+            ? (*parameters)[index].type.toBasetype
+            : argumentTypes[index].toBasetype;
+        const isReference = isFixedArgument &&
+            ((*parameters)[index].storageClass & (STC.ref_ | STC.out_)) !=
+                STC.none;
         if (
             !isPlaceComposable(parameterType) ||
             argumentTypes[index] is null ||
-            !argumentTypes[index].toBasetype.equals(parameterType)
+            isFixedArgument &&
+                !argumentTypes[index].toBasetype.equals(parameterType)
         )
             return false;
 
