@@ -5,11 +5,19 @@ private:
 public import quickbite.ffi.ffi:
     CompilerAbi,
     DependencyImage,
+    InboundCallbackInvoker,
+    InboundTrampolineRegistry,
+    NativeCallException,
     compilerAbiFor,
     loadDependencyImages,
+    nativeCallExceptionFrom,
     registerClosureAbi,
     unregisterClosureAbi,
     verifyDependencyImages;
+
+// Compatibility name for legacy users while callback plumbing lives in the
+// address-only bridge. It carries IDs and typed buffers only.
+public alias DurableInboundInvoker = InboundCallbackInvoker;
 
 // Returns a diagnostic naming an FFI-uncrossable type in `function_`'s
 // signature (today: an associative array, whose hashing/allocation the bridge
@@ -59,26 +67,6 @@ private imported!"dmd.mtype".Type uncrossableAssocArray(
 
     auto base = type.toBasetype;
     return base.ty == TY.Taarray ? base : null;
-}
-
-public class NativeCallException: Exception {
-    public string className;
-    public Throwable nativeThrowable;
-    public const(void)* nativeThrowableObjectPointer;
-    // The native Throwable.next link, captured as another NativeCallException
-    // so the backend can rebuild the chain (ffi.md §34.13). Null at the tail.
-    public NativeCallException chainedNext;
-
-    public this(
-        in string message,
-        in string className,
-        Throwable nativeThrowable,
-    ) {
-        super(message);
-        this.className = className;
-        this.nativeThrowable = nativeThrowable;
-        this.nativeThrowableObjectPointer = cast(const(void)*) nativeThrowable;
-    }
 }
 
 // Optional zero-copy struct receiver capability for native-layout backends.
@@ -204,57 +192,6 @@ public interface NativeMarshaller {
     // returns its opaque callback id. The registry re-enters solely through
     // that id after the forward native call has returned (ffi.md §35.4).
     size_t durableInboundCallbackId(in size_t argumentIndex);
-}
-
-// Backend-neutral re-entry route for durable callbacks. The backend owns the
-// callback-id table and roots its callable values; the bridge owns libffi's
-// executable closure/CIF pair for the same session lifetime.
-public alias DurableInboundInvoker = void delegate(
-    in size_t callbackId,
-    imported!"dmd.mtype".Type returnType,
-    imported!"dmd.mtype".Type[] parameterTypes,
-    void*[] argumentBuffers,
-    ubyte[] resultBuffer,
-);
-
-public struct InboundTrampolineRegistry {
-    private DurableInboundInvoker _invoke;
-    private DurableClosureContext*[] _contexts;
-    private void*[] _closures;
-
-    public this(DurableInboundInvoker invoke) {
-        _invoke = invoke;
-    }
-
-    public void setupDelegateArgument(
-        ubyte[] buffer,
-        imported!"dmd.mtype".Type delegateType,
-        in size_t callbackId,
-        in CompilerAbi compilerAbi,
-    ) {
-        setupDurableDelegateArgument(
-            buffer,
-            delegateType,
-            callbackId,
-            compilerAbi,
-            &this,
-        );
-    }
-
-    // The owning backend session calls this after native code can no longer
-    // re-enter it. The writable allocation, not the executable code pointer,
-    // is libffi's ownership token.
-    public void close() {
-        import quickbite.ffi.libffi: ffi_closure_free;
-
-        foreach (context; _contexts)
-            unregisterClosureAbi(context.code);
-        foreach (closure; _closures)
-            ffi_closure_free(closure);
-        _closures = null;
-        _contexts = null;
-        _invoke = null;
-    }
 }
 
 // `argumentTypes` are the call site's actual argument types (one per argument).
@@ -990,21 +927,6 @@ private bool canRepresentCall(
     return true;
 }
 
-// Capture the caught native Throwable and its `.next` chain as a linked
-// NativeCallException, preserving each link's message and dynamic class name so
-// the backend can rebuild the interpreted chain (ffi.md §34.13). Only Exception
-// is caught at the call site; Error stays fatal.
-private NativeCallException nativeCallExceptionFrom(Throwable throwable) {
-    auto result = new NativeCallException(
-        throwable.msg,
-        throwable.classinfo.name,
-        throwable,
-    );
-    if (throwable.next !is null)
-        result.chainedNext = nativeCallExceptionFrom(throwable.next);
-    return result;
-}
-
 private size_t abiSourceIndex(
     imported!"dmd.astenums".LINK linkage,
     in CompilerAbi compilerAbi,
@@ -1028,21 +950,6 @@ private struct ClosureContext {
     size_t argumentIndex;
     imported!"dmd.mtype".Type returnType;
     imported!"dmd.mtype".Type[] parameterTypes;   // source order
-    size_t returnSize;
-    CompilerAbi compilerAbi;
-    const(void)* code;
-    imported!"quickbite.ffi.libffi".ffi_cif* cif;
-    imported!"quickbite.ffi.libffi".ffi_type*[] argumentFfiTypes;
-}
-
-// Durable counterpart of ClosureContext. It holds no forward-call marshaller or
-// argument index: all re-entry state is resolved from its session registry and
-// opaque callback id (§35.4).
-private struct DurableClosureContext {
-    InboundTrampolineRegistry* registry;
-    size_t callbackId;
-    imported!"dmd.mtype".Type returnType;
-    imported!"dmd.mtype".Type[] parameterTypes;
     size_t returnSize;
     CompilerAbi compilerAbi;
     const(void)* code;
@@ -1150,68 +1057,6 @@ private void setupDelegateArgument(
     *cast(void**) (buffer.ptr + (void*).sizeof) = code;
 }
 
-private void setupDurableDelegateArgument(
-    ubyte[] buffer,
-    imported!"dmd.mtype".Type delegateType,
-    in size_t callbackId,
-    in CompilerAbi compilerAbi,
-    InboundTrampolineRegistry* registry,
-) {
-    import quickbite.ffi.libffi:
-        ffi_cif, ffi_type, ffi_type_pointer, ffi_prep_cif, ffi_closure,
-        ffi_closure_alloc, ffi_prep_closure_loc, FFI_DEFAULT_ABI;
-    import dmd.astenums: LINK;
-    import dmd.mtype: Type, TypeFunction;
-
-    auto functionType = cast(TypeFunction) delegateType.nextOf;
-    auto returnType = functionType.next.toBasetype;
-    auto returnFfi = ffiTypeFor(returnType);
-    const np = functionType.parameterList.parameters is null
-        ? 0
-        : functionType.parameterList.parameters.length;
-    auto parameterTypes = new Type[](np);
-    foreach (index; 0 .. np)
-        parameterTypes[index] =
-            (*functionType.parameterList.parameters)[index].type.toBasetype;
-
-    auto argumentFfiTypes = new ffi_type*[](1 + np);
-    argumentFfiTypes[0] = &ffi_type_pointer;
-    foreach (abiIndex; 0 .. np)
-        argumentFfiTypes[1 + abiIndex] =
-            ffiArgumentTypeFor(parameterTypes[abiSourceIndex(
-                LINK.d,
-                compilerAbi,
-                np,
-                abiIndex,
-            )]);
-
-    auto cif = new ffi_cif;
-    ffi_prep_cif(cif, FFI_DEFAULT_ABI, cast(uint) (1 + np), returnFfi,
-        argumentFfiTypes.ptr);
-
-    auto context = new DurableClosureContext;
-    context.registry = registry;
-    context.callbackId = callbackId;
-    context.returnType = returnType;
-    context.parameterTypes = parameterTypes;
-    context.returnSize = returnFfi.size < 8 ? 8 : returnFfi.size;
-    context.compilerAbi = compilerAbi;
-    context.cif = cif;
-    context.argumentFfiTypes = argumentFfiTypes;
-    registry._contexts ~= context;
-
-    void* code;
-    auto writable = ffi_closure_alloc(ffi_closure.sizeof, &code);
-    ffi_prep_closure_loc(cast(ffi_closure*) writable, cif,
-        &durableClosureTrampoline, cast(void*) context, code);
-    context.code = code;
-    registerClosureAbi(code, compilerAbi);
-    registry._closures ~= writable;
-
-    *cast(void**) buffer.ptr = cast(void*) context;
-    *cast(void**) (buffer.ptr + (void*).sizeof) = code;
-}
-
 // Invoked by native code through the libffi closure. `args[0]` is the delegate
 // context (ignored — the backend resolves the closure by argument index);
 // `args[1 ..]` are the explicit arguments in the caller's compiler ABI order,
@@ -1238,33 +1083,6 @@ private extern(C) void closureTrampoline(
 
     context.marshaller.invokeClosure(
         context.argumentIndex,
-        context.returnType,
-        context.parameterTypes,
-        sourceArguments,
-        (cast(ubyte*) ret)[0 .. context.returnSize],
-    );
-}
-
-private extern(C) void durableClosureTrampoline(
-    imported!"quickbite.ffi.libffi".ffi_cif* cif,
-    void* ret,
-    void** args,
-    void* userData,
-) {
-    import dmd.astenums: LINK;
-
-    auto context = cast(DurableClosureContext*) userData;
-    const np = context.parameterTypes.length;
-    auto sourceArguments = new void*[](np);
-    foreach (abiIndex; 0 .. np)
-        sourceArguments[abiSourceIndex(
-            LINK.d,
-            context.compilerAbi,
-            np,
-            abiIndex,
-        )] = args[1 + abiIndex];
-    context.registry._invoke(
-        context.callbackId,
         context.returnType,
         context.parameterTypes,
         sourceArguments,

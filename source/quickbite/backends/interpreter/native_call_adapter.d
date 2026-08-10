@@ -13,7 +13,7 @@ import quickbite.ffi.oldffi:
 
 // Re-exported so the interpreter call sites keep a single import for the native
 // call path and its exception type.
-public import quickbite.ffi.oldffi: NativeCallException;
+public import quickbite.ffi.ffi: NativeCallException;
 
 // Runs an interpreted delegate that native code called back into (ffi.md
 // §34.16). The Walker supplies it so the marshaller can re-enter the
@@ -28,7 +28,7 @@ public alias DelegateInvoker = imported!"quickbite.backends.interpreter.runtime_
 // interpreter Values and remains valid for the Walker session (§35.4).
 public struct InterpreterInboundTrampolineSession {
     import quickbite.backends.interpreter.runtime_value: Value;
-    import quickbite.ffi.oldffi: InboundTrampolineRegistry;
+    import quickbite.ffi.ffi: InboundTrampolineRegistry;
 
     private Value[] _callbacks;
     private DelegateInvoker _invokeDelegate;
