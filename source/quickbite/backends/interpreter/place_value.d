@@ -38,6 +38,9 @@ public imported!"quickbite.backends.interpreter.expression_result".ExpressionRes
 
     auto type = place.type;
 
+    if (isNullType(type))
+        return ExpressionResult.null_;
+
     // An enum-typed place must come back tagged (`ExpressionResult.enumValue`), not as
     // the plain integral `ExpressionResult` `native_scalar.readScalar` returns for it
     // (it dispatches on the resolved base type, so an enum's own tagging is
@@ -220,6 +223,15 @@ private bool isAssocArrayType(imported!"dmd.mtype".Type type) @trusted {
 }
 
 
+// `Type.toBasetype` is not `@safe`; the null type has one value and its
+// native place is therefore always the all-zero representation.
+private bool isNullType(imported!"dmd.mtype".Type type) @trusted {
+    import dmd.astenums: TY;
+
+    return type.toBasetype.ty == TY.Tnull;
+}
+
+
 // DMD interns base types, while modifiers and aliases can give two different
 // Type objects for the same guest-layout value. The byte-copy gate cares about
 // that layout identity, not the wrapper object identity.
@@ -293,6 +305,9 @@ public bool valueMatchesPlace(
 
     import quickbite.backends.interpreter.native_scalar: isNativeScalarType;
     import quickbite.backends.interpreter.expression_result: ExpressionResult;
+
+    if (isNullType(type))
+        return value == ExpressionResult.null_;
 
     if (isNativeScalarType(type))
         return value.isNumericScalar || value.isCharacter;
@@ -442,6 +457,16 @@ public void writeValue(
                 ~ " -> " ~ typeName(type),
             );
         copyAggregateBytes(place.address, source.address, typeByteSize(type));
+        return;
+    }
+
+    if (isNullType(type)) {
+        if (value != ExpressionResult.null_)
+            throw new Exception(
+                "quickbite.backends.interpreter.place_value.writeValue: "
+                ~ "null place requires a null ExpressionResult",
+            );
+        zeroBytes(place.address, typeByteSize(type));
         return;
     }
 
@@ -697,6 +722,9 @@ public bool isPlaceComposable(imported!"dmd.mtype".Type type) @safe {
         return isPlaceComposable(arrayType.next);
 
     if (type.isTypePointer !is null)
+        return true;
+
+    if (isNullType(type))
         return true;
 
     return false;

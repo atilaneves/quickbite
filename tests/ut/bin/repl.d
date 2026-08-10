@@ -101,6 +101,11 @@ import quickbite.repl_prelude: __quickbiteFormat;
     actual.should == `["k":10L]`;
 }
 
+@("repl.frontend.literalNullUsesPreludeFormatter")
+unittest {
+    assertFormatterBackendOutput(["null"], ["null"]);
+}
+
 @("repl.frontend.typeofExpressionWithTrailingTokensIsNotTypeCell")
 unittest {
     import quickbite.frontend.repl: ReplCellKind, ReplSession;

@@ -238,6 +238,10 @@
 - Do not omit untested backend rows: verify every mature backend and include
   each one that passes.
 
+- When replacing a boxed value store with typed native places, handle DMD's
+  `Tnull` as its own place-composable leaf. Supporting null only for
+  pointer-like destinations does not cover `auto value = null`.
+
 - In zsh, do not assign to reserved readonly parameters such as `status`; use
   a task-specific variable name.
 
