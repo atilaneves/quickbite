@@ -121,10 +121,12 @@ public struct NativeOperand {
 }
 
 // Plain fixed-arity extern(C) calls whose values compose through typed places
-// use this path. It writes every argument into short-lived typed storage, then
-// passes only typed addresses to the FFI. Receivers, references, variadics,
-// and non-composable values continue through the legacy adapter until they
-// can expose their authoritative places.
+// use this path. It writes rvalues into short-lived typed storage and lends
+// local/ref bindings and fields their existing places. A native `ref`/`out`
+// formal must borrow such a place: `ffi.call` turns that address into its ABI
+// pointer cell, so the native callee writes the caller's binding directly.
+// Receivers, variadics, and lvalues without an already-addressable place
+// continue through the legacy adapter.
 public bool tryCallNativeAddressOnly(
     imported!"dmd.func".FuncDeclaration function_,
     in imported!"quickbite.backends.interpreter.runtime_value".Value[] arguments,
@@ -141,6 +143,7 @@ public bool tryCallNativeAddressOnly(
     version (OSX) import core.sys.darwin.dlfcn: RTLD_DEFAULT;
     version (Solaris) import core.sys.solaris.dlfcn: RTLD_DEFAULT;
     import dmd.astenums: LINK, VarArg;
+    import dmd.astenums: STC;
     import dmd.mangle: mangleExact;
     import dmd.mtype: TypeFunction;
     import quickbite.backends.interpreter.layout: typeByteSize, typeHasPointers;
@@ -177,12 +180,14 @@ public bool tryCallNativeAddressOnly(
     auto operandTypes = new TypedAddress[](arguments.length);
     NativeBlock[] operandOwners;
     foreach (index, argument; arguments) {
-        auto parameterType = (*parameters)[index].type.toBasetype;
+        auto parameter = (*parameters)[index];
+        auto parameterType = parameter.type.toBasetype;
+        const isReference =
+            (parameter.storageClass & (STC.ref_ | STC.out_)) != STC.none;
         if (
             !isPlaceComposable(parameterType) ||
             argumentTypes[index] is null ||
-            !argumentTypes[index].toBasetype.equals(parameterType) ||
-            !valueMatchesPlace(parameterType, argument)
+            !argumentTypes[index].toBasetype.equals(parameterType)
         )
             return false;
 
@@ -200,6 +205,16 @@ public bool tryCallNativeAddressOnly(
             );
             continue;
         }
+
+        // A `ref`/`out` formal is passed as a pointer to its argument's typed
+        // storage. Never manufacture a cell from the argument Value here:
+        // doing so would make a native write observable only through oldffi's
+        // later reification/writeback path.
+        if (isReference)
+            return false;
+
+        if (!valueMatchesPlace(parameterType, argument))
+            return false;
 
         auto owner = NativeBlock.allocate(
             typeByteSize(parameterType),

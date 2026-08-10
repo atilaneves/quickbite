@@ -5133,6 +5133,7 @@ private struct Walker {
                         arguments,
                         argumentTypes,
                         nativeAddressOnlyOperands(
+                            call.f,
                             argumentExpressions,
                             argumentTypes,
                         ),
@@ -11561,6 +11562,7 @@ private struct Walker {
     // call its existing typed place. Rvalues continue through typed scratch.
     private imported!"quickbite.backends.interpreter.native_call_adapter".NativeOperand[]
     nativeAddressOnlyOperands(
+        imported!"dmd.func".FuncDeclaration function_,
         imported!"dmd.expression".Expression[] argumentExpressions,
         imported!"dmd.mtype".Type[] argumentTypes,
     ) {
@@ -11571,6 +11573,15 @@ private struct Walker {
         operands.length = argumentExpressions.length;
         foreach (index, expression; argumentExpressions) {
             if (index >= argumentTypes.length || argumentTypes[index] is null)
+                continue;
+
+            // An address-only `ref`/`out` call needs the caller's lvalue
+            // place, not the already-read argument Value. Restrict this to
+            // local/ref bindings and their fields: composing a PtrExp or an
+            // IndexExp here would evaluate source expressions after their
+            // ordinary argument evaluation, risking a duplicate side effect.
+            if (nativeReferenceParameter(function_, index) &&
+                !hasStableLocalFieldPlace(expression))
                 continue;
 
             // `auto`: DMD returns a mutable Type pointer.
