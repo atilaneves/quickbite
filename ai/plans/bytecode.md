@@ -498,6 +498,10 @@ same caller place.
 Live hazards and divergences to reconfirm against current source when a row
 reaches them:
 
+- Every occurrence of a string literal gets its own `literalBlocks` entry, so
+  two identical literals have different pointers and `s is t` over them is
+  `false` where compiled D merges them into one `.rodata` address and answers
+  `true`. No matrix fixture pins it.
 - A `T[N][]`'s rows are separately heap-allocated inner descriptors, so a
   pointer taken into one row (`&outer[i][j]`) is valid within that row, but a
   flat pointer walk across rows diverges from compiled D's contiguous layout.

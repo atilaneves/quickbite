@@ -10819,37 +10819,51 @@ private struct Compiler {
         return Operand(offset, ScalarType.bool_);
     }
 
-    // `dg1 == dg2` / `dg1 is dg2` (and the negated forms): compare the two
-    // 8-byte halves of the 16-byte `{functionIndex, context}` pair -- there
-    // is no 16-byte equality opcode -- and combine them with the same
-    // short-circuiting `&&` shape `compileStructIdentity` above uses for a
-    // multi-field struct, specialised to exactly two fixed-offset fields.
+    // `dg1 == dg2` / `dg1 is dg2` (and the negated forms): a delegate is the
+    // 16-byte `{functionIndex, context}` pair, whose two words sit at the
+    // operand's own offset and one machine word past it.
     private Operand compileDelegateEquality(
         in ushort left,
         in ushort right,
         in bool invert,
     ) {
+        return compileWordPairEquality(
+            left, cast(ushort) (left + size_t.sizeof),
+            right, cast(ushort) (right + size_t.sizeof),
+            invert,
+        );
+    }
+
+    // Bitwise equality of a two-word value, given each side's two word
+    // offsets -- there is no 16-byte equality opcode, so compare the words
+    // with the same short-circuiting `&&` shape `compileStructIdentity`
+    // above uses for a multi-field struct, specialised to exactly two
+    // fields. The caller names the two words, since a two-word value's field
+    // order is its own (a slice descriptor is `{length, ptr}`, a delegate
+    // `{functionIndex, context}`).
+    private Operand compileWordPairEquality(
+        in ushort leftFirst,
+        in ushort leftSecond,
+        in ushort rightFirst,
+        in ushort rightSecond,
+        in bool invert,
+    ) {
         const result = allocate(ScalarType.bool_);
         _code ~= Instruction(Op.loadConstant, result, constantIndex(1), 1);
 
-        const functionEqual = allocate(ScalarType.bool_);
-        _code ~= Instruction(Op.equal8, functionEqual, left, right);
-        const functionFalseJump =
-            emitJumpIfFalse(Operand(functionEqual, ScalarType.bool_));
+        const firstEqual = allocate(ScalarType.bool_);
+        _code ~= Instruction(Op.equal8, firstEqual, leftFirst, rightFirst);
+        const firstFalseJump =
+            emitJumpIfFalse(Operand(firstEqual, ScalarType.bool_));
 
-        const contextEqual = allocate(ScalarType.bool_);
-        _code ~= Instruction(
-            Op.equal8,
-            contextEqual,
-            cast(ushort) (left + size_t.sizeof),
-            cast(ushort) (right + size_t.sizeof),
-        );
-        const contextFalseJump =
-            emitJumpIfFalse(Operand(contextEqual, ScalarType.bool_));
+        const secondEqual = allocate(ScalarType.bool_);
+        _code ~= Instruction(Op.equal8, secondEqual, leftSecond, rightSecond);
+        const secondFalseJump =
+            emitJumpIfFalse(Operand(secondEqual, ScalarType.bool_));
 
         const endJump = emitJump;
-        patchJump(functionFalseJump);
-        patchJump(contextFalseJump);
+        patchJump(firstFalseJump);
+        patchJump(secondFalseJump);
         _code ~= Instruction(Op.loadConstant, result, constantIndex(0), 1);
         patchJump(endJump);
 
@@ -10874,6 +10888,23 @@ private struct Compiler {
                 identity.op == EXP.notIdentity,
             );
 
+        // `a is b` on dynamic arrays (`string` included): two slices are the
+        // same slice only when both descriptor words agree, so a one-word
+        // comparison at the descriptor's base offset would answer with the
+        // length alone -- calling two distinct allocations of equal length
+        // the same slice, and an empty interior slice `null`.
+        if (isDynamicArrayIdentity(identity)) {
+            const left = identityDescriptorOffset(identity.e1);
+            const right = identityDescriptorOffset(identity.e2);
+            return compileWordPairEquality(
+                cast(ushort) sliceDescriptorLengthOffset(left),
+                cast(ushort) sliceDescriptorPtrOffset(left),
+                cast(ushort) sliceDescriptorLengthOffset(right),
+                cast(ushort) sliceDescriptorPtrOffset(right),
+                identity.op == EXP.notIdentity,
+            );
+        }
+
         const lhs = compileExpression(identity.e1);
         const rhs = compileExpression(identity.e2);
         const op = identity.op == EXP.notIdentity
@@ -10882,6 +10913,38 @@ private struct Compiler {
         const offset = allocate(ScalarType.bool_);
         _code ~= Instruction(op, offset, lhs.offset, rhs.offset);
         return Operand(offset, ScalarType.bool_);
+    }
+
+    // Whether `identity` compares two dynamic arrays. A bare `null` literal
+    // counts as one when the other side is an array: DMD leaves such a
+    // literal typed `typeof(null)` in some positions, but the comparison is
+    // still the array-descriptor one.
+    private static bool isDynamicArrayIdentity(IdentityExp identity) {
+        import dmd.astenums: TY;
+
+        static bool isArrayOrNull(Expression expression) {
+            return expression.type.toBasetype.ty == TY.Tarray ||
+                expression.isNullExp !is null;
+        }
+
+        return (identity.e1.type.toBasetype.ty == TY.Tarray ||
+                identity.e2.type.toBasetype.ty == TY.Tarray) &&
+            isArrayOrNull(identity.e1) && isArrayOrNull(identity.e2);
+    }
+
+    // The slice-descriptor base offset for one side of a dynamic-array
+    // identity comparison. A `null` literal DMD left typed `typeof(null)`
+    // has no descriptor to load, so materialise the zeroed one it denotes.
+    private ushort identityDescriptorOffset(Expression expression) {
+        import dmd.astenums: TY;
+
+        if (expression.type.toBasetype.ty != TY.Tarray) {
+            const offset = allocateBytes(sliceDescriptorSize, size_t.sizeof);
+            _code ~= Instruction(Op.nullSlice, offset);
+            return offset;
+        }
+
+        return dynamicArrayDescriptor(expression).offset;
     }
 
     private Operand compileIntBinaryExpression(
@@ -13576,6 +13639,16 @@ private struct Compiler {
             (*call.arguments)[2].type.toBasetype.ty == TY.Tdelegate)
             return compileBoolConditionAssert(assert_.e1, op);
 
+        // `is`/`!is` over dynamic arrays: identity is the whole two-word slice
+        // descriptor, which `assert_.e1` already expresses. Compile that
+        // condition the same way the struct and delegate cases above do; the
+        // rendered-operand route below reads a single word and would answer
+        // with the length alone.
+        if (op == "is" || op == "!is")
+            if (auto identity = assert_.e1.isIdentityExp)
+                if (isDynamicArrayIdentity(identity))
+                    return compileBoolConditionAssert(assert_.e1, op);
+
         // Pointer relations `p < q`, `p == q`, `p is q` (and negations) compare
         // raw `size_t` pointer values; `is`/`!is` arrive only over pointers.
         if (isPointerType((*call.arguments)[1].type) ||
@@ -13790,15 +13863,16 @@ private struct Compiler {
     // Compile an expression to a one-byte boolean. A struct identity `a is b`
     // (DMD's lowering of a POD struct `==`) compares the two inline blocks
     // byte-wise; a delegate identity (`dg1 is dg2`, no such lowering since a
-    // delegate has no `opEquals`) routes through the same two-halves
-    // comparison `compileEqualExpression`'s `Tdelegate` branch uses;
-    // everything else is an ordinary boolean expression (an `opEquals` call,
-    // an `opCmp` relation, a `&&` chain).
+    // delegate has no `opEquals`) and a dynamic-array identity both compare a
+    // two-word value, which `compileIdentityExpression` already knows how to
+    // do; everything else is an ordinary boolean expression (an `opEquals`
+    // call, an `opCmp` relation, a `&&` chain).
     private Operand compileBoolValue(Expression expression) {
         import dmd.astenums: TY;
 
         if (auto identity = expression.isIdentityExp) {
-            if (identity.e1.type.toBasetype.ty == TY.Tdelegate)
+            if (identity.e1.type.toBasetype.ty == TY.Tdelegate ||
+                isDynamicArrayIdentity(identity))
                 return compileIdentityExpression(identity);
             return compileStructIdentity(identity);
         }

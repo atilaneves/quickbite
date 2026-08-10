@@ -7741,3 +7741,112 @@ static foreach (backend; Matrix!(
         });
     }
 }
+
+// `is` on a dynamic array compares the whole two-word slice descriptor --
+// both the pointer and the length -- so two separately allocated arrays
+// holding equal elements compare equal by `==` and non-identical by `is`.
+// Ctfe and Interpreter compare the elements instead; the block below pins
+// that.
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.diverges, "see sibling pin below (Ctfe, Interpreter)"),
+    Omit!(Interpreter, Because.diverges,
+        "see sibling pin below (Ctfe, Interpreter)"),
+)) {
+    @("dynamicArray.equalContentsAreNotIdentical." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            unittest {
+                int first = 1;
+                int[] a = [first, first + 1];
+                int[] b = [first, first + 1];
+
+                assert(a == b);
+                assert(a !is b);
+                assert(!(a is b));
+            }
+        });
+    }
+}
+
+// DMD's CTFE engine has no addresses to compare, so it answers `is` on two
+// dynamic arrays by comparing their elements; the Interpreter, which models
+// the same value world, answers the same way. Both therefore call two
+// distinct allocations holding equal elements identical.
+static foreach (backend; AliasSeq!(Ctfe, Interpreter)) {
+    @("dynamicArray.equalContentsAreNotIdentical." ~ backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            unittest {
+                int first = 1;
+                int[] a = [first, first + 1];
+                int[] b = [first, first + 1];
+
+                assert(a is b);
+            }
+        });
+    }
+}
+
+// The length half of the same descriptor: two slices sharing a start pointer
+// but differing in length are not identical, while a slice spanning the whole
+// array is identical to the array itself.
+static foreach (backend; Matrix!()) {
+    @("dynamicArray.slicesDifferingOnlyInLengthAreNotIdentical." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            unittest {
+                int first = 1;
+                int[] a = [first, first + 1, first + 2];
+
+                assert(a[0 .. 1] !is a[0 .. 2]);
+                assert(a[0 .. 2] is a[0 .. 2]);
+                assert(a is a[0 .. $]);
+            }
+        });
+    }
+}
+
+// An empty slice taken from a live array keeps that array's pointer, so it is
+// not `null` even though its length matches `null`'s; a default-initialised
+// array, whose pointer is null too, is. Interpreter diverges; the block below
+// pins it.
+static foreach (backend; Matrix!(
+    Omit!(Interpreter, Because.diverges, "see sibling pin below (Interpreter)"),
+)) {
+    @("dynamicArray.emptyInteriorSliceIsNotNull." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            unittest {
+                int first = 1;
+                int[] a = [first, first + 1];
+                int[] empty = a[0 .. 0];
+                int[] none;
+
+                assert(empty.length == 0);
+                assert(empty !is null);
+                assert(none is null);
+            }
+        });
+    }
+}
+
+// Comparing elements rather than descriptors also loses D's distinction
+// between an empty slice and a null one, since neither has any elements. Ctfe
+// keeps that distinction, so only the Interpreter is pinned here.
+static foreach (backend; AliasSeq!(Interpreter)) {
+    @("dynamicArray.emptyInteriorSliceIsNotNull." ~ backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            unittest {
+                int first = 1;
+                int[] a = [first, first + 1];
+
+                assert(a[0 .. 0] is null);
+            }
+        });
+    }
+}
