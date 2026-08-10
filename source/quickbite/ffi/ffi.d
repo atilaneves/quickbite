@@ -3,10 +3,7 @@ module quickbite.ffi.ffi;
 private:
 
 
-public enum CompilerAbi {
-    dmd,
-    ldc,
-}
+public import quickbite.ffi.symbol: CompilerAbi;
 
 
 public struct Callable {

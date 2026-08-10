@@ -134,17 +134,8 @@ public bool tryCallNativeAddressOnly(
     NativeOperand[] directAddressOperands,
     out imported!"quickbite.backends.interpreter.runtime_value".Value result,
 ) {
-    import core.sys.posix.dlfcn: dlsym;
-    version (DragonFlyBSD) import core.sys.dragonflybsd.dlfcn: RTLD_DEFAULT;
-    version (FreeBSD) import core.sys.freebsd.dlfcn: RTLD_DEFAULT;
-    version (linux) import core.sys.linux.dlfcn: RTLD_DEFAULT;
-    version (NetBSD) import core.sys.netbsd.dlfcn: RTLD_DEFAULT;
-    version (OpenBSD) import core.sys.openbsd.dlfcn: RTLD_DEFAULT;
-    version (OSX) import core.sys.darwin.dlfcn: RTLD_DEFAULT;
-    version (Solaris) import core.sys.solaris.dlfcn: RTLD_DEFAULT;
     import dmd.astenums: LINK, VarArg;
     import dmd.astenums: STC;
-    import dmd.mangle: mangleExact;
     import dmd.mtype: TypeFunction;
     import quickbite.backends.interpreter.layout: typeByteSize, typeHasPointers;
     import quickbite.backends.interpreter.native_block: NativeBlock;
@@ -152,9 +143,11 @@ public bool tryCallNativeAddressOnly(
     import quickbite.backends.interpreter.place_value:
         isPlaceComposable, readValue, valueMatchesPlace, writeValue;
     import quickbite.ffi.ffi:
-        Callable, CompilerAbi, TypedAddress, call;
+        Callable, TypedAddress, call;
+    import quickbite.ffi.symbol: resolveFunctionSymbol;
 
-    if (function_ is null || function_._linkage != LINK.c)
+    if (function_ is null ||
+        (function_._linkage != LINK.c && function_._linkage != LINK.d))
         return false;
 
     auto signature = cast(TypeFunction) function_.type;
@@ -233,16 +226,13 @@ public bool tryCallNativeAddressOnly(
             ? NativeBlock.Scan.conservative
             : NativeBlock.Scan.no,
     );
-    auto symbol = dlsym(RTLD_DEFAULT, mangleExact(function_));
-    if (symbol is null)
+    // `Callable` needs its mutable address field.
+    auto symbol = resolveFunctionSymbol(function_);
+    if (symbol.address is null)
         return false;
 
-    version (LDC)
-        enum compilerAbi = CompilerAbi.ldc;
-    else
-        enum compilerAbi = CompilerAbi.dmd;
     if (!call(
-        Callable(cast(void*) symbol, signature, compilerAbi, function_),
+        Callable(symbol.address, signature, symbol.compilerAbi, function_),
         operandTypes,
         TypedAddress(returnType, resultOwner.address),
     ))
