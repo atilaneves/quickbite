@@ -2260,6 +2260,41 @@ static foreach (backend; AliasSeq!(Bytecode, SystemLinker)) {
     }
 }
 
+// A conditional whose arms mix a string literal and a string variable is an
+// ordinary rvalue index: whichever arm the runtime condition selects supplies
+// the character, and the condition runs exactly once.
+static foreach (backend; AliasSeq!(Bytecode, SystemLinker)) {
+    @("dynamicArray.indexIntoConditionalWithStringLiteralArm." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            bool chooseLiteral(bool choice, ref int calls) {
+                ++calls;
+                return choice;
+            }
+
+            unittest {
+                int calls;
+                string variable = "xy";
+
+                assert((chooseLiteral(false, calls) ? "ab" : variable)[0] ==
+                    'x');
+                assert(calls == 1);
+            }
+
+            unittest {
+                int calls;
+                string variable = "xy";
+
+                assert((chooseLiteral(true, calls) ? "ab" : variable)[0] ==
+                    'a');
+                assert(calls == 1);
+            }
+        });
+    }
+}
+
 
 
 /++
