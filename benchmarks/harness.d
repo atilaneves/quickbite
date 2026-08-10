@@ -37,11 +37,12 @@ public Result measure(
     foreach (i; 0 .. warmup)
         runTests();
 
+    GC.disable;
+    scope(exit) GC.enable;
+
     foreach (i; 0 .. iterations) {
-        // Collection stays enabled while the operation runs: its pauses and
-        // reclamation are part of normal edit-to-result latency. This explicit
-        // collection is outside the timed region and gives samples a common
-        // starting point.
+        // The explicit collection stays outside the measured operation so each
+        // diagnostic sample begins from a comparable baseline.
         GC.collect;
         const baselineRam = GC.stats.usedSize;
         const start = MonoTime.currTime;
@@ -92,6 +93,9 @@ public Measurement!T measureWithResults(T)(
 
     foreach (i; 0 .. warmup)
         operation();
+
+    GC.disable;
+    scope(exit) GC.enable;
 
     foreach (i; 0 .. iterations) {
         GC.collect;

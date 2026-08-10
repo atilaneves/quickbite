@@ -1005,7 +1005,7 @@ void printRunHeader(in size_t warmup, in size_t runs) {
         writefln("governor:    %s", governor.readText.strip);
 
     writefln("os:          %s", os);
-    writefln("gc:          enabled during timed loop");
+    writefln("gc:          disabled during timed loop");
     writefln("sampling:    %s warmup + %s runs", warmup, runs);
     writeln;
 }
