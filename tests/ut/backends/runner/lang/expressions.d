@@ -7067,6 +7067,88 @@ static foreach (backend; Matrix!()) {
     }
 }
 
+// The minimal shape behind the test above: a scalar field of a class
+// reference held in a `ref` class parameter passed on as a `ref` argument.
+// The receiver chain is field -> class dereference -> ref-parameter slot.
+static foreach (backend; Matrix!()) {
+    @("classField.refArgumentThroughRefClassParameter." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            class Payload {
+                int value;
+
+                this(int value) {
+                    this.value = value;
+                }
+            }
+
+            void bump(ref int value) {
+                value += 1;
+            }
+
+            void via(ref Payload payload) {
+                bump(payload.value);
+            }
+
+            unittest {
+                auto payload = new Payload(5);
+                via(payload);
+                assert(payload.value == 6);
+            }
+        });
+    }
+}
+
+// A `ref` class parameter is one address indirection away from the class
+// handle, but the handle it holds names the same object: plain field reads,
+// assignments, and compound assignments through it must all reach the
+// object's storage.
+static foreach (backend; Matrix!()) {
+    @("classField.accessThroughRefClassParameter." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            class Payload {
+                int value;
+
+                this(int value) {
+                    this.value = value;
+                }
+            }
+
+            int read(ref Payload payload) {
+                return payload.value;
+            }
+
+            void write(ref Payload payload) {
+                payload.value = 9;
+            }
+
+            void add(ref Payload payload) {
+                payload.value += 5;
+            }
+
+            unittest {
+                auto payload = new Payload(7);
+                assert(read(payload) == 7);
+            }
+
+            unittest {
+                auto payload = new Payload(1);
+                write(payload);
+                assert(payload.value == 9);
+            }
+
+            unittest {
+                auto payload = new Payload(1);
+                add(payload);
+                assert(payload.value == 6);
+            }
+        });
+    }
+}
+
 // A class cell promoted by taking a field's address is authoritative for the
 // whole object, not only for later field reads. Passing the class value onward
 // must therefore reconstruct the argument from the cell after a pointer write,
