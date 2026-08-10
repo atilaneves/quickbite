@@ -247,7 +247,7 @@ static if (is(backend == Interpreter)) {
 @("dependencyImage.ldcExternDCompilerAbi")
 @Tags(Interpreter.stringof)
 unittest {
-    import quickbite.ffi.oldffi: CompilerAbi, DependencyImage;
+    import quickbite.ffi.ffi: CompilerAbi, DependencyImage;
     import quickbite.frontend.compiler: parseSnippetWithCheckActionContext;
     import std.path: buildPath;
     import std.process: execute;
@@ -4674,11 +4674,12 @@ unittest {
 }
 
 // A native call site only ever catches `Exception` at the FFI boundary
-// (ffi/oldffi.d: "Only Exception is caught at the call site; Error stays
-// fatal."), so an Error can only reach `nativeExceptionRoot` (interpreter.md
-// §9.10) indirectly, via the `.next` chain of a caught Exception (ffi.md
-// §34.13's chainedNext recursion follows `.next` regardless of its dynamic
-// type). The chained class's fully-qualified name does not match
+// (native_call_adapter.d wraps the native call in `catch (Exception)` and
+// rethrows it; an Error stays fatal), so an Error can only reach
+// `nativeExceptionRoot` (interpreter.md §9.10) indirectly, via the `.next`
+// chain of a caught Exception (ffi.md §34.13's chainedNext recursion follows
+// `.next` regardless of its dynamic type). The chained class's
+// fully-qualified name does not match
 // "core.exception."/"object." + "Error", so the name-prefix heuristic
 // misclassifies it as Exception, and catch(Error) on the rethrown link
 // wrongly misses it.
