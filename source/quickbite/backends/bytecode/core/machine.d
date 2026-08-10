@@ -27,7 +27,8 @@ package(quickbite.backends.bytecode) RunResult run(
         appendElementWidth, CatchClause, ClassInfo,
         concatArraysWidth, dupArrayWidth, indexElementWidth, Op, ScalarType,
         noCatchObjectField, noExceptionClass, noOutParameterOffset,
-        pointerElementWidth, size, sliceCopyWidth, sliceDescriptorSize,
+        pointerElementWidth, size, sliceCopyWidth, sliceDescriptorLengthOffset,
+        sliceDescriptorPtrOffset, sliceDescriptorSize,
         sliceEqualWidth, subSliceElementWidth;
 
     // Reserve a generous fixed capacity so growing `stack` for callee frames
@@ -223,11 +224,12 @@ package(quickbite.backends.bytecode) RunResult run(
                 break;
 
             case sliceLength:
+                const sliceLengthOffset =
+                    sliceDescriptorLengthOffset(base + instruction.b);
                 stack[
                     base + instruction.a .. base + instruction.a + size_t.sizeof
                 ] = stack[
-                    base + instruction.b + size_t.sizeof
-                    .. base + instruction.b + 2 * size_t.sizeof
+                    sliceLengthOffset .. sliceLengthOffset + size_t.sizeof
                 ];
                 ++ip;
                 break;
@@ -294,8 +296,9 @@ package(quickbite.backends.bytecode) RunResult run(
                     lo,
                     hi,
                 );
-                const sourcePointer =
-                    scalarValue!size_t(stack, base + instruction.b);
+                const sourcePointer = scalarValue!size_t(
+                    stack, sliceDescriptorPtrOffset(base + instruction.b),
+                );
                 writeSliceDescriptorPointer(
                     stack,
                     base + instruction.a,
@@ -2253,13 +2256,16 @@ private auto transcodeUtfString(
     in size_t sourceOffset,
     in ushort mode,
 ) @trusted {
-    import quickbite.backends.bytecode.core.program: TranscodeMode;
+    import quickbite.backends.bytecode.core.program:
+        sliceDescriptorLengthOffset, sliceDescriptorPtrOffset, TranscodeMode;
     import std.utf: decode, encode;
 
     struct Block { ubyte[] elements; size_t length; }
 
-    const pointer = scalarValue!size_t(stack, sourceOffset);
-    const length = scalarValue!size_t(stack, sourceOffset + size_t.sizeof);
+    const pointer =
+        scalarValue!size_t(stack, sliceDescriptorPtrOffset(sourceOffset));
+    const length =
+        scalarValue!size_t(stack, sliceDescriptorLengthOffset(sourceOffset));
 
     // dchar elements (the decode targets) are 4 bytes; char elements (the
     // encode target) are 1 byte.
@@ -2323,8 +2329,12 @@ private string stringFromSlice(
     in ubyte[] stack,
     in size_t offset,
 ) @trusted pure {
-    const pointer = scalarValue!size_t(stack, offset);
-    const length = scalarValue!size_t(stack, offset + size_t.sizeof);
+    import quickbite.backends.bytecode.core.program:
+        sliceDescriptorLengthOffset, sliceDescriptorPtrOffset;
+
+    const pointer = scalarValue!size_t(stack, sliceDescriptorPtrOffset(offset));
+    const length =
+        scalarValue!size_t(stack, sliceDescriptorLengthOffset(offset));
     return (cast(const(char)*) pointer)[0 .. length].idup;
 }
 
@@ -2376,8 +2386,13 @@ private ushort objectClassIndex(in size_t objectPointer) @trusted {
 }
 
 private string stringFromObjectSlice(in ubyte* descriptor) @trusted {
-    const pointer = objectScalarValue!size_t(descriptor);
-    const length = objectScalarValue!size_t(descriptor + size_t.sizeof);
+    import quickbite.backends.bytecode.core.program:
+        sliceDescriptorLengthOffset, sliceDescriptorPtrOffset;
+
+    const pointer =
+        objectScalarValue!size_t(descriptor + sliceDescriptorPtrOffset(0));
+    const length =
+        objectScalarValue!size_t(descriptor + sliceDescriptorLengthOffset(0));
     return (cast(const(char)*) pointer)[0 .. length].idup;
 }
 
@@ -2503,6 +2518,7 @@ private void validateSubSlice(
     in size_t lo,
     in size_t hi,
 ) @safe {
+    import quickbite.backends.bytecode.core.program: sliceDescriptorLengthOffset;
     import std.conv: text;
 
     if (lo > hi)
@@ -2513,7 +2529,7 @@ private void validateSubSlice(
 
     const length = scalarValue!size_t(
         stack,
-        sourceOffset + size_t.sizeof,
+        sliceDescriptorLengthOffset(sourceOffset),
     );
     if (hi > length)
         throw new Exception(text(
@@ -2532,8 +2548,13 @@ private ubyte[] dupArray(
     in size_t sourceOffset,
     in uint elementSize,
 ) @trusted {
-    const length = scalarValue!size_t(stack, sourceOffset + size_t.sizeof);
-    const pointer = scalarValue!size_t(stack, sourceOffset);
+    import quickbite.backends.bytecode.core.program:
+        sliceDescriptorLengthOffset, sliceDescriptorPtrOffset;
+
+    const length =
+        scalarValue!size_t(stack, sliceDescriptorLengthOffset(sourceOffset));
+    const pointer =
+        scalarValue!size_t(stack, sliceDescriptorPtrOffset(sourceOffset));
     const byteCount = length * elementSize;
 
     auto block = new ubyte[](byteCount);
@@ -2555,10 +2576,17 @@ private ubyte[] concatArrays(
     in size_t rightOffset,
     in uint elementSize,
 ) @trusted {
-    const leftLength = scalarValue!size_t(stack, leftOffset + size_t.sizeof);
-    const rightLength = scalarValue!size_t(stack, rightOffset + size_t.sizeof);
-    const leftPointer = scalarValue!size_t(stack, leftOffset);
-    const rightPointer = scalarValue!size_t(stack, rightOffset);
+    import quickbite.backends.bytecode.core.program:
+        sliceDescriptorLengthOffset, sliceDescriptorPtrOffset;
+
+    const leftLength =
+        scalarValue!size_t(stack, sliceDescriptorLengthOffset(leftOffset));
+    const rightLength =
+        scalarValue!size_t(stack, sliceDescriptorLengthOffset(rightOffset));
+    const leftPointer =
+        scalarValue!size_t(stack, sliceDescriptorPtrOffset(leftOffset));
+    const rightPointer =
+        scalarValue!size_t(stack, sliceDescriptorPtrOffset(rightOffset));
     const leftBytes = leftLength * elementSize;
     const rightBytes = rightLength * elementSize;
 
@@ -2599,9 +2627,15 @@ private ubyte[] appendElement(
     ref size_t[] appendablePointers,
 ) @trusted {
     import core.memory: GC;
+    import quickbite.backends.bytecode.core.program:
+        sliceDescriptorLengthOffset, sliceDescriptorPtrOffset;
 
-    const length = scalarValue!size_t(stack, descriptorOffset + size_t.sizeof);
-    const pointer = scalarValue!size_t(stack, descriptorOffset);
+    const length = scalarValue!size_t(
+        stack, sliceDescriptorLengthOffset(descriptorOffset),
+    );
+    const pointer = scalarValue!size_t(
+        stack, sliceDescriptorPtrOffset(descriptorOffset),
+    );
     const oldBytes = length * elementSize;
     const newBytes = (length + 1) * elementSize;
     const blockInfo = GC.query(cast(void*) pointer);
@@ -2666,9 +2700,15 @@ private ubyte[] resizeArray(
     in size_t newLength,
 ) @trusted {
     import std.algorithm.comparison: min;
+    import quickbite.backends.bytecode.core.program:
+        sliceDescriptorLengthOffset, sliceDescriptorPtrOffset;
 
-    const oldLength = scalarValue!size_t(stack, descriptorOffset + size_t.sizeof);
-    const pointer = scalarValue!size_t(stack, descriptorOffset);
+    const oldLength = scalarValue!size_t(
+        stack, sliceDescriptorLengthOffset(descriptorOffset),
+    );
+    const pointer = scalarValue!size_t(
+        stack, sliceDescriptorPtrOffset(descriptorOffset),
+    );
 
     auto block = new ubyte[](newLength * elementSize);
     block[] = fill;
@@ -2690,9 +2730,15 @@ private ubyte[] resizeArrayWithTemplate(
     in size_t newLength,
 ) @trusted {
     import std.algorithm.comparison: min;
+    import quickbite.backends.bytecode.core.program:
+        sliceDescriptorLengthOffset, sliceDescriptorPtrOffset;
 
-    const oldLength = scalarValue!size_t(stack, descriptorOffset + size_t.sizeof);
-    const pointer = scalarValue!size_t(stack, descriptorOffset);
+    const oldLength = scalarValue!size_t(
+        stack, sliceDescriptorLengthOffset(descriptorOffset),
+    );
+    const pointer = scalarValue!size_t(
+        stack, sliceDescriptorPtrOffset(descriptorOffset),
+    );
     auto block = new ubyte[](newLength * elementSize);
     const keptBytes = min(oldLength, newLength) * elementSize;
     block[0 .. keptBytes] = (cast(const(ubyte)*) pointer)[0 .. keptBytes];
@@ -2712,13 +2758,20 @@ private bool slicesEqual(
     in size_t rightOffset,
     in uint elementSize,
 ) @trusted {
-    const leftLength = scalarValue!size_t(stack, leftOffset + size_t.sizeof);
-    const rightLength = scalarValue!size_t(stack, rightOffset + size_t.sizeof);
+    import quickbite.backends.bytecode.core.program:
+        sliceDescriptorLengthOffset, sliceDescriptorPtrOffset;
+
+    const leftLength =
+        scalarValue!size_t(stack, sliceDescriptorLengthOffset(leftOffset));
+    const rightLength =
+        scalarValue!size_t(stack, sliceDescriptorLengthOffset(rightOffset));
     if (leftLength != rightLength)
         return false;
 
-    const leftPointer = scalarValue!size_t(stack, leftOffset);
-    const rightPointer = scalarValue!size_t(stack, rightOffset);
+    const leftPointer =
+        scalarValue!size_t(stack, sliceDescriptorPtrOffset(leftOffset));
+    const rightPointer =
+        scalarValue!size_t(stack, sliceDescriptorPtrOffset(rightOffset));
     const byteCount = leftLength * elementSize;
     return (cast(const(ubyte)*) leftPointer)[0 .. byteCount] ==
         (cast(const(ubyte)*) rightPointer)[0 .. byteCount];
@@ -2731,15 +2784,20 @@ private bool numericSlicesEqual(
     in imported!"quickbite.backends.bytecode.core.program".ScalarType leftType,
     in imported!"quickbite.backends.bytecode.core.program".ScalarType rightType,
 ) @safe {
-    import quickbite.backends.bytecode.core.program: size;
+    import quickbite.backends.bytecode.core.program:
+        sliceDescriptorLengthOffset, sliceDescriptorPtrOffset, size;
 
-    const leftLength = scalarValue!size_t(stack, leftOffset + size_t.sizeof);
-    const rightLength = scalarValue!size_t(stack, rightOffset + size_t.sizeof);
+    const leftLength =
+        scalarValue!size_t(stack, sliceDescriptorLengthOffset(leftOffset));
+    const rightLength =
+        scalarValue!size_t(stack, sliceDescriptorLengthOffset(rightOffset));
     if (leftLength != rightLength)
         return false;
 
-    const leftPointer = scalarValue!size_t(stack, leftOffset);
-    const rightPointer = scalarValue!size_t(stack, rightOffset);
+    const leftPointer =
+        scalarValue!size_t(stack, sliceDescriptorPtrOffset(leftOffset));
+    const rightPointer =
+        scalarValue!size_t(stack, sliceDescriptorPtrOffset(rightOffset));
     const leftWidth = size(leftType);
     const rightWidth = size(rightType);
     const leftElements = numericSliceBytes(
@@ -2871,13 +2929,20 @@ private bool nestedSlicesEqual(
     in uint depth,
     in uint innerElementSize,
 ) @trusted {
-    const leftLength = scalarValue!size_t(stack, leftOffset + size_t.sizeof);
-    const rightLength = scalarValue!size_t(stack, rightOffset + size_t.sizeof);
+    import quickbite.backends.bytecode.core.program:
+        sliceDescriptorLengthOffset, sliceDescriptorPtrOffset;
+
+    const leftLength =
+        scalarValue!size_t(stack, sliceDescriptorLengthOffset(leftOffset));
+    const rightLength =
+        scalarValue!size_t(stack, sliceDescriptorLengthOffset(rightOffset));
     if (leftLength != rightLength)
         return false;
 
-    const leftPointer = scalarValue!size_t(stack, leftOffset);
-    const rightPointer = scalarValue!size_t(stack, rightOffset);
+    const leftPointer =
+        scalarValue!size_t(stack, sliceDescriptorPtrOffset(leftOffset));
+    const rightPointer =
+        scalarValue!size_t(stack, sliceDescriptorPtrOffset(rightOffset));
     return nestedRowsEqual(
         leftPointer, rightPointer, leftLength, depth - 1, innerElementSize,
     );
@@ -2900,7 +2965,9 @@ private bool nestedRowsEqual(
     in uint stepsRemaining,
     in uint innerElementSize,
 ) @trusted {
-    import quickbite.backends.bytecode.core.program: sliceDescriptorSize;
+    import quickbite.backends.bytecode.core.program:
+        sliceDescriptorLengthOffset, sliceDescriptorPtrOffset,
+        sliceDescriptorSize;
 
     if (stepsRemaining == 0) {
         const byteCount = length * innerElementSize;
@@ -2912,15 +2979,17 @@ private bool nestedRowsEqual(
         const leftRow = leftPointer + index * sliceDescriptorSize;
         const rightRow = rightPointer + index * sliceDescriptorSize;
 
-        const leftRowLength =
-            *cast(const(size_t)*) (leftRow + size_t.sizeof);
-        const rightRowLength =
-            *cast(const(size_t)*) (rightRow + size_t.sizeof);
+        const leftRowLength = *cast(const(size_t)*)
+            (leftRow + sliceDescriptorLengthOffset(0));
+        const rightRowLength = *cast(const(size_t)*)
+            (rightRow + sliceDescriptorLengthOffset(0));
         if (leftRowLength != rightRowLength)
             return false;
 
-        const leftRowPointer = *cast(const(size_t)*) leftRow;
-        const rightRowPointer = *cast(const(size_t)*) rightRow;
+        const leftRowPointer =
+            *cast(const(size_t)*) (leftRow + sliceDescriptorPtrOffset(0));
+        const rightRowPointer =
+            *cast(const(size_t)*) (rightRow + sliceDescriptorPtrOffset(0));
         if (!nestedRowsEqual(
             leftRowPointer, rightRowPointer, leftRowLength,
             stepsRemaining - 1, innerElementSize,
@@ -2940,13 +3009,19 @@ private void copySlice(
     in uint elementSize,
 ) @trusted {
     import std.conv: text;
+    import quickbite.backends.bytecode.core.program:
+        sliceDescriptorLengthOffset, sliceDescriptorPtrOffset;
 
-    const destinationPointer = scalarValue!size_t(stack, destinationOffset);
-    const destinationLength =
-        scalarValue!size_t(stack, destinationOffset + size_t.sizeof);
-    const sourcePointer = scalarValue!size_t(stack, sourceOffset);
+    const destinationPointer = scalarValue!size_t(
+        stack, sliceDescriptorPtrOffset(destinationOffset),
+    );
+    const destinationLength = scalarValue!size_t(
+        stack, sliceDescriptorLengthOffset(destinationOffset),
+    );
+    const sourcePointer =
+        scalarValue!size_t(stack, sliceDescriptorPtrOffset(sourceOffset));
     const sourceLength =
-        scalarValue!size_t(stack, sourceOffset + size_t.sizeof);
+        scalarValue!size_t(stack, sliceDescriptorLengthOffset(sourceOffset));
 
     if (destinationLength != sourceLength)
         throw new Exception(text(
@@ -2986,14 +3061,20 @@ private void copyRowRange(
     in uint rowByteSize,
 ) @trusted {
     import std.conv: text;
-    import quickbite.backends.bytecode.core.program: sliceDescriptorSize;
+    import quickbite.backends.bytecode.core.program:
+        sliceDescriptorLengthOffset, sliceDescriptorPtrOffset,
+        sliceDescriptorSize;
 
-    const destinationPointer = scalarValue!size_t(stack, destinationOffset);
-    const destinationLength =
-        scalarValue!size_t(stack, destinationOffset + size_t.sizeof);
-    const sourcePointer = scalarValue!size_t(stack, sourceOffset);
+    const destinationPointer = scalarValue!size_t(
+        stack, sliceDescriptorPtrOffset(destinationOffset),
+    );
+    const destinationLength = scalarValue!size_t(
+        stack, sliceDescriptorLengthOffset(destinationOffset),
+    );
+    const sourcePointer =
+        scalarValue!size_t(stack, sliceDescriptorPtrOffset(sourceOffset));
     const sourceLength =
-        scalarValue!size_t(stack, sourceOffset + size_t.sizeof);
+        scalarValue!size_t(stack, sliceDescriptorLengthOffset(sourceOffset));
 
     if (destinationLength != sourceLength)
         throw new Exception(text(
@@ -3013,10 +3094,13 @@ private void copyRowRange(
         throw new Exception("Range violation");
 
     foreach (i; 0 .. destinationLength) {
-        const destRowPointer = *cast(const(size_t)*)
-            (destinationPointer + i * sliceDescriptorSize);
-        const sourceRowPointer = *cast(const(size_t)*)
-            (sourcePointer + i * sliceDescriptorSize);
+        const destRowPointer = *cast(const(size_t)*) (
+            destinationPointer + i * sliceDescriptorSize +
+                sliceDescriptorPtrOffset(0)
+        );
+        const sourceRowPointer = *cast(const(size_t)*) (
+            sourcePointer + i * sliceDescriptorSize + sliceDescriptorPtrOffset(0)
+        );
         auto destRow = (cast(ubyte*) destRowPointer)[0 .. rowByteSize];
         const sourceRow =
             (cast(const(ubyte)*) sourceRowPointer)[0 .. rowByteSize];
@@ -3031,10 +3115,15 @@ private void fillSlice1(
     in size_t destinationOffset,
     in size_t valueOffset,
 ) @trusted {
-    const destinationPointer =
-        scalarValue!size_t(stack, destinationOffset);
-    const destinationLength =
-        scalarValue!size_t(stack, destinationOffset + size_t.sizeof);
+    import quickbite.backends.bytecode.core.program:
+        sliceDescriptorLengthOffset, sliceDescriptorPtrOffset;
+
+    const destinationPointer = scalarValue!size_t(
+        stack, sliceDescriptorPtrOffset(destinationOffset),
+    );
+    const destinationLength = scalarValue!size_t(
+        stack, sliceDescriptorLengthOffset(destinationOffset),
+    );
     auto destination = (cast(ubyte*) destinationPointer)[0 .. destinationLength];
     destination[] = scalarValue!ubyte(stack, valueOffset);
 }
@@ -3046,10 +3135,15 @@ private void fillSlice2(
     in size_t destinationOffset,
     in size_t valueOffset,
 ) @trusted {
-    const destinationPointer =
-        scalarValue!size_t(stack, destinationOffset);
-    const destinationLength =
-        scalarValue!size_t(stack, destinationOffset + size_t.sizeof);
+    import quickbite.backends.bytecode.core.program:
+        sliceDescriptorLengthOffset, sliceDescriptorPtrOffset;
+
+    const destinationPointer = scalarValue!size_t(
+        stack, sliceDescriptorPtrOffset(destinationOffset),
+    );
+    const destinationLength = scalarValue!size_t(
+        stack, sliceDescriptorLengthOffset(destinationOffset),
+    );
     auto destination = (cast(ushort*) destinationPointer)[0 .. destinationLength];
     destination[] = scalarValue!ushort(stack, valueOffset);
 }
@@ -3061,10 +3155,15 @@ private void fillSlice4(
     in size_t destinationOffset,
     in size_t valueOffset,
 ) @trusted {
-    const destinationPointer =
-        scalarValue!size_t(stack, destinationOffset);
-    const destinationLength =
-        scalarValue!size_t(stack, destinationOffset + size_t.sizeof);
+    import quickbite.backends.bytecode.core.program:
+        sliceDescriptorLengthOffset, sliceDescriptorPtrOffset;
+
+    const destinationPointer = scalarValue!size_t(
+        stack, sliceDescriptorPtrOffset(destinationOffset),
+    );
+    const destinationLength = scalarValue!size_t(
+        stack, sliceDescriptorLengthOffset(destinationOffset),
+    );
     auto destination = (cast(uint*) destinationPointer)[0 .. destinationLength];
     destination[] = scalarValue!uint(stack, valueOffset);
 }
@@ -3076,10 +3175,15 @@ private void fillSlice8(
     in size_t destinationOffset,
     in size_t valueOffset,
 ) @trusted {
-    const destinationPointer =
-        scalarValue!size_t(stack, destinationOffset);
-    const destinationLength =
-        scalarValue!size_t(stack, destinationOffset + size_t.sizeof);
+    import quickbite.backends.bytecode.core.program:
+        sliceDescriptorLengthOffset, sliceDescriptorPtrOffset;
+
+    const destinationPointer = scalarValue!size_t(
+        stack, sliceDescriptorPtrOffset(destinationOffset),
+    );
+    const destinationLength = scalarValue!size_t(
+        stack, sliceDescriptorLengthOffset(destinationOffset),
+    );
     auto destination = (cast(ulong*) destinationPointer)[0 .. destinationLength];
     destination[] = scalarValue!ulong(stack, valueOffset);
 }
@@ -3094,10 +3198,15 @@ private void fillSliceN(
     in size_t valueOffset,
     in uint elementSize,
 ) @trusted {
-    const destinationPointer =
-        scalarValue!size_t(stack, destinationOffset);
-    const destinationLength =
-        scalarValue!size_t(stack, destinationOffset + size_t.sizeof);
+    import quickbite.backends.bytecode.core.program:
+        sliceDescriptorLengthOffset, sliceDescriptorPtrOffset;
+
+    const destinationPointer = scalarValue!size_t(
+        stack, sliceDescriptorPtrOffset(destinationOffset),
+    );
+    const destinationLength = scalarValue!size_t(
+        stack, sliceDescriptorLengthOffset(destinationOffset),
+    );
     auto destination =
         (cast(ubyte*) destinationPointer)[0 .. destinationLength * elementSize];
     const source = stack[valueOffset .. valueOffset + elementSize];
@@ -3115,19 +3224,29 @@ private void applyArrayAddAssign4(
     in size_t rightOffset,
 ) @trusted {
     import std.conv: text;
+    import quickbite.backends.bytecode.core.program:
+        sliceDescriptorLengthOffset, sliceDescriptorPtrOffset;
 
-    const length = scalarValue!size_t(stack, destinationOffset + size_t.sizeof);
-    const leftLength = scalarValue!size_t(stack, leftOffset + size_t.sizeof);
-    const rightLength = scalarValue!size_t(stack, rightOffset + size_t.sizeof);
+    const length = scalarValue!size_t(
+        stack, sliceDescriptorLengthOffset(destinationOffset),
+    );
+    const leftLength =
+        scalarValue!size_t(stack, sliceDescriptorLengthOffset(leftOffset));
+    const rightLength =
+        scalarValue!size_t(stack, sliceDescriptorLengthOffset(rightOffset));
     if (leftLength != length || rightLength != length)
         throw new Exception(text(
             "Array lengths don't match for array operation: ",
             length, ", ", leftLength, ", ", rightLength,
         ));
 
-    auto destination = cast(int*) scalarValue!size_t(stack, destinationOffset);
-    const left = cast(const(int)*) scalarValue!size_t(stack, leftOffset);
-    const right = cast(const(int)*) scalarValue!size_t(stack, rightOffset);
+    auto destination = cast(int*) scalarValue!size_t(
+        stack, sliceDescriptorPtrOffset(destinationOffset),
+    );
+    const left = cast(const(int)*)
+        scalarValue!size_t(stack, sliceDescriptorPtrOffset(leftOffset));
+    const right = cast(const(int)*)
+        scalarValue!size_t(stack, sliceDescriptorPtrOffset(rightOffset));
     foreach (index; 0 .. length)
         destination[index] = left[index] + right[index];
 }
@@ -3151,10 +3270,17 @@ private ubyte* elementAddress(
     in size_t index,
     in uint elementSize,
 ) @trusted {
-    const length = scalarValue!size_t(stack, descriptorOffset + size_t.sizeof);
+    import quickbite.backends.bytecode.core.program:
+        sliceDescriptorLengthOffset, sliceDescriptorPtrOffset;
+
+    const length = scalarValue!size_t(
+        stack, sliceDescriptorLengthOffset(descriptorOffset),
+    );
     enforceIndexInBounds(index, length);
 
-    const pointer = scalarValue!size_t(stack, descriptorOffset);
+    const pointer = scalarValue!size_t(
+        stack, sliceDescriptorPtrOffset(descriptorOffset),
+    );
     return cast(ubyte*) (pointer + index * elementSize);
 }
 
@@ -3345,13 +3471,17 @@ private string arrayOperandText(
         elementType,
     in uint elementNestingDepth = 0,
 ) @trusted {
-    import quickbite.backends.bytecode.core.program: size, sliceDescriptorSize;
+    import quickbite.backends.bytecode.core.program:
+        sliceDescriptorLengthOffset, sliceDescriptorPtrOffset, size,
+        sliceDescriptorSize;
     import std.array: appender;
     import std.conv: text;
 
     const elementIsArray = elementNestingDepth > 0;
-    const pointer = scalarValue!size_t(frame, offset);
-    const length = scalarValue!size_t(frame, offset + size_t.sizeof);
+    const pointer =
+        scalarValue!size_t(frame, sliceDescriptorPtrOffset(offset));
+    const length =
+        scalarValue!size_t(frame, sliceDescriptorLengthOffset(offset));
     const elementSize = elementIsArray ? sliceDescriptorSize : size(elementType);
     const elements = (cast(const(ubyte)*) pointer)[0 .. length * elementSize];
 
@@ -3707,13 +3837,17 @@ private bool descriptorContentEqual(
     in ubyte[] left,
     in ubyte[] right,
 ) @trusted @nogc nothrow pure {
-    const leftLength = scalarValue!size_t(left, size_t.sizeof);
-    const rightLength = scalarValue!size_t(right, size_t.sizeof);
+    import quickbite.backends.bytecode.core.program:
+        sliceDescriptorLengthOffset, sliceDescriptorPtrOffset;
+
+    const leftLength = scalarValue!size_t(left, sliceDescriptorLengthOffset(0));
+    const rightLength =
+        scalarValue!size_t(right, sliceDescriptorLengthOffset(0));
     if (leftLength != rightLength)
         return false;
 
-    const leftPointer = scalarValue!size_t(left, 0);
-    const rightPointer = scalarValue!size_t(right, 0);
+    const leftPointer = scalarValue!size_t(left, sliceDescriptorPtrOffset(0));
+    const rightPointer = scalarValue!size_t(right, sliceDescriptorPtrOffset(0));
     return (cast(const(ubyte)*) leftPointer)[0 .. leftLength] ==
         (cast(const(ubyte)*) rightPointer)[0 .. leftLength];
 }
@@ -3787,20 +3921,16 @@ private final class BytecodeNativeMarshaller:
         // `allocateNativeArgumentArea` in compiler.d); argument `index` lives
         // at `_argument + index * nativeArgumentSlotSize` regardless of its
         // own width. `buffer` is sized to the argument type's native ABI
-        // width (4 bytes for `int`, 8 for a pointer); copy exactly that many,
-        // not a fixed 8.
+        // width (4 bytes for `int`, 8 for a pointer, 16 for a dynamic-array
+        // descriptor); copy exactly that many, not a fixed 8. The VM's own
+        // slice descriptor (`writeSliceDescriptor`, machine.d) is already in
+        // native `{length, pointer}` order, so a `Tarray` argument needs no
+        // conversion beyond the straight copy every other type gets.
         const slot = _argument + index * nativeArgumentSlotSize;
         import dmd.astenums: TY;
-        if (type.toBasetype.ty == TY.Tarray) {
-            assert(buffer.length == 2 * size_t.sizeof);
-            buffer[0 .. size_t.sizeof] = _stack[
-                slot + size_t.sizeof .. slot + 2 * size_t.sizeof
-            ];
-            buffer[size_t.sizeof .. 2 * size_t.sizeof] = _stack[
-                slot .. slot + size_t.sizeof
-            ];
-            return;
-        }
+        assert(
+            type.toBasetype.ty != TY.Tarray || buffer.length == 2 * size_t.sizeof,
+        );
         buffer[] = _stack[slot .. slot + buffer.length];
     }
 
@@ -3834,17 +3964,14 @@ private final class BytecodeNativeMarshaller:
     public void readResult(Type type, in ubyte[] buffer) {
         import dmd.astenums: TY;
 
-        // The FFI slice layout (`ffiSliceType`, ffi/oldffi.d) is
-        // {length, pointer}; the VM's own slice descriptor
-        // (`writeSliceDescriptor`, machine.d) is {pointer, length}. Swap the
-        // two words instead of a straight copy, matching `fillArgument`'s
-        // reverse swap for a `void[]`-typed argument.
+        // The FFI slice layout (`ffiSliceType`, ffi/oldffi.d) and the VM's
+        // own slice descriptor (`writeSliceDescriptor`, machine.d) are both
+        // native `{length, pointer}` order, so a `Tarray` result is a
+        // straight copy, matching `fillArgument`'s straight copy for a
+        // `void[]`-typed argument.
         if (type.toBasetype.ty == TY.Tarray) {
-            _stack[_destination .. _destination + size_t.sizeof] =
-                buffer[size_t.sizeof .. 2 * size_t.sizeof];
-            _stack[
-                _destination + size_t.sizeof .. _destination + 2 * size_t.sizeof
-            ] = buffer[0 .. size_t.sizeof];
+            _stack[_destination .. _destination + 2 * size_t.sizeof] =
+                buffer[0 .. 2 * size_t.sizeof];
             return;
         }
 
@@ -3862,9 +3989,10 @@ private final class BytecodeNativeMarshaller:
         import dmd.astenums: TY;
         import quickbite.ffi.libffi: ffi_arg;
 
-        // A slice return needs the field-order swap in `readResult`, so it
-        // always goes through the buffer path, never the direct zero-copy
-        // handoff.
+        // A slice return always goes through the padded-buffer path and
+        // `readResult`'s copy above, never the direct zero-copy handoff
+        // below; nothing about that requires the buffer indirection anymore,
+        // it is just the narrower change this boundary needs right now.
         if (type.toBasetype.ty == TY.Tarray)
             return null;
 

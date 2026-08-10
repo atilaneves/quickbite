@@ -54,7 +54,8 @@ private imported!"quickbite.lang".Value reifyArray(
     in ubyte[][] literalBlocks,
 ) @safe pure {
     import quickbite.backends.bytecode.core.program:
-        size, sliceDescriptorLengthOffset, sliceDescriptorSize;
+        size, sliceDescriptorLengthOffset, sliceDescriptorPtrOffset,
+        sliceDescriptorSize;
     import quickbite.lang: Value;
 
     const length = type.isStaticArray
@@ -62,7 +63,10 @@ private imported!"quickbite.lang".Value reifyArray(
         : scalar!size_t(bytes[sliceDescriptorLengthOffset(0) .. $]);
     auto block = type.isStaticArray
         ? bytes
-        : resolveBlock(scalar!size_t(bytes), heap, data, literalBlocks);
+        : resolveBlock(
+            scalar!size_t(bytes[sliceDescriptorPtrOffset(0) .. $]),
+            heap, data, literalBlocks,
+        );
     if (!type.arrayElementsAreArrays && !type.arrayElementsAreStructs &&
         type.elementEnumMembers.length == 0 &&
         isCharacter(type.elementType))

@@ -4856,3 +4856,104 @@ unittest {
     }
 }
 }
+
+// Construct `backend` for a dependency-image fixture, regardless of whether
+// its constructor also wants an oracle-style `importPaths` argument
+// (`SystemLinker`/`LLVMJit`) or just the link files (`Interpreter`/
+// `Bytecode`).
+private auto runDependencyImageFixture(alias backend)(
+    const string[] linkFiles,
+    const string[] importPaths,
+    Module module_,
+) {
+    static if (is(backend == SystemLinker) || is(backend == LLVMJit))
+        return (new backend(linkFiles, importPaths)).runTests(module_);
+    else
+        return (new backend(linkFiles)).runTests(module_);
+}
+
+// A struct-typed native-call return whose field layout mixes a scalar with
+// a dynamic-array (`string`) field: the field's own bytes must land in the
+// bridge's real ABI order regardless of the VM's own internal descriptor
+// order, unlike every all-scalar struct-return fixture above. The expected
+// values are D's real compiled-code semantics, checked directly in the
+// asserted source rather than diffed against a separately computed oracle
+// result, so `SystemLinker` running the same asserts through the matrix
+// below already serves as the oracle (`ai/plans/single-oracle.md`).
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.inexpressible,
+        "CTFE cannot call a native dependency image"),
+)) {
+@("dependencyImage.structWithSliceFieldReturn." ~ backend.stringof)
+@Tags(backend.stringof)
+unittest {
+    import quickbite.frontend.compiler: parseSnippetWithCheckActionContext;
+    import std.path: buildPath;
+
+    const sandbox = immutable Sandbox();
+    with(sandbox) {
+        const importPath = "imports";
+        const depPath = buildPath(
+            importPath,
+            "dep_image_struct_slice_return_fixture_" ~ backend.stringof ~ ".d",
+        );
+        writeFile(depPath, q{
+            module dep_image_struct_slice_return_fixture;
+
+            struct Pair {
+                int count;
+                string label;
+            }
+
+            Pair dependencyMakePair(int count) {
+                return Pair(count, "hello");
+            }
+        }.uniqueDepModule(
+            "dep_image_struct_slice_return_fixture", backend.stringof,
+        ));
+
+        const imagePath = buildSharedLibrary(
+            sandbox,
+            "dep_image_struct_slice_return_fixture_" ~ backend.stringof,
+            [depPath],
+        );
+
+        writeFile(depPath, q{
+            module dep_image_struct_slice_return_fixture;
+
+            struct Pair {
+                int count;
+                string label;
+            }
+
+            Pair dependencyMakePair(int count);
+        }.uniqueDepModule(
+            "dep_image_struct_slice_return_fixture", backend.stringof,
+        ));
+
+        auto moduleResult = parseSnippetWithCheckActionContext(
+            q{
+                import dep_image_struct_slice_return_fixture;
+
+                unittest {
+                    int count = 10;
+                    Pair pair = dependencyMakePair(count);
+                    assert(pair.count == 10);
+                    assert(pair.label == "hello");
+                }
+            }.uniqueDepModule(
+                "dep_image_struct_slice_return_fixture", backend.stringof,
+            ),
+            [inSandboxPath(importPath)],
+        );
+
+        const actual = runDependencyImageFixture!backend(
+            [imagePath],
+            [inSandboxPath(importPath)],
+            moduleResult.module_,
+        );
+        actual.length.should == 1;
+        actual[0].passed.should == true;
+    }
+}
+}

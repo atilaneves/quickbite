@@ -112,24 +112,24 @@ package(quickbite.backends.bytecode) struct ResultType {
     }
 }
 
-// Bytes of a dynamic-array slice descriptor laid out in the frame: a native
-// `void* ptr` into VM-owned heap memory followed by a `size_t length`. The
-// native bridge reverses these fields to D's ABI `{length, ptr}` descriptor.
+// Bytes of a dynamic-array slice descriptor laid out in the frame: a
+// `size_t length` followed by a native `void* ptr` into VM-owned heap
+// memory, the same order compiled D lays a slice out in, so the native
+// bridge hands a descriptor across unchanged.
 package(quickbite.backends.bytecode) enum sliceDescriptorSize =
     2 * size_t.sizeof;
 
 // Byte offset of a slice descriptor's `ptr` field relative to the
 // descriptor's own base offset `base` (a frame slot, module-data offset, or
-// a descriptor-sized buffer's start) — the one place the `{ptr, length}`
+// a descriptor-sized buffer's start) — the one place the `{length, ptr}`
 // layout `sliceDescriptorSize` documents is expressed as field offsets, so
 // compiler.d, machine.d, and reify.d compute them the same way instead of
 // re-deriving `base` / `base + size_t.sizeof` inline. Pairs with
-// `sliceDescriptorLengthOffset`; flipping the descriptor to `{length, ptr}`
-// becomes a one-module edit to these two functions.
+// `sliceDescriptorLengthOffset`.
 package(quickbite.backends.bytecode) size_t sliceDescriptorPtrOffset(
     in size_t base,
 ) @safe @nogc nothrow pure {
-    return base;
+    return base + size_t.sizeof;
 }
 
 // Byte offset of a slice descriptor's `length` field relative to the
@@ -137,7 +137,7 @@ package(quickbite.backends.bytecode) size_t sliceDescriptorPtrOffset(
 package(quickbite.backends.bytecode) size_t sliceDescriptorLengthOffset(
     in size_t base,
 ) @safe @nogc nothrow pure {
-    return base + size_t.sizeof;
+    return base;
 }
 
 // A native (libc) call's argument area is N contiguous slots of this
