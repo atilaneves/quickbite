@@ -120,9 +120,10 @@ public struct NativeOperand {
     public imported!"quickbite.backends.interpreter.native_block".NativeBlock retained;
 }
 
-// Plain fixed-arity extern(C) calls whose values compose through typed places
-// use this path. It writes rvalues into short-lived typed storage and lends
-// local/ref bindings and fields their existing places. A native `ref`/`out`
+// Plain fixed-arity extern(C), extern(D), and extern(C++) calls whose values
+// compose through typed places use this path. It writes rvalues into
+// short-lived typed storage and lends local/ref bindings and fields their
+// existing places. A native `ref`/`out`
 // formal must borrow such a place: `ffi.call` turns that address into its ABI
 // pointer cell, so the native callee writes the caller's binding directly.
 // Receivers, variadics, and lvalues without an already-addressable place
@@ -147,7 +148,8 @@ public bool tryCallNativeAddressOnly(
     import quickbite.ffi.symbol: resolveFunctionSymbol;
 
     if (function_ is null ||
-        (function_._linkage != LINK.c && function_._linkage != LINK.d))
+        (function_._linkage != LINK.c && function_._linkage != LINK.d &&
+            function_._linkage != LINK.cpp))
         return false;
 
     auto signature = cast(TypeFunction) function_.type;
@@ -274,8 +276,9 @@ public bool tryCallNative(
 // The address-only bridge already knows D's hidden struct-receiver ABI.  Keep
 // a struct's authoritative place as that receiver whenever the walker has
 // one; only a genuine rvalue is materialised in a typed temporary.  This is
-// deliberately limited to ordinary extern(D) members: class/virtual and C++
-// dispatch still have protocols the old adapter owns.
+// C++ members use the same typed receiver path; `ffi.call` supplies their
+// C++ receiver and invisible-reference ABI lowering. Class/virtual dispatch
+// keeps its distinct opaque-object resolver below.
 public bool tryCallNativeStructMemberAddressOnly(
     imported!"dmd.func".FuncDeclaration function_,
     imported!"dmd.mtype".TypeStruct receiverType,
@@ -299,7 +302,8 @@ public bool tryCallNativeStructMemberAddressOnly(
 
     if (
         function_ is null || receiverType is null ||
-        !AggregateValue.isStruct(receiver) || function_._linkage != LINK.d
+        !AggregateValue.isStruct(receiver) ||
+        (function_._linkage != LINK.d && function_._linkage != LINK.cpp)
     )
         return false;
 
@@ -425,7 +429,8 @@ public bool tryCallNativeStructConstructorAddressOnly(
 
     if (
         function_ is null || receiverType is null ||
-        !AggregateValue.isStruct(receiver) || function_._linkage != LINK.d ||
+        !AggregateValue.isStruct(receiver) ||
+        (function_._linkage != LINK.d && function_._linkage != LINK.cpp) ||
         function_.isCtorDeclaration is null
     )
         return false;
@@ -684,7 +689,7 @@ public bool tryCallNativeClassMemberAddressOnly(
 
     if (
         function_ is null || receiverType is null || !receiver.isPointer ||
-        function_._linkage != LINK.d
+        (function_._linkage != LINK.d && function_._linkage != LINK.cpp)
     )
         return false;
 
