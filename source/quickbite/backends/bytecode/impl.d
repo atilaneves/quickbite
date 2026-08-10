@@ -5,7 +5,7 @@ private:
 public class Bytecode: imported!"quickbite.backends".TreeNodeBackend {
     import quickbite.backends: TreeNodeBackend;
     import quickbite.backends.evaluator: Evaluator, EvalResult, displayEvalResult;
-    import dmd.func: FuncDeclaration;
+    import dmd.func: FuncDeclaration, UnitTestDeclaration;
 
     public alias eval = Evaluator.eval;
 
@@ -35,5 +35,20 @@ public class Bytecode: imported!"quickbite.backends".TreeNodeBackend {
                 compilation.program.literalBlocks,
             );
         }, function_);
+    }
+
+    protected override EvalResult executeUnitTest(
+        UnitTestDeclaration unitTest,
+    ) {
+        import quickbite.backends.bytecode.core.compiler: compile;
+        import quickbite.backends.bytecode.core.machine: run;
+
+        try {
+            auto compilation = compile(unitTest);
+            run(*compilation.program, compilation.compileFunction);
+            return EvalResult("");
+        } catch (Exception exception) {
+            return EvalResult(EvalResult.Diagnostic(exception.msg));
+        }
     }
 }

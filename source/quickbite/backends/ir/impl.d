@@ -6,7 +6,7 @@ public class IR: imported!"quickbite.backends".TreeNodeBackend {
     import quickbite.backends: TreeNodeBackend;
     import quickbite.backends.evaluator: Evaluator, EvalResult, displayEvalResult;
     import quickbite.lang: Value;
-    import dmd.func: FuncDeclaration;
+    import dmd.func: FuncDeclaration, UnitTestDeclaration;
 
     public alias eval = Evaluator.eval;
 
@@ -18,5 +18,19 @@ public class IR: imported!"quickbite.backends".TreeNodeBackend {
             () => eval(compileFunction(function_)),
             function_,
         );
+    }
+
+    protected override EvalResult executeUnitTest(
+        UnitTestDeclaration unitTest,
+    ) {
+        import quickbite.backends.ir.compiler: compileUnitTest;
+        import quickbite.backends.ir.vm: run;
+
+        try {
+            run(compileUnitTest(unitTest));
+            return EvalResult("");
+        } catch (Exception exception) {
+            return EvalResult(EvalResult.Diagnostic(exception.msg));
+        }
     }
 }

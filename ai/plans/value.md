@@ -734,11 +734,12 @@ recovered by peeling.
 
 ### Item 2 — Unittest/expression split
 
-Complete the unittest/expression split for IR and Bytecode (decision 12) after
-their formatter wiring. CTFE and Interpreter already execute unittest bodies
-directly and return only success/diagnostic. Delete the private reify ->
-`Value` -> `toString` scaffolding per backend (decision 4) as each gains the
-formatter. Only a REPL expression cell executes the prelude formatter and
+All four tree-node backends execute unittest bodies directly and return only
+success/diagnostic; their unittest paths neither reify nor render a result.
+IR and Bytecode still need their backend-owned formatter execution slices
+before their expression paths can complete the split. As each gains the
+formatter, delete its private reify -> `Value` -> `toString` scaffolding
+(decision 4). Only a REPL expression cell executes the prelude formatter and
 consumes its returned string. Do not retain `Value` or render a dummy `void`
 result just to reuse the evaluator path.
 
