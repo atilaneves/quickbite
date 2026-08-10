@@ -12231,18 +12231,17 @@ private struct Compiler {
             return result;
         }
 
+        // The struct-typed `index.type` shapes are all handled above and
+        // return; whatever reaches here is a scalar (or pointer/classPointer)
+        // element, so `storeExpressionIntoPlace`'s aggregate dispatcher is
+        // the wrong tool -- its `aggregateValueOffset` throws "Unsupported
+        // aggregate assignment" for exactly those representations. A bare
+        // compile-and-store is both correct and sufficient here.
         if (auto place = placeOrNull(index)) {
             const value = compileExpression((*call.arguments)[1]);
             storePlace(*place, value);
             auto result = new Operand;
             *result = loadPlace(*place);
-            return result;
-        }
-        if (auto place = placeOrNull(index)) {
-            auto result = new Operand;
-            *result = storeExpressionIntoPlace(
-                *place, (*call.arguments)[1],
-            );
             return result;
         }
 
