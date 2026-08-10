@@ -803,11 +803,13 @@ unittest {
     }
 }
 
-// Characterization (ffi.md §34.7): a >16-byte struct returns through the hidden
-// `sret` pointer, which libffi issues transparently from the struct ffi_type and
-// the bridge reifies via NativeMarshaller.readResult. Already works; this pins
-// that behaviour across the §5 seam. The asymmetric fields also re-exercise the
-// §27 extern(D) argument reversal alongside the sret return.
+// A 32-byte struct returned by value from an `extern(D)` dependency-image
+// function. On x86-64 a value that large cannot come back in registers, so the
+// callee writes it through a hidden pointer into the caller's storage; every
+// field must still read back exactly as the callee computed it. The asymmetric
+// field expressions (`first - second`, `first * second`) additionally make a
+// swapped argument pair observable, which matters for `extern(D)` because DMD
+// and LDC pass explicit D arguments in opposite orders.
 @("dependencyImage.externDLargeStructReturn." ~ backend.stringof)
 @Tags(backend.stringof)
 unittest {
@@ -1940,9 +1942,10 @@ unittest {
 }
 
 
-// An in-out scalar parameter (ffi.md §34.8): the callee reads the pointed-to
-// value before writing it back, so the marshalled cell must carry the
-// argument's current value into the call, not start zeroed.
+// An in-out scalar parameter: `dependencyBump(&value)` hands the callee the
+// address of the caller's own `int`, and `*value += 1` reads that storage
+// before writing to it. Both directions therefore have to work — a call that
+// only carried the result back out would still leave `value` at 1, not 42.
 @("dependencyImage.externCInOutScalarParameter." ~ backend.stringof)
 @Tags(backend.stringof)
 unittest {
@@ -2156,11 +2159,10 @@ unittest {
 }
 
 
-// A delegate crossing the boundary as a RETURN value: the type mapper claims
-// delegates (ffiTypeFor handles Tdelegate) so the call proceeds, but the
-// marshaller only handles delegates as direct arguments — reifying the
-// returned {context, funcptr} pair dies on the unmarshalValue default assert
-// instead of either working or falling back gracefully before the call.
+// A delegate crossing the boundary as a RETURN value rather than as an
+// argument. A D delegate is a `{context, funcptr}` pair, so both halves have to
+// survive the return: `adder()` yields 42 only if calling the returned delegate
+// reaches the dependency image's closure body with the `base` it captured.
 @("dependencyImage.externDDelegateReturn." ~ backend.stringof)
 @Tags(backend.stringof)
 unittest {
@@ -3309,14 +3311,11 @@ unittest {
 }
 
 // A union-typed out-pointer written by one extern(C) call and read back
-// through a second (ffi.md §35.10), mirroring externCScalarOutParameter but
-// with a union behind the pointer. `Handle*` passed as `&handle` is an
-// out-struct-pointer whose pointed-to type is a union, so `canMarshalToNative`
-// (native_call_adapter.d) refuses it toNative and `canRepresentCall`'s out-cell check
-// (core.d) rejects the call: the Interpreter degrades to the
-// no-available-source refusal today even though the sentinel byte would
-// round-trip. SystemLinker is the behaviour oracle; the Interpreter leg is red
-// pending the union-gate fix.
+// through a second, mirroring externCScalarOutParameter but with a union
+// behind the pointer. `&handle` designates the caller's own storage, so the
+// byte `dependencyInitHandle` writes through one union member must still be
+// there when a separate `dependencyReadHandle` call reads it: the union has to
+// cross as an address, not as a copy of whichever member looks active.
 @("dependencyImage.externCUnionOutParameter." ~ backend.stringof)
 @Tags(backend.stringof)
 unittest {
@@ -3839,13 +3838,12 @@ unittest {
 }
 
 
-// Pins §35.2: an aggregate (struct) native global crosses via the recursive
-// marshaller on the same dlsym data-symbol path as a scalar. The read reifies
-// the struct `Value` from the symbol's bytes through `unmarshalStruct`, and an
-// interpreted field write (`config.width = 7`) composes the `DotVarExp`
-// read-modify-write with the §35.2 write branch: `writeLocation` reads the
-// receiver from native, rebuilds it with `withStructField`, and recurses onto
-// the `VarExp`, pushing the struct bytes back to the symbol. No per-shape code.
+// An `extern __gshared` struct global names the same object as the definition
+// in the compiled dependency image, so reads and writes from either side land
+// on that one object. The fixture drives both directions and both kinds of
+// write: a native whole-object update (`setConfig`), then a D single-field
+// assignment (`config.width = 7`) that native code reads back — while the
+// untouched `height` field keeps the value native code last gave it.
 @("dependencyImage.structGlobalReadWrite." ~ backend.stringof)
 @Tags(backend.stringof)
 unittest {
@@ -3922,12 +3920,11 @@ unittest {
 }
 
 
-// Pins §35.2: reading a dynamic-array native global. The slice `{length,ptr}`
-// descriptor is reified from the symbol via the same dlsym data-symbol path
-// used for scalars — `unmarshalValue`'s `Tarray` case reads `length`, reads
-// `ptr`, and copies `length` elements. The image's `static this()` populates
-// the slice at dlopen (pinned in an earlier commit). Read only;
-// slice-global writeback is a later rung.
+// Reading a dynamic-array `extern __gshared` global. The image's `static
+// this()` fills the slice when the image is loaded, so by the time the
+// importing code runs, `numbers` already denotes those elements: its length and
+// every element must agree with what native code sums out of the same global.
+// Read only — assigning a new array to such a global is `sliceGlobalWriteback`.
 @("dependencyImage.sliceGlobalRead." ~ backend.stringof)
 @Tags(backend.stringof)
 unittest {
@@ -4000,12 +3997,11 @@ unittest {
     }
 }
 
-// Pins §35.2: writing a whole new slice into a dynamic-array native global.
-// The interpreter's `writeLocation` (VarExp case) routes the assignment
-// through the generic `marshalNative` descriptor path: for a `Tarray` it
-// allocates a fresh element buffer, writes `{length, ptr=buffer.ptr}` into the
-// symbol's 16 bytes, and pins the buffer for the process lifetime (§5). Native
-// code then reads the interpreter-written `{length,ptr}` and elements back.
+// Writing a whole new array into a dynamic-array `extern __gshared` global.
+// The assignment rebinds the shared variable itself, so native code reading
+// that same global must observe the new length and the new elements, and the
+// elements must stay alive for as long as the global refers to them. Assigning
+// a second array has to replace the first outright, not extend or alias it.
 @("dependencyImage.sliceGlobalWriteback." ~ backend.stringof)
 @Tags(backend.stringof)
 unittest {
@@ -4081,9 +4077,11 @@ unittest {
 }
 
 
-// Pins that native globals of different scalar widths (64-bit int, double,
-// unsigned byte, bool) reify correctly through the data-symbol read path
-// (ffi.md §35.2).
+// Reading `extern __gshared` scalar globals of four different shapes: a `long`
+// whose initializer does not fit in an `int`, a `double`, a `ubyte` above 127,
+// and a `bool`. Each must read back at its own width and signedness, so a read
+// that assumed one common scalar shape would lose the high bits of `bigCount`,
+// the fraction of `ratio`, or sign-extend `flagByte` to a negative value.
 @("dependencyImage.scalarWidthGlobalRead." ~ backend.stringof)
 @Tags(backend.stringof)
 unittest {
@@ -4150,12 +4148,11 @@ unittest {
     }
 }
 
-// Pins §35.2: a whole-struct rebind assignment (`origin = Point(9, 8)`) to a
-// native struct global writes through via `writeLocation`'s VarExp branch +
-// `marshalNative`. The target is the `VarExp` of the struct global, so the
-// assignment drives the VarExp write branch directly with a struct `Value`,
-// distinct from the field-write read-modify-write path (`config.width = 7`,
-// a `DotVarExp`) pinned by `structGlobalReadWrite`.
+// Assigning a whole struct value (`origin = Point(9, 8)`) to a native struct
+// global: every field is replaced at once, and native code reads both back from
+// the same object. This is the counterpart to the single-field assignment
+// (`config.width = 7`) pinned by `structGlobalReadWrite`, which instead has to
+// leave the fields it does not name alone.
 @("dependencyImage.structGlobalRebindWriteback." ~ backend.stringof)
 @Tags(backend.stringof)
 unittest {
@@ -4223,11 +4220,12 @@ unittest {
     }
 }
 
-// Pins §35.2: reading a static-array (Tsarray) native global. A
-// `__gshared int[4]` stores its elements INLINE in the symbol (no
-// {length,ptr} descriptor), so the data-symbol path reifies the inline
-// element bytes through `unmarshalValue`'s `Tsarray` case. This is distinct
-// from the dynamic-slice descriptor case pinned by `sliceGlobalRead`.
+// Reading a static-array `extern __gshared` global. A static array's length is
+// part of its type and its elements live INLINE in the object itself, unlike a
+// dynamic array, which is a `{length, ptr}` reference to elements stored
+// elsewhere (`sliceGlobalRead`). So `grid.length` is a compile-time constant
+// and indexing reads the shared object's own bytes — the same bytes native
+// `gridAt` indexes.
 @("dependencyImage.staticArrayGlobalRead." ~ backend.stringof)
 @Tags(backend.stringof)
 unittest {
@@ -4291,12 +4289,12 @@ unittest {
     }
 }
 
-// Pins §35.2 and §34.11: reading a struct-with-slice-field native global. The
-// recursive marshaller reifies the nested `{length,ptr}` field from the
-// symbol's struct bytes: `unmarshalNative` -> `unmarshalStruct` recurses into
-// the `string` field just as §34.11's by-value nested-slice struct crossing
-// does, but here the struct comes from the data-symbol read path. The string
-// field points at a literal in rodata that survives for the process. Read only.
+// Reading an `extern __gshared` struct global that mixes an array field with a
+// scalar one. `Named.label` is a `string`, so the shared object holds a
+// reference to characters stored elsewhere — here a literal that lives for the
+// whole program — while `id` is stored inline. Reading the global therefore has
+// to follow the reference for one field and read bytes directly for the other,
+// and native `labelLength` must agree about the very same object. Read only.
 @("dependencyImage.nestedStructGlobalRead." ~ backend.stringof)
 @Tags(backend.stringof)
 unittest {
@@ -4337,8 +4335,8 @@ unittest {
 
                 unittest {
                     assert(entry.id == 7);           // scalar field
-                    assert(entry.label == "hello");  // slice field reified by
-                                                     // recursing into the struct
+                    assert(entry.label == "hello");  // array field: a reference
+                                                     // to the literal's chars
                     assert(entry.label.length == 5);
                     assert(labelLength() == 5);      // native reads its own
                                                      // nested global
@@ -4600,11 +4598,11 @@ unittest {
     }
 }
 
-// Pins §35.2: reading a pointer-typed native global. The data-symbol path routes
-// through `unmarshalValue`'s `Tpointer` case, reifying `anchorPtr` as a non-null
-// native-pointer Value. To exercise the read without interpreted native-pointer
-// deref (out of scope, §35.2), the interpreter reads the pointer global and
-// passes it to a native callee that dereferences it.
+// Reading a pointer-typed `extern __gshared` global. `anchorPtr` holds the
+// address the image stored in it, so it must read back non-null and still
+// denote `anchor`. The fixture proves the second part by handing the pointer to
+// a native callee that dereferences it, which keeps the test about the value of
+// the pointer global rather than about dereferencing a foreign address from D.
 @("dependencyImage.pointerGlobalRead." ~ backend.stringof)
 @Tags(backend.stringof)
 unittest {
@@ -4644,9 +4642,8 @@ unittest {
                 import dep_image_pointer_global_fixture;
 
                 unittest {
-                    assert(anchorPtr !is null);          // pointer global reified
-                                                         // as a non-null native
-                                                         // pointer
+                    assert(anchorPtr !is null);          // the global holds the
+                                                         // address of `anchor`
                     assert(derefArg(anchorPtr) == 77);   // interpreter reads the
                                                          // pointer global, passes
                                                          // it to native which

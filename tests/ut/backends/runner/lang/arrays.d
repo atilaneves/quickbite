@@ -4476,27 +4476,15 @@ static foreach (backend; Matrix!(
     }
 }
 
-// A dynamic-array-typed value (`int[][int]`): the value slot is a 16-byte
-// slice descriptor, not an inline scalar. `a[1] = [10, 20, 30]` lowers to a
-// pointer-index store into the AA's value slot
-// (`impl.d`'s `storeNativePointerElement` -> `native_call_adapter.
-// marshalNative`), and `marshalNative` only takes its direct
-// `place_value.writeValue` path when `place_value.isPlaceComposable`
-// accepts the element type; that predicate has no `Tarray` (dynamic-array)
-// arm, so a dynamic-array-valued AA element always falls through to the
-// legacy boxed `marshalArgument` reconstruction path instead (`ai/plans/
-// value.md` decision 18 / item 5, not yet deleted). The read side composes
-// correctly; the boxed fallback is what writes the wrong bytes. Fixing this
-// means extending `isPlaceComposable` (and `valueMatchesComposablePlace`)
-// to a `Tarray` arm -- a native-call-marshalling-seam change item 5 already
-// owns, not an AA-local fix -- so this stays a separate, unconfirmed
-// backend gap.
+// An associative array whose value type is itself a dynamic array
+// (`int[][int]`): each entry holds an array reference, not an inline scalar,
+// so inserting a value, reading its length and its elements back, mutating an
+// element in place, and copying the whole value out all have to agree about
+// the same elements. `Interpreter` does not round-trip such an entry; the
+// mechanism is unconfirmed, so it stays off the matrix.
 static foreach (backend; Matrix!(
     Omit!(Interpreter, Because.unconfirmed,
-        "AA dynamic-array-valued element write falls through "
-            ~ "native_call_adapter.marshalNative's boxed fallback because "
-            ~ "place_value.isPlaceComposable has no Tarray arm (value.md "
-            ~ "item 5)"),
+        "AA entry whose value type is a dynamic array does not round-trip"),
 )) {
     @("assocArray.dynamicArrayValueInsertsReadsAndMutates." ~
         backend.stringof)
