@@ -463,3 +463,7 @@
 - A semantic DMD type used to describe a native-call fixture must use the same
   alignment attributes as the compiled fixture type. Similar-looking `align`
   placements can describe different offsets and therefore different ABIs.
+
+- When splitting execution from `displayEvalResult`, preserve its terminal
+  `Throwable` boundary. D runtime assertion and bounds failures are `Error`s,
+  not `Exception`s, and must still become backend diagnostics.

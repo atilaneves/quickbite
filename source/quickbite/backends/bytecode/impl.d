@@ -47,8 +47,8 @@ public class Bytecode: imported!"quickbite.backends".TreeNodeBackend {
             auto compilation = compile(unitTest);
             run(*compilation.program, compilation.compileFunction);
             return EvalResult("");
-        } catch (Exception exception) {
-            return EvalResult(EvalResult.Diagnostic(exception.msg));
+        } catch (Throwable throwable) {
+            return EvalResult(EvalResult.Diagnostic(throwable.msg));
         }
     }
 }
