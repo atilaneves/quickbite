@@ -1055,6 +1055,34 @@ static foreach (backend; Matrix!()) {
     }
 }
 
+// Mixed-width equality compares at D's common type: `int -1` and `uint.max`
+// are the same 32-bit pattern, and the common type `uint` makes them equal.
+// Comparing sign/zero-extended 64-bit values instead would diverge from dmd.
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.diverges,
+        "same mismatched-width comparison bug in its own numeric-equality " ~
+        "code ([-1] != [4294967295]) -- a separate, pre-existing backend " ~
+        "gap outside this PR's bytecode-backend diff"),
+    Omit!(Interpreter, Because.diverges,
+        "same mismatched-width comparison bug in its own numeric-equality " ~
+        "code ([-1] != [4294967295]) -- a separate, pre-existing backend " ~
+        "gap outside this PR's bytecode-backend diff"),
+)) {
+    @("dynamicArray.mixedWidthEqualityComparesAtCommonType." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            unittest {
+                int[] integers = [-1];
+                uint[] unsigneds = [uint.max];
+
+                assert(integers == unsigneds);
+            }
+        });
+    }
+}
+
 static foreach (backend; Matrix!()) {
     @("assertDiagnostic.arrayLengthMismatch." ~ backend.stringof)
     @Tags(backend.stringof)
