@@ -9003,13 +9003,6 @@ private struct Walker {
 
         const current = runExpression(target.e1);
         auto oldLength = current == Value.null_ ? 0 : AggregateValue.length(current);
-        if (currentFunction !is null && currentFunction.isConstructorFunction)
-            if (auto field = target.e1.isDotVarExp)
-                if (
-                    field.var.isVarDeclaration !is null &&
-                    field.var.isVarDeclaration._init is null
-                )
-                    oldLength = 0;
         const newLength = cast(size_t) value.asLong;
 
         Value[] elements;
