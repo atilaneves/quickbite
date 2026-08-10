@@ -2072,9 +2072,7 @@ package(quickbite.backends.bytecode) RunResult run(
                             base + instruction.c,
                         );
                 }
-                discardUnwoundFrames(
-                    stack, frames, base, handler.frameDepth,
-                );
+                frames.length = handler.frameDepth;
                 functionIndex = handler.functionIndex;
                 base = handler.base;
                 ip = clause.handlerIp;
@@ -2118,9 +2116,7 @@ package(quickbite.backends.bytecode) RunResult run(
                         .. handler.base + clause.nextMessageOffset
                             + sliceDescriptorSize
                     ] = 0;
-                discardUnwoundFrames(
-                    stack, frames, base, handler.frameDepth,
-                );
+                frames.length = handler.frameDepth;
                 functionIndex = handler.functionIndex;
                 base = handler.base;
                 ip = clause.handlerIp;
@@ -2178,22 +2174,12 @@ package(quickbite.backends.bytecode) RunResult run(
             const clause = selected.clause;
             if (clause.objectOffset != noCatchObjectField)
                 throw error;
-            discardUnwoundFrames(stack, frames, base, handler.frameDepth);
+            frames.length = handler.frameDepth;
             functionIndex = handler.functionIndex;
             base = handler.base;
             ip = clause.handlerIp;
         }
     }
-}
-
-private void discardUnwoundFrames(
-    ubyte[] stack,
-    ref Frame[] frames,
-    size_t base,
-    in size_t frameDepth,
-) {
-    while (frames.length > frameDepth)
-        frames.length -= 1;
 }
 
 private SelectedHandler selectHandler(
