@@ -13,13 +13,6 @@ private:
 unittest {
     const structValue = AggregateValue.reconstructStruct("Pair", [Value(1), Value(2)]);
     const arrayValue = AggregateValue.reconstructArray([structValue]);
-    const classValue = AggregateValue.reconstructClass(
-        "Box",
-        ["Box"],
-        ["items"],
-        [arrayValue],
-        7,
-    );
 
     AggregateValue.isStruct(structValue).should == true;
     AggregateValue.fieldCount(structValue).should == 2;
@@ -36,8 +29,4 @@ unittest {
     AggregateValue.nativeArrayAddress(nativeArray).should == external.ptr;
     AggregateValue.elementAt(nativeArray, 0).should == Value(3);
     AggregateValue.elementAt(nativeArray, 1).should == Value(4);
-    AggregateValue.isClass(classValue).should == true;
-    AggregateValue.classIdentity(classValue).should == 7;
-    AggregateValue.classTypeName(classValue).should == "Box";
-    AggregateValue.classFieldAt(classValue, 0).should == arrayValue;
 }

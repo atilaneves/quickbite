@@ -96,10 +96,9 @@ public struct FrameBlock {
     // identically-shaped read.
     //
     // THROWS on a caller that got that wrong, rather than stating it as an
-    // `in` contract the way `slotAddress`/`slotOffset` above do, for the
-    // reason `object_table.ObjectTable.storageFor` gives at length for its
-    // own size check: `-release` strips a contract, and that is precisely
-    // the build where silent memory corruption matters most. The
+    // `in` contract the way `slotAddress`/`slotOffset` above do:
+    // `-release` strips a contract, and that is precisely the build where
+    // silent memory corruption matters most. The
     // distinction from those two is not taste. Their contract is belt and
     // braces -- the very next thing they do is `_layout[variable]`, an
     // associative-array lookup that raises `RangeError` on a missing key in

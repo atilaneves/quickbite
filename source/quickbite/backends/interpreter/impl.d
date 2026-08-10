@@ -13,7 +13,6 @@ public class Interpreter: imported!"quickbite.backends".TreeNodeBackend {
     import quickbite.backends.interpreter.frame_block: FrameBlock;
     import quickbite.backends.interpreter.frame_layout: cachedFrameLayout;
     import quickbite.backends.interpreter.module_table: ModuleTable;
-    import quickbite.backends.interpreter.object_table: ObjectTable;
     import quickbite.backends.interpreter.runtime_value: Value;
     import dmd.func: FuncDeclaration, UnitTestDeclaration;
 
@@ -67,7 +66,6 @@ public class Interpreter: imported!"quickbite.backends".TreeNodeBackend {
             clearFrameLayoutCache;
             Walker walker;
             scope(exit) walker.closeDurableInboundSession;
-            walker.classObjectTable = new ObjectTable;
             walker.moduleTable = new ModuleTable;
             walker.inUnitTest = inUnitTest;
             import dmd.funcsem: functionSemantic3;
@@ -172,10 +170,10 @@ private struct ClassArrayFieldDefaults {
 private class InterpretedException: Exception {
     public imported!"quickbite.backends.interpreter.runtime_value".Value object;
 
-    public this(in imported!"quickbite.backends.interpreter.runtime_value".Value object) {
-        import quickbite.backends.interpreter.aggregate_value: AggregateValue;
-
-        const message = exceptionMessage(AggregateValue.classFieldNamed(object, "msg"));
+    public this(
+        in imported!"quickbite.backends.interpreter.runtime_value".Value object,
+        in string message,
+    ) {
         super(message);
         this.object = object;
     }
@@ -213,7 +211,6 @@ private struct Walker {
     import quickbite.backends.interpreter.native_block: NativeBlock;
     import quickbite.backends.interpreter.native_struct: NativeStruct;
     import quickbite.backends.interpreter.module_table: ModuleTable;
-    import quickbite.backends.interpreter.object_table: ObjectTable;
     import quickbite.backends.interpreter.place: Place;
     import quickbite.backends.interpreter.runtime_values: defaultValue;
     import quickbite.backends.interpreter.runtime_value: Value;
@@ -251,7 +248,6 @@ private struct Walker {
     private FuncDeclaration[size_t] functionPointers;
     private size_t[FuncDeclaration] functionPointerIds;
     private size_t nextFunctionPointerId;
-    private size_t nextClassObjectId;
     private RuntimeDelegate[size_t] delegates;
     // A native class reference carries only its body address; retain the
     // dynamic class Type by that address for Object-typed aliases.
@@ -261,13 +257,9 @@ private struct Walker {
     // that owns the body.
     private Value[void*] nativeClassOwners;
     // A borrowed native Throwable reference carries only its object address.
-    // Keep its boxed field description separate from ordinary class ownership
-    // so hydrating a catch's static view cannot replace an allocation root.
+    // Its interpreter-visible fields live in a native aggregate keyed by that
+    // real address; the host object remains opaque ABI-owned storage.
     private Value[void*] nativeExceptionMetadata;
-    // A boxed view of a borrowed native class retains its opaque host object
-    // pointer as interpreter metadata keyed by the view's ordinary object
-    // identity. Guest fields remain exclusively guest data.
-    private void*[size_t] borrowedNativeClassPointers;
     // Interpreted delegates have no guest ABI function pointer. Native
     // delegate slots retain their callable Value out-of-band while their
     // ordinary `{context, function}` guest bytes remain ABI-shaped.
@@ -298,16 +290,6 @@ private struct Walker {
     // The copied FrameBlock handles retain their GC-owned storage, so both a
     // direct nested call and a deeper relay can resolve the original place.
     private FrameBlock[] _enclosingFrames;
-
-    private ObjectTable* classObjectTable;
-
-    // Resolve the legacy boxed class seam to its native object body.
-    private void* resolveObjectBody(
-        size_t identity,
-        imported!"dmd.dclass".ClassDeclaration class_,
-    ) @safe {
-        return classObjectTable.storageFor(identity, class_);
-    }
 
     // Module-lifetime storage for module, `static`, and `__gshared` bindings.
     // All child walkers share the same table by pointer.
@@ -667,7 +649,7 @@ private struct Walker {
         if (classType is null || classType.sym is null)
             return false;
 
-        return AggregateValue.hasClassType(object, className(classType.sym));
+        return classHasType(object, className(classType.sym));
     }
 
     // Single write path for a binding. Native bytes and address-keyed
@@ -747,21 +729,6 @@ private struct Walker {
             // parameter by `ref` forwards the same live reference rather than
             // the frame's initial null bytes.
             writeValue(bindingPlace(variable), value);
-            return;
-        }
-
-        if (
-            variable.type.toBasetype.isTypeClass !is null &&
-            !value.isNativeAggregate &&
-            !value.isPointer &&
-            value != Value.null_
-        ) {
-            // Boxed class construction remains only at the allocation seam
-            // until that seam creates native bodies directly. It must still
-            // establish the one reference slot rather than leave a second
-            // boxed local authority behind.
-            if (!storeClassBinding(variable, value))
-                throw new Exception("Class binding has no native body.");
             return;
         }
 
@@ -1137,105 +1104,6 @@ private struct Walker {
         return true;
     }
 
-    private bool storeClassBinding(VarDeclaration variable, in Value value) {
-        import quickbite.backends.interpreter.place_value:
-            isClassBodyComposable, writeClassBody;
-
-        auto classType = variable.type.toBasetype.isTypeClass;
-
-        if (value == Value.null_) {
-            Place(bindingAddress(variable), classType).storeReference(null);
-            return true;
-        }
-
-        if (!AggregateValue.isClass(value))
-            return false;
-
-        const identity = AggregateValue.classIdentity(value);
-        if (identity == 0)
-            return false;
-
-        if (!isClassBodyComposable(classType.sym))
-            return false;
-
-        if (!classBodyShapeMatches(variable, classType.sym, value))
-            return false;
-
-        // Not `const`: `Place`'s constructor and `storeReference` both
-        // take a mutable `void*`.
-        auto bodyAddress = classObjectTable.storageFor(identity, classType.sym);
-        writeClassBody(Place(bodyAddress, classType), value, &resolveObjectBody);
-        Place(bindingAddress(variable), classType).storeReference(bodyAddress);
-        return true;
-    }
-
-    private bool classBodyShapeMatches(
-        VarDeclaration variable,
-        imported!"dmd.dclass".ClassDeclaration class_,
-        in Value value,
-    ) {
-        import quickbite.backends.interpreter.layout: classQualifiedName;
-
-        if (AggregateValue.classTypeName(value) != classQualifiedName(class_))
-            return false;
-
-        bool[size_t] visiting = [AggregateValue.classIdentity(value): true];
-        return classBodyShapeMatchesImpl(class_, value, visiting);
-    }
-
-    private bool classBodyShapeMatchesImpl(
-        imported!"dmd.dclass".ClassDeclaration class_,
-        in Value value,
-        bool[size_t] visiting,
-    ) {
-        import quickbite.backends.interpreter.layout:
-            classFields, declaredType, classQualifiedName;
-        import quickbite.backends.interpreter.place_value:
-            isClassBodyComposable, valueMatchesPlace;
-
-        foreach (index, field; classFields(class_)) {
-            auto fieldType = declaredType(field);
-            auto fieldValue = AggregateValue.classFieldAt(value, index);
-
-            auto fieldClassType = fieldType.isTypeClass;
-            if (fieldClassType is null) {
-                if (!valueMatchesPlace(fieldType, fieldValue))
-                    return false;
-                continue;
-            }
-
-            if (fieldValue == Value.null_)
-                continue;
-
-            if (!AggregateValue.isClass(fieldValue))
-                return false;
-
-            // The nested-field counterpart of `classBodyShapeMatches`'s own
-            // static/dynamic decline above (its header comment carries the
-            // full rationale): a class-typed FIELD whose declared type is
-            // narrower than the object it currently references would reach
-            // `resolveObjectBody`/`storageFor` with the SAME
-            // too-narrow-`class_` hazard the root check exists to close.
-            if (AggregateValue.classTypeName(fieldValue)
-                != classQualifiedName(fieldClassType.sym))
-                return false;
-
-            const identity = AggregateValue.classIdentity(fieldValue);
-            if (identity == 0 || (identity in visiting))
-                return false;
-
-            if (!isClassBodyComposable(fieldClassType.sym))
-                return false;
-
-            visiting[identity] = true;
-
-            if (!classBodyShapeMatchesImpl(fieldClassType.sym, fieldValue, visiting))
-                return false;
-        }
-
-        return true;
-    }
-
     private void bindCatchVariable(
         imported!"dmd.statement".Catch catch_,
         in Value object,
@@ -1243,13 +1111,7 @@ private struct Walker {
         if (catch_.var is null)
             return;
 
-        if (auto pointer = borrowedNativeClassPointer(object)) {
-            const hydrated = nativeExceptionCatchObject(catch_, object);
-            nativeExceptionMetadata[*pointer] = hydrated;
-            bindingPlace(catch_.var).storeReference(*pointer);
-        } else {
-            setLocal(catch_.var, object);
-        }
+        setLocal(catch_.var, object);
         clearUninitializedBindingAddress(bindingPlace(catch_.var).address);
     }
 
@@ -1262,26 +1124,29 @@ private struct Walker {
     private void throwInterpretedException(
         imported!"dmd.expression".Expression expression,
     ) {
-        auto object = runExpression(expression);
-        if (object.isPointer)
-            if (auto rooted = object.pointerAddress in nativeClassOwners)
-                object = *rooted;
-        if (!AggregateValue.isClass(object))
+        const object = runExpression(expression);
+        if (dynamicClass(object) is null)
             throw new Exception("Unsupported throw expression.");
-        if (hasPendingFinallyBodyException)
-            throw new InterpretedException(chainExceptionObject(
+        if (hasPendingFinallyBodyException) {
+            const chained = chainExceptionObject(
                 pendingFinallyBodyException,
                 object,
-            ));
+            );
+            throw new InterpretedException(
+                chained,
+                exceptionObjectMessage(chained),
+            );
+        }
 
-        throw new InterpretedException(object);
+        throw new InterpretedException(object, exceptionObjectMessage(object));
     }
 
     private void throwNativeException(
         imported!"quickbite.backends.interpreter.native_call_adapter".NativeCallException exception,
     ) {
         rootNativeException(exception);
-        throw new InterpretedException(nativeExceptionObject(exception));
+        const object = nativeExceptionObject(exception);
+        throw new InterpretedException(object, exception.msg);
     }
 
     private void rootNativeException(
@@ -1295,42 +1160,21 @@ private struct Walker {
             rootNativeException(exception.chainedNext);
     }
 
-    // Rebuild the captured native exception chain as linked interpreted
-    // exception objects, threading each `.next` through _nextInChainPtr
-    // (ffi.md §34.13).
+    // Preserve each captured host Throwable's real address as its guest
+    // identity. Interpreter-visible fields live in a native aggregate keyed
+    // by that address, while `.next` stays address-keyed because the host link
+    // is runtime-owned storage rather than a guest-layout object body.
     private Value nativeExceptionObject(
         imported!"quickbite.backends.interpreter.native_call_adapter".NativeCallException exception,
     ) {
-        auto object = nativeExceptionBaseObject(
+        const object = nativeExceptionBaseObject(
             exception.msg,
             exception.className,
             exception.nativeThrowableObjectPointer,
         );
         if (exception.chainedNext !is null) {
             const next = nativeExceptionObject(exception.chainedNext);
-            if (object.isNativeAggregate)
-                nativeThrowableNext[AggregateValue.nativeClassBodyAddress(object)] = next;
-            // A borrowed native Throwable already owns its `.next` link.
-            // Rewriting that live druntime object through frontend field
-            // layout can corrupt adjacent payload; recursion above is still
-            // required to register and root each native link.
-            if (!object.isNativeAggregate)
-                object = AggregateValue.withClassFieldNamed(
-                    object,
-                    "_nextInChainPtr",
-                    next.isNativeAggregate
-                        ? Value.pointerValue(
-                            AggregateValue.nativeClassBodyAddress(next),
-                        )
-                        : next,
-                );
-        }
-
-        if (auto pointer = borrowedNativeClassPointer(object)) {
-            // Throwable.next exposes another native reference before its
-            // interpreted cast runs, so every captured link needs the same
-            // host-only metadata lookup as the outer catch binding.
-            nativeExceptionMetadata[*pointer] = object;
+            nativeThrowableNext[classIdentityAddress(object)] = next;
         }
 
         return object;
@@ -1341,172 +1185,120 @@ private struct Walker {
         in string className,
         in const(void)* nativeObjectPointer = null,
     ) {
-        Value object;
-        if (auto class_ = dynamicClassDeclarationByName(className)) {
-            object = AggregateValue.withClassFieldNamed(
-                classDefaultValue(class_),
-                "msg",
-                Value(message),
-            );
-        } else if (auto class_ = classDeclarationByQualifiedName(className)) {
-            // Fully-qualified name (e.g. a native throw's `classinfo.name`)
-            // may not be lexically visible from the current call frame but
-            // still be known to the frontend. Reusing the declaration gives
-            // the real base-class chain.
-            object = AggregateValue.withClassFieldNamed(
-                classDefaultValue(class_),
-                "msg",
-                Value(message),
-            );
-        } else {
-            object = nativeExceptionValue(message, className);
-        }
-
-        return withBorrowedNativeClassPointer(object, nativeObjectPointer);
-    }
-
-    // Build a native exception object with the full Throwable field layout so
-    // chain-aware field reads (`.next` resolves to _nextInChainPtr) work, while
-    // keeping the thrown class's type names so a catch on a dependency subclass
-    // still matches. Falls back to the message-only object if the frontend has
-    // not recorded the Exception declaration.
-    private Value nativeExceptionValue(
-        in string message,
-        in string className,
-    ) const {
-        import quickbite.backends.interpreter.runtime_values: defaultValue;
-        import quickbite.backends.interpreter.layout: classFields;
         import dmd.dclass: ClassDeclaration;
 
-        auto class_ = ClassDeclaration.exception;
+        auto class_ = dynamicClassDeclarationByName(className);
         if (class_ is null)
-            return Value.classValue(
-                className,
-                nativeExceptionTypeNames(className),
-                ["msg"],
-                [Value(message)],
+            class_ = classDeclarationByQualifiedName(className);
+        if (class_ is null)
+            class_ = ClassDeclaration.exception;
+        if (class_ is null)
+            throw new Exception("Cannot resolve native exception class.");
+
+        auto metadata = AggregateValue.allocateClass(class_.type);
+        initializeNativeClassBody(this, class_.type, metadata);
+        if (nativeObjectPointer !is null)
+            hydrateNativeExceptionMetadata(
+                metadata,
+                class_,
+                cast(void*) nativeObjectPointer,
+            );
+        if (AggregateValue.hasClassFieldNamed(metadata, "msg"))
+            metadata = AggregateValue.withClassFieldNamed(
+                metadata,
+                "msg",
+                Value(message),
             );
 
-        string[] fieldNames;
-        Value[] fields;
-        foreach (field; classFields(class_)) {
-            fieldNames ~= variableName(field);
-            fields ~= defaultValue(field.type);
+        if (nativeObjectPointer is null) {
+            const address = AggregateValue.nativeClassBodyAddress(metadata);
+            nativeClassTypes[address] = class_.type;
+            nativeClassOwners[address] = metadata;
+            return metadata;
         }
 
-        return AggregateValue.withClassFieldNamed(
-            Value.classValue(
-                className,
-                nativeExceptionTypeNames(className),
-                fieldNames,
-                fields,
-            ),
-            "msg",
-            Value(message),
-        );
+        auto address = cast(void*) nativeObjectPointer;
+        nativeClassTypes[address] = class_.type;
+        nativeExceptionMetadata[address] = metadata;
+        return Value.pointerValue(address);
     }
 
-    private Value nativeExceptionCatchObject(
-        imported!"dmd.statement".Catch catch_,
-        in Value object,
-    ) {
-        if (borrowedNativeClassPointer(object) is null)
-            return object;
-
-        auto classType = catch_.type.toBasetype.isTypeClass;
-        if (classType is null || classType.sym is null)
-            return object;
-
-        return nativeExceptionObjectWithClassFields(classType.sym, object);
-    }
-
-    private Value nativeExceptionObjectWithClassFields(
+    private void hydrateNativeExceptionMetadata(
+        ref Value metadata,
         imported!"dmd.dclass".ClassDeclaration class_,
-        in Value object,
+        void* nativeObjectPointer,
     ) {
-        import quickbite.backends.interpreter.layout: classFields;
-
-        auto nativePointer = borrowedNativeClassPointer(object);
-        if (nativePointer is null)
-            return object;
-
-        const pointer = *nativePointer;
-        string[] fieldNames;
-        Value[] fields;
-        foreach (field; classFields(class_)) {
-            const name = variableName(field);
-            fieldNames ~= name;
-            fields ~= isSyntheticNativeExceptionField(name) &&
-                AggregateValue.hasClassFieldNamed(object, name)
-                ? AggregateValue.classFieldNamed(object, name)
-                : nativeClassFieldValue(field, pointer);
-        }
-
-        return Value.classValue(
-            AggregateValue.classTypeName(object),
-            AggregateValue.classTypeNames(object),
-            fieldNames,
-            fields,
-            AggregateValue.classIdentity(object),
-        );
-    }
-
-    // Delete this once class/object storage is fully native-layout backed.
-    // Until then, it only keeps the boxed native-exception shim from reading
-    // interpreter-owned exception metadata as if it were native object
-    // storage.
-    private bool isSyntheticNativeExceptionField(in string name)
-        @safe @nogc nothrow pure const
-    {
-        return name == "msg" || name == "_nextInChainPtr";
-    }
-
-    private Value nativeClassFieldValue(
-        imported!"dmd.declaration".VarDeclaration field,
-        const(void)* objectPointer,
-    ) {
-        import quickbite.backends.interpreter.layout: fieldByteOffset;
+        import quickbite.backends.interpreter.layout: classFields, fieldName;
         import quickbite.backends.interpreter.place: Place;
-        import quickbite.backends.interpreter.place_value: readValue;
+        import quickbite.backends.interpreter.place_value: readValue, writeValue;
 
-        auto fieldType = field.type.toBasetype;
-        return readValue(Place(
-            cast(void*) (cast(ubyte*) objectPointer + fieldByteOffset(field)),
-            fieldType,
-        ));
+        auto destination = Place(
+            AggregateValue.nativeClassBodyAddress(metadata),
+            class_.type,
+        );
+        auto source = Place(nativeObjectPointer, class_.type);
+        foreach (field; classFields(class_)) {
+            const name = fieldName(field);
+            if (name == "msg" || name == "_nextInChainPtr")
+                continue;
+            writeValue(destination.field(field), readValue(source.field(field)));
+        }
     }
 
-    private Value withBorrowedNativeClassPointer(
-        in Value object,
-        in const(void)* nativeObjectPointer,
-    ) {
-        if (nativeObjectPointer is null)
-            return object;
-
-        const existingIdentity = AggregateValue.classIdentity(object);
-        const identity = existingIdentity == 0
-            ? ++nextClassObjectId
-            : existingIdentity;
-        const identified = existingIdentity == 0
-            ? object.withClassIdentity(identity)
-            : object;
-        borrowedNativeClassPointers[identity] = cast(void*) nativeObjectPointer;
-        return identified;
-    }
-
-    private void** borrowedNativeClassPointer(in Value object) {
-        if (!AggregateValue.isClass(object) || object.isNativeAggregate)
+    private Value* classMetadata(in Value object) {
+        if (object.isNativeAggregate)
             return null;
-        const identity = AggregateValue.classIdentity(object);
-        return identity == 0 ? null : identity in borrowedNativeClassPointers;
+        const address = classIdentityAddress(object);
+        if (address is null)
+            return null;
+        if (auto metadata = address in nativeExceptionMetadata)
+            return metadata;
+        return address in nativeClassOwners;
     }
 
-    private Value chainExceptionObject(in Value thrown, in Value next) const {
-        if (!AggregateValue.isClass(thrown) ||
-            !AggregateValue.hasClassFieldNamed(thrown, "_nextInChainPtr"))
+    private bool classHasFieldNamed(in Value object, in string name) {
+        if (object.isNativeAggregate)
+            return AggregateValue.hasClassFieldNamed(object, name);
+        if (auto metadata = classMetadata(object))
+            return AggregateValue.hasClassFieldNamed(*metadata, name);
+        return false;
+    }
+
+    private Value classFieldNamed(in Value object, in string name) {
+        if (object.isNativeAggregate)
+            return AggregateValue.classFieldNamed(object, name);
+        if (auto metadata = classMetadata(object))
+            return AggregateValue.classFieldNamed(*metadata, name);
+        throw new Exception("Class field metadata is unavailable.");
+    }
+
+    private Value withClassFieldNamed(
+        in Value object,
+        in string name,
+        in Value field,
+    ) {
+        if (object.isNativeAggregate)
+            return AggregateValue.withClassFieldNamed(object, name, field);
+        if (auto metadata = classMetadata(object)) {
+            *metadata = AggregateValue.withClassFieldNamed(*metadata, name, field);
+            return object;
+        }
+        throw new Exception("Class field metadata is unavailable.");
+    }
+
+    private string exceptionObjectMessage(in Value object) {
+        return classHasFieldNamed(object, "msg")
+            ? exceptionMessage(classFieldNamed(object, "msg"))
+            : "";
+    }
+
+    private Value chainExceptionObject(in Value thrown, in Value next) {
+        if (!classHasFieldNamed(thrown, "_nextInChainPtr"))
             return thrown;
 
-        return AggregateValue.withClassFieldNamed(thrown, "_nextInChainPtr", next);
+        const chained = withClassFieldNamed(thrown, "_nextInChainPtr", next);
+        nativeThrowableNext[classIdentityAddress(chained)] = next;
+        return chained;
     }
 
     private bool isThrowableConstructor(
@@ -1528,17 +1320,17 @@ private struct Walker {
     private Value applyThrowableConstructor(
         in Value object,
         in Value[] arguments,
-    ) const {
-        if (!AggregateValue.isClass(object) || arguments.length == 0)
+    ) {
+        if (dynamicClass(object) is null || arguments.length == 0)
             return object;
 
-        auto result = AggregateValue.withClassFieldNamed(object, "msg", arguments[0]);
+        auto result = withClassFieldNamed(object, "msg", arguments[0]);
         if (
             arguments.length >= 4 &&
-            AggregateValue.isClass(arguments[3]) &&
-            AggregateValue.hasClassFieldNamed(result, "_nextInChainPtr")
+            dynamicClass(arguments[3]) !is null &&
+            classHasFieldNamed(result, "_nextInChainPtr")
         )
-            result = AggregateValue.withClassFieldNamed(
+            result = withClassFieldNamed(
                 result,
                 "_nextInChainPtr",
                 arguments[3],
@@ -1556,7 +1348,7 @@ private struct Walker {
         if (!hasThis)
             throw new Exception("Unsupported eval call.");
 
-        if (AggregateValue.isClass(thisValue) && isThrowableConstructor(function_)) {
+        if (dynamicClass(thisValue) !is null && isThrowableConstructor(function_)) {
             thisValue = applyThrowableConstructor(thisValue, arguments);
             return thisValue;
         }
@@ -2154,16 +1946,8 @@ private struct Walker {
             if (name == "__ctfe")
                 return Value(false);
 
-            if (
-                hasThis &&
-                AggregateValue.isClass(thisValue) &&
-                AggregateValue.hasClassFieldNamed(thisValue, name)
-            )
-                return AggregateValue.classFieldNamed(thisValue, name);
-
             // Constructor and member-method `this` is the native body
-            // pointer. Resolve an unqualified class field through that body
-            // rather than falling back to a boxed class-value lookup.
+            // pointer. Resolve an unqualified class field through that body.
             if (hasThis && thisValue.isPointer && currentFunction !is null) {
                 auto thisParameter = currentFunction.vthis;
                 auto classType = thisParameter is null
@@ -2667,9 +2451,18 @@ private struct Walker {
             // type; native objects such as a caught Throwable need not have
             // been allocated by the Interpreter or entered in its dynamic-type
             // registry for their inherited field layout to be addressable.
-            auto nativeClassReceiver = preservedNativeClassIdentity(
-                runExpression(dot.e1),
-            );
+            auto nativeClassReceiver = runExpression(dot.e1);
+            if (
+                nativeClassReceiver.isNativeAggregate &&
+                dot.e1.type.toBasetype.isTypeClass !is null
+            )
+                nativeClassReceiver = Value.pointerValue(
+                    AggregateValue.nativeClassBodyAddress(nativeClassReceiver),
+                );
+            else if (auto metadata = classMetadata(nativeClassReceiver))
+                nativeClassReceiver = Value.pointerValue(
+                    AggregateValue.nativeClassBodyAddress(*metadata),
+                );
             if (
                 nativeClassReceiver.isPointer &&
                 dot.e1.type.toBasetype.isTypeClass !is null
@@ -2901,10 +2694,6 @@ private struct Walker {
         if (child.currentFunction !is null && child.currentFunction.isNested)
             child._enclosingFrames = [_activationFrame] ~ _enclosingFrames;
 
-        // Shared, not duped: see `classObjectTable`'s own field comment
-        // for why an identity-keyed table needs a shared pointer here,
-        // not a per-frame copy.
-        child.classObjectTable = classObjectTable;
         child.uninitializedBindingAddresses = uninitializedBindingAddresses;
         // Shared for the same reason: one evaluated array-literal class
         // default must stay the single backing array every fork sees.
@@ -2917,7 +2706,6 @@ private struct Walker {
         child.nativeThrowableNext = nativeThrowableNext.dup;
         child.nativeFunctionPointerSlots = nativeFunctionPointerSlots.dup;
         child.nativeTypeInfoSlots = nativeTypeInfoSlots.dup;
-        child.nextClassObjectId = nextClassObjectId;
         child.functionPointers = functionPointers.dup;
         child.functionPointerIds = functionPointerIds.dup;
         child.nextFunctionPointerId = nextFunctionPointerId;
@@ -2925,7 +2713,6 @@ private struct Walker {
         child.nativeClassTypes = nativeClassTypes.dup;
         child.nativeClassOwners = nativeClassOwners.dup;
         child.nativeExceptionMetadata = nativeExceptionMetadata.dup;
-        child.borrowedNativeClassPointers = borrowedNativeClassPointers.dup;
         child.nativeDelegateSlots = nativeDelegateSlots.dup;
         child.lazyArgumentExpressions = lazyArgumentExpressions.dup;
         child.lazyArgumentFrames = lazyArgumentFrames.dup;
@@ -4008,13 +3795,15 @@ private struct Walker {
         if (value == Value.null_)
             return null;
 
-        if (value.isNativeAggregate)
-            return AggregateValue.nativeClassBodyAddress(value);
+        if (value.isNativeAggregate) {
+            auto type = AggregateValue.native(value).type.toBasetype;
+            return type.isTypeClass is null
+                ? null
+                : AggregateValue.nativeClassBodyAddress(value);
+        }
         if (value.isPointer)
             return value.pointerAddress;
-        if (auto pointer = borrowedNativeClassPointer(value))
-            return *pointer;
-        return cast(void*) AggregateValue.classIdentity(value);
+        return null;
     }
 
     private Value runCallExpression(imported!"dmd.expression".CallExp call) {
@@ -4323,12 +4112,6 @@ private struct Walker {
 
             if (nativeCall) {
                 try {
-                    // A native callback may have hydrated a native-backed
-                    // class for interpreted field access. Native calls consume
-                    // the preserved object identity, independent of whether
-                    // DMD retained a parameter declaration we can classify.
-                    foreach (ref argument; arguments)
-                        argument = preservedNativeClassIdentity(argument);
                     NativeCallResult nativeResult;
                     if (!call.f.needThis && invokeNativeDeclaration(
                             call.f,
@@ -4750,7 +4533,7 @@ private struct Walker {
         FuncDeclaration function_,
         in Value receiver,
     ) {
-        if (!AggregateValue.isClass(receiver))
+        if (dynamicClass(receiver) is null)
             return function_;
 
         auto class_ = dynamicClass(receiver);
@@ -4770,7 +4553,35 @@ private struct Walker {
     }
 
     private imported!"dmd.dclass".ClassDeclaration dynamicClass(in Value value) {
-        return dynamicClassDeclarationByName(AggregateValue.classTypeName(value));
+        const address = classIdentityAddress(value);
+        if (address !is null)
+            if (auto type = address in nativeClassTypes) {
+                auto classType = type.toBasetype.isTypeClass;
+                return classType is null ? null : classType.sym;
+            }
+
+        if (value.isNativeAggregate) {
+            auto classType = AggregateValue.native(value).type.toBasetype.isTypeClass;
+            return classType is null ? null : classType.sym;
+        }
+
+        return null;
+    }
+
+    private bool classHasType(in Value value, in string name) {
+        auto class_ = dynamicClass(value);
+        if (class_ is null)
+            return false;
+
+        foreach (typeName; classTypeNames(class_))
+            if (typeName == name)
+                return true;
+        return false;
+    }
+
+    private string dynamicClassName(in Value value) {
+        auto class_ = dynamicClass(value);
+        return class_ is null ? "" : classInfoName(class_);
     }
 
     private imported!"dmd.dclass".ClassDeclaration dynamicClassDeclarationByName(
@@ -5489,25 +5300,14 @@ private struct Walker {
         const memberReceiver = nativeMemberReceiver(function_, receiver);
 
         if (declarationName(function_) == "next") {
-            const(Value)* throwable = &memberReceiver;
-            if (memberReceiver.isPointer)
-                if (auto object = memberReceiver.pointerAddress in nativeExceptionMetadata)
-                    throwable = object;
-            if (
-                AggregateValue.isClass(*throwable) &&
-                AggregateValue.hasClassType(*throwable, "Throwable")
-            ) {
-                auto body = memberReceiver.isNativeAggregate
-                    ? AggregateValue.nativeClassBodyAddress(memberReceiver)
-                    : memberReceiver.isPointer
-                    ? memberReceiver.pointerAddress
-                    : null;
+            if (classHasType(memberReceiver, "Throwable")) {
+                const body = classIdentityAddress(memberReceiver);
                 if (auto next = body in nativeThrowableNext)
                     return *next;
 
-                if (AggregateValue.hasClassFieldNamed(*throwable, "_nextInChainPtr"))
-                    return AggregateValue.classFieldNamed(
-                        *throwable,
+                if (classHasFieldNamed(memberReceiver, "_nextInChainPtr"))
+                    return classFieldNamed(
+                        memberReceiver,
                         "_nextInChainPtr",
                     );
             }
@@ -5666,14 +5466,12 @@ private struct Walker {
     ) {
         mergeNativeThrowableRoots(child);
         nextFunctionPointerId = child.nextFunctionPointerId;
-        nextClassObjectId = child.nextClassObjectId;
         functionPointers = child.functionPointers;
         functionPointerIds = child.functionPointerIds;
         delegates = child.delegates;
         nativeClassTypes = child.nativeClassTypes;
         nativeClassOwners = child.nativeClassOwners;
         nativeExceptionMetadata = child.nativeExceptionMetadata;
-        borrowedNativeClassPointers = child.borrowedNativeClassPointers;
         nativeDelegateSlots = child.nativeDelegateSlots;
         nativeFunctionPointerSlots = child.nativeFunctionPointerSlots;
         nativeTypeInfoSlots = child.nativeTypeInfoSlots;
@@ -5690,14 +5488,12 @@ private struct Walker {
     ) {
         mergeNativeThrowableRoots(child);
         nextFunctionPointerId = child.nextFunctionPointerId;
-        nextClassObjectId = child.nextClassObjectId;
         functionPointers = child.functionPointers;
         functionPointerIds = child.functionPointerIds;
         delegates = child.delegates;
         nativeClassTypes = child.nativeClassTypes;
         nativeClassOwners = child.nativeClassOwners;
         nativeExceptionMetadata = child.nativeExceptionMetadata;
-        borrowedNativeClassPointers = child.borrowedNativeClassPointers;
         nativeDelegateSlots = child.nativeDelegateSlots;
         nativeFunctionPointerSlots = child.nativeFunctionPointerSlots;
         nativeTypeInfoSlots = child.nativeTypeInfoSlots;
@@ -6715,7 +6511,13 @@ private struct Walker {
                 import quickbite.backends.interpreter.place: Place;
                 import quickbite.backends.interpreter.place_value: readValue;
 
-                auto fieldPlace = Place(target.pointerAddress, dot.e1.type)
+                auto bodyAddress = target.pointerAddress;
+                auto bodyType = dot.e1.type;
+                if (auto metadata = target.pointerAddress in nativeExceptionMetadata) {
+                    bodyAddress = AggregateValue.nativeClassBodyAddress(*metadata);
+                    bodyType = AggregateValue.native(*metadata).type;
+                }
+                auto fieldPlace = Place(bodyAddress, bodyType)
                     .field(dot.var.isVarDeclaration);
                 if (fieldPlace.type.isTypeClass !is null) {
                     if (
@@ -6742,11 +6544,6 @@ private struct Walker {
                     if (auto delegate_ = fieldPlace.address in nativeDelegateSlots)
                         return *delegate_;
                 return readValue(fieldPlace);
-            }
-            if (AggregateValue.isClass(target)) {
-                const fieldIndex = classFieldIndex(dot, target);
-
-                return AggregateValue.classFieldAt(target, fieldIndex);
             }
             if (target.isNativeAggregate) {
                 import dmd.astenums: TY;
@@ -6800,8 +6597,8 @@ private struct Walker {
     ) {
         if (classInfo.e1.isTypeExp is null) {
             const receiver = runExpression(classInfo.e1);
-            if (AggregateValue.isClass(receiver))
-                return Value.typeName(AggregateValue.classTypeName(receiver));
+            if (dynamicClass(receiver) !is null)
+                return Value.typeName(dynamicClassName(receiver));
         }
 
         return Value.typeName(typeInfoName(classInfo.e1.type));
@@ -6812,12 +6609,12 @@ private struct Walker {
     ) {
         auto owner = classInfoNameOwnerExpression(ownerExpression);
         const receiver = runExpression(owner);
-        if (AggregateValue.isClass(receiver))
-            return Value(AggregateValue.classTypeName(receiver));
+        if (dynamicClass(receiver) !is null)
+            return Value(dynamicClassName(receiver));
 
         // A native class reference is its body pointer. Its static class type
         // still supplies the ClassInfo name needed by this interpreter-only
-        // property path; no boxed class object is involved.
+        // property path; the pointer remains the storage authority.
         if (receiver.isPointer && owner.type.toBasetype.isTypeClass !is null)
             if (auto dynamicType = receiver.pointerAddress in nativeClassTypes)
                 return Value(typeInfoName(*dynamicType));
@@ -6889,8 +6686,8 @@ private struct Walker {
                 "` is `null`",
             ));
 
-        if (AggregateValue.isClass(value))
-            return typeidValue(typeid_, AggregateValue.classTypeName(value));
+        if (dynamicClass(value) !is null)
+            return typeidValue(typeid_, dynamicClassName(value));
 
         return typeidValue(typeid_, typeInfoName(expression.type));
     }
@@ -7025,10 +6822,9 @@ private struct Walker {
         imported!"dmd.expression".Expression target,
         in Value value,
         in bool arrayRefWriteback = false,
-        in bool classFieldRefresh = false,
     ) {
         if (auto cast_ = target.isCastExp) {
-            writeLocation(cast_.e1, value, arrayRefWriteback, classFieldRefresh);
+            writeLocation(cast_.e1, value, arrayRefWriteback);
             return;
         }
 
@@ -7137,7 +6933,13 @@ private struct Walker {
                 import quickbite.backends.interpreter.place_value: writeValue;
 
                 auto field = dot.var.isVarDeclaration;
-                auto fieldPlace = Place(nativeClassReceiver.pointerAddress, dot.e1.type)
+                auto bodyAddress = nativeClassReceiver.pointerAddress;
+                auto bodyType = dot.e1.type;
+                if (auto metadata = bodyAddress in nativeExceptionMetadata) {
+                    bodyAddress = AggregateValue.nativeClassBodyAddress(*metadata);
+                    bodyType = AggregateValue.native(*metadata).type;
+                }
+                auto fieldPlace = Place(bodyAddress, bodyType)
                     .field(field);
                 // A live delegate value (an interpreted closure, not `null`)
                 // has no native ABI function address, so `place_value.
@@ -7154,20 +6956,6 @@ private struct Walker {
                     return;
                 }
                 writeStoredValue(fieldPlace, value);
-                return;
-            }
-
-            if (receiver.isClassObject) {
-                const fieldIndex = classFieldIndex(dot, receiver);
-
-                const authoritative = receiver;
-
-                writeLocation(
-                    dot.e1,
-                    AggregateValue.withClassField(authoritative, fieldIndex, value),
-                    /* arrayRefWriteback */ false,
-                    /* classFieldRefresh */ true,
-                );
                 return;
             }
 
@@ -7646,19 +7434,9 @@ private struct Walker {
         if (auto dot = index.e1.isDotVarExp) {
             if (receiverClassType(dot.e1) !is null) {
                 const receiver = runExpression(dot.e1);
-                // A class local's own runtime value is commonly a bare
-                // pointer to the object body, not a `NativeAggregate` --
-                // `AggregateValue.classFieldAt`/`withClassField` only
-                // special-case the latter and otherwise fall through to
-                // `Value.classFieldAt`'s boxed-class-object arm, throwing
-                // "Expected class object." for a bare pointer (the same
-                // hazard `runIndexAssignExpression`'s identical `DotVarExp`/
-                // class arm already closes for the simple-assignment shape
-                // `c.arr[i] = v`). Resolve the field's `Place` directly
-                // through the pointer instead and write the updated array
-                // back through it, covering this compound/element-of-
-                // class-array-field shape (`c.arr[i].field = v`) the same
-                // way.
+                // A class local exposes its object-body pointer. Resolve the
+                // field's `Place` directly through that pointer and write
+                // the updated array back through it.
                 const nativeClassReceiver = receiver.isPointer
                     ? receiver
                     : receiver.isNativeAggregate
@@ -7668,28 +7446,20 @@ private struct Walker {
                     import quickbite.backends.interpreter.place: Place;
                     import quickbite.backends.interpreter.place_value: readValue, writeValue;
 
-                    auto fieldPlace = Place(nativeClassReceiver.pointerAddress, dot.e1.type)
+                    auto bodyAddress = nativeClassReceiver.pointerAddress;
+                    auto bodyType = dot.e1.type;
+                    if (auto metadata = bodyAddress in nativeExceptionMetadata) {
+                        bodyAddress = AggregateValue.nativeClassBodyAddress(*metadata);
+                        bodyType = AggregateValue.native(*metadata).type;
+                    }
+                    auto fieldPlace = Place(bodyAddress, bodyType)
                         .field(dot.var.isVarDeclaration);
                     const source = readValue(fieldPlace);
                     const updatedArray = AggregateValue.withArrayElement(source, arrayIndex, value);
                     writeValue(fieldPlace, updatedArray);
                     return;
                 }
-
-                const fieldIndex = classFieldIndex(dot, receiver);
-                // Same stale-receiver hazard `writeLocation`'s `DotVarExp`
-                // arm closes -- re-derive from the shared cell before folding
-                // in this element's write.
-                const authoritative = receiver;
-                const updatedArray = AggregateValue.withArrayElement(
-                    AggregateValue.classFieldAt(authoritative, fieldIndex), arrayIndex, value);
-                writeLocation(
-                    dot.e1,
-                    AggregateValue.withClassField(authoritative, fieldIndex, updatedArray),
-                    /* arrayRefWriteback */ false,
-                    /* classFieldRefresh */ true,
-                );
-                return;
+                throw new Exception("Class field assignment needs a native address.");
             }
 
             const fieldIndex = structFieldIndex(dot);
@@ -7880,37 +7650,6 @@ private struct Walker {
         return updated;
     }
 
-    private size_t classFieldIndex(imported!"dmd.expression".DotVarExp dot) {
-        return classFieldIndex(dot, Value.void_);
-    }
-
-    private size_t classFieldIndex(
-        imported!"dmd.expression".DotVarExp dot,
-        in Value receiver,
-    ) {
-        import quickbite.backends.interpreter.layout: classFields;
-
-        auto field = dot.var.isVarDeclaration;
-        if (field is null)
-            throw new Exception("Unsupported interpreter field access.");
-
-        auto class_ = receiver.isClassObject
-            ? dynamicClass(receiver)
-            : null;
-        if (class_ is null) {
-            auto classType = receiverClassType(dot.e1);
-            class_ = classType is null ? null : classType.sym;
-        }
-        if (class_ is null)
-            throw new Exception("Unsupported interpreter field access.");
-
-        foreach (index, candidate; classFields(class_))
-            if (candidate is field)
-                return index;
-
-        throw new Exception("Unsupported interpreter field access.");
-    }
-
     private Value runIndexAssignExpression(
         imported!"dmd.expression".IndexExp index,
         imported!"dmd.expression".Expression rhs,
@@ -7964,9 +7703,8 @@ private struct Walker {
             // alongside this one) previously fell through to
             // `structFieldIndex`, which throws "Unsupported interpreter
             // field access." for a class receiver -- this shape was entirely
-            // unsupported. Checked via the STATIC receiver type
-            // (`receiverClassType`), mirroring `writeLocation`'s own
-            // `DotVarExp` arm's `isClassObject` dispatch.
+            // unsupported. Checked via the STATIC receiver type, matching
+            // `writeLocation`'s own class-field dispatch.
             if (receiverClassType(dot.e1) !is null) {
                 const receiver = runExpression(dot.e1);
                 const nativeClassReceiver = receiver.isPointer
@@ -7977,7 +7715,13 @@ private struct Walker {
                 if (nativeClassReceiver.isPointer) {
                     import quickbite.backends.interpreter.place: Place;
 
-                    auto fieldPlace = Place(nativeClassReceiver.pointerAddress, dot.e1.type)
+                    auto bodyAddress = nativeClassReceiver.pointerAddress;
+                    auto bodyType = dot.e1.type;
+                    if (auto metadata = bodyAddress in nativeExceptionMetadata) {
+                        bodyAddress = AggregateValue.nativeClassBodyAddress(*metadata);
+                        bodyType = AggregateValue.native(*metadata).type;
+                    }
+                    auto fieldPlace = Place(bodyAddress, bodyType)
                         .field(dot.var.isVarDeclaration);
                     const source = readStoredValue(fieldPlace);
                     if (index.lengthVar !is null)
@@ -7987,24 +7731,7 @@ private struct Walker {
                     writeStoredValue(fieldPlace.index(arrayIndex), value);
                     return value;
                 }
-                const fieldIndex = classFieldIndex(dot, receiver);
-                // Same stale-receiver hazard `writeLocation`'s `DotVarExp`
-                // arm closes -- re-derive from the shared cell before folding
-                // in this element's write.
-                const authoritative = receiver;
-                const source = AggregateValue.classFieldAt(authoritative, fieldIndex);
-                if (index.lengthVar !is null)
-                    setLocal(index.lengthVar, Value(AggregateValue.length(source)));
-                const arrayIndex = cast(size_t) runExpression(index.e2).asLong;
-                const value = runExpression(rhs);
-                const updatedArray = AggregateValue.withArrayElement(source, arrayIndex, value);
-                writeLocation(
-                    dot.e1,
-                    AggregateValue.withClassField(authoritative, fieldIndex, updatedArray),
-                    /* arrayRefWriteback */ false,
-                    /* classFieldRefresh */ true,
-                );
-                return value;
+                throw new Exception("Class field assignment needs a native address.");
             }
 
             // `$` inside index.e2 is a DollarExp bound to index.lengthVar, so
@@ -8319,13 +8046,8 @@ private struct Walker {
         // unconditionally threw "Unsupported interpreter field access." for
         // this receiver shape before any indexing even ran. Dispatching on
         // `receiverClassType(dot.e1)` alone is not enough, though: a class
-        // local's own runtime value is commonly a bare pointer to the
-        // object body (`receiver.isPointer`), not a `NativeAggregate`
-        // (`receiver.isNativeAggregate`) -- `AggregateValue.classFieldAt`/
-        // `withClassField` only special-case the latter and otherwise fall
-        // through to `Value.classFieldAt`'s boxed-class-object arm, which
-        // threw "Expected class object." for a bare pointer. Resolve the
-        // field's `Place` directly through the pointer instead, the same
+        // local exposes either its object-body pointer or its owning native
+        // aggregate. Resolve the field's `Place` through that address, the same
         // `nativeClassReceiver`/`fieldPlace` composition
         // `runIndexAssignExpression`'s singly-indexed `DotVarExp`/class arm
         // already uses, and write the whole updated field back through that
@@ -9151,21 +8873,6 @@ private struct Walker {
     private Value classCastValue(imported!"dmd.expression".CastExp cast_) {
         auto value = runExpression(cast_.e1);
         value = rootedNativeClassValue(cast_.e1, value);
-        if (value.isPointer)
-            if (auto dynamicType = value.pointerAddress in nativeClassTypes)
-                value = AggregateValue.borrowClass(
-                    *dynamicType,
-                    value.pointerAddress,
-                );
-        if (value.isPointer) {
-            if (auto owner = value.pointerAddress in nativeClassOwners) {
-                value = *owner;
-            } else if (
-                auto metadata = value.pointerAddress in nativeExceptionMetadata
-            ) {
-                value = *metadata;
-            }
-        }
         if (value == Value.null_)
             return value;
 
@@ -9173,15 +8880,10 @@ private struct Walker {
         if (classType is null || classType.sym is null)
             throw new Exception("Unsupported class cast target.");
 
-        if (!AggregateValue.hasClassType(value, className(classType.sym)))
+        if (!classHasType(value, className(classType.sym)))
             return Value.null_;
 
-        // A native class aggregate already carries the reference slot and
-        // rooted body. Casting only changes its static expression type; do
-        // not route it through the legacy exception reification shim.
-        return value.isNativeAggregate
-            ? value
-            : nativeExceptionObjectWithClassFields(classType.sym, value);
+        return value;
     }
 
     private bool tryIdentifierClassCastValue(
@@ -9200,10 +8902,10 @@ private struct Walker {
             return true;
         }
 
-        if (!AggregateValue.isClass(value))
+        if (dynamicClass(value) is null)
             return false;
 
-        result = AggregateValue.hasClassType(value, "Throwable")
+        result = classHasType(value, "Throwable")
             ? value
             : Value.null_;
         return true;
@@ -10341,11 +10043,12 @@ private struct Walker {
 
         auto native = new RangeError;
         native.msg = message;
-        throw new InterpretedException(nativeExceptionBaseObject(
+        const object = nativeExceptionBaseObject(
             message,
             native.classinfo.name,
             cast(void*) native,
-        ));
+        );
+        throw new InterpretedException(object, message);
     }
 
     private bool isSliceValue(imported!"dmd.expression".Expression expression) {
@@ -10579,19 +10282,13 @@ private struct Walker {
     }
 
     // `runNewStructPointerExpression`'s own constructor-call merge, the heap
-    // struct sibling of `mergeNewClassExpressionState` and shared with its
-    // `InterpretedException` path for the same reason: `nextClassObjectId`
-    // only ever advances on the CHILD, so a constructor that mints a class
-    // identity and then throws a guest exception the caller catches leaves
-    // this activation free to re-mint an identity the child already handed
-    // out, and `object_table.ObjectTable.storageFor` throws outright the
-    // moment the two objects sharing it disagree on size.
+    // struct sibling of `mergeNewClassExpressionState`. A constructor can
+    // allocate classes or capture host exception metadata before it throws,
+    // so those address-keyed maps must survive the child walk.
     private void mergeNewStructConstructorState(ref Walker child) {
-        nextClassObjectId = child.nextClassObjectId;
         nativeClassTypes = child.nativeClassTypes;
         nativeClassOwners = child.nativeClassOwners;
         nativeExceptionMetadata = child.nativeExceptionMetadata;
-        borrowedNativeClassPointers = child.borrowedNativeClassPointers;
     }
 
     // `new T(args)` where T's constructor is a body-less native leaf: construct
@@ -10693,14 +10390,12 @@ private struct Walker {
 
     private void mergeNewClassExpressionState(ref Walker child) {
         nextFunctionPointerId = child.nextFunctionPointerId;
-        nextClassObjectId = child.nextClassObjectId;
         functionPointers = child.functionPointers;
         functionPointerIds = child.functionPointerIds;
         delegates = child.delegates;
         nativeClassTypes = child.nativeClassTypes;
         nativeClassOwners = child.nativeClassOwners;
         nativeExceptionMetadata = child.nativeExceptionMetadata;
-        borrowedNativeClassPointers = child.borrowedNativeClassPointers;
         nativeDelegateSlots = child.nativeDelegateSlots;
         nativeFunctionPointerSlots = child.nativeFunctionPointerSlots;
         nativeTypeInfoSlots = child.nativeTypeInfoSlots;
@@ -10928,25 +10623,15 @@ private struct Walker {
     }
 
 
-    // A class rvalue normally exposes only its native body pointer. Recover a
-    // rooted native view when legacy class seams still require one.
+    // A binding read may expose only the native body pointer. Preserve the
+    // owning aggregate when the binding still has that allocation handle;
+    // borrowed host objects remain their real address.
     private Value rootedNativeClassValue(
         imported!"dmd.expression".Expression expression,
         in Value evaluated,
     ) {
         if (auto cast_ = expression.isCastExp)
             return rootedNativeClassValue(cast_.e1, evaluated);
-
-        // Re-entry through a native callback creates a child Walker. A native
-        // class caught there is hydrated for interpreted field access, but
-        // its class value still carries the runtime object's preserved body
-        // pointer. Restore that opaque identity before the value crosses a
-        // later native-call boundary; attempting to compose the hydrated
-        // field snapshot into a class-reference slot would invent a second
-        // object representation.
-        const nativeIdentity = preservedNativeClassIdentity(evaluated);
-        if (!evaluated.isPointer && nativeIdentity.isPointer)
-            return nativeIdentity;
 
         auto var = expression.isVarExp;
         auto variable = var is null ? null : var.var.isVarDeclaration;
@@ -10955,24 +10640,7 @@ private struct Walker {
             if (rooted.isNativeAggregate)
                 return rooted;
         }
-        if (
-            evaluated.isPointer &&
-            expression.type !is null &&
-            expression.type.toBasetype.isTypeClass !is null
-        )
-            if (auto dynamicType = evaluated.pointerAddress in nativeClassTypes)
-                return AggregateValue.borrowClass(
-                    *dynamicType,
-                    evaluated.pointerAddress,
-                );
         return evaluated;
-    }
-
-    private Value preservedNativeClassIdentity(in Value value) {
-        if (auto pointer = borrowedNativeClassPointer(value))
-            return Value.pointerValue(*pointer);
-
-        return value;
     }
 
     private Value defaultLocalValue(VarDeclaration variable) {
@@ -11124,31 +10792,6 @@ private imported!"quickbite.backends.interpreter.runtime_value".Value nativeCons
         ? null
         : function_.parent.isStructDeclaration;
     return structDecl !is null ? defaultValue(structDecl.type) : receiver;
-}
-
-
-private imported!"quickbite.backends.interpreter.runtime_value".Value classDefaultValue(
-    imported!"dmd.dclass".ClassDeclaration class_,
-    in size_t identity = 0,
-) {
-    import quickbite.backends.interpreter.runtime_values: defaultValue;
-    import quickbite.backends.interpreter.runtime_value: Value;
-    import quickbite.backends.interpreter.layout: classFields;
-
-    string[] fieldNames;
-    Value[] fields;
-    foreach (field; classFields(class_)) {
-        fieldNames ~= variableName(field);
-        fields ~= defaultValue(field.type);
-    }
-
-    return Value.classValue(
-        classInfoName(class_),
-        classTypeNames(class_),
-        fieldNames,
-        fields,
-        identity,
-    );
 }
 
 
@@ -11406,43 +11049,6 @@ private string[] classTypeNames(imported!"dmd.dclass".ClassDeclaration class_) {
     }
 
     return names;
-}
-
-
-private string[] nativeExceptionTypeNames(in string name) @safe pure {
-    const root = nativeExceptionRoot(name);
-    return [
-        unqualifiedName(name),
-        name,
-        root,
-        "Throwable",
-        "Object",
-        "object." ~ root,
-        "object.Throwable",
-        "object.Object",
-    ];
-}
-
-private string nativeExceptionRoot(in string name) @safe pure {
-    import std.algorithm: endsWith, startsWith;
-
-    return (
-        (
-            name.startsWith("core.exception.") ||
-            name.startsWith("object.")
-        ) &&
-        name.endsWith("Error")
-    )
-        ? "Error"
-        : "Exception";
-}
-
-
-private string unqualifiedName(in string name) @safe pure {
-    import std.string: lastIndexOf;
-
-    const index = name.lastIndexOf('.');
-    return index == -1 ? name : name[index + 1 .. $];
 }
 
 

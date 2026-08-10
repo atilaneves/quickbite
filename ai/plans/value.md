@@ -22,11 +22,13 @@ Current capabilities:
 - `NativeBlock`/`NativeArray`/`NativeStruct` compose structs, static arrays,
   slices, and their elements using DMD layout. They own real GC storage,
   growth, slice headers, and the interpreter side of the FFI seam.
-- Native frame, module, object-body, and borrowed reference places provide
+- Native frame, module, class-body, and borrowed reference places provide
   authoritative reads, writes, whole-value reconstruction, and addresses.
   Views compose by DMD offsets and strides; direct, nested, indexed, sliced,
   `ref`, and cross-frame access share storage rather than copies.
-- Class bodies are owned by their host address, not a variable binding.
+- Class identity is the host body address. VM-created objects retain a native
+  aggregate owner; borrowed host `Throwable`s retain the host address and keep
+  interpreter-visible native-layout metadata keyed by that same address.
   Union storage observes overlapping DMD offsets and first-member default
   initialization for the supported recursively scalar-field shapes.
 - Rebinding stores a new value or address in the binding place; same-storage
@@ -314,8 +316,10 @@ deletion (items 2-3).
       carrier, or wrapper around addresses is the regression (that is
       how the boxed era grew — never "a second pointer type", always
       "a carrier for a shape the current one can't express");
-    - no data-pointer kind predicate or declaration/allocation identity map
-      exists in the interpreter execution path.
+    - no data-pointer kind predicate, counter identity namespace, or
+      identity-to-body allocation table exists in the interpreter execution
+      path. Address-keyed dynamic-type, ownership, and exception metadata do
+      not replace the address as guest identity.
 
 16. **Walker role; no shared substrate.** The walker is not a stepping
     stone: its own terminal goal is running arbitrary D projects' unit
@@ -507,12 +511,12 @@ checked fact; do not relearn them.
   address reaches a conservatively scanned frame, module, object, aggregate,
   or native-call scratch block. No address-to-allocation registry participates.
 - Native class references carry only their body address. VM-owned allocations
-  retain their storage in an ownership table; borrowed native exceptions keep
-  their hydrated `Throwable` metadata in a separate table keyed by object
-  address. A temporary boxed view of a borrowed native class retains its host
-  pointer in interpreter-owned capability metadata keyed by the view's object
-  identity; guest fields are never host metadata. A catch's static view may
-  replace exception metadata, but never an ordinary class allocation root.
+  retain their native aggregate in an ownership table. A borrowed native
+  exception keeps a separate native-layout metadata aggregate keyed by its
+  real host object address; its dynamic type is keyed by that address too.
+  Ordinary fields are hydrated from the host body, while runtime-owned `msg`
+  and chain state come from the captured exception record. The metadata never
+  crosses a native boundary or replaces the host address as identity.
 - A field slice borrows bytes composed from its receiver place; an aggregate
   expression snapshot is never the backing storage for an lvalue-derived view.
 - `RuntimeValue.NativeAggregate` owns or borrows DMD-layout bytes for a
@@ -678,7 +682,7 @@ work. The remaining value-track work begins with the language-surface and
 display tasks below. Item numbers remain stable for existing cross-references.
 `interpreter-performance.md` may improve measurement in parallel, but its
 production optimisation order begins only after items 2-3 and removal of the
-Interpreter's transitional allocation/declaration identity maps. This prevents
+Interpreter's remaining transitional representation maps. This prevents
 performance work from entrenching representation machinery already scheduled
 for deletion.
 
@@ -772,7 +776,8 @@ Delete the remaining broad `RuntimeValue` type rather than retaining it under
 its private alias `Value`. If recursive AST evaluation still needs a carrier,
 replace it with the smallest non-owning scalar/address/callable carrier allowed
 by decisions 7 and 11; it must contain no formatting model, recursively boxed
-aggregate, or storage authority.
+aggregate, class-object snapshot, or storage authority. A class expression is
+only a native aggregate owner or its object-body address.
 
 ### Item 6 — Open design questions
 

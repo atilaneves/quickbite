@@ -126,30 +126,6 @@ public struct AggregateValue {
         return Value.nativeAggregateValue(NativeAggregate(type, reference, body));
     }
 
-    public static imported!"quickbite.backends.interpreter.runtime_value".Value borrowClass(
-        imported!"dmd.mtype".Type type,
-        void* bodyAddress,
-    ) @trusted {
-        import quickbite.backends.interpreter.layout: classInstanceByteSize;
-        import quickbite.backends.interpreter.native_block: NativeBlock;
-        import quickbite.backends.interpreter.place: Place;
-        import quickbite.backends.interpreter.runtime_value: Value;
-
-        auto classType = baseTypeOf(type).isTypeClass;
-        if (classType is null || classType.sym is null)
-            throw new Exception("AggregateValue.borrowClass needs a class type.");
-        auto reference = NativeBlock.allocate(
-            (void*).sizeof,
-            NativeBlock.Scan.conservative,
-        );
-        Place(reference.address, type).storeReference(bodyAddress);
-        auto body = NativeBlock.borrow(
-            bodyAddress,
-            classInstanceByteSize(classType.sym),
-        );
-        return Value.nativeAggregateValue(NativeAggregate(type, reference, body));
-    }
-
     public static imported!"quickbite.backends.interpreter.runtime_value".Value reconstructNativeArray(
         imported!"dmd.mtype".Type type,
         in imported!"quickbite.backends.interpreter.runtime_value".Value[] elements,
@@ -312,18 +288,6 @@ public struct AggregateValue {
         return value.arraySlice(lower, upper);
     }
 
-    public static imported!"quickbite.backends.interpreter.runtime_value".Value reconstructClass(
-        in string typeName,
-        in string[] typeNames,
-        in string[] fieldNames,
-        in imported!"quickbite.backends.interpreter.runtime_value".Value[] fields,
-        in size_t identity = 0,
-    ) @safe pure {
-        import quickbite.backends.interpreter.runtime_value: Value;
-
-        return Value.classValue(typeName, typeNames, fieldNames, fields, identity);
-    }
-
     public static bool isStruct(
         in imported!"quickbite.backends.interpreter.runtime_value".Value value,
     ) @safe {
@@ -349,14 +313,6 @@ public struct AggregateValue {
             baseTypeOf(native(value).type).isTypeAArray !is null;
     }
 
-    public static bool isClass(
-        in imported!"quickbite.backends.interpreter.runtime_value".Value value,
-    ) @safe {
-        return value.isNativeAggregate
-            ? baseTypeOf(native(value).type).isTypeClass !is null
-            : value.isClassObject;
-    }
-
     // Aggregate reads stay behind this boundary so the authority switch can
     // replace recursive RuntimeValue access with native-layout handles in one
     // place. Scalars deliberately remain RuntimeValue operations.
@@ -375,26 +331,6 @@ public struct AggregateValue {
                 return elementCount(value);
         }
         return value.length;
-    }
-
-    public static size_t classIdentity(
-        in imported!"quickbite.backends.interpreter.runtime_value".Value value,
-    ) @safe {
-        // Native class identity is its body address, consumed directly by
-        // pointer paths. The boxed object-table namespace deliberately has
-        // no entry for it, so legacy class-cell callers see no usable ID.
-        return value.isNativeAggregate ? 0 : value.classIdentity;
-    }
-
-    public static string classTypeName(
-        in imported!"quickbite.backends.interpreter.runtime_value".Value value,
-    ) @safe {
-        if (value.isNativeAggregate) {
-            import quickbite.backends.interpreter.layout: classQualifiedName;
-
-            return classQualifiedName(baseTypeOf(native(value).type).isTypeClass.sym);
-        }
-        return value.classTypeName;
     }
 
     public static size_t fieldCount(
@@ -429,18 +365,17 @@ public struct AggregateValue {
         in imported!"quickbite.backends.interpreter.runtime_value".Value value,
         in size_t index,
     ) @safe {
-        if (value.isNativeAggregate) {
-            import quickbite.backends.interpreter.layout: classFields;
-            import quickbite.backends.interpreter.place: Place;
-            import quickbite.backends.interpreter.place_value: readValue;
+        import quickbite.backends.interpreter.layout: classFields;
+        import quickbite.backends.interpreter.place: Place;
+        import quickbite.backends.interpreter.place_value: readValue;
 
-            auto aggregate = native(value);
-            auto classType = baseTypeOf(aggregate.type).isTypeClass;
-            return readValue(Place(nativeClassBodyAddress(value), aggregate.type).field(
-                classFields(classType.sym)[index],
-            ));
-        }
-        return value.classFieldAt(index);
+        if (!value.isNativeAggregate)
+            throw new Exception("AggregateValue.classFieldAt needs a native class.");
+        auto aggregate = native(value);
+        auto classType = baseTypeOf(aggregate.type).isTypeClass;
+        return readValue(Place(nativeClassBodyAddress(value), aggregate.type).field(
+            classFields(classType.sym)[index],
+        ));
     }
 
     public static size_t elementCount(
@@ -509,32 +444,30 @@ public struct AggregateValue {
         in imported!"quickbite.backends.interpreter.runtime_value".Value value,
         in string name,
     ) @safe {
-        if (value.isNativeAggregate) {
-            import quickbite.backends.interpreter.layout: classFields, fieldName;
+        import quickbite.backends.interpreter.layout: classFields, fieldName;
 
-            auto classType = baseTypeOf(native(value).type).isTypeClass;
-            foreach (field; classFields(classType.sym))
-                if (fieldName(field) == name)
-                    return true;
+        if (!value.isNativeAggregate)
             return false;
-        }
-        return value.hasClassFieldNamed(name);
+        auto classType = baseTypeOf(native(value).type).isTypeClass;
+        foreach (field; classFields(classType.sym))
+            if (fieldName(field) == name)
+                return true;
+        return false;
     }
 
     public static imported!"quickbite.backends.interpreter.runtime_value".Value classFieldNamed(
         in imported!"quickbite.backends.interpreter.runtime_value".Value value,
         in string name,
     ) @safe {
-        if (value.isNativeAggregate) {
-            import quickbite.backends.interpreter.layout: classFields, fieldName;
+        import quickbite.backends.interpreter.layout: classFields, fieldName;
 
-            auto classType = baseTypeOf(native(value).type).isTypeClass;
-            foreach (index, field; classFields(classType.sym))
-                if (fieldName(field) == name)
-                    return classFieldAt(value, index);
-            throw new Exception("AggregateValue.classFieldNamed: no such class field.");
-        }
-        return value.classFieldNamed(name);
+        if (!value.isNativeAggregate)
+            throw new Exception("AggregateValue.classFieldNamed needs a native class.");
+        auto classType = baseTypeOf(native(value).type).isTypeClass;
+        foreach (index, field; classFields(classType.sym))
+            if (fieldName(field) == name)
+                return classFieldAt(value, index);
+        throw new Exception("AggregateValue.classFieldNamed: no such class field.");
     }
 
     public static imported!"quickbite.backends.interpreter.runtime_value".Value withClassFieldNamed(
@@ -542,81 +475,23 @@ public struct AggregateValue {
         in string name,
         in imported!"quickbite.backends.interpreter.runtime_value".Value field,
     ) {
-        if (value.isNativeAggregate) {
-            import quickbite.backends.interpreter.layout: classFields, fieldName;
-            import quickbite.backends.interpreter.place: Place;
-            import quickbite.backends.interpreter.place_value: writeValue;
+        import quickbite.backends.interpreter.layout: classFields, fieldName;
+        import quickbite.backends.interpreter.place: Place;
+        import quickbite.backends.interpreter.place_value: writeValue;
 
-            auto aggregate = native(value);
-            auto classType = baseTypeOf(aggregate.type).isTypeClass;
-            foreach (declaration; classFields(classType.sym))
-                if (fieldName(declaration) == name) {
-                    writeValue(
-                        Place(nativeClassBodyAddress(value), aggregate.type).field(declaration),
-                        field,
-                    );
-                    return value;
-                }
-            throw new Exception("AggregateValue.withClassFieldNamed: no such class field.");
-        }
-        return value.withClassFieldNamed(name, field);
-    }
-
-    public static imported!"quickbite.backends.interpreter.runtime_value".Value withAppendedClassField(
-        in imported!"quickbite.backends.interpreter.runtime_value".Value value,
-        in string name,
-        in imported!"quickbite.backends.interpreter.runtime_value".Value field,
-    ) pure {
-        return value.withAppendedClassField(name, field);
-    }
-
-    public static string[] classTypeNames(
-        in imported!"quickbite.backends.interpreter.runtime_value".Value value,
-    ) @safe {
-        if (value.isNativeAggregate)
-            return nativeClassTypeNames(
-                baseTypeOf(native(value).type).isTypeClass.sym,
-            );
-        return value.classTypeNames;
-    }
-
-    public static bool hasClassType(
-        in imported!"quickbite.backends.interpreter.runtime_value".Value value,
-        in string name,
-    ) @safe {
-        if (value.isNativeAggregate) {
-            foreach (typeName; classTypeNames(value))
-                if (typeName == name)
-                    return true;
-            return false;
-        }
-        return value.classHasType(name);
-    }
-
-    // DMD's class/interface links are extern(C++) fields without @safe
-    // annotations; this read-only graph walk copies every identifier.
-    private static string[] nativeClassTypeNames(
-        imported!"dmd.dclass".ClassDeclaration class_,
-    ) @trusted {
-        string[] names;
-        for (auto current = class_; current !is null; current = current.baseClass) {
-            names ~= current.ident is null ? "" : current.ident.toString.idup;
-            foreach (interface_; current.interfaces)
-                appendInterfaceTypeNames(names, interface_.sym);
-        }
-        return names;
-    }
-
-    // Same trusted read-only DMD interface graph boundary as the caller.
-    private static void appendInterfaceTypeNames(
-        ref string[] names,
-        imported!"dmd.dclass".ClassDeclaration interface_,
-    ) @trusted {
-        if (interface_ is null)
-            return;
-        names ~= interface_.ident is null ? "" : interface_.ident.toString.idup;
-        foreach (base; interface_.interfaces)
-            appendInterfaceTypeNames(names, base.sym);
+        if (!value.isNativeAggregate)
+            throw new Exception("AggregateValue.withClassFieldNamed needs a native class.");
+        auto aggregate = native(value);
+        auto classType = baseTypeOf(aggregate.type).isTypeClass;
+        foreach (declaration; classFields(classType.sym))
+            if (fieldName(declaration) == name) {
+                writeValue(
+                    Place(nativeClassBodyAddress(value), aggregate.type).field(declaration),
+                    field,
+                );
+                return value;
+            }
+        throw new Exception("AggregateValue.withClassFieldNamed: no such class field.");
     }
 
     public static imported!"quickbite.backends.interpreter.runtime_value".Value withArrayElement(
@@ -690,29 +565,6 @@ public struct AggregateValue {
             return value;
         }
         return value.withStructField(index, field);
-    }
-
-    public static imported!"quickbite.backends.interpreter.runtime_value".Value withClassField(
-        in imported!"quickbite.backends.interpreter.runtime_value".Value value,
-        in size_t index,
-        in imported!"quickbite.backends.interpreter.runtime_value".Value field,
-    ) {
-        if (value.isNativeAggregate) {
-            import quickbite.backends.interpreter.layout: classFields;
-            import quickbite.backends.interpreter.place: Place;
-            import quickbite.backends.interpreter.place_value: writeValue;
-
-            auto aggregate = native(value);
-            auto classType = baseTypeOf(aggregate.type).isTypeClass;
-            writeValue(
-                Place(nativeClassBodyAddress(value), aggregate.type).field(
-                    classFields(classType.sym)[index],
-                ),
-                field,
-            );
-            return value;
-        }
-        return value.withClassField(index, field);
     }
 
     public static const(void)* nativeArrayAddress(

@@ -15,8 +15,9 @@ measurement. Correctness work takes precedence when the Interpreter and
 
 Representation work is a prerequisite for production optimisation. Complete
 `value.md`'s formatter, unittest/expression split, shared-`Value` deletion, and
-Interpreter transitional-map removal before changing Interpreter execution
-machinery for speed. Measurement infrastructure may land earlier. Never
+remaining Interpreter transitional-representation removal before changing
+Interpreter execution machinery for speed. Measurement infrastructure may
+land earlier. Never
 optimise, share, or otherwise entrench a representation component that
 `value.md` schedules for deletion.
 
@@ -56,10 +57,10 @@ breakdown.
 
 `forkExecutionStateInto` currently duplicates many associative arrays for
 every interpreted call. The profile identifies real cost, but the hottest
-`NativeBlock` registry is transitional state that `value.md` schedules for
-deletion. This evidence prioritises finishing that deletion; it does not make
-the registry a production-code optimisation target. The profile does not yet
-account for the whole runtime or allocation delta.
+`NativeBlock` registry measured there belonged to the superseded
+identity-to-body storage world. This evidence does not make an allocation
+identity registry a production-code optimisation target. The profile does not
+yet account for the whole runtime or allocation delta.
 
 The Symmetry Investments collector is not a viable comparison at this
 baseline. Registering symgc 0.0.8 through `import symgc.gcobj` and selecting
@@ -155,7 +156,7 @@ for speed.
 
 Complete `value.md` before production performance changes. Delete the shared
 `Value`, the existing broad Interpreter `RuntimeValue`, formatting/reification
-scaffolding, and transitional allocation/declaration identity maps. Pointer
+scaffolding, and remaining transitional representation maps. Pointer
 lifetimes use ordinary GC scanning from native frames and blocks, with a scoped
 temporary owner only while a newly produced raw address has not yet reached
 scanned storage; an execution-wide root registry is not an optimisation

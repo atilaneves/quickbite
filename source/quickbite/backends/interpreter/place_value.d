@@ -13,24 +13,9 @@ private:
 // native `{ length, ptr }` header (`native_array.readSliceHeaderBytes`) and
 // recurses once per element via `Place.index`, which already follows the
 // header's stored `ptr` -- the read side of a slice's place-composed shape.
-// A union is the SAME field-by-field recursion as a non-union struct
-// (`structValueAt` below serves both), and needs no union-specific
-// arithmetic to get that right: every member's `layout.fieldByteOffset` is
-// already the union's own overlapping offset (0 for a top-level union's
-// members, DMD's own flattened offsets for an anonymous union's), so
-// composing each member independently through its OWN `Place.field` is
-// already reinterpretation of the identical underlying bytes at each
-// member's own type -- exactly what `SystemLinker` gives, with no
-// reconciliation step to perform because there is nothing to reconcile:
-// the bytes are simply read again, at a different type, per member. A
-// class (`Type.isTypeClass`) is the odd one out: unlike every other case
-// above, this place's own bytes are not the object's bytes, only a stored
-// reference to them (`Place.deref` already documents this) -- so the class
-// arm below composes the object's body through that reference rather than
-// this place directly, delegating to `readClassValue` (own header comment)
-// for the recursion, since a class field can itself point at another
-// object -- an object GRAPH, not only a single object -- and that
-// recursion needs a cycle guard a plain `readValue` call does not carry.
+// A class place is the odd one out: its bytes are a reference slot, so the
+// class arm returns that slot's stored object-body address. Object fields
+// remain in native storage and are never reconstructed into RuntimeValue.
 // A pointer (`Type.isTypePointer`) is a composable
 // LEAF, not a recursion: this place's own bytes ARE the host address
 // (`ai/plans/value.md` decision 15, "there is exactly one data-pointer
@@ -50,24 +35,8 @@ private:
 // honest here). See `readRealBits`/`writeRealBits`'s own header comments
 // for the padding-determinism argument the verified frame mirror's
 // whole-slot byte comparison depends on.
-//
-// `identityOfObjectBody` is the caller-supplied capability the class arm
-// needs and no other arm does: a boxed `Value.classValue` carries an
-// IDENTITY, and which namespace an identity lives in is the caller's fact,
-// not this module's. `impl.d` mints identities as small counters and
-// `object_table.ObjectTable` maps counter to body address; a `Value`
-// carrying a raw address where a counter is expected passes
-// `ObjectTable.storageFor`'s non-zero guard and silently allocates a
-// SECOND body for the same object, duplicating it and breaking both
-// aliasing and generation tracking. So this takes the address-to-identity
-// translation the same way `writeClassBody` takes the inverse one
-// (`resolveObjectBody`) instead of minting a `cast(size_t) address`
-// nothing else in the codebase would recognise. `null` (the default, for
-// the majority of call sites whose place holds no class at all) makes the
-// class arm decline rather than guess.
 public imported!"quickbite.backends.interpreter.runtime_value".Value readValue(
     imported!"quickbite.backends.interpreter.place".Place place,
-    size_t delegate(void* bodyAddress) @safe identityOfObjectBody = null,
 ) @safe {
     import quickbite.backends.interpreter.native_scalar: isNativeScalarType;
     import quickbite.backends.interpreter.layout:
@@ -147,16 +116,10 @@ public imported!"quickbite.backends.interpreter.runtime_value".Value readValue(
             ? Value.null_
             : AggregateValue.copyFromAddress(type, place.address);
 
-    // Native-authority class slots expose the stored object body address
-    // directly. The legacy mirror supplies an identity capability and keeps
-    // its boxed graph reconstruction below; it is not allowed to mint a
-    // second identity for a native body.
+    // A class slot's stored body address is the class value's identity.
     if (type.isTypeClass !is null) {
-        if (identityOfObjectBody is null) {
-            auto body = place.deref.address;
-            return body is null ? Value.null_ : Value.pointerValue(body);
-        }
-        return readClassValue(place, null, identityOfObjectBody);
+        auto body = place.deref.address;
+        return body is null ? Value.null_ : Value.pointerValue(body);
     }
 
     // A pointer place's own bytes are the stored host address itself
@@ -194,112 +157,6 @@ private bool bytesAreZero(
         if (octet != 0)
             return false;
     return true;
-}
-
-
-// The class-composing recursion `readValue`'s class arm delegates to,
-// carrying `visiting` -- the set of object-body addresses already being
-// read along the CURRENT reference chain -- so a live cycle
-// (`class Node { Node next; }` with `a.next.next is a`) declines with a
-// clear exception instead of recursing forever. `place` is at a class-typed
-// place (a stored reference, `place`'s own contract), exactly the shape
-// `readValue`'s class arm and a class-typed FIELD's own place share, which
-// is what lets this function call itself directly for a nested class field
-// rather than routing back through the generic `readValue` dispatch (kept
-// simple below: only a class-typed field recurses through `readClassValue`;
-// every other field type recurses through `readValue` unchanged, since a
-// struct or array field can never reintroduce a class reference into this
-// chain -- `writeValue`'s own struct/array arms refuse a class-typed field
-// outright, see their header comment, so no native storage this codebase
-// ever writes can carry one except directly, through another class-typed
-// field).
-//
-// `visiting` is keyed by the body's OWN address -- the storage fact, which
-// is what a cycle actually is (the same body reached twice down one
-// reference chain), and deliberately NOT the identity handed back below,
-// which lives in the caller's namespace and needs no cycle meaning at all.
-// It is a genuine "currently being read" set, not a "read at all" set: an
-// address is removed once its own subtree finishes (`scope(exit)`), so two
-// SIBLING fields referencing the SAME object (a DAG, not a cycle) each
-// still compose independently, matching `object_table.ObjectTable`'s own
-// "one identity, one address" guarantee rather than needing a second one
-// here.
-//
-// `identityOfObjectBody` translates that address into the identity the
-// CALLER's own object table uses -- see `readValue`'s own header comment
-// for why this module must not mint one itself. A caller that supplies
-// none has no class namespace to speak of, so this declines rather than
-// producing a `Value.classValue` whose identity nothing can resolve.
-private imported!"quickbite.backends.interpreter.runtime_value".Value readClassValue(
-    imported!"quickbite.backends.interpreter.place".Place place,
-    bool[size_t] visiting,
-    size_t delegate(void* bodyAddress) @safe identityOfObjectBody,
-) @safe {
-    import quickbite.backends.interpreter.layout:
-        classFields, classQualifiedName, classHierarchyNames, fieldName;
-    import quickbite.backends.interpreter.aggregate_value: AggregateValue;
-    import quickbite.backends.interpreter.runtime_value: Value;
-
-    // `place.deref` follows this place's own stored reference and keeps
-    // the class type, giving a place at the object body's own address
-    // (`place.d`'s own contract) -- a null reference (no object bound
-    // yet) reads back as `Value.null_` rather than attempting to read
-    // fields through a null address. Checked before the capability below:
-    // "no object bound yet" needs no identity to answer.
-    auto bodyPlace = place.deref;
-    if (bodyPlace.address is null)
-        return Value.null_;
-
-    if (identityOfObjectBody is null)
-        throw new Exception(
-            "quickbite.backends.interpreter.place_value.readValue: "
-            ~ "a class place needs an identityOfObjectBody capability to "
-            ~ "name the object it reads",
-        );
-
-    const bodyKey = cast(size_t) bodyPlace.address;
-    if (bodyKey in visiting)
-        throw new Exception(
-            "quickbite.backends.interpreter.place_value.readValue: "
-            ~ "cyclic class object graph",
-        );
-    visiting[bodyKey] = true;
-    scope(exit) visiting.remove(bodyKey);
-
-    const identity = identityOfObjectBody(bodyPlace.address);
-
-    auto classType = place.type.isTypeClass;
-    string[] fieldNames;
-    Value[] fields;
-    foreach (field; classFields(classType.sym)) {
-        fieldNames ~= fieldName(field);
-
-        auto fieldPlace = bodyPlace.field(field);
-        fields ~= fieldPlace.type.isTypeClass !is null
-            ? readClassValue(fieldPlace, visiting, identityOfObjectBody)
-            : readValue(fieldPlace, identityOfObjectBody);
-    }
-
-    // `classQualifiedName(classType.sym)` names `classType` -- `place`'s
-    // own STATIC type, not necessarily the object's dynamic one -- unlike
-    // `impl.d`'s `classDefaultValue`, invoked once at `new` with the class
-    // actually being constructed, which is where every `Value.classValue`
-    // this codebase mints its `classTypeName` from today; casts pass it
-    // through unchanged rather than re-deriving it. `impl.d`'s
-    // `classBodyShapeMatches` (the class mirror's write/verify gate) now
-    // trusts `classTypeName` as the object's genuine dynamic class, so a
-    // `Value` reaching there from THIS function through a place statically
-    // narrower than the real object (were one ever routed into a shared
-    // identity `classBodyShapeMatches` checks) would carry a name that
-    // undersells the object's real class and wrongly MATCH where the gate
-    // should decline.
-    return AggregateValue.reconstructClass(
-        classQualifiedName(classType.sym),
-        classHierarchyNames(classType.sym),
-        fieldNames,
-        fields,
-        identity,
-    );
 }
 
 
@@ -605,37 +462,6 @@ in (length == real.sizeof)
 }
 
 
-// The shared field-by-field composition `readValue` uses for BOTH a
-// non-union struct and a union at `place`: read each of `structType`'s own
-// `layout.structFields`, in declaration order, through its own `Place.
-// field`. For a plain struct this reads non-overlapping bytes, one field
-// each; for a union every field's `Place.field` lands at the SAME
-// overlapping offset(s) (DMD's own fact, `value.md`'s Unions section), so
-// this reads every member as its own reinterpretation of those identical
-// bytes -- no union-specific arithmetic needed, because `Place.field`'s
-// offset arithmetic already IS the aliasing truth. `readValue`'s recursion
-// makes each field's own value tagged/typed correctly (an enum, a nested
-// struct or union, ...), matching the boxed walker's own struct-shaped
-// `Value` for a union (`impl.d`'s `withUnionFieldWrite`, which likewise
-// stores a union's `Value` as `Value.structValue` with one entry per
-// declared member, never a smaller "only the live member" shape).
-private imported!"quickbite.backends.interpreter.runtime_value".Value structValueAt(
-    imported!"quickbite.backends.interpreter.place".Place place,
-    imported!"dmd.mtype".TypeStruct structType,
-    size_t delegate(void* bodyAddress) @safe identityOfObjectBody,
-) @safe {
-    import quickbite.backends.interpreter.layout: structFields;
-    import quickbite.backends.interpreter.aggregate_value: AggregateValue;
-    import quickbite.backends.interpreter.runtime_value: Value;
-
-    Value[] fields;
-    foreach (field; structFields(structType))
-        fields ~= readValue(place.field(field), identityOfObjectBody);
-
-    return AggregateValue.reconstructStruct(structTypeName(structType), fields);
-}
-
-
 // The inverse of `readValue`: writes `value`'s scalar leaves into `place`
 // through the identical field-by-field/element-by-element composition --
 // scalar leaves via `Place.storeScalar`, a slice-typed place through
@@ -646,16 +472,9 @@ private imported!"quickbite.backends.interpreter.runtime_value".Value structValu
 // comment gives, with one addition: a class-typed place stays refused here
 // too, even though `readValue` now composes one. Reading a class only needs
 // the reference this place already stores (`Place.deref` follows it);
-// writing one would need to STORE a reference, and the only legal
-// reference for a given object identity is the address `object_table.
-// ObjectTable` handed out for it when the object was created -- knowledge
-// this module has no access to, and should not guess at. That wiring
-// (minting/looking up an identity's body address and storing it here)
-// belongs to whichever later slice connects class locals to `impl.d`'s
-// frame mirror, not to this place-composition layer. Writing an
-// already-allocated body's OWN fields (once its address is known) is
-// `writeClassBody` below, the write-side counterpart of `readValue`'s class
-// arm. A union-typed place writes ONE member's bytes rather than recursing
+// writing one accepts only an already-known native body address or null;
+// it never reconstructs an object from field values. A union-typed place
+// writes ONE member's bytes rather than recursing
 // every field the way a non-union struct does, and refuses outright the
 // unions that single write cannot honestly stand in for -- see
 // `writeUnionValue`/`isComposableUnion`'s own header comments. A
@@ -1133,115 +952,6 @@ private bool writeCoversWholeType(imported!"dmd.mtype".Type type) @safe {
 }
 
 
-// Writes a boxed class `Value`'s fields into an already-allocated object
-// body -- the write-side counterpart of `readValue`'s class arm, and the
-// inverse of the same field composition: `bodyPlace` is a place AT the
-// object body's own address, keeping the class type (the same shape
-// `Place.deref` produces, and `object_table.ObjectTable.storageFor`'s
-// address paired with `place.placeAt` gives directly), not a place holding
-// a reference to it. There is no reference to store here -- unlike
-// `writeValue`, which refuses a class-typed place because it would have to
-// invent or look up that reference -- so this has no such gap for THIS
-// object's own fields: the body's own address is already `bodyPlace.
-// address`, supplied by whoever called this (`object_table.ObjectTable`).
-//
-// A class-typed FIELD is a second, nested instance of that exact gap one
-// level down -- writing a reference into the field's own slot needs an
-// object-body address for THAT identity too. `resolveObjectBody` is the
-// explicit capability that closes it: a caller-supplied identity-to-address
-// function (`impl.d` satisfies it from its own `classObjectTable`, the
-// identical `ObjectTable` this function's own top-level address already
-// came from), rather than this module importing the walker or holding any
-// table of its own -- the same "caller supplies a resolver, this module
-// stays pure composition" shape `lvalue_place.placeOfLvalue`'s own
-// `resolveBase`/`evalIndex` parameters already use. A `null` field value
-// stores a `null` reference and recurses no further, matching `readValue`'s
-// own null-reference short circuit. A non-`null` field value that is not a
-// class object, or carries no real identity (`classIdentity == 0`), has
-// nothing this function can resolve, so it throws rather than guessing.
-//
-// Cycle guard: `writeClassBodyImpl` threads a `visiting` set exactly like
-// `readClassValue`'s own (see its header comment for the DFS "currently
-// being written" reasoning) so a live cycle declines with a clear exception
-// instead of recursing forever. Unlike `writeSliceValue`'s "never touch the
-// destination until every element is written" guarantee, a cycle detected
-// here may have already written PRECEDING fields (of this object or an
-// ancestor's) before the throw -- an all-or-nothing guarantee would need a
-// separate, side-effect-free pre-pass this module has no reason to grow,
-// since `writeClassBody`'s only real call site (`impl.d`'s
-// `mirrorClassToFrame`) already runs the pure, cycle-aware
-// `classBodyShapeMatches` gate first and never reaches a cycle here at all;
-// this function's own guard exists so a direct call (this module's own
-// tests) still terminates rather than overflowing the stack.
-public void writeClassBody(
-    imported!"quickbite.backends.interpreter.place".Place bodyPlace,
-    in imported!"quickbite.backends.interpreter.runtime_value".Value value,
-    void* delegate(size_t identity, imported!"dmd.dclass".ClassDeclaration class_) @safe
-        resolveObjectBody,
-) @safe {
-    writeClassBodyImpl(bodyPlace, value, resolveObjectBody, null);
-}
-
-private void writeClassBodyImpl(
-    imported!"quickbite.backends.interpreter.place".Place bodyPlace,
-    in imported!"quickbite.backends.interpreter.runtime_value".Value value,
-    void* delegate(size_t identity, imported!"dmd.dclass".ClassDeclaration class_) @safe
-        resolveObjectBody,
-    bool[size_t] visiting,
-) @safe {
-    import quickbite.backends.interpreter.layout: classFields;
-    import quickbite.backends.interpreter.place: Place;
-    import quickbite.backends.interpreter.aggregate_value: AggregateValue;
-    import quickbite.backends.interpreter.runtime_value: Value;
-
-    auto classType = bodyPlace.type.isTypeClass;
-    if (classType is null)
-        throw new Exception(
-            "quickbite.backends.interpreter.place_value.writeClassBody: "
-            ~ "bodyPlace must be a class-typed place",
-        );
-
-    const identity = cast(size_t) bodyPlace.address;
-    if (identity in visiting)
-        throw new Exception(
-            "quickbite.backends.interpreter.place_value.writeClassBody: "
-            ~ "cyclic class object graph",
-        );
-    visiting[identity] = true;
-    scope(exit) visiting.remove(identity);
-
-    foreach (index, field; classFields(classType.sym)) {
-        auto fieldPlace = bodyPlace.field(field);
-        auto fieldValue = AggregateValue.classFieldAt(value, index);
-
-        if (fieldPlace.type.isTypeClass is null) {
-            writeValue(fieldPlace, fieldValue);
-            continue;
-        }
-
-        if (fieldValue == Value.null_) {
-            fieldPlace.storeReference(null);
-            continue;
-        }
-
-        if (!AggregateValue.isClass(fieldValue) || fieldValue.classIdentity == 0)
-            throw new Exception(
-                "quickbite.backends.interpreter.place_value.writeClassBody: "
-                ~ "class-typed field requires a Value holding a class "
-                ~ "object with a real identity, or null",
-            );
-
-        auto nestedClassType = fieldPlace.type.isTypeClass;
-        auto nestedAddress =
-            resolveObjectBody(fieldValue.classIdentity, nestedClassType.sym);
-        fieldPlace.storeReference(nestedAddress);
-        writeClassBodyImpl(
-            Place(nestedAddress, fieldPlace.type), fieldValue, resolveObjectBody, visiting,
-        );
-    }
-}
-
-
 public bool isPlaceComposable(imported!"dmd.mtype".Type type) @safe {
     import quickbite.backends.interpreter.native_scalar: isNativeScalarType;
 
@@ -1341,62 +1051,6 @@ private bool fieldsAreDisjoint(
             if (start < otherEnd && otherStart < end)
                 return false;
         }
-    }
-
-    return true;
-}
-
-
-// Whether `class_`'s own fields (`layout.classFields`, base-to-derived) are
-// all `isPlaceComposable` -- the class-body sibling of `isPlaceComposable`
-// itself, answering "can `readValue`'s class arm and `writeClassBody` round
-// trip this class's body without throwing", the same round-trip meaning
-// `isPlaceComposable` already carries for a struct's fields. Deliberately
-// reuses `isPlaceComposable` per field rather than growing a parallel
-// dispatch, for the identical anti-drift reason `isPlaceComposable`'s own
-// header gives.
-//
-// A field whose type is itself a class is the one exception, answering
-// `true` unconditionally rather than delegating to `isPlaceComposable`
-// (which still, deliberately, answers `false` for a class type -- see its
-// own header comment: that predicate gates the plain composable-local
-// mirror, unrelated to this one). `writeClassBody` now has a resolver
-// capability to write a class-typed field's own reference (its own header
-// comment), so the field's TYPE always composes; what can still fail is a
-// VALUE-level fact -- an unresolvable identity, or a cycle -- neither of
-// which this predicate can see (it takes a `ClassDeclaration`, not a
-// `Value`), and neither of which is a TYPE question in the first place.
-// `impl.d`'s `classBodyShapeMatches` is the value-level counterpart that
-// catches those before `mirrorClassToFrame` reaches `writeClassBody`.
-// Answering `true` here unconditionally, rather
-// than recursing into the referenced class's OWN `isClassBodyComposable`,
-// is also what keeps this a plain, terminating TYPE-shape walk: DMD class
-// declarations are free to reference themselves directly
-// (`class Node { Node next; }`), and a class's own field TYPES form no
-// well-founded recursion to bottom out on the way `isPlaceComposable`'s
-// struct/array recursion does (a struct cannot contain itself by value,
-// but a class field naming its own class is completely ordinary D).
-public bool isClassBodyComposable(
-    imported!"dmd.dclass".ClassDeclaration class_,
-) @safe {
-    import quickbite.backends.interpreter.layout: classFields, declaredType;
-
-    auto fields = classFields(class_);
-
-    // The class-body sibling of `allFieldsComposable`'s own identical gate
-    // (its header comment): a class can declare an anonymous union too, and
-    // DMD flattens its members into `classFields` at overlapping offsets
-    // exactly as it does into a struct's.
-    if (!fieldsAreDisjoint(fields))
-        return false;
-
-    foreach (field; fields) {
-        auto fieldType = declaredType(field);
-        if (fieldType.isTypeClass !is null)
-            continue;
-
-        if (!isPlaceComposable(fieldType))
-            return false;
     }
 
     return true;
