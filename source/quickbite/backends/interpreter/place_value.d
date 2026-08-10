@@ -4,25 +4,18 @@ module quickbite.backends.interpreter.place_value;
 private:
 
 
-// Reconstructs the whole guest value at `place`, composing `Place.field`/
-// `Place.index` down to scalar leaves rather than reading `place`'s bytes as
-// one flat span: a native scalar type reads through `Place.loadScalar`
-// directly; a non-union struct type recurses once per `layout.structFields`
-// field, in declaration order; a static-array type recurses once per
-// `layout.staticArrayLength` element; a slice (`Type.isTypeDArray`) reads its
-// native `{ length, ptr }` header (`native_array.readSliceHeaderBytes`) and
-// recurses once per element via `Place.index`, which already follows the
-// header's stored `ptr` -- the read side of a slice's place-composed shape.
-// A class place is the odd one out: its bytes are a reference slot, so the
-// class arm returns that slot's stored object-body address. Object fields
-// remain in native storage and are never reconstructed into RuntimeValue.
+// Reads scalars through their codecs and copies aggregate places as complete
+// native-layout values. Struct padding, union overlap, inline arrays, slice
+// headers, and AA handles therefore stay bytes rather than being decomposed
+// into RuntimeValue trees. A class place is a reference slot, so its
+// arm returns the stored object-body address.
 // A pointer (`Type.isTypePointer`) is a composable
 // LEAF, not a recursion: this place's own bytes ARE the host address
 // (`ai/plans/value.md` decision 15, "there is exactly one data-pointer
 // representation -- the host address"), so the pointer arm below reads
 // exactly that address back out via `Place.deref.address` (the same
 // stored-pointer read `Place.index`'s own pointer case already performs)
-// and boxes it, with no element recursion -- a pointer's pointee is not
+// and wraps it, with no element recursion -- a pointer's pointee is not
 // part of ITS value the way a slice's or static array's elements are.
 // `real` (`TY.Tfloat80`) is ALSO a composable leaf, but through its OWN
 // codec below (`isRealType`/`readRealBits`/`writeRealBits`), not
@@ -109,8 +102,7 @@ public imported!"quickbite.backends.interpreter.runtime_value".Value readValue(
 
     // An associative-array place stores only Quickbite's native header
     // pointer.  Copy that pointer-sized value as one aggregate handle; AA
-    // lookup/mutation stays in the interpreter's native_assoc_array hooks,
-    // never in recursive RuntimeValue entries.
+    // lookup/mutation stays in the interpreter's native_assoc_array hooks.
     if (type.isTypeAArray !is null)
         return bytesAreZero(place.address, typeByteSize(type))
             ? Value.null_
@@ -168,7 +160,7 @@ private bool bytesAreZero(
 // `Value` to give back for a floating one. `@trusted`: `Type.
 // toBasetype` is not `@safe`, mirroring `native_scalar.d`'s identical
 // boundary for the identical call. `public`: `impl.d`'s `placeShapeMatches`
-// needs the identical check, to decide whether a boxed `Value` reaching a
+// needs the identical check, to decide whether a transient `Value` reaching a
 // `real`-typed place is itself a numeric scalar before calling `writeValue`
 // -- reusing this rather than growing a second `Tfloat80` check keeps the
 // two from drifting apart the same way `isNativeScalarType` already does
@@ -292,14 +284,9 @@ private string typeName(imported!"dmd.mtype".Type type) @trusted {
 }
 
 
-// Whether `value` has exactly the recursive boxed shape `writeValue` can
-// encode at `type`: a native scalar, `real`, struct/union, static array, or
-// host-address pointer. This is the value-side counterpart to
-// `isPlaceComposable`'s type-side gate, and deliberately calls it itself so
-// mirror writers and scratch verifiers cannot disagree about whether a
-// `writeValue` call is safe. A mismatch is ordinary control flow for the
-// boxed-era mirror: callers leave the shadow untouched rather than relying on
-// `writeValue` to throw after a partial recursive write.
+// Whether a non-aggregate RuntimeValue can be encoded at `type`. Native
+// aggregates use their typed storage directly and are handled before this
+// scalar compatibility gate at execution boundaries.
 public bool valueMatchesPlace(
     imported!"dmd.mtype".Type type,
     in imported!"quickbite.backends.interpreter.runtime_value".Value value,
@@ -307,27 +294,13 @@ public bool valueMatchesPlace(
     if (!isPlaceComposable(type))
         return false;
 
-    return valueMatchesComposablePlace(type, value);
-}
-
-
-// `valueMatchesPlace` has already established that `type` is composable.
-// Keeping that type-side recursion outside this value-side recursion avoids
-// re-walking every nested aggregate at each leaf.
-private bool valueMatchesComposablePlace(
-    imported!"dmd.mtype".Type type,
-    in imported!"quickbite.backends.interpreter.runtime_value".Value value,
-) @safe {
     import quickbite.backends.interpreter.native_scalar: isNativeScalarType;
-    import quickbite.backends.interpreter.layout:
-        declaredType, staticArrayLength, structFields;
-    import quickbite.backends.interpreter.aggregate_value: AggregateValue;
     import quickbite.backends.interpreter.runtime_value: Value;
 
     if (isNativeScalarType(type))
         return value.isNumericScalar || value.isCharacter;
 
-    // `real` is `isPlaceComposable` but not a native scalar. Its boxed
+    // `real` is `isPlaceComposable` but not a native scalar. Its expression
     // representation is always numeric (never character), matching
     // `writeValue`'s `writeRealBits` arm.
     if (isRealType(type))
@@ -336,42 +309,10 @@ private bool valueMatchesComposablePlace(
     if (complexComponentType(type) !is null)
         return value.isComplexScalar;
 
-    auto structType = type.isTypeStruct;
-    if (structType !is null) {
-        if (!AggregateValue.isStruct(value))
-            return false;
-
-        auto fields = structFields(structType);
-        if (AggregateValue.fieldCount(value) != fields.length)
-            return false;
-
-        foreach (index, field; fields)
-            if (!valueMatchesComposablePlace(
-                declaredType(field),
-                AggregateValue.fieldAt(value, index),
-            ))
-                return false;
-
-        return true;
-    }
-
     if (type.isTypePointer !is null)
         return value.isPointer || value == Value.null_;
 
-    auto arrayType = type.isTypeSArray;
-    assert(arrayType !is null, "valueMatchesPlace: composable type");
-    if (!AggregateValue.isArray(value))
-        return false;
-
-    const length = staticArrayLength(arrayType);
-    if (AggregateValue.elementCount(value) != length)
-        return false;
-
-    foreach (i; 0 .. length)
-        if (!valueMatchesComposablePlace(arrayType.next, AggregateValue.elementAt(value, i)))
-            return false;
-
-    return true;
+    return false;
 }
 
 
@@ -462,35 +403,16 @@ in (length == real.sizeof)
 }
 
 
-// The inverse of `readValue`: writes `value`'s scalar leaves into `place`
-// through the identical field-by-field/element-by-element composition --
-// scalar leaves via `Place.storeScalar`, a slice-typed place through
-// `writeSliceValue` below (new backing storage, elements written, then the
-// `{ length, ptr }` header written into `place` last -- see its own header
-// comment for the ordering argument and the storage's lifetime), and
-// everything else unsupported for exactly the reasons `readValue`'s own
-// comment gives, with one addition: a class-typed place stays refused here
-// too, even though `readValue` now composes one. Reading a class only needs
-// the reference this place already stores (`Place.deref` follows it);
-// writing one accepts only an already-known native body address or null;
-// it never reconstructs an object from field values. A union-typed place
-// writes ONE member's bytes rather than recursing
-// every field the way a non-union struct does, and refuses outright the
-// unions that single write cannot honestly stand in for -- see
-// `writeUnionValue`/`isComposableUnion`'s own header comments. A
-// pointer-typed place composes symmetrically with `readValue`'s pointer
-// arm: `Value.isPointer` carries a host address and `Value.null_` carries
-// the null address. `real` is a plain leaf here too
-// (`writeRealBits`, via `isRealType`) -- see `readValue`'s own header
-// comment for why it lives in this module rather than `native_scalar`'s
-// shared codec.
+// Writes native aggregates as complete byte spans and scalar carriers through
+// their codecs. Aggregate layout never comes from RuntimeValue structure.
+// Null slices, AAs, delegates, pointers, and class references retain their
+// ABI all-zero or address representation.
 public void writeValue(
     imported!"quickbite.backends.interpreter.place".Place place,
     in imported!"quickbite.backends.interpreter.runtime_value".Value value,
 ) @safe {
     import quickbite.backends.interpreter.native_scalar: isNativeScalarType;
-    import quickbite.backends.interpreter.layout:
-        structFields, staticArrayLength, typeByteSize;
+    import quickbite.backends.interpreter.layout: typeByteSize;
     import quickbite.backends.interpreter.aggregate_value: AggregateValue;
     import quickbite.backends.interpreter.place: Place;
     import quickbite.backends.interpreter.runtime_value: Value;
@@ -558,29 +480,8 @@ public void writeValue(
         return;
     }
 
-    auto structType = nonUnionStructOf(type);
-    if (structType !is null) {
-        foreach (index, field; structFields(structType))
-            writeValue(place.field(field), AggregateValue.fieldAt(value, index));
-        return;
-    }
-
-    auto unionType = unionStructOf(type);
-    if (unionType !is null) {
-        writeUnionValue(place, unionType, value);
-        return;
-    }
-
-    auto arrayType = type.isTypeSArray;
-    if (arrayType !is null) {
-        foreach (i; 0 .. staticArrayLength(arrayType))
-            writeValue(place.index(i), AggregateValue.elementAt(value, i));
-        return;
-    }
-
-    auto sliceType = type.isTypeDArray;
-    if (sliceType !is null) {
-        writeSliceValue(place, sliceType, value);
+    if (type.isTypeDArray !is null && value == Value.null_) {
+        zeroBytes(place.address, typeByteSize(type));
         return;
     }
 
@@ -644,138 +545,10 @@ private void* pointerAddress(in imported!"quickbite.backends.interpreter.runtime
 }
 
 
-// The inverse of `readValue`'s slice arm: allocates NEW backing storage
-// (`native_array.NativeArray.allocate`, sized to `value.length`) for the
-// elements rather than reusing whatever `place`'s own header already
-// pointed at -- a written slice header is always a snapshot (`value.md`'s
-// Containers contract), so there is no existing backing storage here to
-// grow or reuse even when a shorter or longer array already lived at
-// `place`. `NativeArray.allocate` itself picks the new block's scan policy
-// from `layout.typeHasPointers` over `elementType` alone -- chosen once,
-// at allocation, never defaulted, exactly the Containers contract's own
-// rule; this function makes no separate scan decision of its own.
-//
-// Elements are written through the identical composition `readValue`'s
-// slice arm reads them back through -- `Place.index`, not hand-rolled
-// stride arithmetic over `array`'s block a second time. Since `array`'s
-// own header does not exist anywhere yet (it is not `place`'s header:
-// writing that is this function's LAST step, below), a throwaway scratch
-// header block gives a `Place` for `.index` to follow: `array.
-// writeSliceHeader(scratchHeader, 0)` writes `array`'s `{ length, ptr }`
-// into it, then `elements.index(i)` reads that SAME header back out
-// exactly as any other slice place's `.index` would, landing on element
-// `i`'s real address inside `array`'s own block. The scratch header itself
-// is never read again once this function returns; only `array`'s block
-// survives, addressed from `place`'s own header instead.
-//
-// The header write into `place` itself comes LAST, after every element
-// has already been written successfully into `array` -- storage nothing
-// else can yet see, since no guest-visible location points at it until
-// then. An element `writeValue` cannot compose -- a class or `real`
-// element (or a nested aggregate containing one) throws from deep in that
-// recursion, before `place`'s own header
-// is ever touched -- so a non-composable element refuses the WHOLE write,
-// leaving `place` exactly as it was, never a partially written array
-// visible through it.
-//
-// Lifetime: once this function returns, the only thing keeping `array`'s
-// block reachable from a GC root is `place`'s own header, just written --
-// which only actually keeps it alive if `place` itself lives inside a
-// block the collector scans. The final `array.writeSliceHeader(place.
-// address)` call enforces exactly that: it refuses to write a live GC
-// pointer into a destination the GC does not scan (see its own header
-// comment in `native_array.d`), the one case this function deliberately
-// does NOT paper over -- a genuinely unscanned destination is a caller
-// bug (every real caller's destination is scanned already, per that
-// comment's own argument), not a case for this function to route around.
-//
-// `Value.null_` -- a null slice, `int[] xs = null` -- is a length of zero,
-// not an error: `Value.length` itself throws "Expected array." for it,
-// which would make this arm refuse a value `readValue`'s own slice arm
-// hands straight back (it reads a `{ 0, null }` header as an empty array,
-// never as `Value.null_`). Treating it as empty is what makes the two
-// directions agree; D itself draws no observable distinction between a
-// null and an empty slice beyond `is null`, which no header this module
-// writes can carry back anyway.
-private void writeSliceValue(
-    imported!"quickbite.backends.interpreter.place".Place place,
-    imported!"dmd.mtype".TypeDArray sliceType,
-    in imported!"quickbite.backends.interpreter.runtime_value".Value value,
-) @safe {
-    import quickbite.backends.interpreter.native_array: NativeArray;
-    import quickbite.backends.interpreter.native_block: NativeBlock;
-    import quickbite.backends.interpreter.place: Place;
-    import quickbite.backends.interpreter.aggregate_value: AggregateValue;
-    import quickbite.backends.interpreter.runtime_value: Value;
-
-    const length = value == Value.null_ ? 0 : AggregateValue.elementCount(value);
-
-    auto elementType = sliceType.next;
-    auto array = NativeArray.allocate(elementType, length);
-
-    auto scratchHeader = NativeBlock.allocate(
-        NativeArray.sliceHeaderByteLength, NativeBlock.Scan.conservative);
-    array.writeSliceHeader(scratchHeader, 0);
-    auto elements = Place(scratchHeader.address, sliceType);
-
-    foreach (i; 0 .. length)
-        writeValue(elements.index(i), AggregateValue.elementAt(value, i));
-
-    array.writeSliceHeader(place.address);
-}
-
-
-// `value` is `structValueAt`'s own shape for a union -- one entry per
-// declared member -- and this writes exactly ONE of those entries: the
-// WIDEST declared member's own bytes, leaving every other entry
-// unconsulted. Writing every entry back field by field, the way the
-// non-union struct arm of `writeValue` does, would make the LAST declared
-// member win regardless of which one the caller actually meant, and a
-// member narrower than a later sibling would leave that sibling's own
-// trailing bytes as whatever was already at `place` rather than what
-// `value` says they should be. Ties are broken by picking the first
-// declared member at the max width, an arbitrary but deterministic choice.
-//
-// Writing one member and ignoring the rest is only HONEST when both halves
-// of `isComposableUnion` below hold -- every other entry is genuinely a
-// reinterpretation of the written member's bytes, and the written member
-// covers every byte any member reads. That predicate is `isPlaceComposable`'s
-// own union arm, so a union this declines is never written by
-// `impl.d`'s mirror and never verified by it either; the assertion below
-// pins that agreement for a direct caller, and it throws (a decline, an
-// `Exception`) rather than indexing an empty member list the way an
-// earlier version of this function did for `union U {}`, which killed the
-// whole interpreter with an `ArrayIndexError` -- an `Error`, on an
-// ordinary D program the mirror is only supposed to shadow.
-private void writeUnionValue(
-    imported!"quickbite.backends.interpreter.place".Place place,
-    imported!"dmd.mtype".TypeStruct unionType,
-    in imported!"quickbite.backends.interpreter.runtime_value".Value value,
-) @safe {
-    import quickbite.backends.interpreter.aggregate_value: AggregateValue;
-    import quickbite.backends.interpreter.layout: structFields;
-
-    if (!isComposableUnion(unionType))
-        throw new Exception(
-            "quickbite.backends.interpreter.place_value.writeValue: "
-            ~ "union place whose single widest-member write cannot stand "
-            ~ "in for the whole union",
-        );
-
-    const widestIndex = widestUnionFieldIndex(unionType);
-    writeValue(
-        place.field(structFields(unionType)[widestIndex]),
-        AggregateValue.fieldAt(value, widestIndex),
-    );
-}
-
-
-// Which of `unionType`'s own `layout.structFields` `writeUnionValue`
-// writes: the first declared member of maximum `layout.typeByteSize`.
-// `-1` when there are none at all -- `union U {}` is legal D, and a union
-// with no member has no byte pattern for a single-member write to stand in
-// for, so `isComposableUnion` declines it rather than letting the write
-// index a member that does not exist.
+// The structural capability predicate below remains conservative for callers
+// that need to know whether a type can be decomposed into scalar leaves. It is
+// not an aggregate execution representation: aggregate reads and writes copy
+// native storage as one value.
 private ptrdiff_t widestUnionFieldIndex(
     imported!"dmd.mtype".TypeStruct unionType,
 ) @safe {
@@ -795,34 +568,8 @@ private ptrdiff_t widestUnionFieldIndex(
 }
 
 
-// Whether `writeUnionValue`'s "write the widest member, ignore every other
-// entry" semantics is actually equivalent to writing the union -- the
-// shared gate `isPlaceComposable`'s union arm and `writeUnionValue` itself
-// both ask, so a declined union is neither written nor verified. Three
-// conditions, each closing a way the single write silently loses bytes the
-// boxed `Value` claims:
-//
-// - There IS a widest member (`widestUnionFieldIndex >= 0`).
-// - Every member is one both boxed union writers keep a faithful
-//   reinterpretation of its siblings (`isUnionMemberReDerivable`). Without
-//   this the ignored entries are not redundant, they are contradictory:
-//   `union U { real r; long l; }` after `u.l = 42` carries `r = real.nan`
-//   (nothing re-derives a `real` sibling), and `real` being the wider
-//   member, the write would splat NaN's bytes over the `l` the guest just
-//   assigned.
-// - The widest member's own `writeValue` covers every byte of its type
-//   (`writeCoversWholeType`). Without this a padded widest member leaves
-//   bytes a same-width sibling reads as live data untouched:
-//   `union U { S s; ubyte[16] x; }` with `struct S { long l; byte b; }`
-//   ties at 16, `s` wins, and its field-by-field write never touches bytes
-//   9..15 -- which are `x[9 .. 16]`.
-//
-// A union this declines is one whose boxed value stays the sole authority,
-// costing mirror coverage and nothing else. The alternative -- writing the
-// widest member anyway -- is invisible to the verified mirror's byte
-// assertion, since the verify side recomputes through this same function
-// and lands on the identical wrong bytes, and becomes a wrong answer the
-// moment native storage becomes the authority.
+// A union is scalar-leaf composable only when it has a member covering the
+// complete extent and every sibling can be derived through the same leaf set.
 private bool isComposableUnion(imported!"dmd.mtype".TypeStruct unionType) @safe {
     import quickbite.backends.interpreter.layout: structFields, declaredType;
 
@@ -839,27 +586,8 @@ private bool isComposableUnion(imported!"dmd.mtype".TypeStruct unionType) @safe 
 }
 
 
-// Whether a union member of `type` is one every boxed union write path in
-// this codebase re-derives from the union's own bytes, so that the boxed
-// `Value`'s entry for it can never contradict its siblings. The set is
-// deliberately a subset of `isPlaceComposable`'s -- a member answering
-// `true` here always composes, which the `out` contract below checks
-// rather than leaving it as a claim two functions must independently
-// honour: a native scalar `writeValue` writes (`isWritableNativeScalar`),
-// a static array of those, or a non-union struct built recursively from
-// them.
-//
-// The excluded shapes are excluded because `impl.d`'s `withUnionFieldWrite`
-// -- the walker's only union field-write path -- re-derives exactly a
-// native-scalar, non-union-struct, or scalar-element-static-array sibling
-// and leaves every other member on its own prior boxed value. `real` is
-// deliberately not `native_scalar.isNativeScalarType` (that module's own
-// header comment), a pointer is not a scalar at all, and a nested union is
-// skipped explicitly there -- so all three keep a stale entry across a
-// sibling's write. `impl.d`'s union DEFAULT path
-// (`unionSiblingDefaultFieldValue`) declines the same shapes and defaults
-// them independently, which is how `union U { real r; long l; }` gets a
-// `real.nan` entry beside a zero `long` one before any write at all.
+// Only native scalar leaves, static arrays of them, and disjoint plain structs
+// recursively composed from them belong to that conservative set.
 private bool isUnionMemberReDerivable(imported!"dmd.mtype".Type type) @safe
 out (result; !result || isPlaceComposable(type))
 {
@@ -886,8 +614,8 @@ out (result; !result || isPlaceComposable(type))
     // whole struct re-derivable while `isPlaceComposable` declines it.
     // Over-declining is the right bias: the union merely stays unmirrored,
     // whereas accepting it routes `u.s.b = 1.5f` through the non-union
-    // receiver path, leaves the boxed sibling stale, and a later `ref`
-    // bind verifies that stale snapshot against the sibling's bytes.
+    // receiver path, leaves a sibling view stale, and a later `ref` bind
+    // verifies that stale view against the sibling's bytes.
     auto fields = structFields(structType);
     if (!fieldsAreDisjoint(fields))
         return false;
@@ -900,13 +628,10 @@ out (result; !result || isPlaceComposable(type))
 }
 
 
-// Whether `writeValue` at a place of `type` writes every one of
-// `layout.typeByteSize(type)` bytes -- a fact about THIS module's own
-// writer, recursing the identical dispatch `writeValue` does so the two
-// cannot drift. Only the union arm needs it (see `isComposableUnion`):
-// everywhere else a byte no field or element owns is padding nothing reads,
-// and fresh native blocks start out zeroed (`NativeBlock.allocate`'s own
-// contract), so untouched padding has a deterministic representation.
+// Whether scalar leaves tile every one of `layout.typeByteSize(type)`'s bytes.
+// Only the conservative union-shape classifier needs this fact (see
+// `isComposableUnion`). Aggregate `writeValue` does not use this walk: it
+// copies the complete typed byte span.
 //
 // A native scalar, a `real`, and a pointer each write exactly their own
 // `typeByteSize` (`native_scalar.writeScalar`, `writeRealBits`,
@@ -984,11 +709,9 @@ public bool isPlaceComposable(imported!"dmd.mtype".Type type) @safe {
 
 
 // Whether every one of `structType`'s own `layout.structFields` (in
-// declaration order) is itself `isPlaceComposable` -- what
-// `isPlaceComposable`'s struct arm asks, which is exactly what
-// `writeValue`'s own struct arm needs, since it recurses once per field.
-// A union asks the stricter `isComposableUnion` instead, for the reason
-// that function's header gives.
+// declaration order) belongs to the conservative scalar-leaf shape described
+// by `isPlaceComposable`. A union asks the stricter `isComposableUnion`
+// instead, for the reason that function's header gives.
 //
 // "In declaration order, one field each" is only true while those fields
 // occupy DISJOINT bytes, so `fieldsAreDisjoint` gates the whole walk: DMD
@@ -999,7 +722,7 @@ public bool isPlaceComposable(imported!"dmd.mtype".Type type) @safe {
 // The enclosing declaration is still a plain `StructDeclaration`, so
 // without this check the struct arm would treat the flattened members as
 // independent storage, write every one of them over the same bytes in
-// declaration order, and let the last win -- while the boxed `Value` keeps
+// declaration order, and let the last win -- while a decomposed value keeps
 // one entry per member, entries that for `union { real r; long l; }` after
 // `s.l = 42` genuinely contradict each other (nothing re-derives a `real`
 // sibling). A later `ref` bind composed into that storage then verifies a
@@ -1023,17 +746,12 @@ private bool allFieldsComposable(imported!"dmd.mtype".TypeStruct structType) @sa
 // Whether no two of `fields` share a byte -- each field's own
 // `layout.fieldByteOffset` plus its declared type's own
 // `layout.typeByteSize`, DMD's numbers verbatim, compared pairwise.
-// Answering `false` is a decline, and a deliberately over-eager one: any
-// overlap at all refuses the whole enclosing type rather than trying to
-// group the overlapping members back into the anonymous union DMD
-// flattened and asking `isComposableUnion` of that group. An unmirrored
-// local costs only coverage of storage nothing reads yet, while getting
-// the grouping wrong crashes a correct program -- and the group that
-// would most often pass such a gate is the one `writeValue` has no place
-// to write through anyway, since a flattened member has no union-typed
-// `Place` of its own. A true union's own `structFields` all sit at offset
-// 0 and would fail this outright, which is why only the plain-struct and
-// class-body arms ask it; a union asks `isComposableUnion`.
+// Answering `false` is a deliberately conservative classification: any
+// overlap refuses the whole enclosing type rather than trying to group the
+// overlapping members back into the anonymous union DMD flattened and asking
+// `isComposableUnion` of that group. A true union's own `structFields` all sit
+// at offset 0 and would fail this outright, which is why a union asks
+// `isComposableUnion` directly.
 private bool fieldsAreDisjoint(
     imported!"dmd.declaration".VarDeclaration[] fields,
 ) @safe {
@@ -1057,10 +775,9 @@ private bool fieldsAreDisjoint(
 }
 
 
-// `type` narrowed to `TypeStruct`, but only when it is not a union -- the
-// shared "does `readValue`/`writeValue`/`isPlaceComposable` treat this as a
-// field-composed struct" check all three recurse through, so the one place
-// that decides "struct, not union" cannot drift between them.
+// `type` narrowed to `TypeStruct`, but only when it is not a union. Reads,
+// writes, and the structural classifier share this distinction so the one
+// place deciding "struct, not union" cannot drift between them.
 private imported!"dmd.mtype".TypeStruct nonUnionStructOf(
     imported!"dmd.mtype".Type type,
 ) @safe {
@@ -1075,7 +792,7 @@ private imported!"dmd.mtype".TypeStruct nonUnionStructOf(
 // only when it IS a union (DMD reports a union as a `TypeStruct` whose
 // `sym` is a `UnionDeclaration` -- `value.md`'s Unions section, the same
 // durable fact `nonUnionStructOf` reads from the opposite side). The one
-// place `readValue`/`writeValue`/`isPlaceComposable` decide "union, not a
+// place reads, writes, and the structural classifier decide "union, not a
 // plain struct" -- so, symmetrically, this cannot drift from
 // `nonUnionStructOf` either: exactly one of the two ever returns non-null
 // for a given `TypeStruct`.
@@ -1104,15 +821,11 @@ private imported!"dmd.mtype".Type baseTypeOf(
 // `@trusted` boundary, mirroring `place.d`'s own `placeBytes`. `length` is
 // always `NativeArray.sliceHeaderByteLength`, so the returned slice spans
 // exactly the header bytes at `address` -- never more.
-private ubyte[] sliceHeaderBytes(void* address, in size_t length) pure nothrow @trusted {
-    return (cast(ubyte*) address)[0 .. length];
-}
-
-
 // Both addresses come from DMD-sized aggregate storage of the identical
 // static type, checked by `writeValue` before this boundary.  Copying exactly
 // that size is the whole-value assignment operation; recursive field writes
-// would recreate a boxed aggregate traversal and lose union/padding bits.
+// would recreate field-by-field aggregate traversal and lose union/padding
+// bits.
 private void copyAggregateBytes(
     void* destination,
     void* source,
@@ -1128,23 +841,6 @@ private void copyAggregateBytes(
 // the same derivation `quickbite.frontend.dmd.values`'s struct default-value
 // builder already uses to name a struct `Value` built straight from a
 // `TypeStruct`, with no existing `Value` to borrow a type name from.
-private string structTypeName(
-    imported!"dmd.mtype".TypeStruct structType,
-) @safe {
-    return structTypeNameImpl(structType);
-}
-
-// `StructDeclaration.ident` is a plain field read, but `StructDeclaration`
-// (an `extern (C++)` class) is not itself `@safe`-annotated; this is the
-// `@trusted` boundary for reading it, mirroring `layout.d`'s
-// `declaredTypeImpl`.
-private string structTypeNameImpl(
-    imported!"dmd.mtype".TypeStruct structType,
-) @trusted {
-    return structType.sym.ident is null ? "" : structType.sym.ident.toString.idup;
-}
-
-
 // The non-member enum rendering `value.md`'s Display format spec rule 5
 // gives for a `value` that matches no member of `enumType`: `cast(E)N`.
 // `readValue`'s enum arm falls back to this once `layout.

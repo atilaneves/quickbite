@@ -189,14 +189,19 @@ package bool isStdConvText(imported!"dmd.func".FuncDeclaration function_) {
 package imported!"quickbite.backends.interpreter.runtime_value".Value stdConvTextCall(
     in imported!"quickbite.backends.interpreter.runtime_value".Value[] arguments,
     in bool[] rawStringArguments,
+    imported!"dmd.mtype".Type resultType,
 ) @safe {
+    import quickbite.backends.interpreter.aggregate_value: AggregateValue;
     import quickbite.backends.interpreter.runtime_value: Value;
 
     string rendered;
     foreach (index, ref argument; arguments)
         rendered ~= stdConvTextArgument(argument, rawStringArguments[index]);
 
-    return Value(rendered);
+    Value[] characters;
+    foreach (character; rendered)
+        characters ~= Value(character);
+    return AggregateValue.reconstructArray(resultType, characters);
 }
 
 private string stdConvTextArgument(
@@ -208,7 +213,7 @@ private string stdConvTextArgument(
     // `rawStringArgument` comes from the original D expression type; after
     // evaluation, `char[]` is only a Value array, but `std.conv.text` renders
     // it as string text instead of an element range.
-    if (argument.isNativeAggregate && AggregateValue.isArray(argument)) {
+    if (AggregateValue.isArray(argument)) {
         if (rawStringArgument) {
             char[] result;
             foreach (index; 0 .. AggregateValue.elementCount(argument))
@@ -219,9 +224,7 @@ private string stdConvTextArgument(
         return nativeArrayText(argument);
     }
 
-    return rawStringArgument || argument.isStringDisplayArray
-        ? argument.asCharArrayString
-        : argument.dText;
+    return argument.dText;
 }
 
 
@@ -235,7 +238,7 @@ private string nativeArrayText(
         if (index)
             result ~= ", ";
         const element = AggregateValue.elementAt(value, index);
-        result ~= element.isNativeAggregate && AggregateValue.isArray(element)
+        result ~= AggregateValue.isArray(element)
             ? nativeArrayText(element)
             : element.dText;
     }

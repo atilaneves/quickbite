@@ -3,14 +3,6 @@ module quickbite.backends.interpreter.runtime_value;
 private:
 
 
-private enum ArrayDisplay {
-    normal,
-    string,
-    wstring,
-    dstring,
-}
-
-
 public struct RuntimeValue {
     private alias NativeAggregate = imported!"quickbite.backends.interpreter.native_aggregate".NativeAggregate;
 
@@ -40,12 +32,9 @@ public struct RuntimeValue {
         ImaginaryScalar,
         ComplexScalar,
 
-        Array,
-        AssocArray,
         NativeAggregate,
         Pointer,
         NativeDelegate,
-        Struct,
         TypeName,
         EnumValue,
         FunctionPointer,
@@ -62,71 +51,10 @@ public struct RuntimeValue {
         return Value(Null.init);
     }
 
-    public static Value structValue(
-        in string typeName,
-        in Value[] fields,
-    ) @safe pure {
-        return Value(Struct(typeName, fields));
-    }
-
-    public static Value arrayValue(in Value[] elements) @safe pure {
-        return Value(Array(elements));
-    }
-
-    public static Value arraySliceValue(
-        in Value[] elements,
-        in Value[] allocation,
-        in size_t allocationOffset,
-        in size_t allocationId = 0,
-    ) @safe pure {
-        return Value(Array(
-            elements,
-            ArrayDisplay.normal,
-            allocation,
-            allocationOffset,
-            allocationId,
-        ));
-    }
-
     public static Value nativeAggregateValue(
         NativeAggregate aggregate,
     ) @safe pure {
         return Value(aggregate);
-    }
-
-    public static Value stringValue(in char[] elements) @safe pure {
-        Value[] values;
-        foreach (element; elements)
-            values ~= Value(element);
-
-        return Value(Array(values, ArrayDisplay.string));
-    }
-
-    public static Value stringValue(in wchar[] elements) @safe pure {
-        Value[] values;
-        foreach (element; elements)
-            values ~= Value(element);
-
-        return Value(Array(values, ArrayDisplay.wstring));
-    }
-
-    public static Value stringValue(in dchar[] elements) @safe pure {
-        Value[] values;
-        foreach (element; elements)
-            values ~= Value(element);
-
-        return Value(Array(values, ArrayDisplay.dstring));
-    }
-
-    public static Value characterArrayValue(in Value[] elements) @safe pure {
-        return Value(Array(elements, ArrayDisplay.string));
-    }
-
-    public static Value assocArrayValue(
-        in Value[] keys,
-        in Value[] values,
-    ) @safe pure {
-        return Value(AssocArray(keys, values));
     }
 
     public static Value pointerValue(void* pointer) @safe pure {
@@ -178,15 +106,7 @@ public struct RuntimeValue {
         data = Data(value);
     }
 
-    private this(Struct value) @safe pure {
-        data = Data(value);
-    }
-
     private this(NativeAggregate value) @safe pure {
-        data = Data(value);
-    }
-
-    private this(AssocArray value) @safe pure {
         data = Data(value);
     }
 
@@ -199,10 +119,6 @@ public struct RuntimeValue {
     }
 
     private this(FunctionPointer value) @safe pure {
-        data = Data(value);
-    }
-
-    private this(Array value) @safe pure {
         data = Data(value);
     }
 
@@ -238,69 +154,12 @@ public struct RuntimeValue {
         data = Data(cast(Unqual!T) value);
     }
 
-    public this(T)(in T value) @safe pure
-    if (is(T == struct) && !is(T == Void))
-    {
-        data = Data(Struct(value));
-    }
-
-    public this(in string value) @safe pure {
-        data = Value.stringValue(value).data;
-    }
-
-    public this(T)(in T[] values) @safe pure {
-        Value[] elements;
-        foreach (value; values)
-            elements ~= Value(value);
-
-        data = Data(Array(elements));
-    }
-
-    public this(K, V)(in V[K] values) @safe pure {
-        data = Data(AssocArray(values));
-    }
-
     public bool opEquals(in Value other) const @safe pure {
         return data == other.data;
     }
 
     public size_t toHash() const @safe pure nothrow {
         return 0;
-    }
-
-    public string asCharArrayString() const @safe pure {
-        import std.sumtype: match;
-
-        return data.match!(
-            (const(Array) array) {
-                char[] result;
-                foreach (element; array.elements)
-                    result ~= element.asUtf8Character;
-                return result.idup;
-            },
-            (_) {
-                throw new Exception("Expected char array.");
-                return null;
-            },
-        );
-    }
-
-    public bool isStringDisplayArray() const @safe pure nothrow {
-        import std.sumtype: match;
-
-        return data.match!(
-            (const(Array) array) {
-                final switch (array.display) with (ArrayDisplay) {
-                    case normal:
-                        return false;
-                    case string:
-                    case wstring:
-                    case dstring:
-                        return true;
-                }
-            },
-            (_) => false,
-        );
     }
 
     private dchar asDchar() const @safe pure {
@@ -379,11 +238,7 @@ public struct RuntimeValue {
         return data.match!(
             (value) {
                 alias T = typeof(value);
-                static if (is(T == const(AssocArray)) || is(T == AssocArray)) {
-                    return value.toString;
-                } else static if (is(T == const(Struct)) || is(T == Struct)) {
-                    return value.toString;
-                } else static if (is(T == const(TypeName)) || is(T == TypeName)) {
+                static if (is(T == const(TypeName)) || is(T == TypeName)) {
                     return value.toString;
                 } else static if (is(T == const(EnumValue)) || is(T == EnumValue)) {
                     return value.toString;
@@ -399,8 +254,6 @@ public struct RuntimeValue {
                     is(T == Undisplayable))
                 {
                     return "<undisplayable>";
-                } else static if (is(T == const(Array)) || is(T == Array)) {
-                    return value.dText;
                 } else static if (is(T == const(Null)) || is(T == Null)) {
                     return "null";
                 } else {
@@ -572,151 +425,6 @@ public struct RuntimeValue {
         );
     }
 
-    public size_t length() const @safe pure {
-        import std.sumtype: match;
-
-        return data.match!(
-            (const(Array) array) => array.elements.length,
-            (const(AssocArray) assocArray) => assocArray.entries.length,
-            (_) {
-                throw new Exception("Expected array.");
-                return size_t.init;
-            },
-        );
-    }
-
-    public bool assocArrayContains(in Value key) const @safe pure {
-        import std.sumtype: match;
-
-        return data.match!(
-            (const(AssocArray) assocArray) {
-                foreach (entry; assocArray.entries)
-                    if (entry.key == key)
-                        return true;
-                return false;
-            },
-            (const(Null)) => false,
-            (_) {
-                throw new Exception("Expected associative array.");
-                return false;
-            },
-        );
-    }
-
-    public Value assocArrayElement(in Value key) const @safe pure {
-        import std.sumtype: match;
-
-        return data.match!(
-            (const(AssocArray) assocArray) {
-                foreach (entry; assocArray.entries)
-                    if (entry.key == key)
-                        return entry.value;
-
-                throw new Exception("Expected present key.");
-                return Value.void_;
-            },
-            (_) {
-                throw new Exception("Expected associative array.");
-                return Value.void_;
-            },
-        );
-    }
-
-    public Value withAssocArrayEntry(
-        in Value key,
-        in Value value,
-    ) const @safe pure {
-        import std.sumtype: match;
-
-        return data.match!(
-            (const(AssocArray) assocArray) {
-                Value[] keys;
-                Value[] values;
-                bool replaced;
-
-                foreach (entry; assocArray.entries) {
-                    keys ~= entry.key;
-                    if (entry.key == key) {
-                        values ~= value;
-                        replaced = true;
-                    } else
-                        values ~= entry.value;
-                }
-
-                if (!replaced) {
-                    keys ~= key;
-                    values ~= value;
-                }
-
-                return Value.assocArrayValue(keys, values);
-            },
-            (_) {
-                throw new Exception("Expected associative array.");
-                return Value.void_;
-            },
-        );
-    }
-
-    public Value withoutAssocArrayKey(in Value key) const @safe pure {
-        import std.sumtype: match;
-
-        return data.match!(
-            (const(AssocArray) assocArray) {
-                Value[] keys;
-                Value[] values;
-
-                foreach (entry; assocArray.entries) {
-                    if (entry.key == key)
-                        continue;
-                    keys ~= entry.key;
-                    values ~= entry.value;
-                }
-
-                return Value.assocArrayValue(keys, values);
-            },
-            (_) {
-                throw new Exception("Expected associative array.");
-                return Value.void_;
-            },
-        );
-    }
-
-    public Value assocArrayKeys() const @safe pure {
-        import std.sumtype: match;
-
-        return data.match!(
-            (const(AssocArray) assocArray) {
-                Value[] keys;
-                foreach (entry; assocArray.entries)
-                    keys ~= entry.key;
-
-                return Value.arrayValue(keys);
-            },
-            (_) {
-                throw new Exception("Expected associative array.");
-                return Value.void_;
-            },
-        );
-    }
-
-    public Value assocArrayValues() const @safe pure {
-        import std.sumtype: match;
-
-        return data.match!(
-            (const(AssocArray) assocArray) {
-                Value[] values;
-                foreach (entry; assocArray.entries)
-                    values ~= entry.value;
-
-                return Value.arrayValue(values);
-            },
-            (_) {
-                throw new Exception("Expected associative array.");
-                return Value.void_;
-            },
-        );
-    }
-
     public bool isPointer() const @safe pure nothrow {
         import std.sumtype: match;
 
@@ -817,15 +525,6 @@ public struct RuntimeValue {
         );
     }
 
-    public bool isStruct() const @safe pure nothrow {
-        import std.sumtype: match;
-
-        return data.match!(
-            (const(Struct) struct_) => true,
-            (_) => false,
-        );
-    }
-
     public bool isTypeName() const @safe pure nothrow {
         import std.sumtype: match;
 
@@ -843,27 +542,6 @@ public struct RuntimeValue {
             (_) {
                 throw new Exception("Expected type name.");
                 return "";
-            },
-        );
-    }
-
-    public bool isArray() const @safe pure nothrow {
-        import std.sumtype: match;
-
-        return data.match!(
-            (const(Array) array) => true,
-            (_) => false,
-        );
-    }
-
-    public size_t structFieldCount() const @safe pure {
-        import std.sumtype: match;
-
-        return data.match!(
-            (const(Struct) struct_) => struct_.fields.length,
-            (_) {
-                throw new Exception("Expected struct.");
-                return size_t.init;
             },
         );
     }
@@ -905,174 +583,6 @@ public struct RuntimeValue {
                 cast(long) cast(size_t) other.pointerAddress;
 
         throw new Exception("Expected pointers.");
-    }
-
-    public Value opIndex(in size_t index) const @safe pure {
-        import std.sumtype: match;
-
-        return data.match!(
-            (const(Array) array) => array.elements[index],
-            (_) {
-                throw new Exception("Expected array.");
-                return Value.void_;
-            },
-        );
-    }
-
-    public Value withArrayElement(
-        in size_t index,
-        in Value element,
-    ) const pure {
-        import std.sumtype: match;
-
-        return data.match!(
-            (const(Array) array) {
-                auto elements = array.elements.dup;
-                elements[index] = element;
-                auto allocation = array.allocation.dup;
-                const allocationIndex = array.allocationOffset + index;
-                if (allocationIndex < allocation.length)
-                    allocation[allocationIndex] = element;
-                return Value(Array(
-                    elements,
-                    array.display,
-                    allocation,
-                    array.allocationOffset,
-                    array.allocationId,
-                ));
-            },
-            (_) {
-                throw new Exception("Expected array.");
-                return Value.void_;
-            },
-        );
-    }
-
-    public Value withArrayLength(in size_t length) const pure {
-        import std.sumtype: match;
-
-        return data.match!(
-            (const(Array) array) => Value(Array(
-                array.elements[0 .. length],
-                array.display,
-                array.allocation,
-                array.allocationOffset,
-                array.allocationId,
-            )),
-            (_) {
-                throw new Exception("Expected array.");
-                return Value.void_;
-            },
-        );
-    }
-
-    public Value arraySlice(
-        in size_t lower,
-        in size_t upper,
-    ) const @safe pure {
-        import std.sumtype: match;
-
-        return data.match!(
-            (const(Array) array) => Value(Array(
-                array.elements[lower .. upper],
-                array.display,
-                array.allocation,
-                array.allocationOffset + lower,
-                array.allocationId,
-            )),
-            (_) {
-                throw new Exception("Expected array.");
-                return Value.void_;
-            },
-        );
-    }
-
-    public Value[] arrayAllocationElements() const @safe pure {
-        import std.sumtype: match;
-
-        return data.match!(
-            (const(Array) array) => array.allocation.dup,
-            (_) {
-                throw new Exception("Expected array.");
-                Value[] empty;
-                return empty;
-            },
-        );
-    }
-
-    public size_t arrayAllocationOffset() const @safe pure {
-        import std.sumtype: match;
-
-        return data.match!(
-            (const(Array) array) => array.allocationOffset,
-            (_) {
-                throw new Exception("Expected array.");
-                return size_t.init;
-            },
-        );
-    }
-
-    public size_t arrayAllocationId() const @safe pure {
-        import std.sumtype: match;
-
-        return data.match!(
-            (const(Array) array) => array.allocationId,
-            (_) {
-                throw new Exception("Expected array.");
-                return size_t.init;
-            },
-        );
-    }
-
-    public Value structFieldAt(in size_t index) const @safe pure {
-        import std.sumtype: match;
-
-        return data.match!(
-            (const(Struct) struct_) => struct_.fields[index].value,
-            (_) {
-                throw new Exception("Expected struct.");
-                return Value.void_;
-            },
-        );
-    }
-
-    // not @safe: the sumtype match copies array-bearing alternatives,
-    // which `match` infers as @system, same as withArrayElement below
-    public Value withStructField(
-        in size_t index,
-        in Value value,
-    ) const pure {
-        import std.sumtype: match;
-
-        return data.match!(
-            (const(Struct) struct_) {
-                Value[] values;
-                foreach (field; struct_.fields)
-                    values ~= field.value;
-                values[index] = value;
-                return Value.structValue(struct_.typeName, values);
-            },
-            (_) {
-                throw new Exception("Expected struct.");
-                return Value.void_;
-            },
-        );
-    }
-
-    public Value withAppendedArrayElement(in Value element) const pure {
-        import std.sumtype: match;
-
-        return data.match!(
-            (const(Array) array) {
-                auto elements = array.elements.dup;
-                elements ~= element;
-                return Value(Array(elements, array.display));
-            },
-            (_) {
-                throw new Exception("Expected array.");
-                return Value.void_;
-            },
-        );
     }
 
     public real asReal() const @safe pure {
@@ -1480,138 +990,6 @@ private struct FunctionPointer {
 private struct Undisplayable {}
 
 
-private struct Array {
-    public Value[] elements;
-    public Value[] allocation;
-    public size_t allocationOffset;
-    public size_t allocationId;
-    public ArrayDisplay display;
-
-    public this(
-        in Value[] elements,
-        in ArrayDisplay display = ArrayDisplay.normal,
-    ) @safe pure {
-        this.elements = elements.dup;
-        this.allocation = elements.dup;
-        this.allocationOffset = 0;
-        this.allocationId = 0;
-        this.display = display;
-    }
-
-    public this(
-        in Value[] elements,
-        in ArrayDisplay display,
-        in Value[] allocation,
-        in size_t allocationOffset = 0,
-        in size_t allocationId = 0,
-    ) @safe pure {
-        this.elements = elements.dup;
-        this.allocation = allocation.dup;
-        this.allocationOffset = allocationOffset;
-        this.allocationId = allocationId;
-        this.display = display;
-    }
-
-    public bool opEquals(in Array other) const @safe pure {
-        return elements == other.elements;
-    }
-
-    public string toString() const @safe pure {
-        string ret = "[";
-
-        foreach (i, element; elements) {
-            if (i != 0)
-                ret ~= ", ";
-            ret ~= element.dText;
-        }
-
-        return ret ~ "]";
-    }
-
-    public string dText() const @safe pure {
-        final switch (display) with (ArrayDisplay) {
-            case normal:
-                return toString;
-            case string:
-            case wstring:
-            case dstring:
-                return `"` ~ charArrayString ~ `"`;
-        }
-    }
-
-    private bool isCharArray() const @safe pure {
-        foreach (element; elements)
-            if (!element.isCharacter)
-                return false;
-
-        return true;
-    }
-
-    private string charArrayString() const @safe pure {
-        if (!isCharArray)
-            return toString;
-
-        char[] result;
-        foreach (element; elements)
-            result ~= element.asUtf8Character;
-
-        return result.idup;
-    }
-}
-
-
-private struct AssocArray {
-    public Entry[] entries;
-
-    public this(
-        in Value[] keys,
-        in Value[] values,
-    ) @safe pure {
-        assert(keys.length == values.length);
-        foreach (index, key; keys)
-            entries ~= Entry(key, values[index]);
-    }
-
-    public this(K, V)(in V[K] values) @safe pure {
-        foreach (key, value; values)
-            entries ~= Entry(Value(key), Value(value));
-    }
-
-    public bool opEquals(in AssocArray other) const @safe pure {
-        if (entries.length != other.entries.length)
-            return false;
-
-        foreach (entry; entries) {
-            bool found;
-
-            foreach (otherEntry; other.entries)
-                if (otherEntry.key == entry.key &&
-                    otherEntry.value == entry.value) {
-                    found = true;
-                    break;
-                }
-
-            if (!found)
-                return false;
-        }
-
-        return true;
-    }
-
-    public string toString() const @safe pure {
-        string ret = "[";
-
-        foreach (i, entry; entries) {
-            if (i != 0)
-                ret ~= ", ";
-            ret ~= entry.toString;
-        }
-
-        return ret ~ "]";
-    }
-}
-
-
 private struct Pointer {
     public void* address;
 
@@ -1634,64 +1012,6 @@ private struct NativeDelegate {
         import std.conv: text;
 
         return text(funcptr);
-    }
-}
-
-
-private struct Entry {
-    public Value key;
-    public Value value;
-
-    public string toString() const @safe pure {
-        return key.dText ~ ":" ~ value.dText;
-    }
-}
-
-
-private struct Struct {
-    public string typeName;
-    public Field[] fields;
-
-    public this(
-        in string typeName,
-        in Value[] fields,
-    ) @safe pure {
-        this.typeName = typeName;
-
-        foreach (field; fields)
-            this.fields ~= Field("", field);
-    }
-
-    public this(T)(in T value) @safe pure
-    if (is(T == struct))
-    {
-        typeName = T.stringof;
-
-        static foreach (member; __traits(allMembers, T)) {
-            fields ~= Field(member, Value(__traits(getMember, value, member)));
-        }
-    }
-
-    public string toString() const @safe pure {
-        string ret = typeName ~ "(";
-
-        foreach (i, field; fields) {
-            if (i != 0)
-                ret ~= ", ";
-            ret ~= field.toString;
-        }
-
-        return ret ~ ")";
-    }
-}
-
-
-private struct Field {
-    public string name;
-    public Value value;
-
-    public string toString() const @safe pure {
-        return value.dText;
     }
 }
 

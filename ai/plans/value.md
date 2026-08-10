@@ -6,11 +6,12 @@ This plan records the removal of the shared `quickbite.lang.Value` and the
 tree-walking interpreter's move to native-layout storage. Decisions 15-18
 (July 2026) commit the end state — native-layout storage, one data-pointer
 representation (the host address), no FFI marshalling — with deleting
-`Value` as the completion signal. The remaining order is: delete the shared
-`Value` and remove the Interpreter's transitional representation machinery
-before optimising Interpreter execution. Broader
-Interpreter language expansion follows those steps. The Bytecode refactor and
-its address-only FFI migration proceed in a file-disjoint parallel lane.
+`Value` as the completion signal. The remaining order is: remove the
+Interpreter's remaining transient carrier machinery, then delete the shared
+`Value` once every backend has completed its formatter migration, before
+optimising Interpreter execution. Broader Interpreter language expansion
+follows those steps. The Bytecode refactor and its address-only FFI migration
+proceed in a file-disjoint parallel lane.
 Current capabilities:
 
 - `EvalResult` carries a display `string` or `Diagnostic`, and `:t` is
@@ -38,9 +39,12 @@ Current capabilities:
   that recursive expression walk. Once stored, conservative scanning of the
   native destination keeps the allocation live; no allocation-identity root
   registry crosses calls or activations.
-- `RuntimeValue` is transient expression currency. Its aggregate arm owns or
-  borrows native DMD-layout storage, and its sole data-pointer arm is a host
-  address. It is never local, alias, or cross-frame storage authority.
+- `RuntimeValue` is transient expression currency. Its sole aggregate arm owns
+  or borrows typed native DMD-layout storage, and its sole data-pointer arm is
+  a host address. It has no structural array, struct, associative-array, entry,
+  or class-object arms. Aggregate construction always has a DMD type, and
+  aggregate place writes copy the complete typed byte span. `RuntimeValue` is
+  never local, alias, or cross-frame storage authority.
 - The Interpreter native-call adapter has one preparation path and one
   execution path. Preparation selects typed argument, receiver, and result
   addresses; execution calls the address-only `quickbite.ffi.ffi` bridge.
@@ -425,9 +429,9 @@ checked fact; do not relearn them.
   isPlaceComposable` via its own leaf codec (`readRealBits`/
   `writeRealBits`); a write composes into a zero-initialised local and
   copies the whole slot, making `real`'s padding deterministic.
-- `place_value.valueMatchesPlace` is the recursive gate for whether a
-  transient execution value can enter the place writer. It includes both
-  type composability and value shape.
+- `place_value.valueMatchesPlace` is the scalar compatibility gate for whether
+  a non-aggregate transient execution value can enter the place writer. Typed
+  native aggregates bypass it and copy their complete byte span.
 - Integer offsetting of a pointer preserves its host address and applies the
   byte delta already scaled from the expression's static pointer type.
 - Nested indexing into a native array composes offsets one level at a time:

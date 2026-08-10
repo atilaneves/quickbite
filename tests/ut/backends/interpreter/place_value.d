@@ -18,103 +18,6 @@ import dmd.typesem: sarrayOf, pointerTo;
 private:
 
 
-// `P.y` follows `P.x` with the host compiler's own alignment padding, so a
-// round trip through `writeValue`/`readValue` must land `y` at its own
-// offset independently of `x` -- the same padding trap `Place.field`'s own
-// tests pin, exercised here through the whole-value composition instead of
-// one field's `Place` directly.
-@("place_value.writeValue.readValue.structRoundTripsFlatScalarFields")
-unittest {
-    auto type = structTypeOf(q{ struct P { int x; long y; } }, "P");
-    auto block = NativeBlock.allocate(typeByteSize(type), NativeBlock.Scan.no);
-    auto root = placeAt(block, type);
-
-    // Runtime-computed, not bare literals passed straight to `Value`.
-    int writtenX = 3;
-    writtenX = writtenX * 5 + 1;
-    long writtenY = 1000L;
-    writtenY = writtenY * 7 + 2;
-
-    auto written = Value.structValue("P", [Value(writtenX), Value(writtenY)]);
-
-    writeValue(root, written);
-
-    const readBack = readValue(root);
-    AggregateValue.isStruct(readBack).should == true;
-    AggregateValue.fieldAt(readBack, 0).should == Value(writtenX);
-    AggregateValue.fieldAt(readBack, 1).should == Value(writtenY);
-}
-
-
-// A struct-typed field (`Q.p`) must recurse one level into its own fields
-// rather than being treated as an opaque byte span -- the whole-value
-// counterpart of `NativeStruct.structField`'s aliasing.
-@("place_value.writeValue.readValue.structRoundTripsNestedStructField")
-unittest {
-    auto type = structTypeOf(q{
-        struct P { int x; long y; }
-        struct Q { P p; int z; }
-    }, "Q");
-    auto block = NativeBlock.allocate(typeByteSize(type), NativeBlock.Scan.no);
-    auto root = placeAt(block, type);
-
-    int writtenX = 4;
-    writtenX = writtenX * 3 + 2;
-    long writtenY = 500L;
-    writtenY = writtenY * 9 + 5;
-    int writtenZ = 7;
-    writtenZ = writtenZ * 2 + 1;
-
-    auto written = Value.structValue("Q", [
-        Value.structValue("P", [Value(writtenX), Value(writtenY)]),
-        Value(writtenZ),
-    ]);
-
-    writeValue(root, written);
-
-    const readBack = readValue(root);
-    AggregateValue.isStruct(readBack).should == true;
-    const nested = AggregateValue.fieldAt(readBack, 0);
-    AggregateValue.isStruct(nested).should == true;
-    AggregateValue.fieldAt(nested, 0).should == Value(writtenX);
-    AggregateValue.fieldAt(nested, 1).should == Value(writtenY);
-    AggregateValue.fieldAt(readBack, 1).should == Value(writtenZ);
-}
-
-
-// A static-array-typed field (`H.xs`) must recurse element by element,
-// through `Place.index`'s own inline stride arithmetic -- the whole-value
-// counterpart of `NativeStruct.arrayField`'s aliasing.
-@("place_value.writeValue.readValue.structRoundTripsStaticArrayField")
-unittest {
-    auto type = structTypeOf(q{ struct H { int[3] xs; } }, "H");
-    auto block = NativeBlock.allocate(typeByteSize(type), NativeBlock.Scan.no);
-    auto root = placeAt(block, type);
-
-    int first = 1;
-    first = first * 6 + 1;
-    int second = 2;
-    second = second * 6 + 2;
-    int third = 3;
-    third = third * 6 + 3;
-
-    auto written = Value.structValue(
-        "H",
-        [Value.arrayValue([Value(first), Value(second), Value(third)])],
-    );
-
-    writeValue(root, written);
-
-    const readBack = readValue(root);
-    AggregateValue.isStruct(readBack).should == true;
-    const elements = AggregateValue.fieldAt(readBack, 0);
-    AggregateValue.isArray(elements).should == true;
-    AggregateValue.elementAt(elements, 0).should == Value(first);
-    AggregateValue.elementAt(elements, 1).should == Value(second);
-    AggregateValue.elementAt(elements, 2).should == Value(third);
-}
-
-
 // An enum-typed place must read back as a `Value.enumValue` qualified with
 // the member's own name (`Colour.green`), not the plain integral `Value`
 // `native_scalar.readScalar` alone would give -- the enum-tagging gap this
@@ -161,33 +64,6 @@ unittest {
     writeValue(root, written);
 
     readValue(root).should == written;
-}
-
-
-// An enum-typed struct field must compose the same way a scalar field
-// does, tagged correctly on the read side rather than losing its enum
-// name inside the recursion.
-@("place_value.writeValue.readValue.structRoundTripsEnumField")
-unittest {
-    auto type = structTypeOf(q{
-        enum Colour : int { red, green, blue }
-        struct S { Colour colour; int x; }
-    }, "S");
-    auto block = NativeBlock.allocate(typeByteSize(type), NativeBlock.Scan.no);
-    auto root = placeAt(block, type);
-
-    int writtenX = 3;
-    writtenX = writtenX * 4 + 1;
-
-    auto written = Value.structValue(
-        "S", [Value.enumValue("Colour.blue", 2), Value(writtenX)]);
-
-    writeValue(root, written);
-
-    const readBack = readValue(root);
-    AggregateValue.isStruct(readBack).should == true;
-    AggregateValue.fieldAt(readBack, 0).should == Value.enumValue("Colour.blue", 2);
-    AggregateValue.fieldAt(readBack, 1).should == Value(writtenX);
 }
 
 
@@ -241,233 +117,8 @@ unittest {
 }
 
 
-// The round trip `writeValue`'s slice arm exists for: allocates new backing
-// storage sized to `value.length`, writes every element into it, then
-// writes the `{ length, ptr }` header into `place` -- `readValue` must then
-// see back exactly what was written, through its own independent header +
-// element read (`ai/plans/value.md` "Remaining work" item 5).
-@("place_value.writeValue.readValue.sliceRoundTripsElementsAndLength")
-unittest {
-    auto holderType = structTypeOf(q{ struct SliceHolder { int[] xs; } }, "SliceHolder");
-    auto sliceType = structFields(holderType)[0].type;
-    auto block = NativeBlock.allocate(typeByteSize(sliceType), NativeBlock.Scan.conservative);
-    auto place = placeAt(block, sliceType);
-
-    int first = 2;
-    first = first * 5 + 1;
-    int second = 3;
-    second = second * 5 + 2;
-    int third = 4;
-    third = third * 5 + 3;
-
-    auto written = Value.arrayValue([Value(first), Value(second), Value(third)]);
-
-    writeValue(place, written);
-
-    auto readBack = readValue(place);
-    AggregateValue.elementCount(readBack).should == 3;
-    AggregateValue.elementAt(readBack, 0).should == Value(first);
-    AggregateValue.elementAt(readBack, 1).should == Value(second);
-    AggregateValue.elementAt(readBack, 2).should == Value(third);
-}
-
-
-// A zero-length array is the legal exception `writeSliceHeader` carves out
-// for an unscanned destination (`native_array.d`'s own contract): its block
-// address is `null` (`NativeArray.allocate`'s own `GC.calloc(0, ...)`), so
-// writing a null pointer loses nothing. Pinned directly on the written
-// header's own bytes, not only on the round trip, since a wrong non-null
-// `ptr` alongside a correct `length` of 0 would still read back equal.
-@("place_value.writeValue.readValue.sliceRoundTripsZeroLengthArray")
-unittest {
-    import quickbite.backends.interpreter.native_array: readSliceHeaderBytes;
-
-    auto holderType = structTypeOf(q{ struct SliceHolder { int[] xs; } }, "SliceHolder");
-    auto sliceType = structFields(holderType)[0].type;
-    auto block = NativeBlock.allocate(typeByteSize(sliceType), NativeBlock.Scan.conservative);
-    auto place = placeAt(block, sliceType);
-
-    writeValue(place, Value.arrayValue([]));
-
-    auto header = readSliceHeaderBytes(block.bytes);
-    header.length.should == 0;
-    (header.ptr is null).should == true;
-
-    AggregateValue.length(readValue(place)).should == 0;
-}
-
-
-// A slice element type that is itself a non-union struct must compose
-// through `writeValue`'s own struct arm during the element write, exactly
-// as `readValue`'s slice arm already does when reading elements back --
-// the write-side counterpart of `place_value.readValue.
-// sliceOfStructsRoundTripsNativeElements`, but through `writeValue`'s own
-// allocation this time rather than a hand-built fixture.
-@("place_value.writeValue.readValue.sliceOfStructsRoundTrips")
-unittest {
-    auto holderType = structTypeOf(q{
-        struct SlicePoint { int x; int y; }
-        struct SlicePointsHolder { SlicePoint[] s; }
-    }, "SlicePointsHolder");
-    auto sliceType = structFields(holderType)[0].type;
-    auto block = NativeBlock.allocate(typeByteSize(sliceType), NativeBlock.Scan.conservative);
-    auto place = placeAt(block, sliceType);
-
-    int firstX = 1;
-    firstX = firstX * 3 + 1;
-    int firstY = 2;
-    firstY = firstY * 3 + 2;
-    int secondX = 3;
-    secondX = secondX * 3 + 3;
-    int secondY = 4;
-    secondY = secondY * 3 + 4;
-
-    auto written = Value.arrayValue([
-        Value.structValue("SlicePoint", [Value(firstX), Value(firstY)]),
-        Value.structValue("SlicePoint", [Value(secondX), Value(secondY)]),
-    ]);
-
-    writeValue(place, written);
-
-    auto readBack = readValue(place);
-    AggregateValue.elementCount(readBack).should == 2;
-    auto readFirst = AggregateValue.elementAt(readBack, 0);
-    AggregateValue.fieldAt(readFirst, 0).should == Value(firstX);
-    AggregateValue.fieldAt(readFirst, 1).should == Value(firstY);
-    auto readSecond = AggregateValue.elementAt(readBack, 1);
-    AggregateValue.fieldAt(readSecond, 0).should == Value(secondX);
-    AggregateValue.fieldAt(readSecond, 1).should == Value(secondY);
-}
-
-
-// Writing a SHORTER array over a place that already holds a longer one
-// must leave a header describing the NEW length, not the old one --
-// `writeSliceValue` always allocates fresh backing storage sized to the
-// incoming value rather than growing/shrinking whatever was there before
-// (a written header is a snapshot, per `value.md`'s Containers contract),
-// so the old, now-unreferenced array is simply left for the GC.
-@("place_value.writeValue.readValue.sliceRewriteWithShorterArrayReplacesHeader")
-unittest {
-    auto holderType = structTypeOf(q{ struct SliceHolder { int[] xs; } }, "SliceHolder");
-    auto sliceType = structFields(holderType)[0].type;
-    auto block = NativeBlock.allocate(typeByteSize(sliceType), NativeBlock.Scan.conservative);
-    auto place = placeAt(block, sliceType);
-
-    writeValue(place, Value.arrayValue([Value(1), Value(2), Value(3), Value(4), Value(5)]));
-
-    auto written = Value.arrayValue([Value(9), Value(8)]);
-    writeValue(place, written);
-
-    auto readBack = readValue(place);
-    AggregateValue.length(readBack).should == 2;
-    AggregateValue.elementAt(readBack, 0).should == Value(9);
-    AggregateValue.elementAt(readBack, 1).should == Value(8);
-}
-
-
-// An element value `writeValue` cannot compose (a class-typed `void` value,
-// here -- a class place accepts only an object body address or null) must
-// refuse the WHOLE slice write, not silently leave part of
-// the array written -- `place`'s own header is the LAST thing
-// `writeSliceValue` writes, so a throw partway through the element loop
-// must leave `place` exactly as it was beforehand, still describing
-// whatever array was there first.
-@("place_value.writeValue.sliceWithNonComposableElementTypeRefusesWholeWrite")
-unittest {
-    auto holderType = structTypeOf(q{
-        class SliceElementClass { int x; }
-        struct SliceHolder { SliceElementClass[] cs; }
-    }, "SliceHolder");
-    auto sliceType = structFields(holderType)[0].type;
-    auto block = NativeBlock.allocate(typeByteSize(sliceType), NativeBlock.Scan.conservative);
-    auto place = placeAt(block, sliceType);
-
-    auto original = Value.arrayValue([]);
-    writeValue(place, original);
-
-    writeValue(place, Value.arrayValue([Value.void_])).shouldThrowWithMessage(
-        "quickbite.backends.interpreter.place_value.writeValue: class place "
-        ~ "requires an object pointer or null",
-    );
-
-    AggregateValue.length(readValue(place)).should == 0;
-}
-
-
-// The newly allocated backing storage's own scan attribute must match
-// `layout.typeHasPointers` over the ELEMENT type, chosen once at
-// allocation by `NativeArray.allocate` itself -- asserted directly on the
-// real GC attribute (`value.md`'s Containers contract: "do not write
-// `GC.collect`-survival tests for scan policy... assert the scan attribute
-// directly"), not inferred from whether a collection happens to survive.
-// `int` elements carry no pointers, so the array's block must be `NO_SCAN`.
-@("place_value.writeValue.sliceElementBlockIsNoScanForPointerFreeElements")
-unittest {
-    import core.memory: GC;
-    import quickbite.backends.interpreter.native_array: readSliceHeaderBytes;
-
-    auto holderType = structTypeOf(q{ struct SliceHolder { int[] xs; } }, "SliceHolder");
-    auto sliceType = structFields(holderType)[0].type;
-    auto block = NativeBlock.allocate(typeByteSize(sliceType), NativeBlock.Scan.conservative);
-    auto place = placeAt(block, sliceType);
-
-    writeValue(place, Value.arrayValue([Value(1), Value(2)]));
-
-    auto header = readSliceHeaderBytes(block.bytes);
-    (GC.addrOf(header.ptr) is null).should == false;
-    const attr = GC.getAttr(GC.addrOf(header.ptr));
-    (attr & GC.BlkAttr.NO_SCAN).should == GC.BlkAttr.NO_SCAN;
-}
-
-
-// The pointer-bearing counterpart of the test above: a slice-of-slices
-// element type (`int[]`) itself carries a pointer (its own `{ length, ptr }`
-// header), so the outer array's block must be conservatively scanned or
-// the inner arrays' own blocks become invisible to the collector. Also
-// exercises `writeSliceValue` recursing into its own element write for a
-// nested slice element, through the same generic `writeValue` dispatch
-// every other element type already goes through.
-@("place_value.writeValue.readValue.sliceElementBlockIsConservativeForPointerBearingElements")
-unittest {
-    import core.memory: GC;
-    import quickbite.backends.interpreter.native_array: readSliceHeaderBytes;
-
-    auto holderType = structTypeOf(q{ struct SliceHolder { int[][] xss; } }, "SliceHolder");
-    auto sliceType = structFields(holderType)[0].type;
-    auto block = NativeBlock.allocate(typeByteSize(sliceType), NativeBlock.Scan.conservative);
-    auto place = placeAt(block, sliceType);
-
-    auto written = Value.arrayValue([
-        Value.arrayValue([Value(1), Value(2)]),
-        Value.arrayValue([Value(3)]),
-    ]);
-
-    writeValue(place, written);
-
-    auto header = readSliceHeaderBytes(block.bytes);
-    const attr = GC.getAttr(GC.addrOf(header.ptr));
-    (attr & GC.BlkAttr.NO_SCAN).should == 0;
-
-    const readBack = readValue(place);
-    AggregateValue.isArray(readBack).should == true;
-    AggregateValue.elementCount(readBack).should == 2;
-    foreach (rowIndex; 0 .. AggregateValue.elementCount(readBack)) {
-        const row = AggregateValue.elementAt(readBack, rowIndex);
-        AggregateValue.isArray(row).should == true;
-        AggregateValue.elementCount(row).should == written[rowIndex].length;
-        foreach (columnIndex; 0 .. AggregateValue.elementCount(row))
-            AggregateValue.elementAt(row, columnIndex).should ==
-                written[rowIndex][columnIndex];
-    }
-}
-
-
-// The read-side counterpart of `Place.index`'s own slice-place test
-// (`Place.index.sliceElementAddressesFollowTheHeadersPointerAndScalarStore
-// LoadRoundTrips`): a slice place's own address holds a native `{ length,
-// ptr }` header, and `readValue` must read that header back and recurse
-// once per element via `Place.index`, exactly as it already does for a
-// static array's inline elements.
+// A slice value consists of a length and a pointer to element storage.
+// Reading it must follow that stored pointer and preserve every element.
 @("place_value.readValue.sliceRoundTripsNativeElements")
 unittest {
     import quickbite.backends.interpreter.native_array: NativeArray;
@@ -502,10 +153,8 @@ unittest {
 }
 
 
-// The struct-element counterpart of the above: a slice's element type is
-// itself a non-union struct, so each element must recurse through
-// `readValue`'s own struct branch rather than being read as flat bytes --
-// the whole-value analogue of `NativeArray.structElement`'s aliasing.
+// A slice of structs stores each element inline at the struct stride. Reading
+// two elements must preserve the independently written fields of each struct.
 @("place_value.readValue.sliceOfStructsRoundTripsNativeElements")
 unittest {
     auto holderType = structTypeOf(q{
@@ -533,8 +182,14 @@ unittest {
     int secondY = 4;
     secondY = secondY * 3 + 4;
 
-    auto firstPoint = Value.structValue("SlicePoint", [Value(firstX), Value(firstY)]);
-    auto secondPoint = Value.structValue("SlicePoint", [Value(secondX), Value(secondY)]);
+    const firstPoint = AggregateValue.reconstructStruct(
+        sliceType.nextOf,
+        [Value(firstX), Value(firstY)],
+    );
+    const secondPoint = AggregateValue.reconstructStruct(
+        sliceType.nextOf,
+        [Value(secondX), Value(secondY)],
+    );
 
     writeValue(root.index(0), firstPoint);
     writeValue(root.index(1), secondPoint);
@@ -552,13 +207,8 @@ unittest {
 }
 
 
-// A union composes as overlapping bytes: writing `i` (the whole 4-byte
-// member) directly through its own `Place.field` must be visible,
-// reinterpreted, through the narrower sibling `s` when the WHOLE union is
-// read back -- the value.md "Unions" example made concrete, and the read
-// side (`structValueAt`'s union arm, via `readValue`) needs no write
-// through the top-level union `Value` at all to prove this: `Place.field`'s
-// own offset arithmetic already lands both members at the same address.
+// A union's members occupy overlapping storage. Writing the whole `int`
+// member must therefore be visible, reinterpreted, through `short`.
 @("place_value.readValue.unionWritingIntMemberIsVisibleThroughShortSiblingReinterpreted")
 unittest {
     auto unionType = structTypeOf(q{ union U { int i; short s; } }, "U");
@@ -595,126 +245,6 @@ unittest {
 
     AggregateValue.fieldAt(readValue(root), 0).asLong.should == cast(int) cast(ushort) writtenS;
     AggregateValue.fieldAt(readValue(root), 0).asLong.shouldNotEqual(cast(int) writtenS);
-}
-
-
-// The whole-union write side: `writeValue` on the union's OWN place, given
-// `structValueAt`'s struct-shaped `Value` (one entry per declared member,
-// already mutually consistent -- see `writeUnionValue`'s own header
-// comment), round-trips through the WIDEST declared member's bytes alone.
-// Here the widest member (`i`) is also the FIRST declared, the simplest
-// case value.md's own union example gives.
-@("place_value.writeValue.readValue.unionRoundTripsThroughWidestFirstDeclaredMember")
-unittest {
-    auto unionType = structTypeOf(q{ union U { int i; short s; } }, "U");
-    auto block = NativeBlock.allocate(typeByteSize(unionType), NativeBlock.Scan.no);
-    auto root = placeAt(block, unionType);
-
-    int writtenI = 11;
-    writtenI = writtenI * 100_000 + 13;
-
-    auto written = Value.structValue("U", [Value(writtenI), Value(cast(short) writtenI)]);
-
-    writeValue(root, written);
-
-    const readBack = readValue(root);
-    AggregateValue.isStruct(readBack).should == true;
-    AggregateValue.fieldAt(readBack, 0).should == Value(writtenI);
-    AggregateValue.fieldAt(readBack, 1).should == Value(cast(short) writtenI);
-}
-
-
-// `writeUnionValue` must find the WIDEST member by its own byte size, not
-// just take the first declared one -- here the first-declared member (`s`)
-// is the NARROWER one, so a write that (wrongly) picked it would only ever
-// touch 2 of the block's 4 bytes, losing `i`'s own upper bytes (nonzero:
-// `writtenI` is picked above 65536 so this would fail if that bug were
-// reintroduced) on the round trip.
-@("place_value.writeValue.readValue.unionRoundTripsThroughWidestMemberRegardlessOfDeclarationOrder")
-unittest {
-    auto unionType = structTypeOf(q{ union U { short s; int i; } }, "U");
-    auto block = NativeBlock.allocate(typeByteSize(unionType), NativeBlock.Scan.no);
-    auto root = placeAt(block, unionType);
-
-    int writtenI = 11;
-    writtenI = writtenI * 100_000 + 13;
-
-    auto written = Value.structValue("U", [Value(cast(short) writtenI), Value(writtenI)]);
-
-    writeValue(root, written);
-
-    auto readBack = readValue(root);
-    AggregateValue.fieldAt(readBack, 0).should == Value(cast(short) writtenI);
-    AggregateValue.fieldAt(readBack, 1).should == Value(writtenI);
-}
-
-
-// DMD flattens an anonymous union's members directly into the enclosing
-// struct's own fields, at overlapping offsets (`value.md`'s Unions
-// section) -- `S` itself is not a `UnionDeclaration`, so this already goes
-// through the plain (non-union) struct arm of `readValue`/`writeValue`,
-// unchanged by this slice; the point of this fixture is that nothing about
-// that generic per-field composition assumes fields never overlap, so the
-// flattened case already round-trips correctly with no union-specific code
-// needed at all.
-@("place_value.writeValue.readValue.anonymousUnionFlattenedIntoStructRoundTrips")
-unittest {
-    auto type = structTypeOf(q{
-        struct S {
-            union { int i; short s; }
-            int tag;
-        }
-    }, "S");
-    auto block = NativeBlock.allocate(typeByteSize(type), NativeBlock.Scan.no);
-    auto root = placeAt(block, type);
-
-    int writtenI = 5;
-    writtenI = writtenI * 100_000 + 17;
-    int writtenTag = 9;
-    writtenTag = writtenTag * 3 + 1;
-
-    auto written = Value.structValue(
-        "S", [Value(writtenI), Value(cast(short) writtenI), Value(writtenTag)]);
-
-    writeValue(root, written);
-
-    auto readBack = readValue(root);
-    AggregateValue.fieldAt(readBack, 0).should == Value(writtenI);
-    AggregateValue.fieldAt(readBack, 1).should == Value(cast(short) writtenI);
-    AggregateValue.fieldAt(readBack, 2).should == Value(writtenTag);
-}
-
-
-// A NAMED union-typed field (unlike the anonymous case above) stays ONE
-// field of its enclosing struct, at that field's own offset -- exercising
-// this slice's new union arm through one extra level of `Place.field`
-// nesting, the union counterpart of `structRoundTripsNestedStructField`.
-@("place_value.writeValue.readValue.unionFieldNestedInsideStructComposesAtRightOffset")
-unittest {
-    auto type = structTypeOf(q{
-        union U { int i; short s; }
-        struct Outer { int tag; U u; }
-    }, "Outer");
-    auto block = NativeBlock.allocate(typeByteSize(type), NativeBlock.Scan.no);
-    auto root = placeAt(block, type);
-
-    int writtenTag = 4;
-    writtenTag = writtenTag * 6 + 1;
-    int writtenI = 8;
-    writtenI = writtenI * 100_000 + 19;
-
-    auto written = Value.structValue("Outer", [
-        Value(writtenTag),
-        Value.structValue("U", [Value(writtenI), Value(cast(short) writtenI)]),
-    ]);
-
-    writeValue(root, written);
-
-    auto readBack = readValue(root);
-    AggregateValue.fieldAt(readBack, 0).should == Value(writtenTag);
-    auto unionValue = AggregateValue.fieldAt(readBack, 1);
-    AggregateValue.fieldAt(unionValue, 0).should == Value(writtenI);
-    AggregateValue.fieldAt(unionValue, 1).should == Value(cast(short) writtenI);
 }
 
 
@@ -850,66 +380,6 @@ unittest {
 }
 
 
-// A struct with a pointer field composes through the same per-field
-// `writeValue`/`readValue` recursion as any other struct -- and the block
-// backing it must be conservatively scanned, the mechanical fact
-// `NativeStruct.allocate` already derives from `layout.typeHasPointers`
-// (`value.md`'s Containers contract: never defaulted). Asserted directly
-// on the GC attribute, not inferred from a `GC.collect` survival, per that
-// same contract.
-@("place_value.writeValue.readValue.structWithPointerFieldComposesAndBlockIsConservativelyScanned")
-unittest {
-    import core.memory: GC;
-    import quickbite.backends.interpreter.native_struct: NativeStruct;
-
-    auto type = structTypeOf(q{ struct PointerHolder { int* p; int x; } }, "PointerHolder");
-    auto native = NativeStruct.allocate(type);
-    auto root = placeAt(native.block, type);
-
-    auto pointee = NativeBlock.allocate(int.sizeof, NativeBlock.Scan.no);
-
-    int writtenX = 3;
-    writtenX = writtenX * 4 + 1;
-
-    auto written = Value.structValue(
-        "PointerHolder", [Value.pointerValue(pointee.address), Value(writtenX)]);
-
-    writeValue(root, written);
-
-    auto readBack = readValue(root);
-    AggregateValue.fieldAt(readBack, 0).should == Value.pointerValue(pointee.address);
-    AggregateValue.fieldAt(readBack, 1).should == Value(writtenX);
-
-    const attr = GC.getAttr(native.block.address);
-    (attr & GC.BlkAttr.NO_SCAN).should == 0;
-}
-
-
-// A static array of pointers composes element by element, through
-// `Place.index`'s inline stride arithmetic, exactly like a static array of
-// any other place-composable element.
-@("place_value.writeValue.readValue.staticArrayOfPointersComposes")
-unittest {
-    auto arrayType = Type.tint32.pointerTo.sarrayOf(2);
-    auto block = NativeBlock.allocate(typeByteSize(arrayType), NativeBlock.Scan.conservative);
-    auto root = placeAt(block, arrayType);
-
-    auto first = NativeBlock.allocate(int.sizeof, NativeBlock.Scan.no);
-    auto second = NativeBlock.allocate(int.sizeof, NativeBlock.Scan.no);
-
-    auto written = Value.arrayValue([
-        Value.pointerValue(first.address),
-        Value.pointerValue(second.address),
-    ]);
-
-    writeValue(root, written);
-
-    auto readBack = readValue(root);
-    AggregateValue.elementAt(readBack, 0).should == Value.pointerValue(first.address);
-    AggregateValue.elementAt(readBack, 1).should == Value.pointerValue(second.address);
-}
-
-
 // Pointer places accept exactly the sole data-pointer carrier: a host address.
 // The stored bytes must preserve that address without an identity side table.
 @("place_value.writeValue.pointerHostAddressRoundTripsWithoutIdentityCarrier")
@@ -979,57 +449,6 @@ unittest {
     writeValue(root, Value(written));
 
     readValue(root).should == Value(written);
-}
-
-
-// `P.r` follows `P.c` with the host compiler's own `real.alignof` padding
-// (16 on this host), so a round trip through `writeValue`/`readValue` must
-// land `r` at DMD's own field offset independently of `c` -- the `real`
-// counterpart of `structRoundTripsFlatScalarFields`.
-@("place_value.writeValue.readValue.structRoundTripsRealFieldAtItsOwnOffset")
-unittest {
-    auto type = structTypeOf(q{ struct P { char c; real r; } }, "P");
-    auto block = NativeBlock.allocate(typeByteSize(type), NativeBlock.Scan.no);
-    auto root = placeAt(block, type);
-
-    real one = 1;
-    one = one * 1 + 0;
-    real writtenR = one + real.epsilon;
-
-    auto written = Value.structValue("P", [Value('x'), Value(writtenR)]);
-
-    writeValue(root, written);
-
-    const readBack = readValue(root);
-    AggregateValue.isStruct(readBack).should == true;
-    AggregateValue.fieldAt(readBack, 0).should == Value('x');
-    AggregateValue.fieldAt(readBack, 1).should == Value(writtenR);
-}
-
-
-// A static array of `real` composes element by element, through `Place.
-// index`'s inline stride arithmetic at DMD's own `real` stride (16 bytes
-// on this host) -- the `real` counterpart of `staticArrayOfPointersComposes`.
-@("place_value.writeValue.readValue.staticArrayOfRealComposesWithDmdOwnStride")
-unittest {
-    auto arrayType = Type.tfloat80.sarrayOf(2);
-    auto block = NativeBlock.allocate(typeByteSize(arrayType), NativeBlock.Scan.no);
-    auto root = placeAt(block, arrayType);
-
-    real one = 1;
-    one = one * 1 + 0;
-    real first = one + real.epsilon;
-    real two = 2;
-    two = two * 1 + 0;
-    real second = two + real.epsilon;
-
-    auto written = Value.arrayValue([Value(first), Value(second)]);
-
-    writeValue(root, written);
-
-    auto readBack = readValue(root);
-    AggregateValue.elementAt(readBack, 0).should == Value(first);
-    AggregateValue.elementAt(readBack, 1).should == Value(second);
 }
 
 
@@ -1227,42 +646,6 @@ unittest {
 unittest {
     auto unionType = structTypeOf(q{ union U {} }, "U");
     isPlaceComposable(unionType).should == false;
-}
-
-
-// `writeValue` must agree with `isPlaceComposable` exactly, so a declined
-// union is refused rather than half-written -- and refused with a plain
-// `Exception`, the module's own decline shape, never an `Error`.
-@("place_value.writeValue.declinesEmptyUnion")
-unittest {
-    auto unionType = structTypeOf(q{ union U {} }, "U");
-    auto block = NativeBlock.allocate(typeByteSize(unionType), NativeBlock.Scan.no);
-    auto root = placeAt(block, unionType);
-
-    writeValue(root, Value.structValue("U", [])).shouldThrowWithMessage(
-        "quickbite.backends.interpreter.place_value.writeValue: union place "
-        ~ "whose single widest-member write cannot stand in for the whole union",
-    );
-}
-
-
-// The write-side half of `falseForUnionWithRealMember`: reached directly
-// (not through `impl.d`'s gate), the writer declines the same shape the
-// predicate does instead of writing `real.nan`'s bytes over `l`'s 42.
-@("place_value.writeValue.declinesUnionWithRealMember")
-unittest {
-    auto unionType = structTypeOf(q{ union U { real r; long l; } }, "U");
-    auto block = NativeBlock.allocate(typeByteSize(unionType), NativeBlock.Scan.no);
-    auto root = placeAt(block, unionType);
-
-    long writtenL = 21;
-    writtenL = writtenL * 2;
-
-    writeValue(root, Value.structValue("U", [Value(real.nan), Value(writtenL)]))
-        .shouldThrowWithMessage(
-            "quickbite.backends.interpreter.place_value.writeValue: union place "
-            ~ "whose single widest-member write cannot stand in for the whole union",
-        );
 }
 
 

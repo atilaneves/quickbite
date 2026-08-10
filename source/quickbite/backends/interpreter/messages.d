@@ -274,8 +274,9 @@ public string equalityOperandMessage(
     in bool useBoolMessage,
     imported!"dmd.expression".Expression expression,
 ) {
-    import quickbite.frontend.dmd.types: isIntegralExpression;
-    import quickbite.backends.interpreter.runtime_value: Value;
+    import quickbite.backends.interpreter.aggregate_value: AggregateValue;
+    import quickbite.frontend.dmd.types:
+        isCharacterArrayType, isIntegralExpression;
     import std.conv: text;
 
     if (useBoolMessage)
@@ -293,24 +294,16 @@ public string equalityOperandMessage(
     if (value.isFloatingScalar)
         return value.dText;
 
-    if (value.isStringDisplayArray)
-        return value.dText;
-
-    if (value.isNativeAggregate) {
-        import quickbite.backends.interpreter.aggregate_value: AggregateValue;
-        import quickbite.frontend.dmd.types: isCharacterArrayType;
-
-        if (AggregateValue.isArray(value) &&
-            isCharacterArrayType(expression.type)) {
-            string characters;
-            foreach (index; 0 .. AggregateValue.elementCount(value))
-                characters ~= AggregateValue.elementAt(value, index).asUtf8Character;
-            return `"` ~ characters ~ `"`;
-        }
-
-        if (AggregateValue.isArray(value))
-            return nativeArrayText(value);
+    if (AggregateValue.isArray(value) &&
+        isCharacterArrayType(expression.type)) {
+        string characters;
+        foreach (index; 0 .. AggregateValue.elementCount(value))
+            characters ~= AggregateValue.elementAt(value, index).asUtf8Character;
+        return `"` ~ characters ~ `"`;
     }
+
+    if (AggregateValue.isArray(value))
+        return nativeArrayText(value);
 
     return text(value);
 }
@@ -326,7 +319,7 @@ private string nativeArrayText(
         if (index)
             result ~= ", ";
         const element = AggregateValue.elementAt(value, index);
-        result ~= element.isNativeAggregate && AggregateValue.isArray(element)
+        result ~= AggregateValue.isArray(element)
             ? nativeArrayText(element)
             : element.dText;
     }
@@ -356,9 +349,6 @@ private string charArrayString(
     in imported!"quickbite.backends.interpreter.runtime_value".Value value,
 ) {
     import quickbite.backends.interpreter.aggregate_value: AggregateValue;
-
-    if (!value.isNativeAggregate)
-        return value.asCharArrayString;
 
     char[] result;
     foreach (index; 0 .. AggregateValue.elementCount(value))
