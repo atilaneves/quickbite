@@ -4578,6 +4578,35 @@ static foreach (backend; Matrix!()) {
     }
 }
 
+// A struct-typed AA value whose byte width (12, three ints) is not a power
+// of two, unlike the two-int `Point` above: the address computation this
+// composes through must align by the struct's own alignment, not by its raw
+// byte width used as an alignment mask.
+static foreach (backend; Matrix!()) {
+    @("assocArray.nonPowerOfTwoWidthStructValueFieldReadWrite." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct Triple { int a; int b; int c; }
+            unittest {
+                Triple[int] entries;
+                entries[1] = Triple(10, 20, 30);
+                entries[2] = Triple(40, 50, 60);
+
+                entries[1].b = 99;
+
+                assert(entries[1].a == 10);
+                assert(entries[1].b == 99);
+                assert(entries[1].c == 30);
+                assert(entries[2].a == 40);
+                assert(entries[2].b == 50);
+                assert(entries[2].c == 60);
+            }
+        });
+    }
+}
+
 // Calling a mutating method through an AA-value struct receiver
 // (`a[1].bump()`) is the same `_d_aaGetRvalueX`-lowered pointer-dereference
 // receiver shape as the plain field write above, but reached through

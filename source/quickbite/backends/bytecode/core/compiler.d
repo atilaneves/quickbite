@@ -3818,7 +3818,14 @@ private struct Compiler {
                     pointer, place.indexOffset, width, operandType,
                 );
             case assocIndex:
-                const placeholder = allocateBytes(width, width);
+                // `width` is the AA value's raw byte width (e.g. 12 for a
+                // 3-int struct), not a power of two in general -- unlike
+                // every other aggregate allocation site, which aligns via
+                // `staticArrayAlign(valueType)`, an allocator whose rounding
+                // (`& ~(alignment - 1)`) assumes a power-of-two alignment.
+                const placeholder = allocateBytes(
+                    width, aggregate ? staticArrayAlign(place.valueType) : width,
+                );
                 _code ~= Instruction(
                     Op.aaGetOrInsert,
                     place.offset,
