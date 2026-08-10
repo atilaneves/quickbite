@@ -2550,8 +2550,24 @@ private struct Compiler {
 
         // A `null` pointer literal (the `(bounds, null)` false branch of `m[k]`):
         // an 8-byte zero pointer slot. The throw in the comma's first operand
-        // aborts before this is read.
+        // aborts before this is read. An array-typed `null` (e.g. a ternary
+        // arm retyped to the ternary's own array type, `cond ? null : arr`)
+        // is a genuine {ptr, length} descriptor that IS read, so it gets a
+        // full 16-byte zeroed slot via `Op.nullSlice` instead -- an 8-byte
+        // pointer-only slot would leave whatever a consumer widens it to
+        // read the frame bytes just past this allocation as the length word.
         if (expression.isNullExp !is null) {
+            import dmd.astenums: TY;
+
+            if (expression.type !is null &&
+                expression.type.toBasetype.ty == TY.Tarray) {
+                const offset = allocateBytes(
+                    sliceDescriptorSize, size_t.sizeof,
+                );
+                _code ~= Instruction(Op.nullSlice, offset);
+                return Operand(offset, ScalarType.void_);
+            }
+
             const offset =
                 allocateBytes(cast(uint) size_t.sizeof, size_t.sizeof);
             _code ~= Instruction(

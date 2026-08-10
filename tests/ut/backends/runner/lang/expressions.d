@@ -12852,3 +12852,25 @@ static foreach (backend; AliasSeq!(Bytecode)) {
         );
     }
 }
+
+// An array-typed ternary's `null` arm reaches compileConditionalExpression's
+// generic result-copy path exactly like any other array arm (not the
+// array-aware `compileDynamicArrayInto`/`Op.nullSlice` path a declaration
+// initializer takes): the null arm's own operand must be a real 16-byte
+// descriptor, not an 8-byte pointer widened by copying past its allocation.
+static foreach (backend; AliasSeq!(Bytecode)) {
+    @("dynamicArray.indexIntoConditionalWithNullArm." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            unittest {
+                bool cond = true;
+                string arr = "hi";
+
+                auto value = (cond ? null : arr)[0];
+            }
+        }).shouldThrowWithMessage(
+            "index [0] is out of bounds for array of length 0",
+        );
+    }
+}
