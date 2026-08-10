@@ -3336,6 +3336,11 @@ private struct Walker {
                     )
                     ? runRefArgumentExpression(argument, evaluated)
                     : runExpression(argument);
+                if (
+                    index < function_.parameters.length &&
+                    (*function_.parameters)[index].type.toBasetype.isTypeClass !is null
+                )
+                    arguments[$ - 1] = rootedNativeClassValue(argument, arguments[$ - 1]);
                 argumentExpressions ~= argument;
                 evaluatedArguments ~= evaluated;
             }
@@ -8854,6 +8859,11 @@ private struct Walker {
                     )
                     ? runRefArgumentExpression(argument, evaluated)
                     : runExpression(argument);
+                if (
+                    index < function_.parameters.length &&
+                    (*function_.parameters)[index].type.toBasetype.isTypeClass !is null
+                )
+                    arguments[$ - 1] = rootedNativeClassValue(argument, arguments[$ - 1]);
                 argumentExpressions ~= argument;
                 evaluatedArguments ~= evaluated;
             }

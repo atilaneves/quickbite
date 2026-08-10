@@ -9858,7 +9858,7 @@ static foreach (backend; Matrix!()) {
     }
 }
 
-static foreach (backend; AliasSeq!(Interpreter, SystemLinker)) {
+static foreach (backend; Matrix!()) {
     @("class.constructorArrayResizePreservesAssignedElements." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {

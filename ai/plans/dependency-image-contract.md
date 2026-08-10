@@ -145,16 +145,19 @@ bridge remains available for `fbody is null`, native data symbols, callbacks,
 member calls, ref returns, and other real ABI crossings.
 
 An import path must never make an otherwise-interpretable source-backed D
-function native. The one carve-out: a non-root function whose lazily
-semantic'd body resolves to `ErrorStatement` (e.g. the root project's own
-preview flags do not retroactively apply to an already-compiled dependency)
-is treated as native, since the dependency's compiled image reflects its own
-correct build rather than this reanalysis artifact. This cannot mask a real
-error in the root project itself: `parseRootModules` requires
-`global.errors == 0` for the root before execution ever starts, so only a
-lazily-analyzed non-root function can still reach interpretation with an
-`ErrorStatement` body. Remove `isArchiveBackedFunction` without weakening the
-ordinary native-leaf path.
+function native. The one carve-out, currently on the ordinary call-value
+dispatch path only (`hasNoInterpretableSource`; the ref-return address and
+ref-return assignment paths still gate on `fbody is null` alone and do not
+yet share it): a non-root function whose lazily semantic'd body resolves to
+`ErrorStatement` (e.g. the root project's own preview flags do not
+retroactively apply to an already-compiled dependency) is treated as native,
+since the dependency's compiled image reflects its own correct build rather
+than this reanalysis artifact. This cannot mask a real error in the root
+project itself: `parseRootModules` requires `global.errors == 0` for the
+root before execution ever starts, so only a lazily-analyzed non-root
+function can still reach interpretation with an `ErrorStatement` body.
+Remove `isArchiveBackedFunction` without weakening the ordinary native-leaf
+path.
 
 Bytecode gains a `dependencyImages` constructor matching Interpreter's, and
 the benchmark backend registry passes the prepared image to both VM

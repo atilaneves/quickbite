@@ -121,13 +121,13 @@ static foreach (backend; Matrix!(
                         }
 
                         // @trusted: calls the @system extern(C) bindings
-                        // below. Every call site in this fixture passes
+                        // below. This fixture's one call site passes
                         // `&textBuffer[0]` (a fixed 1024-byte buffer) as
                         // `output` together with the hardcoded
                         // `"unknown range: %p %ld"` format, whose two `%p`/
-                        // `%ld` conversions match `arguments`' two callers
-                        // exactly, so this can neither overflow the buffer
-                        // nor read past `arguments`.
+                        // `%ld` conversions match its two `arguments` exactly,
+                        // so this can neither overflow the buffer nor read
+                        // past `arguments`.
                         private int pureSprintf(A...)(
                             scope char* output,
                             scope const(char*) format,
