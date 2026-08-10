@@ -2125,7 +2125,11 @@ private struct Walker {
         if (auto string_ = expression.isStringExp) {
             import quickbite.backends.interpreter.runtime_string_literals: stringValue;
 
-            return stringValue(string_);
+            NativeBlock pointerStorage;
+            const value = stringValue(string_, pointerStorage);
+            if (pointerStorage.address !is null)
+                nativePointerRoots[pointerStorage.address] = pointerStorage;
+            return value;
         }
 
         if (auto array = expression.isArrayLiteralExp)
@@ -5343,6 +5347,7 @@ private struct Walker {
         auto functionType = delegateType.nextOf is null
             ? null
             : cast(TypeFunction) delegateType.nextOf;
+        auto argumentTypes = nativeArgumentTypes(argumentExpressions);
 
         try {
             if (durableInboundSession is null)
@@ -5354,7 +5359,14 @@ private struct Walker {
                 delegateAddress: callee.nativeDelegateFuncptr,
                 delegateContext: callee.nativeDelegateContext,
                 arguments: arguments.dup,
-                argumentTypes: nativeArgumentTypes(argumentExpressions),
+                argumentTypes: argumentTypes,
+                argumentOperands: nativeCallOperands(
+                    null,
+                    arguments,
+                    argumentExpressions,
+                    argumentTypes,
+                    null,
+                ),
                 callbackSession: durableInboundSession,
             );
             NativeCallResult nativeResult;
@@ -11438,6 +11450,7 @@ private struct Walker {
             argumentTypes: argumentTypes,
             argumentOperands: nativeCallOperands(
                 function_,
+                arguments,
                 argumentExpressions,
                 argumentTypes,
                 evaluatedArguments,
@@ -11447,11 +11460,13 @@ private struct Walker {
         return invokeNative(request, result);
     }
 
-    // Existing lvalues cross as typed addresses. Rvalues are deliberately
-    // absent here and become typed NativeBlock temporaries in the adapter.
+    // Existing lvalues and retained C-string pointers cross as typed
+    // addresses. Other rvalues become typed NativeBlock temporaries in the
+    // adapter.
     private imported!"quickbite.backends.interpreter.native_call_adapter".NativeOperand[]
     nativeCallOperands(
         imported!"dmd.func".FuncDeclaration function_,
+        in Value[] arguments,
         imported!"dmd.expression".Expression[] argumentExpressions,
         imported!"dmd.mtype".Type[] argumentTypes,
         in EvaluatedReferenceArgument[] evaluatedArguments,
@@ -11495,6 +11510,36 @@ private struct Walker {
             }
 
             if (
+                index < arguments.length &&
+                index < argumentTypes.length &&
+                isCharacterPointer(argumentTypes[index]) &&
+                (arguments[index].isPointer || arguments[index] == Value.null_)
+            ) {
+                import quickbite.backends.interpreter.place: Place;
+
+                auto scratch = NativeBlock.allocate(
+                    (void*).sizeof,
+                    NativeBlock.Scan.conservative,
+                );
+                auto pointer = arguments[index] == Value.null_
+                    ? null
+                    : arguments[index].pointerAddress;
+                Place(scratch.address, argumentTypes[index])
+                    .storeReference(pointer);
+                NativeBlock retained;
+                if (pointer !is null)
+                    if (auto root = pointer in nativePointerRoots)
+                        retained = *root;
+                operands[index] = NativeOperand(
+                    argumentTypes[index],
+                    scratch.address,
+                    scratch,
+                    retained,
+                );
+                continue;
+            }
+
+            if (
                 index >= argumentTypes.length ||
                 expression.type is null ||
                 !expression.type.toBasetype.equals(
@@ -11513,6 +11558,14 @@ private struct Walker {
                 );
         }
         return operands;
+    }
+
+    private bool isCharacterPointer(imported!"dmd.mtype".Type type) {
+        import dmd.astenums: TY;
+
+        return type !is null &&
+            type.toBasetype.ty == TY.Tpointer &&
+            type.toBasetype.nextOf.toBasetype.ty == TY.Tchar;
     }
 
     private bool hasStableLocalFieldPlace(

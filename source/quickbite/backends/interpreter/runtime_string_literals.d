@@ -11,6 +11,8 @@ private enum maxUtf8CodeUnits = 4;
 
 public imported!"quickbite.backends.interpreter.runtime_value".Value stringValue(
     imported!"dmd.expression".StringExp string_,
+    out imported!"quickbite.backends.interpreter.native_block".NativeBlock
+        pointerStorage,
 ) {
     import quickbite.backends.interpreter.aggregate_value: AggregateValue;
 
@@ -18,8 +20,10 @@ public imported!"quickbite.backends.interpreter.runtime_value".Value stringValue
     // rather than preserving the intermediate array expression.  Give that
     // pointer real NUL-terminated native storage; reconstructArray requires
     // an array Type and would otherwise reject this ordinary C-string path.
-    if (string_.type.toBasetype.isTypePointer !is null)
-        return pointerStringValue(string_);
+    if (string_.type.toBasetype.isTypePointer !is null) {
+        pointerStorage = pointerStringStorage(string_);
+        return Value.pointerValue(pointerStorage.address);
+    }
 
     switch (string_.sz) {
         case wcharCodeUnitWidth:
@@ -41,7 +45,8 @@ public imported!"quickbite.backends.interpreter.runtime_value".Value stringValue
 }
 
 
-private Value pointerStringValue(
+private imported!"quickbite.backends.interpreter.native_block".NativeBlock
+pointerStringStorage(
     imported!"dmd.expression".StringExp string_,
 ) {
     import quickbite.backends.interpreter.native_array: NativeArray;
@@ -61,7 +66,7 @@ private Value pointerStringValue(
             string_.getIndex(index),
         ));
     writeScalar(elementType, elements.element(length - 1), Value(0));
-    return Value.pointerValue(storage.address);
+    return storage;
 }
 
 

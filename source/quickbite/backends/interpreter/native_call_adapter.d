@@ -1,6 +1,6 @@
 module quickbite.backends.interpreter.native_call_adapter;
 
-// Outbound calls prepare typed addresses for the value-free FFI bridge.
+// Outbound calls prepare typed addresses for the address-only FFI bridge.
 // Inbound callbacks borrow libffi's typed argument and result places.
 
 private:
@@ -579,19 +579,6 @@ private bool prepareNativeOperand(
                 invocation.callable.compilerAbi,
             );
         }
-    } else if (type.toBasetype.ty == TY.Tpointer &&
-        type.toBasetype.nextOf.toBasetype.ty == TY.Tchar &&
-        AggregateValue.isArray(value))
-    {
-        auto characters = NativeBlock.allocate(
-            AggregateValue.length(value) + 1,
-            NativeBlock.Scan.no,
-        );
-        foreach (index; 0 .. AggregateValue.length(value))
-            characters.bytes[index] = cast(ubyte)
-                AggregateValue.elementAt(value, index).asLong;
-        writeValue(Place(owner.address, type), Value.pointerValue(characters.address));
-        invocation.roots ~= characters;
     } else if (valueMatchesPlace(type, value) ||
         type.toBasetype.ty == TY.Tclass &&
             (value.isPointer || value == Value.null_) ||
