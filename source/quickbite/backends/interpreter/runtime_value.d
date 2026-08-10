@@ -70,13 +70,6 @@ public struct RuntimeValue {
         return Value(Struct(typeName, fields));
     }
 
-    public static Value structDisplayValue(
-        in string typeName,
-        in Value[] fields,
-    ) @safe pure {
-        return Value(Struct(typeName, fields, true));
-    }
-
     public static Value classValue(
         in string typeName,
         in string[] typeNames,
@@ -307,15 +300,6 @@ public struct RuntimeValue {
         );
     }
 
-    public string stringTypeAnnotation() const @safe pure nothrow {
-        import std.sumtype: match;
-
-        return data.match!(
-            (const(Array) array) => array.typeAnnotation,
-            (_) => "",
-        );
-    }
-
     public bool isStringDisplayArray() const @safe pure nothrow {
         import std.sumtype: match;
 
@@ -428,8 +412,10 @@ public struct RuntimeValue {
                     is(T == NativeAggregate))
                 {
                     return "<native aggregate>";
-                } else static if (is(T == const(Undisplayable)) || is(T == Undisplayable)) {
-                    return value.toString;
+                } else static if (is(T == const(Undisplayable)) ||
+                    is(T == Undisplayable))
+                {
+                    return "<undisplayable>";
                 } else static if (is(T == const(Array)) || is(T == Array)) {
                     return value.dText;
                 } else static if (is(T == const(Null)) || is(T == Null)) {
@@ -439,83 +425,6 @@ public struct RuntimeValue {
                 }
             },
         );
-    }
-
-    public string toString() const @safe pure {
-        import std.conv: text;
-        import std.sumtype: match;
-        import std.traits: isSomeChar;
-
-        return data.match!(
-            (value) {
-                alias T = typeof(value);
-                static if (is(T == const(ubyte))) {
-                    return text(value);
-                } else static if (is(T == const(byte))) {
-                    return text(value);
-                } else static if (is(T == const(short))) {
-                    return text(value);
-                } else static if (is(T == const(ushort))) {
-                    return text(value);
-                } else static if (is(T == const(uint))) {
-                    return text(value, "u");
-                } else static if (is(T == const(long))) {
-                    return text(value, "L");
-                } else static if (is(T == const(ulong))) {
-                    return text(value, "UL");
-                } else static if (is(T == const(float))) {
-                    return text(decimalText(value), "f");
-                } else static if (is(T == const(double))) {
-                    return decimalText(value);
-                } else static if (is(T == const(real))) {
-                    return text(decimalText(value), "L");
-                } else static if (is(T == const(ImaginaryScalar)) ||
-                    is(T == ImaginaryScalar))
-                {
-                    return value.toString;
-                } else static if (is(T == const(ComplexScalar)) ||
-                    is(T == ComplexScalar))
-                {
-                    return value.toString;
-                } else static if (isSomeChar!T) {
-                    return text("'", asUtf8Character, "'");
-                } else static if (is(T == const(AssocArray)) || is(T == AssocArray)) {
-                    return value.toString;
-                } else static if (is(T == const(Struct)) || is(T == Struct)) {
-                    return value.toString;
-                } else static if (is(T == const(ClassObject)) || is(T == ClassObject)) {
-                    return value.toString;
-                } else static if (is(T == const(TypeName)) || is(T == TypeName)) {
-                    return value.toString;
-                } else static if (is(T == const(EnumValue)) || is(T == EnumValue)) {
-                    return value.toString;
-                } else static if (is(T == const(FunctionPointer)) || is(T == FunctionPointer)) {
-                    return value.toString;
-                } else static if (is(T == const(Pointer)) || is(T == Pointer)) {
-                    return value.toString;
-                } else static if (is(T == const(NativeAggregate)) ||
-                    is(T == NativeAggregate))
-                {
-                    return "<native aggregate>";
-                } else static if (is(T == const(Undisplayable)) || is(T == Undisplayable)) {
-                    return value.toString;
-                } else static if (is(T == const(Array)) || is(T == Array)) {
-                    return value.toString;
-                } else static if (is(T == const(Null)) || is(T == Null)) {
-                    return "null";
-                } else {
-                    return data.toString;
-                }
-            },
-        );
-    }
-
-    private static string decimalText(T)(in T value) @safe pure {
-        import std.algorithm: canFind;
-        import std.conv: text;
-
-        const result = text(value);
-        return result.canFind('.', 'e', 'E', "inf", "nan") ? result : result ~ ".0";
     }
 
     public Value castTo(T)() const @safe pure {
@@ -1799,11 +1708,7 @@ private struct FunctionPointer {
 }
 
 
-private struct Undisplayable {
-    public string toString() const @safe pure {
-        return "<undisplayable>";
-    }
-}
+private struct Undisplayable {}
 
 
 private struct Array {
@@ -1862,36 +1767,6 @@ private struct Array {
             case wstring:
             case dstring:
                 return `"` ~ charArrayString ~ `"`;
-        }
-    }
-
-    public string typeAnnotation() const @safe pure nothrow {
-        import std.sumtype: match;
-        import std.traits: Unqual;
-
-        if (elements.length != 0)
-            return elements[0].data.match!(
-                (value) {
-                    alias T = Unqual!(typeof(value));
-
-                    static if (is(T == wchar)) {
-                        return "w";
-                    } else static if (is(T == dchar)) {
-                        return "d";
-                    } else {
-                        return "";
-                    }
-                },
-            );
-
-        final switch (display) with (ArrayDisplay) {
-            case normal:
-            case string:
-                return "";
-            case wstring:
-                return "w";
-            case dstring:
-                return "d";
         }
     }
 
@@ -2007,15 +1882,12 @@ private struct Entry {
 private struct Struct {
     public string typeName;
     public Field[] fields;
-    private bool _literalFields;
 
     public this(
         in string typeName,
         in Value[] fields,
-        in bool literalFields = false,
     ) @safe pure {
         this.typeName = typeName;
-        _literalFields = literalFields;
 
         foreach (field; fields)
             this.fields ~= Field("", field);
@@ -2037,7 +1909,7 @@ private struct Struct {
         foreach (i, field; fields) {
             if (i != 0)
                 ret ~= ", ";
-            ret ~= _literalFields ? field.value.toString : field.toString;
+            ret ~= field.toString;
         }
 
         return ret ~ ")";

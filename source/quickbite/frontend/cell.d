@@ -26,6 +26,7 @@ public struct Cell {
 public struct EvalSourceParseResult {
     public string source;
     public imported!"dmd.func".FuncDeclaration function_;
+    public bool displayIsFormatted;
 }
 
 private struct LoadedModuleSource {
@@ -561,18 +562,37 @@ private string escapedLineDirectiveFilePath(in string filePath) @safe pure {
     return result;
 }
 
-public EvalSourceParseResult parseEvalSource(in string source) {
+public EvalSourceParseResult parseEvalSource(
+    in string source,
+    in bool formatExpression = false,
+) {
     import quickbite.frontend.compiler: parseSnippet;
 
-    const evalSource = completeEvalSource(source);
+    const diagnosticSource = completeEvalSource(source, false);
     try {
-        auto moduleResult = parseSnippet(evalSource);
+        auto moduleResult = parseSnippet(diagnosticSource);
+        if (!formatExpression)
+            return EvalSourceParseResult(
+                diagnosticSource,
+                evalFunction(moduleResult.module_),
+                false,
+            );
+
+        const evalSource = completeEvalSource(source, true);
+        auto formattedModuleResult = parseSnippet(
+            evalSource,
+            [quickbiteSourceImportPath],
+        );
         return EvalSourceParseResult(
             evalSource,
-            evalFunction(moduleResult.module_),
+            evalFunction(formattedModuleResult.module_),
+            true,
         );
     } catch (Exception exception) {
-        throw new Exception(withCandidateSignatures(evalSource, exception.msg));
+        throw new Exception(withCandidateSignatures(
+            diagnosticSource,
+            exception.msg,
+        ));
     }
 }
 
@@ -1433,14 +1453,20 @@ private string evalSource(
         localTranscript ~ " }";
 }
 
-private string completeEvalSource(in string source) {
+private string completeEvalSource(
+    in string source,
+    in bool formatExpression,
+) {
     const expressionStart = finalExpressionStart(source);
+    const returnSource = formatExpression
+        ? "import quickbite.repl_prelude: __quickbiteFormat;\n" ~
+            "return __quickbiteFormat(" ~
+            source[expressionStart .. $] ~
+            ");"
+        : "return " ~ source[expressionStart .. $] ~ ";";
     return evalSource(
         null,
-        source[0 .. expressionStart] ~
-            "return " ~
-            source[expressionStart .. $] ~
-            ";",
+        source[0 .. expressionStart] ~ returnSource,
         syntheticEvalFunctionName(nextEvalFunctionIndex),
     );
 }

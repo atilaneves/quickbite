@@ -42,31 +42,23 @@ public class Interpreter: imported!"quickbite.backends".TreeNodeBackend {
     }
 
     public override EvalResult eval(FuncDeclaration function_) {
-        try {
-            import quickbite.backends.interpreter.frame_layout:
-                clearFrameLayoutCache;
-
-            clearFrameLayoutCache;
-            Walker walker;
-            scope(exit) walker.closeDurableInboundSession;
-            walker.classObjectTable = new ObjectTable;
-            walker.moduleTable = new ModuleTable;
-            walker.inUnitTest = function_.isUnitTestDeclaration !is null;
-            auto layout = cachedFrameLayout(function_);
-            walker._activationFrame = FrameBlock.allocate(layout);
-            walker.runStatement(function_.fbody);
-            return EvalResult(interpreterDisplayString(walker.result, function_));
-        } catch (Exception exception) {
-            // The interpreter's own message, verbatim: rewriting it through
-            // DMD's CTFE engine (as an earlier revision did) replaced the
-            // real, actionable error with whichever body-less leaf CTFE
-            // happened to reject.
-            return EvalResult(EvalResult.Diagnostic(exception.msg));
-        }
+        return execute(function_, false, false);
     }
 
     protected override EvalResult executeUnitTest(
         UnitTestDeclaration unitTest,
+    ) {
+        return execute(unitTest, true, false);
+    }
+
+    public override EvalResult evalFormattedDisplay(FuncDeclaration function_) {
+        return execute(function_, false, true);
+    }
+
+    private EvalResult execute(
+        FuncDeclaration function_,
+        in bool inUnitTest,
+        in bool consumeFormattedDisplay,
     ) {
         try {
             import quickbite.backends.interpreter.frame_layout:
@@ -77,46 +69,24 @@ public class Interpreter: imported!"quickbite.backends".TreeNodeBackend {
             scope(exit) walker.closeDurableInboundSession;
             walker.classObjectTable = new ObjectTable;
             walker.moduleTable = new ModuleTable;
-            walker.inUnitTest = true;
-            auto layout = cachedFrameLayout(unitTest);
+            walker.inUnitTest = inUnitTest;
+            auto layout = cachedFrameLayout(function_);
             walker._activationFrame = FrameBlock.allocate(layout);
-            walker.runStatement(unitTest.fbody);
-            return EvalResult("");
+            walker.runStatement(function_.fbody);
+            return consumeFormattedDisplay
+                ? EvalResult(formattedDisplay(walker.result))
+                : EvalResult("");
         } catch (Exception exception) {
+            // The interpreter's own message, verbatim: rewriting it through
+            // DMD's CTFE engine (as an earlier revision did) replaced the
+            // real, actionable error with whichever body-less leaf CTFE
+            // happened to reject.
             return EvalResult(EvalResult.Diagnostic(exception.msg));
         }
     }
 
     public override ReplSession createReplSession() {
         return new InterpreterReplSession(this);
-    }
-
-    private EvalResult evalFormattedDisplay(FuncDeclaration function_) {
-        try {
-            import quickbite.backends.interpreter.frame_layout:
-                clearFrameLayoutCache;
-
-            clearFrameLayoutCache;
-            Walker walker;
-            scope(exit) walker.closeDurableInboundSession;
-            walker.classObjectTable = new ObjectTable;
-            walker.moduleTable = new ModuleTable;
-            auto layout = cachedFrameLayout(function_);
-            walker._activationFrame = FrameBlock.allocate(layout);
-            walker.runStatement(function_.fbody);
-            if (walker.result.isNativeAggregate) {
-                import quickbite.backends.interpreter.aggregate_value: AggregateValue;
-
-                char[] display;
-                foreach (index; 0 .. AggregateValue.elementCount(walker.result))
-                    display ~= AggregateValue.elementAt(walker.result, index)
-                        .asUtf8Character;
-                return EvalResult(display.idup);
-            }
-            return EvalResult(walker.result.asCharArrayString);
-        } catch (Exception exception) {
-            return EvalResult(EvalResult.Diagnostic(exception.msg));
-        }
     }
 }
 
@@ -144,78 +114,18 @@ private bool isTransparentArrayCastTarget(imported!"dmd.mtype".Type type) {
     return isArrayType(type);
 }
 
-private string interpreterDisplayString(
-    in imported!"quickbite.backends.interpreter.runtime_value".Value value,
-    imported!"dmd.func".FuncDeclaration function_,
-) {
-    import quickbite.backends.interpreter.aggregate_value: AggregateValue;
-    import quickbite.backends.interpreter.runtime_value: Value;
-    import quickbite.frontend.dmd.types: isCharacterArrayType;
-
-    if (value == Value.void_)
-        return "";
-
-    auto returnType = function_.type is null ? null : function_.type.nextOf;
-    if (isCharacterArrayType(returnType)) {
-        if (!value.isNativeAggregate)
-            return `"` ~ value.asCharArrayString ~ `"` ~ value.stringTypeAnnotation;
-
-
-        char[] characters;
-        foreach (index; 0 .. AggregateValue.elementCount(value))
-            characters ~= AggregateValue.elementAt(value, index).asUtf8Character;
-        return (`"` ~ characters ~ `"` ~ value.stringTypeAnnotation).idup;
-    }
-
-    if (value.isNativeAggregate)
-        return nativeAggregateDisplay(value);
-
-    return value.toString;
-}
-
-private string nativeAggregateDisplay(
+private string formattedDisplay(
     in imported!"quickbite.backends.interpreter.runtime_value".Value value,
 ) {
     import quickbite.backends.interpreter.aggregate_value: AggregateValue;
 
-    auto type = AggregateValue.native(value).type.toBasetype;
-    if (type.isTypeDArray !is null || type.isTypeSArray !is null) {
-        string display = "[";
-        foreach (index; 0 .. AggregateValue.elementCount(value)) {
-            if (index != 0)
-                display ~= ", ";
-            display ~= nativeAggregateElementDisplay(
-                AggregateValue.elementAt(value, index),
-            );
-        }
-        return display ~ "]";
-    }
+    if (!value.isNativeAggregate)
+        return value.asCharArrayString;
 
-    if (auto structType = type.isTypeStruct) {
-        import quickbite.backends.interpreter.layout: structFields;
-
-        string display = structType.sym.ident.toString.idup ~ "(";
-        bool first = true;
-        foreach (index, field; structFields(structType)) {
-            if (field.isThisDeclaration !is null)
-                continue;
-            if (!first)
-                display ~= ", ";
-            display ~= nativeAggregateElementDisplay(
-                AggregateValue.fieldAt(value, index),
-            );
-            first = false;
-        }
-        return display ~ ")";
-    }
-
-    return value.toString;
-}
-
-private string nativeAggregateElementDisplay(
-    in imported!"quickbite.backends.interpreter.runtime_value".Value value,
-) {
-    return value.isNativeAggregate ? nativeAggregateDisplay(value) : value.dText;
+    char[] display;
+    foreach (index; 0 .. AggregateValue.elementCount(value))
+        display ~= AggregateValue.elementAt(value, index).asUtf8Character;
+    return display.idup;
 }
 
 private enum LoopControl {

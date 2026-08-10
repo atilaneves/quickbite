@@ -15,9 +15,10 @@ Current capabilities:
 
 - `EvalResult` carries a display `string` or `Diagnostic`, and `:t` is
   frontend-answered. CTFE and Interpreter execute every semantically valid
-  expression cell through the prelude formatter and execute unittests without
-  rendering; the IR and Bytecode paths still use interim `Value` display
-  scaffolding.
+  expression display through the prelude formatter and execute unittests
+  without rendering. The Interpreter consumes the guest-produced string
+  directly and has no host-side display model; the IR and Bytecode paths still
+  use interim `Value` display scaffolding.
 - `NativeBlock`/`NativeArray`/`NativeStruct` compose structs, static arrays,
   slices, and their elements using DMD layout. They own real GC storage,
   growth, slice headers, and the interpreter side of the FFI seam.
@@ -187,9 +188,9 @@ deletion (items 2-3).
     carrier is interpreter-private execution machinery, not a display
     value — `RuntimeValue` is a descriptive name, not a prescribed shared
     type. Top-level unittest execution needs only success or a diagnostic
-    and must not render the walker's final result; the REPL expression
-    path synthesizes `__quickbiteFormat(expr)` and returns that
-    guest-produced string through `EvalResult`. Replace the interim
+    and must not render the walker's final result; expression-display entry
+    points synthesize `__quickbiteFormat(expr)` and return that guest-produced
+    string through `EvalResult`. Replace the interim
     `runUnitTest -> eval(FuncDeclaration) -> displayString` bridge with a
     direct unittest execution entry point plus a separate REPL evaluation
     entry point: display work leaves the latency-critical unittest path.
@@ -736,12 +737,13 @@ recovered by peeling.
 
 All four tree-node backends execute unittest bodies directly and return only
 success/diagnostic; their unittest paths neither reify nor render a result.
-IR and Bytecode still need their backend-owned formatter execution slices
-before their expression paths can complete the split. As each gains the
-formatter, delete its private reify -> `Value` -> `toString` scaffolding
-(decision 4). Only a REPL expression cell executes the prelude formatter and
-consumes its returned string. Do not retain `Value` or render a dummy `void`
-result just to reuse the evaluator path.
+The Interpreter's REPL and direct-expression convenience API execute the
+prelude formatter and consume its guest-produced string without a host-side
+display model. IR and Bytecode still need their backend-owned formatter
+execution slices before their expression paths can complete the split. As each
+gains the formatter, delete its private reify -> `Value` -> `toString`
+scaffolding (decision 4). Do not retain `Value` or render a dummy `void` result
+just to reuse the evaluator path.
 
 ### Item 3 — Delete the shared value
 

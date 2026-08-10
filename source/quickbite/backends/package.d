@@ -15,12 +15,19 @@ private:
 
 // A backend that does it all. Needed notably by the REPL.
 public abstract class Backend: Runner, Evaluator {
-    public bool supportsReplPreludeFormatter() const @safe @nogc nothrow pure {
+    public override bool supportsReplPreludeFormatter() const
+    @safe @nogc nothrow pure {
         return false;
     }
 
     public override ReplSession createReplSession() {
         return replayReplSession(this);
+    }
+
+    public override EvalResult evalFormattedDisplay(
+        imported!"dmd.func".FuncDeclaration function_,
+    ) {
+        return eval(function_);
     }
 }
 

@@ -9,13 +9,19 @@ public interface Evaluator {
     import dmd.dmodule: Module;
     import dmd.func: FuncDeclaration;
 
-    // The single execution primitive each backend implements. Failure is
-    // data: a backend catches its own internal exceptions and returns them
-    // as the diagnostic rather than throwing. The successful result is the
-    // value rendered to its display string; each backend renders its
-    // internally-reified `Value` to that string via the shared
-    // `displayString` helper below.
+    // The execution primitive each backend implements. Failure is data: a
+    // backend catches its own internal exceptions and returns them as the
+    // diagnostic rather than throwing. Backends still awaiting their guest
+    // formatter migration may return a host-rendered display here; a migrated
+    // backend uses this entry point for execution without display.
     public EvalResult eval(FuncDeclaration function_);
+
+    // Executes a function synthesized to return the guest formatter's string
+    // and consumes that string as the public display.
+    public EvalResult evalFormattedDisplay(FuncDeclaration function_);
+
+    public bool supportsReplPreludeFormatter() const
+    @safe @nogc nothrow pure;
 
     public ReplSession createReplSession();
 
@@ -24,7 +30,10 @@ public interface Evaluator {
     public final string eval(in string expr) {
         import quickbite.frontend.cell: parseEvalSource;
 
-        const result = eval(parseEvalSource(expr).function_);
+        auto parsed = parseEvalSource(expr, supportsReplPreludeFormatter);
+        const result = parsed.displayIsFormatted
+            ? evalFormattedDisplay(parsed.function_)
+            : eval(parsed.function_);
         if (result.failed)
             throw new Exception(result.diagnostic);
         return result.display;
@@ -49,7 +58,9 @@ public interface Evaluator {
             case expression:
                 // Candidate-signature enrichment applies to expression cells
                 // only.
-                const result = eval(cell.function_);
+                const result = cell.displayIsFormatted
+                    ? evalFormattedDisplay(cell.function_)
+                    : eval(cell.function_);
                 return result.failed
                     ? EvalResult(
                           EvalResult.Diagnostic(

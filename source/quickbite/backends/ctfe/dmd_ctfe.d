@@ -43,7 +43,7 @@ public class Ctfe: imported!"quickbite.backends".TreeNodeBackend {
         return new CtfeReplSession(this);
     }
 
-    private EvalResult evalFormattedDisplay(FuncDeclaration function_) {
+    public override EvalResult evalFormattedDisplay(FuncDeclaration function_) {
         string diagnostic;
         auto interpreted = interpretCtfeWithDiagnostic(
             callExpression(function_),
