@@ -692,14 +692,6 @@ just like other native-layout reference values. Autovivifying a null handle
 writes that handle through the referenced binding before inserting, so the
 caller retains both the allocation and later mutations.
 
-An associative array's dynamic-array-typed VALUE (e.g. `int[][int]`) writes
-through `native_call_adapter.marshalNative`'s legacy boxed `marshalArgument`
-fallback rather than its direct `place_value.writeValue` path, because
-`isPlaceComposable` has no `Tarray` arm; the stored slice header comes out
-wrong. Struct- and static-array-typed AA values already compose correctly.
-Extending `isPlaceComposable`/`valueMatchesComposablePlace` to a `Tarray` arm
-is item 5's fallback-deletion scope, not a standalone language-surface fix.
-
 `lang/archive.d`'s 5 `Omit!(Interpreter, Because.unconfirmed)` rows are not a
 language-surface gap: the Interpreter has no symbol-resolution source for a
 static archive at all (see the fixtures' `Omit` notes for the confirmed

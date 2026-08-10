@@ -120,10 +120,11 @@ public struct NativeOperand {
     public imported!"quickbite.backends.interpreter.native_block".NativeBlock retained;
 }
 
-// The first address-only outbound-call slice accepts plain extern(C) scalar
-// calls. It writes every scalar argument into a short-lived typed cell, then
-// passes only typed addresses to the FFI. More involved call shapes continue
-// through the legacy adapter until they can expose their authoritative places.
+// Plain fixed-arity extern(C) calls whose values compose through typed places
+// use this path. It writes every argument into short-lived typed storage, then
+// passes only typed addresses to the FFI. Receivers, references, variadics,
+// and non-composable values continue through the legacy adapter until they
+// can expose their authoritative places.
 public bool tryCallNativeAddressOnly(
     imported!"dmd.func".FuncDeclaration function_,
     in imported!"quickbite.backends.interpreter.runtime_value".Value[] arguments,
@@ -141,11 +142,11 @@ public bool tryCallNativeAddressOnly(
     import dmd.astenums: LINK, VarArg;
     import dmd.mangle: mangleExact;
     import dmd.mtype: TypeFunction;
-    import quickbite.backends.interpreter.layout: typeByteSize;
+    import quickbite.backends.interpreter.layout: typeByteSize, typeHasPointers;
     import quickbite.backends.interpreter.native_block: NativeBlock;
-    import quickbite.backends.interpreter.native_scalar: isNativeScalarType;
     import quickbite.backends.interpreter.place: Place;
-    import quickbite.backends.interpreter.place_value: readValue, writeValue;
+    import quickbite.backends.interpreter.place_value:
+        isPlaceComposable, readValue, valueMatchesPlace, writeValue;
     import quickbite.ffi.ffi:
         Callable, CompilerAbi, TypedAddress, call;
 
@@ -169,7 +170,7 @@ public bool tryCallNativeAddressOnly(
         return false;
 
     auto returnType = signature.next.toBasetype;
-    if (!isNativeScalarType(returnType))
+    if (!isPlaceComposable(returnType))
         return false;
 
     auto operandTypes = new TypedAddress[](arguments.length);
@@ -177,15 +178,18 @@ public bool tryCallNativeAddressOnly(
     foreach (index, argument; arguments) {
         auto parameterType = (*parameters)[index].type.toBasetype;
         if (
-            !isNativeScalarType(parameterType) ||
+            !isPlaceComposable(parameterType) ||
             argumentTypes[index] is null ||
-            !argumentTypes[index].toBasetype.equals(parameterType)
+            !argumentTypes[index].toBasetype.equals(parameterType) ||
+            !valueMatchesPlace(parameterType, argument)
         )
             return false;
 
         auto owner = NativeBlock.allocate(
             typeByteSize(parameterType),
-            NativeBlock.Scan.no,
+            typeHasPointers(parameterType)
+                ? NativeBlock.Scan.conservative
+                : NativeBlock.Scan.no,
         );
         writeValue(Place(owner.address, parameterType), argument);
         operandTypes[index] = TypedAddress(parameterType, owner.address);
@@ -194,7 +198,9 @@ public bool tryCallNativeAddressOnly(
 
     auto resultOwner = NativeBlock.allocate(
         typeByteSize(returnType),
-        NativeBlock.Scan.no,
+        typeHasPointers(returnType)
+            ? NativeBlock.Scan.conservative
+            : NativeBlock.Scan.no,
     );
     auto symbol = dlsym(RTLD_DEFAULT, mangleExact(function_));
     if (symbol is null)

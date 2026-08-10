@@ -456,16 +456,36 @@ private bool valueMatchesComposablePlace(
         return value.isPointer || value == Value.null_;
 
     auto arrayType = type.isTypeSArray;
-    assert(arrayType !is null, "valueMatchesPlace: composable type");
+    if (arrayType !is null) {
+        if (!AggregateValue.isArray(value))
+            return false;
+
+        const length = staticArrayLength(arrayType);
+        if (AggregateValue.elementCount(value) != length)
+            return false;
+
+        foreach (i; 0 .. length)
+            if (!valueMatchesComposablePlace(
+                arrayType.next,
+                AggregateValue.elementAt(value, i),
+            ))
+                return false;
+
+        return true;
+    }
+
+    auto sliceType = type.isTypeDArray;
+    assert(sliceType !is null, "valueMatchesPlace: composable type");
+    if (value == Value.null_)
+        return true;
     if (!AggregateValue.isArray(value))
         return false;
 
-    const length = staticArrayLength(arrayType);
-    if (AggregateValue.elementCount(value) != length)
-        return false;
-
-    foreach (i; 0 .. length)
-        if (!valueMatchesComposablePlace(arrayType.next, AggregateValue.elementAt(value, i)))
+    foreach (i; 0 .. AggregateValue.elementCount(value))
+        if (!valueMatchesComposablePlace(
+            sliceType.next,
+            AggregateValue.elementAt(value, i),
+        ))
             return false;
 
     return true;
@@ -1201,6 +1221,10 @@ public bool isPlaceComposable(imported!"dmd.mtype".Type type) @safe {
     auto arrayType = type.isTypeSArray;
     if (arrayType !is null)
         return isPlaceComposable(arrayType.next);
+
+    auto sliceType = type.isTypeDArray;
+    if (sliceType !is null)
+        return isPlaceComposable(sliceType.next);
 
     if (type.isTypePointer !is null)
         return true;
