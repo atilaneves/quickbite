@@ -813,6 +813,84 @@ unittest {
     }
 }
 
+// A ref-returning *member* function dispatched to a compiled dependency
+// image needs its result's address, not merely its value, so a later
+// assignment through the call writes back to the receiver's own field.
+@("dependencyImage.externDMemberRefReturn." ~ backend.stringof)
+@Tags(backend.stringof)
+unittest {
+    import quickbite.frontend.compiler: parseSnippetWithCheckActionContext;
+    import std.path: buildPath;
+
+    const sandbox = immutable Sandbox();
+    with(sandbox) {
+        const importPath = "imports";
+        const depPath = buildPath(importPath, "dep_image_member_ref_return_fixture_" ~ backend.stringof ~ ".d");
+        writeFile(depPath, q{
+            module dep_image_member_ref_return_fixture;
+
+            struct Holder {
+                private int stored;
+
+                this(int value) {
+                    stored = value;
+                }
+
+                ref int slot() {
+                    return stored;
+                }
+            }
+        }.uniqueDepModule("dep_image_member_ref_return_fixture", backend.stringof));
+
+        const imagePath = buildSharedLibrary(
+            sandbox,
+            "dep_image_member_ref_return_fixture_" ~ backend.stringof,
+            [depPath],
+        );
+
+        writeFile(depPath, q{
+            module dep_image_member_ref_return_fixture;
+
+            struct Holder {
+                private int stored;
+
+                this(int value);
+                ref int slot();
+            }
+        }.uniqueDepModule("dep_image_member_ref_return_fixture", backend.stringof));
+
+        auto moduleResult = parseSnippetWithCheckActionContext(
+            q{
+                import dep_image_member_ref_return_fixture;
+
+                unittest {
+                    auto holder = Holder(41);
+                    assert(holder.slot == 41);
+
+                    holder.slot = 42;
+                    assert(holder.slot == 42);
+                }
+            }.uniqueDepModule("dep_image_member_ref_return_fixture", backend.stringof),
+            [inSandboxPath(importPath)],
+        );
+
+        const oracle = (new SystemLinker(
+            [imagePath],
+            [inSandboxPath(importPath)],
+        )).runTests(moduleResult.module_);
+        oracle.length.should == 1;
+        oracle[0].passed.should == true;
+
+        const actual = runDependencyImage!backend(
+            [imagePath],
+            [inSandboxPath(importPath)],
+            moduleResult.module_,
+        );
+        actual.length.should == 1;
+        actual[0].passed.should == true;
+    }
+}
+
 @("dependencyImage.externDTypedSliceFunction." ~ backend.stringof)
 @Tags(backend.stringof)
 unittest {

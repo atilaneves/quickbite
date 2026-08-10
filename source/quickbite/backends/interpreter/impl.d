@@ -3309,19 +3309,18 @@ private struct Walker {
         imported!"dmd.expression".DotVarExp dot,
         in string unsupported,
     ) {
-        import dmd.funcsem: functionSemantic3;
         import quickbite.backends.interpreter.frame_layout:
             isReferenceParameter;
-        import quickbite.frontend.dmd.functions: hasNoAvailableSource;
+        import quickbite.frontend.dmd.functions:
+            ensureFunctionBodySemantic, hasNoAvailableSource;
 
         const receiver = runExpression(dot.e1);
         if (receiver == Value.null_)
             throw new Exception("function call through null class reference `null`");
 
         auto function_ = resolveMemberFunction(call.f, receiver);
-        functionSemantic3(function_);
-        if (hasNoAvailableSource(function_))
-            throw new Exception(unsupported);
+        ensureFunctionBodySemantic(function_);
+        const native = hasNoAvailableSource(function_);
 
         Value[] arguments;
         imported!"dmd.expression".Expression[] argumentExpressions;
@@ -3340,6 +3339,34 @@ private struct Walker {
                 argumentExpressions ~= argument;
                 evaluatedArguments ~= evaluated;
             }
+
+        if (native) {
+            import quickbite.backends.interpreter.native_call_adapter:
+                NativeCallException, NativeCallResult;
+
+            imported!"dmd.mtype".Type receiverType = receiverClassType(dot.e1);
+            if (receiverType is null)
+                receiverType = receiverStructType(dot.e1);
+
+            NativeCallResult nativeResult;
+            try {
+                if (!invokeNativeDeclaration(
+                    function_,
+                    receiver,
+                    receiverType,
+                    dot.e1,
+                    arguments,
+                    argumentExpressions,
+                    evaluatedArguments,
+                    false,
+                    nativeResult,
+                ))
+                    throw new Exception(unsupported);
+            } catch (NativeCallException exception) {
+                throwNativeException(exception);
+            }
+            return Value.pointerValue(nativeResult.referenceAddress);
+        }
 
         Walker child;
         child.runningCalledFunction = true;
@@ -8794,10 +8821,10 @@ private struct Walker {
         imported!"dmd.expression".CallExp call,
         in Value value,
     ) {
-        import dmd.funcsem: functionSemantic3;
         import quickbite.backends.interpreter.frame_layout:
             isReferenceParameter;
-        import quickbite.frontend.dmd.functions: hasNoAvailableSource;
+        import quickbite.frontend.dmd.functions:
+            ensureFunctionBodySemantic, hasNoAvailableSource;
 
         if (call.f is null || !returnsRef(call.f))
             return false;
@@ -8811,9 +8838,7 @@ private struct Walker {
             throw new Exception("function call through null class reference `null`");
 
         auto function_ = resolveMemberFunction(call.f, receiver);
-        functionSemantic3(function_);
-        if (hasNoAvailableSource(function_))
-            return false;
+        ensureFunctionBodySemantic(function_);
 
         Value[] arguments;
         imported!"dmd.expression".Expression[] argumentExpressions;
@@ -8832,6 +8857,41 @@ private struct Walker {
                 argumentExpressions ~= argument;
                 evaluatedArguments ~= evaluated;
             }
+
+        if (hasNoAvailableSource(function_)) {
+            import quickbite.backends.interpreter.native_call_adapter:
+                NativeCallException, NativeCallResult;
+            import quickbite.backends.interpreter.place: Place;
+
+            imported!"dmd.mtype".Type receiverType = receiverClassType(dot.e1);
+            if (receiverType is null)
+                receiverType = receiverStructType(dot.e1);
+
+            try {
+                NativeCallResult nativeResult;
+                if (!invokeNativeDeclaration(
+                    function_,
+                    receiver,
+                    receiverType,
+                    dot.e1,
+                    arguments,
+                    argumentExpressions,
+                    evaluatedArguments,
+                    false,
+                    nativeResult,
+                ))
+                    return false;
+                auto returnType = function_.type.toBasetype.isTypeFunction
+                    .next.toBasetype;
+                writeStoredValue(
+                    Place(nativeResult.referenceAddress, returnType),
+                    value,
+                );
+                return true;
+            } catch (NativeCallException exception) {
+                throwNativeException(exception);
+            }
+        }
 
         Walker child;
         child.runningCalledFunction = true;
