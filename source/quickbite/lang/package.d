@@ -177,7 +177,7 @@ public struct Value {
     }
 
     // A delegate returned by native code: an opaque {context, funcptr} pair
-    // callable through the FFI bridge (ffi.md §35.8).
+    // callable through the FFI bridge.
     public static Value nativeDelegateValue(
         const(void)* context,
         const(void)* funcptr,
@@ -2171,9 +2171,9 @@ private struct NativePointer {
 }
 
 
-// A delegate returned by native code (ffi.md §35.8): the extern(D)
-// {context, funcptr} pair, opaque to the backend, callable through the FFI
-// bridge with the context pointer leading.
+// A delegate returned by native code: the extern(D) {context, funcptr} pair,
+// opaque to the backend, callable through the FFI bridge with the context
+// pointer leading.
 private struct NativeDelegate {
     public const(void)* context;
     public const(void)* funcptr;

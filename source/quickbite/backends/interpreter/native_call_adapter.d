@@ -34,9 +34,9 @@ private NativeCallException nativeCallExceptionFrom(Throwable throwable) {
     return result;
 }
 
-// Runs an interpreted delegate that native code called back into (ffi.md
-// §34.16). The Walker supplies it so callback plumbing can re-enter the
-// interpreter without this module importing the Walker.
+// Runs an interpreted delegate that native code called back into. The Walker
+// supplies it so callback plumbing can re-enter the interpreter without this
+// module importing the Walker.
 public alias DelegateInvoker = imported!"quickbite.backends.interpreter.runtime_value".Value delegate(
     in imported!"quickbite.backends.interpreter.runtime_value".Value callee,
     in imported!"quickbite.backends.interpreter.runtime_value".Value[] arguments,
@@ -222,7 +222,7 @@ private size_t callbackSourceIndex(
 
 // Session-owned callback roots and callback-id invoker for durable FFI
 // trampolines. The registry owns libffi closure memory; this session owns
-// interpreter Values and remains valid for the Walker session (§35.4).
+// interpreter Values and remains valid for the Walker session.
 public struct InterpreterInboundTrampolineSession {
     import quickbite.backends.interpreter.runtime_value: Value;
 
@@ -246,7 +246,7 @@ public struct InterpreterInboundTrampolineSession {
 
     // Durable callbacks are valid only while their owning Walker can service
     // re-entry. Release the executable libffi closures and callback roots as
-    // that session ends (§35.4).
+    // that session ends.
     public void close() {
         if (_registry !is null)
             _registry.close;

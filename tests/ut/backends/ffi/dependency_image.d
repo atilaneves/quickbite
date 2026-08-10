@@ -1728,10 +1728,11 @@ unittest {
     }
 }
 
-// Characterization (ffi.md §34.11): a by-value struct with a slice field
-// crosses in both directions through the existing recursive struct walk reusing
-// the {length, ptr} slice descriptor; already works, so this pins it. Covers the
-// argument direction (reading `s.name`/`s.id`) and the struct-returning variant.
+// A by-value struct with a `string` field, crossing in both directions. The
+// struct is not a flat block of scalars — one of its fields is itself a
+// `{length, ptr}` descriptor — so `dependencyScore` reaches 407 only if it sees
+// both the four characters of `name` and the `int` beside them, and the
+// `Tagged` it returns must carry a readable `name` back out with its `id`.
 @("dependencyImage.externDNestedSliceStruct." ~ backend.stringof)
 @Tags(backend.stringof)
 unittest {
@@ -1807,9 +1808,10 @@ unittest {
     }
 }
 
-// A by-value struct with a static-array field (ffi.md §34.3.1 item 0): the
-// static array crosses as a STRUCT ffi_type of `dim` element copies, so the
-// containing struct is no longer refused. Covers the argument direction.
+// A by-value struct whose first field is a static array. `int[4]` stores its
+// four elements inline rather than behind a pointer, so passing `Fixed` by
+// value hands the callee five ints in one block: the sum 146 is reachable only
+// if every element and the trailing `tag` arrive where the callee reads them.
 @("dependencyImage.externDStaticArrayField." ~ backend.stringof)
 @Tags(backend.stringof)
 unittest {
@@ -2010,10 +2012,11 @@ unittest {
 }
 
 
-// A pointer-to-pointer parameter the callee reads through (ffi.md §34.8): the
-// `char**` shape alone does not make it an out slot, so the argument's current
-// pointer value must reach the callee. The fixture null-checks so the flaw
-// shows as a wrong return value rather than a crash.
+// A `const(char)**` parameter the callee reads through. The extra level of
+// indirection does not make it an output slot: `&word` designates the caller's
+// own pointer variable, and the callee dereferences it, so the pointer already
+// stored there has to reach `dependencyFirstLength`. The callee null-checks, so
+// a pointer that did not arrive shows up as -1 rather than as a crash.
 @("dependencyImage.externCPointerToPointerInput." ~ backend.stringof)
 @Tags(backend.stringof)
 unittest {
@@ -2226,10 +2229,10 @@ unittest {
 }
 
 
-// A dependency-image class with a virtual method and a subclass override (ffi.md
-// §34.12): the factory returns a base `Widget` reference to a derived `Button`,
-// and the call must dispatch through the object's vtable to the override rather
-// than to the statically-resolved base method.
+// A dependency-image class with a virtual method and a subclass override: the
+// factory returns a base `Widget` reference to a derived `Button`, and the call
+// must dispatch through the object's vtable to the override rather than to the
+// statically-resolved base method.
 @("dependencyImage.externDClassVirtualDispatch." ~ backend.stringof)
 @Tags(backend.stringof)
 unittest {
@@ -2310,9 +2313,9 @@ unittest {
 }
 
 // A dependency-image interface method call dispatched through the interface
-// table (ffi.md §34.12): the factory returns a `Drawable` interface reference to
-// a `Button`, and the call must dispatch through the object's interface table to
-// the implementation. `draw` reads an instance field, so a wrong `this`
+// table: the factory returns a `Drawable` interface reference to a `Button`,
+// and the call must dispatch through the object's interface table to the
+// implementation. `draw` reads an instance field, so a wrong `this`
 // (interface pointer not adjusted back to the object base) returns the wrong
 // value — that itable `this`-adjustment is what distinguishes interfaces from a
 // plain class vtable.
@@ -2401,10 +2404,11 @@ unittest {
     }
 }
 
-// A dependency-image struct constructed through its native extern(D)
-// `this(int)` constructor (ffi.md §34.13). The ctor computes the field rather
-// than plain field-init, so a passing read proves the native constructor body
-// ran across the boundary rather than an aggregate struct-literal fallback.
+// A dependency-image struct constructed through its `extern(D)` `this(int)`
+// constructor, whose body lives only in the compiled image. The constructor
+// computes `value` from `seed` instead of storing it, so reading 42 back out of
+// `Tracked(25)` is possible only if that body ran: a struct built from the
+// argument alone would hold 25.
 @("dependencyImage.externDStructConstructor." ~ backend.stringof)
 @Tags(backend.stringof)
 unittest {
@@ -2472,9 +2476,10 @@ unittest {
     }
 }
 
-// A dependency-image struct whose body-less extern(D) destructor runs at scope
-// exit (ffi.md §34.13). The destructor increments a shared native counter, read
-// back through a body-less accessor, proving `~this()` fired across the boundary.
+// A dependency-image struct whose `~this()` is declared to the importing module
+// but defined only in the compiled image. D runs it when `tracked` leaves the
+// inner scope; the destructor bumps a counter inside the image, so `dtorCalls`
+// reporting 1 afterwards is what shows it fired.
 @("dependencyImage.externDStructDestructor." ~ backend.stringof)
 @Tags(backend.stringof)
 unittest {
@@ -2552,9 +2557,10 @@ unittest {
     }
 }
 
-// A dependency-image struct whose body-less extern(D) postblit runs on copy
-// (ffi.md §34.13). The postblit increments a shared native counter, read back
-// through a body-less accessor, proving `this(this)` fired across the boundary.
+// A dependency-image struct whose `this(this)` is declared to the importing
+// module but defined only in the compiled image. D runs it when `copy` is
+// initialised from `original`; the postblit bumps a counter inside the image,
+// so `postblitCalls` reporting 1 is what shows it fired.
 @("dependencyImage.externDStructPostblit." ~ backend.stringof)
 @Tags(backend.stringof)
 unittest {
@@ -2868,8 +2874,10 @@ unittest {
     }
 }
 
-// A scoped delegate is contractually consumed within this native call, so it
-// remains on the call-scoped reverse bridge (ffi.md §34.16).
+// A `scope void delegate(int)` handed to a dependency-image function that calls
+// it back before returning. `scope` says the callee will not retain it, so the
+// delegate need only stay callable for the duration of that one call — and the
+// value it is passed (42) has to reach the closure, which writes it to `seen`.
 @("dependencyImage.externDScopedVoidDelegateCallback." ~ backend.stringof)
 @Tags(backend.stringof)
 unittest {
@@ -2933,10 +2941,11 @@ unittest {
     }
 }
 
-// A dependency image retains an interpreted extern(D) delegate beyond the
-// registering FFI call, then invokes it through a later native call (ffi.md
-// §35.4). SystemLinker proves D permits this; Interpreter must keep the native
-// entry point and interpreted closure alive across both FFI calls.
+// A dependency image retains an `extern(D)` delegate beyond the call that
+// registered it, then invokes it from a later, separate call. D permits an
+// unscoped delegate to outlive the call it was passed to, so both its entry
+// point and the closure it captured have to stay valid across the gap between
+// the two calls, not just for the duration of the first.
 @("dependencyImage.externDDurableDelegateCallback." ~ backend.stringof)
 @Tags(backend.stringof)
 unittest {
@@ -3011,10 +3020,9 @@ unittest {
     }
 }
 
-// A multi-argument interpreted delegate passed into native code (ffi.md §34.16).
-// The callback subtracts its arguments, so a wrong explicit-argument order would
-// return -7; a passing result proves the trampoline restores the reversed
-// extern(D) callback arguments to source order.
+// A two-argument delegate handed to a dependency-image function that calls it
+// back. The callback subtracts its arguments, which makes their order
+// observable: `(10, 3)` must arrive as `a == 10, b == 3` and yield 7, not -7.
 @("dependencyImage.externDMultiArgDelegateCallback." ~ backend.stringof)
 @Tags(backend.stringof)
 unittest {
@@ -3076,10 +3084,10 @@ unittest {
     }
 }
 
-// A dependency-image struct whose body-less extern(D) postblit MUTATES the copy
-// (ffi.md §34.13). Unlike externDStructPostblit (which only counts), this writes
-// through `this`, so the copied variable must reflect the post-call receiver
-// bytes — the BlitExp receiver writeback half of the rung.
+// A dependency-image struct whose `this(this)` mutates the copy. Unlike
+// externDStructPostblit (which only counts calls), this one writes through
+// `this`, and D runs a postblit on the newly copied object: `copy` must read
+// back 10 while `original` is left at 9.
 @("dependencyImage.externDMutatingPostblit." ~ backend.stringof)
 @Tags(backend.stringof)
 unittest {
@@ -3149,11 +3157,11 @@ unittest {
     }
 }
 
-// A `new T(args)` expression where T's extern(D) constructor is body-less
-// (ffi.md §34.13). Unlike externDStructConstructor (`T(seed)` value
-// construction), the new-expression path must route a body-less ctor through the
-// FFI bridge instead of running its (null) body, which would leave the heap
-// struct default-initialised (value == 0).
+// `new T(args)` where T's `extern(D)` constructor is defined only in the
+// compiled image. Unlike externDStructConstructor (`T(seed)` value
+// construction), the constructed value lives on the heap and is reached through
+// a `Tracked*`; the constructor still has to run, so `tracked.value` is 42
+// rather than the default-initialised 0.
 @("dependencyImage.externDNewStructConstructor." ~ backend.stringof)
 @Tags(backend.stringof)
 unittest {
@@ -3221,15 +3229,12 @@ unittest {
     }
 }
 
-// Characterization pin for native class-handle GC visibility (ffi.md §34.12):
-// a returned class reference reifies as an opaque Pointer whose raw
-// `void*` field lives inside a boxed Value, and every place the interpreter
-// keeps Values (the locals AA, the host stack) is GC-scanned memory — so a
-// collection between the factory call and a later use keeps the object alive,
-// with no explicit rooting. A gap would exist only where a handle's sole
-// reference lives in NO_SCAN memory (the native-layout backend's raw byte
-// frames); that is future native-layout handle-table work, not a
-// boxed-interpreter defect.
+// A class reference returned by a dependency image has to survive a garbage
+// collection that runs while the only reference to it is the caller's own
+// local: `makeThing` hands back an `Object`, `collectNow` runs a full
+// collection, and `isLive` then asks the GC whether that address is still a
+// live allocation. Nothing in the fixture roots the object explicitly, so
+// holding it in `thing` is what must keep it reachable.
 @("dependencyImage.externDClassHandleSurvivesCollection." ~ backend.stringof)
 @Tags(backend.stringof)
 unittest {
@@ -3391,9 +3396,11 @@ unittest {
     }
 }
 
-// A dynamic slice whose element is a by-value struct (ffi.md §34.3.1 item 0):
-// the slice ABI descriptor is element-agnostic, so once the element gate is
-// representability-driven the slice crosses both as an argument and a return.
+// A dynamic array whose element type is a struct rather than a scalar, crossing
+// in both directions. `dependencyPointSum` must walk the caller's own elements
+// (26 is the sum of all four ints), and the `const(Point)[]` returned by
+// `dependencyMakePoints` must come back with both its length and each field
+// intact.
 @("dependencyImage.externDSliceOfStructs." ~ backend.stringof)
 @Tags(backend.stringof)
 unittest {
@@ -3479,13 +3486,12 @@ unittest {
     }
 }
 
-// An associative-array parameter crossing the boundary (ffi.md §34.3.1 item 0):
-// the boxed interpreter cannot reproduce the AA's hashing, allocation, and
-// layout across the ABI, so the crossing stays refused — but the diagnostic
-// must name the associative array rather than blame missing source. The native
-// oracle crosses it fine (the KEPT supported-behavior leg); the Interpreter
-// refuses it honestly (unsupportedNativeTypeMessage). extern(C) keeps argument
-// ordering irrelevant.
+// An associative-array parameter crossing the boundary. The native oracle makes
+// the call, so the language permits it; the Interpreter refuses it, because it
+// cannot reproduce an `int[string]`'s hashing, allocation, and layout across
+// the ABI. What is pinned is that the refusal is honest: the diagnostic names
+// the associative array and its type spelling rather than blaming missing
+// source. `extern(C)` keeps argument ordering irrelevant.
 static if (is(backend == Interpreter)) {
 @("dependencyImage.externCAssocArrayRejected." ~ backend.stringof)
 @Tags(backend.stringof)
@@ -3546,7 +3552,7 @@ unittest {
         actual.length.should == 1;
         actual[0].passed.should == false;
         // Honest diagnostic: names the associative array and its type spelling,
-        // not missing source (ffi.md §34.3.1 item 0).
+        // not missing source.
         "associative array".should.be in actual[0].message;
         "int[string]".should.be in actual[0].message;
     }
@@ -3688,11 +3694,10 @@ unittest {
 }
 
 
-// Pins §35.2b: the dependency image's `static this()` runs when the image is
-// dlopened (RTLD_NOW | RTLD_GLOBAL), so `seed` is 42 for both the SystemLinker
-// oracle and the Interpreter. The direct `seed` read also exercises the §35.2a
-// symbol-read path, proving the ctor's write is visible through the resolved
-// symbol.
+// A dependency image's `static this()` must already have run by the time the
+// importing code executes, so the `__gshared seed` it sets reads as 42 — both
+// through the image's own `readSeed` and through a direct read of `seed` from
+// D, which has to see the same object the module constructor wrote.
 @("dependencyImage.moduleCtorRanAtDlopen." ~ backend.stringof)
 @Tags(backend.stringof)
 unittest {
@@ -3761,12 +3766,11 @@ unittest {
 }
 
 
-// Pins §35.2: a plain module-level `int` is thread-local by default (STT_TLS)
-// in D — the common case for dub-package globals, unlike the minority
-// `__gshared`. It crosses the boundary via the same dlsym data-symbol path as
-// `__gshared`: the §35.2a predicate matches `extern int` (extern_ set, dataseg,
-// no _init) and `dlsym` resolves the STT_TLS symbol to the interpreter thread's
-// instance, so reads and write-through both work with no extra code.
+// A plain module-level `int` in a dependency image is thread-local by default
+// in D, not `__gshared` — the common case for a dub package's globals. Declared
+// to the importer as `extern int`, it still names one object per thread: a read
+// from D, an assignment from D, and the image's own `bumpTls` must all land on
+// that same instance, making the sequence 100, 5, 6 observable from both sides.
 @("dependencyImage.tlsGlobalReadWrite." ~ backend.stringof)
 @Tags(backend.stringof)
 unittest {
@@ -4362,15 +4366,18 @@ unittest {
     }
 }
 
-// Pins §35.2 cross-image dependency-image initialization ordering: A's module
-// ctor runs before B's because images load in list order under RTLD_GLOBAL, so
-// B's ctor (which reads A's shared `seedBase`) sees A's initialized value.
+// Cross-image dependency-image initialization ordering: A's module ctor runs
+// before B's because images load in list order under RTLD_GLOBAL, so B's ctor
+// (which reads A's shared `seedBase`) sees A's initialized value.
 // Image B references A's symbol as an undefined extern, resolved at load time
 // through RTLD_GLOBAL. The shared global is `extern(C)` so both images agree on
 // the symbol name `seedBase`; a plain extern(D) global mangles the module name
 // in (`_D21dep_image_ctororder_a...` vs `..._b...`), so B's reference would not
 // resolve to A's definition. First multi-image fixture.
-// Linux registration is deferred pending the minimal repro in ffi.md §35.2.
+//
+// Not registered on Linux: there it fails even in a fresh process, and it is
+// not yet established whether the fault lies in the fixture, in the
+// SystemLinker oracle, or in loading the images.
 version (linux) {
 } else {
     @("dependencyImage.crossImageCtorOrdering." ~ backend.stringof)
@@ -4402,9 +4409,9 @@ version (linux) {
     }
 }
 
-// Pins §35.2 DT_NEEDED-driven dependency-image initialization ordering: the
-// caller only names image B. B has a dynamic-loader dependency on A, so dlopen(B)
-// must load A first, run A's module ctor, then run B's module ctor.
+// DT_NEEDED-driven dependency-image initialization ordering: the caller only
+// names image B. B has a dynamic-loader dependency on A, so dlopen(B) must load
+// A first, run A's module ctor, then run B's module ctor.
 @("dependencyImage.dtNeededCtorOrdering." ~ backend.stringof)
 @Tags(backend.stringof)
 unittest {
@@ -4497,10 +4504,10 @@ unittest {
     }
 }
 
-// Pins §35.2 TLS through a DT_NEEDED dependency image: the caller only loads
-// image B, but B depends on image A. A owns a default thread-local D global;
-// interpreted direct reads/writes and native B calls must all observe the same
-// TLS instance after dlopen(B) loads A.
+// TLS through a DT_NEEDED dependency image: the caller only loads image B, but
+// B depends on image A. A owns a default thread-local D global; direct reads
+// and writes from D and native calls into B must all observe the same TLS
+// instance once dlopen(B) has pulled A in.
 @("dependencyImage.dtNeededTlsGlobalReadWrite." ~ backend.stringof)
 @Tags(backend.stringof)
 unittest {

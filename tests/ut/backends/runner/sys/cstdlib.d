@@ -566,10 +566,9 @@ static foreach (backend; Matrix!(
 }
 
 
-// ffi.md §24.5 Phase 4: oracle-backed fixtures exercising shapes the
-// descriptor-driven chokepoint already supports without a new code branch:
-// wider scalars (labs), floating-point returns (atof/strtod), and an
-// extern(C) call in a second module (core.stdc.ctype).
+// Oracle-backed `extern(C)` fixtures past the `int`-in/`int`-out base case: a
+// 64-bit argument and result (`labs`), floating-point returns (`atof`,
+// `strtod`), and calls into a second C module (`core.stdc.ctype`).
 enum absSource = q{
     unittest {
         import core.stdc.stdlib: abs;
