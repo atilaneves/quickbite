@@ -8926,6 +8926,41 @@ static foreach (backend; AliasSeq!(Bytecode, SystemLinker)) {
     }
 }
 
+// D evaluates an assignment's operands left to right: the lvalue's
+// subexpressions run before the right-hand side, for compound assignment
+// exactly as for plain assignment.
+static foreach (backend; AliasSeq!(Bytecode, SystemLinker)) {
+    @("compoundAssignment.indexedTargetEvaluatesLvalueBeforeRhs." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            int index(ref int stamp, ref int indexStamp) {
+                indexStamp = ++stamp;
+                return 1;
+            }
+
+            int five(ref int stamp, ref int rhsStamp) {
+                rhsStamp = ++stamp;
+                return 5;
+            }
+
+            unittest {
+                int stamp;
+                int indexStamp;
+                int rhsStamp;
+                int[] values = [0, 0];
+
+                values[index(stamp, indexStamp)] += five(stamp, rhsStamp);
+
+                assert(indexStamp == 1);
+                assert(rhsStamp == 2);
+                assert(values[1] == 5);
+            }
+        });
+    }
+}
+
 // The compound-assignment counterpart: `p.at(i) += rhs` through the same
 // ref-returning element accessor.
 static foreach (backend; AliasSeq!(Bytecode, SystemLinker)) {
