@@ -4993,7 +4993,9 @@ private struct Walker {
                 ) {
                     import quickbite.backends.interpreter.native_call_adapter:
                         NativeCallException, tryCallNativeConstructor,
-                        tryCallNativeMember, tryCallNativeClassMember;
+                        tryCallNativeMember, tryCallNativeClassMember,
+                        tryCallNativeStructConstructorAddressOnly,
+                        tryCallNativeStructMemberAddressOnly;
 
                     Value result;
                     Value[] writebacks;
@@ -5009,6 +5011,23 @@ private struct Walker {
                             // default `.init` and reify the constructed struct
                             // from the receiver buffer.
                             if (function_.isCtorDeclaration !is null) {
+                                auto argumentTypes = nativeArgumentTypes(
+                                    argumentExpressions,
+                                );
+                                if (tryCallNativeStructConstructorAddressOnly(
+                                    function_,
+                                    structType,
+                                    nativeConstructorReceiver(function_, receiver),
+                                    arguments,
+                                    argumentTypes,
+                                    nativeAddressOnlyOperands(
+                                        function_,
+                                        argumentExpressions,
+                                        argumentTypes,
+                                    ),
+                                    result,
+                                ))
+                                    return result;
                                 if (tryCallNativeConstructor(
                                     function_,
                                     structType,
@@ -5045,6 +5064,25 @@ private struct Walker {
                                         ? receiver
                                         : receiverWriteback;
                                 }
+                            } else {
+                                auto argumentTypes = nativeArgumentTypes(
+                                    argumentExpressions,
+                                );
+                                if (tryCallNativeStructMemberAddressOnly(
+                                    function_,
+                                    structType,
+                                    receiver,
+                                    nativeStructReceiverOperand(dot.e1),
+                                    arguments,
+                                    argumentTypes,
+                                    nativeAddressOnlyOperands(
+                                        function_,
+                                        argumentExpressions,
+                                        argumentTypes,
+                                    ),
+                                    result,
+                                ))
+                                    return result;
                             }
                         }
 
@@ -12125,7 +12163,8 @@ private struct Walker {
     ) {
         import quickbite.frontend.dmd.functions: noAvailableSourceMessage;
         import quickbite.backends.interpreter.native_call_adapter:
-            NativeCallException, tryCallNativeConstructor;
+            NativeCallException, tryCallNativeConstructor,
+            tryCallNativeStructConstructorAddressOnly;
         import dmd.expression: Expression;
 
         Value[] arguments;
@@ -12139,6 +12178,21 @@ private struct Walker {
         Value constructed;
         Value[] writebacks;
         try {
+            auto argumentTypes = nativeArgumentTypes(argumentExpressions);
+            if (tryCallNativeStructConstructorAddressOnly(
+                new_.member,
+                targetType.isTypeStruct,
+                nativeConstructorReceiver(new_.member, initValue),
+                arguments,
+                argumentTypes,
+                nativeAddressOnlyOperands(
+                    new_.member,
+                    argumentExpressions,
+                    argumentTypes,
+                ),
+                constructed,
+            ))
+                return allocateNativePointer(targetType, constructed);
             if (tryCallNativeConstructor(
                 new_.member,
                 targetType.isTypeStruct,

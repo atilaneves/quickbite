@@ -271,6 +271,236 @@ public bool tryCallNative(
     return true;
 }
 
+// The address-only bridge already knows D's hidden struct-receiver ABI.  Keep
+// a struct's authoritative place as that receiver whenever the walker has
+// one; only a genuine rvalue is materialised in a typed temporary.  This is
+// deliberately limited to ordinary extern(D) members: class/virtual and C++
+// dispatch still have protocols the old adapter owns.
+public bool tryCallNativeStructMemberAddressOnly(
+    imported!"dmd.func".FuncDeclaration function_,
+    imported!"dmd.mtype".TypeStruct receiverType,
+    in imported!"quickbite.backends.interpreter.runtime_value".Value receiver,
+    NativeOperand receiverOperand,
+    in imported!"quickbite.backends.interpreter.runtime_value".Value[] arguments,
+    imported!"dmd.mtype".Type[] argumentTypes,
+    NativeOperand[] directAddressOperands,
+    out imported!"quickbite.backends.interpreter.runtime_value".Value result,
+) {
+    import dmd.astenums: LINK, STC, VarArg;
+    import dmd.mtype: TypeFunction;
+    import quickbite.backends.interpreter.aggregate_value: AggregateValue;
+    import quickbite.backends.interpreter.layout: typeByteSize, typeHasPointers;
+    import quickbite.backends.interpreter.native_block: NativeBlock;
+    import quickbite.backends.interpreter.place: Place;
+    import quickbite.backends.interpreter.place_value:
+        isPlaceComposable, readValue, valueMatchesPlace, writeValue;
+    import quickbite.ffi.ffi: Callable, TypedAddress, call;
+    import quickbite.ffi.symbol: resolveFunctionSymbol;
+
+    if (
+        function_ is null || receiverType is null ||
+        !AggregateValue.isStruct(receiver) || function_._linkage != LINK.d
+    )
+        return false;
+
+    auto signature = cast(TypeFunction) function_.type;
+    if (signature is null || signature.parameterList.varargs != VarArg.none ||
+        signature.isRef)
+        return false;
+
+    auto parameters = signature.parameterList.parameters;
+    if (
+        parameters is null && arguments.length != 0 ||
+        parameters !is null && arguments.length != parameters.length ||
+        argumentTypes.length != arguments.length
+    )
+        return false;
+
+    auto returnType = signature.next.toBasetype;
+    if (!isPlaceComposable(returnType))
+        return false;
+
+    NativeBlock receiverOwner;
+    TypedAddress receiverAddress;
+    if (
+        receiverOperand.address !is null &&
+        receiverOperand.type !is null &&
+        receiverOperand.type.toBasetype.equals(receiverType)
+    )
+        receiverAddress = TypedAddress(receiverType, receiverOperand.address);
+    else {
+        if (!valueMatchesPlace(receiverType, receiver))
+            return false;
+        receiverOwner = NativeBlock.allocate(
+            typeByteSize(receiverType),
+            typeHasPointers(receiverType)
+                ? NativeBlock.Scan.conservative
+                : NativeBlock.Scan.no,
+        );
+        writeValue(Place(receiverOwner.address, receiverType), receiver);
+        receiverAddress = TypedAddress(receiverType, receiverOwner.address);
+    }
+
+    auto operandTypes = new TypedAddress[](arguments.length);
+    NativeBlock[] operandOwners;
+    foreach (index, argument; arguments) {
+        auto parameter = (*parameters)[index];
+        auto parameterType = parameter.type.toBasetype;
+        const isReference =
+            (parameter.storageClass & (STC.ref_ | STC.out_)) != STC.none;
+        if (
+            !isPlaceComposable(parameterType) ||
+            argumentTypes[index] is null ||
+            !argumentTypes[index].toBasetype.equals(parameterType)
+        )
+            return false;
+
+        if (
+            index < directAddressOperands.length &&
+            directAddressOperands[index].address !is null &&
+            directAddressOperands[index].type !is null &&
+            directAddressOperands[index].type.equals(parameterType)
+        ) {
+            operandTypes[index] = TypedAddress(
+                parameterType,
+                directAddressOperands[index].address,
+            );
+            continue;
+        }
+        if (isReference || !valueMatchesPlace(parameterType, argument))
+            return false;
+
+        auto owner = NativeBlock.allocate(
+            typeByteSize(parameterType),
+            typeHasPointers(parameterType)
+                ? NativeBlock.Scan.conservative
+                : NativeBlock.Scan.no,
+        );
+        writeValue(Place(owner.address, parameterType), argument);
+        operandTypes[index] = TypedAddress(parameterType, owner.address);
+        operandOwners ~= owner;
+    }
+
+    auto resultOwner = NativeBlock.allocate(
+        typeByteSize(returnType),
+        typeHasPointers(returnType)
+            ? NativeBlock.Scan.conservative
+            : NativeBlock.Scan.no,
+    );
+    auto symbol = resolveFunctionSymbol(function_);
+    if (symbol.address is null || !call(
+        Callable(symbol.address, signature, symbol.compilerAbi, function_),
+        operandTypes,
+        TypedAddress(returnType, resultOwner.address),
+        &receiverAddress,
+    ))
+        return false;
+
+    result = readValue(Place(resultOwner.address, returnType));
+    return true;
+}
+
+// Struct constructors are extern(D) receiver calls too, but their `ref this`
+// result is semantically the constructed receiver.  The native bridge writes
+// that receiver in place, so retain the typed temporary and read it directly.
+public bool tryCallNativeStructConstructorAddressOnly(
+    imported!"dmd.func".FuncDeclaration function_,
+    imported!"dmd.mtype".TypeStruct receiverType,
+    in imported!"quickbite.backends.interpreter.runtime_value".Value receiver,
+    in imported!"quickbite.backends.interpreter.runtime_value".Value[] arguments,
+    imported!"dmd.mtype".Type[] argumentTypes,
+    NativeOperand[] directAddressOperands,
+    out imported!"quickbite.backends.interpreter.runtime_value".Value result,
+) {
+    import dmd.astenums: LINK, STC, VarArg;
+    import dmd.mtype: TypeFunction;
+    import quickbite.backends.interpreter.aggregate_value: AggregateValue;
+    import quickbite.backends.interpreter.layout: typeByteSize, typeHasPointers;
+    import quickbite.backends.interpreter.native_block: NativeBlock;
+    import quickbite.backends.interpreter.place: Place;
+    import quickbite.backends.interpreter.place_value:
+        isPlaceComposable, readValue, valueMatchesPlace, writeValue;
+    import quickbite.ffi.ffi: Callable, TypedAddress, call;
+    import quickbite.ffi.symbol: resolveFunctionSymbol;
+
+    if (
+        function_ is null || receiverType is null ||
+        !AggregateValue.isStruct(receiver) || function_._linkage != LINK.d ||
+        function_.isCtorDeclaration is null
+    )
+        return false;
+
+    auto signature = cast(TypeFunction) function_.type;
+    if (signature is null || signature.parameterList.varargs != VarArg.none)
+        return false;
+    auto parameters = signature.parameterList.parameters;
+    if (
+        parameters is null && arguments.length != 0 ||
+        parameters !is null && arguments.length != parameters.length ||
+        argumentTypes.length != arguments.length
+    )
+        return false;
+
+    auto receiverOwner = NativeBlock.allocate(
+        typeByteSize(receiverType),
+        typeHasPointers(receiverType)
+            ? NativeBlock.Scan.conservative
+            : NativeBlock.Scan.no,
+    );
+    writeValue(Place(receiverOwner.address, receiverType), receiver);
+    auto receiverAddress = TypedAddress(receiverType, receiverOwner.address);
+    auto operandTypes = new TypedAddress[](arguments.length);
+    NativeBlock[] operandOwners;
+    foreach (index, argument; arguments) {
+        auto parameter = (*parameters)[index];
+        auto parameterType = parameter.type.toBasetype;
+        const isReference =
+            (parameter.storageClass & (STC.ref_ | STC.out_)) != STC.none;
+        if (
+            !isPlaceComposable(parameterType) ||
+            argumentTypes[index] is null ||
+            !argumentTypes[index].toBasetype.equals(parameterType)
+        )
+            return false;
+        if (
+            index < directAddressOperands.length &&
+            directAddressOperands[index].address !is null &&
+            directAddressOperands[index].type !is null &&
+            directAddressOperands[index].type.equals(parameterType)
+        ) {
+            operandTypes[index] = TypedAddress(
+                parameterType,
+                directAddressOperands[index].address,
+            );
+            continue;
+        }
+        if (isReference || !valueMatchesPlace(parameterType, argument))
+            return false;
+        auto owner = NativeBlock.allocate(
+            typeByteSize(parameterType),
+            typeHasPointers(parameterType)
+                ? NativeBlock.Scan.conservative
+                : NativeBlock.Scan.no,
+        );
+        writeValue(Place(owner.address, parameterType), argument);
+        operandTypes[index] = TypedAddress(parameterType, owner.address);
+        operandOwners ~= owner;
+    }
+
+    auto symbol = resolveFunctionSymbol(function_);
+    auto returnType = signature.next.toBasetype;
+    if (symbol.address is null || !call(
+        Callable(symbol.address, signature, symbol.compilerAbi, function_),
+        operandTypes,
+        TypedAddress(returnType, receiverOwner.address),
+        &receiverAddress,
+    ))
+        return false;
+
+    result = readValue(Place(receiverOwner.address, receiverType));
+    return true;
+}
+
 public bool tryAssignNativeRefReturn(
     imported!"dmd.func".FuncDeclaration function_,
     in imported!"quickbite.backends.interpreter.runtime_value".Value[] arguments,
