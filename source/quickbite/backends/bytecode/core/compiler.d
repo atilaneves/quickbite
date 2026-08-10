@@ -9013,13 +9013,13 @@ private struct Compiler {
     ) {
         import std.conv: text;
 
-        const rhs = compileExpression(assign.e2);
         auto place = placeOrNull(assign.e1);
         if (place is null)
             throw new Exception(text(
                 unsupportedMessage,
                 expressionChars(assign),
             ));
+        const rhs = compileExpression(assign.e2);
 
         if (place.isPointerValue) {
             if (op4 != Op.addInt4 || op8 != Op.addInt8)
