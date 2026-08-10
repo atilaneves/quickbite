@@ -247,8 +247,9 @@ unittest {
 
 
 // `impl.d`'s `scalarBytes`/`scalarFromBytes` splat a scalar's native bytes
-// out into a `ExpressionResult[]` of individually-boxed `ubyte` bytes (for pointer byte
-// slices and single-byte pointer writebacks) and reassemble the same way;
+// out into an `ExpressionResult[]` of individually boxed `ubyte` bytes (for
+// pointer byte slices and single-byte pointer writebacks) and reassemble the
+// same way;
 // these tests exercise that exact splat/reassemble composition on top of
 // `writeScalar`/`readScalar` directly, one byte-boxing step removed from
 // `impl.d`'s own (private, untestable-in-isolation) helpers.

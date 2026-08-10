@@ -1008,9 +1008,8 @@ private struct Walker {
     }
 
     // The one typed place for a binding's own storage: a true local's frame
-    // slot or a dataseg binding's module block. The combined authority switch
-    // routes whole reads, stores, lvalue composition, and reference binding
-    // through this constructor so none can choose a separate carrier.
+    // slot or a dataseg binding's module block. Whole reads, stores, lvalue
+    // composition, and reference binding all use this constructor.
     private Place bindingPlace(VarDeclaration variable) {
         import quickbite.backends.interpreter.layout: declaredType;
 
@@ -5911,9 +5910,10 @@ private struct Walker {
     // context}` pair (D's builtin delegate equality) -- not by the internal
     // `functionPointerId` this walker mints fresh for every delegate
     // EXPRESSION evaluation. `&s1.get` evaluated twice yields two different
-    // ids for the identical function+receiver, so the raw `ExpressionResult == ExpressionResult`
-    // fallback (still correct for two Values that are literal copies of the
-    // same id, e.g. plain assignment) answers unequal for the exact case D
+    // ids for the identical function+receiver, so the raw
+    // `ExpressionResult == ExpressionResult` fallback (still correct for two
+    // results carrying the same id, e.g. after plain assignment) answers
+    // unequal for the exact case D
     // requires equal. `contextPointer` already carries the receiver's own
     // binding address for a member-function delegate, not a copy
     // (`delegateContextPointer`'s `VarExp` arm resolves it the same way for
@@ -6421,10 +6421,8 @@ private struct Walker {
                 // (the same gap `nativeDelegateSlots`'s own field comment
                 // documents), so it lives out-of-band, keyed by the field's
                 // own address, exactly as the struct-field read arm below
-                // already checks for a mirrored local's field. A class
-                // field's own address is always the object body's own
-                // storage -- no mirror-slot gate needed, unlike a struct
-                // local's binding, which may not have been established yet.
+                // already checks. A class field's address is always in the
+                // object body's own storage.
                 if (fieldPlace.type.toBasetype.ty == TY.Tdelegate)
                     if (auto delegate_ = fieldPlace.address in nativeDelegateSlots)
                         return *delegate_;
@@ -6827,11 +6825,9 @@ private struct Walker {
                 // has no native ABI function address, so `place_value.
                 // writeValue`'s Tdelegate arm only ever accepts `null` --
                 // register it out-of-band in `nativeDelegateSlots`, keyed by
-                // the field's own address, mirroring the struct-field write
-                // arm above. A class field's address is the object body's
-                // own storage, live for the object's whole lifetime, so no
-                // mirror-slot gate is needed the way a struct local's
-                // binding requires.
+                // the field's own address, just as the struct-field write arm
+                // above does. A class field's address is the object body's
+                // own storage, live for the object's whole lifetime.
                 if (field !is null && field.type.toBasetype.ty == TY.Tdelegate) {
                     nativeDelegateSlots[fieldPlace.address] = value;
                     writeValue(fieldPlace, ExpressionResult.null_);
@@ -10425,11 +10421,8 @@ private struct Walker {
             if (variable is null)
                 throw new Exception("Unsupported eval post expression target.");
 
-            // Reuse the ordinary VarExp read path.  During the authority
-            // migration a promoted legacy cell can coexist with an established
-            // frame slot; the latter is the address a native pointer wrote,
-            // so the post-increment must observe that same storage rather
-            // than selecting a stale cell through `readCelledLocal`.
+            // Reuse the ordinary VarExp read path so post-increment observes
+            // the binding's authoritative native storage.
             const oldValue = runExpression(post.e1);
             if (oldValue.isPointer) {
                 writeLocation(post.e1, oldValue.pointerOffsetBy(delta.asLong));

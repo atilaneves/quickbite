@@ -71,9 +71,9 @@ public struct FrameBlock {
     // of its own declared type, as opposed to a REFERENCE slot holding a
     // caller-supplied address (`hasReferenceSlot` below) or no slot at
     // all. The native binding path gates on this, never on `hasSlot` alone: a
-    // reference slot's bytes are an address, not a `place_value`
-    // composition of `variable`'s own declared type, so mirroring it the
-    // same way would write the wrong bytes into the wrong-sized slot.
+    // reference slot's bytes are an address, not storage for `variable`'s own
+    // declared type, so writing the declared value there would overwrite the
+    // address with the wrong layout.
     public bool hasOwningSlot(VarDeclaration variable) const @safe {
         return _layout.has(variable)
             && _layout[variable].kind == FrameLayout.Slot.Kind.owning;

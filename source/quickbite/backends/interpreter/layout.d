@@ -180,8 +180,8 @@ private imported!"dmd.mtype".Type declaredTypeImpl(
 // `baseClass` from `class_` up to the root, then emits each level's own
 // `fields` starting from the root and working back down, so a derived
 // class's fields follow its base class's fields, matching the layout the
-// interpreter's class `ExpressionResult`s use. Unlike `structFields` above, this does
-// NOT force layout first -- a class's `fields` are populated by semantic
+// interpreter's native class bodies use. Unlike `structFields` above, this
+// does NOT force layout first -- a class's `fields` are populated by semantic
 // analysis (`dsymbolsem.d`) before the interpreter ever runs, so there is
 // no `sizeok`-gated state to force here the way a struct's is.
 public imported!"dmd.declaration".VarDeclaration[] classFields(

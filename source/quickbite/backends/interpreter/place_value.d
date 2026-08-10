@@ -26,8 +26,7 @@ private:
 // (`ai/plans/value.md`'s decision 15 -- host layout IS the spec on THIS
 // host, not a hazard to refuse -- is what makes a place-local codec
 // honest here). See `readRealBits`/`writeRealBits`'s own header comments
-// for the padding-determinism argument the verified frame mirror's
-// whole-slot byte comparison depends on.
+// for the padding-determinism contract of native place writes.
 public imported!"quickbite.backends.interpreter.expression_result".ExpressionResult readValue(
     imported!"quickbite.backends.interpreter.place".Place place,
 ) @safe {
@@ -159,12 +158,10 @@ private bool bytesAreZero(
 // declines it before this is consulted, because the read side has no enum
 // `ExpressionResult` to give back for a floating one. `@trusted`: `Type.
 // toBasetype` is not `@safe`, mirroring `native_scalar.d`'s identical
-// boundary for the identical call. `public`: `impl.d`'s `placeShapeMatches`
-// needs the identical check, to decide whether a transient `ExpressionResult` reaching a
-// `real`-typed place is itself a numeric scalar before calling `writeValue`
-// -- reusing this rather than growing a second `Tfloat80` check keeps the
-// two from drifting apart the same way `isNativeScalarType` already does
-// for every native scalar type.
+// boundary for the identical call. `public`: `valueMatchesPlace` needs the
+// same check to decide whether a transient `ExpressionResult` reaching a
+// `real`-typed place is numeric before `writeValue`; sharing it prevents the
+// compatibility check and codec from drifting apart.
 public bool isRealType(imported!"dmd.mtype".Type type) @trusted {
     import dmd.astenums: TY;
 
@@ -612,10 +609,8 @@ out (result; !result || isPlaceComposable(type))
     // -- unlike the `real`/`long` pair, which stops at
     // `isWritableNativeScalar` -- the walk below would otherwise call the
     // whole struct re-derivable while `isPlaceComposable` declines it.
-    // Over-declining is the right bias: the union merely stays unmirrored,
-    // whereas accepting it routes `u.s.b = 1.5f` through the non-union
-    // receiver path, leaves a sibling view stale, and a later `ref` bind
-    // verifies that stale view against the sibling's bytes.
+    // Over-declining is the right bias: overlapping fields do not form the
+    // disjoint scalar-leaf composition this predicate promises.
     auto fields = structFields(structType);
     if (!fieldsAreDisjoint(fields))
         return false;
@@ -719,15 +714,9 @@ public bool isPlaceComposable(imported!"dmd.mtype".Type type) @safe {
 // `structFields` at OVERLAPPING offsets (`value.md`'s Unions section --
 // and it is the offsets that are consulted here, never `overlapped`, since
 // that flag is a derived fact about them, not a second source of truth).
-// The enclosing declaration is still a plain `StructDeclaration`, so
-// without this check the struct arm would treat the flattened members as
-// independent storage, write every one of them over the same bytes in
-// declaration order, and let the last win -- while a decomposed value keeps
-// one entry per member, entries that for `union { real r; long l; }` after
-// `s.l = 42` genuinely contradict each other (nothing re-derives a `real`
-// sibling). A later `ref` bind composed into that storage then verifies a
-// DIFFERENT member's snapshot against those bytes and asserts on a program
-// the oracle runs.
+// The enclosing declaration is still a plain `StructDeclaration`, so without
+// this check the classifier would treat the flattened members as disjoint
+// leaves even though a write through either member changes the same bytes.
 private bool allFieldsComposable(imported!"dmd.mtype".TypeStruct structType) @safe {
     import quickbite.backends.interpreter.layout: structFields, declaredType;
 

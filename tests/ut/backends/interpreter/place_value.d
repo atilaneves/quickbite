@@ -18,10 +18,9 @@ import dmd.typesem: sarrayOf, pointerTo;
 private:
 
 
-// An enum-typed place must read back as a `ExpressionResult.enumValue` qualified with
-// the member's own name (`Colour.green`), not the plain integral `ExpressionResult`
-// `native_scalar.readScalar` alone would give -- the enum-tagging gap this
-// slice closes (`ai/plans/value.md` "Remaining work" item 5).
+// An enum-typed place must read back as an `ExpressionResult.enumValue`
+// qualified with the member's own name (`Colour.green`), not the plain integral
+// `ExpressionResult` that `native_scalar.readScalar` alone would give.
 @("place_value.readValue.enumMemberValueReadsBackTaggedWithItsQualifiedName")
 unittest {
     auto type = enumTypeOf(q{ enum Colour : int { red, green, blue } }, "Colour");
@@ -298,9 +297,9 @@ unittest {
 }
 
 
-// `isPlaceComposable` still gates the write-side mirror, which stays
-// slice-free even though `readValue` itself now reconstructs a slice --
-// pinned directly on the slice type, not only via a struct field of one.
+// `isPlaceComposable` describes the conservative scalar-leaf subset, so a
+// slice is excluded even though `readValue` can copy its native header. Pin
+// that distinction directly on the slice type, not only through a field.
 @("place_value.isPlaceComposable.falseForSlice")
 unittest {
     auto holderType = structTypeOf(q{ struct SliceHolder { int[] xs; } }, "SliceHolder");
@@ -309,9 +308,8 @@ unittest {
 }
 
 
-// A union whose declared members are all native scalars is composable --
-// `readValue`/`writeValue` compose it exactly as they do a struct's own
-// fields (`allFieldsComposable`, shared between the two arms).
+// A union whose declared members are all native scalars is composable: every
+// member view can be derived from the same complete byte span.
 @("place_value.isPlaceComposable.trueForUnionWithComposableMembers")
 unittest {
     auto unionType = structTypeOf(q{ union U { int x; long y; } }, "U");
@@ -319,14 +317,9 @@ unittest {
 }
 
 
-// One non-composable member (a slice, here -- a pointer no longer
-// disqualifies a member, see `isPlaceComposable.trueForPointer`) refuses
-// the WHOLE union, exactly as one non-composable field refuses a whole
-// class body (`isClassBodyComposable`'s own inherited-field test) --
-// `writeValue`'s union arm would otherwise recurse into that member via
-// `writeUnionValue` (were it ever the widest) or `readValue`'s union arm
-// via `structValueAt` (always, since every member is read), either of
-// which would throw.
+// One non-composable member (a slice, here) refuses the whole union because
+// the conservative classifier requires every member view to be derivable
+// through its scalar-leaf subset.
 @("place_value.isPlaceComposable.falseForUnionWithNonComposableMember")
 unittest {
     auto unionType = structTypeOf(q{ union U { int x; int[] p; } }, "U");
@@ -337,10 +330,8 @@ unittest {
 // A pointer's own bytes ARE the host address (`ai/plans/value.md`
 // decision 15): the TYPE always composes as a leaf (`readValue`/
 // `writeValue`'s pointer arms), so `isPlaceComposable` -- a type-shape
-// question -- answers `true` unconditionally. `impl.d`'s `mirrorToFrame`/
-// `assertFrameMirror` still decline a VALUE that is not itself a host
-// address, through their own shared `placeShapeMatches` gate, not through
-// this predicate.
+// question -- answers `true` unconditionally. `valueMatchesPlace` separately
+// requires the transient result to carry a host address or `null`.
 @("place_value.isPlaceComposable.trueForPointer")
 unittest {
     isPlaceComposable(Type.tint32.pointerTo).should == true;
@@ -348,8 +339,8 @@ unittest {
 
 
 // A pointer place's own bytes ARE the host address (`ai/plans/value.md`
-// decision 15) -- writing a `ExpressionResult.pointerValue` and reading it back
-// must round-trip that exact address, with no element recursion at all.
+// decision 15) -- writing an `ExpressionResult.pointerValue` and reading it
+// back must round-trip that exact address, with no element recursion at all.
 @("place_value.writeValue.readValue.pointerRoundTripsHostAddress")
 unittest {
     auto pointerType = Type.tint32.pointerTo;
@@ -398,10 +389,9 @@ unittest {
 
 // `Place.deref` already follows a pointer place's own stored address to
 // the pointee; this proves the round trip end to end: `writeValue` stores
-// a pointee's own address, `readValue` reads that same address back out
-// boxed, and a NEW place composed straight from the read-back address
-// reaches the identical pointee value -- the point of storing a host
-// address at all, per decision 15.
+// a pointee's own address, `readValue` returns that same address, and a NEW
+// place composed straight from it reaches the identical pointee value -- the
+// point of storing a host address at all, per decision 15.
 @("place_value.writeValue.readValue.derefThroughWrittenPointerReachesPointeeValue")
 unittest {
     auto pointerType = Type.tint32.pointerTo;
@@ -452,14 +442,11 @@ unittest {
 }
 
 
-// The property the verified frame mirror's whole-slot RAW BYTE comparison
-// depends on (`ai/plans/value.md`'s Layout authority contract): writing
-// the SAME `real` value twice must produce IDENTICAL bytes, padding
-// included, not merely an equal `real` on read-back. Asserted directly on
-// the block's own raw bytes, not only on the round-tripped `ExpressionResult`, since
-// two different padding patterns could still both read back correctly
-// (`readRealBits` never inspects the padding) while still breaking the
-// mirror's byte-for-byte comparison.
+// Native `real` writes are byte-deterministic: writing the SAME value twice
+// produces IDENTICAL bytes, padding included, not merely an equal `real` on
+// read-back. Asserted directly on the block's raw bytes because different
+// padding patterns could both read back correctly (`readRealBits` never
+// inspects padding).
 //
 // Both writes go into a destination pre-filled with a DIFFERENT non-zero
 // pattern, and the padding is asserted zero rather than merely equal: an
@@ -498,7 +485,6 @@ unittest {
 }
 
 
-// `enum E : real` and `enum E : double` are legal D, and `writeValue` can
 // Floating-base enums use their underlying floating scalar as the execution
 // carrier. Typed native storage retains the enum type, so reads and writes
 // still preserve the complete guest representation without forcing the
@@ -553,14 +539,8 @@ unittest {
 }
 
 
-// A `real` union member is one no boxed union write path re-derives from a
-// sibling's bytes, so a union carrying one can hold entries that contradict
-// each other: after `u.l = 42`, `impl.d`'s `withUnionFieldWrite` leaves
-// `r` on its own default, `real.nan`. `real` being the wider member,
-// writing it would splat NaN's bytes over the `l` the guest just assigned
-// -- and the verify side, recomputing through the same `writeValue`, would
-// land on the identical wrong bytes and see nothing. So the whole union
-// declines instead.
+// A `real` union member is outside `isUnionMemberReDerivable`'s native-scalar
+// subset, so the conservative classifier declines the whole union.
 @("place_value.isPlaceComposable.falseForUnionWithRealMember")
 unittest {
     auto unionType = structTypeOf(q{ union U { real r; long l; } }, "U");
@@ -578,10 +558,8 @@ unittest {
 }
 
 
-// A nested union member is skipped by `withUnionFieldWrite`'s sibling
-// re-derivation exactly like `real` and a pointer are, so the outer union
-// declines for the same reason -- and would anyway, since writing a nested
-// union covers only ITS own widest member, not the outer union's extent.
+// A nested union is not a re-derivable scalar-leaf member, so the outer union
+// declines for the same reason as `real` and pointer members.
 @("place_value.isPlaceComposable.falseForUnionWithNestedUnionMember")
 unittest {
     auto unionType = structTypeOf(q{
@@ -620,14 +598,10 @@ unittest {
 
 // The same union with `S` grown an ANONYMOUS union of its own: DMD
 // flattens `a` and `b` into `S`'s own fields at the same offset, so `S`
-// does not compose (`allFieldsComposable`'s overlap gate), and a member
-// that does not compose is not one the union write path re-derives
-// coherently either. Both flattened members are native scalars, so nothing
-// but the overlap check stops the member walk -- which is why this shape,
-// and not the `real`/`long` neighbours above, is the one that reached
-// `isUnionMemberReDerivable`'s "re-derivable implies composable" `out`
-// contract and made the contract itself assert on a program the oracle
-// runs.
+// does not compose (`allFieldsComposable`'s overlap gate), and therefore is
+// not a re-derivable union member. Both flattened members are native scalars,
+// so this shape directly exercises the overlap check that preserves
+// `isUnionMemberReDerivable`'s "re-derivable implies composable" contract.
 @("place_value.isPlaceComposable.falseForUnionWithAnonymousUnionBearingStructMember")
 unittest {
     auto unionType = structTypeOf(q{
@@ -649,8 +623,8 @@ unittest {
 }
 
 
-// No capability, no class: a caller with no identity namespace of its own
-// receives the native body address, which is the authoritative identity.
+// A class place reads the native body address, which is the authoritative
+// object identity.
 @("place_value.readValue.returnsClassBodyAddressWithoutAnIdentityCapability")
 unittest {
     auto classType = classTypeOf(q{ class C { int x; } }, "C");
@@ -665,10 +639,8 @@ unittest {
 }
 
 
-// A boxed null slice is a length of zero, not an error. `ExpressionResult.length`
-// itself throws "Expected array." for `ExpressionResult.null_`, which would otherwise
-// make `writeValue` refuse a value the read side hands straight back: a
-// `{ 0, null }` header reads as an empty array, never as `ExpressionResult.null_`.
+// A null slice has length zero. Writing `ExpressionResult.null_` produces a
+// `{ 0, null }` header, which reads back as an empty native array result.
 @("place_value.writeValue.readValue.nullSliceWritesAnEmptySlice")
 unittest {
     auto holderType = structTypeOf(q{ struct SliceHolder { int[] xs; } }, "SliceHolder");

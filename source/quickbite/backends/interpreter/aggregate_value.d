@@ -10,9 +10,8 @@ private alias NativeAggregate = imported!"quickbite.backends.interpreter.native_
 // surface keeps their typed construction and access separate from scalar
 // ExpressionResult operations.
 public struct AggregateValue {
-    // Typed constructors are the authority-switch entry points.  Their Type
-    // parameter is mandatory: aggregate layout never comes from a display
-    // name or the recursive shape of a ExpressionResult.
+    // Typed constructors require a Type: aggregate layout never comes from a
+    // display name or an `ExpressionResult`'s variant shape.
     public static imported!"quickbite.backends.interpreter.expression_result".ExpressionResult reconstructStruct(
         imported!"dmd.mtype".Type type,
         in imported!"quickbite.backends.interpreter.expression_result".ExpressionResult[] fields,
@@ -246,8 +245,8 @@ public struct AggregateValue {
 
     // The source is an ABI buffer whose caller has already established as at
     // least this Type's DMD byte size.  Copying it as one span retains union
-    // overlap, padding, and slice headers; reconstructing fields here would
-    // reintroduce recursive aggregate reification at the FFI boundary.
+    // overlap, padding, and slice headers without imposing a field model on
+    // the ABI boundary.
     public static imported!"quickbite.backends.interpreter.expression_result".ExpressionResult copyFromBytes(
         imported!"dmd.mtype".Type type,
         in ubyte[] bytes,

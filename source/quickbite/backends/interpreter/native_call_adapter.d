@@ -222,7 +222,8 @@ private size_t callbackSourceIndex(
 
 // Session-owned callback roots and callback-id invoker for durable FFI
 // trampolines. The registry owns libffi closure memory; this session owns
-// interpreter Values and remains valid for the Walker session (§35.4).
+// interpreter callback results and remains valid for the Walker session
+// (§35.4).
 public struct InterpreterInboundTrampolineSession {
     import quickbite.backends.interpreter.expression_result: ExpressionResult;
 
@@ -315,7 +316,7 @@ private void extendInboundIntegerResult(
 
 // A typed, rooted address crossing the interpreter/native-call boundary.
 // `owner` keeps interpreter-owned storage alive; `address` is the ABI operand
-// itself and never denotes a recursively boxed aggregate snapshot.
+// itself, pointing directly at the value's native-layout bytes.
 public struct NativeOperand {
     public imported!"dmd.mtype".Type type;
     public void* address;

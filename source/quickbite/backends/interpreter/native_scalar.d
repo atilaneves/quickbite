@@ -4,24 +4,20 @@ module quickbite.backends.interpreter.native_scalar;
 private:
 
 
-// A leaf codec between the interpreter's boxed scalar `quickbite.backends.interpreter.expression_result.ExpressionResult`
-// and the host's native byte layout for a D scalar type. This is the first
-// production call site for the native-layout container types
-// (`native_block.d`/`native_array.d`/`native_struct.d`): `impl.d` promotes an
-// address-taken scalar local to a `NativeBlock`, `writeScalar`s direct writes
-// into it, and `readScalar`s pointer dereferences from it, so
-// `*cast(T*) &local` loads the same bytes at the pointee's static type.
+// A leaf codec between the interpreter's transient scalar
+// `quickbite.backends.interpreter.expression_result.ExpressionResult` and the
+// host's native byte layout for a D scalar type. Frame, module, aggregate, and
+// borrowed places use it for scalar loads and stores, so `*cast(T*) &local`
+// loads the same bytes at the pointee's static type.
 //
 // `real`/`TY.Tfloat80` is deliberately excluded from `isNativeScalarType`:
 // an x86 80-bit extended-precision `real` occupies a host- and
 // ABI-specific padded size (10 significant bytes inside a 12- or 16-byte
 // slot, depending on platform and alignment) that `layout.typeByteSize`
-// reports correctly for THIS host, but treating it as a byte-for-byte
-// portable native scalar the way `float`/`double` are would bake in that
-// padding as if it were a stable cross-host fact. Nothing this commit's
-// call site needs (the two pinned float/uint and double/ulong fixtures)
-// requires `real`; excluding it keeps this codec's claims honest rather
-// than silently wrong on a host whose padding differs.
+// reports correctly for THIS host, but treating it as a byte-for-byte portable
+// native scalar the way `float`/`double` are would bake in that padding as if
+// it were a stable cross-host fact. `place_value.d` owns the host-specific
+// `real` codec instead.
 //
 // Native-call operands and results now cross the FFI seam as typed places, so
 // this codec remains the interpreter's single scalar<->bytes authority there
