@@ -2229,6 +2229,37 @@ static foreach (backend; Matrix!(
     }
 }
 
+// The field-access sibling of the test above: `pairs[i].b` must bounds-check
+// `i` exactly as `pairs[i]` does, not address past the array's end and read
+// whatever heap bytes live there.
+static foreach (backend; AliasSeq!(Bytecode, SystemLinker)) {
+    @("dynamicArray.fieldOfIndexedElementPastLengthDiagnostic." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct Pair {
+                int a;
+                int b;
+            }
+
+            int value(int seed) {
+                return seed;
+            }
+
+            unittest {
+                int first = value(10);
+                Pair[] pairs = [Pair(first, first + 1)];
+                size_t index = cast(size_t) value(5);
+
+                assert(pairs[index].b == first);
+            }
+        }).shouldThrowWithMessage(
+            "index [5] is out of bounds for array of length 1",
+        );
+    }
+}
+
 
 
 /++
