@@ -301,10 +301,10 @@
   report by session memory (machine-local, may be stale); git history and
   `ai/plans` are the authoritative record.
 
-- This repo sets `push.default = matching`, so a bare `git push` from a
-  worktree also publishes every other matching local branch — including the
-  user's unpushed local `master`. Always push explicitly:
-  `git push origin <branch>` (with `--force-with-lease` after a rebase).
+- This repo sets `push.default = matching`, so a bare `git push` from one of
+  several worktrees can publish unrelated matching local branches, including
+  the user's unpushed `master`. Push the current worktree explicitly with
+  `git push origin HEAD:<branch>` (and `--force-with-lease` after a rebase).
 
 - dmd's own AST visitor classes (`Visitor`, `SemanticTimePermissiveVisitor`,
   `StatementRewriteWalker`, etc.) are `extern (C++)`. A subclass written to

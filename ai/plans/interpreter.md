@@ -28,10 +28,10 @@ benchmark result unrepresentative.
 (driving fixture: **cerealed**) puts in front of it, so that
 `runTests(Interpreter, modules)` produces the same per-unittest results as
 `SystemLinker`. This includes reaching and correctly calling the body-less
-native leaves encountered along the way. The Interpreter temporarily uses
-`quickbite.ffi.oldffi`; correctness fixes required by this gate belong to the
-priority even though the later deletion of that package is owned by
-`value.md`.
+native leaves encountered along the way. The Interpreter uses the typed-address
+`quickbite.ffi.ffi` bridge; Interpreter-specific preparation,
+callback re-entry, and exception translation stay in its backend adapter.
+`quickbite.ffi.oldffi` remains only for Bytecode's parallel migration lane.
 
 The unittest execution boundary returns success or a diagnostic directly. It
 does not format the final interpreter result: display is a separate REPL
@@ -40,10 +40,10 @@ function returns inside a unittest still produce interpreter-private runtime
 results; separating the top-level contracts does not turn expression execution
 into a `void` operation.
 
-The measure of done is empirical and external: Cerealed's whole unittest suite
-runs green on `Interpreter` against the `SystemLinker` oracle in the default
-LDC host. That gate precedes the Interpreter representation/FFI deletion,
-formatter migration, and broader Interpreter surface work.
+The empirical, external Cerealed gate is green on master: its whole unittest
+suite runs on `Interpreter` in the default LDC host. The acceptance command is
+now a standing regression gate while formatter migration and broader
+Interpreter surface work continue.
 
 **Ordering correction (2026-07-09).** The paragraph above holds only for
 `value.md`'s *latency measurement*. Its representation *decision* is no longer
@@ -56,8 +56,8 @@ track instead of being shimmed here. See the triage rule in §8.
 ## 2. Non-goals
 
 ```text
-- redesign of native calls: the new Bytecode bridge belongs to `ffi.md`, while
-  deleting the Interpreter's legacy bridge belongs to `value.md`;
+- Bytecode's migration from `quickbite.ffi.oldffi` and deletion of that legacy
+  package (`bytecode.md` and `ffi.md`);
 - the Bytecode/IR backends' execution (ai/plans/bytecode.md);
 - value representation choice (boxed vs native layout): ai/plans/value.md;
 - new language features DMD does not lower for us (we execute DMD's AST, not
@@ -84,14 +84,14 @@ interpreter execution, not the native boundary.
 ## 4. Relationship to the FFI and representation plans
 
 ```text
-quickbite.ffi.oldffi
-               temporary Interpreter native-call implementation. Correctness
-               fixes demanded by the Cerealed gate are in scope here; new
-               architecture and speculative features are not.
 quickbite.ffi.ffi
-               pristine address-only bridge built for native-layout Bytecode.
-               It is not derived from oldffi and does not wait for Interpreter
-               compatibility.
+               address-only bridge shared by native-layout backends. It owns
+               callable resolution, compiler-ABI provenance, CIF construction,
+               and execution, but no backend value representation.
+Interpreter adapter
+               selects typed addresses and owns callback lifetime/re-entry and
+               native exception translation. It has one preparation path and
+               one execution path, with no legacy marshalling fallback.
 value.md       how the interpreter represents runtime results and addressable
                storage. Assumes
                execution works; this plan delivers that assumption FOR THE
@@ -113,12 +113,11 @@ value.md       how the interpreter represents runtime results and addressable
 bytecode.md    a different backend; native-layout execution. Out of scope.
 ```
 
-The current default-host failure may cross the native boundary. `LINK.d` alone
-does not identify the callable's ABI: DMD and LDC order explicit D arguments
-differently. A legacy-bridge fix must use the defining callable's compiler ABI,
-not hard-code DMD or LDC globally. Once the gate is green, ordinary Interpreter
-calls migrate to the new typed-address contract and
-`quickbite.ffi.oldffi` is deleted under `value.md`.
+`LINK.d` alone does not identify a callable's ABI: DMD and LDC order explicit D
+arguments differently. Every resolved callable carries the ABI of its defining
+compiler; neither the bridge nor an adapter may hard-code DMD or LDC globally.
+Bytecode owns the final `quickbite.ffi.oldffi` consumer and deletes that package
+when its parallel address-only migration is complete.
 
 Pointer slicing is ordinary D semantics and stays in this plan. Constructing
 `ptr[lower .. upper]` creates a view at the adjusted address and length; it
@@ -127,34 +126,28 @@ It rejects `lower > upper` before address arithmetic, while deliberately not
 checking whether the resulting view lies inside an allocation, matching
 compiled D.
 
-### 4.1 Immediate work order
+### 4.1 Standing work order
 
-1. Make native calls in the default LDC host obey the actual callable's ABI.
-2. Re-run the full Cerealed suite and classify the first remaining mismatch.
-3. Distil each newly exposed class into a standalone, package-independent D
-   behavior, then implement that behavior against `SystemLinker`.
-4. Repeat until the default command reports every Cerealed unittest passing.
+1. Keep the default LDC-hosted Cerealed acceptance command green.
+2. Take the next confirmed omission from §9.11 or a newly measured package.
+3. Distil it into a standalone, package-independent D behavior, then implement
+   that behavior against `SystemLinker`.
+4. Promote the fixture into its oracle matrix and re-run the Cerealed gate.
 
 ### 4.2 Unittest execution is not REPL evaluation
 
-The current `TreeNodeBackend` bridge implements `runUnitTest` by calling
-`Evaluator.eval(FuncDeclaration)`. `Interpreter.eval` then renders
-`Walker.result` through `displayString`, although `runUnitTest` discards that
-display and keeps only failure/diagnostic state. That couples the project's
-latency-critical product path to REPL formatting.
-
-The target has two entry points:
+`TreeNodeBackend` has two entry points:
 
 ```text
 executeUnitTest(UnitTestDeclaration) -> TestResult
 evaluateRepl(FuncDeclaration)        -> EvalResult
 ```
 
-Names are illustrative; the separation is the contract. A successful unittest
-must reach `TestResult` without `displayString`, `Value.toString`, or
-`__quickbiteFormat`. A REPL expression cell executes the frontend-synthesized
-formatter and returns its string. Statement/no-display cells may use the same
-execution machinery without manufacturing a display value.
+The separation is the contract. A successful unittest reaches `TestResult`
+without `displayString`, `Value.toString`, or `__quickbiteFormat`. A REPL
+expression cell executes the frontend-synthesized formatter and returns its
+string. Statement/no-display cells may use the same execution machinery
+without manufacturing a display value.
 
 Inside the walker, `runExpression` remains a recursive operation because all
 real D code, including unittests, computes expressions and calls value-returning
@@ -2049,17 +2042,11 @@ still under active development, does not yet write through this `ref`
 foreach loop variable (every element reads back as `0`) regardless of
 void-init status.
 
-cerealed impact: `bin/bench.sh -b interpreter -b system-linker --dub
-cerealed` re-measured before/after. Before: 7 mismatches. After:
-`static_array.d(7)` gone, no newly-unmasked classes; cerealed drops to 6
-mismatches: `encode_decode.d(75)`/`(80)`, `property.d(12)` ×2,
-`reset.d(9)`, `structs.d(22)`. **All six remaining are
-representation-ceiling** (deferred to value.md per §8: ScopeBuffer
+The native-layout work validated this rung's durable diagnosis: the remaining
+classes at this frontier were representation-ceiling cases (ScopeBuffer
 native-memory aliasing, fuzz-seeded double/float reinterpret, and a
-`double`/AA field reinterpret-cast — none is a missing language-surface
-behaviour). This exhausts the language-surface cerealed frontier opened
-by §6/§7: every remaining cerealed/Interpreter disagreement now requires
-value.md's native-layout track, not further interpreter rungs.
+`double`/AA field reinterpret-cast), not missing language-surface behavior.
+Those classes are closed and the Cerealed acceptance command is green.
 
 **2026-07-14 (Fable review: field-address identity, float writeback
 compare, snapshot write refusal).** A code review of the `&s.field`
@@ -2129,13 +2116,9 @@ entry) found three defects, fixed together:
 
 All three fixtures confirmed red on `Interpreter`/green on
 `SystemLinker` before the fix (reconstructed on the pre-fix parent per
-this section's 2026-07-09 handoff protocol). Re-measure: `bin/bench.sh
--b interpreter -b system-linker --dub cerealed` is unchanged at 6
-disagreements (`encode_decode.d(75)`/`(80)`, `property.d(12)` ×2,
-`reset.d(9)`, `structs.d(22)`) — no regression, and the closed
-`pointers.d(82)` `ref`-argument rung stays closed (its fixture,
-`refArgument.sideEffectingPointerDerefNotReEvaluatedWhenUnwritten`,
-still passes green with the new `identicalValues` compare).
+this section's 2026-07-09 handoff protocol). The durable regression fixture is
+`refArgument.sideEffectingPointerDerefNotReEvaluatedWhenUnwritten`; it keeps
+the closed `pointers.d(82)` `ref`-argument rung closed.
 
 **Sibling gap, not fixed here (Finding 4, plan note only).** The rung-6
 `recordSliceAlias` `DotVarExp` branch (this section's
@@ -2191,10 +2174,10 @@ seam:
 - pointer-typed integer constants (TempCStringBuffer.useStack's
   `cast(T*) size_t.max`) as native pointer values;
 - `&field` of a static-array struct member as an array pointer;
-- C strings marshalled from interpreter array pointers (fopen's path);
+- C strings backed by retained native character storage (fopen's path);
 - delegating struct constructors (`this(...)` forwarding, File's ctor);
-- native-memory struct loads/stores through the marshal layer
-  (malloc'd Impl reads/writes; Tsarray fields for stat_t);
+- native-memory struct loads/stores through typed places
+  (malloc'd Impl reads/writes; `Tsarray` fields for `stat_t`);
 - struct out-parameters at flagged `&local` call sites (fstat);
 - core.internal.atomic hooks (asm bodies interpreted as plain load/store/
   rmw; alignment asserts short-circuited) — File's refcount;
@@ -2202,8 +2185,8 @@ seam:
   overloads forward `*cast(T*)&val`) — the lost refcount store;
 - postblit-call declaration initializers (`(copy = orig).__postblit()`)
   keeping the blitted variable, not the call's incidental result;
-- pointer-into-array argument writeback for native calls that fill
-  buffers (posix read);
+- native calls writing directly through pointer-into-array addresses
+  (POSIX `read` buffers);
 - data-segment variables materializing their static initializers
   (std.encoding's bomTable, read by readText's BOM detection);
 - char/integer code-point equality (bytes read from native memory
@@ -2773,31 +2756,25 @@ back into its `SystemLinker`-oracle matrix after fixing the named red behavior:
   for the compound-`+=` sibling shape). Found via `tests/example.d`; no
   matrix fixture pins the combined-content trigger yet.
 
-## 10. Completion criteria
+## 10. Standing Cerealed regression gate
+
+The default LDC-hosted command is green on master and must remain green:
 
 ```text
-- Make the §7 inventory for cerealed empty: every cerealed unittest runs on
-  Interpreter and agrees with SystemLinker.
-- Make the default LDC-hosted
-  `./bin/bench.sh -w 0 -r 1 -b interpreter --dub cerealed` produce a passing
-  post-parse row for the interpreter rather than a crash or skip.
-- Leave an approved oracle-backed, package-independent fixture for each
-  semantic rung, with no language or system regression.
-- Keep production code free of Cerealed-specific names and behavior.
+./bin/bench.sh -w 0 -r 1 -b interpreter --dub cerealed
 ```
 
-At that point priority 2 begins: migrate the Interpreter away from
-`quickbite.ffi.oldffi` and delete its obsolete value and FFI conversion paths
-under `value.md`.
+Every new semantic rung keeps an approved oracle-backed,
+package-independent fixture and must not regress that command. Production code
+remains free of Cerealed-specific names and behavior.
 
 ## 11. Beyond cerealed
 
-Cerealed is the first driving package, not the finish line. Broader language
-expansion is priority 4: it starts only after the Interpreter FFI/value cleanup
-and shared formatter work. Then repeat the same measure, distil, approve,
-red-to-green loop against a second package that exercises a different ordinary
-D surface. Do not preserve legacy marshalling or value machinery merely to
-start that next package sooner.
+Cerealed is the first driving package, not the finish line. After the shared
+formatter work, repeat the same measure, distil, approve, red-to-green loop
+against a second package that exercises a different ordinary D surface. Do not
+restore legacy marshalling or value machinery merely to start that next
+package sooner.
 
 ## 12. Structural maintenance queue
 
