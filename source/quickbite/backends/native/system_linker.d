@@ -256,7 +256,7 @@ private void linkSharedLibrary(
     in string libPath,
     in string[] dependencyImages,
 ) {
-    import quickbite.ffi.oldffi: verifyDependencyImages;
+    import quickbite.ffi.ffi: verifyDependencyImages;
     import std.conv: text;
     import std.process: execute;
 
