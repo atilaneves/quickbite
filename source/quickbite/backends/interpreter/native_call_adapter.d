@@ -120,6 +120,40 @@ public struct NativeOperand {
     public imported!"quickbite.backends.interpreter.native_block".NativeBlock retained;
 }
 
+// The address-only bridge's complete call shape.  Preparation owns selecting
+// these typed addresses; execution may call `ffi.call` only once every field
+// required by the selected shape is present.  The legacy executor remains the
+// temporary implementation while its value-to-buffer fallbacks are removed.
+private struct NativeInvocation {
+    public imported!"quickbite.ffi.ffi".Callable callable;
+    public imported!"quickbite.ffi.ffi".TypedAddress[] arguments;
+    public imported!"quickbite.ffi.ffi".TypedAddress result;
+    public imported!"quickbite.ffi.ffi".TypedAddress receiver;
+    public imported!"quickbite.ffi.ffi".DVariadicMetadata variadicMetadata;
+    public bool hasReceiver;
+    public bool hasVariadicMetadata;
+
+    public bool isComplete() const @safe @nogc nothrow pure {
+        if (
+            callable.address is null ||
+            callable.signature is null ||
+            result.type is null
+        )
+            return false;
+        foreach (argument; arguments)
+            if (argument.type is null || argument.address is null)
+                return false;
+        if (hasReceiver &&
+            (receiver.type is null || receiver.address is null))
+            return false;
+        if (hasVariadicMetadata &&
+            (variadicMetadata.value.type is null ||
+                variadicMetadata.value.address is null))
+            return false;
+        return true;
+    }
+}
+
 public bool tryCallNative(
     imported!"dmd.func".FuncDeclaration function_,
     in imported!"quickbite.backends.interpreter.runtime_value".Value[] arguments,
