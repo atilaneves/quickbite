@@ -913,6 +913,30 @@ static foreach (backend; Matrix!()) {
     }
 }
 
+// A `T[N][]` row appended from a static-array VARIABLE (not a literal) must
+// copy the variable's elements into the row's own storage; reinterpreting the
+// element bytes as a slice descriptor makes the next row read dereference
+// element data as a pointer.
+static foreach (backend; Matrix!()) {
+    @("dynamicArray.appendStaticArrayVariableRowThenReadElements." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            unittest {
+                int[3][] rows;
+                int[3] row = [7, 8, 9];
+
+                rows ~= row;
+
+                assert(rows.length == 1);
+                assert(rows[0][0] == 7);
+                assert(rows[0][2] == 9);
+            }
+        });
+    }
+}
+
 // The not-equal sibling of the test above, guarding against a fix that
 // makes `int[2][] == int[2][]` vacuously true instead of comparing content.
 static foreach (backend; Matrix!()) {
