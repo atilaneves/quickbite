@@ -2982,6 +2982,56 @@ static foreach (backend; Matrix!()) {
     }
 }
 
+// Two delegates stored into associative-array elements may capture the same
+// local; both entries observe the shared captured variable while the
+// declaring frame is live. The bytecode core heap-boxes AA-stored delegate
+// contexts (a frame-relative context would dangle past the frame), but its
+// boxed environments are per-delegate, so a local captured by more than one
+// stored delegate declines rather than share an environment.
+static foreach (backend; AliasSeq!(Bytecode)) {
+    @ShouldFail(
+        "bytecode heap-boxed closure environments are per-delegate; a " ~
+        "local captured by a second AA-stored delegate declines the store",
+    )
+    @("delegate.assocArrayElementsSharingACapturedLocal." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            unittest {
+                int captured = 2;
+                int delegate(int)[string] operations;
+
+                operations["add"] = (int x) => x + captured;
+                operations["mul"] = (int x) => x * captured;
+
+                assert(operations["add"](3) == 5);
+                assert(operations["mul"](3) == 6);
+            }
+        });
+    }
+}
+
+static foreach (backend; Matrix!(
+    Omit!(Bytecode, Because.diverges, "see the @ShouldFail pin above"),
+)) {
+    @("delegate.assocArrayElementsSharingACapturedLocal." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            unittest {
+                int captured = 2;
+                int delegate(int)[string] operations;
+
+                operations["add"] = (int x) => x + captured;
+                operations["mul"] = (int x) => x * captured;
+
+                assert(operations["add"](3) == 5);
+                assert(operations["mul"](3) == 6);
+            }
+        });
+    }
+}
+
 static foreach (backend; Matrix!()) {
     @("delegate.structReceiverPassedAsParameter." ~ backend.stringof)
     @Tags(backend.stringof)
