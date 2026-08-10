@@ -27,6 +27,9 @@ public struct BenchOptions {
     public size_t warmup = defaultWarmup;
     public size_t runs   = defaultRuns;
     public bool skipCheck;
+    // Stop after the frontend and package preparation so an external profiler
+    // can attach before the post-parse backend work starts.
+    public bool profilePostParse;
     public string[] importPaths;
     public string[] backendNames;
     // Repeatable: each --dub names one dub package to benchmark. A scalar would
@@ -45,6 +48,9 @@ public BenchOptions parseOptions(string[] args) {
         "w|warmup",     "untimed iterations before sampling",          &opts.warmup,
         "r|runs",       "timed iterations per measurement",            &opts.runs,
         "skip-check",   "skip correctness checks before timing",       &opts.skipCheck,
+        "profile-post-parse",
+                         "stop before post-parse execution for profiler attachment",
+                                                                       &opts.profilePostParse,
         "import-path",  "add an import search path (repeatable)",      &opts.importPaths,
         "b|backend",    "backend to measure (repeatable)",             &opts.backendNames,
         "dub",          "benchmark a dub package's tests by name (repeatable)",
@@ -53,7 +59,7 @@ public BenchOptions parseOptions(string[] args) {
     opts.helpWanted = info.helpWanted;
     if (info.helpWanted)
         defaultGetoptPrinter(
-            "usage: bench [-w N] [-r N] [--skip-check]"
+            "usage: bench [-w N] [-r N] [--skip-check] [--profile-post-parse]"
             ~ " [--import-path=P ...] [--backend=NAME ...] [--dub=NAME ...]"
             ~ " [<module.d> ...]",
             info.options,
@@ -85,6 +91,7 @@ public int run(string[] args) {
     const warmup    = opts.warmup;
     const runs      = opts.runs;
     const skipCheck = opts.skipCheck;
+    const profilePostParse = opts.profilePostParse;
 
     // A --dub run is dedicated to dub packages, compiled like `dub test` (a
     // whole root set, no lightning rod). A standalone-fixture run is the
@@ -208,6 +215,9 @@ public int run(string[] args) {
         writeln;
     }
 
+    if (profilePostParse)
+        pauseForPostParseProfiler;
+
     writeln("== post-parse (excludes dmd parse + semantic) ==");
     printHeader;
     BenchmarkRow[] rows;
@@ -303,6 +313,24 @@ BenchmarkUnit benchmarkUnit(
         if (unit.displayName == displayName)
             return unit;
     assert(false, "measured benchmark unit is missing");
+}
+
+// SIGSTOP is deliberate: unlike a time-based profiler delay, it gives the
+// profiler a deterministic boundary after all frontend work and before any
+// backend execution. `SIGCONT` resumes the ordinary benchmark path unchanged.
+private void pauseForPostParseProfiler() {
+    import core.sys.posix.signal: SIGSTOP, raise;
+    import core.sys.posix.unistd: getpid;
+    import std.stdio: stdout, writefln;
+
+    const pid = getpid;
+    writefln(
+        "post-parse profiler: attach to PID %s, then resume with kill -CONT %s",
+        pid,
+        pid,
+    );
+    stdout.flush;
+    assert(raise(SIGSTOP) == 0);
 }
 
 // Check results emitted by the timed iterations. The first iteration supplies
