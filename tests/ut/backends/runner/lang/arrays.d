@@ -2232,7 +2232,37 @@ static foreach (backend; Matrix!(
 // The field-access sibling of the test above: `pairs[i].b` must bounds-check
 // `i` exactly as `pairs[i]` does, not address past the array's end and read
 // whatever heap bytes live there.
-static foreach (backend; AliasSeq!(Bytecode, SystemLinker)) {
+static foreach (backend; AliasSeq!(Ctfe, Interpreter)) {
+    @("dynamicArray.fieldOfIndexedElementPastLengthDiagnostic." ~
+        backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct Pair {
+                int a;
+                int b;
+            }
+
+            int value(int seed) {
+                return seed;
+            }
+
+            unittest {
+                int first = value(10);
+                Pair[] pairs = [Pair(first, first + 1)];
+                size_t index = cast(size_t) value(5);
+
+                assert(pairs[index].b == first);
+            }
+        }).shouldThrowWithMessage("array index 5 is out of bounds `[0..1]`");
+    }
+}
+
+// Compiled bounds checks raise druntime's ArrayIndexError text; the
+// backtick-range wording is CTFE-only.
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.diverges, "see sibling pin above (Ctfe, Interpreter)"),
+    Omit!(Interpreter, Because.diverges, "see sibling pin above (Ctfe, Interpreter)"),
+)) {
     @("dynamicArray.fieldOfIndexedElementPastLengthDiagnostic." ~
         backend.stringof)
     @Tags(backend.stringof)
@@ -2263,7 +2293,11 @@ static foreach (backend; AliasSeq!(Bytecode, SystemLinker)) {
 // A conditional whose arms mix a string literal and a string variable is an
 // ordinary rvalue index: whichever arm the runtime condition selects supplies
 // the character, and the condition runs exactly once.
-static foreach (backend; AliasSeq!(Bytecode, SystemLinker)) {
+static foreach (backend; Matrix!(
+    Omit!(Interpreter, Because.diverges,
+        "double-evaluates the condition through this shape (calls == 2, " ~
+        "not 1) -- a separate, pre-existing backend gap"),
+)) {
     @("dynamicArray.indexIntoConditionalWithStringLiteralArm." ~
         backend.stringof)
     @Tags(backend.stringof)

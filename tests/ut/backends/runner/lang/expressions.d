@@ -2180,7 +2180,7 @@ static foreach (backend; Matrix!(
 // The read twin of the test above: using an indirect ref-returning call as a
 // VALUE must load through the returned address, exactly as the direct-call
 // path does, not hand back the raw address bits.
-static foreach (backend; AliasSeq!(Bytecode, SystemLinker)) {
+static foreach (backend; Matrix!()) {
     @("refCall.readThroughKnownDelegateLoadsReturnedLocation." ~
         backend.stringof)
     @Tags(backend.stringof)
@@ -8958,7 +8958,11 @@ static foreach (backend; AliasSeq!(Bytecode, SystemLinker)) {
 // D evaluates an assignment's operands left to right: the lvalue's
 // subexpressions run before the right-hand side, for compound assignment
 // exactly as for plain assignment.
-static foreach (backend; AliasSeq!(Bytecode, SystemLinker)) {
+static foreach (backend; Matrix!(
+    Omit!(Interpreter, Because.diverges,
+        "also evaluates the RHS before the lvalue's index subexpression " ~
+        "(indexStamp == 4, not 1) -- a separate, pre-existing backend gap"),
+)) {
     @("compoundAssignment.indexedTargetEvaluatesLvalueBeforeRhs." ~
         backend.stringof)
     @Tags(backend.stringof)
