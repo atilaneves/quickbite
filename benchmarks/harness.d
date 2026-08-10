@@ -9,15 +9,18 @@ public struct Result {
     // cannot represent a sub-integer-hnsec spread.
     public double stddevHnsecs;
     // The largest increase in GC.stats.usedSize between a pre-sample
-    // collection and the sample's completion. With collection enabled this is
-    // retained live memory, not total allocation volume.
+    // collection and the sample's completion. With collection disabled this
+    // includes garbage retained after it becomes unreachable; it is not an
+    // allocation-site breakdown.
     public size_t maxGcUsedSizeDelta;
 }
 
 public struct Measurement(T) {
     public Result timing;
-    // Values returned by every timed iteration, in iteration order. Warmup
-    // values deliberately stay out of this record.
+    // Warmup values are not timed, but callers retain them so a failed warmup
+    // cannot be hidden by later successful measured iterations.
+    public T[] warmupResults;
+    // Values returned by every timed iteration, in iteration order.
     public T[] results;
 }
 
@@ -88,11 +91,12 @@ public Measurement!T measureWithResults(T)(
     import std.math: sqrt;
 
     auto timings = new Duration[](iterations);
+    auto warmupResults = new T[](warmup);
     auto results = new T[](iterations);
     size_t maxGcUsedSizeDelta;
 
     foreach (i; 0 .. warmup)
-        operation();
+        warmupResults[i] = operation();
 
     GC.disable;
     scope(exit) GC.enable;
@@ -130,6 +134,7 @@ public Measurement!T measureWithResults(T)(
         );
     return Measurement!T(
         Result(timings[0], median, stddev, maxGcUsedSizeDelta),
+        warmupResults,
         results,
     );
 }

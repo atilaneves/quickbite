@@ -7,9 +7,11 @@ tree-walking interpreter's move to native-layout storage. Decisions 15-18
 (July 2026) commit the end state — native-layout storage, one data-pointer
 representation (the host address), no FFI marshalling — with deleting
 `Value` as the completion signal. The remaining order is: execute the formatter
-everywhere, then delete the shared `Value`. Broader Interpreter language
-expansion follows those steps. The Bytecode refactor and its address-only FFI
-migration proceed in a file-disjoint parallel lane. Current capabilities:
+everywhere, delete the shared `Value`, and remove the Interpreter's transitional
+representation machinery before optimising Interpreter execution. Broader
+Interpreter language expansion follows those steps. The Bytecode refactor and
+its address-only FFI migration proceed in a file-disjoint parallel lane.
+Current capabilities:
 
 - `EvalResult` carries a display `string` or `Diagnostic`, and `:t` is
   frontend-answered. CTFE and Interpreter execute formatter-wrapped expression
@@ -243,6 +245,14 @@ deletion (items 2-3).
     recreate the rejected pointer-provenance split. Function and delegate
     handles are separate non-data categories. Boxed values survive only as
     transient rvalues (decisions 7/11), never as storage authority.
+
+    An owning block used only to produce a transient raw pointer remains
+    reachable through a lexically scoped owner until that pointer is stored in
+    a conservatively scanned frame, module, object, or aggregate block. Do not
+    retain an execution-wide address-to-block map as substitute storage
+    authority. Such a map is an allocation-identity registry and violates the
+    end-state criterion below even when introduced only to keep the host GC
+    from collecting an otherwise unreachable block.
 
     A symbolic `TypeInfo` for an interpreted-only guest type, an interpreted
     delegate, or an interpreted function pointer has no resident native
@@ -649,6 +659,11 @@ All test additions/changes require approval first (AGENTS.md).
 The native authority switch is the standing interpreter contract, not pending
 work. The remaining value-track work begins with the language-surface and
 display tasks below. Item numbers remain stable for existing cross-references.
+`interpreter-performance.md` may improve measurement in parallel, but its
+production optimisation order begins only after items 1-3 and removal of the
+Interpreter's transitional allocation/declaration identity maps. This prevents
+performance work from entrenching representation machinery already scheduled
+for deletion.
 
 ### Item 4 — Workingness track
 
@@ -738,6 +753,19 @@ result just to reuse the evaluator path.
 Delete the shared `quickbite.lang.Value` and its unit tests once per-backend
 formatter migrations leave no consumers. This deletion is decision 15's
 completion signal.
+
+For the Interpreter, also delete transient storage-authority scaffolding that
+the native-layout end state makes unnecessary. Delete the existing broad
+`RuntimeValue` type rather than retaining it under its private alias `Value`.
+If recursive AST evaluation still needs a carrier, replace it with the smallest
+non-owning scalar/address/callable carrier allowed by decisions 7 and 11; it
+must contain no formatting model, recursively boxed aggregate, or storage
+authority.
+
+Replace `nativePointerRoots` with ordinary scanning from native frames and
+blocks plus explicitly scoped temporary owners at raw-pointer construction
+boundaries. Delete allocation/declaration identity maps rather than moving
+them into a shared execution context or optimising their fork/merge behavior.
 
 ### Item 6 — Open design questions
 

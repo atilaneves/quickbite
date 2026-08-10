@@ -27,9 +27,6 @@ public struct BenchOptions {
     public size_t warmup = defaultWarmup;
     public size_t runs   = defaultRuns;
     public bool skipCheck;
-    // Stop after the frontend and package preparation so an external profiler
-    // can attach before the post-parse backend work starts.
-    public bool profilePostParse;
     public string[] importPaths;
     public string[] backendNames;
     // Repeatable: each --dub names one dub package to benchmark. A scalar would
@@ -48,9 +45,6 @@ public BenchOptions parseOptions(string[] args) {
         "w|warmup",     "untimed iterations before sampling",          &opts.warmup,
         "r|runs",       "timed iterations per measurement",            &opts.runs,
         "skip-check",   "skip correctness checks before timing",       &opts.skipCheck,
-        "profile-post-parse",
-                         "stop before post-parse execution for profiler attachment",
-                                                                       &opts.profilePostParse,
         "import-path",  "add an import search path (repeatable)",      &opts.importPaths,
         "b|backend",    "backend to measure (repeatable)",             &opts.backendNames,
         "dub",          "benchmark a dub package's tests by name (repeatable)",
@@ -59,7 +53,7 @@ public BenchOptions parseOptions(string[] args) {
     opts.helpWanted = info.helpWanted;
     if (info.helpWanted)
         defaultGetoptPrinter(
-            "usage: bench [-w N] [-r N] [--skip-check] [--profile-post-parse]"
+            "usage: bench [-w N] [-r N] [--skip-check]"
             ~ " [--import-path=P ...] [--backend=NAME ...] [--dub=NAME ...]"
             ~ " [<module.d> ...]",
             info.options,
@@ -91,7 +85,6 @@ public int run(string[] args) {
     const warmup    = opts.warmup;
     const runs      = opts.runs;
     const skipCheck = opts.skipCheck;
-    const profilePostParse = opts.profilePostParse;
 
     // A --dub run is dedicated to dub packages, compiled like `dub test` (a
     // whole root set, no lightning rod). A standalone-fixture run is the
@@ -215,12 +208,10 @@ public int run(string[] args) {
         writeln;
     }
 
-    if (profilePostParse)
-        pauseForPostParseProfiler;
-
     writeln("== post-parse (excludes dmd parse + semantic) ==");
     printHeader;
     BenchmarkRow[] rows;
+    TestResult[][][string] warmupResults;
     TestResult[][][string] measuredResults;
     foreach (name; backendNames)
         foreach (group; groups) {
@@ -249,6 +240,8 @@ public int run(string[] args) {
                             warmup,
                             runs,
                         );
+                        warmupResults[pairKey(unit.displayName, name)] =
+                            measured.warmupResults;
                         measuredResults[pairKey(unit.displayName, name)] =
                             measured.results;
                         rows ~= BenchmarkRow(
@@ -270,7 +263,12 @@ public int run(string[] args) {
 
     auto checkedResults = skipCheck
         ? TestResult[][string].init
-        : checkMeasuredResults(backendNames, units, measuredResults);
+        : checkMeasuredResults(
+            backendNames,
+            units,
+            warmupResults,
+            measuredResults,
+        );
     if (!skipCheck)
         foreach (unit; units)
             foreach (name; backendNames) {
@@ -315,24 +313,6 @@ BenchmarkUnit benchmarkUnit(
     assert(false, "measured benchmark unit is missing");
 }
 
-// SIGSTOP is deliberate: unlike a time-based profiler delay, it gives the
-// profiler a deterministic boundary after all frontend work and before any
-// backend execution. `SIGCONT` resumes the ordinary benchmark path unchanged.
-private void pauseForPostParseProfiler() {
-    import core.sys.posix.signal: SIGSTOP, raise;
-    import core.sys.posix.unistd: getpid;
-    import std.stdio: stdout, writefln;
-
-    const pid = getpid;
-    writefln(
-        "post-parse profiler: attach to PID %s, then resume with kill -CONT %s",
-        pid,
-        pid,
-    );
-    stdout.flush;
-    assert(raise(SIGSTOP) == 0);
-}
-
 // Check results emitted by the timed iterations. The first iteration supplies
 // the backend result used for the cross-backend check; every later iteration
 // must reproduce its test names and pass/fail outcomes before its timing can
@@ -340,6 +320,7 @@ private void pauseForPostParseProfiler() {
 TestResult[][string] checkMeasuredResults(
     in string[] backendNames,
     in BenchmarkUnit[] units,
+    TestResult[][][string] warmupResults,
     TestResult[][][string] measuredResults,
 ) {
     import std.stdio: stderr;
@@ -350,6 +331,22 @@ TestResult[][string] checkMeasuredResults(
         bool incomplete;
         foreach (name; backendNames) {
             const key = pairKey(unit.displayName, name);
+            if (key in warmupResults)
+                foreach (sample; warmupResults[key]) {
+                    const failure = firstFailureMessage(
+                        normalisedResults(sample),
+                    );
+                    if (failure is null)
+                        continue;
+                    stderr.writefln(
+                        "skipping %s %s: warmup failed: %s",
+                        unit.displayName,
+                        name,
+                        failure.firstLine,
+                    );
+                    incomplete = true;
+                    break;
+                }
             if (key !in measuredResults) {
                 incomplete = true;
                 continue;
@@ -362,8 +359,10 @@ TestResult[][string] checkMeasuredResults(
             }
             firstResults[name] = normalisedResults(samples[0]);
             foreach (sample; samples[1 .. $]) {
-                if (testResultsMismatches(firstResults[name], normalisedResults(sample))
-                    .length == 0)
+                if (testResultsMismatches(
+                    firstResults[name],
+                    normalisedResults(sample),
+                ).length == 0)
                     continue;
                 stderr.writefln(
                     "skipping %s %s: nondeterministic test results",

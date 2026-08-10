@@ -62,8 +62,9 @@ track instead of being shimmed here. See the triage rule in §8.
 - value representation choice (boxed vs native layout): ai/plans/value.md;
 - new language features DMD does not lower for us (we execute DMD's AST, not
   raw source — templates and `static foreach` arrive pre-lowered);
-- performance of the interpreter (correctness first; latency is `value.md`'s
-  axis).
+- performance of the interpreter (correctness first; execution latency is
+  owned by `interpreter-performance.md`, while representation remains
+  `value.md`'s axis).
 ```
 
 ## 3. Oracle
@@ -111,6 +112,12 @@ value.md       how the interpreter represents runtime results and addressable
                track lands in parallel behavior-neutral slices plus one
                small authority switch.
 bytecode.md    a different backend; native-layout execution. Out of scope.
+interpreter-performance.md
+               Interpreter execution latency. It may optimise the machinery
+               delivered here but may not redefine language behavior or the
+               `SystemLinker` oracle. Measurement infrastructure may proceed
+               in parallel; production optimisation waits for `value.md`'s
+               representation end state.
 ```
 
 `LINK.d` alone does not identify a callable's ABI: DMD and LDC order explicit D
