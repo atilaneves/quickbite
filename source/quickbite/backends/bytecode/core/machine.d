@@ -2825,9 +2825,22 @@ private bool numericElementsEqual(
         : leftWidth > rightWidth
         ? !isSigned(leftType)
         : !isSigned(rightType);
-    if (commonUnsigned)
-        return extendedUnsignedElement(left, leftType) ==
-            extendedUnsignedElement(right, rightType);
+    if (commonUnsigned) {
+        // `extendedUnsignedElement` sign-extends a signed side's own value
+        // to 64 bits (via `signedElement`), so `int(-1)` and `uint.max` --
+        // the same bit pattern at the common 32-bit width -- diverge at 64
+        // bits (0xFFFF...FFFF vs 0x0000_0000_FFFF_FFFF). Mask both sides
+        // down to the common width before comparing so only the bits that
+        // actually exist in both operands' representations are compared.
+        import std.algorithm: max;
+
+        const commonWidth = max(leftWidth, rightWidth, uint.sizeof);
+        const mask = commonWidth >= ulong.sizeof
+            ? ulong.max
+            : (1UL << (commonWidth * 8)) - 1;
+        return (extendedUnsignedElement(left, leftType) & mask) ==
+            (extendedUnsignedElement(right, rightType) & mask);
+    }
     return signedElement(left, leftType) == signedElement(right, rightType);
 }
 
