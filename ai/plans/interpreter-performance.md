@@ -13,6 +13,13 @@ completeness, `value.md` owns representation, and `bench.md` owns trustworthy
 measurement. Correctness work takes precedence when the Interpreter and
 `SystemLinker` disagree.
 
+Representation work is a prerequisite for production optimisation. Complete
+`value.md`'s formatter, unittest/expression split, shared-`Value` deletion, and
+Interpreter transitional-map removal before changing Interpreter execution
+machinery for speed. Measurement infrastructure may land earlier. Never
+optimise, share, or otherwise entrench a representation component that
+`value.md` schedules for deletion.
+
 ## Measured Baseline
 
 On commit `7bf3c583`, with the LDC 1.42 optimised benchmark host and Cerealed's
@@ -25,9 +32,9 @@ interpreter GC-used-size delta    about 8.42 GiB
 system-linker post-parse          about 1.17 s
 ```
 
-The post-parse numbers above use `-w 0 -r 1 --skip-check` to avoid the current
-benchmark driver's duplicate untimed execution. They are single samples, so
-they establish scale rather than an acceptance threshold.
+At that commit, the post-parse numbers used `-w 0 -r 1 --skip-check` to avoid
+the benchmark driver's then-separate untimed execution. They are single
+samples, so they establish scale rather than an acceptance threshold.
 
 A whole-process `perf` profile of the same Interpreter command showed
 substantial time in druntime allocation machinery and these Interpreter-owned
@@ -48,8 +55,11 @@ hot Interpreter operation. The 8.42 GiB figure is the increase in
 breakdown.
 
 `forkExecutionStateInto` currently duplicates many associative arrays for
-every interpreted call. This is the first measured production-code target. It
-is not yet proven to account for the whole runtime or allocation delta.
+every interpreted call. The profile identifies real cost, but the hottest
+`NativeBlock` registry is transitional state that `value.md` schedules for
+deletion. This evidence prioritises finishing that deletion; it does not make
+the registry a production-code optimisation target. The profile does not yet
+account for the whole runtime or allocation delta.
 
 The Symmetry Investments collector is not a viable comparison at this
 baseline. Registering symgc 0.0.8 through `import symgc.gcobj` and selecting
@@ -81,6 +91,12 @@ profiles do not mix dependency preparation, frontend work, explicit
 pre-sample collection, and Interpreter execution. A whole-process profile may
 identify candidates, but may not close an optimisation item.
 
+The profiling boundary must leave the process attachable while idle and resume
+without executing backend work before the profiler is active. `SIGSTOP` is not
+that contract: this host's `perf record -p` cannot create maps for the stopped
+task. Use a sleeping signal/fd-controlled boundary or profiler control events,
+and verify the resulting profile contains no frontend samples.
+
 Measure normal user-visible latency with collection enabled. A GC-disabled run
 may remain as a diagnostic for allocation volume and variance, but may not be
 the sole acceptance number: suppressing collection while one execution creates
@@ -93,9 +109,9 @@ The standing acceptance command compares the Interpreter with its oracle:
 ./bin/bench.sh -w 0 -r 5 -b interpreter -b system-linker --dub cerealed
 ```
 
-Until the benchmark changes below land, use `--skip-check` only for profiling a
-single backend and run the ordinary two-backend command separately to establish
-correctness.
+Use `--skip-check` only for diagnostic profiling that deliberately does not
+publish a correctness-backed performance result. Run the ordinary two-backend
+command separately to establish agreement with the oracle.
 
 ## Correctness And Benchmark Contracts
 
@@ -115,40 +131,48 @@ correctness.
 - `--skip-check` remains the explicit way to bypass result validation. It does
   not add any execution.
 
-This removes the current sequence:
-
-```text
-verify every backend -> run every backend again under the timer
-```
-
-and replaces it with:
+The required sequence is:
 
 ```text
 measure and retain results -> compare retained results -> publish valid rows
 ```
 
-The timing harness must therefore accept a delegate returning `TestResult[]`
-and retain one result set alongside each sample instead of accepting a `void`
-delegate and discarding every result.
+The timing harness retains warmup and measured `TestResult[]` values alongside
+the timing samples so callers can validate every execution before publishing a
+row.
 
 ## Optimisation Order
 
-### 1. Make The Benchmark Execute Each Sample Once
+### 1. Add An Attachable Post-Parse Profiling Boundary
 
-Remove `checkRunnerResults`' separate backend execution. Fold result capture
-and validation into measurement as specified above. This is harness overhead,
-not an Interpreter speedup, but it immediately reduces the command's
-edit-to-result wall time and makes later profiling cheaper and less ambiguous.
+Add the attachable boundary specified by the measurement contract. A
+GC-disabled diagnostic profile may guide `value.md` deletion before the
+boundary exists, but cannot close a performance item. Re-baseline after
+representation completion and before changing surviving Interpreter machinery
+for speed.
 
-Do not weaken the check rule. A row is printed only after the retained timed
-results satisfy the same single-backend or cross-backend correctness contract
-that the separate pass enforces today.
+### 2. Finish The Value-Representation End State
 
-Add post-parse profiling boundaries and report whether GC collection remained
-enabled during each row. Re-baseline before changing Interpreter production
-code.
+Complete `value.md` before production performance changes. Delete the shared
+`Value`, the existing broad Interpreter `RuntimeValue`, formatting/reification
+scaffolding, and transitional allocation/declaration identity maps.
+`nativePointerRoots` is specifically not an optimisation target: replace it
+with ordinary GC scanning from native frames and blocks, using a scoped
+temporary owner only while a newly produced raw address has not yet reached
+scanned storage.
 
-### 2. Stop Copying Execution-Global State Per Call
+Completion means the Interpreter satisfies `value.md`'s end-state criteria and
+the performance profile contains only machinery intended to survive. Do not
+move a transitional map into a shared context merely because copying it is hot.
+
+### 3. Re-baseline After Representation Completion
+
+Repeat the full measurement contract. Compare the new profile with this plan's
+historical baseline, but choose targets only from the new scoped CPU and
+allocation evidence. Rewrite the remaining order if representation deletion
+changes the dominant costs.
+
+### 4. Stop Copying Surviving Execution-Global State Per Call
 
 Partition `Walker` state by lifetime:
 
@@ -157,11 +181,11 @@ Partition `Walker` state by lifetime:
 - explicitly scoped temporary roots whose lifetime ends at a known return or
   expression boundary.
 
-Move identity registries, native allocation ownership, function-pointer and
-delegate registries, exception metadata, and other genuinely execution-global
-maps into a shared struct. Keep call-local bindings, lazy arguments, loop
-control, result state, and the activation frame local. A child call must borrow
-the shared context rather than duplicate it.
+Move only surviving function-pointer and delegate registries, exception
+metadata, and other genuinely execution-global maps into a shared struct. Keep
+call-local bindings, lazy arguments, loop control, result state, and the
+activation frame local. A child call must borrow the shared context rather than
+duplicate it.
 
 Do not move a map merely because sharing is faster. For each map currently
 copied by `forkExecutionStateInto`, document:
@@ -172,13 +196,12 @@ copied by `forkExecutionStateInto`, document:
 - which addresses keep GC allocations alive; and
 - what `mergeFunctionState` currently does with it.
 
-Convert one map family at a time. Start with the `NativeBlock` map identified
-by the profile, then re-profile. Delete each corresponding copy and merge path
-once the shared-lifetime contract makes it redundant. Completion means
-`forkExecutionStateInto` contains no full execution-global associative-array
-duplication.
+Convert one surviving map family at a time, then re-profile. Delete each
+corresponding copy and merge path once the shared-lifetime contract makes it
+redundant. Completion means `forkExecutionStateInto` contains no full
+execution-global associative-array duplication.
 
-### 3. Make Call Frames Dense And Reusable
+### 5. Make Call Frames Dense And Reusable
 
 After state copying is removed, measure `FrameBlock.allocate`, frame-layout
 lookup, parameter binding, and frame destruction separately.
@@ -201,7 +224,7 @@ Escaping-frame analysis is a correctness requirement, not an optional
 optimisation. Keep ordinary GC allocation for frames whose addresses escape
 until their lifetime can be proved.
 
-### 4. Remove Temporary Allocation In Expression Execution
+### 6. Remove Temporary Allocation In Expression Execution
 
 Re-profile after call-state and frame changes. Count allocation calls and bytes
 for:
@@ -211,18 +234,18 @@ for:
 - string and diagnostic duplication;
 - aggregate-handle temporaries;
 - associative-array helper keys and values; and
-- `RuntimeValue` copies.
+- surviving expression-carrier copies.
 
 Reuse scratch buffers owned by the current activation where recursion permits,
 or use stack/static-capacity storage for small common arities. A scratch buffer
 must not outlive its frame or alias a nested call's active buffer.
 
-`RuntimeValue` remains transient expression currency until `value.md` deletes
-it. Do not attribute cost to it from its presence alone. Measure its copy and
-construction costs, and optimise it only if a scoped profile identifies them.
-Do not restore recursively boxed aggregate storage.
+Do not attribute cost to a surviving expression carrier from its presence
+alone. Measure its copy and construction costs, and optimise it only if a
+scoped profile identifies them. Do not restore recursively boxed aggregate
+storage or a universal runtime value.
 
-### 5. Reduce AST And Type Dispatch Cost
+### 7. Reduce AST And Type Dispatch Cost
 
 Only after allocation pressure is no longer dominant, profile the tree walk's
 own work. Candidate costs include repeated `isXxxExp` chains,
@@ -234,7 +257,7 @@ all such caches at the existing compiler-lifetime boundary. A cache may store
 classification, layout, or resolved callable metadata; it may not cache a
 runtime value or skip expression side effects.
 
-### 6. Reconsider The Backend Boundary
+### 8. Reconsider The Backend Boundary
 
 If the preceding work leaves the Interpreter materially slower than the
 edit-latency target, use the profile to decide whether the remaining cost is
@@ -277,5 +300,8 @@ backend isolation, or CI requirements.
   allocation evidence.
 - Do not optimise legacy boxed aggregate arms that are scheduled for deletion
   unless a profile proves they execute in the measured workload.
+- Do not optimise, share, or consolidate allocation/declaration identity maps
+  that `value.md` schedules for deletion. Delete them through the native
+  storage-authority work first, then profile what remains.
 - Do not add a JIT to the Interpreter. JIT compilation is contrary to the
   project's edit-latency goal and belongs to a different backend.

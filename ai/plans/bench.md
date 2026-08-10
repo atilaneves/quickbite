@@ -42,12 +42,9 @@ Important current behaviour:
   declaration)`.
 - Dub packages are timed as one grouped benchmark unit. For non-`GroupedRunner`
   backends, `runTests(Runner, Module[])` loops over each module.
-- With exactly one backend selected, the CLI forces `skipCheck = true` and marks
-  every prepared fixture/backend pair as passing without inspecting
-  `TestResult[]`.
-
-That last point is the correctness hole. The noise is annoying, but the fake
-pass path is worse.
+- Timed executions return `TestResult[]`; rows remain provisional until their
+  retained results pass the single- or multi-backend check below. There is no
+  separate untimed backend execution.
 
 ## Check Rule
 
@@ -70,9 +67,19 @@ test names, and same pass/fail outcomes. Failure messages may differ. Every
 later measured iteration must reproduce its backend's retained result shape
 and outcomes; otherwise discard the row as nondeterministic.
 
-`--skip-check` means exactly what it says and bypasses these checks. The
-timed row should show the reported pass count so the output proves that the
-backend did not benchmark an empty unit.
+`--skip-check` means exactly what it says and bypasses these checks. A checked
+row shows the retained result's pass count. An unchecked row says `unchecked`;
+it must not imply that discarded backend results passed.
+
+## Profiling Boundary
+
+Post-parse profiling must exclude preparation, frontend work, and explicit
+pre-sample collection. The boundary must leave the benchmark process alive and
+attachable while idle, then resume without executing backend work before the
+profiler is active. A `SIGSTOP` boundary is unsuitable on the supported Linux
+host because `perf record -p` cannot create maps for the stopped task. Use a
+sleeping signal/fd-controlled boundary or profiler control events and verify
+that the captured profile contains no frontend samples.
 
 ## Build Model And What Is Timed
 
@@ -550,54 +557,7 @@ that returns no `TestResult[]` entries is recorded as one failing self-check
 with `backend reported zero unittest results`, so the timing loop skips it with
 a useful reason instead of silently carrying an empty result set.
 
-Still open: item 7 backend-neutrality upkeep, plus any remaining item 1/2
-single-vs-multi-backend check polish where not already covered.
-
-### 1. Stop Implicitly Skipping Checks For Single-Backend Runs
-
-Remove the rule that a single selected backend forces `skipCheck = true`.
-
-Instead:
-
-- `--skip-check` means exactly what it says and is the only implicit-pass path.
-- `-b interpreter --dub cerealed` uses its first measured execution as the
-  self-check; it does not execute the package once before timing.
-- A single selected backend's row is published only if that measured
-  execution returns passing nonempty `TestResult[]`.
-- The timed row reports how many tests were returned and how many passed.
-
-The first test should use fake runners: one runner reports a failing
-`TestResult`, and a single selected backend must not be marked passing unless
-`--skip-check` is set.
-
-### 2. Compare Results Only For Multi-Backend Runs
-
-Do not compare a single selected backend with an implicit oracle backend.
-Cross-backend agreement is useful only when the user explicitly selected more
-than one backend to time.
-
-For one backend, validate the retained first measured result:
-
-- collect the returned `TestResult[]`;
-- discard the measured row if the result count is zero; the existing
-  normalisation of an empty result to a failing self-check supplies the reason;
-- discard the measured row if any result failed; and
-- print the pass count in the timed row.
-
-For multiple backends, measure every selected backend, retain the first
-`TestResult[]` from each, and require those values to agree on:
-
-- result count;
-- test names; and
-- pass/fail outcomes.
-
-Failure messages may differ. A mismatch means at least one timed backend did
-not run the same benchmark, so reject the provisional measured rows before
-publishing them.
-
-For standalone fixtures, the unit has one module. For dub packages, the unit is
-the prepared package module group if the runner supports grouped execution, or
-the existing `runTests(Runner, Module[])` fallback otherwise.
+Still open: item 7 backend-neutrality upkeep.
 
 ### 3. Count Runnable Unittests - complete
 

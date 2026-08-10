@@ -1,6 +1,6 @@
 module benchmarks.cli;
 
-import benchmarks.harness: measure, Result;
+import benchmarks.harness: measure, measureWithResults, Result;
 import benchmarks.backends: BackendEnv, makeRunners;
 import quickbite.backends.runner: Runner, TestResult, runTests;
 import quickbite.benchmarks: moduleDisplayName;
@@ -191,35 +191,6 @@ public int run(string[] args) {
     foreach (group; groups)
         units ~= group.units;
 
-    TestResult[][string] checkedResults;
-    if (skipCheck) {
-        foreach (name; backendNames)
-            foreach (unit; units)
-                checkedResults[pairKey(unit.displayName, name)] = [];
-    } else {
-        foreach (group; groups) {
-            auto groupResults =
-                checkRunnerResults(group.runners, backendNames, group.units);
-            foreach (key, value; groupResults)
-                checkedResults[key] = value;
-        }
-        foreach (unit; units)
-            foreach (name; backendNames) {
-                const key = pairKey(unit.displayName, name);
-                if (key !in checkedResults)
-                    continue;
-
-                const failure = firstFailureMessage(checkedResults[key]);
-                if (failure !is null)
-                    stderr.writefln(
-                        "skipping %s %s: %s",
-                        unit.displayName,
-                        name,
-                        failure.firstLine,
-                    );
-    }
-    }
-
     if (units.length > 0) {
         writeln("== frontend (parse + semantic) ==");
         printHeader;
@@ -239,39 +210,47 @@ public int run(string[] args) {
 
     writeln("== post-parse (excludes dmd parse + semantic) ==");
     printHeader;
+    BenchmarkRow[] rows;
+    TestResult[][][string] warmupResults;
+    TestResult[][][string] measuredResults;
     foreach (name; backendNames)
         foreach (group; groups) {
             auto runner = group.runners[name];
 
             foreach (unit; group.units) {
-                const allPassing = skipCheck
-                    || checkedTestsPassing(checkedResults, unit, name);
-                if (!allPassing) {
-                    // A standalone fixture's own skip reason was already printed
-                    // by checkRunnerResults; a group needs its own line because
-                    // it is reported under one name its failing member lacks.
-                    if (unit.grouped)
-                        stderr.writefln(
-                            "skipping %s %s: failing fixtures", unit.displayName, name,
-                        );
-                    continue;
-                }
-
                 Module[] modules;
                 foreach (member; unit.members)
                     modules ~= member.module_;
 
                 try {
-                    printRow(
-                        unit.displayName,
-                        name,
-                        checkedTestsDisplay(checkedResults, unit, name),
-                        measure(
-                            () { runTests(runner, modules); },
+                    if (skipCheck) {
+                        rows ~= BenchmarkRow(
+                            unit.displayName,
+                            name,
+                            "unchecked",
+                            measure(
+                                () { runTests(runner, modules); },
+                                warmup,
+                                runs,
+                            ),
+                        );
+                    } else {
+                        auto measured = measureWithResults(
+                            () { return runTests(runner, modules); },
                             warmup,
                             runs,
-                        ),
-                    );
+                        );
+                        warmupResults[pairKey(unit.displayName, name)] =
+                            measured.warmupResults;
+                        measuredResults[pairKey(unit.displayName, name)] =
+                            measured.results;
+                        rows ~= BenchmarkRow(
+                            unit.displayName,
+                            name,
+                            "",
+                            measured.timing,
+                        );
+                    }
                 } catch (Exception e) {
                     stderr.writefln(
                         "skipping %s %s: %s",
@@ -279,11 +258,162 @@ public int run(string[] args) {
                         unit.grouped ? e.msg : e.msg.firstLine,
                     );
                 }
-                writeln;
             }
         }
 
+    auto checkedResults = skipCheck
+        ? TestResult[][string].init
+        : checkMeasuredResults(
+            backendNames,
+            units,
+            warmupResults,
+            measuredResults,
+        );
+    if (!skipCheck)
+        foreach (unit; units)
+            foreach (name; backendNames) {
+                const key = pairKey(unit.displayName, name);
+                if (key !in checkedResults)
+                    continue;
+
+                const failure = firstFailureMessage(checkedResults[key]);
+                if (failure !is null)
+                    stderr.writefln(
+                        "skipping %s %s: %s",
+                        unit.displayName,
+                        name,
+                        failure.firstLine,
+                    );
+            }
+    foreach (row; rows) {
+        auto unit = benchmarkUnit(units, row.fixture);
+        if (!skipCheck && !checkedTestsPassing(checkedResults, unit, row.backend))
+            continue;
+        printRow(
+            row.fixture,
+            row.backend,
+            skipCheck
+                ? row.tests
+                : checkedTestsDisplay(checkedResults, unit, row.backend),
+            row.result,
+        );
+        writeln;
+    }
+
     return preparationFailed ? 1 : 0;
+}
+
+BenchmarkUnit benchmarkUnit(
+    BenchmarkUnit[] units,
+    in string displayName,
+) {
+    foreach (unit; units)
+        if (unit.displayName == displayName)
+            return unit;
+    assert(false, "measured benchmark unit is missing");
+}
+
+// Check results emitted by the timed iterations. The first iteration supplies
+// the backend result used for the cross-backend check; every later iteration
+// must reproduce its test names and pass/fail outcomes before its timing can
+// be published.
+TestResult[][string] checkMeasuredResults(
+    in string[] backendNames,
+    in BenchmarkUnit[] units,
+    TestResult[][][string] warmupResults,
+    TestResult[][][string] measuredResults,
+) {
+    import std.stdio: stderr;
+
+    TestResult[][string] checkedResults;
+    foreach (unit; units) {
+        TestResult[][string] firstResults;
+        bool incomplete;
+        foreach (name; backendNames) {
+            const key = pairKey(unit.displayName, name);
+            if (key in warmupResults)
+                foreach (sample; warmupResults[key]) {
+                    const failure = firstFailureMessage(
+                        normalisedResults(sample),
+                    );
+                    if (failure is null)
+                        continue;
+                    stderr.writefln(
+                        "skipping %s %s: warmup failed: %s",
+                        unit.displayName,
+                        name,
+                        failure.firstLine,
+                    );
+                    incomplete = true;
+                    break;
+                }
+            if (key !in measuredResults) {
+                incomplete = true;
+                continue;
+            }
+
+            const samples = measuredResults[key];
+            if (samples.length == 0) {
+                incomplete = true;
+                continue;
+            }
+            firstResults[name] = normalisedResults(samples[0]);
+            foreach (sample; samples[1 .. $]) {
+                if (testResultsMismatches(
+                    firstResults[name],
+                    normalisedResults(sample),
+                ).length == 0)
+                    continue;
+                stderr.writefln(
+                    "skipping %s %s: nondeterministic test results",
+                    unit.displayName,
+                    name,
+                );
+                incomplete = true;
+                break;
+            }
+        }
+        if (incomplete)
+            continue;
+
+        bool disagreed;
+        foreach (name; backendNames[1 .. $]) {
+            const mismatches = testResultsMismatches(
+                firstResults[backendNames[0]],
+                firstResults[name],
+            );
+            if (mismatches.length == 0)
+                continue;
+            disagreed = true;
+            stderr.writefln(
+                "backends %s and %s disagree on %s:",
+                backendNames[0], name, unit.displayName,
+            );
+            foreach (mismatch; mismatches)
+                stderr.writefln("  %s", mismatch);
+        }
+        if (disagreed) {
+            stderr.writefln("skipping %s: backends disagree", unit.displayName);
+            continue;
+        }
+
+        foreach (name; backendNames)
+            checkedResults[pairKey(unit.displayName, name)] = firstResults[name];
+    }
+    return checkedResults;
+}
+
+TestResult[] normalisedResults(const(TestResult)[] results) {
+    return results.length == 0
+        ? [
+            TestResult(
+                false,
+                "runner returned no tests",
+                "",
+                "backend reported zero unittest results",
+            ),
+        ]
+        : results.dup;
 }
 
 string firstLine(in string message) {
@@ -682,8 +812,9 @@ public DubInfo dubInfoFromDescribeData(
 void printHeader() {
     import std.stdio: writefln, writeln;
     writefln(
-        "%-32s %-14s %-10s %10s %10s %10s %10s",
-        "fixture", "backend", "tests", "min", "median", "stddev", "max ram",
+        "%-32s %-14s %-10s %-8s %10s %10s %10s %10s",
+        "fixture", "backend", "tests", "GC", "min", "median", "stddev",
+        "GC used ram delta",
     );
     writeln;
 }
@@ -698,10 +829,11 @@ public void printRow(
 
     enum hnsecsPerMs = 10_000.0;
     writefln(
-        "%-32s %-14s %-10s %7.3f ms %7.3f ms %7.3f ms %7.1f KiB",
+        "%-32s %-14s %-10s %-8s %7.3f ms %7.3f ms %7.3f ms %7.1f KiB",
         fixture,
         backendName,
         tests,
+        "disabled",
         result.min.total!"hnsecs" / hnsecsPerMs,
         result.median.total!"hnsecs" / hnsecsPerMs,
         result.stddevHnsecs / hnsecsPerMs,
@@ -719,22 +851,18 @@ public string renderBenchmarkSection(
     auto output = appender!string;
     output.put("== " ~ title ~ " ==\n");
     output.put(format(
-        "%-32s %-14s %-10s %10s %10s %10s %10s\n\n",
-        "fixture",
-        "backend",
-        "tests",
-        "min",
-        "median",
-        "stddev",
-        "max ram",
+        "%-32s %-14s %-10s %-8s %10s %10s %10s %10s\n\n",
+        "fixture", "backend", "tests", "GC", "min", "median", "stddev",
+        "GC used ram delta",
     ));
     foreach (row; rows) {
         enum hnsecsPerMs = 10_000.0;
         output.put(format(
-            "%-32s %-14s %-10s %7.3f ms %7.3f ms %7.3f ms %7.1f KiB\n",
+            "%-32s %-14s %-10s %-8s %7.3f ms %7.3f ms %7.3f ms %7.1f KiB\n",
             row.fixture,
             row.backend,
             row.tests,
+            "disabled",
             row.result.min.total!"hnsecs" / hnsecsPerMs,
             row.result.median.total!"hnsecs" / hnsecsPerMs,
             row.result.stddevHnsecs / hnsecsPerMs,
@@ -746,7 +874,7 @@ public string renderBenchmarkSection(
 }
 
 private double ramKiB(in Result result) {
-    return result.maxRamBytes / 1024.0;
+    return result.maxGcUsedSizeDelta / 1024.0;
 }
 
 public struct PreparedFixtures {

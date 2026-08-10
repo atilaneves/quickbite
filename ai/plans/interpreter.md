@@ -115,7 +115,9 @@ bytecode.md    a different backend; native-layout execution. Out of scope.
 interpreter-performance.md
                Interpreter execution latency. It may optimise the machinery
                delivered here but may not redefine language behavior or the
-               `SystemLinker` oracle.
+               `SystemLinker` oracle. Measurement infrastructure may proceed
+               in parallel; production optimisation waits for `value.md`'s
+               representation end state.
 ```
 
 `LINK.d` alone does not identify a callable's ABI: DMD and LDC order explicit D
