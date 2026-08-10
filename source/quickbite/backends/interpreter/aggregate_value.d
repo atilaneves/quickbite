@@ -179,6 +179,69 @@ public struct AggregateValue {
         return Value.nativeAggregateValue(NativeAggregate(type, header));
     }
 
+    public static imported!"quickbite.backends.interpreter.runtime_value".Value nativeAggregateByteSlice(
+        in imported!"quickbite.backends.interpreter.runtime_value".Value value,
+        imported!"dmd.mtype".Type type,
+    ) @safe {
+        import quickbite.backends.interpreter.layout: typeByteSize;
+        import quickbite.backends.interpreter.native_array: NativeArray;
+        import quickbite.backends.interpreter.native_block: NativeBlock;
+        import quickbite.backends.interpreter.runtime_value: Value;
+
+        auto source = native(value);
+        auto slice = baseTypeOf(type).isTypeDArray;
+        if (slice is null)
+            throw new Exception(
+                "AggregateValue.nativeAggregateByteSlice needs a slice type.",
+            );
+
+        auto header = NativeBlock.allocate(
+            NativeArray.sliceHeaderByteLength,
+            NativeBlock.Scan.conservative,
+        );
+        borrowArray(
+            slice.next,
+            source.address,
+            typeByteSize(source.type),
+        ).writeSliceHeader(header, 0);
+        return Value.nativeAggregateValue(NativeAggregate(
+            type,
+            header,
+            source.storage,
+        ));
+    }
+
+    public static imported!"quickbite.backends.interpreter.runtime_value".Value classBodyByteSlice(
+        in imported!"quickbite.backends.interpreter.runtime_value".Value value,
+        imported!"dmd.mtype".Type type,
+    ) @safe {
+        import quickbite.backends.interpreter.native_array: NativeArray;
+        import quickbite.backends.interpreter.native_block: NativeBlock;
+        import quickbite.backends.interpreter.runtime_value: Value;
+
+        auto source = native(value);
+        auto slice = baseTypeOf(type).isTypeDArray;
+        if (slice is null || baseTypeOf(source.type).isTypeClass is null)
+            throw new Exception(
+                "AggregateValue.classBodyByteSlice needs class and slice types.",
+            );
+
+        auto header = NativeBlock.allocate(
+            NativeArray.sliceHeaderByteLength,
+            NativeBlock.Scan.conservative,
+        );
+        borrowArray(
+            slice.next,
+            source.retained.address,
+            source.retained.byteLength,
+        ).writeSliceHeader(header, 0);
+        return Value.nativeAggregateValue(NativeAggregate(
+            type,
+            header,
+            source.retained,
+        ));
+    }
+
     public static imported!"quickbite.backends.interpreter.runtime_value".Value slice(
         in imported!"quickbite.backends.interpreter.runtime_value".Value value,
         imported!"dmd.mtype".Type resultType,
@@ -467,11 +530,17 @@ public struct AggregateValue {
         in size_t index,
     ) @safe {
         if (value.isNativeAggregate) {
+            import dmd.astenums: TY;
             import quickbite.backends.interpreter.place: Place;
             import quickbite.backends.interpreter.place_value: readValue;
+            import quickbite.backends.interpreter.runtime_value: Value;
 
             auto aggregate = native(value);
-            return readValue(Place(aggregate.address, aggregate.type).index(index));
+            auto element = Place(aggregate.address, aggregate.type).index(index);
+            auto array = baseTypeOf(aggregate.type).isTypeDArray;
+            return array !is null && baseTypeOf(array.next).ty == TY.Tvoid
+                ? Value(byteAt(element.address))
+                : readValue(element);
         }
         return value[index];
     }
@@ -770,6 +839,11 @@ private imported!"dmd.mtype".Type baseTypeOf(imported!"dmd.mtype".Type type) @tr
 // established byte length into owned NativeBlock storage.
 private ubyte[] bytesAt(void* address, in size_t length) pure nothrow @trusted {
     return (cast(ubyte*) address)[0 .. length];
+}
+
+
+private ubyte byteAt(void* address) pure nothrow @trusted {
+    return *cast(ubyte*) address;
 }
 
 

@@ -91,6 +91,10 @@
 - Don't add broad acceptance tests in TDD unless the current implementation is
   expected to fail them; an immediately-passing test drives no production code.
 
+- Record matrix-test redness per backend. A test does not prove an Interpreter
+  defect merely because its Bytecode row fails; the retained Interpreter row
+  must fail before the Interpreter production change.
+
 - Pass review text containing Markdown backticks via a body file or
   single-quoted input, not double quotes.
 

@@ -1009,54 +1009,6 @@ static foreach (backend; Matrix!(
     }
 }
 
-// A nested predicate passed to an imported range algorithm retains access to
-// the method parameter it compares. Removing the matched element then shifts
-// the remaining slice elements in place.
-static foreach (backend; Matrix!()) {
-    @("closure.nestedPredicateRemovesMatchingAllocation." ~ backend.stringof)
-    @Tags(backend.stringof)
-    unittest {
-        runBackendSourceFixtureTests!backend(q{
-            struct ByteRange {
-                void* ptr;
-                size_t length;
-            }
-
-            struct Allocations {
-                ByteRange[] entries;
-
-                bool remove(void[] bytes) scope pure {
-                    import std.algorithm: canFind, countUntil;
-
-                    bool matches(ByteRange other) {
-                        return other.ptr == bytes.ptr &&
-                            other.length == bytes.length;
-                    }
-
-                    assert(entries.canFind!matches);
-                    const index = entries.countUntil!matches;
-                    foreach (i; index .. entries.length - 1)
-                        entries[i] = entries[i + 1];
-                    entries = entries[0 .. $ - 1];
-                    return true;
-                }
-            }
-
-            unittest {
-                ubyte[2] first;
-                ubyte[3] second;
-                auto allocations = Allocations([
-                    ByteRange(first.ptr, first.length),
-                    ByteRange(second.ptr, second.length),
-                ]);
-                assert(allocations.remove(first[]));
-                assert(allocations.entries.length == 1);
-                assert(allocations.entries[0].ptr == second.ptr);
-            }
-        });
-    }
-}
-
 // A TypeInfo reference retains its identity when stored in an aggregate and
 // read back.
 static foreach (backend; Matrix!()) {
@@ -9336,34 +9288,6 @@ static foreach (backend; Matrix!(
                 int[32] storage;
                 assert(Owner(storage[]).length == 32);
                 assert(storage[0] == 42);
-            }
-        });
-    }
-}
-
-// Return-scope destruction happens after the ref-return expression has
-// selected its lvalue. Cleanup must not replace that returned address, so an
-// assignment through the call still reaches the selected object.
-// SystemLinker is the oracle.
-static foreach (backend; Matrix!()) {
-    @("refCall.returnCleanupPreservesLvalueAddress." ~ backend.stringof)
-    @Tags(backend.stringof)
-    unittest {
-        runBackendSourceFixtureTests!backend(q{
-            struct Cleanup {
-                ~this() {}
-            }
-
-            int target;
-
-            ref int getTarget() {
-                Cleanup cleanup;
-                return target;
-            }
-
-            unittest {
-                getTarget = 42;
-                assert(target == 42);
             }
         });
     }

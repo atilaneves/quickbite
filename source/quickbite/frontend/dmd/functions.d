@@ -8,6 +8,13 @@ public bool hasNoAvailableSource(
     return function_.fbody is null;
 }
 
+public bool hasNoInterpretableSource(
+    imported!"dmd.func".FuncDeclaration function_,
+) {
+    return function_.fbody is null ||
+        function_.fbody.isErrorStatement !is null;
+}
+
 // Imported functions are analyzed on demand. DMD can defer semantic3 work
 // created while analyzing the body, so drain that queue before a backend reads
 // parameters or the body. The inline-asm shim is likewise post-semantic.
@@ -18,7 +25,10 @@ public void ensureFunctionBodySemantic(
     import dmd.dsymbolsem: runDeferredSemantic3;
     import dmd.funcsem: functionSemantic3;
 
-    if (function_.semanticRun >= PASS.semantic3done)
+    if (
+        function_.fbody is null ||
+        function_.semanticRun >= PASS.semantic3done
+    )
         return;
 
     functionSemantic3(function_);
