@@ -7838,3 +7838,42 @@ static foreach (backend; AliasSeq!(Interpreter)) {
         });
     }
 }
+
+// Compiled D merges identical string literals into one `.rodata` address, so
+// two occurrences of the same literal are `is`-identical -- unlike two
+// separately allocated arrays with equal content (`equalContentsAreNotIdentical`
+// above). `ai/plans/bytecode.md`'s "Live hazards and divergences" records this
+// as a pre-existing hazard; the block below pins Bytecode's divergence.
+static foreach (backend; Matrix!(
+    Omit!(Bytecode, Because.diverges, "see sibling pin below (Bytecode)"),
+)) {
+    @("stringLiteral.identicalLiteralsAreIdentical." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            unittest {
+                string s = "ab";
+                string t = "ab";
+
+                assert(s is t);
+            }
+        });
+    }
+}
+
+// Every occurrence of a string literal gets its own `literalBlocks` entry
+// (`emitStringLiteralArgument`/data-segment literal writers, `compiler.d`),
+// so two identical literals never share an address on Bytecode.
+static foreach (backend; AliasSeq!(Bytecode)) {
+    @("stringLiteral.identicalLiteralsAreIdentical." ~ backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            unittest {
+                string s = "ab";
+                string t = "ab";
+
+                assert(s !is t);
+            }
+        });
+    }
+}
