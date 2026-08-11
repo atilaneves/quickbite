@@ -18,6 +18,12 @@ public class Interpreter: imported!"quickbite.backends".TreeNodeBackend {
 
     public alias eval = Evaluator.eval;
 
+    private enum ExecutionMode {
+        regular,
+        unitTest,
+        formatted,
+    }
+
     public this() @safe @nogc nothrow pure {
     }
 
@@ -41,23 +47,22 @@ public class Interpreter: imported!"quickbite.backends".TreeNodeBackend {
     }
 
     public override EvalResult eval(FuncDeclaration function_) {
-        return execute(function_, false, false);
+        return execute(function_, ExecutionMode.regular);
     }
 
     protected override EvalResult executeUnitTest(
         UnitTestDeclaration unitTest,
     ) {
-        return execute(unitTest, true, false);
+        return execute(unitTest, ExecutionMode.unitTest);
     }
 
     public override EvalResult evalFormattedDisplay(FuncDeclaration function_) {
-        return execute(function_, false, true);
+        return execute(function_, ExecutionMode.formatted);
     }
 
     private EvalResult execute(
         FuncDeclaration function_,
-        in bool inUnitTest,
-        in bool consumeFormattedDisplay,
+        in ExecutionMode mode,
     ) {
         try {
             import quickbite.backends.interpreter.frame_layout:
@@ -67,15 +72,20 @@ public class Interpreter: imported!"quickbite.backends".TreeNodeBackend {
             Walker walker;
             scope(exit) walker.closeDurableInboundSession;
             walker.moduleTable = new ModuleTable;
-            walker.inUnitTest = inUnitTest;
-            import dmd.funcsem: functionSemantic3;
-            functionSemantic3(function_);
+            walker.inUnitTest = mode == ExecutionMode.unitTest;
+            import quickbite.frontend.dmd.functions: ensureFunctionBodySemantic;
+
+            ensureFunctionBodySemantic(function_);
             auto layout = cachedFrameLayout(function_);
             walker._activationFrame = FrameBlock.allocate(layout);
             walker.runStatement(function_.fbody);
-            return consumeFormattedDisplay
-                ? EvalResult(formattedDisplay(walker.result))
-                : EvalResult("");
+            final switch (mode) with (ExecutionMode) {
+            case regular:
+            case unitTest:
+                return EvalResult("");
+            case formatted:
+                return EvalResult(formattedDisplay(walker.result));
+            }
         } catch (Exception exception) {
             // The interpreter's own message, verbatim: rewriting it through
             // DMD's CTFE engine (as an earlier revision did) replaced the
@@ -2134,17 +2144,14 @@ private struct Walker {
         return ExpressionResult(left >= right);
     }
 
-    // ordered comparisons between pointers into unrelated allocations are
-    // false both ways, matching CTFE
+    // Pointer relations compare their raw host addresses. The caller has
+    // already established that both results are pointer-shaped.
     private ExpressionResult runPointerComparison(
         in imported!"dmd.tokens".EXP op,
         in ExpressionResult left,
         in ExpressionResult right,
     ) {
         import dmd.tokens: EXP;
-
-        if (!left.pointerSameAllocation(right))
-            return ExpressionResult(false);
 
         const difference = left.pointerOffsetDifference(right);
 

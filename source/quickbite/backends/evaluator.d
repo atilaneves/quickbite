@@ -176,6 +176,18 @@ public EvalResult displayEvalResult(
         return EvalResult(EvalResult.Diagnostic(throwable.msg));
 }
 
+// Executes work whose successful result has no display. Backends use this for
+// unittest execution, whose public result is either an empty display or the
+// unmodified diagnostic from the thrown host exception.
+public EvalResult voidEvalResult(scope void delegate() execute) {
+    try {
+        execute();
+        return EvalResult("");
+    } catch (Throwable throwable) {
+        return EvalResult(EvalResult.Diagnostic(throwable.msg));
+    }
+}
+
 // Renders a backend-reified `Value` to its display string at the
 // `eval(FuncDeclaration)` boundary. This is the single shared renderer so
 // every backend and the `eval(Cell)`/`eval(string)` paths produce
