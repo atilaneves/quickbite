@@ -29,6 +29,26 @@ package bool tryAssocArrayHook(
     if (function_ is null)
         return false;
 
+    if (function_.ident is null)
+        return false;
+
+    switch (function_.ident.toString) {
+        case "_d_aaApply2":
+        case "_d_aaLen":
+        case "_d_aaGetRvalueX":
+        case "_d_aaGetY":
+        case "_d_aaIn":
+        case "_d_aaDel":
+        case "_d_aaEqual":
+        case "dup":
+        case "keys":
+        case "values":
+            break;
+
+        default:
+            return false;
+    }
+
     const name = text(function_.toPrettyChars);
     if (name.canFind("_d_aaApply2!(")) {
         hook = AssocArrayHook.apply2;
@@ -87,6 +107,23 @@ package bool tryAtomicHook(
 
     if (function_ is null)
         return false;
+
+    if (function_.ident is null)
+        return false;
+
+    switch (function_.ident.toString) {
+        case "atomicLoad":
+        case "atomicStore":
+        case "atomicExchange":
+        case "atomicFetchAdd":
+        case "atomicFetchSub":
+        case "atomicValueIsProperlyAligned":
+        case "atomicPtrIsProperlyAligned":
+            break;
+
+        default:
+            return false;
+    }
 
     if (function_.parent is null || function_.parent.isTemplateInstance is null)
         return false;

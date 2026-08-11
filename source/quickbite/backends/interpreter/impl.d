@@ -4012,7 +4012,8 @@ private struct Walker {
                 // accepts null), so answer it before native object dispatch.
                 if (
                     receiver.isTypeName &&
-                    functionName(call.f) == "opEquals" &&
+                    call.f.ident !is null &&
+                    call.f.ident.toString == "opEquals" &&
                     arguments.length == 1 &&
                     (arguments[0].isTypeName || arguments[0] == ExpressionResult.null_)
                 )
@@ -4163,7 +4164,11 @@ private struct Walker {
 
         if (auto function_ = functionPointerExpressionFunction(call.e1)) {
             if (isZeroFormalCall(function_) && arguments.length == 5) {
-                if (functionName(function_) == "enforceRawArraysConformableNogc") {
+                if (
+                    function_.ident !is null &&
+                    function_.ident.toString ==
+                        "enforceRawArraysConformableNogc"
+                ) {
                     import quickbite.backends.interpreter.interception_guard:
                         enforceInterceptionPolicy;
 
@@ -4410,7 +4415,10 @@ private struct Walker {
     private bool isStringForeachApplyCall(FuncDeclaration function_) const {
         import std.algorithm: canFind;
 
-        const name = functionName(function_);
+        if (function_.ident is null)
+            return false;
+
+        const name = function_.ident.toString;
         return
             name.canFind("_aApplycd1") ||
             name.canFind("_aApplywd1") ||
@@ -4439,7 +4447,7 @@ private struct Walker {
             throw new Exception("Unsupported eval call.");
 
         foreach (value; stringForeachApplyElements(
-            functionName(function_),
+            function_.ident.toString,
             runExpression((*call.arguments)[0]),
         )) {
             const result = runFunction(body, [value], [null]);
@@ -4451,7 +4459,7 @@ private struct Walker {
     }
 
     private ExpressionResult[] stringForeachApplyElements(
-        in string helper,
+        scope const(char)[] helper,
         in ExpressionResult source,
     ) {
         import std.algorithm: canFind, reverse;
@@ -4630,6 +4638,12 @@ private struct Walker {
         import std.algorithm: startsWith;
         import std.conv: text;
 
+        if (
+            function_.ident is null ||
+            function_.ident.toString != "arrayOp"
+        )
+            return false;
+
         auto instance = function_.parent is null
             ? null
             : function_.parent.isTemplateInstance;
@@ -4642,7 +4656,7 @@ private struct Walker {
         )
             return false;
 
-        string[] operators;
+        size_t operatorIndex;
         foreach (argument; *instance.tiargs) {
             auto expression = isExpression(argument);
             if (expression is null)
@@ -4652,10 +4666,16 @@ private struct Walker {
             if (literal is null)
                 return false;
 
-            operators ~= literal.peekString.idup;
+            if (operatorIndex >= 2)
+                return false;
+
+            const expectedOperator = operatorIndex == 0 ? "+" : "=";
+            if (literal.peekString != expectedOperator)
+                return false;
+            ++operatorIndex;
         }
 
-        return operators == ["+", "="];
+        return operatorIndex == 2;
     }
 
     private ExpressionResult runArrayOpAddAssignCall(
@@ -6618,7 +6638,10 @@ private struct Walker {
         throw new Exception("Unsupported interpreter property read.");
     }
 
-    private ExpressionResult delegateProperty(in ExpressionResult receiver, in string name) {
+    private ExpressionResult delegateProperty(
+        in ExpressionResult receiver,
+        scope const(char)[] name,
+    ) {
         auto runtime = receiver.functionPointerId in _executionState.delegates;
         if (runtime is null)
             throw new Exception("Unsupported interpreter field read.");
@@ -10739,7 +10762,7 @@ private bool sameFunctionSignature(
     imported!"dmd.func".FuncDeclaration candidate,
     imported!"dmd.func".FuncDeclaration base,
 ) {
-    if (functionName(candidate) != functionName(base))
+    if (candidate.ident !is base.ident)
         return false;
 
     if (
@@ -10945,14 +10968,6 @@ private string typeChars(imported!"dmd.mtype".Type type) @trusted {
     return type.toChars.fromStringz.idup;
 }
 
-// @trusted: `toChars` is not `@safe`; it returns a valid null-terminated C
-// string for the lifetime of the DMD function declaration.
-private string functionName(imported!"dmd.func".FuncDeclaration function_) @trusted {
-    import std.string: fromStringz;
-
-    return function_.toChars.fromStringz.idup;
-}
-
 private struct RuntimeDelegate {
     public imported!"dmd.func".FuncDeclaration function_;
     public size_t functionPointerId;
@@ -11004,10 +11019,10 @@ private imported!"dmd.dstruct".StructDeclaration constructorStructDeclaration(
 }
 
 
-private string declarationName(
+private const(char)[] declarationName(
     imported!"dmd.declaration".Declaration declaration,
 ) @safe {
-    return declaration.ident is null ? "" : declaration.ident.toString.idup;
+    return declaration.ident is null ? "" : declaration.ident.toString;
 }
 
 

@@ -81,6 +81,7 @@ public bool isLegalInterception(
 public bool bodyContainsAsm(
     imported!"dmd.func".FuncDeclaration function_,
 ) {
+    import core.lifetime: emplace;
     import dmd.statement: CompoundStatement;
     import dmd.visitor.statement_rewrite_walker: StatementRewriteWalker;
 
@@ -98,7 +99,9 @@ public bool bodyContainsAsm(
         }
     }
 
-    scope finder = new AsmStatementFinder;
+    align(__traits(classInstanceAlignment, AsmStatementFinder))
+        ubyte[__traits(classInstanceSize, AsmStatementFinder)] storage;
+    scope finder = emplace!AsmStatementFinder(storage[]);
     finder.visitStmt(function_.fbody);
     return finder.found;
 }
