@@ -2800,6 +2800,13 @@ plain wrong values
 Each class takes one subagent and §8's one-standalone-fixture-per-reason rule;
 they are correctness bugs, not crashes, so `SystemLinker` arbitrates every one.
 
+One member of the wrong-value class is already isolated: an element of a static
+array of structs does not get its declared field defaults, so
+`struct R { char[4] c = "...."; } R[2] arr;` reads `0xFF` bytes where compiled D
+reads `'.'`. A single struct gets its defaults; only the array elements miss
+them. Expect this to disguise itself as corruption in an unrelated fixture
+before it is fixed — it did exactly that during review.
+
 Two properties of this queue that a re-measure will not show. The field-access
 class is a **wall**: clearing it does not retire its tests, it advances them into
 `Unsupported interpreter call arguments`, `Array slice needs native aggregate
