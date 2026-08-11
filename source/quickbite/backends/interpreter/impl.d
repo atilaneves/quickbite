@@ -18,6 +18,20 @@ public class Interpreter: imported!"quickbite.backends".TreeNodeBackend {
 
     public alias eval = Evaluator.eval;
 
+    // Module-level guest state has module lifetime, not per-execution
+    // lifetime: a global written by one unittest is still written when the
+    // next one runs. One table, shared by every execution of this backend
+    // instance, is what makes that true.
+    private ModuleTable* _moduleTable;
+    // A class reference stored in such a global outlives the execution that
+    // created it, but its dynamic class and owning allocation live outside
+    // the guest bytes, keyed by body address. They describe the same storage
+    // the module table holds, so they share its lifetime: drop them at the
+    // end of an execution and a surviving reference loses the identity that
+    // makes a virtual call dispatch to the original object.
+    private imported!"dmd.mtype".Type[void*] _nativeClassTypes;
+    private ExpressionResult[void*] _nativeClassOwners;
+
     public this() @safe @nogc nothrow pure {
     }
 
@@ -65,8 +79,16 @@ public class Interpreter: imported!"quickbite.backends".TreeNodeBackend {
 
             clearFrameLayoutCache;
             Walker walker;
-            scope(exit) walker.closeDurableInboundSession;
-            walker.moduleTable = new ModuleTable;
+            scope(exit) {
+                _nativeClassTypes = walker.nativeClassTypes;
+                _nativeClassOwners = walker.nativeClassOwners;
+                walker.closeDurableInboundSession;
+            }
+            if (_moduleTable is null)
+                _moduleTable = new ModuleTable;
+            walker.moduleTable = _moduleTable;
+            walker.nativeClassTypes = _nativeClassTypes.dup;
+            walker.nativeClassOwners = _nativeClassOwners.dup;
             walker.inUnitTest = inUnitTest;
             import dmd.funcsem: functionSemantic3;
             functionSemantic3(function_);
@@ -2351,6 +2373,17 @@ private struct Walker {
 
         if (auto delegate_ = e1.isDelegateExp)
             return runDelegateExpression(delegate_);
+
+        // `this` is not an ordinary binding to compose an address from: the
+        // receiver's address is the one this activation was entered with. A
+        // struct constructor's implicit `return this` reaches here, and must
+        // answer the temporary the constructor ran against.
+        if (e1.isThisExp !is null) {
+            if (thisAddress !is null)
+                return ExpressionResult.pointerValue(thisAddress);
+            if (currentFunction !is null && currentFunction.vthis !is null)
+                return bindingPointerValue(currentFunction.vthis);
+        }
 
         // D's comma expression yields its right operand, including that
         // operand's lvalue identity. Constructor lowering uses this shape to
@@ -4751,7 +4784,13 @@ private struct Walker {
         if (auto override_ = overridingFunction(class_, function_))
             return override_;
 
+        if (auto interface_ = matchingInterfaceFunction(class_, function_))
+            return interface_;
+
         if (auto vtbl = vtblFunction(class_, function_))
+            return vtbl;
+
+        if (auto vtbl = matchingVtableFunction(class_, function_))
             return vtbl;
 
         if (auto candidate = matchingMemberFunction(class_, function_))
@@ -5828,6 +5867,11 @@ private struct Walker {
         // writable exactly when that place is.
         if (auto target = assignmentTarget(expression))
             return isWritableLocation(target);
+
+        // A `ref`-returning call denotes the lvalue it returned, so a member
+        // call on it must reach that lvalue's storage rather than a copy.
+        if (auto call = expression.isCallExp)
+            return call.f !is null && returnsRef(call.f);
 
         // A comma expression denotes its right operand, so it is writable
         // exactly when that operand is.
@@ -9062,8 +9106,20 @@ private struct Walker {
         // raw pointer the cast reinterprets the address: the storage need not
         // hold a constructed object yet, which is how `emplace` reaches the
         // instance it is about to initialise.
-        if (isPointerType(cast_.e1.type))
+        if (isPointerType(cast_.e1.type)) {
+            // Compiled code recovers the dynamic class from the vptr the
+            // storage already holds; the interpreter keeps that identity
+            // beside the address instead, so this cast is where it has to be
+            // recorded -- otherwise the resulting reference has no dynamic
+            // type and every later interface cast or virtual call off it
+            // fails. An address that already denotes an object keeps the
+            // class it was created with: that registration is at least as
+            // precise as the one this cast asserts.
+            if (auto address = classIdentityAddress(value))
+                if (address !in nativeClassTypes)
+                    nativeClassTypes[address] = classType;
             return value;
+        }
 
         if (!classHasType(value, className(classType.sym)))
             return ExpressionResult.null_;
@@ -11113,7 +11169,20 @@ private imported!"dmd.func".FuncDeclaration vtblFunction(
     if (index >= class_.vtbl.length)
         return null;
 
-    return class_.vtbl[index].isFuncDeclaration;
+    // A vtable index is only meaningful within the table it was assigned
+    // against. `base` may be an interface method whose index numbers the
+    // interface's own table, so the same index into an implementing class's
+    // vtbl names an unrelated method; accept the entry only when it really
+    // belongs to this class hierarchy and has the signature being called.
+    auto function_ = class_.vtbl[index].isFuncDeclaration;
+    if (
+        function_ is null ||
+        !isClassHierarchyMember(class_, function_) ||
+        !sameFunctionSignature(function_, base)
+    )
+        return null;
+
+    return function_;
 }
 
 
@@ -11132,6 +11201,69 @@ private imported!"dmd.func".FuncDeclaration matchingMemberFunction(
 }
 
 
+// The concrete method implementing `base` reached through one of `class_`'s
+// interfaces. An interface's vtbl holds the interface's own declarations, so
+// this answers the declaration a call site's signature names even when the
+// implementing class never mentions the interface method by that identity.
+private imported!"dmd.func".FuncDeclaration matchingInterfaceFunction(
+    imported!"dmd.dclass".ClassDeclaration class_,
+    imported!"dmd.func".FuncDeclaration base,
+) {
+    foreach (interface_; class_.interfaces)
+        if (auto function_ = matchingInterfaceFunction(*interface_, base))
+            return function_;
+
+    return null;
+}
+
+
+private imported!"dmd.func".FuncDeclaration matchingInterfaceFunction(
+    ref imported!"dmd.dclass".BaseClass interface_,
+    imported!"dmd.func".FuncDeclaration base,
+) {
+    foreach (function_; interface_.vtbl)
+        if (function_ !is null && sameFunctionSignature(function_, base))
+            return function_;
+
+    foreach (ref baseInterface; interface_.baseInterfaces)
+        if (auto function_ = matchingInterfaceFunction(baseInterface, base))
+            return function_;
+
+    return null;
+}
+
+
+// The entry of `class_`'s own vtable that matches `base`'s signature, found
+// by scanning rather than by index -- the fallback for a `base` whose
+// `vtblIndex` numbers a different table than this class's.
+private imported!"dmd.func".FuncDeclaration matchingVtableFunction(
+    imported!"dmd.dclass".ClassDeclaration class_,
+    imported!"dmd.func".FuncDeclaration base,
+) {
+    foreach (entry; class_.vtbl)
+        if (auto function_ = entry.isFuncDeclaration)
+            if (
+                isClassHierarchyMember(class_, function_) &&
+                sameFunctionSignature(function_, base)
+            )
+                return function_;
+
+    return null;
+}
+
+
+private bool isClassHierarchyMember(
+    imported!"dmd.dclass".ClassDeclaration class_,
+    imported!"dmd.func".FuncDeclaration function_,
+) {
+    foreach (current; classHierarchy(class_))
+        if (function_.parent is current)
+            return true;
+
+    return false;
+}
+
+
 private bool sameFunctionSignature(
     imported!"dmd.func".FuncDeclaration candidate,
     imported!"dmd.func".FuncDeclaration base,
@@ -11146,11 +11278,20 @@ private bool sameFunctionSignature(
     )
         return true;
 
-    if (candidate.parameters is null || base.parameters is null)
-        return candidate.parameters is base.parameters;
-
-    if (candidate.parameters.length != base.parameters.length)
+    // A parameterless declaration has `parameters` either null or empty
+    // depending on how it was built; both mean "no parameters", so compare
+    // counts rather than the array identities.
+    const candidateParameterCount = candidate.parameters is null
+        ? 0
+        : candidate.parameters.length;
+    const baseParameterCount = base.parameters is null
+        ? 0
+        : base.parameters.length;
+    if (candidateParameterCount != baseParameterCount)
         return false;
+
+    if (candidateParameterCount == 0)
+        return true;
 
     foreach (index, parameter; *candidate.parameters) {
         auto baseParameter = (*base.parameters)[index];
