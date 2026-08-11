@@ -208,6 +208,11 @@ private struct TemporaryPointerOwners {
     public imported!"quickbite.backends.interpreter.native_block".NativeBlock[]
         blocks;
     public size_t expressionDepth;
+    // A constructed member-call receiver's destructor (see
+    // `constructedReceiverDestructor`), queued here instead of run when the
+    // call returns, so it fires once the enclosing full expression finishes
+    // evaluating, in reverse construction order.
+    public imported!"dmd.expression".Expression[] pendingReceiverDestructors;
 }
 
 // Native places for class array-literal `.init` fields, keyed by the address
@@ -1026,6 +1031,17 @@ private struct Walker {
         _temporaryPointerOwners.blocks ~= owner;
     }
 
+    private void queueReceiverDestructor(
+        imported!"dmd.expression".Expression destructor,
+    ) @safe {
+        assert(
+            _temporaryPointerOwners !is null &&
+                _temporaryPointerOwners.expressionDepth != 0,
+            "receiver destructor queued outside its expression scope",
+        );
+        _temporaryPointerOwners.pendingReceiverDestructors ~= destructor;
+    }
+
     private void storeBinding(VarDeclaration variable, in ExpressionResult value) {
         setLocal(variable, value);
         clearUninitializedBindingAddress(bindingPlace(variable).address);
@@ -1683,12 +1699,27 @@ private struct Walker {
             _temporaryPointerOwners = new TemporaryPointerOwners;
 
         const firstOwner = _temporaryPointerOwners.blocks.length;
+        const firstDestructor =
+            _temporaryPointerOwners.pendingReceiverDestructors.length;
         const outermost = _temporaryPointerOwners.expressionDepth == 0;
         ++_temporaryPointerOwners.expressionDepth;
         scope(exit) {
             --_temporaryPointerOwners.expressionDepth;
-            if (outermost)
+            if (outermost) {
+                // A temporary lives until the end of the full expression
+                // that created it. Run every receiver destructor queued
+                // while evaluating this full expression now, in reverse
+                // construction order, before releasing its temporary
+                // storage.
+                auto destructors =
+                    _temporaryPointerOwners.pendingReceiverDestructors[
+                        firstDestructor .. $];
+                _temporaryPointerOwners.pendingReceiverDestructors.length =
+                    firstDestructor;
+                foreach_reverse (destructor; destructors)
+                    runExpression(destructor);
                 _temporaryPointerOwners.blocks.length = firstOwner;
+            }
         }
 
         return runExpressionImpl(expression);
@@ -4268,9 +4299,8 @@ private struct Walker {
             } else
                 receiver = runExpression(dot.e1);
             auto receiverDestructor = constructedReceiverDestructor(dot.e1);
-            scope(exit)
-                if (receiverDestructor !is null)
-                    runExpression(receiverDestructor);
+            if (receiverDestructor !is null)
+                queueReceiverDestructor(receiverDestructor);
             receiver = rootedNativeClassValue(dot.e1, receiver);
             const interpreterAllocatedClass = receiver.isNativeAggregate &&
                 dot.e1.type.toBasetype.isTypeClass !is null;
@@ -4527,8 +4557,9 @@ private struct Walker {
 
     // A constructor used directly as a member receiver owns a full-expression
     // temporary. DMD records that cleanup on the synthesized declaration
-    // rather than emitting a DtorExpStatement, so return it to the call site
-    // that spans the temporary's lifetime.
+    // rather than emitting a DtorExpStatement, so return it to the call site,
+    // which queues it to run at the end of the enclosing full expression
+    // instead of when this call returns.
     private imported!"dmd.expression".Expression
     constructedReceiverDestructor(
         imported!"dmd.expression".Expression receiver,

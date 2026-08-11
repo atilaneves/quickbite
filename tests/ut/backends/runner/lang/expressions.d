@@ -9730,6 +9730,41 @@ static foreach (backend; Matrix!(
     }
 }
 
+// A temporary created within an expression lives until the end of the full
+// expression that created it, not until a member call through it returns.
+// Later use of state its destructor mutates, still in the same expression,
+// must observe the value from before that destructor ran. SystemLinker is
+// the oracle.
+static foreach (backend; Matrix!()) {
+    @("call.constructedTemporaryOutlivesTheMemberCall." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct Owner {
+                int[] memory;
+
+                this(int[] memory) {
+                    this.memory = memory;
+                }
+
+                ~this() {
+                    memory[0] = 42;
+                }
+
+                size_t length() const {
+                    return memory.length;
+                }
+            }
+
+            unittest {
+                int[4] storage;
+                const total = Owner(storage[]).length + storage[0];
+                assert(total == 4);
+            }
+        });
+    }
+}
+
 // Return-scope destruction happens after the ref-return expression has
 // selected its lvalue. Cleanup must not replace that returned address, so an
 // assignment through the call still reaches the selected object.
