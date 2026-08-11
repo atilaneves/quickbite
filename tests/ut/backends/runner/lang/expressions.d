@@ -16,6 +16,32 @@ private void runSse2BackendSourceFixtureTests(T)(in string moduleSource) {
 }
 
 
+// Slice-assigning a struct's dynamic-array field writes through the storage
+// that field already denotes; it does not rebind the field to fresh storage.
+// A second slice of that same storage therefore observes the write.
+static foreach (backend; Matrix!()) {
+    @("struct.fieldSliceAssignmentWritesExistingStorage." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct Holder {
+                int[] values;
+            }
+
+            unittest {
+                auto holder = Holder(new int[3]);
+                auto sameStorage = holder.values;
+
+                holder.values[] = [1, 2, 3];
+
+                assert(sameStorage == [1, 2, 3]);
+                assert(holder.values.ptr == sameStorage.ptr);
+            }
+        });
+    }
+}
+
+
 static foreach (backend; Matrix!()) {
     @("associativeArray.directLocalRefArgumentMutatesSource." ~ backend.stringof)
     @Tags(backend.stringof)

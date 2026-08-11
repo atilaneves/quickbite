@@ -8119,11 +8119,23 @@ private struct Walker {
     // A slice assignment through a struct field (`s.buf[i .. j] = source[]`):
     // splice the written elements into the field's current array and write
     // the updated struct back through the field's location.
+    // `current`'s own header is a byte copy (`AggregateValue.fieldAt` reads
+    // through `place_value.readValue`'s `copyFromAddress`), but the pointer
+    // those bytes hold is the field's real one, so writing through `current`
+    // via `AggregateValue.withArrayElement` reaches the field's actual
+    // backing storage. Rebuilding a whole new array and writing it back into
+    // the field slot instead (as this used to) replaces that pointer with a
+    // fresh allocation's, silently severing identity a caller may depend on
+    // -- e.g. a struct field backed by a `Mallocator`-returned block whose
+    // destructor later frees the field's pointer: swapping in a
+    // differently-sourced block there corrupts the allocator on free.
     private ExpressionResult runFieldSliceAssignExpression(
         imported!"dmd.expression".SliceExp slice,
         imported!"dmd.expression".DotVarExp dot,
         imported!"dmd.expression".Expression rhs,
     ) {
+        import std.conv: text;
+
         const fieldIndex = structFieldIndex(dot);
         const receiver = runExpression(dot.e1);
         const current = AggregateValue.fieldAt(receiver, fieldIndex);
@@ -8135,20 +8147,21 @@ private struct Walker {
             ? AggregateValue.length(current)
             : cast(size_t) runExpression(slice.upr).asLong;
 
+        if (upper > AggregateValue.length(current))
+            throwRangeError(text(
+                "slice [", lower, " .. ", upper,
+                "] extends past source array of length ", AggregateValue.length(current),
+            ));
+
         const block = isBlockSliceAssignment(slice, rhs);
         const value = runExpression(rhs);
 
-        ExpressionResult[] elements;
-        foreach (index; 0 .. AggregateValue.length(current))
-            elements ~= index < lower || index >= upper
-                ? AggregateValue.elementAt(current, index)
-                : block ? copyArrayValue(value, slice.type.toBasetype.nextOf)
+        foreach (index; lower .. upper) {
+            const element = block
+                ? copyArrayValue(value, slice.type.toBasetype.nextOf)
                 : AggregateValue.elementAt(value, index - lower);
-
-        writeLocation(dot.e1, AggregateValue.withStructField(receiver,
-            fieldIndex,
-            reconstructStoredArray(dot.var.type, elements),
-        ));
+            AggregateValue.withArrayElement(current, index, element);
+        }
         return value;
     }
 
