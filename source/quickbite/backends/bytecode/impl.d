@@ -4,7 +4,8 @@ private:
 
 public class Bytecode: imported!"quickbite.backends".TreeNodeBackend {
     import quickbite.backends: TreeNodeBackend;
-    import quickbite.backends.evaluator: Evaluator, EvalResult, displayEvalResult;
+    import quickbite.backends.evaluator: Evaluator, EvalResult, displayEvalResult,
+        voidEvalResult;
     import dmd.func: FuncDeclaration, UnitTestDeclaration;
 
     public alias eval = Evaluator.eval;
@@ -43,12 +44,9 @@ public class Bytecode: imported!"quickbite.backends".TreeNodeBackend {
         import quickbite.backends.bytecode.core.compiler: compile;
         import quickbite.backends.bytecode.core.machine: run;
 
-        try {
+        return voidEvalResult(() {
             auto compilation = compile(unitTest);
             run(*compilation.program, compilation.compileFunction);
-            return EvalResult("");
-        } catch (Throwable throwable) {
-            return EvalResult(EvalResult.Diagnostic(throwable.msg));
-        }
+        });
     }
 }

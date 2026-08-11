@@ -436,6 +436,18 @@ public struct ExpressionResult {
         );
     }
 
+    public const(NativeAggregate) nativeAggregate() const @safe pure {
+        import std.sumtype: match;
+
+        return data.match!(
+            (const(NativeAggregate) aggregate) => aggregate,
+            (_) {
+                throw new Exception("Expected native aggregate.");
+                return NativeAggregate.init;
+            },
+        );
+    }
+
     public bool isFunctionPointer() const @safe pure nothrow {
         import std.sumtype: match;
 
@@ -482,7 +494,7 @@ public struct ExpressionResult {
         );
     }
 
-    public const(void)* nativeDelegateContext() const {
+    public const(void)* nativeDelegateContext() const @safe pure {
         import std.sumtype: match;
 
         return data.match!(
@@ -494,7 +506,7 @@ public struct ExpressionResult {
         );
     }
 
-    public const(void)* nativeDelegateFuncptr() const {
+    public const(void)* nativeDelegateFuncptr() const @safe pure {
         import std.sumtype: match;
 
         return data.match!(
@@ -552,10 +564,6 @@ public struct ExpressionResult {
     // zero-valued `Pointer` it represents.
     private bool isPointerOrNull() const @safe pure {
         return isPointer || this == ExpressionResult.null_;
-    }
-
-    public bool pointerSameAllocation(in ExpressionResult other) const @safe pure {
-        return isPointerOrNull && other.isPointerOrNull;
     }
 
     public long pointerOffsetDifference(in ExpressionResult other) const @safe pure {

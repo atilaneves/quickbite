@@ -214,14 +214,10 @@ public struct AggregateValue {
         ));
     }
 
-    // `ExpressionResult.nativeAggregate` currently lacks a const overload; this
-    // cast only restores mutability to read the copied handle, never guest
-    // storage, and its tagged accessor still rejects every other alternative.
     public static imported!"quickbite.backends.interpreter.native_aggregate".NativeAggregate native(
-        in imported!"quickbite.backends.interpreter.expression_result".ExpressionResult value,
-    ) @trusted {
-        return (cast(imported!"quickbite.backends.interpreter.expression_result".ExpressionResult) value)
-            .nativeAggregate;
+        imported!"quickbite.backends.interpreter.expression_result".ExpressionResult value,
+    ) @safe {
+        return value.nativeAggregate;
     }
 
     // Copies the complete native-layout value at `address` into a freshly

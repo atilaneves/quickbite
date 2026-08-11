@@ -199,7 +199,10 @@ longer imports or aliases it.
     (unittests execute expressions; nested calls return results), but its
     carrier is interpreter-private execution machinery, not a display
     value. `ExpressionResult` names that narrow currency rather than a shared
-    runtime abstraction. Top-level unittest execution needs only success or a
+    runtime abstraction: it is not `Value` under another name. Unlike `Value`,
+    it has no recursive aggregate or display representation; aggregates are
+    typed native-layout bytes and pointers are host addresses. Top-level
+    unittest execution needs only success or a
     diagnostic and must not render the walker's final result;
     expression-display entry points synthesize `__quickbiteFormat(expr)` and
     return that guest-produced
