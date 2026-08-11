@@ -340,6 +340,10 @@ private struct Walker {
     // was bound. Evaluating the thunk temporarily selects that frame, whose
     // places remain the sole authority for the captured bindings.
     private FrameBlock[VarDeclaration] lazyArgumentFrames;
+    // A child initially borrows both lazy maps from its caller. Before adding
+    // its own binding it detaches both maps together, so calls without lazy
+    // parameters do not copy the caller's accumulated bindings.
+    private bool _lazyArgumentMapsBorrowed;
     // DMD may synthesize an IndexExp/SliceExp `$` length declaration after a
     // root frame layout was computed. It is expression-evaluation metadata,
     // not a D storage binding; key its native size_t by the declaration object's
@@ -2751,8 +2755,9 @@ private struct Walker {
         child.moduleTable = moduleTable;
         child._temporaryPointerOwners = _temporaryPointerOwners;
         child._executionState = _executionState;
-        child.lazyArgumentExpressions = lazyArgumentExpressions.dup;
-        child.lazyArgumentFrames = lazyArgumentFrames.dup;
+        child.lazyArgumentExpressions = lazyArgumentExpressions;
+        child.lazyArgumentFrames = lazyArgumentFrames;
+        child._lazyArgumentMapsBorrowed = true;
     }
 
     // The child's returned address points into its own frame: a pointer to a
@@ -5434,8 +5439,7 @@ private struct Walker {
         in ExpressionResult[] arguments,
         in bool captureLocals = false,
     ) {
-        lazyArgumentExpressions = child.lazyArgumentExpressions;
-        lazyArgumentFrames = child.lazyArgumentFrames;
+        mergeLazyArgumentMapsFrom(child);
     }
 
     private void mergeMemberFunctionState(
@@ -5445,9 +5449,15 @@ private struct Walker {
         ref Walker child,
         in ExpressionResult[] arguments,
     ) {
+        mergeLazyArgumentMapsFrom(child);
+        child.returned = false;
+    }
+
+    private void mergeLazyArgumentMapsFrom(ref Walker child) {
         lazyArgumentExpressions = child.lazyArgumentExpressions;
         lazyArgumentFrames = child.lazyArgumentFrames;
-        child.returned = false;
+        if (!child._lazyArgumentMapsBorrowed)
+            _lazyArgumentMapsBorrowed = false;
     }
 
     private ExpressionResult structValueFromCell(in ExpressionResult current, ref NativeStruct cell) {
@@ -5854,9 +5864,18 @@ private struct Walker {
     ) {
         if (auto variable = lazyExpressionVariable(argumentExpression)) {
             if (auto expression = variable in lazyArgumentExpressions) {
-                lazyArgumentExpressions[parameter] = *expression;
-                if (auto capturedFrame = variable in lazyArgumentFrames)
-                    lazyArgumentFrames[parameter] = *capturedFrame;
+                // Mutable locals keep the borrowed-map values usable after
+                // detaching replaces this Walker's map handles.
+                auto forwardedExpression = *expression;
+                FrameBlock forwardedFrame;
+                auto hasForwardedFrame = variable in lazyArgumentFrames;
+                if (hasForwardedFrame !is null)
+                    forwardedFrame = *hasForwardedFrame;
+
+                detachLazyArgumentMaps;
+                lazyArgumentExpressions[parameter] = forwardedExpression;
+                if (hasForwardedFrame !is null)
+                    lazyArgumentFrames[parameter] = forwardedFrame;
                 return;
             }
         }
@@ -5864,8 +5883,18 @@ private struct Walker {
         if (argumentExpression is null)
             throw new Exception("Unsupported interpreter call arguments.");
 
+        detachLazyArgumentMaps;
         lazyArgumentExpressions[parameter] = argumentExpression;
         lazyArgumentFrames[parameter] = callerFrame;
+    }
+
+    private void detachLazyArgumentMaps() {
+        if (!_lazyArgumentMapsBorrowed)
+            return;
+
+        lazyArgumentExpressions = lazyArgumentExpressions.dup;
+        lazyArgumentFrames = lazyArgumentFrames.dup;
+        _lazyArgumentMapsBorrowed = false;
     }
 
     private ExpressionResult runLazyArgument(VarDeclaration variable) {
@@ -10161,8 +10190,7 @@ private struct Walker {
     }
 
     private void mergeNewClassExpressionState(ref Walker child) {
-        lazyArgumentExpressions = child.lazyArgumentExpressions;
-        lazyArgumentFrames = child.lazyArgumentFrames;
+        mergeLazyArgumentMapsFrom(child);
     }
 
     private ExpressionResult newArrayValue(
