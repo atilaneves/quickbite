@@ -566,10 +566,9 @@ static foreach (backend; Matrix!(
 }
 
 
-// ffi.md §24.5 Phase 4: oracle-backed fixtures exercising shapes the
-// descriptor-driven chokepoint already supports without a new code branch:
-// wider scalars (labs), floating-point returns (atof/strtod), and an
-// extern(C) call in a second module (core.stdc.ctype).
+// Oracle-backed `extern(C)` fixtures past the `int`-in/`int`-out base case: a
+// 64-bit argument and result (`labs`), floating-point returns (`atof`,
+// `strtod`), and calls into a second C module (`core.stdc.ctype`).
 enum absSource = q{
     unittest {
         import core.stdc.stdlib: abs;
@@ -736,16 +735,12 @@ static foreach (backend; Matrix!(
 }
 
 
-// ffi.md §35.10: a body-less libc call taking a union-typed out-pointer. The
-// glibc `pthread_mutexattr_t` is `union { byte[N] __size; int __align; }`, so
-// passing `&attr` marshals a union toNative. `canMarshalToNative`
-// (native_call_adapter.d) refuses unions and `canRepresentCall`'s out-cell check
-// (core.d) rejects the whole call, so the Interpreter degrades to the
-// no-available-source refusal today even though the union bytes round-trip
-// byte-faithfully. Reading the type back through `gettype` proves the bytes
-// written through the union survived the crossing. SystemLinker (and its
-// LLVMJit promotion) is the behaviour oracle; the Interpreter leg is red
-// pending the gate fix.
+// A body-less libc call taking a union-typed out-pointer: glibc's
+// `pthread_mutexattr_t` is `union { byte[N] __size; int __align; }`. Passing
+// `&attr` gives libc the address of the caller's own union, so the bytes one
+// call writes through it have to still be there for the next call to read.
+// `gettype` returning what `settype` set is what proves that: the union
+// crossed as an address rather than as a copy of one of its members.
 enum pthreadMutexattrUnionSource = q{
     unittest {
         import core.sys.posix.pthread:

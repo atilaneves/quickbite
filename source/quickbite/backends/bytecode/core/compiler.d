@@ -39,8 +39,9 @@ private struct Compiler {
         assocArrayKeyIsStructLayoutFlag, concatArraysOp, dupArrayOp,
         indexLoadOp, indexStoreOp, isSigned,
         nativeArgumentSlotSize, noCatchObjectField, noExceptionClass,
-        noOutParameterOffset, pointerLoadOp, pointerSliceOp, pointerStoreOp,
-        size, sliceCopyOp, sliceDescriptorLengthOffset, sliceDescriptorSize,
+        noReceiverOffset, pointerLoadOp, pointerSliceOp, pointerStoreOp,
+        size, sliceCopyOp, sliceDescriptorLengthOffset,
+        sliceDescriptorPtrOffset, sliceDescriptorSize,
         sliceEqualOp, sliceFillOp, subSliceOp;
     import dmd.declaration: VarDeclaration;
     import dmd.expression:
@@ -81,7 +82,7 @@ private struct Compiler {
     private DeclarationRecord[VarDeclaration] _declarations;
     private DeclarationRecord _unavailableDeclaration;
     // Named catch variables for the narrow Exception/Throwable object surface:
-    // each synthetic object exposes native {ptr, length} string descriptors
+    // each synthetic object exposes native {length, ptr} string descriptors
     // for `msg` and, when a finally throw chains a body exception, `next.msg`.
     private ExceptionObjectLocal[VarDeclaration] _exceptionObjectLocals;
     // The receiver of the method currently being compiled, if any: the base
@@ -2552,10 +2553,11 @@ private struct Compiler {
         // an 8-byte zero pointer slot. The throw in the comma's first operand
         // aborts before this is read. An array-typed `null` (e.g. a ternary
         // arm retyped to the ternary's own array type, `cond ? null : arr`)
-        // is a genuine {ptr, length} descriptor that IS read, so it gets a
-        // full 16-byte zeroed slot via `Op.nullSlice` instead -- an 8-byte
-        // pointer-only slot would leave whatever a consumer widens it to
-        // read the frame bytes just past this allocation as the length word.
+        // is a genuine {length, ptr} descriptor that IS read, so it gets a
+        // full 16-byte zeroed slot via `Op.nullSlice` instead -- a single
+        // 8-byte word covers only the descriptor's length, leaving whatever
+        // a consumer widens it to read the frame bytes just past this
+        // allocation as the pointer word.
         if (expression.isNullExp !is null) {
             import dmd.astenums: TY;
 
@@ -3827,7 +3829,8 @@ private struct Compiler {
                     cast(uint) size_t.sizeof, size_t.sizeof,
                 );
                 _code ~= Instruction(
-                    Op.copy, pointer, place.offset,
+                    Op.copy, pointer,
+                    cast(ushort) sliceDescriptorPtrOffset(place.offset),
                     cast(ushort) size_t.sizeof,
                 );
                 return pointerPlaceAddress(
@@ -4076,7 +4079,8 @@ private struct Compiler {
                 sliceDescriptorSize, size_t.sizeof,
             );
             _code ~= Instruction(
-                Op.copy, offset, address.offset,
+                Op.copy, cast(ushort) sliceDescriptorPtrOffset(offset),
+                address.offset,
                 cast(ushort) size_t.sizeof,
             );
             const elementWidth = typeFacts(
@@ -4124,7 +4128,7 @@ private struct Compiler {
     }
 
 
-    // Compile a string literal directly into an expanded native {ptr, length}
+    // Compile a string literal directly into an expanded native {length, ptr}
     // descriptor at a fresh frame slot.
     private ushort compileStringLiteralPointer(StringExp string_) {
         const offset = allocateBytes(sliceDescriptorSize, size_t.sizeof);
@@ -4158,7 +4162,7 @@ private struct Compiler {
     }
 
     // Emit a string literal's bytes into a fresh literal block and an
-    // `Op.loadStringLiteral` writing the expanded {ptr, length} descriptor
+    // `Op.loadStringLiteral` writing the expanded {length, ptr} descriptor
     // directly into the existing frame slot `destination` (as opposed to
     // `compileStringLiteralPointer`'s fresh one).
     private void emitLoadStringLiteral(
@@ -4262,7 +4266,7 @@ private struct Compiler {
     }
 
     // Write a compile-time string into a fresh, stable `literalBlocks` entry
-    // and emit its native {ptr, length} descriptor, returning the
+    // and emit its native {length, ptr} descriptor, returning the
     // descriptor's frame offset. Used for synthesised diagnostic messages
     // (`throwString`), whose descriptor a later `throw` dereferences, so it
     // needs the same stable-address storage as a source-level string
@@ -5544,7 +5548,7 @@ private struct Compiler {
     // A struct `S` local occupies `Type.size()` inline frame bytes at its
     // DMD-computed alignment, each field at `base + field.offset`. The block is
     // zeroed first (scalar fields default to 0, dynamic-array fields to an empty
-    // `{null, 0}` descriptor), then a struct-literal initializer stores its
+    // `{0, null}` descriptor), then a struct-literal initializer stores its
     // per-field values; a bare `S s;` leaves the zeroed block.
     private void compileStructDeclaration(VarDeclaration variable) {
         import std.conv: text;
@@ -6550,7 +6554,8 @@ private struct Compiler {
             const pointerSlot = compileSizeConstant(shared_.pointer);
             const countSlot = compileSizeConstant(shared_.count);
             _code ~= Instruction(
-                Op.copy, destination, pointerSlot, cast(ushort) size_t.sizeof,
+                Op.copy, cast(ushort) sliceDescriptorPtrOffset(destination),
+                pointerSlot, cast(ushort) size_t.sizeof,
             );
             _code ~= Instruction(
                 Op.copy,
@@ -7082,9 +7087,9 @@ private struct Compiler {
         // An lvalue array source loads its descriptor through the same Place
         // used by mutation, preserving D's shared-backing assignment. Scoped
         // to `Tarray` sources only: a `Tsarray` lvalue's storage is `dim`
-        // consecutive elements, not a {ptr, length} descriptor, so
+        // consecutive elements, not a {length, ptr} descriptor, so
         // reinterpreting it here would copy element bytes as if they were a
-        // pointer and length.
+        // length and pointer.
         if (source.type !is null && source.type.toBasetype.ty == TY.Tarray)
             if (auto place = placeOrNull(source)) {
                 const value = loadPlaceValue(*place);
@@ -7149,7 +7154,7 @@ private struct Compiler {
         // Any other string source reaching this far (a runtime
         // `object.classinfo.name`): none of the dedicated cases above
         // matched, and it is not a known dynamic-array descriptor either, so
-        // copy the ordinary {ptr, length} descriptor `compileExpression`
+        // copy the ordinary {length, ptr} descriptor `compileExpression`
         // already resolves it to.
         if (isStringType(source.type)) {
             _code ~= Instruction(
@@ -7666,7 +7671,7 @@ private struct Compiler {
     }
 
     // `p[lo .. hi]` over a pointer: write a slice descriptor
-    // {p + lo * elementSize, hi - lo} at `destination`, sharing the heap block
+    // {hi - lo, p + lo * elementSize} at `destination`, sharing the heap block
     // `p` addresses. lo and hi are element indices (not pre-scaled), compiled
     // into an adjacent {lo, hi} size_t pair the pointerSlice opcode reads.
     private void compilePointerSliceInto(
@@ -7820,7 +7825,7 @@ private struct Compiler {
         // pointer word. `cast(U*)p` repaints an existing pointer value with the
         // target element type without changing the raw address. A string's
         // basetype is also `Tarray` and its descriptor is the ordinary
-        // {ptr, length} form, so it takes the same path as any other `T[]`.
+        // {length, ptr} form, so it takes the same path as any other `T[]`.
         if (isPointerType(cast_.to)) {
             if (isDynamicArrayArgument(cast_.e1) || isStringType(cast_.e1.type))
                 return compileArrayPointer(cast_);
@@ -8048,7 +8053,8 @@ private struct Compiler {
         const pointer =
             allocateBytes(cast(uint) size_t.sizeof, size_t.sizeof);
         _code ~= Instruction(
-            Op.copy, pointer, inner, cast(ushort) size_t.sizeof,
+            Op.copy, pointer, cast(ushort) sliceDescriptorPtrOffset(inner),
+            cast(ushort) size_t.sizeof,
         );
         return pointer;
     }
@@ -8280,7 +8286,9 @@ private struct Compiler {
     ) {
         const pointer = allocateBytes(cast(uint) size_t.sizeof, size_t.sizeof);
         _code ~= Instruction(
-            Op.copy, pointer, descriptorOffset, cast(ushort) size_t.sizeof,
+            Op.copy, pointer,
+            cast(ushort) sliceDescriptorPtrOffset(descriptorOffset),
+            cast(ushort) size_t.sizeof,
         );
         return offsetPointer(pointer, elementType, indexSlot, elementByteWidth);
     }
@@ -8770,14 +8778,14 @@ private struct Compiler {
 
         const condition = compileBoolCondition(conditional.econd);
         // A dynamic-array-typed result (string included) is a 16-byte
-        // {ptr, length} descriptor, not the 8-byte pointer/scalar
+        // {length, ptr} descriptor, not the 8-byte pointer/scalar
         // `operandSize` computes for every other result kind (this
         // function's original design, per the comment below, was a
         // pointer-valued conditional -- an 8-byte value). Reinterpreting an
-        // array descriptor as 8 bytes copies only its pointer word and
-        // leaves `result`'s length word at its zeroed frame default, so a
-        // later consumer reads a well-formed-looking but null/zero-length
-        // descriptor.
+        // array descriptor as 8 bytes copies only its length word and
+        // leaves `result`'s pointer word at its zeroed frame default, so a
+        // later consumer reads a descriptor whose length looks right over a
+        // null pointer.
         const isArrayResult = conditional.type !is null &&
             conditional.type.toBasetype.ty == TY.Tarray;
         const result = allocateBytes(
@@ -8847,13 +8855,17 @@ private struct Compiler {
     // the descriptor's pointer word — not its length — feeds
     // `compileTruthValue`'s pointer branch. `dynamicArrayDescriptor` loads a
     // resolved place or materialises a non-lvalue once, so every `T[]`/string
-    // source yields the same {ptr, length} descriptor. Every other operand
+    // source yields the same {length, ptr} descriptor. Every other operand
     // goes through `compileTruthValue` directly.
     private Operand compileBoolCondition(Expression expression) {
         if (isStringType(expression.type) || isDynamicArrayArgument(expression)) {
             const array = dynamicArrayDescriptor(expression);
             return compileTruthValue(
-                Operand(array.offset, ScalarType.void_, true),
+                Operand(
+                    cast(ushort) sliceDescriptorPtrOffset(array.offset),
+                    ScalarType.void_,
+                    true,
+                ),
             );
         }
 
@@ -9378,7 +9390,7 @@ private struct Compiler {
     // (`int[] arr = [1, 2, 3];`) compiles its bytes into a fresh
     // `_program.literalBlocks` entry -- a GC-rooted block that never moves,
     // the same stable-address mechanism `appendStringLiteral` already uses
-    // -- and writes {blockPointer, count} directly into the descriptor's
+    // -- and writes {count, blockPointer} directly into the descriptor's
     // moduleData bytes right now, at registration time, exactly as
     // `moduleScalarInitializerBytes` writes a scalar's bytes directly: no
     // bytecode instruction is needed, since the compiler and the machine
@@ -9457,11 +9469,12 @@ private struct Compiler {
 
             _program.literalBlocks ~= literalBytes;
             const pointer = cast(size_t) _program.literalBlocks[$ - 1].ptr;
-            _program.moduleData[offset .. sliceDescriptorLengthOffset(offset)] =
+            const ptrOffset = sliceDescriptorPtrOffset(offset);
+            const lengthOffset = sliceDescriptorLengthOffset(offset);
+            _program.moduleData[ptrOffset .. ptrOffset + size_t.sizeof] =
                 nativeToLittleEndian(pointer);
-            _program.moduleData[
-                sliceDescriptorLengthOffset(offset) .. offset + sliceDescriptorSize
-            ] = nativeToLittleEndian(cast(size_t) literalCount);
+            _program.moduleData[lengthOffset .. lengthOffset + size_t.sizeof] =
+                nativeToLittleEndian(cast(size_t) literalCount);
         }
         return declarationRecordView(declaration).moduleDynamicArrayOrNull;
     }
@@ -9491,8 +9504,8 @@ private struct Compiler {
     // so on) -- each inner array is built into its own stable
     // `literalBlocks` entry first, the same way `compileDynamicArrayInto`'s
     // own array-of-arrays literal branch builds each row into its own heap
-    // block at runtime, so the outer bytes hold one 16-byte `{pointer,
-    // count}` descriptor per row rather than raw scalar bytes. The
+    // block at runtime, so the outer bytes hold one 16-byte `{count,
+    // pointer}` descriptor per row rather than raw scalar bytes. The
     // recursive call below re-derives `elementIsArray` from each row's own
     // `Expression.type` (`arrayElementIsArray`) rather than being told a
     // fixed depth by its caller, so a row that is itself another
@@ -9581,12 +9594,12 @@ private struct Compiler {
                 const rowPointer =
                     cast(size_t) _program.literalBlocks[$ - 1].ptr;
                 const rowOffset = elementIndex * sliceDescriptorSize;
-                bytes[rowOffset .. sliceDescriptorLengthOffset(rowOffset)] =
+                const rowPtrOffset = sliceDescriptorPtrOffset(rowOffset);
+                const rowLengthOffset = sliceDescriptorLengthOffset(rowOffset);
+                bytes[rowPtrOffset .. rowPtrOffset + size_t.sizeof] =
                     nativeToLittleEndian(rowPointer);
-                bytes[
-                    sliceDescriptorLengthOffset(rowOffset)
-                        .. rowOffset + sliceDescriptorSize
-                ] = nativeToLittleEndian(cast(size_t) rowCount);
+                bytes[rowLengthOffset .. rowLengthOffset + size_t.sizeof] =
+                    nativeToLittleEndian(cast(size_t) rowCount);
             }
             return bytes;
         }
@@ -10311,14 +10324,16 @@ private struct Compiler {
             cast(ushort) size_t.sizeof,
         );
 
-        // Build a throwaway {pointer, length} descriptor over `base` and go
+        // Build a throwaway {length, pointer} descriptor over `base` and go
         // through `subSliceOp` instead of the unchecked `pointerSliceOp`, so
         // an out-of-range bound throws instead of silently reading or
         // writing past the array's frame storage.
         const sourceDescriptor =
             allocateBytes(sliceDescriptorSize, size_t.sizeof);
         _code ~= Instruction(
-            Op.copy, sourceDescriptor, address.offset,
+            Op.copy,
+            cast(ushort) sliceDescriptorPtrOffset(sourceDescriptor),
+            address.offset,
             cast(ushort) size_t.sizeof,
         );
         _code ~= Instruction(
@@ -10457,7 +10472,7 @@ private struct Compiler {
             }
 
             // `T[][]` (`Tarray`-row): unlike a `T[N]` row, a `T[]` row is
-            // itself just a 16-byte `{ptr, length}` descriptor, the same
+            // itself just a 16-byte `{length, ptr}` descriptor, the same
             // reference-semantics value every other broadcast-fill element
             // is. There is no separately heap-allocated row block to write
             // through -- broadcasting the rhs row means writing its own
@@ -10594,7 +10609,7 @@ private struct Compiler {
         // A string element (`string[2]`) is checked before the general
         // Tarray case below, whose element basetype a string also matches:
         // each element must be a literal (`stringLiteralOf` throws
-        // otherwise), expanded directly into the native {ptr, length}
+        // otherwise), expanded directly into the native {length, ptr}
         // descriptor its 16-byte slot holds, the same width every other
         // dynamic-array element uses.
         if (isStringType(elementType)) {
@@ -10805,37 +10820,51 @@ private struct Compiler {
         return Operand(offset, ScalarType.bool_);
     }
 
-    // `dg1 == dg2` / `dg1 is dg2` (and the negated forms): compare the two
-    // 8-byte halves of the 16-byte `{functionIndex, context}` pair -- there
-    // is no 16-byte equality opcode -- and combine them with the same
-    // short-circuiting `&&` shape `compileStructIdentity` above uses for a
-    // multi-field struct, specialised to exactly two fixed-offset fields.
+    // `dg1 == dg2` / `dg1 is dg2` (and the negated forms): a delegate is the
+    // 16-byte `{functionIndex, context}` pair, whose two words sit at the
+    // operand's own offset and one machine word past it.
     private Operand compileDelegateEquality(
         in ushort left,
         in ushort right,
         in bool invert,
     ) {
+        return compileWordPairEquality(
+            left, cast(ushort) (left + size_t.sizeof),
+            right, cast(ushort) (right + size_t.sizeof),
+            invert,
+        );
+    }
+
+    // Bitwise equality of a two-word value, given each side's two word
+    // offsets -- there is no 16-byte equality opcode, so compare the words
+    // with the same short-circuiting `&&` shape `compileStructIdentity`
+    // above uses for a multi-field struct, specialised to exactly two
+    // fields. The caller names the two words, since a two-word value's field
+    // order is its own (a slice descriptor is `{length, ptr}`, a delegate
+    // `{functionIndex, context}`).
+    private Operand compileWordPairEquality(
+        in ushort leftFirst,
+        in ushort leftSecond,
+        in ushort rightFirst,
+        in ushort rightSecond,
+        in bool invert,
+    ) {
         const result = allocate(ScalarType.bool_);
         _code ~= Instruction(Op.loadConstant, result, constantIndex(1), 1);
 
-        const functionEqual = allocate(ScalarType.bool_);
-        _code ~= Instruction(Op.equal8, functionEqual, left, right);
-        const functionFalseJump =
-            emitJumpIfFalse(Operand(functionEqual, ScalarType.bool_));
+        const firstEqual = allocate(ScalarType.bool_);
+        _code ~= Instruction(Op.equal8, firstEqual, leftFirst, rightFirst);
+        const firstFalseJump =
+            emitJumpIfFalse(Operand(firstEqual, ScalarType.bool_));
 
-        const contextEqual = allocate(ScalarType.bool_);
-        _code ~= Instruction(
-            Op.equal8,
-            contextEqual,
-            cast(ushort) (left + size_t.sizeof),
-            cast(ushort) (right + size_t.sizeof),
-        );
-        const contextFalseJump =
-            emitJumpIfFalse(Operand(contextEqual, ScalarType.bool_));
+        const secondEqual = allocate(ScalarType.bool_);
+        _code ~= Instruction(Op.equal8, secondEqual, leftSecond, rightSecond);
+        const secondFalseJump =
+            emitJumpIfFalse(Operand(secondEqual, ScalarType.bool_));
 
         const endJump = emitJump;
-        patchJump(functionFalseJump);
-        patchJump(contextFalseJump);
+        patchJump(firstFalseJump);
+        patchJump(secondFalseJump);
         _code ~= Instruction(Op.loadConstant, result, constantIndex(0), 1);
         patchJump(endJump);
 
@@ -10860,6 +10889,23 @@ private struct Compiler {
                 identity.op == EXP.notIdentity,
             );
 
+        // `a is b` on dynamic arrays (`string` included): two slices are the
+        // same slice only when both descriptor words agree, so a one-word
+        // comparison at the descriptor's base offset would answer with the
+        // length alone -- calling two distinct allocations of equal length
+        // the same slice, and an empty interior slice `null`.
+        if (isDynamicArrayIdentity(identity)) {
+            const left = identityDescriptorOffset(identity.e1);
+            const right = identityDescriptorOffset(identity.e2);
+            return compileWordPairEquality(
+                cast(ushort) sliceDescriptorLengthOffset(left),
+                cast(ushort) sliceDescriptorPtrOffset(left),
+                cast(ushort) sliceDescriptorLengthOffset(right),
+                cast(ushort) sliceDescriptorPtrOffset(right),
+                identity.op == EXP.notIdentity,
+            );
+        }
+
         const lhs = compileExpression(identity.e1);
         const rhs = compileExpression(identity.e2);
         const op = identity.op == EXP.notIdentity
@@ -10868,6 +10914,38 @@ private struct Compiler {
         const offset = allocate(ScalarType.bool_);
         _code ~= Instruction(op, offset, lhs.offset, rhs.offset);
         return Operand(offset, ScalarType.bool_);
+    }
+
+    // Whether `identity` compares two dynamic arrays. A bare `null` literal
+    // counts as one when the other side is an array: DMD leaves such a
+    // literal typed `typeof(null)` in some positions, but the comparison is
+    // still the array-descriptor one.
+    private static bool isDynamicArrayIdentity(IdentityExp identity) {
+        import dmd.astenums: TY;
+
+        static bool isArrayOrNull(Expression expression) {
+            return expression.type.toBasetype.ty == TY.Tarray ||
+                expression.isNullExp !is null;
+        }
+
+        return (identity.e1.type.toBasetype.ty == TY.Tarray ||
+                identity.e2.type.toBasetype.ty == TY.Tarray) &&
+            isArrayOrNull(identity.e1) && isArrayOrNull(identity.e2);
+    }
+
+    // The slice-descriptor base offset for one side of a dynamic-array
+    // identity comparison. A `null` literal DMD left typed `typeof(null)`
+    // has no descriptor to load, so materialise the zeroed one it denotes.
+    private ushort identityDescriptorOffset(Expression expression) {
+        import dmd.astenums: TY;
+
+        if (expression.type.toBasetype.ty != TY.Tarray) {
+            const offset = allocateBytes(sliceDescriptorSize, size_t.sizeof);
+            _code ~= Instruction(Op.nullSlice, offset);
+            return offset;
+        }
+
+        return dynamicArrayDescriptor(expression).offset;
     }
 
     private Operand compileIntBinaryExpression(
@@ -11259,7 +11337,7 @@ private struct Compiler {
         CallExp call,
         FuncDeclaration function_,
         in ParameterLayout layout,
-        in ushort nativeStructReceiverOffset = noOutParameterOffset,
+        in ushort nativeStructReceiverOffset = noReceiverOffset,
         imported!"dmd.mtype".TypeStruct nativeStructReceiverType = null,
     ) {
         import dmd.astenums: TY;
@@ -11277,16 +11355,22 @@ private struct Compiler {
         const argumentCount = call.arguments is null ? 0 : call.arguments.length;
         const argumentArea = allocateNativeArgumentArea(argumentCount);
         auto argumentTypes = new Type[argumentCount];
-        auto outParameterOffsets = new ushort[argumentCount];
-        // Every argument must be a scalar `int`/`long`/`size_t`, a
-        // string-literal `const(char)*`, a `&local` out parameter, or a
-        // pointer local passed by value; any other shape bails.
+        // The return-type list above is the only compile-time gate on the
+        // call as a whole. Individual arguments are not similarly gated: a
+        // scalar, a string-literal `const(char)*`, a `&local` out parameter,
+        // and a pointer local passed by value each get their own emission
+        // below, but any other shape (a `double`, a `float`, a small int, a
+        // by-value slice or struct, a delegate, a `ref`/`out` parameter, ...)
+        // falls through to the plain `emitCallArgument` call at the bottom of
+        // the loop rather than bailing here. `quickbite.ffi.ffi` validation
+        // at the actual native-call boundary is the real gate for those
+        // shapes; a shape it rejects surfaces as the no-available-source
+        // diagnostic at run time, not a compile-time decline.
         foreach (index; 0 .. argumentCount) {
             auto argument = (*call.arguments)[index];
             const slot = cast(ushort)
                 (argumentArea + index * nativeArgumentSlotSize);
             argumentTypes[index] = argument.type.toBasetype;
-            outParameterOffsets[index] = noOutParameterOffset;
 
             const argumentTy = argument.type.toBasetype.ty;
             if (argumentTy == TY.Tint32 || argumentTy == TY.Tint64 ||
@@ -11346,19 +11430,15 @@ private struct Compiler {
                 continue;
             }
 
-            // `&local` out parameter: `SymOffExp` (as `symbolAddress`
-            // also matches), zero offset, tracked pointer local. Slot is
-            // never read (ffi.md §34.8: type is unconditionally an out
-            // parameter); only the frame offset is recorded.
+            // `&local` out parameter (e.g. strtod's `&endptr`): the slot holds
+            // the local's own frame address, which the callee writes through,
+            // so it needs nothing the ordinary argument path does not do.
             emitCallArgument(slot, false, argument);
-            auto outLocal = addressOfLocalOffset(argument);
-            if (outLocal !is null)
-                outParameterOffsets[index] = *outLocal;
         }
 
         return emitNativeCall(
-            function_, argumentTypes, argumentArea, outParameterOffsets,
-            noOutParameterOffset, null, nativeStructReceiverOffset,
+            function_, argumentTypes, argumentArea,
+            noReceiverOffset, null, nativeStructReceiverOffset,
             nativeStructReceiverType,
         );
     }
@@ -11389,7 +11469,6 @@ private struct Compiler {
         const argumentCount = call.arguments is null ? 0 : call.arguments.length;
         const argumentArea = allocateNativeArgumentArea(argumentCount);
         auto argumentTypes = new Type[argumentCount];
-        auto outParameterOffsets = new ushort[argumentCount];
         foreach (index; 0 .. argumentCount) {
             auto argument = (*call.arguments)[index];
             if (argument.type is null)
@@ -11401,7 +11480,6 @@ private struct Compiler {
                 return null;
 
             argumentTypes[index] = argument.type.toBasetype;
-            outParameterOffsets[index] = noOutParameterOffset;
             emitCallArgument(
                 cast(ushort) (argumentArea + index * nativeArgumentSlotSize),
                 false,
@@ -11413,43 +11491,9 @@ private struct Compiler {
             function_,
             argumentTypes,
             argumentArea,
-            outParameterOffsets,
             receiver.offset,
             receiverType,
         );
-    }
-
-    private ushort* addressOfLocalOffset(Expression argument) {
-        auto target = argument;
-        while (auto cast_ = target.isCastExp)
-            target = cast_.e1;
-
-        if (auto symOff = target.isSymOffExp) {
-            if (symOff.offset != 0)
-                return null;
-            auto declaration = symOff.var.isVarDeclaration;
-            return declaration is null ? null : declarationRecordView(declaration).scalarOrNull;
-        }
-
-        auto address = target.isAddrExp;
-        if (address is null)
-            return null;
-
-        target = address.e1;
-        while (auto cast_ = target.isCastExp)
-            target = cast_.e1;
-
-        auto variable = target.isVarExp;
-        auto declaration = variable is null
-            ? null
-            : variable.var.isVarDeclaration;
-        if (declaration is null)
-            return null;
-        if (auto local = declarationRecordView(declaration).scalarOrNull)
-            return local;
-        if (auto struct_ = declarationRecordView(declaration).struct_OrNull)
-            return &struct_.offset;
-        return null;
     }
 
     // Emit a string literal's bytes plus a NUL terminator into a fresh,
@@ -11498,10 +11542,9 @@ private struct Compiler {
         FuncDeclaration function_,
         Type[] argumentTypes,
         in ushort argumentArea,
-        in ushort[] outParameterOffsets,
-        in ushort nativeClassReceiverOffset = noOutParameterOffset,
+        in ushort nativeClassReceiverOffset = noReceiverOffset,
         imported!"dmd.mtype".TypeClass nativeClassReceiverType = null,
-        in ushort nativeStructReceiverOffset = noOutParameterOffset,
+        in ushort nativeStructReceiverOffset = noReceiverOffset,
         imported!"dmd.mtype".TypeStruct nativeStructReceiverType = null,
     ) {
         import dmd.astenums: TY;
@@ -11510,7 +11553,7 @@ private struct Compiler {
         // `Type` and DMD's `toBasetype`/`nextOf` are non-const methods.
         auto returnType = function_.type.toBasetype.nextOf;
         // A dynamic-array return (e.g. `gc_getArrayUsed`'s `void[]`) has no
-        // scalar tag; it is a 16-byte {ptr, length} slice descriptor, the same
+        // scalar tag; it is a 16-byte {length, ptr} slice descriptor, the same
         // shape every other array-typed frame slot uses.
         const isArrayReturn = returnType.toBasetype.ty == TY.Tarray;
         // A struct return (e.g. `GC.qalloc`'s `BlkInfo`, libc's `div_t`) is an
@@ -11533,7 +11576,6 @@ private struct Compiler {
             NativeCall(
                 function_,
                 argumentTypes,
-                outParameterOffsets.dup,
                 nativeClassReceiverOffset,
                 nativeClassReceiverType,
                 nativeStructReceiverOffset,
@@ -12431,7 +12473,8 @@ private struct Compiler {
                     const count = typeFacts(staticSource.type).byteWidth /
                         typeFacts(cast(Type) element).byteWidth;
                     _code ~= Instruction(
-                        Op.copy, slot, source.offset,
+                        Op.copy, cast(ushort) sliceDescriptorPtrOffset(slot),
+                        source.offset,
                         cast(ushort) size_t.sizeof,
                     );
                     _code ~= Instruction(
@@ -12827,7 +12870,7 @@ private struct Compiler {
     }
 
     // True when the associative array's key is compared by the content its
-    // {ptr, length} descriptor points at (`keysEqual`'s `keyIsArray`,
+    // {length, ptr} descriptor points at (`keysEqual`'s `keyIsArray`,
     // machine.d), rather than by the descriptor's own bytes --
     // two separately-constructed but content-equal `string`s have different
     // backing pointers, so a raw descriptor compare would wrongly treat them
@@ -12836,8 +12879,8 @@ private struct Compiler {
     // miscompare by the wrong element width.
     //
     // A struct key that is itself nothing but a single plain-`string`
-    // field (`struct Name { string text; }`) has the exact same {ptr,
-    // length} byte layout as a bare `string` -- there are no interleaved
+    // field (`struct Name { string text; }`) has the exact same {length,
+    // ptr} byte layout as a bare `string` -- there are no interleaved
     // scalar fields to keep raw, so it is content-compared the same way
     // (`assocArray.structKeyWithStringMemberComparesStructurally`,
     // `tests/ut/backends/runner/lang/arrays.d`). A struct with any other
@@ -13493,7 +13536,7 @@ private struct Compiler {
 
     // `assert(cond, message)` with an explicit string message that is neither
     // a `_d_assert_fail` call nor the verbatim-logical-expression form: throw
-    // the message string itself on failure, its native {ptr, length}
+    // the message string itself on failure, its native {length, ptr}
     // descriptor materialised the same way any other string source is — a
     // `StringExp` literal (`assert(1 == 2, "oops")`, folded to
     // `assert(false, "oops")`), a struct field, or a `string` local. A
@@ -13604,6 +13647,16 @@ private struct Compiler {
         if ((*call.arguments)[1].type.toBasetype.ty == TY.Tdelegate ||
             (*call.arguments)[2].type.toBasetype.ty == TY.Tdelegate)
             return compileBoolConditionAssert(assert_.e1, op);
+
+        // `is`/`!is` over dynamic arrays: identity is the whole two-word slice
+        // descriptor, which `assert_.e1` already expresses. Compile that
+        // condition the same way the struct and delegate cases above do; the
+        // rendered-operand route below reads a single word and would answer
+        // with the length alone.
+        if (op == "is" || op == "!is")
+            if (auto identity = assert_.e1.isIdentityExp)
+                if (isDynamicArrayIdentity(identity))
+                    return compileBoolConditionAssert(assert_.e1, op);
 
         // Pointer relations `p < q`, `p == q`, `p is q` (and negations) compare
         // raw `size_t` pointer values; `is`/`!is` arrive only over pointers.
@@ -13819,15 +13872,16 @@ private struct Compiler {
     // Compile an expression to a one-byte boolean. A struct identity `a is b`
     // (DMD's lowering of a POD struct `==`) compares the two inline blocks
     // byte-wise; a delegate identity (`dg1 is dg2`, no such lowering since a
-    // delegate has no `opEquals`) routes through the same two-halves
-    // comparison `compileEqualExpression`'s `Tdelegate` branch uses;
-    // everything else is an ordinary boolean expression (an `opEquals` call,
-    // an `opCmp` relation, a `&&` chain).
+    // delegate has no `opEquals`) and a dynamic-array identity both compare a
+    // two-word value, which `compileIdentityExpression` already knows how to
+    // do; everything else is an ordinary boolean expression (an `opEquals`
+    // call, an `opCmp` relation, a `&&` chain).
     private Operand compileBoolValue(Expression expression) {
         import dmd.astenums: TY;
 
         if (auto identity = expression.isIdentityExp) {
-            if (identity.e1.type.toBasetype.ty == TY.Tdelegate)
+            if (identity.e1.type.toBasetype.ty == TY.Tdelegate ||
+                isDynamicArrayIdentity(identity))
                 return compileIdentityExpression(identity);
             return compileStructIdentity(identity);
         }
@@ -14203,7 +14257,8 @@ private struct Compiler {
                 ScalarType.void_,
             );
             _code ~= Instruction(
-                Op.copy, view, rowAddress.offset,
+                Op.copy, cast(ushort) sliceDescriptorPtrOffset(view),
+                rowAddress.offset,
                 cast(ushort) size_t.sizeof,
             );
             _code ~= Instruction(
@@ -14506,7 +14561,7 @@ private struct Compiler {
     // Broadcast one already-compiled row value (`value`, `rowByteSize`
     // bytes) into every element of a `[lo .. hi)` range of a `T[N][]`
     // destination (`destination`, a slice descriptor over that range). Each
-    // destination slot is its own 16-byte `{ptr, length}` row descriptor
+    // destination slot is its own 16-byte `{length, ptr}` row descriptor
     // pointing at a separately heap-allocated block (`Op.allocArray2D`), so
     // this writes through each row's existing `.ptr` in a runtime loop --
     // `emitSliceFill`'s flat byte-fill would instead overwrite the row
@@ -14533,7 +14588,9 @@ private struct Compiler {
         const rowPointer =
             allocateBytes(cast(uint) size_t.sizeof, size_t.sizeof);
         _code ~= Instruction(
-            Op.copy, rowPointer, rowDescriptor, cast(ushort) size_t.sizeof,
+            Op.copy, rowPointer,
+            cast(ushort) sliceDescriptorPtrOffset(rowDescriptor),
+            cast(ushort) size_t.sizeof,
         );
         emitPointerStore(value, rowPointer, compileSizeConstant(0), rowByteSize);
 
@@ -14586,7 +14643,7 @@ private struct Compiler {
             allocateBytes(sliceDescriptorSize, size_t.sizeof);
         _code ~= Instruction(
             Op.copy,
-            cast(ushort) (mismatchDestination + size_t.sizeof),
+            cast(ushort) sliceDescriptorLengthOffset(mismatchDestination),
             destinationLength,
             cast(ushort) size_t.sizeof,
         );
@@ -14594,7 +14651,7 @@ private struct Compiler {
             allocateBytes(sliceDescriptorSize, size_t.sizeof);
         _code ~= Instruction(
             Op.copy,
-            cast(ushort) (mismatchSource + size_t.sizeof),
+            cast(ushort) sliceDescriptorLengthOffset(mismatchSource),
             sourceLength,
             cast(ushort) size_t.sizeof,
         );
@@ -14604,7 +14661,9 @@ private struct Compiler {
         const sourcePointer =
             allocateBytes(cast(uint) size_t.sizeof, size_t.sizeof);
         _code ~= Instruction(
-            Op.copy, sourcePointer, source, cast(ushort) size_t.sizeof,
+            Op.copy, sourcePointer,
+            cast(ushort) sliceDescriptorPtrOffset(source),
+            cast(ushort) size_t.sizeof,
         );
         const index = compileSizeConstant(0);
         const conditionIndex = _code.length;
@@ -14622,7 +14681,7 @@ private struct Compiler {
         _code ~= Instruction(
             Op.copy,
             destinationPointer,
-            rowDescriptor,
+            cast(ushort) sliceDescriptorPtrOffset(rowDescriptor),
             cast(ushort) size_t.sizeof,
         );
         const sourceRow = allocateBytes(rowByteSize, 1);
@@ -15107,7 +15166,7 @@ private struct Compiler {
         // A static-array-typed literal (`[value, value]` assigned into an
         // `int[2]*` dereference, e.g.) is an inline value block, like a
         // struct literal — not a heap-backed slice, which would materialise
-        // a throwaway {ptr, length} descriptor instead of the array's own
+        // a throwaway {length, ptr} descriptor instead of the array's own
         // bytes.
         if (array.type.toBasetype.ty == TY.Tsarray) {
             const offset = allocateStructBlock(array.type);
@@ -15772,7 +15831,7 @@ private struct DeclarationRecord {
 
 // A string literal's stable-block placement: `blockIndex` into
 // `Program.literalBlocks`, `length` in elements (code units), matching the
-// native {ptr, length} descriptor's own {index, length} literal-load operand
+// native {length, ptr} descriptor's own {index, length} literal-load operand
 // pair.
 private struct StringLiteralData {
     ushort blockIndex;

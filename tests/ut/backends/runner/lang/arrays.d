@@ -3939,7 +3939,7 @@ static foreach (backend; AliasSeq!(Bytecode)) {
 // (`assocArrayKeyMeta`/`assocArrayKeyOffset`, raw-byte comparison, no string
 // member) is supported (`structKeyRawBytesConstructLookupAndIterate` above).
 // A struct key that is itself nothing but a single plain-`string` field has
-// the exact same {ptr, length} byte layout as a bare `string` -- no
+// the exact same {length, ptr} byte layout as a bare `string` -- no
 // interleaved scalar fields to keep raw -- so `assocArrayKeyIsArray`
 // (compiler.d) now recognises that shape and routes it through the same
 // content, not descriptor-byte, comparison a bare `string` key already gets
@@ -4476,27 +4476,15 @@ static foreach (backend; Matrix!(
     }
 }
 
-// A dynamic-array-typed value (`int[][int]`): the value slot is a 16-byte
-// slice descriptor, not an inline scalar. `a[1] = [10, 20, 30]` lowers to a
-// pointer-index store into the AA's value slot
-// (`impl.d`'s `storeNativePointerElement` -> `native_call_adapter.
-// marshalNative`), and `marshalNative` only takes its direct
-// `place_value.writeValue` path when `place_value.isPlaceComposable`
-// accepts the element type; that predicate has no `Tarray` (dynamic-array)
-// arm, so a dynamic-array-valued AA element always falls through to the
-// legacy boxed `marshalArgument` reconstruction path instead (`ai/plans/
-// value.md` decision 18 / item 5, not yet deleted). The read side composes
-// correctly; the boxed fallback is what writes the wrong bytes. Fixing this
-// means extending `isPlaceComposable` (and `valueMatchesComposablePlace`)
-// to a `Tarray` arm -- a native-call-marshalling-seam change item 5 already
-// owns, not an AA-local fix -- so this stays a separate, unconfirmed
-// backend gap.
+// An associative array whose value type is itself a dynamic array
+// (`int[][int]`): each entry holds an array reference, not an inline scalar,
+// so inserting a value, reading its length and its elements back, mutating an
+// element in place, and copying the whole value out all have to agree about
+// the same elements. `Interpreter` does not round-trip such an entry; the
+// mechanism is unconfirmed, so it stays off the matrix.
 static foreach (backend; Matrix!(
     Omit!(Interpreter, Because.unconfirmed,
-        "AA dynamic-array-valued element write falls through "
-            ~ "native_call_adapter.marshalNative's boxed fallback because "
-            ~ "place_value.isPlaceComposable has no Tarray arm (value.md "
-            ~ "item 5)"),
+        "AA entry whose value type is a dynamic array does not round-trip"),
 )) {
     @("assocArray.dynamicArrayValueInsertsReadsAndMutates." ~
         backend.stringof)
@@ -6620,7 +6608,7 @@ static foreach (backend; AliasSeq!(Interpreter)) {
 /++
     Plain reassignment of an already-declared `string` local from another
     `string` local (`b = a;`) must copy the full slice descriptor. A `string`
-    local's slot holds the same native 16-byte {ptr, length} descriptor as any
+    local's slot holds the same native 16-byte {length, ptr} descriptor as any
     other dynamic array, which the scalar type mapping reports as size 0, so a
     naive scalar-sized copy would silently write nothing and leave `b`
     unchanged.
@@ -6678,7 +6666,7 @@ static foreach (backend; Matrix!()) {
 /++
     Plain reassignment of an already-declared `string` local from a sub-slice
     of another `string` local (`b = a[lo .. hi];`) exercises the same
-    reassignment path with a native {ptr, length}-descriptor sub-slice
+    reassignment path with a native {length, ptr}-descriptor sub-slice
     right-hand side.
 +/
 static foreach (backend; Matrix!()) {
@@ -6708,7 +6696,7 @@ static foreach (backend; Matrix!()) {
 /++
     A sub-slice of a heap-backed `string` (produced by `.idup`, not a
     data-segment literal) reads the sliced bytes and length by resolving the
-    source's native {ptr, length} descriptor to its real heap block, not the
+    source's native {length, ptr} descriptor to its real heap block, not the
     program's read-only data segment.
 +/
 static foreach (backend; Matrix!()) {
@@ -6744,7 +6732,7 @@ static foreach (backend; Matrix!()) {
 /++
     Reassigning an already-declared `string` local (`b = "x";`) from a
     heap-backed `string` source (`.idup`) must copy the full 16-byte
-    {ptr, length} descriptor; a partial copy would silently drop bytes of the
+    {length, ptr} descriptor; a partial copy would silently drop bytes of the
     pointer or the length.
 +/
 static foreach (backend; Matrix!()) {
@@ -7737,6 +7725,154 @@ static foreach (backend; Matrix!(
                 values[0][0] = 55;
                 assert(src[0][0] == 7);
                 assert(values[1][0] == 7);
+            }
+        });
+    }
+}
+
+// `is` on a dynamic array compares the whole two-word slice descriptor --
+// both the pointer and the length -- so two separately allocated arrays
+// holding equal elements compare equal by `==` and non-identical by `is`.
+// Ctfe and Interpreter compare the elements instead; the block below pins
+// that.
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.diverges, "see sibling pin below (Ctfe, Interpreter)"),
+    Omit!(Interpreter, Because.diverges,
+        "see sibling pin below (Ctfe, Interpreter)"),
+)) {
+    @("dynamicArray.equalContentsAreNotIdentical." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            unittest {
+                int first = 1;
+                int[] a = [first, first + 1];
+                int[] b = [first, first + 1];
+
+                assert(a == b);
+                assert(a !is b);
+                assert(!(a is b));
+            }
+        });
+    }
+}
+
+// DMD's CTFE engine has no addresses to compare, so it answers `is` on two
+// dynamic arrays by comparing their elements; the Interpreter, which models
+// the same value world, answers the same way. Both therefore call two
+// distinct allocations holding equal elements identical.
+static foreach (backend; AliasSeq!(Ctfe, Interpreter)) {
+    @("dynamicArray.equalContentsAreNotIdentical." ~ backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            unittest {
+                int first = 1;
+                int[] a = [first, first + 1];
+                int[] b = [first, first + 1];
+
+                assert(a is b);
+            }
+        });
+    }
+}
+
+// The length half of the same descriptor: two slices sharing a start pointer
+// but differing in length are not identical, while a slice spanning the whole
+// array is identical to the array itself.
+static foreach (backend; Matrix!()) {
+    @("dynamicArray.slicesDifferingOnlyInLengthAreNotIdentical." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            unittest {
+                int first = 1;
+                int[] a = [first, first + 1, first + 2];
+
+                assert(a[0 .. 1] !is a[0 .. 2]);
+                assert(a[0 .. 2] is a[0 .. 2]);
+                assert(a is a[0 .. $]);
+            }
+        });
+    }
+}
+
+// An empty slice taken from a live array keeps that array's pointer, so it is
+// not `null` even though its length matches `null`'s; a default-initialised
+// array, whose pointer is null too, is. Interpreter diverges; the block below
+// pins it.
+static foreach (backend; Matrix!(
+    Omit!(Interpreter, Because.diverges, "see sibling pin below (Interpreter)"),
+)) {
+    @("dynamicArray.emptyInteriorSliceIsNotNull." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            unittest {
+                int first = 1;
+                int[] a = [first, first + 1];
+                int[] empty = a[0 .. 0];
+                int[] none;
+
+                assert(empty.length == 0);
+                assert(empty !is null);
+                assert(none is null);
+            }
+        });
+    }
+}
+
+// Comparing elements rather than descriptors also loses D's distinction
+// between an empty slice and a null one, since neither has any elements. Ctfe
+// keeps that distinction, so only the Interpreter is pinned here.
+static foreach (backend; AliasSeq!(Interpreter)) {
+    @("dynamicArray.emptyInteriorSliceIsNotNull." ~ backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            unittest {
+                int first = 1;
+                int[] a = [first, first + 1];
+
+                assert(a[0 .. 0] is null);
+            }
+        });
+    }
+}
+
+// Compiled D merges identical string literals into one `.rodata` address, so
+// two occurrences of the same literal are `is`-identical -- unlike two
+// separately allocated arrays with equal content (`equalContentsAreNotIdentical`
+// above). `ai/plans/bytecode.md`'s "Live hazards and divergences" records this
+// as a pre-existing hazard; the block below pins Bytecode's divergence.
+static foreach (backend; Matrix!(
+    Omit!(Bytecode, Because.diverges, "see sibling pin below (Bytecode)"),
+)) {
+    @("stringLiteral.identicalLiteralsAreIdentical." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            unittest {
+                string s = "ab";
+                string t = "ab";
+
+                assert(s is t);
+            }
+        });
+    }
+}
+
+// Every occurrence of a string literal gets its own `literalBlocks` entry
+// (`emitStringLiteralArgument`/data-segment literal writers, `compiler.d`),
+// so two identical literals never share an address on Bytecode.
+static foreach (backend; AliasSeq!(Bytecode)) {
+    @("stringLiteral.identicalLiteralsAreIdentical." ~ backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            unittest {
+                string s = "ab";
+                string t = "ab";
+
+                assert(s !is t);
             }
         });
     }

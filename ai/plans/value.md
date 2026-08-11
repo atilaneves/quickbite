@@ -2,15 +2,30 @@
 
 ## Status
 
-This plan records the removal of the shared `quickbite.lang.Value` and the
-tree-walking interpreter's move to native-layout storage. Decisions 15-18
-(July 2026) commit the end state — native-layout storage, one data-pointer
-representation (the host address), no FFI marshalling — with deleting
-`Value` as the completion signal. The Interpreter's value removal is complete:
-its remaining narrow expression currency is `ExpressionResult`, and its
-package and tests contain no `Value` or `RuntimeValue` compatibility spelling.
-The shared `Value` deletion remains gated by the IR and Bytecode formatter
-migrations. Production Interpreter optimisation waits for that deletion;
+This plan owns the tree-walking Interpreter's value representation and
+native-call adapter, and the retirement of the shared `quickbite.lang.Value`.
+The goal is the prime directive plus simplicity: minimal incremental
+edit-to-test-verdict latency, with no machinery that does not pay for itself.
+A universal value carrier is condemned by its costs — per-expression boxing
+and allocation, tag dispatch between the static type and the bytes, value
+conversion at the FFI boundary — not by name. Decisions 15-19 commit the end
+state: native-layout storage as the only value authority, destination-passing
+evaluation (decision 7), no result materialization on the unittest path, and
+an FFI boundary that sees only typed addresses.
+
+The precedent survey and primary-source evidence for these decisions live in
+`RESEARCH.md`. This plan is the normative contract when the survey describes
+an alternative or hypothesis rather than a settled choice.
+
+`ExpressionResult` (a 25-alternative `SumType`) is still the Interpreter's
+universal expression currency: every recursive expression evaluation returns
+it, statement execution materializes a result unconditionally, an assignment
+round-trips its right-hand side through the carrier before the place write,
+and the native-call adapter's request/result structs carry it in both
+directions. Deleting `expression_result.d` is the Interpreter-side completion
+marker (items 8-10). Deleting the shared `Value` is a separate marker gated
+by the IR and Bytecode formatter migrations; neither marker waits for the
+other. Production Interpreter optimisation waits for the carrier deletion;
 broader language expansion may proceed independently. The Bytecode refactor
 and its address-only FFI migration proceed in a file-disjoint parallel lane.
 Current capabilities:
@@ -40,21 +55,23 @@ Current capabilities:
   that recursive expression walk. Once stored, conservative scanning of the
   native destination keeps the allocation live; no allocation-identity root
   registry crosses calls or activations.
-- `ExpressionResult` is transient expression currency. Its sole aggregate arm
-  owns or borrows typed native DMD-layout storage, and its sole data-pointer arm
-  is a host address. It has no structural array, struct, associative-array,
-  entry, class-object, undisplayable, formatting, or string-display-metadata
-  arms. Aggregate construction always has a DMD type, and aggregate place
-  writes copy the complete typed byte span. `ExpressionResult` is never local,
-  alias, or cross-frame storage authority. Diagnostics and the temporary
+- `ExpressionResult`'s sole aggregate arm owns or borrows typed native
+  DMD-layout storage, and its sole data-pointer arm is a host address. It has
+  no structural array, struct, associative-array, entry, class-object,
+  undisplayable, formatting, or string-display-metadata arms. Aggregate
+  construction always has a DMD type, and aggregate place writes copy the
+  complete typed byte span. `ExpressionResult` is never local, alias, or
+  cross-frame storage authority. Diagnostics and the temporary
   `std.conv.text` interceptor render from the expression's DMD type and typed
   scalar accessors at their consumer sites.
 - The Interpreter native-call adapter has one preparation path and one
-  execution path. Preparation selects typed argument, receiver, and result
-  addresses; execution calls the address-only `quickbite.ffi.ffi` bridge.
-  There is no expression-result marshal/reify/writeback fallback. Callback
-  lifetime and re-entry and native exception translation stay adapter-owned
-  because they are Interpreter mechanics, not value conversion.
+  execution path calling the address-only `quickbite.ffi.ffi` bridge.
+  Preparation reuses an operand's existing native address when one matches;
+  an address-less operand is materialized through the carrier, and every
+  native result is still read back into it — both remaining carrier
+  crossings are queue work (item 10). Callback lifetime and re-entry and
+  native exception translation stay adapter-owned because they are
+  Interpreter mechanics, not value conversion.
 
 ## Audit findings (June 2026)
 
@@ -121,33 +138,39 @@ longer imports or aliases it.
    where it diverges, its behaviour is characterized, not treated as
    truth (`ai/plans/single-oracle.md`).
 
-7. The tree walker may temporarily need an interpreter-package-private
-   carrier for expression results: immediate scalar rvalues, typed addresses,
-   callables, and interpreter metadata. That carrier is implementation
-   machinery, not a permanent replacement for `Value`. It may not own
-   recursively boxed aggregate data, act as frame or alias storage, cross the
-   FFI boundary, or become a shared backend abstraction. Aggregate expression
-   results designate native-layout storage. Whether a smaller carrier remains
-   after the old storage and FFI paths are deleted is an implementation
-   question, not an approved architectural goal.
+7. **Destination-passing evaluation replaces the expression-result
+   carrier** (August 2026; supersedes this decision's earlier "a private
+   carrier may remain" form). Four language situations are distinct
+   evaluator operations, committed as semantic distinctions — the names,
+   signatures, and construction-state encoding are implementation, owned by
+   item 8:
 
-   The expression currency is a return type, never an authority (decision 15).
-   The earlier claim that a boxed tagged union
-   is "the natural form" for a tree walker was downgraded: it argues
-   against *reimplementing* layout, not against *reusing* it. It is
-   **recursive aggregate boxing** (`Struct = Value[] fields`,
-   `Array = Value[] elements`) — not boxing per se — that forces per-call
-   marshalling and cannot pass the correctness ceiling. The Lox-derived
-   runtime type tag is redundant for type safety here: the DMD frontend
-   stamps a static `Type` on every node.
+   - no-result execution: statements and unittest bodies produce nothing;
+   - place evaluation: an lvalue yields an address plus its static type;
+   - construction: an rvalue is constructed into a fresh caller-provided
+     typed destination whose construction state the evaluator tracks — a
+     function call receives its caller's destination, a return statement
+     writes there, and a void call has none;
+   - assignment: a live place receives a value through D's defined
+     assign/move/postblit/destruction semantics; the live lvalue is never
+     handed out as arbitrary result storage for the right-hand side, since
+     that could expose a partially constructed value through aliases.
+     Direct construction into final storage is allowed only where D
+     semantics permit it.
+
+   Scalar-only work uses statically typed host locals inside type-specific
+   helpers selected from the statically typed AST — ordinary implementation
+   data, not a guest-value currency; the DMD frontend stamps a static
+   `Type` on every node, so no runtime tag is needed for type safety. A
+   universal carrier — one host type through which statically unrelated
+   guest values pass — may not return under any name; that is how the
+   boxed era grew.
 
 8. This plan owns the Interpreter's value representation and native-call
    adapter. `quickbite.ffi.ffi` is designed independently for native-layout
    backends and never sees `ExpressionResult`: the Interpreter hands it typed
    argument and result addresses without compatibility methods or a legacy
-   fallback. `quickbite.ffi.oldffi` remains only for Bytecode's parallel
-   migration lane; `bytecode.md` owns removal of that final consumer and
-   deletion of the legacy package.
+   fallback.
 
 9. FFI-crossing and addressable aggregates live in native ABI layout
    behind a thin handle reusing DMD's own offsets. A cross-language
@@ -183,32 +206,29 @@ longer imports or aliases it.
     exhaustiveness. It moves the wrong way along the axis; the fix moves
     toward native bytes behind a handle.
 
-11. "Boxed scalars stay" means **immediate scalar expression results**
-    only — the walker's transient rvalue currency. Every lvalue, scalar
-    included, is an address from the moment it is bound (decision 15);
-    there is no lazy promotion and no snapshot reconciliation. The
-    earlier framing — eager slots vs measured lazy promotion — is
-    settled by decision 15: promotion machinery is a second world with
-    a trigger-detection seam ("identity observed" is far broader than
-    `&x` — `ref` parameters, casts, slice sharing, cross-frame
-    aliasing), and that seam is where the boxed era's bug population
-    lived. A scalar rvalue without an address is evaluated into a typed native
-    temporary before the bridge sees it. The bridge receives that address; it
-    does not request or perform a value conversion.
+11. **Scalar rvalues are host locals, not boxes** (August 2026; supersedes
+    "boxed scalars stay"). A scalar intermediate lives in a statically
+    typed host local until it is stored, passed, or needs an address; then
+    it is written into its typed destination or a typed native temporary
+    (decision 19). Every lvalue, scalar included, is an address from the
+    moment it is bound (decision 15); there is no lazy promotion and no
+    snapshot reconciliation — promotion machinery is a second world with a
+    trigger-detection seam, and that seam is where the boxed era's bug
+    population lived. The FFI bridge receives addresses; it does not
+    request or perform a value conversion.
 
-12. Execution and display are separate consumers of expression
-    evaluation. The walker needs a recursive expression-result operation
-    (unittests execute expressions; nested calls return results), but its
-    carrier is interpreter-private execution machinery, not a display
-    value. `ExpressionResult` names that narrow currency rather than a shared
-    runtime abstraction. Top-level unittest execution needs only success or a
-    diagnostic and must not render the walker's final result;
-    expression-display entry points synthesize `__quickbiteFormat(expr)` and
-    return that guest-produced
-    string through `EvalResult`. Replace the interim
-    `runUnitTest -> eval(FuncDeclaration) -> displayString` bridge with a
-    direct unittest execution entry point plus a separate REPL evaluation
-    entry point: display work leaves the latency-critical unittest path.
+12. Execution and display are separate consumers of expression evaluation.
+    Top-level unittest execution needs only success or a diagnostic and
+    must not render or materialize the walker's final result;
+    expression-display entry points synthesize `__quickbiteFormat(expr)`
+    and return that guest-produced string through `EvalResult`. The public
+    `Evaluator` contract exposes nothing else: a package-private
+    Interpreter-test helper may take an explicit DMD type and a native
+    destination, layered over decision 7's construction operation, but it
+    never becomes the public contract. Existing `eval` tests are
+    classified by behaviour: D-language behaviour moves to runner/oracle
+    fixtures; a test whose only contract is returning a boxed host value
+    is deleted with the carrier.
 
 13. Ownership split with the bytecode rewrite (`ai/plans/bytecode.md`),
     so the two tracks can run in parallel without one building what the
@@ -264,8 +284,9 @@ longer imports or aliases it.
     reference it; they never participate in guest identity or address
     arithmetic. A storage-identity-plus-offset coordinate system would
     recreate the rejected pointer-provenance split. Function and delegate
-    handles are separate non-data categories. Boxed values survive only as
-    transient rvalues (decisions 7/11), never as storage authority.
+    handles are separate non-data categories. Transient rvalues are host
+    locals or fresh typed destinations (decisions 7/11); nothing boxed
+    acts as storage authority.
 
     An owning block used only to produce a transient raw pointer remains
     reachable through a lexically scoped owner until that pointer is stored in
@@ -316,19 +337,29 @@ longer imports or aliases it.
     `(root, PATH)` key is therefore cancelled — those families are
     deleted with their world, not migrated.
 
-    End-state criteria, strongest first:
+    End-state criteria are cost-shaped, not identity-shaped:
 
-    - the shared `quickbite.lang.Value` is deleted (items 1-3) — the
-      completion signal;
-    - structurally, the walker's expression currency has exactly one
-      pointer arm and that arm holds a host address; any new arm,
-      carrier, or wrapper around addresses is the regression (that is
-      how the boxed era grew — never "a second pointer type", always
-      "a carrier for a shape the current one can't express");
-    - no data-pointer kind predicate, counter identity namespace, or
-      identity-to-body allocation table exists in the interpreter execution
-      path. Address-keyed dynamic-type, ownership, and exception metadata do
-      not replace the address as guest identity.
+    - unittest execution materializes no expression results; the
+      statement path produces nothing to discard;
+    - no per-expression boxing or heap allocation on execution paths:
+      scalars are statically typed host locals, aggregates never leave
+      native-layout storage;
+    - nothing crosses the FFI boundary but typed addresses — no
+      conversion, reconstruction, or writeback in either direction;
+    - one storage authority per binding and one data-pointer
+      representation, the host address; no data-pointer kind predicate,
+      counter identity namespace, or identity-to-body allocation table in
+      the execution path. Address-keyed dynamic-type, ownership, and
+      exception metadata do not replace the address as guest identity.
+
+    A 25-alternative carrier cannot satisfy these criteria, so the
+    deletions are their verification markers, not goals in themselves:
+    `expression_result.d` deleted is the Interpreter-side marker (items
+    8-10), the shared `quickbite.lang.Value` deleted (items 2-3) the
+    shared one, and neither waits for the other. Any reintroduced
+    universal carrier or wrapper around addresses is the regression —
+    that is how the boxed era grew: never "a second pointer type", always
+    "a carrier for a shape the current one can't express".
 
 16. **Walker role; no shared substrate.** The walker is not a stepping
     stone: its own terminal goal is running arbitrary D projects' unit
@@ -367,20 +398,20 @@ longer imports or aliases it.
     with an authoritative native place. Each activation owns one fresh frame
     block, including an activation whose layout has no slots; captures and
     calls retain typed addresses into the owning frame. The merge gate is no
-    new red rows relative to the documented baseline.
+    new red rows relative to the documented baseline. The expression-currency
+    migration (items 8-10) only ever removes carrier arms; a slice may not
+    add one, and a temporary carrier fallback may not cross the FFI boundary
+    or become storage authority.
 
 18. **FFI end state: no marshalling.** This is a structural guarantee:
     an aggregate argument's bytes already sit at a real address and a native
     return is written straight into typed result storage. A small backend
-    adapter hands argument and result addresses to the new
-    `quickbite.ffi.ffi`, which owns ABI descriptors, CIF construction, and
-    calls.
+    adapter hands argument and result addresses to `quickbite.ffi.ffi`, which
+    owns ABI descriptors, CIF construction, and calls.
     Adapter-owned callback lifetime/re-entry and native exception translation
     remain only where demanded by supported Interpreter behavior. That is call
     plumbing, not marshalling debt; the irreducible remainder (`ffi_call`
-    dispatch) only a JIT removes. None of `quickbite.ffi.oldffi`'s marshalling
-    surface is copied into the new bridge. Bytecode retains that package until
-    its parallel address-only migration deletes the final legacy consumer.
+    dispatch) only a JIT removes.
 
     Preserved evidence (do not re-litigate): a bolt-on native-layout
     marshaller was measured to be the wrong unit of change — its
@@ -394,12 +425,33 @@ longer imports or aliases it.
     when aggregates are never boxed.
 
     The Interpreter adapter has one typed-address preparation path and one
-    execution path. A scalar rvalue may be written into typed scratch storage
-    before preparation completes, but no `ExpressionResult` crosses the bridge
-    and no buffer-based aggregate reconstruction or post-call writeback path
-    exists. The libffi descriptor, argument-address array, scalar scratch, and
-    symbol resolution remain bridge plumbing; callback lifetime/re-entry and
+    execution path. Preparation reuses an operand's existing native address;
+    an address-less scalar rvalue is written into typed scratch storage
+    first. At the endpoint a native result is written into caller-provided
+    typed result storage and consumed through it — reading results back
+    into an expression carrier is queue work (item 10), not endpoint. No
+    `ExpressionResult` crosses the bridge itself, and no buffer-based
+    aggregate reconstruction or post-call writeback path exists. The libffi
+    descriptor, argument-address array, scalar scratch, and symbol
+    resolution remain bridge plumbing; callback lifetime/re-entry and
     native exception translation remain Interpreter-adapter plumbing.
+
+19. **Addressable expression temporaries have activation-scoped storage.**
+    Item 8 must measure and choose between two unboxed designs:
+    per-activation typed offsets added to the function's frame layout, or
+    segmented aligned scratch allocated along the executed path with lexical
+    marks and cleanup records. The existing frame-layout cache lasts for one
+    Interpreter root execution, not across roots or source edits, so neither
+    candidate receives presumed reuse credit.
+
+    Either design must satisfy D's temporary-lifetime rules: destruction at
+    the full-expression boundary in reverse construction order, the special
+    boundary of an evaluated `&&`/`||` right-hand side, destruction of
+    already-constructed temporaries on unwind, GC visibility while live, and
+    stable addresses under recursion and native callback re-entry. Storage
+    belongs to an activation; an AST node never owns runtime bytes. If the
+    corpus measurement cannot distinguish the candidates, choose the smaller
+    mechanism.
 
 ## Contracts
 
@@ -687,13 +739,44 @@ All test additions/changes require approval first (AGENTS.md).
 
 ## Remaining work
 
-The native authority switch and Interpreter value removal are standing
-contracts, not pending work. The remaining value-track work is the IR and
-Bytecode formatter migration followed by shared-`Value` deletion, alongside
-the language-surface tasks below. Item numbers remain stable for existing
-cross-references. `interpreter-performance.md` may improve measurement in
-parallel, but production optimisation begins only after items 2-3 delete the
-shared representation.
+The native authority switch is a standing contract, not pending work. The
+remaining value-track work is the destination-passing migration and carrier
+deletion (items 8-10), the IR and Bytecode formatter migration followed by
+shared-`Value` deletion (items 2-3), and the language-surface tasks below.
+Item numbers remain stable for existing cross-references.
+`interpreter-performance.md` may improve measurement in parallel, but
+production Interpreter optimisation begins only after item 10 deletes the
+carrier.
+
+### Item 8 — Destination-passing entry points and the no-result path
+
+Design and land decision 7's four operations over the existing
+`Place`/`place_value.d` seam, including decision 19's temporary-lifetime and
+construction-state rules. Measure fixed frame offsets against segmented
+scratch under `interpreter-performance.md`'s contract before selecting either;
+this slice owns the names, signatures, storage choice, and lifetime encoding.
+Convert statement execution to the no-result operation: today every expression
+statement materializes a full carrier result and stores it in walker state
+nothing reads, on the unittest hot path.
+
+### Item 9 — Assignment through construction
+
+Convert assignment's right-hand side to construct into destination storage:
+today `x = f()` round-trips through the carrier before the place write.
+D-defined assign/move/postblit/destruction semantics per decision 7.
+
+### Item 10 — Carrier deletion queue
+
+Convert the remaining expression families onto the destination-passing
+operations, ordered by what the measurement corpus
+(`interpreter-performance.md`) actually hits: calls with caller-provided
+destinations, indexing, casts, builtins, aggregate reconstruction
+(`aggregate_value.d`), the native-call request/result carrier fields, and
+retirement of the `std.conv.text` interceptor. Slice invariants per
+decision 17. The queue ends when `expression_result.d` is deleted. Includes
+an inventory of real corpus crossings that need an interpreted callable or
+`TypeInfo` to escape to native code — decision 15's refusal stance holds,
+and no trampoline or proxy is designed, until a real crossing exists.
 
 ### Item 4 — Workingness track
 
@@ -729,18 +812,12 @@ Neither this fix's fast path nor the old fallback reproduces that.
 The temporary `std.conv.text` character-array path reads the authoritative
 native slice header, including its retained backing address, rather than a
 transient aggregate handle. This is slice execution, not a formatter-specific
-storage shim; the interceptor remains temporary per item 1.
+storage shim; retiring the interceptor is item 10 queue work.
 
 An associative-array `ref` parameter reads the caller's typed handle place,
 just like other native-layout reference values. Autovivifying a null handle
 writes that handle through the referenced binding before inserting, so the
 caller retains both the allocation and later mutations.
-
-`lang/archive.d`'s 5 `Omit!(Interpreter, Because.unconfirmed)` rows are not a
-language-surface gap: the Interpreter has no symbol-resolution source for a
-static archive at all (see the fixtures' `Omit` notes for the confirmed
-specifics) — a new native symbol-resolution source belongs to `ffi.md`, not
-this track.
 
 A method call chained off an assign/construct/blit whose target is itself a
 side-effecting `PtrExp`/`IndexExp` (`(*next() = value).bump()`) has no
@@ -770,17 +847,15 @@ just to reuse the evaluator path.
 ### Item 3 — Delete the shared value
 
 Delete the shared `quickbite.lang.Value` and its unit tests once per-backend
-formatter migrations leave no consumers. This deletion is decision 15's
-completion signal. IR and Bytecode formatter execution are the remaining
-prerequisites; the Interpreter no longer consumes or aliases the shared type.
-
-The Interpreter's `ExpressionResult` has the smallest non-owning
-scalar/address/callable shape allowed by decisions 7 and 11: no formatting
-model, recursively boxed aggregate, class-object snapshot, or storage
-authority. `FrameBlock`, `ModuleTable`, and typed `Place` composition are the
-binding authority. Address-keyed callable and symbolic-reference metadata may
-accompany native byte ranges, but may not become a second binding store. A
-class expression is only a native aggregate owner or its object-body address.
+formatter migrations leave no consumers. This is the shared-side marker of
+decision 15; IR and Bytecode formatter execution are its remaining
+prerequisites, and the Interpreter-side carrier deletion (items 8-10)
+proceeds independently. The Interpreter no longer consumes or aliases the
+shared type. `FrameBlock`, `ModuleTable`, and typed `Place` composition are
+the binding authority. Address-keyed callable and symbolic-reference
+metadata may accompany native byte ranges, but may not become a second
+binding store. A class expression is only a native aggregate owner or its
+object-body address.
 
 ### Item 6 — Open design questions
 

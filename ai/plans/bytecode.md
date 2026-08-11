@@ -69,15 +69,12 @@ This is the load-bearing decision; everything else follows from it.
   stepping and slicing still use DMD's size of the immediate pointed-at type
   (`int[]*` advances by a slice descriptor and `S*` by `S.sizeof`). Never infer
   byte stride from the scalar opcode type.
-- Required native-layout correction: the VM's slice descriptor
-  (`writeSliceDescriptor`) is `{ptr, length}`, but compiled D lays a slice out
-  as `{length, ptr}` (length at offset 0). Flip every descriptor read and write
-  to native order before integrating `quickbite.ffi.ffi`. Delete the legacy
-  boundary swaps in the same representation change. The new bridge never sees
-  the old order and contains no swap or compatibility path; until the flip,
-  slice calls through it are unsupported. The flip touches every descriptor
-  read/write site (`subSlice*`, `indexLoad*`, bounds checks) and needs a bridge
-  round-trip test of a struct containing a slice field.
+- The slice descriptor is native `{length, ptr}`, the same layout compiled D
+  uses, so `quickbite.ffi.ffi` must contain no swap or compatibility path.
+  Every descriptor field offset comes from
+  `sliceDescriptorPtrOffset`/`sliceDescriptorLengthOffset` (program.d); a site
+  that opens a descriptor with a bare offset instead is a latent bug, since
+  neither accessor is the identity any more.
 - Heap: interpreted data structures are native data structures
   and the host GC owns the heap. The druntime lowering hooks are templates
   (`_d_newclassT!T`, `_d_arrayappendT`, `_d_aaGetY`) instantiated into the
@@ -239,9 +236,7 @@ rendering knowledge beyond "these bytes at this type".
   floor for the latency goal — ranges, capturing lambdas, classes, and
   exceptions arrive with the first `std.algorithm`-using test, regardless of
   slice order.
-- Bytecode eventually imports `quickbite.ffi.ffi`, never
-  `quickbite.ffi.oldffi`. The new module is designed from native-layout
-  requirements rather than adapted from the Interpreter bridge. Data crosses
+- Bytecode calls native leaves through `quickbite.ffi.ffi`. Data crosses
   unchanged, so per-signature conversion or wrapper codegen buys nothing.
 - Druntime lowering hooks (`_d_arrayappendT`, the AA runtime,
   `_d_newclassT`, ...) are templates whose bodies the VM executes; the
@@ -252,11 +247,12 @@ rendering knowledge beyond "these bytes at this type".
   call itself. Invoking a native function whose signature is only known at
   VM runtime means implementing the SysV x86_64 calling convention —
   INTEGER/SSE struct classification, the hidden `sret` pointer for large
-  returns, `real` via x87, variadics. The bridge builds libffi CIFs from
-  DMD type signatures and caches them per bridge entry alongside symbol
-  resolution. There is no marshalling layer: values cross unchanged through
-  their existing typed addresses; the call goes through a cached FFI
-  descriptor.
+  returns, `real` via x87, variadics. `quickbite.ffi.ffi` separately caches
+  prepared physical ABI plans by canonical call shape and resolved targets
+  by dependency-image generation plus callable identity. A bytecode bridge
+  entry may retain references to both; it does not own either cache. There is
+  no marshalling layer: values cross unchanged through their existing typed
+  addresses.
   `real` in signatures is a known libffi hazard on x86_64 and gets explicit
   fixtures (matching the compiled oracle's `real` precision).
 - Native argument slot stride is an addressing contract only: it is wide
@@ -503,6 +499,10 @@ same caller place.
 Live hazards and divergences to reconfirm against current source when a row
 reaches them:
 
+- Every occurrence of a string literal gets its own `literalBlocks` entry, so
+  two identical literals have different pointers and `s is t` over them is
+  `false` where compiled D merges them into one `.rodata` address and answers
+  `true`. Pinned by `stringLiteral.identicalLiteralsAreIdentical` (arrays.d).
 - A `T[N][]`'s rows are separately heap-allocated inner descriptors, so a
   pointer taken into one row (`&outer[i][j]`) is valid within that row, but a
   flat pointer walk across rows diverges from compiled D's contiguous layout.
@@ -567,12 +567,9 @@ Otherwise take an "Architecture work forced by the baseline" front.
   the integration row in the commit that makes it green.
 - Work serially in `source/quickbite/backends/bytecode/core/**`; adjacent
   features converge on the compiler, machine, and program modules. Parallel
-  work belongs only to file-disjoint tracks. This plan owns the eventual
-  `quickbite.ffi.ffi` integration and slice flip; `ffi.md` supplies the bridge
-  without editing Bytecode core.
-- After each editing session, run the repository-mandated
-  `ninja bin/ut` and `bin/ut --random`. Replay a failing random order with its
-  `--seed` before deciding whether the failure is related.
+  work belongs only to file-disjoint tracks. This plan owns Bytecode's use of
+  `quickbite.ffi.ffi`; `ffi.md` supplies the bridge without editing Bytecode
+  core.
 - A plan update names the next concrete failing row or semantic so another
   implementer does not duplicate work. Remove resolved queue entries instead
   of recording what prior changes did. Git history is that record.
@@ -587,9 +584,14 @@ paths are expected to exercise these architectural fronts:
    native-layout storage and aliases.
 2. Execute available Phobos and druntime source, including templates,
    delegates, closures, classes, exceptions, and module initialization.
-3. Integrate the address-only `quickbite.ffi.ffi` for body-less leaves,
-   aggregate returns, and host resources. Keep typed storage and address
-   selection in this plan; keep CIF and callable-ABI mechanics in `ffi.md`.
+3. Widen the body-less-leaf call surface the compiler will emit:
+   `tryCompileNativeCall`'s compile-time return-type list (`compiler.d`) is
+   the only argument/return gate before `quickbite.ffi.ffi` validation at the
+   actual call; a shape that bridge rejects surfaces as a no-available-source
+   diagnostic, not a compile-time decline. Widen the return-type list and give
+   `ref`/`out` arguments real lvalue addresses instead of falling through to a
+   value copy. Keep typed storage and address selection in this plan; keep CIF
+   and callable-ABI mechanics in `ffi.md`.
 4. Synthesize runtime type metadata and inbound VM entry thunks when druntime,
    callbacks, finalizers, associative-array methods, or virtual dispatch force
    them.
@@ -658,8 +660,6 @@ and Cerealed gate no longer expose earlier gaps.
 - Compare language behaviour and diagnostic text with `SystemLinker`, byte for
   byte. Characterize `Ctfe` separately when it diverges.
 - Verify a promoted row red before production changes and green afterward.
-- Run `ninja bin/ut`, then `bin/ut --random`, after each editing session. Use
-  the reported seed for any failure investigation.
 - Run `ci.sh` before creating a PR. Do not accept a benchmark failure merely
   because the current PR advances only part of the full VM.
 
@@ -685,9 +685,10 @@ and Cerealed gate no longer expose earlier gaps.
 - Druntime lowerings with available source execute as D bytecode. Body-less
   leaves use the native bridge.
 - Native-layout values cross `quickbite.ffi.ffi` through typed addresses.
-  Cached libffi descriptors perform the call; bridge entries cache typed
-  signatures, callable ABI provenance, CIFs, and symbol resolution. The bridge
-  contains no conversion, reconstruction, writeback, or slice-word swapping.
+  The bridge owns separate prepared-plan and resolved-target caches; bytecode
+  bridge entries retain references scoped by the FFI plan's provenance rules.
+  The bridge contains no conversion, reconstruction, writeback, or slice-word
+  swapping.
 - Native `Throwable`s crossing the boundary are converted to VM unwinding, and
   VM exceptions crossing an inbound thunk become native unwinding.
 

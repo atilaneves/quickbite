@@ -48,7 +48,7 @@ public void ensureFunctionBodySemantic(
 
 // An `extern __gshared` global whose definition lives in a compiled dependency
 // image: it is in the data segment, has no local initializer, and is declared
-// `extern`. Reading it means resolving the native symbol (ffi.md §35.2a).
+// `extern`. Reading it means resolving the native symbol.
 public bool isExternDataSymbol(
     imported!"dmd.declaration".VarDeclaration variable,
 ) {

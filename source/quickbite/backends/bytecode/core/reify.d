@@ -4,7 +4,7 @@ private:
 
 // Reifies raw result bytes into a Value using the static result type — the
 // only place the new core constructs a Value. A dynamic-array result
-// (`string` included) is a native {ptr, length} descriptor; the pointer
+// (`string` included) is a native {length, ptr} descriptor; the pointer
 // resolves to either a heap block or, for a literal-initialised `string`,
 // the program's read-only data segment (see `resolveBlock`), reconstructed
 // here just as a debugger renders memory by type.
@@ -54,7 +54,8 @@ private imported!"quickbite.lang".Value reifyArray(
     in ubyte[][] literalBlocks,
 ) @safe pure {
     import quickbite.backends.bytecode.core.program:
-        size, sliceDescriptorLengthOffset, sliceDescriptorSize;
+        size, sliceDescriptorLengthOffset, sliceDescriptorPtrOffset,
+        sliceDescriptorSize;
     import quickbite.lang: Value;
 
     const length = type.isStaticArray
@@ -62,7 +63,10 @@ private imported!"quickbite.lang".Value reifyArray(
         : scalar!size_t(bytes[sliceDescriptorLengthOffset(0) .. $]);
     auto block = type.isStaticArray
         ? bytes
-        : resolveBlock(scalar!size_t(bytes), heap, data, literalBlocks);
+        : resolveBlock(
+            scalar!size_t(bytes[sliceDescriptorPtrOffset(0) .. $]),
+            heap, data, literalBlocks,
+        );
     if (!type.arrayElementsAreArrays && !type.arrayElementsAreStructs &&
         type.elementEnumMembers.length == 0 &&
         isCharacter(type.elementType))
@@ -195,7 +199,7 @@ private imported!"quickbite.lang".Value reifyString(
     }
 }
 
-// A `string[N]` element slot holds the same native `{ptr, length}` slice
+// A `string[N]` element slot holds the same native `{length, ptr}` slice
 // descriptor as every other dynamic-array value (see `reifyArray`'s own
 // top-level descriptor read); resolve its pointer the same way, via
 // `resolveBlock`, rather than decoding a compact offset-into-`data` layout.

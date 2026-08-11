@@ -31,14 +31,14 @@ benchmark result unrepresentative.
 native leaves encountered along the way. The Interpreter uses the typed-address
 `quickbite.ffi.ffi` bridge; Interpreter-specific preparation,
 callback re-entry, and exception translation stay in its backend adapter.
-`quickbite.ffi.oldffi` remains only for Bytecode's parallel migration lane.
 
 The unittest execution boundary returns success or a diagnostic directly. It
 does not format the final interpreter result: display is a separate REPL
-concern owned with `value.md`'s prelude formatter. Expressions and nested
-function returns inside a unittest still produce interpreter-private runtime
-results; separating the top-level contracts does not turn expression execution
-into a `void` operation.
+concern owned with `value.md`'s prelude formatter. `value.md` items 8-10 will
+move expressions and nested function returns inside a unittest to
+caller-provided typed destinations. Separating the top-level contracts removes
+display work now; destination passing removes the remaining execution-result
+materialization.
 
 The empirical, external Cerealed gate is green on master: its whole unittest
 suite runs on `Interpreter` in the default LDC host. The acceptance command is
@@ -56,8 +56,6 @@ track instead of being shimmed here. See the triage rule in §8.
 ## 2. Non-goals
 
 ```text
-- Bytecode's migration from `quickbite.ffi.oldffi` and deletion of that legacy
-  package (`bytecode.md` and `ffi.md`);
 - the Bytecode/IR backends' execution (ai/plans/bytecode.md);
 - value representation choice (boxed vs native layout): ai/plans/value.md;
 - new language features DMD does not lower for us (we execute DMD's AST, not
@@ -103,14 +101,14 @@ value.md       how the interpreter represents runtime results and addressable
                loads) is value.md's, handled per the §8 triage rule — red
                fixture here, Interpreter omitted, root fix there. The #386
                shims for such classes were a one-off exception (since
-               retired), not precedent. value.md decisions 15-18 (2026-07-20)
-               commit its end state (native-layout storage, a place is an
-               address plus its static type, no FFI marshalling; deleting
-               `Value` is the
-               completion signal) and a two-track migration in which THIS
-               plan is the workingness track and leads; the representation
-               track lands in parallel behavior-neutral slices plus one
-               small authority switch.
+               retired), not precedent. value.md decisions 15-19 commit its
+               end state (native-layout storage, a place is an address plus
+               its static type, destination-passing evaluation, no FFI
+               marshalling; the expression-carrier and shared-`Value`
+               deletions are independent completion markers) and a
+               two-track migration in which THIS plan is the workingness
+               track and leads; the representation track lands as
+               oracle-green slices per value.md items 8-10.
 bytecode.md    a different backend; native-layout execution. Out of scope.
 interpreter-performance.md
                Interpreter execution latency. It may optimise the machinery
@@ -123,8 +121,6 @@ interpreter-performance.md
 `LINK.d` alone does not identify a callable's ABI: DMD and LDC order explicit D
 arguments differently. Every resolved callable carries the ABI of its defining
 compiler; neither the bridge nor an adapter may hard-code DMD or LDC globally.
-Bytecode owns the final `quickbite.ffi.oldffi` consumer and deletes that package
-when its parallel address-only migration is complete.
 
 Pointer slicing is ordinary D semantics and stays in this plan. Constructing
 `ptr[lower .. upper]` creates a view at the adjusted address and length; it
@@ -156,12 +152,13 @@ expression cell executes the frontend-synthesized formatter and returns its
 string. Statement/no-display cells may use the same execution machinery
 without manufacturing a display value.
 
-Inside the walker, `runExpression` remains a recursive operation because all
-real D code, including unittests, computes expressions and calls value-returning
-functions. Its return type is not a public backend contract and need not remain
-`quickbite.lang.Value`; per `value.md`, it becomes an interpreter-private
-execution-result carrier containing only the immediate results, native handles,
-locations, callables, and metadata the walker needs.
+Inside the walker, expression evaluation remains recursive because all real D
+code, including unittests, computes expressions and calls value-returning
+functions. Its endpoint is `value.md` decision 7: a call receives its caller's
+typed destination, an lvalue yields a place, scalar work uses statically typed
+host locals, and a statement executes with no result. Items 8-10 own the
+migration from the current interpreter-private expression carrier to that
+destination-passing contract.
 
 ## 5. The masking bug: CTFE-as-diagnostic (Phase 0, prerequisite)
 
@@ -586,7 +583,7 @@ walker cannot execute (`core.internal.atomic`). A function with
 interpretable D source must be executed; failure to execute it is an
 interpreter or value-model gap to fix at the root, never to special-case.
 `std.conv.text` is the one deliberate exemption (perf scaffolding, already
-scheduled for removal by `value.md` remaining work item 1).
+scheduled for removal by `value.md` remaining work item 10).
 
 **Mechanical guard (landed, owed-fixtures follow-up).** The chokepoint is
 `Walker.runCallExpression` (impl.d). Every name-based intercept there —
@@ -621,7 +618,7 @@ Exemption list (`isExemptInterception`), each with its retirement condition:
 ```text
 std.conv.text                             §8's pre-existing deliberate
                                            exemption; retire per value.md
-                                           remaining work item 1.
+                                           remaining work item 10.
 core.internal.array.operations.arrayOp!(  discovered by this guard, not
 ...)                                      previously in §9.10; retire with
                                            §9.10's native-layout-aggregates
@@ -1324,8 +1321,7 @@ current PR head. Reconstruct the red state instead:
 3. Run the focused fixture against SystemLinker and Interpreter.
 4. Record SystemLinker green and Interpreter red, including the exact failure.
 5. Add the same fixture on this PR branch.
-6. Keep or adjust the implementation so the focused fixture, ninja bin/ut, and
-   bin/ut --random are green.
+6. Keep or adjust the implementation so the focused fixture is green.
 7. Commit the fixture, any implementation correction, and this plan update
    together.
 ```
@@ -2321,20 +2317,14 @@ sites reach that heuristic: `throwRangeError` (a hardcoded
 prefix pattern) and `nativeExceptionObject` (FFI-caught native throwables,
 `className` from the real `throwable.classinfo.name`).
 
-Reproducing defect 1 (Error misclassification) needed care: `ffi/oldffi.d`'s
-native call site only ever `catch (Exception exception)`s ("Error stays
-fatal" per its own comment), so a natively-thrown `Error` subclass can *not*
-reach `nativeExceptionRoot` as the directly-thrown object — it propagates as
-a raw, uncaught native `Throwable` straight through the whole interpreter
-call stack (confirmed: a first fixture that threw a dependency-image `Error`
-subclass directly crashed the whole `bin/ut` process with a native
-backtrace, not a graceful `TestResult` failure — a real but separate,
-out-of-scope bug). The reachable route is `nativeCallExceptionFrom`'s
-`.next`-chain recursion in the legacy bridge, which follows `.next` regardless
-of its dynamic type: a native `Exception` (caught normally) chained to an
-`Error` via `.next` carries that `Error`'s `classinfo.name` into
-`nativeExceptionBaseObject` when the interpreted code reads and rethrows
-`caught.next`.
+The FFI boundary catches only `Exception` (`native_call_adapter.d`), so a
+natively-thrown `Error` subclass never reaches `nativeExceptionRoot` as the
+directly-thrown object: it propagates as a raw, uncaught native `Throwable`
+through the whole interpreter call stack and kills the process instead of
+producing a failed `TestResult`. That remains an open, separate bug. The one
+route by which an `Error` does reach `nativeExceptionRoot` is
+`nativeCallExceptionFrom`'s `.next`-chain recursion, which follows `.next`
+regardless of its dynamic type.
 
 Red-first evidence (both added to `tests/ut/backends/runner/sys/
 dependency_image.d`, `SystemLinker` oracle vs `Interpreter`, pre-fix):
@@ -2777,11 +2767,13 @@ remains free of Cerealed-specific names and behavior.
 
 ## 11. Beyond cerealed
 
-Cerealed is the first driving package, not the finish line. After the shared
-formatter work, repeat the same measure, distil, approve, red-to-green loop
-against a second package that exercises a different ordinary D surface. Do not
-restore legacy marshalling or value machinery merely to start that next
-package sooner.
+Cerealed is the first driving package, not the finish line. Automem is the
+second package and exercises allocators, reference-counted ownership,
+interfaces, nested callables, and native-layout mutation. Once both package
+gates are green, the next prioritized Interpreter work is `value.md` item 8:
+destination-passing entry points and a genuine no-result statement path.
+Package-driven workingness continues in parallel through `value.md` item 4;
+do not restore legacy marshalling or value machinery for a later package.
 
 ### 11.1 automem — open disagreement queue
 

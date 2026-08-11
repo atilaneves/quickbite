@@ -9,40 +9,43 @@ that platform surface, including vectors, aggregate classification, hidden
 operands, register pressure, variadics, and C++ invisible references. It does
 not mean supporting a partial list selected by the first Bytecode consumers.
 
-Bytecode values already occupy stable storage in the host's native D layout.
-The bridge therefore accepts typed addresses, invokes a resolved callable, and
-writes the result into caller-provided typed storage. It never converts a
-backend value representation into an ABI representation because there is only
-one representation.
+Native-layout backend values (Interpreter and Bytecode alike) already occupy
+stable storage in the host's native D layout. The bridge therefore accepts
+typed addresses, invokes a resolved callable, and writes the result into
+caller-provided typed storage. It never converts a backend value
+representation into an ABI representation because there is only one
+representation.
 
-The existing marshaller-based implementation lives in
-`quickbite.ffi.oldffi` so the Interpreter and its other current consumers
-remain operational during migration. It is not the starting point for this
-design. Do not copy its interfaces, work order, or supported-shape taxonomy
-into the new package.
+The long-term contract is exhaustive; implementation and tuning order is
+driven by the measurement corpus (`interpreter-performance.md`). Each
+unsupported real D/ABI behaviour the corpus surfaces is reduced to a
+`SystemLinker`-oracle language fixture and implemented directly; tuning
+choices (cache eviction, eager versus first-use preparation) are judged by
+incremental edit-to-test-verdict latency on those projects, never by an
+isolated calls-per-second benchmark.
+
+The precedent survey and primary-source evidence for this boundary live in
+`RESEARCH.md`. This plan is the normative contract when the survey describes
+an alternative or hypothesis rather than a settled choice.
 
 ## Module boundary
 
 ```text
 quickbite.ffi.libffi   declaration-only libffi binding
-quickbite.ffi.oldffi   legacy marshaller-based implementation
-quickbite.ffi.ffi      new native-layout call mechanism
+quickbite.ffi.ffi      native-layout call mechanism
 quickbite.ffi.sysv_call private vector-capable x86-64 SysV transport
 ```
 
 `quickbite.ffi.libffi` stays in its current module. It contains only translated
 libffi declarations, constants, and platform assertions. It contains no D type
-mapping, symbol policy, CIF cache, backend concept, or value conversion. Both
-FFI implementations may import it. `quickbite.ffi.sysv_call` contains only the
-private invocation frame and architecture-specific register transfer needed
-when libffi cannot express a vector call.
+mapping, symbol policy, CIF cache, backend concept, or value conversion.
+`quickbite.ffi.sysv_call` contains only the private invocation frame and
+architecture-specific register transfer needed when libffi cannot express a
+vector call.
 
-`quickbite.ffi.oldffi` is migration debt, not a second supported design.
-Existing consumers may remain on it temporarily. No new backend may import it,
-and it gains no new feature unless a correctness fix is required to reach the
-Interpreter's Cerealed gate. Its remaining consumers and deletion conditions
-belong to `interpreter.md` and `value.md`; it needs no architecture plan of its
-own.
+`quickbite.ffi.ffi` is the only native-call mechanism. A second one may not be
+reintroduced as a fallback for a backend that finds address-only storage
+inconvenient, nor as a staging area for a shape this one cannot yet compose.
 
 ## Public contract
 
@@ -107,7 +110,7 @@ The boundary obeys these invariants:
   those pointers or placing their bytes in ABI registers and stack slots does
   not change the values' representation.
 
-The new package must not expose or contain:
+The package must not expose or contain:
 
 ```text
 Value or RuntimeValue
@@ -116,7 +119,6 @@ marshal, unmarshal, materialize, reify, fill, or writeback operations
 aggregate reconstruction
 mutable-slice copy-in/copy-out
 slice word swapping or any other representation repair
-compatibility fallbacks to quickbite.ffi.oldffi
 ```
 
 An unavoidable libffi scratch slot is not representation conversion. For
@@ -165,46 +167,77 @@ a value conversion path.
 
 `quickbite.ffi.ffi` owns only native-call mechanics:
 
-- symbol resolution or consumption of an already-resolved callable;
+- symbol resolution and its generation-scoped target cache;
 - semantic-to-physical call lowering;
 - DMD-type-to-`ffi_type` mapping for non-vector calls;
 - x86-64 SysV register and stack placement for vector-containing calls;
-- CIF preparation and, when useful, caching;
+- prepared-call construction and its physical-shape cache;
 - ordering native value addresses for the callable's ABI;
 - native invocation through libffi or the private SysV transport; and
 - propagation of native exceptions without translation at this boundary.
 
-Bytecode owns evaluation, storage, lifetimes, typed temporaries, receiver
+The backend owns evaluation, storage, lifetimes, typed temporaries, receiver
 selection, and the address of every argument and result. The bridge never asks
-Bytecode to describe how to convert a value.
+a backend to describe how to convert a value.
 
-Dependency discovery, image construction, and cache invalidation remain in
-the dependency-image plans. Loading an image may be a small shared utility,
-but it does not expand the call API or erase the image's ABI provenance.
+The two in-process caches have different invalidation identities. A prepared
+ABI shape is determined by calling convention, compiler ABI, normalized
+physical parameter/result layouts, variadic state, and any declaration
+provenance that affects lowering. A resolved target is determined by
+dependency/image generation plus symbol or callable identity.
+`quickbite.ffi.ffi` owns both caches but keeps them separate: equal canonical
+physical ABI shapes share one prepared plan, while a target entry belongs to
+exactly one symbol-resolution generation. A backend bridge entry may retain
+references to a prepared plan and resolved callable but owns neither cache.
+Raw DMD AST addresses are not keys that survive a frontend lifetime.
+
+There is no serialization of prepared state: a fresh process must rebuild
+the DMD types anyway, and lowering plus `ffi_prep_cif` is cheap once they
+exist. The only durable cross-process artifacts are dub dependency artifacts
+and their dependency images with recorded ABI provenance
+(`dependency-image-contract.md`, `dub-deps.md`). The end goal is a
+long-lived session process that keeps these caches across edits — blocked
+today by dmd frontend global state — so the keying above must already let
+shape and target invalidate independently; the session model then slots in
+without redesigning the caches or the invocation boundary. Eager bootstrap
+versus first-use preparation is decided by corpus measurement, also without
+changing the boundary.
+
+Dependency discovery and image construction remain in the dependency-image
+plans. That layer supplies the image-generation and compiler-ABI provenance
+that invalidates resolved targets without invalidating prepared ABI shapes.
+Loading an image may be a small shared utility, but it does not expand the
+call API or erase the image's ABI provenance.
 
 ## Adjacent work
 
-Inbound callbacks are a separate direction of travel and are not part of the
-outbound call mechanism. Their eventual design must preserve typed-address
-storage and callable-specific ABI provenance rather than growing a marshalling
-seam into this API.
+Inbound callbacks are a separate direction of travel, not part of the
+outbound call mechanism, and stay backend-adapter-owned (the Interpreter
+adapter already owns callback lifetime and re-entry). Outbound and inbound
+share exactly one thing: semantic-to-physical ABI classification. Everything
+else is inbound-specific and absent outbound — a real ABI-valid trampoline
+per escaped callable (executable memory with an explicit lifetime and
+release story), rooting of the interpreted descriptor and context for as
+long as native code may call it, re-entry policy (entering the evaluator
+from arbitrary native frames, reverse exception translation, thread
+attachment), and invalidation of pointers native code retains across an
+edit. A shared inbound mechanism is designed only when a second backend
+needs one; until then an interpreted callable pays nothing before it
+actually escapes, and any eventual design preserves typed-address storage
+and callable-specific ABI provenance rather than growing a marshalling seam
+into this API.
 
-Backend migration is not work in this plan. `bytecode.md` owns Bytecode's
-native-layout correction, legacy-marshaller deletion, and switch to the new
-module. `value.md` owns the later Interpreter migration and deletion of
-`quickbite.ffi.oldffi`.
-
-Symbol resolution, dependency images, and any future CIF cache must preserve
-the callable's compiler-ABI and declaration provenance without changing the
-call boundary.
+Symbol resolution, dependency images, and the prepared-plan cache must
+preserve the callable's compiler-ABI and declaration provenance without
+changing the call boundary.
 
 ## Completion criteria
 
 - `quickbite.ffi.libffi` remains declaration-only.
 - `quickbite.ffi.ffi` imports no backend and exposes no backend conversion
   interface.
-- Neither the new public API nor its implementation contains slice swapping,
-  representation repair, or a compatibility path to `quickbite.ffi.oldffi`.
+- Neither the public API nor its implementation contains slice swapping or
+  representation repair.
 - Native arguments, receivers, `ref`/`out` values, and results cross as typed
   addresses to existing storage.
 - The semantic-to-physical lowering is shared by libffi and vector-containing
@@ -222,8 +255,7 @@ call boundary.
 - The exhaustive x86-64 SysV outbound matrix agrees with compiled-D oracles
   under both DMD- and LDC-hosted execution where compiler provenance applies.
 
-The bridge is not complete merely because it can imitate every feature of
-`quickbite.ffi.oldffi`, nor because a current backend happens to use a subset.
-It is complete when the exhaustive x86-64 SysV outbound contract above is
-proved without adding representation conversion. Other platform ABIs and
-inbound callbacks require their own explicit contracts.
+The bridge is not complete merely because a current backend happens to use a
+subset of it. It is complete when the exhaustive x86-64 SysV outbound contract
+above is proved without adding representation conversion. Other platform ABIs
+and inbound callbacks require their own explicit contracts.

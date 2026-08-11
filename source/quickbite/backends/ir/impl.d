@@ -4,7 +4,8 @@ private:
 
 public class IR: imported!"quickbite.backends".TreeNodeBackend {
     import quickbite.backends: TreeNodeBackend;
-    import quickbite.backends.evaluator: Evaluator, EvalResult, displayEvalResult;
+    import quickbite.backends.evaluator: Evaluator, EvalResult, displayEvalResult,
+        voidEvalResult;
     import quickbite.lang: Value;
     import dmd.func: FuncDeclaration, UnitTestDeclaration;
 
@@ -26,11 +27,8 @@ public class IR: imported!"quickbite.backends".TreeNodeBackend {
         import quickbite.backends.ir.compiler: compileUnitTest;
         import quickbite.backends.ir.vm: run;
 
-        try {
+        return voidEvalResult(() {
             run(compileUnitTest(unitTest));
-            return EvalResult("");
-        } catch (Throwable throwable) {
-            return EvalResult(EvalResult.Diagnostic(throwable.msg));
-        }
+        });
     }
 }
