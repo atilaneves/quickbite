@@ -2147,6 +2147,10 @@ private struct Walker {
             assert(0, "non-variable VarExp was not a SymbolDeclaration");
 
         auto type = symbol.dsym is null ? symbol.type : symbol.dsym.type;
+
+        if (auto structType = type is null ? null : type.toBasetype.isTypeStruct)
+            return runExpression(structType.defaultInitLiteral(var.loc));
+
         // `__traits(initSymbol, T)` denotes T's initializer image as an
         // untyped span: the bytes `emplace` copies into raw storage before any
         // constructor runs. A type whose default is not all-zero (a `char`
@@ -2154,13 +2158,6 @@ private struct Walker {
         // views an initialized instance rather than blank storage. The same
         // declaration spelled with T's own type is instead T's `.init` value.
         const initializerImage = isVoidSliceType(symbol.type);
-
-        if (auto structType = type is null ? null : type.toBasetype.isTypeStruct) {
-            const initial = runExpression(structType.defaultInitLiteral(var.loc));
-            if (!initializerImage)
-                return initial;
-            return AggregateValue.nativeAggregateByteSlice(initial, symbol.type);
-        }
 
         auto classType = type is null ? null : type.toBasetype.isTypeClass;
         if (initializerImage && classType !is null && classType.sym !is null) {
