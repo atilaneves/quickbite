@@ -107,6 +107,44 @@ private bool hasAssocArrayParameterOrReturn(
     return false;
 }
 
+// Druntime's struct-array `.dup` reaches a source-less allocator even though
+// a struct without copy construction needs only an ordinary shallow element
+// copy. Keep copy constructors and postblits on the D-body path, where their
+// user-defined semantics remain authoritative.
+package bool isBlitStructArrayDup(
+    imported!"dmd.func".FuncDeclaration function_,
+) {
+    import std.algorithm: startsWith;
+    import std.conv: text;
+
+    if (function_ is null || function_.ident is null ||
+        function_.ident.toString != "dup" ||
+        function_.parent is null || function_.parent.isTemplateInstance is null ||
+        !text(function_.toPrettyChars).startsWith("object.dup!("))
+        return false;
+
+    auto signature = function_.type is null
+        ? null
+        : function_.type.toBasetype.isTypeFunction;
+    if (signature is null || signature.next is null ||
+        signature.parameterList.length != 1)
+        return false;
+
+    auto resultArray = signature.next.toBasetype.isTypeDArray;
+    auto parameterType = signature.parameterList[0].type;
+    auto parameterArray = parameterType is null
+        ? null
+        : parameterType.toBasetype.isTypeDArray;
+    if (resultArray is null || parameterArray is null)
+        return false;
+
+    auto resultStruct = resultArray.next.toBasetype.isTypeStruct;
+    auto parameterStruct = parameterArray.next.toBasetype.isTypeStruct;
+    return resultStruct !is null && parameterStruct !is null &&
+        resultStruct.sym is parameterStruct.sym &&
+        !resultStruct.sym.hasCopyConstruction;
+}
+
 package enum AtomicHook {
     load,
     store,

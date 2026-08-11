@@ -4581,6 +4581,19 @@ unsupportedExpression:
 
         if (call.f !is null) {
             import quickbite.backends.interpreter.builtins:
+                isBlitStructArrayDup;
+
+            if (isBlitStructArrayDup(call.f)) {
+                import quickbite.backends.interpreter.interception_guard:
+                    enforceInterceptionPolicy;
+
+                enforceInterceptionPolicy(call.f, "isBlitStructArrayDup");
+                return runBlitStructArrayDupCall(call);
+            }
+        }
+
+        if (call.f !is null) {
+            import quickbite.backends.interpreter.builtins:
                 AtomicHook, tryAtomicHook;
 
             AtomicHook atomicHook;
@@ -5512,6 +5525,62 @@ unsupportedExpression:
         in ExpressionResult pointer,
     ) {
         return loadNativePointerElement(pointerExpression.type, pointer, 0);
+    }
+
+    // Struct-array `.dup` is a shallow copy when the element has no copy
+    // construction. Copy the contiguous backing range once, then apply the
+    // same offset-preserving copy to address-keyed callable and symbolic
+    // metadata.
+    private ExpressionResult runBlitStructArrayDupCall(
+        imported!"dmd.expression".CallExp call,
+    ) {
+        import quickbite.backends.interpreter.aggregate_value: AggregateValue;
+        import quickbite.backends.interpreter.expression_result: ExpressionResult;
+        import quickbite.backends.interpreter.layout: typeByteSize;
+        import quickbite.backends.interpreter.native_aggregate: NativeAggregate;
+        import quickbite.backends.interpreter.native_array: NativeArray;
+        import quickbite.backends.interpreter.native_block: NativeBlock;
+
+        requireArgumentCount(call, 1);
+        const source = runExpression((*call.arguments)[0]);
+        if (source == ExpressionResult.null_)
+            return source;
+
+        auto resultType = call.type.toBasetype.isTypeDArray;
+        if (resultType is null)
+            throw new Exception("Struct-array `.dup` needs a dynamic-array result.");
+
+        const length = AggregateValue.length(source);
+        auto destination = NativeArray.allocate(resultType.next, length);
+        const byteLength = length * typeByteSize(resultType.next);
+        auto sourceAddress = cast(void*) AggregateValue.nativeArrayAddress(source);
+        copyBytes(destination.block.address, sourceAddress, byteLength);
+        copyStoredMetadataRange(
+            sourceAddress,
+            destination.block.address,
+            byteLength,
+        );
+
+        auto header = NativeBlock.allocate(
+            NativeArray.sliceHeaderByteLength,
+            NativeBlock.Scan.conservative,
+        );
+        destination.writeSliceHeader(header, 0);
+        return ExpressionResult.nativeAggregateValue(NativeAggregate(
+            call.type,
+            header,
+            destination.block,
+        ));
+    }
+
+    private void copyBytes(
+        void* destination,
+        void* source,
+        in size_t byteLength,
+    ) nothrow @trusted {
+        import core.stdc.string: memmove;
+
+        memmove(destination, source, byteLength);
     }
 
     // DMD lowers associative array operations to druntime template hooks in

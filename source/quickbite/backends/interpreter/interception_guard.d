@@ -129,11 +129,11 @@ private bool isExemptInterception(
         return true;
 
     // Associative-array runtime hooks (`core.internal.newaa._d_aa*`,
-    // `object.dup`/`keys`/`values`, `_d_aaApply2`) all have D source;
-    // `Walker.runAssocArrayHookCall` models their semantics directly
-    // instead. Discovered while adding this guard, not previously in
-    // §9.10's inventory. Retire when the associative-array representation
-    // moves to native layout (§9.10).
+    // `object.dup`/`keys`/`values`, `_d_aaApply2`) and blit-copyable
+    // struct-array `object.dup` instantiations all have D source; Walker
+    // models their semantics directly instead. Discovered while adding this
+    // guard, not previously in §9.10's inventory. Retire when the array
+    // representations move to native layout (§9.10).
     if (isAssocArrayHookName(prettyName))
         return true;
 

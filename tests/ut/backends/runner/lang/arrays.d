@@ -5441,6 +5441,28 @@ static foreach (backend; Matrix!()) {
     }
 }
 
+// Duplicating an array with struct elements is still a shallow array copy;
+// the struct element shape must not force that ordinary `.dup` through a
+// source-less allocator.
+static foreach (backend; Matrix!()) {
+    @("dynamicArray.dupOfStructElements." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct Item {
+                int value;
+            }
+
+            unittest {
+                Item[] original = [Item(41)];
+                Item[] copy = original.dup;
+
+                assert(copy == original);
+            }
+        });
+    }
+}
+
 // Bytecode ("Unsupported bytecode assignment target."), Bytecode
 // ("Unsupported type in bytecode core: int[]"), and IR (unsupported array
 // literal expression) cannot run this .idup fixture.
