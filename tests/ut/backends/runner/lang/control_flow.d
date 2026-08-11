@@ -56,9 +56,15 @@ static foreach (backend; Matrix!()) {
     }
 }
 
-// A synchronized statement lowers to druntime monitor calls. Its receiver must
-// therefore be a runtime-valid class object, including its hidden header, not
-// merely a body with the declared fields written into it.
+// DMD lowers a synchronized statement to `_d_monitorenter`/`_d_monitorexit`
+// calls. SystemLinker and LLVMJit dispatch those to real druntime, locking
+// the object's real native monitor header. The Interpreter has no native
+// monitor header for a guest object to lock, so it intercepts both calls as
+// no-ops instead; guest code already executes serially inside one Walker, so
+// the statement's block still runs with the same control flow a real lock
+// would give it. Every row here checks only that the block executes -- for
+// the Interpreter row specifically, that is exercising the no-op
+// interception path, not any native object-layout guarantee.
 static foreach (backend; Matrix!(
     Omit!(Ctfe, Because.inexpressible,
         "CTFE cannot execute the body-less _d_monitorenter runtime hook"),
@@ -71,9 +77,11 @@ static foreach (backend; Matrix!(
         runBackendSourceFixtureTests!backend(q{
             unittest {
                 auto lock = new Object;
+                int entered;
                 synchronized (lock) {
-                    assert(true);
+                    entered = 1;
                 }
+                assert(entered == 1);
             }
         });
     }

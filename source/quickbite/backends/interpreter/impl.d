@@ -4217,6 +4217,9 @@ private struct Walker {
                 NativeCallException, NativeCallResult;
 
             if (nativeCall) {
+                if (isMonitorOperation(call.f))
+                    return ExpressionResult.void_;
+
                 try {
                     NativeCallResult nativeResult;
                     if (!call.f.needThis && invokeNativeDeclaration(
@@ -11257,6 +11260,18 @@ private string functionName(imported!"dmd.func".FuncDeclaration function_) @trus
     import std.string: fromStringz;
 
     return function_.toChars.fromStringz.idup;
+}
+
+// DMD lowers `synchronized (obj) { ... }` into balanced `_d_monitorenter` and
+// `_d_monitorexit` runtime calls around the block. A guest object has no
+// native monitor header for druntime to lock, and guest code runs serially
+// within one walker, so answering nothing preserves the statement's control
+// flow exactly.
+private bool isMonitorOperation(
+    imported!"dmd.func".FuncDeclaration function_,
+) {
+    const name = function_.ident is null ? "" : function_.ident.toString;
+    return name == "_d_monitorenter" || name == "_d_monitorexit";
 }
 
 private struct RuntimeDelegate {
