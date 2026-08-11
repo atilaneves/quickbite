@@ -8593,19 +8593,15 @@ private struct Walker {
             throw new Exception("Range violation");
     }
 
-    // A slice assignment through a struct field (`s.buf[i .. j] = source[]`):
-    // splice the written elements into the field's current array and write
-    // the updated struct back through the field's location.
-    // `current`'s own header is a byte copy (`AggregateValue.fieldAt` reads
-    // through `place_value.readValue`'s `copyFromAddress`), but the pointer
-    // those bytes hold is the field's real one, so writing through `current`
-    // via `AggregateValue.withArrayElement` reaches the field's actual
-    // backing storage. Rebuilding a whole new array and writing it back into
-    // the field slot instead (as this used to) replaces that pointer with a
-    // fresh allocation's, silently severing identity a caller may depend on
-    // -- e.g. a struct field backed by a `Mallocator`-returned block whose
-    // destructor later frees the field's pointer: swapping in a
-    // differently-sourced block there corrupts the allocator on free.
+    // A slice assignment through a struct field (`s.buf[i .. j] = source[]`)
+    // writes the assigned elements one by one through the storage the field
+    // already denotes -- `fieldSliceStorage` below resolves which storage
+    // that is. Rebuilding a whole new array and storing it back into the
+    // field slot instead would replace the field's data pointer with a fresh
+    // allocation's, silently severing an identity its owner may depend on --
+    // e.g. a field backed by a `Mallocator`-returned block whose destructor
+    // later frees the field's pointer: swapping in a differently-sourced
+    // block there corrupts the allocator on free.
     private ExpressionResult runFieldSliceAssignExpression(
         imported!"dmd.expression".SliceExp slice,
         imported!"dmd.expression".DotVarExp dot,
@@ -8613,9 +8609,7 @@ private struct Walker {
     ) {
         import std.conv: text;
 
-        const fieldIndex = structFieldIndex(dot);
-        const receiver = runExpression(dot.e1);
-        const current = AggregateValue.fieldAt(receiver, fieldIndex);
+        const current = fieldSliceStorage(dot);
 
         const lower = slice.lwr is null
             ? 0
@@ -8640,6 +8634,70 @@ private struct Walker {
             AggregateValue.withArrayElement(current, index, element);
         }
         return value;
+    }
+
+    // The array storage a struct field's own slice assignment must land in,
+    // as an aggregate its caller can index through. D gives an array field
+    // two different storage shapes, and a value read out of the field is a
+    // faithful handle on that storage for only one of them:
+    //
+    // - A dynamic-array field's own bytes are a `{ length, ptr }` header,
+    //   and its elements live wherever `ptr` points. Reading the field
+    //   copies those header bytes (`place_value.readValue`'s
+    //   `AggregateValue.copyFromAddress`), and the copy still holds the
+    //   field's real data pointer, so indexing through it -- which
+    //   dereferences that pointer -- reaches the field's own elements.
+    //
+    // - A static-array field's own bytes ARE its elements. The same read
+    //   therefore yields a detached copy of the data, and every write
+    //   through it is discarded with that copy. Its storage has to be
+    //   composed from the receiver's own address instead, which is what the
+    //   arm below does; only that address names the bytes the struct holds.
+    private ExpressionResult fieldSliceStorage(
+        imported!"dmd.expression".DotVarExp dot,
+    ) {
+        import quickbite.backends.interpreter.layout: declaredType, typeByteSize;
+        import quickbite.backends.interpreter.native_aggregate: NativeAggregate;
+        import quickbite.backends.interpreter.native_block: NativeBlock;
+        import quickbite.backends.interpreter.place: Place;
+        import quickbite.frontend.dmd.types: isStaticArrayType;
+        import dmd.tokens: EXP;
+        import std.conv: text;
+
+        auto field = dot.var.isVarDeclaration;
+        if (field is null || !isStaticArrayType(declaredType(field)))
+            return AggregateValue.fieldAt(runExpression(dot.e1), structFieldIndex(dot));
+
+        const receiver = addressOfExpression(dot.e1, EXP.address);
+        if (!receiver.isPointer)
+            throw new Exception(text(
+                "Unsupported interpreter assignment target: static-array field slice of ",
+                dot.e1.op,
+            ));
+
+        // A class receiver holds a reference to its object body, so its
+        // fields sit at offsets from the referenced body rather than from
+        // the reference slot itself; a struct receiver's fields sit inline
+        // at its own address.
+        auto receiverPlace = Place(receiver.pointerAddress, dot.e1.type);
+        if (dot.e1.type.toBasetype.isTypeClass !is null)
+            receiverPlace = receiverPlace.deref;
+
+        // `NativeBlock.borrow`'s precondition is that the bytes stay live
+        // for as long as any handle derived from the block can reach them.
+        // They are the receiver's own field bytes, and the receiver is an
+        // lvalue that outlives this assignment -- a frame slot, a dataseg
+        // block, or a class body reached through a live reference -- so
+        // nothing here can outlive them. Borrowing rather than copying is
+        // the whole point: the assignment must land in those exact bytes.
+        auto fieldType = declaredType(field);
+        return ExpressionResult.nativeAggregateValue(NativeAggregate(
+            fieldType,
+            NativeBlock.borrow(
+                receiverPlace.field(field).address,
+                typeByteSize(fieldType),
+            ),
+        ));
     }
 
     // A slice assignment through a cast (`(cast(char[]) view)[] = "foo"`):
