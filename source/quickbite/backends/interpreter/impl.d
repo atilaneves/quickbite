@@ -2106,6 +2106,161 @@ private struct Walker {
         import dmd.tokens: EXP;
         import quickbite.backends.interpreter.runtime_values: integerValue, realValue;
 
+        // PROTOTYPE(opcode-dispatch): DMD's `isX` helpers each test this same
+        // discriminator. Jump straight to the one existing handler selected
+        // by it instead of repeating that test for every preceding AST kind.
+        switch (expression.op) with (EXP) {
+        case int64:
+            goto integerExpression;
+        case float64:
+            goto realExpression;
+        case null_:
+            goto nullExpression;
+        case string_:
+            goto stringExpression;
+        case arrayLiteral:
+            goto arrayLiteralExpression;
+        case assocArrayLiteral:
+            goto assocArrayLiteralExpression;
+        case structLiteral:
+            goto structLiteralExpression;
+        case assert_:
+            goto assertExpression;
+        case not:
+            goto notExpression;
+        case andAnd:
+        case orOr:
+            goto logicalExpression;
+        case cast_:
+            goto castExpression;
+        case equal:
+        case notEqual:
+            goto equalExpression;
+        case identity:
+        case notIdentity:
+            goto identityExpression;
+        case lessThan:
+        case lessOrEqual:
+        case greaterThan:
+        case greaterOrEqual:
+            goto comparisonExpression;
+        case question:
+            goto conditionalExpression;
+        case throw_:
+            goto throwExpression;
+        case plusPlus:
+        case minusMinus:
+            goto postExpression;
+        case addAssign:
+            goto addAssignExpression;
+        case add:
+            goto addExpression;
+        case min:
+            goto minExpression;
+        case mul:
+            goto mulExpression;
+        case div:
+            goto divExpression;
+        case mod:
+            goto modExpression;
+        case leftShift:
+            goto leftShiftExpression;
+        case rightShift:
+            goto rightShiftExpression;
+        case unsignedRightShift:
+            goto unsignedRightShiftExpression;
+        case negate:
+            goto negExpression;
+        case tilde:
+            goto complementExpression;
+        case pow:
+            goto powExpression;
+        case concatenate:
+            goto catExpression;
+        case assign:
+            goto assignExpression;
+        case loweredAssignExp:
+            goto loweredAssignExpression;
+        case construct:
+            goto constructExpression;
+        case blit:
+            goto blitExpression;
+        case concatenateAssign:
+            goto concatenateAssignExpression;
+        case concatenateElemAssign:
+            goto concatenateElemAssignExpression;
+        case concatenateDcharAssign:
+            goto concatenateDcharAssignExpression;
+        case minAssign:
+        case mulAssign:
+        case divAssign:
+        case modAssign:
+        case leftShiftAssign:
+        case rightShiftAssign:
+        case unsignedRightShiftAssign:
+        case andAssign:
+        case orAssign:
+        case xorAssign:
+            goto scalarCompoundAssignExpression;
+        case or:
+            goto bitOrExpression;
+        case and:
+            goto bitAndExpression;
+        case xor:
+            goto bitXorExpression;
+        case comma:
+            goto commaExpression;
+        case tuple:
+            goto tupleExpression;
+        case declaration:
+            goto declarationExpression;
+        case call:
+            goto callExpression;
+        case delegate_:
+            goto delegateExpression;
+        case function_:
+            goto functionExpression;
+        case arrayLength:
+            goto arrayLengthExpression;
+        case slice:
+            goto sliceExpression;
+        case index:
+            goto indexExpression;
+        case new_:
+            goto newExpression;
+        case symbolOffset:
+            goto symbolOffsetExpression;
+        case star:
+            goto pointerExpression;
+        case address:
+            goto addressExpression;
+        case delegatePointer:
+            goto delegatePointerExpression;
+        case delegateFunctionPointer:
+            goto delegateFunctionPointerExpression;
+        case dotIdentifier:
+            goto dotIdentifierExpression;
+        case dotVariable:
+            goto dotVariableExpression;
+        case vector:
+            goto vectorExpression;
+        case vectorArray:
+            goto vectorArrayExpression;
+        case this_:
+            goto thisExpression;
+        case super_:
+            goto superExpression;
+        case typeid_:
+            goto typeidExpression;
+        case identifier:
+            goto identifierExpression;
+        case variable:
+            goto variableExpression;
+        default:
+            goto unsupportedExpression;
+        }
+
+integerExpression:
         if (auto integer = expression.isIntegerExp) {
             if (integer.type !is null && integer.type.ty == TY.Tenum)
                 return ExpressionResult.enumValue(
@@ -2115,9 +2270,11 @@ private struct Walker {
             return integerValue(integer);
         }
 
+realExpression:
         if (auto real_ = expression.isRealExp)
             return realValue(real_);
 
+nullExpression:
         if (auto null_ = expression.isNullExp) {
             import dmd.astenums: TY;
 
@@ -2132,6 +2289,7 @@ private struct Walker {
             return ExpressionResult.null_;
         }
 
+stringExpression:
         if (auto string_ = expression.isStringExp) {
             import quickbite.backends.interpreter.runtime_string_literals: stringValue;
 
@@ -2142,15 +2300,19 @@ private struct Walker {
             return value;
         }
 
+arrayLiteralExpression:
         if (auto array = expression.isArrayLiteralExp)
             return arrayValue(array);
 
+assocArrayLiteralExpression:
         if (auto assocArray = expression.isAssocArrayLiteralExp)
             return assocArrayValue(assocArray);
 
+structLiteralExpression:
         if (auto struct_ = expression.isStructLiteralExp)
             return structLiteralValue(struct_);
 
+assertExpression:
         if (auto assert_ = expression.isAssertExp) {
             import quickbite.backends.interpreter.messages:
                 assertFailureMessage;
@@ -2162,10 +2324,12 @@ private struct Walker {
             return ExpressionResult(true);
         }
 
+notExpression:
         if (auto not = expression.isNotExp) {
             return ExpressionResult(!isTruthy(runExpression(not.e1)));
         }
 
+logicalExpression:
         if (auto logical = expression.isLogicalExp) {
             if (logical.op == EXP.andAnd)
                 return runLogicalAndExpression(logical);
@@ -2173,17 +2337,21 @@ private struct Walker {
                 return runLogicalOrExpression(logical);
         }
 
+castExpression:
         if (auto cast_ = expression.isCastExp) {
             log("cast expression: ", cast_);
             return castValue(cast_);
         }
 
+equalExpression:
         if (auto equal = expression.isEqualExp)
             return runEqualExpression(equal);
 
+identityExpression:
         if (auto identity = expression.isIdentityExp)
             return runIdentityExpression(identity);
 
+comparisonExpression:
         if (
             expression.op == EXP.lessThan ||
             expression.op == EXP.lessOrEqual ||
@@ -2197,68 +2365,89 @@ private struct Walker {
             return runComparisonExpression(comparison);
         }
 
+conditionalExpression:
         if (auto conditional = expression.isCondExp)
             return runConditionalExpression(conditional);
 
+throwExpression:
         if (auto throw_ = expression.isThrowExp) {
             throwInterpretedException(throw_.e1);
             return ExpressionResult.void_;
         }
 
+postExpression:
         if (auto post = expression.isPostExp)
             return runPostIncrementExpression(post);
 
+addAssignExpression:
         if (auto addAssign = expression.isAddAssignExp)
             return runAddAssignExpression(addAssign);
 
+addExpression:
         if (auto add = expression.isAddExp)
             return runAddExpression(add);
 
+minExpression:
         if (auto sub = expression.isMinExp)
             return runMinExpression(sub);
 
+mulExpression:
         if (auto mul = expression.isMulExp)
             return runExpression(mul.e1) * runExpression(mul.e2);
 
+divExpression:
         if (auto div = expression.isDivExp)
             return runDivExpression(div);
 
+modExpression:
         if (auto mod = expression.isModExp)
             return runModExpression(mod);
 
+leftShiftExpression:
         if (auto leftShift = expression.isShlExp)
             return runIntegerBinaryExpression(leftShift, "<<");
 
+rightShiftExpression:
         if (auto rightShift = expression.isShrExp)
             return runIntegerBinaryExpression(rightShift, ">>");
 
+unsignedRightShiftExpression:
         if (auto unsignedRightShift = expression.isUshrExp)
             return runIntegerBinaryExpression(unsignedRightShift, ">>>");
 
+negExpression:
         if (auto neg = expression.isNegExp)
             return -runExpression(neg.e1);
 
+complementExpression:
         if (auto complement = expression.isComExp)
             return runIntegerComplementExpression(complement);
 
+powExpression:
         if (auto pow = expression.isPowExp)
             return runPowExpression(pow);
 
+catExpression:
         if (auto cat = expression.isCatExp)
             return runConcatenateExpression(cat);
 
+assignExpression:
         if (auto assign = expression.isAssignExp)
             return runAssignExpression(assign);
 
+loweredAssignExpression:
         if (auto lowered = expression.isLoweredAssignExp)
             return runLoweredAssignExpression(lowered);
 
+constructExpression:
         if (auto construct = expression.isConstructExp)
             return runAssignExpression(construct);
 
+blitExpression:
         if (auto blit = expression.isBlitExp)
             return runAssignExpression(blit);
 
+concatenateAssignExpression:
         if (expression.op == EXP.concatenateAssign) {
             auto assign = cast(imported!"dmd.expression".BinExp) expression;
             if (assign is null)
@@ -2267,6 +2456,7 @@ private struct Walker {
             return runArrayConcatenateAssignExpression(assign);
         }
 
+concatenateElemAssignExpression:
         if (expression.op == EXP.concatenateElemAssign) {
             auto assign = cast(imported!"dmd.expression".BinExp) expression;
             if (assign is null)
@@ -2275,6 +2465,7 @@ private struct Walker {
             return runArrayAppendAssignExpression(assign);
         }
 
+concatenateDcharAssignExpression:
         if (expression.op == EXP.concatenateDcharAssign) {
             auto assign = cast(imported!"dmd.expression".BinExp) expression;
             if (assign is null)
@@ -2283,6 +2474,7 @@ private struct Walker {
             return runArrayAppendAssignExpression(assign);
         }
 
+scalarCompoundAssignExpression:
         if (isScalarCompoundAssignExpression(expression)) {
             auto assign = cast(imported!"dmd.expression".BinExp) expression;
             if (assign is null)
@@ -2291,35 +2483,45 @@ private struct Walker {
             return runCompoundAssignExpression(assign);
         }
 
+bitOrExpression:
         if (auto bitOr = expression.isOrExp)
             return runIntegerBinaryExpression(bitOr, "|");
 
+bitAndExpression:
         if (auto bitAnd = expression.isAndExp)
             return runIntegerBinaryExpression(bitAnd, "&");
 
+bitXorExpression:
         if (auto bitXor = expression.isXorExp)
             return runIntegerBinaryExpression(bitXor, "^");
 
+commaExpression:
         if (auto comma = expression.isCommaExp) {
             runExpression(comma.e1);
             return runExpression(comma.e2);
         }
 
+tupleExpression:
         if (auto tuple = expression.isTupleExp)
             return runTupleExpression(tuple);
 
+declarationExpression:
         if (auto declaration = expression.isDeclarationExp)
             return runDeclarationExpression(declaration);
 
+callExpression:
         if (auto call = expression.isCallExp)
             return runCallExpression(call);
 
+delegateExpression:
         if (auto delegate_ = expression.isDelegateExp)
             return runDelegateExpression(delegate_);
 
+functionExpression:
         if (auto literal = expression.isFuncExp)
             return runFunctionLiteralDeclaration(literal);
 
+arrayLengthExpression:
         if (auto arrayLength = expression.isArrayLengthExp) {
             // PROTOTYPE(place-projection): an addressable receiver already
             // has authoritative typed storage. Read only its header/fixed
@@ -2333,61 +2535,78 @@ private struct Walker {
             );
         }
 
+sliceExpression:
         if (auto slice = expression.isSliceExp)
             return runSliceExpression(slice);
 
+indexExpression:
         if (auto index = expression.isIndexExp)
             return runIndexExpression(index);
 
+newExpression:
         if (auto new_ = expression.isNewExp)
             return runNewExpression(new_);
 
+symbolOffsetExpression:
         if (auto symbol = expression.isSymOffExp) {
             if (auto variable = symbol.var.isVarDeclaration)
                 return symbolOffsetLocalValue(symbol, variable);
             if (auto function_ = symbol.var.isFuncDeclaration)
                 return functionPointerValue(function_);
         }
+        goto unsupportedExpression;
 
+pointerExpression:
         if (auto pointer = expression.isPtrExp)
             return runPointerExpression(pointer);
 
+addressExpression:
         if (auto address = expression.isAddrExp)
             return runAddressExpression(address);
 
+delegatePointerExpression:
         if (auto delegatePointer = expression.isDelegatePtrExp)
             return runDelegatePointerExpression(delegatePointer);
 
+delegateFunctionPointerExpression:
         if (auto delegateFunctionPointer = expression.isDelegateFuncptrExp)
             return runDelegateFunctionPointerExpression(delegateFunctionPointer);
 
+dotIdentifierExpression:
         if (auto dotIdentifier = expression.isDotIdExp)
             return runDotIdentifierExpression(dotIdentifier);
 
+dotVariableExpression:
         if (auto dot = expression.isDotVarExp)
             return runDotVarExpression(dot);
 
+vectorExpression:
         if (auto vector = expression.isVectorExp)
             return runVectorExpression(vector);
 
+vectorArrayExpression:
         if (auto vectorArray = expression.isVectorArrayExp)
             return runVectorArrayExpression(vectorArray);
 
+thisExpression:
         if (expression.isThisExp !is null) {
             if (!hasThis)
                 throw new Exception("Unsupported eval expression: this");
             return thisValue;
         }
 
+superExpression:
         if (expression.isSuperExp !is null) {
             if (!hasThis)
                 throw new Exception("Unsupported eval expression: super");
             return thisValue;
         }
 
+typeidExpression:
         if (auto typeid_ = expression.isTypeidExp)
             return runTypeidExpression(typeid_);
 
+identifierExpression:
         if (auto identifier = expression.isIdentifierExp) {
             const name = identifier.ident is null
                 ? ""
@@ -2426,7 +2645,9 @@ private struct Walker {
                 }
             }
         }
+        goto unsupportedExpression;
 
+variableExpression:
         if (auto var = expression.isVarExp) {
             import dmd.id: Id;
 
@@ -2513,6 +2734,7 @@ private struct Walker {
             return defaultValue(variable);
         }
 
+unsupportedExpression:
         import std.conv: text;
         throw new Exception(text("Unsupported eval expression: ", expression.op));
     }
