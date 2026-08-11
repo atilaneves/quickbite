@@ -13860,3 +13860,48 @@ static foreach (backend; AliasSeq!(Bytecode)) {
         );
     }
 }
+
+// A ref-returning member call's receiver expression denotes the lvalue that
+// member call runs against; D evaluates it exactly once, whether the member
+// call is an assignment target or merely read. SystemLinker is the oracle.
+static foreach (backend; Matrix!()) {
+    @("refCall.receiverExpressionEvaluatedOnce." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct Holder {
+                int stored;
+
+                ref int slot() {
+                    return stored;
+                }
+            }
+
+            ref Holder get(ref Holder holder, ref int evaluations) {
+                ++evaluations;
+                return holder;
+            }
+
+            unittest {
+                Holder holder;
+                int evaluations;
+
+                get(holder, evaluations).slot = 5;
+
+                assert(evaluations == 1);
+                assert(holder.stored == 5);
+            }
+
+            unittest {
+                Holder holder;
+                holder.stored = 7;
+                int evaluations;
+
+                auto value = get(holder, evaluations).slot;
+
+                assert(evaluations == 1);
+                assert(value == 7);
+            }
+        });
+    }
+}

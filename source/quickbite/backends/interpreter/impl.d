@@ -2729,6 +2729,30 @@ private struct Walker {
         return returnedLvalueAddress(call.f, argumentExpressions, child);
     }
 
+    // Resolve a member call's receiver expression exactly once: its address
+    // (needed to alias a struct `this` to the caller's real storage) and the
+    // value read through that address (needed for the null-receiver check,
+    // virtual dispatch, and a native callee). A receiver with no address
+    // (an rvalue) falls back to evaluating it ordinarily -- still exactly
+    // once. Composing the address and the value as two independent
+    // evaluations of `receiverExpression` would re-run any side effect it
+    // carries (e.g. a ref-returning call) an extra time.
+    private void resolveMemberCallReceiver(
+        imported!"dmd.expression".Expression receiverExpression,
+        out ExpressionResult receiverAddress,
+        out ExpressionResult receiver,
+    ) {
+        import dmd.tokens: EXP;
+        import quickbite.backends.interpreter.place: Place;
+
+        receiverAddress = addressOfExpression(receiverExpression, EXP.address);
+        receiver = receiverAddress.isPointer
+            ? readStoredValue(
+                Place(receiverAddress.pointerAddress, receiverExpression.type),
+            )
+            : runExpression(receiverExpression);
+    }
+
     // The address of the lvalue a ref-returning *member* call yields. The
     // callee's `this` must alias the receiver expression's own storage: the
     // returned lvalue is typically a receiver field, and its address is only
@@ -2745,7 +2769,9 @@ private struct Walker {
         import quickbite.frontend.dmd.functions:
             ensureFunctionBodySemantic, hasNoInterpretableSource;
 
-        const receiver = runExpression(dot.e1);
+        ExpressionResult receiverAddress;
+        ExpressionResult receiver;
+        resolveMemberCallReceiver(dot.e1, receiverAddress, receiver);
         if (receiver == ExpressionResult.null_)
             throw new Exception(
                 "function call through null class reference `null`",
@@ -2826,7 +2852,7 @@ private struct Walker {
             _activationFrame,
             evaluatedArguments,
         );
-        aliasThisToReceiverStorage(child, function_, dot.e1);
+        aliasThisToReceiverStorage(child, function_, receiverAddress);
 
         try {
             child.runStatement(function_.fbody);
@@ -2850,32 +2876,26 @@ private struct Walker {
         return returnedLvalueAddress(function_, argumentExpressions, child);
     }
 
-    // Alias a member callee's `this` to the receiver expression's real
-    // storage address. A `ref`-returning or ref-assigned member call must
-    // read and mutate the caller's own aggregate: field addresses computed
-    // inside the callee (`&_field`, `return _field;`) only reach the
-    // caller's struct if `this` is a borrowed view of that exact address,
-    // never a detached copy of the receiver's value.
+    // Alias a member callee's `this` to the receiver's real storage address,
+    // already resolved by the caller (`resolveMemberCallReceiver`). A
+    // `ref`-returning or ref-assigned member call must read and mutate the
+    // caller's own aggregate: field addresses computed inside the callee
+    // (`&_field`, `return _field;`) only reach the caller's struct if `this`
+    // is a borrowed view of that exact address, never a detached copy of the
+    // receiver's value. Taking the receiver's address here a second,
+    // independent way would re-run a side-effecting receiver expression
+    // (e.g. a ref-returning call) an extra time.
     private void aliasThisToReceiverStorage(
         ref Walker child,
         imported!"dmd.func".FuncDeclaration function_,
-        imported!"dmd.expression".Expression receiverExpression,
+        in ExpressionResult receiverAddress,
     ) {
-        import dmd.tokens: EXP;
-
         if (
             function_.vthis is null ||
             function_.vthis.isThisDeclaration is null
         )
             return;
 
-        // A `this` receiver's address is this activation's own aliased
-        // receiver address; composing it via `addressOfExpression` has no
-        // lvalue expression to work from.
-        const receiverAddress =
-            receiverExpression.isThisExp !is null && thisAddress !is null
-            ? ExpressionResult.pointerValue(thisAddress)
-            : addressOfExpression(receiverExpression, EXP.address);
         if (!receiverAddress.isPointer)
             return;
 
@@ -4221,6 +4241,30 @@ private struct Walker {
                 receiver = readValue(
                     Place(receiverPointerAddress.pointerAddress, dot.e1.type),
                 );
+            } else if (
+                dot.e1.isCallExp !is null &&
+                dot.e1.type.toBasetype.isTypeStruct !is null &&
+                dot.e1.isCallExp.f !is null &&
+                returnsRef(dot.e1.isCallExp.f)
+            ) {
+                // A ref-returning call denotes the lvalue it returned
+                // (`isWritableLocation`'s own `CallExp` case): the later
+                // `this`-rebind must reach that exact storage, not a copy.
+                // Take its address once here too, so a side-effecting
+                // receiver call (`get(holder, evaluations).slot`) runs
+                // exactly once rather than the rebind re-running it via a
+                // second `addressOfExpression`.
+                import dmd.tokens: EXP;
+                import quickbite.backends.interpreter.place: Place;
+                import quickbite.backends.interpreter.place_value: readValue;
+
+                receiverPointerAddress = addressOfExpression(dot.e1, EXP.address);
+                hasReceiverPointerAddress = receiverPointerAddress.isPointer;
+                receiver = receiverPointerAddress.isPointer
+                    ? readValue(
+                        Place(receiverPointerAddress.pointerAddress, dot.e1.type),
+                    )
+                    : runExpression(dot.e1);
             } else
                 receiver = runExpression(dot.e1);
             auto receiverDestructor = constructedReceiverDestructor(dot.e1);
@@ -5552,12 +5596,14 @@ private struct Walker {
         in ExpressionResult[] arguments,
         imported!"dmd.expression".Expression[] argumentExpressions,
         in EvaluatedReferenceArgument[] evaluatedArguments = null,
-        // Set by a caller that already evaluated a `PtrExp` or `IndexExp`
-        // receiver's side-effecting operand itself (to compute `receiver`
-        // above) and kept the resulting address around. The `this`-rebind
-        // below needs that same address; reusing it here -- instead of
-        // re-deriving it from `receiverExpression` -- keeps a side-effecting
-        // operand (e.g. `p()` in `p().get()`, or `i++` in `a[i++].method()`)
+        // Set by a caller that already evaluated a `PtrExp`, `IndexExp`, or
+        // ref-returning `CallExp` receiver's side-effecting operand itself
+        // (to compute `receiver` above) and kept the resulting address
+        // around. The `this`-rebind below needs that same address; reusing
+        // it here -- instead of re-deriving it from `receiverExpression` --
+        // keeps a side-effecting operand (e.g. `p()` in `p().get()`, `i++`
+        // in `a[i++].method()`, or the ref-returning call itself in
+        // `get(holder, evaluations).slot`)
         // evaluated exactly once.
         const(ExpressionResult)* precomputedReceiverPointerAddress = null,
     ) {
@@ -5671,7 +5717,8 @@ private struct Walker {
             } else if (
                 (
                     placeExpression.isPtrExp !is null ||
-                    placeExpression.isIndexExp !is null
+                    placeExpression.isIndexExp !is null ||
+                    placeExpression.isCallExp !is null
                 ) &&
                 precomputedReceiverPointerAddress !is null
             ) {
@@ -7341,7 +7388,9 @@ private struct Walker {
         if (dot is null)
             return writeFreeRefReturningCallLocation(call, value);
 
-        const receiver = runExpression(dot.e1);
+        ExpressionResult receiverAddress;
+        ExpressionResult receiver;
+        resolveMemberCallReceiver(dot.e1, receiverAddress, receiver);
         if (receiver == ExpressionResult.null_)
             throw new Exception("function call through null class reference `null`");
 
@@ -7427,7 +7476,7 @@ private struct Walker {
             _activationFrame,
             evaluatedArguments,
         );
-        aliasThisToReceiverStorage(child, function_, dot.e1);
+        aliasThisToReceiverStorage(child, function_, receiverAddress);
 
         try {
             child.runStatement(function_.fbody);
