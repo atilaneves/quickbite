@@ -356,6 +356,15 @@ private struct ClassArrayFieldDefaults {
         const(void)*] table;
 }
 
+// The live dynamic-call chain used only when a newly created closure needs to
+// retain the activation that owns one of its captured addresses. Links point
+// into synchronous caller Walkers, so constructing a call allocates nothing.
+private struct FrameMetadataLifetime {
+    public imported!"quickbite.backends.interpreter.frame_block".FrameBlock* frame;
+    public bool* retained;
+    public FrameMetadataLifetime* caller;
+}
+
 // One root evaluation owns this context, and every nested call borrows it.
 // Callable identities are monotonic, but address-keyed slot metadata follows
 // storage lifetime: writes replace it and copies, moves, and clears relocate or
@@ -525,6 +534,9 @@ private struct Walker {
     // Per-activation native storage block. Every local binding resolves to an
     // owning or reference place in this block.
     private FrameBlock _activationFrame;
+    private bool _activationFrameMetadataRetained;
+    private FrameMetadataLifetime _activationFrameMetadataLifetime;
+    private FrameMetadataLifetime* _callerFrameMetadataLifetime;
     // Native static links for lexically enclosing activations, nearest first.
     // The copied FrameBlock handles retain their GC-owned storage, so both a
     // direct nested call and a deeper relay can resolve the original place.
@@ -978,32 +990,27 @@ private struct Walker {
         if (oldAddress is newAddress)
             return;
 
-        const oldStart = cast(size_t) oldAddress;
-        const oldEnd = oldStart + byteLength;
-
         size_t[] delegateOffsets;
         ExpressionResult[] delegateValues;
-        foreach (address, value; nativeDelegateSlots)
-            if (cast(size_t) address >= oldStart && cast(size_t) address < oldEnd) {
-                delegateOffsets ~= cast(size_t) address - oldStart;
-                delegateValues ~= value;
-            }
-
         size_t[] functionOffsets;
         ExpressionResult[] functionValues;
-        foreach (address, value; nativeFunctionPointerSlots)
-            if (cast(size_t) address >= oldStart && cast(size_t) address < oldEnd) {
-                functionOffsets ~= cast(size_t) address - oldStart;
-                functionValues ~= value;
-            }
-
         size_t[] typeInfoOffsets;
         ExpressionResult[] typeInfoValues;
-        foreach (address, value; nativeTypeInfoSlots)
-            if (cast(size_t) address >= oldStart && cast(size_t) address < oldEnd) {
-                typeInfoOffsets ~= cast(size_t) address - oldStart;
-                typeInfoValues ~= value;
+        foreach (offset; 0 .. byteLength) {
+            auto address = cast(void*) (cast(ubyte*) oldAddress + offset);
+            if (auto value = address in nativeDelegateSlots) {
+                delegateOffsets ~= offset;
+                delegateValues ~= *value;
             }
+            if (auto value = cast(const(void)*) address in nativeFunctionPointerSlots) {
+                functionOffsets ~= offset;
+                functionValues ~= *value;
+            }
+            if (auto value = address in nativeTypeInfoSlots) {
+                typeInfoOffsets ~= offset;
+                typeInfoValues ~= *value;
+            }
+        }
 
         clearStoredMetadataRange(newAddress, byteLength);
 
@@ -1021,7 +1028,7 @@ private struct Walker {
         if (
             consumeSource &&
             !rangesOverlap(
-                oldStart,
+                cast(size_t) oldAddress,
                 byteLength,
                 cast(size_t) newAddress,
                 byteLength,
@@ -1053,44 +1060,47 @@ private struct Walker {
         )
             return;
 
+        if (byteLength == 0)
+            return;
+
         const start = cast(size_t) address;
-        const end = start + byteLength;
-
-        const(void)*[] delegateAddresses;
-        foreach (slot; nativeDelegateSlots.byKeyValue)
-            if (rangesOverlap(
-                cast(size_t) slot.key,
-                2 * (void*).sizeof,
-                start,
-                end - start,
-            ))
-                delegateAddresses ~= slot.key;
-        foreach (slot; delegateAddresses)
-            nativeDelegateSlots.remove(cast(void*) slot);
-
-        const(void)*[] functionAddresses;
-        foreach (slot; nativeFunctionPointerSlots.byKeyValue)
-            if (rangesOverlap(
-                cast(size_t) slot.key,
-                (void*).sizeof,
-                start,
-                end - start,
-            ))
-                functionAddresses ~= slot.key;
-        foreach (slot; functionAddresses)
-            nativeFunctionPointerSlots.remove(slot);
-
-        const(void)*[] typeInfoAddresses;
-        foreach (slot; nativeTypeInfoSlots.byKeyValue)
-            if (rangesOverlap(
-                cast(size_t) slot.key,
-                (void*).sizeof,
-                start,
-                end - start,
-            ))
-                typeInfoAddresses ~= slot.key;
-        foreach (slot; typeInfoAddresses)
-            nativeTypeInfoSlots.remove(cast(void*) slot);
+        enum precedingBytes = 2 * (void*).sizeof - 1;
+        const prefixLength = start < precedingBytes ? start : precedingBytes;
+        const scanStart = start - prefixLength;
+        const scanLength = prefixLength + byteLength;
+        foreach (offset; 0 .. scanLength) {
+            const candidate = scanStart + offset;
+            if (
+                cast(void*) candidate in nativeDelegateSlots &&
+                rangesOverlap(
+                    candidate,
+                    2 * (void*).sizeof,
+                    start,
+                    byteLength,
+                )
+            )
+                nativeDelegateSlots.remove(cast(void*) candidate);
+            if (
+                cast(const(void)*) candidate in nativeFunctionPointerSlots &&
+                rangesOverlap(
+                    candidate,
+                    (void*).sizeof,
+                    start,
+                    byteLength,
+                )
+            )
+                nativeFunctionPointerSlots.remove(cast(const(void)*) candidate);
+            if (
+                cast(void*) candidate in nativeTypeInfoSlots &&
+                rangesOverlap(
+                    candidate,
+                    (void*).sizeof,
+                    start,
+                    byteLength,
+                )
+            )
+                nativeTypeInfoSlots.remove(cast(void*) candidate);
+        }
     }
 
     private static bool rangesOverlap(
@@ -3397,6 +3407,7 @@ unsupportedExpression:
         child.addressOfRefReturn = true;
         child.result = ExpressionResult(false);
         forkExecutionStateInto(child);
+        scope(exit) child.retireActivationFrameMetadata;
         bindCapturedReferenceSlots(call.f, child);
         child.bindFunctionParameters(
             call.f,
@@ -3442,6 +3453,12 @@ unsupportedExpression:
     // owns a fresh activation frame, captures borrow parent addresses, and
     // module storage is shared directly.
     private void forkExecutionStateInto(ref Walker child) {
+        _activationFrameMetadataLifetime = FrameMetadataLifetime(
+            &_activationFrame,
+            &_activationFrameMetadataRetained,
+            _callerFrameMetadataLifetime,
+        );
+        child._callerFrameMetadataLifetime = &_activationFrameMetadataLifetime;
         if (child.currentFunction !is null && child.currentFunction.isNested)
             child._enclosingFrames = [_activationFrame] ~ _enclosingFrames;
 
@@ -3457,6 +3474,24 @@ unsupportedExpression:
         child.lazyArgumentExpressions = lazyArgumentExpressions;
         child.lazyArgumentFrames = lazyArgumentFrames;
         child._lazyArgumentMapsBorrowed = true;
+    }
+
+    // A returned activation normally has no storage lifetime left, so its
+    // address-keyed callable metadata must leave the execution registry with
+    // it. A closure capture or lazy thunk can retain the frame itself; those
+    // two cases keep its metadata live under the same lifetime.
+    private void retireActivationFrameMetadata() {
+        if (_activationFrameMetadataRetained)
+            return;
+
+        foreach (frame; lazyArgumentFrames.byValue)
+            if (frame.block.address is _activationFrame.block.address)
+                return;
+
+        clearStoredMetadataRange(
+            _activationFrame.block.address,
+            _activationFrame.byteLength,
+        );
     }
 
     // The child's returned address points into its own frame: a pointer to a
@@ -4331,14 +4366,37 @@ unsupportedExpression:
         foreach (variable; capturedVariables(function_)) {
             try {
                 auto address = capturedBindingAddress(variable);
-                if (address !is null)
+                if (address !is null) {
                     addresses[variable] = address;
+                    retainCapturedFrameMetadata(address);
+                }
             } catch (Exception) {
                 continue;
             }
         }
 
         return addresses;
+    }
+
+    // Mark the activation that owns a captured address, following ordinary
+    // dynamic callers as well as lexical static links. A `ref` capture can
+    // point through several reference slots before reaching the owning frame,
+    // so address containment, not declaration identity, is authoritative.
+    private void retainCapturedFrameMetadata(const(void)* address) {
+        if (_activationFrame.ownsAddress(address)) {
+            _activationFrameMetadataRetained = true;
+            return;
+        }
+
+        for (
+            auto lifetime = _callerFrameMetadataLifetime;
+            lifetime !is null;
+            lifetime = lifetime.caller
+        )
+            if (lifetime.frame.ownsAddress(address)) {
+                *lifetime.retained = true;
+                return;
+            }
     }
 
     private ExpressionResult delegateContextPointer(
@@ -5982,6 +6040,7 @@ unsupportedExpression:
         child._activationFrame = FrameBlock.allocate(layout);
         child.result = ExpressionResult(false);
         forkExecutionStateInto(child);
+        scope(exit) child.retireActivationFrameMetadata;
         bindCapturedReferenceSlots(function_, child, closureAddresses);
         child.bindFunctionParameters(
             function_,
@@ -6097,6 +6156,7 @@ unsupportedExpression:
         child._activationFrame = FrameBlock.allocate(layout);
         child.result = ExpressionResult(false);
         forkExecutionStateInto(child);
+        scope(exit) child.retireActivationFrameMetadata;
         bindCapturedReferenceSlots(function_, child);
         // For constructor calls, DMD may blit the target variable to zero
         // before the ctor runs (e.g. `box = 0 , box.this(input)`), so the
@@ -7922,6 +7982,7 @@ unsupportedExpression:
         child.refReturnAssignedValue = value;
         child.result = ExpressionResult(false);
         forkExecutionStateInto(child);
+        scope(exit) child.retireActivationFrameMetadata;
         bindCapturedReferenceSlots(function_, child);
         child.thisValue = receiver;
         child.hasThis = true;
@@ -8061,6 +8122,7 @@ unsupportedExpression:
         child.refReturnAssignedValue = value;
         child.result = ExpressionResult(false);
         forkExecutionStateInto(child);
+        scope(exit) child.retireActivationFrameMetadata;
         bindCapturedReferenceSlots(call.f, child);
         child.bindFunctionParameters(
             call.f,
@@ -10965,6 +11027,7 @@ unsupportedExpression:
             child.thisValue = structVal;
             child.hasThis = true;
             forkExecutionStateInto(child);
+            scope(exit) child.retireActivationFrameMetadata;
             child.bindThisReferenceAddress(new_.member, child.thisValue);
             child.bindFunctionParameters(new_.member, arguments);
             child.runStatement(new_.member.fbody);
@@ -11099,6 +11162,7 @@ unsupportedExpression:
         child._activationFrame = FrameBlock.allocate(layout);
         child.result = ExpressionResult(false);
         forkExecutionStateInto(child);
+        scope(exit) child.retireActivationFrameMetadata;
         child.thisValue = ExpressionResult.pointerValue(
             AggregateValue.nativeClassBodyAddress(object),
         );
