@@ -1124,6 +1124,129 @@ private struct Walker {
         return Place(bindingAddress(variable), declaredType(variable));
     }
 
+    // PROTOTYPE(place-projection): conservatively recognizes only lvalue
+    // trees which `lvalue_place.placeOfLvalue` can compose from storage this
+    // activation can actually resolve. Deciding before evaluation matters:
+    // falling back after a partially-composed tree could repeat an index
+    // side effect. Class receivers retain the existing path because it also
+    // performs dynamic-object metadata handling which this experiment does
+    // not attempt to redesign.
+    private bool hasProjectionPlace(
+        imported!"dmd.expression".Expression expression,
+    ) {
+        if (expression is null || expression.type is null)
+            return false;
+
+        if (auto variableExpression = expression.isVarExp) {
+            auto variable = variableExpression.var.isVarDeclaration;
+            return variable !is null && hasBindingPlace(variable);
+        }
+
+        if (auto index = expression.isIndexExp) {
+            auto baseType = index.e1.type is null
+                ? null
+                : index.e1.type.toBasetype;
+            if (
+                baseType is null ||
+                (baseType.isTypeSArray is null &&
+                    baseType.isTypeDArray is null &&
+                    baseType.isTypePointer is null)
+            )
+                return false;
+            if (auto symbol = index.e1.isSymOffExp)
+                return hasProjectionSymbolBase(symbol);
+            return hasProjectionPlace(index.e1);
+        }
+
+        if (auto dot = expression.isDotVarExp) {
+            if (
+                dot.var.isVarDeclaration is null ||
+                dot.e1.type is null ||
+                dot.e1.type.toBasetype.isTypeStruct is null
+            )
+                return false;
+            return hasProjectionPlace(dot.e1);
+        }
+
+        if (auto pointer = expression.isPtrExp) {
+            if (auto symbol = pointer.e1.isSymOffExp)
+                return hasProjectionSymbolBase(symbol);
+            if (auto cast_ = pointer.e1.isCastExp)
+                if (auto address = cast_.e1.isAddrExp)
+                    return hasProjectionPlace(address.e1);
+            return pointer.e1.type !is null &&
+                pointer.e1.type.toBasetype.isTypePointer !is null &&
+                hasProjectionPlace(pointer.e1);
+        }
+
+        if (auto cast_ = expression.isCastExp)
+            return hasProjectionPlace(cast_.e1);
+
+        return false;
+    }
+
+    private bool hasProjectionSymbolBase(
+        imported!"dmd.expression".SymOffExp symbol,
+    ) {
+        auto variable = symbol.var.isVarDeclaration;
+        return variable !is null && hasBindingPlace(variable);
+    }
+
+    // PROTOTYPE(place-projection): compose the addressable expression once.
+    // `$` belongs to its containing index and therefore reads the base
+    // place's length before that index expression runs, preserving the same
+    // receiver-before-index order as `runIndexExpression`.
+    private Place projectionPlace(
+        imported!"dmd.expression".Expression expression,
+    ) {
+        import quickbite.backends.interpreter.lvalue_place: placeOfLvalue;
+        import quickbite.backends.interpreter.messages: indexOutOfBoundsMessage;
+        import quickbite.backends.interpreter.place: IndexOutOfBoundsException;
+
+        assert(hasProjectionPlace(expression));
+        imported!"dmd.expression".IndexExp pendingIndex;
+        size_t pendingLength;
+        bool pendingBoundsCheck;
+        try {
+            return placeOfLvalue(
+                expression,
+                (variable) @safe => addressableBindingBase(variable),
+                (indexExpression) @system {
+                    const value = cast(size_t) cast(ulong)
+                        runExpression(indexExpression).asLong;
+                    if (
+                        pendingBoundsCheck &&
+                        pendingIndex !is null &&
+                        pendingIndex.e2 is indexExpression &&
+                        value >= pendingLength
+                    )
+                        throwRangeError(indexOutOfBoundsMessage(
+                            value,
+                            pendingLength,
+                            isSliceValue(pendingIndex.e1),
+                            runningCalledFunction,
+                        ));
+                    return value;
+                },
+                (index, base) @trusted {
+                    pendingIndex = index;
+                    pendingBoundsCheck =
+                        base.type.toBasetype.isTypePointer is null;
+                    if (pendingBoundsCheck)
+                        pendingLength = base.arrayLength;
+                    if (index.lengthVar !is null)
+                        setLocal(
+                            index.lengthVar,
+                            ExpressionResult(pendingLength),
+                        );
+                },
+            );
+        } catch (IndexOutOfBoundsException exception) {
+            throwRangeError(exception.msg);
+            assert(0);
+        }
+    }
+
     // DMD declaration inspection is `@system`; the returned address is still
     // restricted to storage owned by the frame/module/native binding tables.
     //
@@ -1934,8 +2057,18 @@ private struct Walker {
         if (auto literal = expression.isFuncExp)
             return runFunctionLiteralDeclaration(literal);
 
-        if (auto arrayLength = expression.isArrayLengthExp)
-            return ExpressionResult(AggregateValue.length(runExpression(arrayLength.e1)));
+        if (auto arrayLength = expression.isArrayLengthExp) {
+            // PROTOTYPE(place-projection): an addressable receiver already
+            // has authoritative typed storage. Read only its header/fixed
+            // length instead of allocating a by-value receiver snapshot.
+            if (hasProjectionPlace(arrayLength.e1))
+                return ExpressionResult(
+                    projectionPlace(arrayLength.e1).arrayLength,
+                );
+            return ExpressionResult(
+                AggregateValue.length(runExpression(arrayLength.e1)),
+            );
+        }
 
         if (auto slice = expression.isSliceExp)
             return runSliceExpression(slice);
@@ -6388,6 +6521,16 @@ private struct Walker {
         import quickbite.backends.interpreter.messages: receiverName;
         import std.conv: text;
 
+        // PROTOTYPE(place-projection): select a field directly from an
+        // addressable struct receiver. `readStoredValue` still returns an
+        // ordinary by-value field result; only the discarded whole-receiver
+        // snapshot disappears.
+        if (
+            dot.var.isVarDeclaration !is null &&
+            hasProjectionPlace(dot)
+        )
+            return readStoredValue(projectionPlace(dot));
+
         if (auto field = dot.var.isVarDeclaration) {
             if (field.type.toBasetype.isTypeClass !is null)
                 if (auto variableExpression = dot.e1.isVarExp)
@@ -9796,6 +9939,46 @@ private struct Walker {
             if (address is null)
                 throw new Exception("Associative-array key is absent.");
             return readValue(Place(address, header.valueType));
+        }
+
+        // PROTOTYPE(place-projection): compose an addressable array/pointer
+        // receiver once and load only the selected element. The returned
+        // `ExpressionResult` remains a by-value result; call and other rvalue
+        // receivers retain the original materialisation path below.
+        if (hasProjectionPlace(index.e1)) {
+            // `auto`: `Place.index`/`arrayLength` are mutable-qualified.
+            auto sourcePlace = projectionPlace(index.e1);
+            if (isPointerType(index.e1.type)) {
+                arrayIndex = cast(size_t) cast(ulong)
+                    runExpression(index.e2).asLong;
+                if (_evaluatedReferenceArgumentIndices !is null)
+                    (*_evaluatedReferenceArgumentIndices)[
+                        cast(const(void)*) index.e2
+                    ] = arrayIndex;
+                return readStoredValue(sourcePlace.index(arrayIndex));
+            }
+
+            const sourceLength = sourcePlace.arrayLength;
+            if (index.lengthVar !is null)
+                setLocal(index.lengthVar, ExpressionResult(sourceLength));
+            arrayIndex = cast(size_t) cast(ulong)
+                runExpression(index.e2).asLong;
+            if (_evaluatedReferenceArgumentIndices !is null)
+                (*_evaluatedReferenceArgumentIndices)[
+                    cast(const(void)*) index.e2
+                ] = arrayIndex;
+            if (arrayIndex >= sourceLength) {
+                import quickbite.backends.interpreter.messages:
+                    indexOutOfBoundsMessage;
+
+                throwRangeError(indexOutOfBoundsMessage(
+                    arrayIndex,
+                    sourceLength,
+                    isSliceValue(index.e1),
+                    runningCalledFunction,
+                ));
+            }
+            return readStoredValue(sourcePlace.index(arrayIndex));
         }
 
         // `$` inside index.e2 is a DollarExp bound to index.lengthVar, so it
