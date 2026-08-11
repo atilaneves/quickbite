@@ -9959,6 +9959,68 @@ static foreach (backend; Matrix!(
     }
 }
 
+// Slice-assigning into a struct field typed `void[]` denotes the same
+// byte-addressable storage as any other `void[]`: writing through the field
+// must copy bytes into the storage the field already points at, despite
+// `void` having no independently representable value. SystemLinker is the
+// oracle.
+static foreach (backend; Matrix!()) {
+    @("assign.structFieldVoidSliceCopiesBytes." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct Holder {
+                void[] data;
+            }
+
+            unittest {
+                ubyte[3] source;
+                source[0] = 10;
+                source[1] = 11;
+                source[2] = 12;
+
+                ubyte[3] storage;
+                Holder holder;
+                holder.data = storage[];
+
+                holder.data[] = source[];
+
+                assert(storage[0] == 10);
+                assert(storage[1] == 11);
+                assert(storage[2] == 12);
+            }
+        });
+    }
+}
+
+// A cast to `void[]` changes a view's element type but not the storage it
+// denotes. Slice-assigning through that cast must copy bytes into the
+// original array, despite `void` having no independently representable
+// value. SystemLinker is the oracle.
+static foreach (backend; Matrix!()) {
+    @("assign.castedVoidSliceCopiesBytes." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            unittest {
+                ubyte[3] source;
+                source[0] = 10;
+                source[1] = 11;
+                source[2] = 12;
+
+                ubyte[3] storage;
+                auto view = storage[];
+
+                (cast(void[]) view)[] = source[];
+
+                assert(storage[0] == 10);
+                assert(storage[1] == 11);
+                assert(storage[2] == 12);
+            }
+        });
+    }
+}
+
 // Module globals survive from one unittest to the next. A class reference
 // stored behind an interface must retain its dynamic identity across that
 // boundary so the later unittest dispatches to the original object.

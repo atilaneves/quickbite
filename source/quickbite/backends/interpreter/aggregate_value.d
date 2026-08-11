@@ -540,13 +540,21 @@ public struct AggregateValue {
         in size_t index,
         in imported!"quickbite.backends.interpreter.expression_result".ExpressionResult element,
     ) {
+        import dmd.astenums: TY;
+        import dmd.mtype: Type;
         import quickbite.backends.interpreter.place: Place;
         import quickbite.backends.interpreter.place_value: writeValue;
 
         if (!value.isNativeAggregate)
             throw new Exception("AggregateValue.withArrayElement needs a native array.");
         auto aggregate = native(value);
-        writeValue(Place(aggregate.address, aggregate.type).index(index), element);
+        auto place = Place(aggregate.address, aggregate.type).index(index);
+        // `void` has no value the place codec could store, so writing an
+        // element of a `void[]` retypes the place to `ubyte` and stores the
+        // raw byte instead -- matching how `elementAt` above reads one.
+        if (place.type.toBasetype.ty == TY.Tvoid)
+            place = Place(place.address, Type.tuns8);
+        writeValue(place, element);
         return value;
     }
 
