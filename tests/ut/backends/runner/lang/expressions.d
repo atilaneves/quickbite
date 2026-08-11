@@ -7897,6 +7897,33 @@ static foreach (backend; Matrix!()) {
     }
 }
 
+// Growing a dynamic array by assigning to its `.length` keeps the elements it
+// already holds and default-initialises the ones added past the old end. A
+// constructor body is no different from anywhere else in this respect: an
+// array assigned earlier in the constructor still holds its elements when a
+// later statement grows it.
+static foreach (backend; Matrix!()) {
+    @("class.constructorArrayResizePreservesAssignedElements." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            class Holder {
+                int[] values;
+
+                this() {
+                    values = [1, 2];
+                    values.length = 3;
+                }
+            }
+
+            unittest {
+                auto holder = new Holder;
+                assert(holder.values == [1, 2, 0]);
+            }
+        });
+    }
+}
+
 // A class `int[]` field: construction through an explicit constructor,
 // reassignment, and reading an element and `.length` back, all driven by
 // element size rather than any string special case.
