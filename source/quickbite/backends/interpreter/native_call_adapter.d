@@ -58,8 +58,40 @@ private struct InboundClosureContext {
     private size_t returnSize;
     private imported!"quickbite.ffi.ffi".CompilerAbi compilerAbi;
     private const(void)* code;
-    private imported!"quickbite.ffi.libffi".ffi_cif* cif;
+    private imported!"quickbite.ffi.libffi".ffi_cif cif;
     private imported!"quickbite.ffi.libffi".ffi_type*[] argumentFfiTypes;
+    private imported!"dmd.mtype".Type _singleParameterType;
+    private imported!"quickbite.ffi.libffi".ffi_type*[2]
+        _inlineArgumentFfiTypes;
+    private void* _argumentStorage;
+
+    public void initializeArguments(in size_t parameterCount) {
+        import core.memory: GC;
+        import dmd.mtype: Type;
+        import quickbite.ffi.libffi: ffi_type;
+
+        if (parameterCount <= 1) {
+            parameterTypes = parameterCount == 0
+                ? null
+                : (&_singleParameterType)[0 .. 1];
+            argumentFfiTypes = _inlineArgumentFfiTypes[
+                0 .. parameterCount + 1
+            ];
+            return;
+        }
+
+        const ffiTypesOffset = alignedOffset(
+            Type.sizeof * parameterCount,
+            (ffi_type*).alignof,
+        );
+        const byteLength = ffiTypesOffset +
+            (ffi_type*).sizeof * (parameterCount + 1);
+        _argumentStorage = GC.calloc(byteLength);
+        parameterTypes = (cast(Type*) _argumentStorage)[0 .. parameterCount];
+        argumentFfiTypes = (cast(ffi_type**) (
+            cast(ubyte*) _argumentStorage + ffiTypesOffset
+        ))[0 .. parameterCount + 1];
+    }
 }
 
 private struct InboundTrampolineRegistry {
@@ -124,7 +156,9 @@ private void setupInboundDelegateArgument(
         return;
 
     const parameterCount = functionType.parameterList.length;
-    auto parameterTypes = new Type[](parameterCount);
+    auto context = new InboundClosureContext;
+    context.initializeArguments(parameterCount);
+    auto parameterTypes = context.parameterTypes;
     foreach (index; 0 .. parameterCount) {
         parameterTypes[index] =
             functionType.parameterList[index].type.toBasetype;
@@ -132,16 +166,15 @@ private void setupInboundDelegateArgument(
             return;
     }
 
-    auto argumentFfiTypes = new ffi_type*[](1 + parameterCount);
+    auto argumentFfiTypes = context.argumentFfiTypes;
     argumentFfiTypes[0] = &ffi_type_pointer;
     foreach (abiIndex; 0 .. parameterCount)
         argumentFfiTypes[1 + abiIndex] = libffiTypeFor(parameterTypes[
             callbackSourceIndex(compilerAbi, parameterCount, abiIndex),
         ]);
 
-    auto cif = new ffi_cif;
     if (ffi_prep_cif(
-        cif,
+        &context.cif,
         FFI_DEFAULT_ABI,
         cast(uint) (1 + parameterCount),
         returnFfi,
@@ -149,15 +182,12 @@ private void setupInboundDelegateArgument(
     ) != 0)
         return;
 
-    auto context = new InboundClosureContext;
     context.registry = registry;
     context.callbackId = callbackId;
     context.returnType = returnType;
     context.parameterTypes = parameterTypes;
     context.returnSize = returnFfi.size < 8 ? 8 : returnFfi.size;
     context.compilerAbi = compilerAbi;
-    context.cif = cif;
-    context.argumentFfiTypes = argumentFfiTypes;
     registry._contexts ~= context;
 
     void* code;
@@ -166,7 +196,7 @@ private void setupInboundDelegateArgument(
         return;
     if (ffi_prep_closure_loc(
         cast(ffi_closure*) writable,
-        cif,
+        &context.cif,
         &inboundClosureTrampoline,
         cast(void*) context,
         code,
@@ -192,7 +222,12 @@ private extern(C) void inboundClosureTrampoline(
 ) {
     auto context = cast(InboundClosureContext*) userData;
     const parameterCount = context.parameterTypes.length;
-    auto sourceArguments = new void*[](parameterCount);
+    void*[1] inlineSourceArgument;
+    auto sourceArguments = parameterCount == 0
+        ? null
+        : parameterCount == 1
+            ? inlineSourceArgument[]
+            : new void*[](parameterCount);
     foreach (abiIndex; 0 .. parameterCount)
         sourceArguments[callbackSourceIndex(
             context.compilerAbi,
@@ -218,6 +253,13 @@ private size_t callbackSourceIndex(
     return compilerAbi == CompilerAbi.dmd
         ? argumentCount - abiIndex - 1
         : abiIndex;
+}
+
+private size_t alignedOffset(
+    in size_t offset,
+    in size_t alignment,
+) @safe @nogc nothrow pure {
+    return (offset + alignment - 1) / alignment * alignment;
 }
 
 // Session-owned callback roots and callback-id invoker for durable FFI
@@ -268,9 +310,14 @@ public struct InterpreterInboundTrampolineSession {
         import quickbite.backends.interpreter.place_value: readValue, writeValue;
 
         assert(callbackId < _callbacks.length, "unknown durable callback id");
-        ExpressionResult[] callbackArguments;
+        ExpressionResult[1] inlineCallbackArgument;
+        auto callbackArguments = parameterTypes.length == 0
+            ? null
+            : parameterTypes.length == 1
+                ? inlineCallbackArgument[]
+                : new ExpressionResult[](parameterTypes.length);
         foreach (index, parameterType; parameterTypes)
-            callbackArguments ~= readValue(Place(
+            callbackArguments[index] = readValue(Place(
                 argumentBuffers[index],
                 parameterType,
             ));
@@ -327,7 +374,6 @@ public struct NativeOperand {
 // required by the selected shape is present.
 private struct NativeInvocation {
     public imported!"quickbite.ffi.ffi".Callable callable;
-    public imported!"quickbite.ffi.ffi".TypedAddress[] arguments;
     public imported!"quickbite.ffi.ffi".TypedAddress result;
     public imported!"quickbite.ffi.ffi".TypedAddress receiver;
     public imported!"quickbite.ffi.ffi".DVariadicMetadata variadicMetadata;
@@ -335,7 +381,74 @@ private struct NativeInvocation {
     public bool hasVariadicMetadata;
     public bool returnsRef;
     public bool returnsReceiver;
-    public imported!"quickbite.backends.interpreter.native_block".NativeBlock[] roots;
+    private size_t _argumentCount;
+    private size_t _rootCount;
+    private void* _storage;
+    private imported!"quickbite.ffi.ffi".TypedAddress _singleArgument;
+    private imported!"quickbite.backends.interpreter.native_block".NativeBlock[3]
+        _inlineRoots;
+
+    public this(in size_t argumentCount) {
+        import core.memory: GC;
+
+        _argumentCount = argumentCount;
+        if (argumentCount > 1)
+            _storage = GC.calloc(storageByteLength(argumentCount));
+    }
+
+    // `_storage` is allocated for exactly `_argumentCount` TypedAddresses
+    // followed by the aligned roots range; this bounded cast exposes only the
+    // first range.
+    public inout(imported!"quickbite.ffi.ffi".TypedAddress)[] arguments()
+    inout @trusted @nogc nothrow pure {
+        alias TypedAddress = imported!"quickbite.ffi.ffi".TypedAddress;
+
+        if (_argumentCount == 0)
+            return null;
+        if (_argumentCount == 1)
+            return (&_singleArgument)[0 .. 1];
+        return (cast(inout(TypedAddress)*) _storage)[0 .. _argumentCount];
+    }
+
+    public void retainRoot(
+        imported!"quickbite.backends.interpreter.native_block".NativeBlock root,
+    ) {
+        auto storage = roots;
+        assert(_rootCount < storage.length);
+        storage[_rootCount++] = root;
+    }
+
+    private imported!"quickbite.backends.interpreter.native_block".NativeBlock[]
+    roots() {
+        alias NativeBlock = imported!"quickbite.backends.interpreter.native_block".NativeBlock;
+
+        if (_argumentCount <= 1)
+            return _inlineRoots[0 .. _argumentCount + 2];
+        return (cast(NativeBlock*) (
+            cast(ubyte*) _storage + rootsOffset(_argumentCount)
+        ))[0 .. _argumentCount + 2];
+    }
+
+    private static size_t storageByteLength(
+        in size_t argumentCount,
+    ) @safe @nogc nothrow pure {
+        alias NativeBlock = imported!"quickbite.backends.interpreter.native_block".NativeBlock;
+
+        return rootsOffset(argumentCount) +
+            NativeBlock.sizeof * (argumentCount + 2);
+    }
+
+    private static size_t rootsOffset(
+        in size_t argumentCount,
+    ) @safe @nogc nothrow pure {
+        alias NativeBlock = imported!"quickbite.backends.interpreter.native_block".NativeBlock;
+        alias TypedAddress = imported!"quickbite.ffi.ffi".TypedAddress;
+
+        return alignedOffset(
+            TypedAddress.sizeof * argumentCount,
+            NativeBlock.alignof,
+        );
+    }
 
     public bool isComplete() const @safe @nogc nothrow pure {
         if (
@@ -368,7 +481,8 @@ public struct NativeCallRequest {
     public NativeOperand receiverOperand;
     public bool virtualDispatch;
     public bool returnsReceiver;
-    public imported!"quickbite.backends.interpreter.expression_result".ExpressionResult[] arguments;
+    public const(imported!"quickbite.backends.interpreter.expression_result".
+        ExpressionResult)[] arguments;
     public imported!"dmd.mtype".Type[] argumentTypes;
     public NativeOperand[] argumentOperands;
     public InterpreterInboundTrampolineSession* callbackSession;
@@ -420,6 +534,13 @@ private bool prepareNativeInvocation(
     if (signature.parameterList.varargs != VarArg.none && !cVariadic)
         return false;
 
+    const fixedCount = signature.parameterList.length;
+    if (request.arguments.length != request.argumentTypes.length ||
+        cVariadic && request.arguments.length < fixedCount ||
+        !cVariadic && request.arguments.length != fixedCount)
+        return false;
+    invocation = NativeInvocation(request.arguments.length);
+
     invocation.returnsReceiver = request.returnsReceiver;
     if (request.receiverType !is null) {
         if (!prepareNativeOperand(
@@ -440,7 +561,7 @@ private bool prepareNativeInvocation(
         *cast(const(void)**) contextOwner.address = request.delegateContext;
         invocation.receiver = TypedAddress(Type.tvoidptr, contextOwner.address);
         invocation.hasReceiver = true;
-        invocation.roots ~= contextOwner;
+        invocation.retainRoot(contextOwner);
     }
 
     if (request.declaration !is null) {
@@ -464,12 +585,6 @@ private bool prepareNativeInvocation(
     if (invocation.callable.address is null)
         return false;
 
-    const fixedCount = signature.parameterList.length;
-    if (request.arguments.length != request.argumentTypes.length ||
-        cVariadic && request.arguments.length < fixedCount ||
-        !cVariadic && request.arguments.length != fixedCount)
-        return false;
-    invocation.arguments.length = request.arguments.length;
     foreach (index, argument; request.arguments) {
         auto type = index < fixedCount
             ? signature.parameterList[index].type.toBasetype
@@ -505,7 +620,7 @@ private bool prepareNativeInvocation(
             NativeBlock.Scan.conservative,
         );
         invocation.result = TypedAddress(returnType, owner.address);
-        invocation.roots ~= owner;
+        invocation.retainRoot(owner);
     } else if (returnType.ty == TY.Tvoid || returnType.ty == TY.Tnoreturn) {
         invocation.result = TypedAddress(returnType, null);
     } else {
@@ -516,7 +631,7 @@ private bool prepareNativeInvocation(
                 : NativeBlock.Scan.no,
         );
         invocation.result = TypedAddress(returnType, owner.address);
-        invocation.roots ~= owner;
+        invocation.retainRoot(owner);
     }
     return invocation.isComplete;
 }
@@ -544,7 +659,7 @@ private bool prepareNativeOperand(
     if (!interpretedDelegate && operandMatches(supplied, type)) {
         result = TypedAddress(type, supplied.address);
         if (supplied.owner.address !is null)
-            invocation.roots ~= supplied.owner;
+            invocation.retainRoot(supplied.owner);
         return true;
     }
     if (value.isNativeAggregate) {
@@ -586,7 +701,7 @@ private bool prepareNativeOperand(
         return false;
 
     result = TypedAddress(type, owner.address);
-    invocation.roots ~= owner;
+    invocation.retainRoot(owner);
     return true;
 }
 

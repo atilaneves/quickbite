@@ -258,6 +258,81 @@ private struct CallArguments {
     }
 }
 
+// One native call keeps its source-order types and optional stable operands in
+// one staging value. Zero and one argument stay inline; larger calls use one
+// exact scanned allocation for both parallel arrays.
+private struct NativeCallArguments {
+    private size_t _length;
+    private void* _storage;
+    private imported!"dmd.mtype".Type _singleType;
+    private imported!"quickbite.backends.interpreter.native_call_adapter".
+        NativeOperand _singleOperand;
+
+    public this(
+        imported!"dmd.expression".Expression[] expressions,
+    ) {
+        import core.memory: GC;
+
+        _length = expressions.length;
+        if (_length > 1)
+            _storage = GC.calloc(storageByteLength(_length));
+        foreach (index, expression; expressions)
+            types[index] = expression.type;
+    }
+
+    // `_storage` contains exactly `_length` Types followed by the aligned
+    // NativeOperand range. These casts expose only their respective ranges.
+    public imported!"dmd.mtype".Type[] types() @trusted {
+        alias Type = imported!"dmd.mtype".Type;
+
+        if (_length == 0)
+            return null;
+        if (_length == 1)
+            return (&_singleType)[0 .. 1];
+        return (cast(Type*) _storage)[0 .. _length];
+    }
+
+    public imported!"quickbite.backends.interpreter.native_call_adapter".
+        NativeOperand[] operands() @trusted {
+        alias NativeOperand = imported!"quickbite.backends.interpreter.native_call_adapter".
+            NativeOperand;
+
+        if (_length == 0)
+            return null;
+        if (_length == 1)
+            return (&_singleOperand)[0 .. 1];
+        return (cast(NativeOperand*) (
+            cast(ubyte*) _storage + operandsOffset(_length)
+        ))[0 .. _length];
+    }
+
+    private static size_t storageByteLength(
+        in size_t length,
+    ) @safe @nogc nothrow pure {
+        alias NativeOperand = imported!"quickbite.backends.interpreter.native_call_adapter".
+            NativeOperand;
+
+        return operandsOffset(length) + NativeOperand.sizeof * length;
+    }
+
+    private static size_t operandsOffset(
+        in size_t length,
+    ) @safe @nogc nothrow pure {
+        alias NativeOperand = imported!"quickbite.backends.interpreter.native_call_adapter".
+            NativeOperand;
+        alias Type = imported!"dmd.mtype".Type;
+
+        return alignOffset(Type.sizeof * length, NativeOperand.alignof);
+    }
+
+    private static size_t alignOffset(
+        in size_t offset,
+        in size_t alignment,
+    ) @safe @nogc nothrow pure {
+        return (offset + alignment - 1) / alignment * alignment;
+    }
+}
+
 private struct UninitializedBindings {
     public bool[void*] addresses;
 }
@@ -5000,7 +5075,15 @@ unsupportedExpression:
         auto functionType = delegateType.nextOf is null
             ? null
             : cast(TypeFunction) delegateType.nextOf;
-        auto argumentTypes = nativeArgumentTypes(argumentExpressions);
+        auto nativeArguments = NativeCallArguments(argumentExpressions);
+        fillNativeCallOperands(
+            null,
+            arguments,
+            argumentExpressions,
+            nativeArguments.types,
+            null,
+            nativeArguments.operands,
+        );
 
         try {
             if (durableInboundSession is null)
@@ -5011,15 +5094,9 @@ unsupportedExpression:
                 delegateSignature: functionType,
                 delegateAddress: callee.nativeDelegateFuncptr,
                 delegateContext: callee.nativeDelegateContext,
-                arguments: arguments.dup,
-                argumentTypes: argumentTypes,
-                argumentOperands: nativeCallOperands(
-                    null,
-                    arguments,
-                    argumentExpressions,
-                    argumentTypes,
-                    null,
-                ),
+                arguments: arguments,
+                argumentTypes: nativeArguments.types,
+                argumentOperands: nativeArguments.operands,
                 callbackSession: durableInboundSession,
             );
             NativeCallResult nativeResult;
@@ -10300,7 +10377,15 @@ unsupportedExpression:
             InterpreterInboundTrampolineSession, NativeCallRequest,
             NativeOperand, invokeNative;
 
-        auto argumentTypes = nativeArgumentTypes(argumentExpressions);
+        auto nativeArguments = NativeCallArguments(argumentExpressions);
+        fillNativeCallOperands(
+            function_,
+            arguments,
+            argumentExpressions,
+            nativeArguments.types,
+            evaluatedArguments,
+            nativeArguments.operands,
+        );
         if (durableInboundSession is null)
             durableInboundSession = new InterpreterInboundTrampolineSession(
                 &invokeNativeCallback,
@@ -10316,14 +10401,8 @@ unsupportedExpression:
                 receiverType.toBasetype.isTypeClass !is null,
             returnsReceiver: returnsReceiver,
             arguments: arguments,
-            argumentTypes: argumentTypes,
-            argumentOperands: nativeCallOperands(
-                function_,
-                arguments,
-                argumentExpressions,
-                argumentTypes,
-                evaluatedArguments,
-            ),
+            argumentTypes: nativeArguments.types,
+            argumentOperands: nativeArguments.operands,
             callbackSession: durableInboundSession,
         );
         return invokeNative(request, result);
@@ -10332,20 +10411,19 @@ unsupportedExpression:
     // Existing lvalues and retained C-string pointers cross as typed
     // addresses. Other rvalues become typed NativeBlock temporaries in the
     // adapter.
-    private imported!"quickbite.backends.interpreter.native_call_adapter".NativeOperand[]
-    nativeCallOperands(
+    private void fillNativeCallOperands(
         imported!"dmd.func".FuncDeclaration function_,
         in ExpressionResult[] arguments,
         imported!"dmd.expression".Expression[] argumentExpressions,
         imported!"dmd.mtype".Type[] argumentTypes,
         in EvaluatedReferenceArgument[] evaluatedArguments,
+        imported!"quickbite.backends.interpreter.native_call_adapter".NativeOperand[] operands,
     ) {
         import quickbite.backends.interpreter.native_block: NativeBlock;
         import quickbite.backends.interpreter.native_call_adapter: NativeOperand;
         import dmd.tokens: EXP;
 
-        NativeOperand[] operands;
-        operands.length = argumentExpressions.length;
+        assert(operands.length == argumentExpressions.length);
         foreach (index, expression; argumentExpressions) {
             if (auto typeid_ = expression.isTypeidExp)
                 if (auto typeInfo = typeidDeclaration(typeid_)) {
@@ -10421,7 +10499,6 @@ unsupportedExpression:
                     address.pointerAddress,
                 );
         }
-        return operands;
     }
 
     private bool isCharacterPointer(imported!"dmd.mtype".Type type) {
@@ -11457,22 +11534,6 @@ classFieldArrayLiteralDefault(
     writeValue(Place(block.address, field.type), value);
     walker.classArrayFieldDefaults.table[key] = block;
     return readValue(Place(block.address, field.type));
-}
-
-
-// The call site's actual argument types, in source order, so the FFI core can
-// type a C variadic call's trailing arguments (the signature carries only the
-// fixed parameters).
-private imported!"dmd.mtype".Type[] nativeArgumentTypes(
-    imported!"dmd.expression".Expression[] expressions,
-) {
-    import dmd.mtype: Type;
-
-    Type[] types;
-    foreach (expression; expressions)
-        types ~= expression.type;
-
-    return types;
 }
 
 

@@ -364,14 +364,152 @@ private struct PhysicalArgument {
 
 
 private struct PhysicalCall {
-    private bool valid;
     private imported!"dmd.mtype".Type returnType;
     private PhysicalReturn returnPolicy;
-    private PhysicalArgument[] arguments;
-    private void*[] pointerCells;
     private size_t cFixedArgumentCount;
     private bool cVariadic;
     private size_t receiverArgumentIndex = size_t.max;
+    private size_t _argumentCount;
+    private size_t _pointerCellCount;
+    private void* _storage;
+    private PhysicalArgument _singleArgument;
+    private void* _singlePointerCell;
+    private imported!"quickbite.ffi.libffi".ffi_type* _singleArgumentType;
+    private void* _singleArgumentAddress;
+    private FfiType _singleArgumentMetadata;
+
+    private void initialize(
+        in size_t argumentCount,
+        in size_t pointerCellCount,
+    ) {
+        import core.memory: GC;
+
+        _argumentCount = argumentCount;
+        _pointerCellCount = pointerCellCount;
+        assert(argumentCount > 1 || pointerCellCount <= 1);
+        if (argumentCount > 1)
+            _storage = GC.calloc(storageByteLength(
+                argumentCount,
+                pointerCellCount,
+            ));
+    }
+
+    // `_storage` is one exact allocation containing the five aligned staging
+    // ranges below. Each cast exposes only the range whose size was included
+    // in `storageByteLength`.
+    private PhysicalArgument[] arguments() @trusted {
+        if (_argumentCount == 0)
+            return null;
+        if (_argumentCount == 1)
+            return (&_singleArgument)[0 .. 1];
+        return (cast(PhysicalArgument*) _storage)[0 .. _argumentCount];
+    }
+
+    private void*[] pointerCells() @trusted {
+        if (_pointerCellCount == 0)
+            return null;
+        if (_argumentCount == 1)
+            return (&_singlePointerCell)[0 .. 1];
+        return (cast(void**) (
+            cast(ubyte*) _storage + pointerCellsOffset(_argumentCount)
+        ))[0 .. _pointerCellCount];
+    }
+
+    private imported!"quickbite.ffi.libffi".ffi_type*[] argumentTypes()
+    @trusted {
+        alias ffi_type = imported!"quickbite.ffi.libffi".ffi_type;
+
+        if (_argumentCount == 0)
+            return null;
+        if (_argumentCount == 1)
+            return (&_singleArgumentType)[0 .. 1];
+        return (cast(ffi_type**) (
+            cast(ubyte*) _storage + argumentTypesOffset(
+                _argumentCount,
+                _pointerCellCount,
+            )
+        ))[0 .. _argumentCount];
+    }
+
+    private void*[] argumentAddresses() @trusted {
+        if (_argumentCount == 0)
+            return null;
+        if (_argumentCount == 1)
+            return (&_singleArgumentAddress)[0 .. 1];
+        return (cast(void**) (
+            cast(ubyte*) _storage + argumentAddressesOffset(
+                _argumentCount,
+                _pointerCellCount,
+            )
+        ))[0 .. _argumentCount];
+    }
+
+    private FfiType[] argumentMetadata() @trusted {
+        if (_argumentCount == 0)
+            return null;
+        if (_argumentCount == 1)
+            return (&_singleArgumentMetadata)[0 .. 1];
+        return (cast(FfiType*) (
+            cast(ubyte*) _storage + argumentMetadataOffset(
+                _argumentCount,
+                _pointerCellCount,
+            )
+        ))[0 .. _argumentCount];
+    }
+
+    private static size_t storageByteLength(
+        in size_t argumentCount,
+        in size_t pointerCellCount,
+    ) @safe @nogc nothrow pure {
+        return argumentMetadataOffset(argumentCount, pointerCellCount) +
+            FfiType.sizeof * argumentCount;
+    }
+
+    private static size_t pointerCellsOffset(
+        in size_t argumentCount,
+    ) @safe @nogc nothrow pure {
+        return alignedTo(
+            PhysicalArgument.sizeof * argumentCount,
+            (void*).alignof,
+        );
+    }
+
+    private static size_t argumentTypesOffset(
+        in size_t argumentCount,
+        in size_t pointerCellCount,
+    ) @safe @nogc nothrow pure {
+        alias ffi_type = imported!"quickbite.ffi.libffi".ffi_type;
+
+        return alignedTo(
+            pointerCellsOffset(argumentCount) +
+                (void*).sizeof * pointerCellCount,
+            (ffi_type*).alignof,
+        );
+    }
+
+    private static size_t argumentAddressesOffset(
+        in size_t argumentCount,
+        in size_t pointerCellCount,
+    ) @safe @nogc nothrow pure {
+        alias ffi_type = imported!"quickbite.ffi.libffi".ffi_type;
+
+        return alignedTo(
+            argumentTypesOffset(argumentCount, pointerCellCount) +
+                (ffi_type*).sizeof * argumentCount,
+            (void*).alignof,
+        );
+    }
+
+    private static size_t argumentMetadataOffset(
+        in size_t argumentCount,
+        in size_t pointerCellCount,
+    ) @safe @nogc nothrow pure {
+        return alignedTo(
+            argumentAddressesOffset(argumentCount, pointerCellCount) +
+                (void*).sizeof * argumentCount,
+            FfiType.alignof,
+        );
+    }
 }
 
 
@@ -388,14 +526,15 @@ public bool call(
         FFI_DEFAULT_ABI;
     import dmd.astenums: TY;
 
-    auto physical = physicalCallFor(
+    PhysicalCall physical;
+    if (!preparePhysicalCall(
         callable,
         arguments,
         result,
         receiver,
         variadicMetadata,
-    );
-    if (!physical.valid)
+        physical,
+    ))
         return false;
 
     if (requiresSysVTransport(callable, physical))
@@ -417,9 +556,9 @@ public bool call(
         resultTy == TY.Tvoid ||
         resultTy == TY.Tnoreturn;
     const numAbiArguments = physical.arguments.length;
-    auto argumentTypes = new ffi_type*[](numAbiArguments);
-    auto argumentAddresses = new void*[](numAbiArguments);
-    auto argumentMetadata = new FfiType[](numAbiArguments);
+    auto argumentTypes = physical.argumentTypes;
+    auto argumentAddresses = physical.argumentAddresses;
+    auto argumentMetadata = physical.argumentMetadata;
     foreach (index, argument; physical.arguments) {
         argumentMetadata[index] = argument.pointer
             ? FfiType(&ffi_type_pointer)
@@ -518,16 +657,16 @@ private bool isDmdMemberMemoryReturn(
 }
 
 
-private PhysicalCall physicalCallFor(
+private bool preparePhysicalCall(
     Callable callable,
     TypedAddress[] arguments,
     TypedAddress result,
     TypedAddress* receiver,
     DVariadicMetadata* variadicMetadata,
+    out PhysicalCall physical,
 ) {
     import dmd.astenums: LINK, TY, VarArg;
 
-    PhysicalCall physical;
     if (callable.address is null || callable.signature is null ||
         callable.signature.next is null ||
         (callable.signature.linkage != LINK.c &&
@@ -536,12 +675,12 @@ private PhysicalCall physicalCallFor(
         (receiver !is null && callable.signature.linkage != LINK.d &&
             callable.signature.linkage != LINK.cpp) ||
         !hasSupportedVarArgs(callable.signature))
-        return physical;
+        return false;
     if (callable.declaration !is null &&
         !callable.declaration.type.toBasetype.equals(callable.signature))
-        return physical;
+        return false;
     if (!hasValidCppReceiverPresence(callable, receiver))
-        return physical;
+        return false;
     const isCppConstructor = callable.signature.linkage == LINK.cpp &&
         callable.declaration !is null &&
         callable.declaration.isCtorDeclaration !is null;
@@ -557,12 +696,12 @@ private PhysicalCall physicalCallFor(
     if (hasArgumentTail && arguments.length < numFixedArguments ||
         !hasArgumentTail && arguments.length != numFixedArguments ||
         isDVariadic != (variadicMetadata !is null))
-        return physical;
+        return false;
 
     physical.returnType = callable.signature.next.toBasetype;
     if (result.type is null ||
         !result.type.toBasetype.equals(physical.returnType))
-        return physical;
+        return false;
     physical.returnPolicy = isCppConstructor
         ? PhysicalReturn.cppConstructor
         : callable.signature.isRef
@@ -577,39 +716,33 @@ private PhysicalCall physicalCallFor(
         resultTy == TY.Tnoreturn;
     if ((physical.returnPolicy == PhysicalReturn.reference || !returnsVoid) &&
         result.address is null)
-        return physical;
+        return false;
 
-    auto argumentIsIndirect = new bool[](arguments.length);
-    auto argumentIsIgnored = new bool[](arguments.length);
+    size_t numPassedArguments;
     size_t numPassedFixedArguments;
+    size_t numPointerCells;
     foreach (index, argument; arguments) {
-        if (argument.type is null || argument.address is null)
-            return physical;
-        if (index < numFixedArguments) {
-            auto parameter = callable.signature.parameterList[index];
-            if (isLazyParameter(parameter)) {
-                if (!isMatchingLazyDelegate(argument.type, parameter.type))
-                    return physical;
-            } else if (!argument.type.toBasetype.equals(
-                parameter.type.toBasetype,
-            ))
-                return physical;
-            argumentIsIndirect[index] = isReferenceParameter(parameter) ||
-                callable.signature.linkage == LINK.cpp &&
-                (argument.type.toBasetype.ty == TY.Treference ||
-                    isCppInvisibleReference(argument.type));
-        } else if (hasCVariadicTail &&
-            !isPromotedVariadicType(argument.type))
-            return physical;
-        argumentIsIgnored[index] = !argumentIsIndirect[index] &&
-            isIgnoredSysVArgument(argument.type);
-        if (index < numFixedArguments && !argumentIsIgnored[index])
+        PhysicalArgumentPolicy policy;
+        if (!physicalArgumentPolicy(
+            callable,
+            argument,
+            index,
+            numFixedArguments,
+            hasCVariadicTail,
+            policy,
+        ))
+            return false;
+        if (policy.ignored)
+            continue;
+        ++numPassedArguments;
+        numPointerCells += policy.indirect;
+        if (index < numFixedArguments)
             ++numPassedFixedArguments;
     }
 
     const hasReceiver = receiver !is null;
     if (hasReceiver && (receiver.type is null || receiver.address is null))
-        return physical;
+        return false;
     if (hasReceiver && callable.signature.linkage == LINK.cpp &&
         callable.declaration !is null &&
         callable.declaration.isThis !is null &&
@@ -617,7 +750,17 @@ private PhysicalCall physicalCallFor(
             receiver.type,
             callable.declaration.isThis.type,
         ))
-        return physical;
+        return false;
+    if (hasReceiver)
+        switch (receiver.type.toBasetype.ty) with (TY) {
+            case Tstruct:
+                ++numPointerCells;
+                break;
+            case Tclass, Tpointer:
+                break;
+            default:
+                return false;
+        }
     if (isDVariadic) {
         // DMD's qualifier transforms require mutable type nodes.
         auto expectedType = dVariadicMetadataType(callable.compilerAbi);
@@ -626,34 +769,31 @@ private PhysicalCall physicalCallFor(
                 variadicMetadata.value.type,
                 expectedType,
             ))
-            return physical;
+            return false;
     }
-    size_t numPassedArguments;
-    foreach (ignored; argumentIsIgnored)
-        numPassedArguments += !ignored;
-    physical.arguments = new PhysicalArgument[](
+    physical.initialize(
         numPassedArguments + hasReceiver + isDVariadic,
+        numPointerCells,
     );
-    physical.pointerCells = new void*[](
-        arguments.length + hasReceiver,
-    );
+    auto physicalArguments = physical.arguments;
+    auto pointerCells = physical.pointerCells;
     size_t nextPhysicalIndex;
     size_t nextPointerCell;
     if (hasReceiver) {
         void* receiverAddress;
         switch (receiver.type.toBasetype.ty) with (TY) {
             case Tstruct:
-                physical.pointerCells[nextPointerCell] = receiver.address;
-                receiverAddress = &physical.pointerCells[nextPointerCell++];
+                pointerCells[nextPointerCell] = receiver.address;
+                receiverAddress = &pointerCells[nextPointerCell++];
                 break;
             case Tclass, Tpointer:
                 receiverAddress = receiver.address;
                 break;
             default:
-                return PhysicalCall.init;
+                assert(false, "receiver type was validated before staging");
         }
         physical.receiverArgumentIndex = nextPhysicalIndex;
-        physical.arguments[nextPhysicalIndex++] = PhysicalArgument(
+        physicalArguments[nextPhysicalIndex++] = PhysicalArgument(
             receiver.type,
             receiverAddress,
             size_t.max,
@@ -661,7 +801,7 @@ private PhysicalCall physicalCallFor(
         );
     }
     if (isDVariadic)
-        physical.arguments[nextPhysicalIndex++] = PhysicalArgument(
+        physicalArguments[nextPhysicalIndex++] = PhysicalArgument(
             variadicMetadata.value.type,
             variadicMetadata.value.address,
         );
@@ -672,26 +812,75 @@ private PhysicalCall physicalCallFor(
         const sourceIndex = reversesArguments
             ? arguments.length - offset - 1
             : offset;
-        if (argumentIsIgnored[sourceIndex])
+        PhysicalArgumentPolicy policy;
+        if (!physicalArgumentPolicy(
+            callable,
+            arguments[sourceIndex],
+            sourceIndex,
+            numFixedArguments,
+            hasCVariadicTail,
+            policy,
+        ))
+            return false;
+        if (policy.ignored)
             continue;
         auto address = arguments[sourceIndex].address;
-        if (argumentIsIndirect[sourceIndex]) {
-            physical.pointerCells[nextPointerCell] = address;
-            address = &physical.pointerCells[nextPointerCell++];
+        if (policy.indirect) {
+            pointerCells[nextPointerCell] = address;
+            address = &pointerCells[nextPointerCell++];
         }
-        physical.arguments[nextPhysicalIndex++] = PhysicalArgument(
+        physicalArguments[nextPhysicalIndex++] = PhysicalArgument(
             arguments[sourceIndex].type,
             address,
             sourceIndex,
-            argumentIsIndirect[sourceIndex],
+            policy.indirect,
         );
     }
     physical.cVariadic = hasCVariadicTail;
     physical.cFixedArgumentCount = isCKRVariadic
         ? hasReceiver
         : numPassedFixedArguments + hasReceiver;
-    physical.valid = true;
-    return physical;
+    return true;
+}
+
+
+private struct PhysicalArgumentPolicy {
+    private bool indirect;
+    private bool ignored;
+}
+
+
+private bool physicalArgumentPolicy(
+    Callable callable,
+    TypedAddress argument,
+    in size_t index,
+    in size_t numFixedArguments,
+    in bool hasCVariadicTail,
+    out PhysicalArgumentPolicy policy,
+) {
+    import dmd.astenums: LINK, TY;
+
+    if (argument.type is null || argument.address is null)
+        return false;
+    if (index < numFixedArguments) {
+        auto parameter = callable.signature.parameterList[index];
+        if (isLazyParameter(parameter)) {
+            if (!isMatchingLazyDelegate(argument.type, parameter.type))
+                return false;
+        } else if (!argument.type.toBasetype.equals(
+            parameter.type.toBasetype,
+        ))
+            return false;
+        policy.indirect = isReferenceParameter(parameter) ||
+            callable.signature.linkage == LINK.cpp &&
+            (argument.type.toBasetype.ty == TY.Treference ||
+                isCppInvisibleReference(argument.type));
+    } else if (hasCVariadicTail &&
+        !isPromotedVariadicType(argument.type))
+        return false;
+    policy.ignored = !policy.indirect &&
+        isIgnoredSysVArgument(argument.type);
+    return true;
 }
 
 
