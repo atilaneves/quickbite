@@ -9469,16 +9469,16 @@ static foreach (backend; Matrix!(
 }
 
 // `void[]` still denotes byte-addressable storage: its slice bounds and
-// assignment length are measured in bytes. Copying between two native-backed
-// `void[]` slices must therefore copy those bytes despite the element type
-// having no independently representable D value. SystemLinker is the oracle.
+// assignment length are measured in bytes. Copying between two `void[]`
+// slices must therefore copy those bytes despite the element type having no
+// independently representable D value. SystemLinker is the oracle.
 static foreach (backend; Matrix!(
     Omit!(Ctfe, Because.inexpressible,
         "Ctfe cannot read Mallocator.instance at compile time"),
     Omit!(Bytecode, Because.unconfirmed,
         "the bytecode core cannot assign fakePureErrno while allocating"),
 )) {
-    @("assign.nativeVoidSlicesCopyBytes." ~ backend.stringof)
+    @("assign.voidSlicesCopyBytes." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{

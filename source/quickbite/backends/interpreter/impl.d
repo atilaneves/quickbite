@@ -7394,6 +7394,28 @@ private struct Walker {
         if (value.isTypeName && isCharacterArrayType(type))
             return characterArrayValue(type, value.asTypeNameString);
 
+        // `void[]` denotes raw bytes, so coercing an aggregate to it is a
+        // reinterpretation of that aggregate's own storage -- exactly what
+        // `void[] bytes = someStruct;` and the allocator APIs that traffic in
+        // `void[]` mean by it -- not a value conversion. There is no scalar
+        // cast that could express it, so answer a byte view aliasing the
+        // source instead of falling through to `backendCastValue`.
+        if (value.isNativeAggregate) {
+            import dmd.astenums: TY;
+
+            auto array = type.toBasetype.isTypeDArray;
+            auto source = AggregateValue.native(value).type.toBasetype;
+            if (
+                array !is null &&
+                array.nextOf.toBasetype.ty == TY.Tvoid &&
+                (
+                    source.isTypeStruct !is null ||
+                    source.isTypeSArray !is null
+                )
+            )
+                return AggregateValue.nativeAggregateByteSlice(value, type);
+        }
+
         CastTarget target;
         if (!tryCastTarget(type, target))
             return value;
@@ -8156,6 +8178,8 @@ private struct Walker {
                 return runIndexedSliceAssignExpression(slice, index, rhs);
             if (auto dot = slice.e1.isDotVarExp)
                 return runFieldSliceAssignExpression(slice, dot, rhs);
+            if (slice.e1.isCastExp !is null)
+                return runCastedSliceAssignExpression(slice, rhs);
             throw new Exception(text(
                 "Unsupported interpreter assignment target: slice of ",
                 slice.e1.op,
@@ -8238,10 +8262,31 @@ private struct Walker {
 
         auto destination = bindingPlace(variable);
         foreach (index; lower .. upper)
-            writeStoredValue(destination.index(index), elements[index]);
+            writeStoredArrayElement(destination.index(index), elements[index]);
         clearUninitializedBindingAddress(destination.address);
 
         return value;
+    }
+
+    // Writing one element of an array whose element type is `void`: the
+    // element is a byte of raw storage, because `void` names no value the
+    // place codec could store. Assigning between `void[]` slices is a byte
+    // copy in D -- their bounds and assignment length are measured in bytes
+    // -- so retyping the destination place to `ubyte` stores exactly the byte
+    // `AggregateValue.elementAt` read from the source.
+    private void writeStoredArrayElement(
+        imported!"quickbite.backends.interpreter.place".Place element,
+        in ExpressionResult value,
+    ) {
+        import dmd.astenums: TY;
+        import dmd.mtype: Type;
+        import quickbite.backends.interpreter.place: Place;
+
+        if (element.type.toBasetype.ty == TY.Tvoid) {
+            writeStoredValue(Place(element.address, Type.tuns8), value);
+            return;
+        }
+        writeStoredValue(element, value);
     }
 
     // An indexed array-of-arrays element is already an independently
@@ -8401,6 +8446,39 @@ private struct Walker {
                 "slice [", lower, " .. ", upper,
                 "] extends past source array of length ", AggregateValue.length(current),
             ));
+
+        const block = isBlockSliceAssignment(slice, rhs);
+        const value = runExpression(rhs);
+
+        foreach (index; lower .. upper) {
+            const element = block
+                ? copyArrayValue(value, slice.type.toBasetype.nextOf)
+                : AggregateValue.elementAt(value, index - lower);
+            AggregateValue.withArrayElement(current, index, element);
+        }
+        return value;
+    }
+
+    // A slice assignment through a cast (`(cast(char[]) view)[] = "foo"`):
+    // casting a slice changes the element type of the view, never the storage
+    // it denotes, so the assignment must land in the array the cast operand
+    // already points at. Evaluating the cast yields a slice header holding
+    // that same data pointer, so writing elements through it with
+    // `AggregateValue.withArrayElement` reaches the original backing array.
+    // Rebuilding an array from the written elements instead would leave the
+    // result in a fresh allocation the source never sees.
+    private ExpressionResult runCastedSliceAssignExpression(
+        imported!"dmd.expression".SliceExp slice,
+        imported!"dmd.expression".Expression rhs,
+    ) {
+        const current = runExpression(slice.e1);
+
+        const lower = slice.lwr is null
+            ? 0
+            : cast(size_t) runExpression(slice.lwr).asLong;
+        const upper = slice.upr is null
+            ? AggregateValue.length(current)
+            : cast(size_t) runExpression(slice.upr).asLong;
 
         const block = isBlockSliceAssignment(slice, rhs);
         const value = runExpression(rhs);
