@@ -453,7 +453,20 @@ private CtorOrderingFixture buildCtorOrderingFixture(
     }
 }
 
-static foreach (backend; AliasSeq!(LLVMJit, Interpreter)) {
+// Every fixture below builds its own dependency `.so` and constructs a
+// `SystemLinker` inline as the oracle its result is compared against. The
+// `SystemLinker` row therefore runs compiled code against itself, which checks
+// the fixture's own scaffolding -- that the image builds, loads, and answers --
+// independently of whichever backend is under test.
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.inexpressible,
+        "CTFE cannot call a native dependency image"),
+    Omit!(Bytecode, Because.unconfirmed,
+        "calls into a dependency image for plain function arguments and " ~
+        "returns, but not for member functions, class and interface " ~
+        "dispatch, delegates, exceptions or module-level variables: those " ~
+        "read wrong values or crash"),
+)) {
 @("dependencyImage.externDFunction." ~ backend.stringof)
 @Tags(backend.stringof)
 unittest {
