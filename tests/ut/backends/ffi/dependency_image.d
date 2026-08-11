@@ -41,10 +41,22 @@ private auto runDependencyImage(alias backend)(
     }
 }
 
+// These fixtures each build their own dependency `.so` by hand and call
+// `runDependencyImage!backend` directly instead of going through
+// `runBackendSourceFixtureTests`/`Matrix!()`, so `SystemLinker` -- normally
+// the oracle every matrix carries automatically -- is not implied here. Each
+// fixture below constructs its own `SystemLinker` inline as that oracle
+// instead. `Ctfe` is excluded because it cannot `dlopen` a compiled shared
+// library at compile time (the same `Because.inexpressible` reason automem's
+// `Mallocator`-based fixtures give elsewhere in this suite). `Bytecode` is
+// included on purpose even where its dependency boundary does not yet call
+// into the compiled image, to characterize its current refusal message.
+private alias DependencyImageBackends = AliasSeq!(Interpreter, Bytecode, LLVMJit);
+
 // A dependency is compiled under its own compiler flags. Enabling DIP1000 for
 // the importing project cannot retroactively reject a dependency method that
 // was already compiled without it; calls resolve to the dependency image.
-static foreach (backend; AliasSeq!(Interpreter, Bytecode, LLVMJit)) {
+static foreach (backend; DependencyImageBackends) {
 @("dependencyImage.projectPreviewDoesNotReanalyseDependencyBody." ~
     backend.stringof)
 @Tags(backend.stringof)
@@ -155,7 +167,7 @@ unittest {
 // object. If a later dependency method must execute from the compiled image,
 // it must receive that same object, including slice fields changed by the
 // interpreted method.
-static foreach (backend; AliasSeq!(Interpreter, Bytecode, LLVMJit)) {
+static foreach (backend; DependencyImageBackends) {
 @("dependencyImage.nativeMethodSeesInterpretedPointerReceiverState." ~
     backend.stringof)
 @Tags(backend.stringof)
@@ -270,7 +282,7 @@ unittest {
 // A local declared inside a try statement is destroyed before control leaves
 // that statement. If its dependency-image destructor throws, the following
 // catch handles that exception just as it handles one thrown by the body.
-static foreach (backend; AliasSeq!(Interpreter, Bytecode, LLVMJit)) {
+static foreach (backend; DependencyImageBackends) {
 @("dependencyImage.nativeDestructorExceptionIsCaughtAtTryScopeExit." ~
     backend.stringof)
 @Tags(backend.stringof)

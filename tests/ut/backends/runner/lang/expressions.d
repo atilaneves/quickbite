@@ -9460,6 +9460,10 @@ static foreach (backend; Matrix!(
         runBackendSourceFixtureTests!backend(q{
             unittest {
                 char[3] storage;
+                // `view` is cast to `immutable` only to give the assignment
+                // below something to cast away; it still aliases the mutable
+                // local `storage`, which is never actually shared as
+                // immutable, so writing through it here is safe in practice.
                 immutable(char)[] view = cast(immutable(char)[]) storage[];
                 () @trusted { (cast(char[]) view)[] = "foo"; }();
                 assert(storage[] == "foo");
