@@ -5042,7 +5042,12 @@ private struct Walker {
         import quickbite.backends.interpreter.aggregate_value: AggregateValue;
         import quickbite.backends.interpreter.native_assoc_array: headerAt;
 
-        return headerAt(AggregateValue.native(value).address);
+        auto header = headerAt(AggregateValue.native(value).address);
+        if (header is null || !header.isQuickbiteHeader)
+            throw new Exception(
+                "Associative array has a native runtime representation.",
+            );
+        return header;
     }
 
     private imported!"quickbite.backends.interpreter.native_block".NativeBlock nativeAssocKeySlot(

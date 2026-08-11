@@ -17,6 +17,9 @@ public struct NativeAssocArray {
     import dmd.mtype: Type;
     import quickbite.backends.interpreter.native_block: NativeBlock;
 
+    private enum size_t magic = 0x5142495445414141;
+
+    private size_t _magic = magic;
     private Type _keyType;
     private Type _valueType;
     private NativeBlock[] _keys;
@@ -29,6 +32,10 @@ public struct NativeAssocArray {
 
     public size_t length() const pure nothrow @safe {
         return _keys.length;
+    }
+
+    public bool isQuickbiteHeader() const pure nothrow @safe {
+        return _magic == magic;
     }
 
     public inout(Type) keyType() inout pure nothrow @safe {

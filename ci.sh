@@ -8,6 +8,6 @@ fi
 ninja bin/ut
 bin/ut --random ~@LLVMJit ~@Ctfe
 dmd -unittest -checkaction=context -main -run tests/example.d
-bin/bench.sh
+bin/bench.sh -b interpreter -b system-linker --dub cerealed -w 0
 ninja bin/qb
 uv run tests/run_repl.py
