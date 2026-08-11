@@ -51,22 +51,22 @@ public string missingKeyMessage(
     );
 }
 
-public bool isTruthy(in imported!"quickbite.backends.interpreter.runtime_value".Value value) {
-    import quickbite.backends.interpreter.runtime_value: Value;
+public bool isTruthy(in imported!"quickbite.backends.interpreter.expression_result".ExpressionResult value) {
+    import quickbite.backends.interpreter.expression_result: ExpressionResult;
 
-    if (value == Value.null_)
+    if (value == ExpressionResult.null_)
         return false;
 
     if (value.isPointer)
         return true;
 
-    if (value == Value(false))
+    if (value == ExpressionResult(false))
         return false;
 
-    if (value == Value(true))
+    if (value == ExpressionResult(true))
         return true;
 
-    return value.castTo!bool == Value(true);
+    return value.castTo!bool == ExpressionResult(true);
 }
 
 public string thrownExceptionMessage(
@@ -102,10 +102,10 @@ public bool isClassExpression(
     return type !is null && type.ty == TY.Tclass;
 }
 
-public bool isBoolValue(in imported!"quickbite.backends.interpreter.runtime_value".Value value) {
-    import quickbite.backends.interpreter.runtime_value: Value;
+public bool isBoolValue(in imported!"quickbite.backends.interpreter.expression_result".ExpressionResult value) {
+    import quickbite.backends.interpreter.expression_result: ExpressionResult;
 
-    return value == Value(false) || value == Value(true);
+    return value == ExpressionResult(false) || value == ExpressionResult(true);
 }
 
 public bool isBoolExpression(
@@ -270,12 +270,13 @@ public string invertedEqualityOperator(in char[] operator) {
 }
 
 public string equalityOperandMessage(
-    in imported!"quickbite.backends.interpreter.runtime_value".Value value,
+    in imported!"quickbite.backends.interpreter.expression_result".ExpressionResult value,
     in bool useBoolMessage,
     imported!"dmd.expression".Expression expression,
 ) {
-    import quickbite.frontend.dmd.types: isIntegralExpression;
-    import quickbite.backends.interpreter.runtime_value: Value;
+    import quickbite.backends.interpreter.aggregate_value: AggregateValue;
+    import quickbite.frontend.dmd.types:
+        isCharacterArrayType, isIntegralExpression;
     import std.conv: text;
 
     if (useBoolMessage)
@@ -290,54 +291,98 @@ public string equalityOperandMessage(
     if (isIntegralExpression(expression))
         return text(value.asLong);
 
-    if (value.isFloatingScalar)
-        return value.dText;
-
-    if (value.isStringDisplayArray)
-        return value.dText;
-
-    if (value.isNativeAggregate) {
-        import quickbite.backends.interpreter.aggregate_value: AggregateValue;
-        import quickbite.frontend.dmd.types: isCharacterArrayType;
-
-        if (AggregateValue.isArray(value) &&
-            isCharacterArrayType(expression.type)) {
-            string characters;
-            foreach (index; 0 .. AggregateValue.elementCount(value))
-                characters ~= AggregateValue.elementAt(value, index).asUtf8Character;
-            return `"` ~ characters ~ `"`;
-        }
-
-        if (AggregateValue.isArray(value))
-            return nativeArrayText(value);
+    if (AggregateValue.isArray(value) &&
+        isCharacterArrayType(expression.type)) {
+        string characters;
+        foreach (index; 0 .. AggregateValue.elementCount(value))
+            characters ~= AggregateValue.elementAt(value, index).asUtf8Character;
+        return `"` ~ characters ~ `"`;
     }
 
-    return text(value);
+    if (AggregateValue.isArray(value))
+        return nativeArrayText(value, expression.type);
+
+    return scalarText(value, expression.type);
 }
 
 
 private string nativeArrayText(
-    in imported!"quickbite.backends.interpreter.runtime_value".Value value,
+    in imported!"quickbite.backends.interpreter.expression_result".ExpressionResult value,
+    imported!"dmd.mtype".Type type,
 ) {
     import quickbite.backends.interpreter.aggregate_value: AggregateValue;
 
+    auto elementType = type.toBasetype.nextOf;
     string result = "[";
     foreach (index; 0 .. AggregateValue.elementCount(value)) {
         if (index)
             result ~= ", ";
         const element = AggregateValue.elementAt(value, index);
-        result ~= element.isNativeAggregate && AggregateValue.isArray(element)
-            ? nativeArrayText(element)
-            : element.dText;
+        result ~= AggregateValue.isArray(element)
+            ? nativeArrayText(element, elementType)
+            : scalarText(element, elementType);
     }
     return result ~ "]";
 }
 
+
+private string scalarText(
+    in imported!"quickbite.backends.interpreter.expression_result".ExpressionResult value,
+    imported!"dmd.mtype".Type type,
+) {
+    import dmd.astenums: TY;
+    import quickbite.backends.interpreter.expression_result: ExpressionResult;
+    import std.conv: text;
+
+    if (value == ExpressionResult.null_)
+        return "null";
+    if (value.isEnumScalar)
+        return value.enumName;
+    if (value.isImaginaryScalar)
+        return text(value.imaginaryPart, "i");
+    if (value.isComplexScalar)
+        return text(
+            value.complexRealPart.asReal,
+            "+",
+            value.complexImaginaryPart.asReal,
+            "i",
+        );
+    if (value.isTypeName)
+        return value.asTypeNameString;
+    if (value.isFunctionPointer)
+        return text("<function pointer ", value.functionPointerId, ">");
+    if (value.isPointer)
+        return text(value.pointerAddress);
+    if (value.isNativeDelegate)
+        return text(value.nativeDelegateFuncptr);
+    if (value.isNativeAggregate)
+        return "<native aggregate>";
+
+    switch (type.toBasetype.ty) with (TY) {
+        case Tbool:
+            return text(value == ExpressionResult(true));
+        case Tchar, Twchar, Tdchar:
+            return value.asUtf8Character;
+        case Tint8, Tint16, Tint32, Tint64:
+            return text(value.asLong);
+        case Tuns8, Tuns16, Tuns32, Tuns64:
+            return text(value.asUnsignedLong);
+        case Tfloat32:
+            return text(cast(float) value.asReal);
+        case Tfloat64:
+            return text(cast(double) value.asReal);
+        case Tfloat80:
+            return text(value.asReal);
+        default:
+            throw new Exception("Unsupported diagnostic operand type.");
+    }
+}
+
 public string assertMessage(
     imported!"dmd.expression".Expression expression,
-    scope imported!"quickbite.backends.interpreter.runtime_value".Value delegate(imported!"dmd.expression".Expression) eval,
+    scope imported!"quickbite.backends.interpreter.expression_result".ExpressionResult delegate(imported!"dmd.expression".Expression) eval,
 ) {
-    import quickbite.backends.interpreter.runtime_value: Value;
+    import quickbite.backends.interpreter.expression_result: ExpressionResult;
 
     if (auto literal = expression.isStringExp)
         return literal.peekString.idup;
@@ -353,12 +398,9 @@ public string assertMessage(
 }
 
 private string charArrayString(
-    in imported!"quickbite.backends.interpreter.runtime_value".Value value,
+    in imported!"quickbite.backends.interpreter.expression_result".ExpressionResult value,
 ) {
     import quickbite.backends.interpreter.aggregate_value: AggregateValue;
-
-    if (!value.isNativeAggregate)
-        return value.asCharArrayString;
 
     char[] result;
     foreach (index; 0 .. AggregateValue.elementCount(value))
@@ -439,10 +481,10 @@ private string dmdAssertFailBoolMessageFromCall(
 
 public string dmdAssertFailMessage(
     imported!"dmd.expression".Expression expression,
-    scope imported!"quickbite.backends.interpreter.runtime_value".Value delegate(imported!"dmd.expression".Expression) eval,
+    scope imported!"quickbite.backends.interpreter.expression_result".ExpressionResult delegate(imported!"dmd.expression".Expression) eval,
 ) {
     import dmd.id: Id;
-    import quickbite.backends.interpreter.runtime_value: Value;
+    import quickbite.backends.interpreter.expression_result: ExpressionResult;
     import std.conv: text;
 
     auto call = expression.isCallExp;
@@ -488,7 +530,7 @@ public string dmdAssertFailMessage(
 private string dmdAssertFailIdentityMessage(
     imported!"dmd.expression".Expression left,
     imported!"dmd.expression".Expression right,
-    scope imported!"quickbite.backends.interpreter.runtime_value".Value delegate(imported!"dmd.expression".Expression) eval,
+    scope imported!"quickbite.backends.interpreter.expression_result".ExpressionResult delegate(imported!"dmd.expression".Expression) eval,
 ) {
     if (auto identity = identityExpression(left)) {
         if (assertExpectedTrue(right))
@@ -512,7 +554,7 @@ private bool assertExpectedTrue(imported!"dmd.expression".Expression expression)
 
 private string identityFailureMessage(
     imported!"dmd.expression".IdentityExp identity,
-    scope imported!"quickbite.backends.interpreter.runtime_value".Value delegate(imported!"dmd.expression".Expression) eval,
+    scope imported!"quickbite.backends.interpreter.expression_result".ExpressionResult delegate(imported!"dmd.expression".Expression) eval,
 ) {
     import dmd.tokens: EXP;
     import std.conv: text;
@@ -527,11 +569,11 @@ private string identityFailureMessage(
     );
 }
 
-private string identityOperandMessage(in imported!"quickbite.backends.interpreter.runtime_value".Value value) {
-    import quickbite.backends.interpreter.runtime_value: Value;
+private string identityOperandMessage(in imported!"quickbite.backends.interpreter.expression_result".ExpressionResult value) {
+    import quickbite.backends.interpreter.expression_result: ExpressionResult;
     import std.conv: text;
 
-    if (value == Value.null_)
+    if (value == ExpressionResult.null_)
         return "`null`";
 
     return text(value);
@@ -539,10 +581,10 @@ private string identityOperandMessage(in imported!"quickbite.backends.interprete
 
 public string equalFailureMessage(
     imported!"dmd.expression".EqualExp equal,
-    scope imported!"quickbite.backends.interpreter.runtime_value".Value delegate(imported!"dmd.expression".Expression) eval,
+    scope imported!"quickbite.backends.interpreter.expression_result".ExpressionResult delegate(imported!"dmd.expression".Expression) eval,
 ) {
     import dmd.tokens: EXP;
-    import quickbite.backends.interpreter.runtime_value: Value;
+    import quickbite.backends.interpreter.expression_result: ExpressionResult;
     import std.conv: text;
 
     const operator = equal.op == EXP.notEqual ? "==" : "!=";
@@ -570,9 +612,9 @@ public string assertFailureMessage(
     imported!"dmd.expression".AssertExp assert_,
     in bool runningCalledFunction,
     in bool inUnitTest,
-    scope imported!"quickbite.backends.interpreter.runtime_value".Value delegate(imported!"dmd.expression".Expression) eval,
+    scope imported!"quickbite.backends.interpreter.expression_result".ExpressionResult delegate(imported!"dmd.expression".Expression) eval,
 ) {
-    import quickbite.backends.interpreter.runtime_value: Value;
+    import quickbite.backends.interpreter.expression_result: ExpressionResult;
     import std.conv: text;
 
     // A literal `assert(false)` directly in a unittest body raises the plain

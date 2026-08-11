@@ -102,7 +102,7 @@ unittest {
 // `hasSlot` answers `true` for EITHER slot kind -- an owning param and a
 // reference param alike -- since both have a real slot in this frame;
 // `hasOwningSlot`/`hasReferenceSlot` are the kind-specific predicates
-// `impl.d`'s verified mirror and reference-slot binding actually gate on.
+// `impl.d`'s native binding paths use to distinguish storage from an address.
 @("FrameBlock.hasSlot.trueForOwningAndReferenceParamsFalseForUnrelatedVariable")
 unittest {
     auto function_ = parseFunction(
@@ -233,9 +233,7 @@ unittest {
 // succeeds for one and the pointer-width write lands inside storage that
 // may be narrower than eight bytes -- overwriting whatever local
 // `computeFrameLayout` packed after it. Nothing else catches that, so the
-// refusal is a throw rather than an `in` contract `-release` would strip
-// (the posture `object_table.ObjectTable.storageFor` argues for the same
-// corruption class).
+// refusal is a throw rather than an `in` contract `-release` would strip.
 @("FrameBlock.setReferenceSlot.referenceSlotValue.refuseAnOwningSlotRatherThanWritingPointerWidthIntoIt")
 unittest {
     auto function_ = parseFunction(

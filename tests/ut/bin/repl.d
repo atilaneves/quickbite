@@ -101,6 +101,23 @@ import quickbite.repl_prelude: __quickbiteFormat;
     actual.should == `["k":10L]`;
 }
 
+@("repl.frontend.literalNullUsesPreludeFormatter")
+unittest {
+    assertFormatterBackendOutput(["null"], ["null"]);
+}
+
+@("repl.frontend.imaginaryLiteralUsesPreludeFormatter")
+unittest {
+    assertFormatterBackendOutput(["1.5i"], ["1.5i"]);
+}
+
+@("repl.frontend.nullInterfaceReferenceUsesPreludeFormatter")
+unittest {
+    assertFormatterBackendOutput([
+        "({ interface I {} return cast(I) null; })()",
+    ], ["null"]);
+}
+
 @("repl.frontend.typeofExpressionWithTrailingTokensIsNotTypeCell")
 unittest {
     import quickbite.frontend.repl: ReplCellKind, ReplSession;
@@ -314,6 +331,20 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode)) {
         );
 
         output.should == ["1", "2"];
+    }
+}
+
+static foreach (backend; AliasSeq!(Ctfe, Interpreter)) {
+    @("repl.backend.voidExpressionProducesNoDisplay." ~ backend.stringof)
+    unittest {
+        import quickbite.repl: runReplLoop;
+
+        const output = runReplLoop(
+            newBackend!backend,
+            ["({ void f() {} f(); })()", ":q"],
+        );
+
+        output.should == [];
     }
 }
 

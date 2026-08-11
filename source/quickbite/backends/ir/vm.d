@@ -12,6 +12,14 @@ package imported!"quickbite.lang".Value eval(
     return machine.result(function_);
 }
 
+package void run(
+    in imported!"quickbite.backends.ir.language".Function function_,
+) {
+    Machine machine;
+    machine.init(function_);
+    machine.execute(function_, []);
+}
+
 private struct Machine {
     import quickbite.backends.ir.bits:
         doubleBits,

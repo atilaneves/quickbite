@@ -13,11 +13,12 @@ completeness, `value.md` owns representation, and `bench.md` owns trustworthy
 measurement. Correctness work takes precedence when the Interpreter and
 `SystemLinker` disagree.
 
-Representation work is a prerequisite for production optimisation. Complete
-`value.md`'s formatter, unittest/expression split, shared-`Value` deletion, and
-Interpreter transitional-map removal before changing Interpreter execution
-machinery for speed. Measurement infrastructure may land earlier. Never
-optimise, share, or otherwise entrench a representation component that
+Representation work is a prerequisite for production optimisation. The
+Interpreter's transitional representation removal is complete; its surviving
+carrier is the narrow `ExpressionResult`. Production optimisation still waits
+for the IR and Bytecode formatter slices and the resulting shared-`Value`
+deletion required by `value.md`. Measurement infrastructure may land earlier.
+Never optimise, share, or otherwise entrench a representation component that
 `value.md` schedules for deletion.
 
 ## Measured Baseline
@@ -56,10 +57,10 @@ breakdown.
 
 `forkExecutionStateInto` currently duplicates many associative arrays for
 every interpreted call. The profile identifies real cost, but the hottest
-`NativeBlock` registry is transitional state that `value.md` schedules for
-deletion. This evidence prioritises finishing that deletion; it does not make
-the registry a production-code optimisation target. The profile does not yet
-account for the whole runtime or allocation delta.
+`NativeBlock` registry measured there belonged to the superseded
+identity-to-body storage world. This evidence does not make an allocation
+identity registry a production-code optimisation target. The profile does not
+yet account for the whole runtime or allocation delta.
 
 The Symmetry Investments collector is not a viable comparison at this
 baseline. Registering symgc 0.0.8 through `import symgc.gcobj` and selecting
@@ -151,15 +152,16 @@ boundary exists, but cannot close a performance item. Re-baseline after
 representation completion and before changing surviving Interpreter machinery
 for speed.
 
-### 2. Finish The Value-Representation End State
+### 2. Finish The Shared Value-Representation End State
 
-Complete `value.md` before production performance changes. Delete the shared
-`Value`, the existing broad Interpreter `RuntimeValue`, formatting/reification
-scaffolding, and transitional allocation/declaration identity maps.
-`nativePointerRoots` is specifically not an optimisation target: replace it
-with ordinary GC scanning from native frames and blocks, using a scoped
-temporary owner only while a newly produced raw address has not yet reached
-scanned storage.
+Complete `value.md` before production performance changes. The Interpreter
+already uses the narrow `ExpressionResult` and has no remaining formatting,
+reification, or transitional representation maps. The pending work is the IR
+and Bytecode formatter migration followed by deletion of the shared `Value`.
+Pointer lifetimes use ordinary GC scanning from native frames and blocks, with
+a scoped temporary owner only while a newly produced raw address has not yet
+reached scanned storage; an execution-wide root registry is not an
+optimisation target and must not return.
 
 Completion means the Interpreter satisfies `value.md`'s end-state criteria and
 the performance profile contains only machinery intended to survive. Do not

@@ -4,24 +4,20 @@ module quickbite.backends.interpreter.native_scalar;
 private:
 
 
-// A leaf codec between the interpreter's boxed scalar `quickbite.backends.interpreter.runtime_value.Value`
-// and the host's native byte layout for a D scalar type. This is the first
-// production call site for the native-layout container types
-// (`native_block.d`/`native_array.d`/`native_struct.d`): `impl.d` promotes an
-// address-taken scalar local to a `NativeBlock`, `writeScalar`s direct writes
-// into it, and `readScalar`s pointer dereferences from it, so
-// `*cast(T*) &local` loads the same bytes at the pointee's static type.
+// A leaf codec between the interpreter's transient scalar
+// `quickbite.backends.interpreter.expression_result.ExpressionResult` and the
+// host's native byte layout for a D scalar type. Frame, module, aggregate, and
+// borrowed places use it for scalar loads and stores, so `*cast(T*) &local`
+// loads the same bytes at the pointee's static type.
 //
 // `real`/`TY.Tfloat80` is deliberately excluded from `isNativeScalarType`:
 // an x86 80-bit extended-precision `real` occupies a host- and
 // ABI-specific padded size (10 significant bytes inside a 12- or 16-byte
 // slot, depending on platform and alignment) that `layout.typeByteSize`
-// reports correctly for THIS host, but treating it as a byte-for-byte
-// portable native scalar the way `float`/`double` are would bake in that
-// padding as if it were a stable cross-host fact. Nothing this commit's
-// call site needs (the two pinned float/uint and double/ulong fixtures)
-// requires `real`; excluding it keeps this codec's claims honest rather
-// than silently wrong on a host whose padding differs.
+// reports correctly for THIS host, but treating it as a byte-for-byte portable
+// native scalar the way `float`/`double` are would bake in that padding as if
+// it were a stable cross-host fact. `place_value.d` owns the host-specific
+// `real` codec instead.
 //
 // Native-call operands and results now cross the FFI seam as typed places, so
 // this codec remains the interpreter's single scalar<->bytes authority there
@@ -77,7 +73,7 @@ public bool isNativeScalarType(imported!"dmd.mtype".Type type) @safe {
 public void writeScalar(
     imported!"dmd.mtype".Type type,
     ubyte[] dest,
-    in imported!"quickbite.backends.interpreter.runtime_value".Value value,
+    in imported!"quickbite.backends.interpreter.expression_result".ExpressionResult value,
 ) @safe {
     import quickbite.backends.interpreter.layout: typeByteSize;
 
@@ -103,7 +99,7 @@ public void writeScalar(
 private void writeScalarBits(
     imported!"dmd.astenums".TY kind,
     ubyte[] dest,
-    in imported!"quickbite.backends.interpreter.runtime_value".Value value,
+    in imported!"quickbite.backends.interpreter.expression_result".ExpressionResult value,
 ) @trusted {
     import core.stdc.string: memcpy;
     import dmd.astenums: TY;
@@ -160,9 +156,9 @@ private void writeScalarBits(
 }
 
 
-// The integer bits behind an integral/`bool`/character `Value`, widened to
+// The integer bits behind an integral/`bool`/character `ExpressionResult`, widened to
 // `long`. A character value's bits are its code point (`castTo!long`).
-private long scalarLong(in imported!"quickbite.backends.interpreter.runtime_value".Value value) @safe {
+private long scalarLong(in imported!"quickbite.backends.interpreter.expression_result".ExpressionResult value) @safe {
     return value.isCharacter ? value.castTo!long.asLong : value.asLong;
 }
 
@@ -171,7 +167,7 @@ private long scalarLong(in imported!"quickbite.backends.interpreter.runtime_valu
 // native layout. `src.length` must equal `layout.typeByteSize(type)`,
 // enforced the same unconditional-throw way `writeScalar` enforces
 // `dest.length`, for the same reason.
-public imported!"quickbite.backends.interpreter.runtime_value".Value readScalar(
+public imported!"quickbite.backends.interpreter.expression_result".ExpressionResult readScalar(
     imported!"dmd.mtype".Type type,
     in ubyte[] src,
 ) @safe {
@@ -192,97 +188,97 @@ public imported!"quickbite.backends.interpreter.runtime_value".Value readScalar(
 // same-sized local, then boxes it -- the read-side counterpart of
 // `writeScalarBits`, with the same alignment reasoning for using `memcpy`
 // over a pointer-typed load.
-private imported!"quickbite.backends.interpreter.runtime_value".Value readScalarBits(
+private imported!"quickbite.backends.interpreter.expression_result".ExpressionResult readScalarBits(
     imported!"dmd.astenums".TY kind,
     in ubyte[] src,
 ) @trusted {
     import core.stdc.string: memcpy;
     import dmd.astenums: TY;
-    import quickbite.backends.interpreter.runtime_value: Value;
+    import quickbite.backends.interpreter.expression_result: ExpressionResult;
 
     switch (kind) with (TY) {
         case Tbool: {
             bool bits;
             memcpy(&bits, src.ptr, bits.sizeof);
-            return Value(bits);
+            return ExpressionResult(bits);
         }
 
         case Tchar: {
             char bits;
             memcpy(&bits, src.ptr, bits.sizeof);
-            return Value(bits);
+            return ExpressionResult(bits);
         }
 
         case Twchar: {
             wchar bits;
             memcpy(&bits, src.ptr, bits.sizeof);
-            return Value(bits);
+            return ExpressionResult(bits);
         }
 
         case Tdchar: {
             dchar bits;
             memcpy(&bits, src.ptr, bits.sizeof);
-            return Value(bits);
+            return ExpressionResult(bits);
         }
 
         case Tint8: {
             byte bits;
             memcpy(&bits, src.ptr, bits.sizeof);
-            return Value(bits);
+            return ExpressionResult(bits);
         }
 
         case Tuns8: {
             ubyte bits;
             memcpy(&bits, src.ptr, bits.sizeof);
-            return Value(bits);
+            return ExpressionResult(bits);
         }
 
         case Tint16: {
             short bits;
             memcpy(&bits, src.ptr, bits.sizeof);
-            return Value(bits);
+            return ExpressionResult(bits);
         }
 
         case Tuns16: {
             ushort bits;
             memcpy(&bits, src.ptr, bits.sizeof);
-            return Value(bits);
+            return ExpressionResult(bits);
         }
 
         case Tint32: {
             int bits;
             memcpy(&bits, src.ptr, bits.sizeof);
-            return Value(bits);
+            return ExpressionResult(bits);
         }
 
         case Tuns32: {
             uint bits;
             memcpy(&bits, src.ptr, bits.sizeof);
-            return Value(bits);
+            return ExpressionResult(bits);
         }
 
         case Tint64: {
             long bits;
             memcpy(&bits, src.ptr, bits.sizeof);
-            return Value(bits);
+            return ExpressionResult(bits);
         }
 
         case Tuns64: {
             ulong bits;
             memcpy(&bits, src.ptr, bits.sizeof);
-            return Value(bits);
+            return ExpressionResult(bits);
         }
 
         case Tfloat32: {
             float bits;
             memcpy(&bits, src.ptr, bits.sizeof);
-            return Value(bits);
+            return ExpressionResult(bits);
         }
 
         case Tfloat64: {
             double bits;
             memcpy(&bits, src.ptr, bits.sizeof);
-            return Value(bits);
+            return ExpressionResult(bits);
         }
 
         default:

@@ -6,37 +6,53 @@ This plan records the removal of the shared `quickbite.lang.Value` and the
 tree-walking interpreter's move to native-layout storage. Decisions 15-18
 (July 2026) commit the end state — native-layout storage, one data-pointer
 representation (the host address), no FFI marshalling — with deleting
-`Value` as the completion signal. The remaining order is: execute the formatter
-everywhere, delete the shared `Value`, and remove the Interpreter's transitional
-representation machinery before optimising Interpreter execution. Broader
-Interpreter language expansion follows those steps. The Bytecode refactor and
-its address-only FFI migration proceed in a file-disjoint parallel lane.
+`Value` as the completion signal. The Interpreter's value removal is complete:
+its remaining narrow expression currency is `ExpressionResult`, and its
+package and tests contain no `Value` or `RuntimeValue` compatibility spelling.
+The shared `Value` deletion remains gated by the IR and Bytecode formatter
+migrations. Production Interpreter optimisation waits for that deletion;
+broader language expansion may proceed independently. The Bytecode refactor
+and its address-only FFI migration proceed in a file-disjoint parallel lane.
 Current capabilities:
 
 - `EvalResult` carries a display `string` or `Diagnostic`, and `:t` is
-  frontend-answered. CTFE and Interpreter execute formatter-wrapped expression
-  cells and unittests without rendering; range/template structs and the IR and
-  Bytecode paths still use interim `Value` display scaffolding.
+  frontend-answered. CTFE and Interpreter execute every semantically valid
+  expression display through the prelude formatter and execute unittests
+  without rendering. The Interpreter consumes the guest-produced string
+  directly and has no host-side display model; the IR and Bytecode paths still
+  use interim `Value` display scaffolding.
 - `NativeBlock`/`NativeArray`/`NativeStruct` compose structs, static arrays,
   slices, and their elements using DMD layout. They own real GC storage,
   growth, slice headers, and the interpreter side of the FFI seam.
-- Native frame, module, object-body, and borrowed reference places provide
+- Native frame, module, class-body, and borrowed reference places provide
   authoritative reads, writes, whole-value reconstruction, and addresses.
   Views compose by DMD offsets and strides; direct, nested, indexed, sliced,
   `ref`, and cross-frame access share storage rather than copies.
-- Class bodies are owned by their host address, not a variable binding.
+- Class identity is the host body address. VM-created objects retain a native
+  aggregate owner; borrowed host `Throwable`s retain the host address and keep
+  interpreter-visible native-layout metadata keyed by that same address.
   Union storage observes overlapping DMD offsets and first-member default
   initialization for the supported recursively scalar-field shapes.
 - Rebinding stores a new value or address in the binding place; same-storage
   mutation updates the existing bytes. Casts and slices retain their native
   backing and compose from its address across bindings and calls.
-- `RuntimeValue` is transient expression currency. Its aggregate arm owns or
-  borrows native DMD-layout storage, and its sole data-pointer arm is a host
-  address. It is never local, alias, or cross-frame storage authority.
+- Raw addresses produced by an expression retain their owning blocks only for
+  that recursive expression walk. Once stored, conservative scanning of the
+  native destination keeps the allocation live; no allocation-identity root
+  registry crosses calls or activations.
+- `ExpressionResult` is transient expression currency. Its sole aggregate arm
+  owns or borrows typed native DMD-layout storage, and its sole data-pointer arm
+  is a host address. It has no structural array, struct, associative-array,
+  entry, class-object, undisplayable, formatting, or string-display-metadata
+  arms. Aggregate construction always has a DMD type, and aggregate place
+  writes copy the complete typed byte span. `ExpressionResult` is never local,
+  alias, or cross-frame storage authority. Diagnostics and the temporary
+  `std.conv.text` interceptor render from the expression's DMD type and typed
+  scalar accessors at their consumer sites.
 - The Interpreter native-call adapter has one preparation path and one
   execution path. Preparation selects typed argument, receiver, and result
   addresses; execution calls the address-only `quickbite.ffi.ffi` bridge.
-  There is no `RuntimeValue`/marshal/reify/writeback fallback. Callback
+  There is no expression-result marshal/reify/writeback fallback. Callback
   lifetime and re-entry and native exception translation stay adapter-owned
   because they are Interpreter mechanics, not value conversion.
 
@@ -49,8 +65,8 @@ replayed from source); benchmarks compare strings; the bytecode and IR
 cores exclude a universal runtime value type by design
 (`ai/plans/bytecode.md` "No universal runtime value type";
 `ai/plans/ir.md`). The struct's remaining customers are its own unit tests
-and the interpreter's internal execution scaffolding, both scheduled for
-deletion (items 2-3).
+and the IR and Bytecode backends' formatting scaffolding. The Interpreter no
+longer imports or aliases it.
 
 ## Approved decisions
 
@@ -73,9 +89,10 @@ deletion (items 2-3).
 
 3. The canonical formatter's end state is an in-program prelude template,
    `string __quickbiteFormat(T)(T value)`, written once in ordinary D
-   with `static if` introspection. The frontend synthesizes expression
-   cells as `__quickbiteFormat(expr)`; semantic analysis — shared by all
-   backends — instantiates the template against the real static type, so
+   with `static if` introspection. For a formatter-capable backend, the frontend
+   synthesizes every semantically valid expression cell as
+   `__quickbiteFormat(expr)`; semantic analysis — shared by all backends —
+   instantiates the template against the real static type, so
    type-directed dispatch is resolved before any backend runs and
    backends only execute code. Consistency across backends by
    construction; the native backend ships a plain `string` across the
@@ -87,7 +104,10 @@ deletion (items 2-3).
    as each becomes able to execute the prelude formatter. The formatter
    is an early, demanding test program for the bytecode and IR cores, not
    a new requirement. During the interim the formatter-wrapped synthesis
-   applies only to views consumed by backends that can execute it.
+   applies to every semantically valid expression consumed by a backend that
+   can execute it. A cell that already fails semantic analysis retains its
+   unwrapped source solely to preserve the primary diagnostic; no value path
+   can execute it.
 
 5. REPL mechanics survive without `Value`: void suppression is decided at
    synthesis time (the frontend knows when `typeof(expr)` is `void`, and
@@ -123,7 +143,7 @@ deletion (items 2-3).
 
 8. This plan owns the Interpreter's value representation and native-call
    adapter. `quickbite.ffi.ffi` is designed independently for native-layout
-   backends and never sees `RuntimeValue`: the Interpreter hands it typed
+   backends and never sees `ExpressionResult`: the Interpreter hands it typed
    argument and result addresses without compatibility methods or a legacy
    fallback. `quickbite.ffi.oldffi` remains only for Bytecode's parallel
    migration lane; `bytecode.md` owns removal of that final consumer and
@@ -180,11 +200,12 @@ deletion (items 2-3).
     evaluation. The walker needs a recursive expression-result operation
     (unittests execute expressions; nested calls return results), but its
     carrier is interpreter-private execution machinery, not a display
-    value — `RuntimeValue` is a descriptive name, not a prescribed shared
-    type. Top-level unittest execution needs only success or a diagnostic
-    and must not render the walker's final result; the REPL expression
-    path synthesizes `__quickbiteFormat(expr)` and returns that
-    guest-produced string through `EvalResult`. Replace the interim
+    value. `ExpressionResult` names that narrow currency rather than a shared
+    runtime abstraction. Top-level unittest execution needs only success or a
+    diagnostic and must not render the walker's final result;
+    expression-display entry points synthesize `__quickbiteFormat(expr)` and
+    return that guest-produced
+    string through `EvalResult`. Replace the interim
     `runUnitTest -> eval(FuncDeclaration) -> displayString` bridge with a
     direct unittest execution entry point plus a separate REPL evaluation
     entry point: display work leaves the latency-critical unittest path.
@@ -304,8 +325,10 @@ deletion (items 2-3).
       carrier, or wrapper around addresses is the regression (that is
       how the boxed era grew — never "a second pointer type", always
       "a carrier for a shape the current one can't express");
-    - no data-pointer kind predicate or declaration/allocation identity map
-      exists in the interpreter execution path.
+    - no data-pointer kind predicate, counter identity namespace, or
+      identity-to-body allocation table exists in the interpreter execution
+      path. Address-keyed dynamic-type, ownership, and exception metadata do
+      not replace the address as guest identity.
 
 16. **Walker role; no shared substrate.** The walker is not a stepping
     stone: its own terminal goal is running arbitrary D projects' unit
@@ -372,8 +395,8 @@ deletion (items 2-3).
 
     The Interpreter adapter has one typed-address preparation path and one
     execution path. A scalar rvalue may be written into typed scratch storage
-    before preparation completes, but no `RuntimeValue` crosses the bridge and
-    no buffer-based aggregate reconstruction or post-call writeback path
+    before preparation completes, but no `ExpressionResult` crosses the bridge
+    and no buffer-based aggregate reconstruction or post-call writeback path
     exists. The libffi descriptor, argument-address array, scalar scratch, and
     symbol resolution remain bridge plumbing; callback lifetime/re-entry and
     native exception translation remain Interpreter-adapter plumbing.
@@ -411,9 +434,9 @@ checked fact; do not relearn them.
   isPlaceComposable` via its own leaf codec (`readRealBits`/
   `writeRealBits`); a write composes into a zero-initialised local and
   copies the whole slot, making `real`'s padding deterministic.
-- `place_value.valueMatchesPlace` is the recursive gate for whether a
-  transient execution value can enter the place writer. It includes both
-  type composability and value shape.
+- `place_value.valueMatchesPlace` is the scalar compatibility gate for whether
+  a non-aggregate transient execution value can enter the place writer. Typed
+  native aggregates bypass it and copy their complete byte span.
 - Integer offsetting of a pointer preserves its host address and applies the
   byte delta already scaled from the expression's static pointer type.
 - Nested indexing into a native array composes offsets one level at a time:
@@ -491,20 +514,26 @@ checked fact; do not relearn them.
   address-taking, indexing, and field access compose from that place.
 - Each activation owns a fresh frame block. Captures and calls borrow addresses;
   they do not copy storage authority into a child or reconcile it on return.
+- A raw address whose owner has not yet reached native storage has an owner in
+  the current recursive expression scope. Callees share that lexical scope so
+  returned addresses remain live; the outer expression releases it after the
+  address reaches a conservatively scanned frame, module, object, aggregate,
+  or native-call scratch block. No address-to-allocation registry participates.
 - Native class references carry only their body address. VM-owned allocations
-  retain their storage in an ownership table; borrowed native exceptions keep
-  their hydrated `Throwable` metadata in a separate table keyed by object
-  address. A temporary boxed view of a borrowed native class retains its host
-  pointer in interpreter-owned capability metadata keyed by the view's object
-  identity; guest fields are never host metadata. A catch's static view may
-  replace exception metadata, but never an ordinary class allocation root.
+  retain their native aggregate in an ownership table. A borrowed native
+  exception keeps a separate native-layout metadata aggregate keyed by its
+  real host object address; its dynamic type is keyed by that address too.
+  Ordinary fields are hydrated from the host body, while runtime-owned `msg`
+  and chain state come from the captured exception record. The metadata never
+  crosses a native boundary or replaces the host address as identity.
 - A field slice borrows bytes composed from its receiver place; an aggregate
   expression snapshot is never the backing storage for an lvalue-derived view.
-- `RuntimeValue.NativeAggregate` owns or borrows DMD-layout bytes for a
+- `ExpressionResult.NativeAggregate` owns or borrows DMD-layout bytes for a
   transient aggregate result. Once stored, the destination place is
   authoritative.
-- `RuntimeValue.Pointer` contains only a host address. Pointer arithmetic and
-  subtraction, equality, and relational comparison operate on that address; no
+- `ExpressionResult.Pointer` contains only a host address. Pointer arithmetic
+  and subtraction, equality, and relational comparison operate on that
+  address; no
   allocation identity, declaration identity, or pointer-kind predicate
   participates in execution.
 - Class identity is the object-body address. All aliases, fields, casts, member
@@ -597,13 +626,15 @@ Conventions, in order:
    for characters it does not (all widths render `'a'`, disambiguated by
    `typeof`). Type qualifiers (`const`/`immutable`) and mutability are
    not displayed.
-7. `void` results display nothing (REPL suppression). Functions,
-   delegates, pointers, and other values with no D expression form cannot
-   round-trip; there is no contract to honour, so render whatever is most
-   useful to the reader (e.g. `<function int(int)>`, `&name`, `null` for
-   null callables) — optimise for convenience, not parseability. Pointer
-   display is otherwise unspecified until pointers become a displayable
-   feature — spec it then.
+7. `void` results display nothing (REPL suppression). Functions, delegates,
+   pointers, behaviour-bearing template results, and other values with no D
+   expression form cannot round-trip; there is no contract to honour, so
+   render whatever is most useful to the reader. Non-null callables render
+   `<undisplayable>` and null callables render `null`. A template result whose
+   behaviour cannot be reconstructed from a D expression renders its template
+   struct name and declared state, such as `MapResult([1, 2, 3])`; this is an
+   inspection form, not a constructor expression. Pointer display is otherwise
+   unspecified until pointers become a displayable feature — spec it then.
 
 ## Test strategy
 
@@ -656,14 +687,13 @@ All test additions/changes require approval first (AGENTS.md).
 
 ## Remaining work
 
-The native authority switch is the standing interpreter contract, not pending
-work. The remaining value-track work begins with the language-surface and
-display tasks below. Item numbers remain stable for existing cross-references.
-`interpreter-performance.md` may improve measurement in parallel, but its
-production optimisation order begins only after items 1-3 and removal of the
-Interpreter's transitional allocation/declaration identity maps. This prevents
-performance work from entrenching representation machinery already scheduled
-for deletion.
+The native authority switch and Interpreter value removal are standing
+contracts, not pending work. The remaining value-track work is the IR and
+Bytecode formatter migration followed by shared-`Value` deletion, alongside
+the language-surface tasks below. Item numbers remain stable for existing
+cross-references. `interpreter-performance.md` may improve measurement in
+parallel, but production optimisation begins only after items 2-3 delete the
+shared representation.
 
 ### Item 4 — Workingness track
 
@@ -725,47 +755,32 @@ address it used, the same way the receiver-level
 `PtrExp`/`IndexExp` *receiver* -- not yet threaded through for a target
 recovered by peeling.
 
-### Item 1 — Prelude formatter wiring
-
-**Next PR:** complete the prelude formatter wiring (decision 3). The formatter
-surface covers scalars, arrays, structs, enums, AAs, plain template structs,
-and context-free range results. `std.algorithm.map`'s nested `MapResult`
-remains excluded because its behavior-bearing private state cannot be
-reconstructibly displayed. Define the prelude contract for behavior-bearing
-templates before admitting them. Then expand the gate per backend (decision 4)
-until every REPL expression is formatter-wrapped and the unformatted evaluator
-paths can be deleted. The interpreter's `std.conv.text` hook is temporary
-formatter scaffolding, not a general Phobos builtin: remove it once the
-formatter no longer needs that escape hatch.
-
 ### Item 2 — Unittest/expression split
 
-Complete the unittest/expression split for IR and Bytecode (decision 12) after
-their formatter wiring. CTFE and Interpreter already execute unittest bodies
-directly and return only success/diagnostic. Delete the private reify ->
-`Value` -> `toString` scaffolding per backend (decision 4) as each gains the
-formatter. Only a REPL expression cell executes the prelude formatter and
-consumes its returned string. Do not retain `Value` or render a dummy `void`
-result just to reuse the evaluator path.
+All four tree-node backends execute unittest bodies directly and return only
+success/diagnostic; their unittest paths neither reify nor render a result.
+The Interpreter's REPL and direct-expression convenience API execute the
+prelude formatter and consume its guest-produced string without a host-side
+display model. IR and Bytecode still need their backend-owned formatter
+execution slices before their expression paths can complete the split. As each
+gains the formatter, delete its private reify -> `Value` -> `toString`
+scaffolding (decision 4). Do not retain `Value` or render a dummy `void` result
+just to reuse the evaluator path.
 
 ### Item 3 — Delete the shared value
 
 Delete the shared `quickbite.lang.Value` and its unit tests once per-backend
 formatter migrations leave no consumers. This deletion is decision 15's
-completion signal.
+completion signal. IR and Bytecode formatter execution are the remaining
+prerequisites; the Interpreter no longer consumes or aliases the shared type.
 
-For the Interpreter, also delete transient storage-authority scaffolding that
-the native-layout end state makes unnecessary. Delete the existing broad
-`RuntimeValue` type rather than retaining it under its private alias `Value`.
-If recursive AST evaluation still needs a carrier, replace it with the smallest
-non-owning scalar/address/callable carrier allowed by decisions 7 and 11; it
-must contain no formatting model, recursively boxed aggregate, or storage
-authority.
-
-Replace `nativePointerRoots` with ordinary scanning from native frames and
-blocks plus explicitly scoped temporary owners at raw-pointer construction
-boundaries. Delete allocation/declaration identity maps rather than moving
-them into a shared execution context or optimising their fork/merge behavior.
+The Interpreter's `ExpressionResult` has the smallest non-owning
+scalar/address/callable shape allowed by decisions 7 and 11: no formatting
+model, recursively boxed aggregate, class-object snapshot, or storage
+authority. `FrameBlock`, `ModuleTable`, and typed `Place` composition are the
+binding authority. Address-keyed callable and symbolic-reference metadata may
+accompany native byte ranges, but may not become a second binding store. A
+class expression is only a native aggregate owner or its object-body address.
 
 ### Item 6 — Open design questions
 
@@ -780,12 +795,6 @@ before; it dies with the legacy executors. Bytecode/interpreter
 native-layout deduplication and any shared-substrate extraction are out
 of scope (decision 16): later, if ever, and subordinate to finishing the
 bytecode VM.
-
-Restructuring the Walker's mirror/writeback machinery behind an internal
-seam (for example, funnelling all mirror access through the binding
-helpers) is likewise out of scope until the mirrored `Value` storage is
-gone: a clean, tested interface would entrench machinery scheduled for
-deletion.
 
 ## Guardrails
 

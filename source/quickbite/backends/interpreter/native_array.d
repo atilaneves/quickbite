@@ -664,12 +664,11 @@ public struct NativeArray {
     // block of the required byte length with this array's own scan policy,
     // copying the live `length * stride` bytes across, and adopting the new
     // block, where the address legitimately changes. That is correct --
-    // stale pointers into the old block go stale exactly as compiled D
-    // loses append capacity on
-    // reallocation, and no boxed/old-block value is ever copied back as the
-    // authority. Both paths leave the SAME observable state: `block.
-    // byteLength == n * stride` and every byte beyond the live `length *
-    // stride` is zero -- `tryExtendTo` establishes that itself on the
+    // stale pointers into the old block go stale exactly as compiled D loses
+    // append capacity on reallocation, and the array adopts the new block as
+    // its sole storage authority. Both paths leave the SAME observable state:
+    // `block.byteLength == n * stride` and every byte beyond the live
+    // `length * stride` is zero -- `tryExtendTo` establishes that itself on the
     // extend path, and `NativeBlock.allocate`'s `GC.calloc` zeroes the
     // whole new block on the reallocating path, so an extended block is
     // indistinguishable from a freshly allocated one. A borrowed block

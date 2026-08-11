@@ -12,6 +12,7 @@ public struct Cell {
 
     public Kind kind;
     public string source;
+    public string diagnosticSource;
     public imported!"dmd.func".FuncDeclaration function_;
     private EvalHistoryTarget historyTarget;
     private string history;
@@ -25,6 +26,7 @@ public struct Cell {
 public struct EvalSourceParseResult {
     public string source;
     public imported!"dmd.func".FuncDeclaration function_;
+    public bool displayIsFormatted;
 }
 
 private struct LoadedModuleSource {
@@ -164,34 +166,38 @@ public struct EvalSession {
             );
         }
 
-        const rawSource = evalSource(
+        const diagnosticSource = evalSource(
+            moduleSource,
+            localTranscriptSource ~ expressionReturnSource(input, false),
+            evalFunctionName,
+        );
+        const resultKind = expressionResultKind(diagnosticSource, importPaths);
+        const formatExpression = formatExpressionCells &&
+            resultKind == ExpressionResultKind.value;
+        const source = evalSource(
             moduleSource,
             localTranscriptSource ~ expressionReturnSource(
                 input,
-                false,
+                formatExpression,
             ),
             evalFunctionName,
         );
-        const formatExpression = formatExpressionCells &&
-            expressionReturnNeedsPreludeFormat(rawSource, importPaths);
-        const source = formatExpression
-            ? evalSource(
-                moduleSource,
-                localTranscriptSource ~ expressionReturnSource(input, true),
-                evalFunctionName,
-            )
-            : rawSource;
         return evalCellFromSource(
-            Cell.Kind.expression,
+            resultKind == ExpressionResultKind.void_
+                ? Cell.Kind.noDisplay
+                : Cell.Kind.expression,
             source,
             importPaths,
             EvalHistoryTarget.local,
-            expressionHistory(input, valueCellCount),
+            resultKind == ExpressionResultKind.void_
+                ? input ~ ";\n"
+                : expressionHistory(input, valueCellCount),
             [],
             [],
             [],
             [],
             formatExpression,
+            diagnosticSource,
         );
     }
 
@@ -326,141 +332,36 @@ private string expressionReturnSource(
         "return __quickbiteFormat(" ~ input ~ ");";
 }
 
-private bool expressionReturnNeedsPreludeFormat(
+private enum ExpressionResultKind {
+    invalid,
+    void_,
+    value,
+}
+
+private ExpressionResultKind expressionResultKind(
     in string source,
     in string[] importPaths,
 ) {
-    import dmd.astenums: TY;
-    import dmd.dmodule: Module;
     import quickbite.frontend.compiler: parseSnippet;
 
-    Module module_;
     try {
-        module_ = parseSnippet(source, importPaths).module_;
+        auto moduleResult = parseSnippet(source, importPaths);
+        return functionReturnsVoid(evalFunction(moduleResult.module_))
+            ? ExpressionResultKind.void_
+            : ExpressionResultKind.value;
     } catch (Exception) {
-        return false;
-    }
-
-    auto type = evalFunction(module_).type;
-    auto functionType = type is null ? null : type.isTypeFunction;
-    if (functionType is null || functionType.next is null)
-        return false;
-
-    auto returnType = functionType.next;
-    if (returnType is null)
-        return false;
-
-    return typeNeedsPreludeFormat(returnType);
-}
-
-private bool typeNeedsPreludeFormat(imported!"dmd.mtype".Type type) {
-    import dmd.astenums: TY;
-
-    if (type.ty == TY.Tenum)
-        return true;
-
-    auto baseType = type.toBasetype;
-    with (TY) switch (baseType.ty) {
-        case Tbool,
-             Tchar, Twchar, Tdchar,
-             Tint8, Tuns8, Tint16, Tuns16, Tint32, Tuns32, Tint64, Tuns64,
-             Tfloat32, Tfloat64, Tfloat80:
-            return true;
-        case Taarray:
-            return true;
-        case Tarray, Tsarray:
-            return arrayElementCanUsePreludeFormat(baseType);
-        case Tstruct:
-            return structTypeNeedsPreludeFormat(baseType);
-        default:
-            return false;
+        return ExpressionResultKind.invalid;
     }
 }
 
-private bool structTypeNeedsPreludeFormat(imported!"dmd.mtype".Type type) {
-    auto structType = type.isTypeStruct;
-    if (structType is null)
-        return false;
-
-    if (structType.sym.isInstantiated !is null)
-        return instantiatedStructNeedsPreludeFormat(type);
-
-    return structNeedsPreludeFormat(type) || ordinaryStructNeedsPreludeFormat(type);
-}
-
-private bool instantiatedStructNeedsPreludeFormat(
-    imported!"dmd.mtype".Type type,
+private bool functionReturnsVoid(
+    imported!"dmd.func".FuncDeclaration function_,
 ) {
-    import dmd.id: Id;
-    import dmd.location: Loc;
-    import dmd.dsymbolsem: search;
-
-    auto structType = type.isTypeStruct;
-    if (structType is null || structType.sym.isNested ||
-        structType.sym.vthis !is null || structType.sym.vthis2 !is null)
-        return false;
-
-    if (search(structType.sym, Loc.initial, Id.opCall) !is null ||
-        search(structType.sym, Loc.initial, Id.apply) !is null)
-        return false;
-
-    foreach (field; structType.sym.fields) {
-        if (field is null || field.type is null ||
-            field.isThisDeclaration !is null ||
-            !typeNeedsPreludeFormat(field.type))
-            return false;
-    }
-
-    return true;
-}
-
-private bool structNeedsPreludeFormat(imported!"dmd.mtype".Type type) {
     import dmd.astenums: TY;
 
-    auto structType = type.isTypeStruct;
-    foreach (field; structType.sym.fields)
-        if (field !is null && field.type !is null) {
-            if (field.type.ty == TY.Tenum)
-                return true;
-
-            auto fieldType = field.type.toBasetype;
-            with (TY) switch (fieldType.ty) {
-                case Tint64, Tuns64:
-                    return true;
-                case Tclass:
-                    return true;
-                case Tdelegate:
-                    return true;
-                case Taarray:
-                    return true;
-                case Tarray, Tsarray:
-                    return arrayElementCanUsePreludeFormat(fieldType);
-                case Tpointer:
-                    if (field.isThisDeclaration is null)
-                        return true;
-                    break;
-                default:
-                    break;
-            }
-        }
-
-    return false;
-}
-
-private bool ordinaryStructNeedsPreludeFormat(imported!"dmd.mtype".Type type) {
-    auto structType = type.isTypeStruct;
-    if (structType is null || structType.sym.isInstantiated !is null)
-        return false;
-
-    return true;
-}
-
-private bool arrayElementCanUsePreludeFormat(imported!"dmd.mtype".Type type) {
-    auto elementType = type.nextOf;
-    if (elementType is null)
-        return false;
-
-    return typeNeedsPreludeFormat(elementType);
+    return function_.type !is null &&
+        function_.type.nextOf !is null &&
+        function_.type.nextOf.toBasetype.ty == TY.Tvoid;
 }
 
 private string[] withReplPreludeImportPath(in string[] importPaths) @safe pure {
@@ -684,18 +585,38 @@ private string escapedLineDirectiveFilePath(in string filePath) @safe pure {
     return result;
 }
 
-public EvalSourceParseResult parseEvalSource(in string source) {
+public EvalSourceParseResult parseEvalSource(
+    in string source,
+    in bool formatExpression = false,
+) {
     import quickbite.frontend.compiler: parseSnippet;
 
-    const evalSource = completeEvalSource(source);
+    const diagnosticSource = completeEvalSource(source, false);
     try {
-        auto moduleResult = parseSnippet(evalSource);
+        auto moduleResult = parseSnippet(diagnosticSource);
+        auto function_ = evalFunction(moduleResult.module_);
+        if (!formatExpression || functionReturnsVoid(function_))
+            return EvalSourceParseResult(
+                diagnosticSource,
+                function_,
+                false,
+            );
+
+        const evalSource = completeEvalSource(source, true);
+        auto formattedModuleResult = parseSnippet(
+            evalSource,
+            [quickbiteSourceImportPath],
+        );
         return EvalSourceParseResult(
             evalSource,
-            evalFunction(moduleResult.module_),
+            evalFunction(formattedModuleResult.module_),
+            true,
         );
     } catch (Exception exception) {
-        throw new Exception(withCandidateSignatures(evalSource, exception.msg));
+        throw new Exception(withCandidateSignatures(
+            diagnosticSource,
+            exception.msg,
+        ));
     }
 }
 
@@ -727,6 +648,7 @@ private Cell evalCellFromSource(
     in string[] promotedLocalNames,
     in TranscriptCell[] promotedLocalCells,
     in bool displayIsFormatted = false,
+    in string diagnosticSource = null,
 ) {
     import quickbite.frontend.compiler: parseSnippet;
 
@@ -735,6 +657,7 @@ private Cell evalCellFromSource(
         return Cell(
             kind,
             source,
+            diagnosticSource.length == 0 ? source : diagnosticSource,
             evalFunction(moduleResult.module_),
             historyTarget,
             history,
@@ -745,7 +668,10 @@ private Cell evalCellFromSource(
             displayIsFormatted,
         );
     } catch (Exception exception) {
-        throw new Exception(withCandidateSignatures(source, exception.msg));
+        throw new Exception(withCandidateSignatures(
+            diagnosticSource.length == 0 ? source : diagnosticSource,
+            exception.msg,
+        ));
     }
 }
 
@@ -1551,14 +1477,20 @@ private string evalSource(
         localTranscript ~ " }";
 }
 
-private string completeEvalSource(in string source) {
+private string completeEvalSource(
+    in string source,
+    in bool formatExpression,
+) {
     const expressionStart = finalExpressionStart(source);
+    const returnSource = formatExpression
+        ? "import quickbite.repl_prelude: __quickbiteFormat;\n" ~
+            "return __quickbiteFormat(" ~
+            source[expressionStart .. $] ~
+            ");"
+        : "return " ~ source[expressionStart .. $] ~ ";";
     return evalSource(
         null,
-        source[0 .. expressionStart] ~
-            "return " ~
-            source[expressionStart .. $] ~
-            ";",
+        source[0 .. expressionStart] ~ returnSource,
         syntheticEvalFunctionName(nextEvalFunctionIndex),
     );
 }

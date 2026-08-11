@@ -34,6 +34,8 @@ public string __quickbiteFormat(T)(in T value) @safe pure {
         return floatingWithSuffix(value, "L");
     } else static if (isFunctionPointer!U || isDelegate!U) {
         return callableDisplay(value);
+    } else static if (is(U == class) || is(U == interface)) {
+        return referenceDisplay(value);
     } else static if (isPointer!U) {
         return pointerDisplay(value);
     } else static if (isAssociativeArray!U) {
@@ -130,9 +132,11 @@ private string assocArrayDisplay(T)(in T value) @safe pure {
 }
 
 private string callableDisplay(T)(in T value) @safe pure {
-    import std.conv: text;
+    return value is null ? "null" : "<undisplayable>";
+}
 
-    return value is null ? "null" : text(value);
+private string referenceDisplay(T)(in T value) @safe pure {
+    return value is null ? "null" : "<undisplayable>";
 }
 
 private string pointerDisplay(T)(in T value) @safe pure {

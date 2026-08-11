@@ -170,11 +170,8 @@ public struct Place {
     // place's own slot: stores `reference` -- a class object body's own
     // address, a pointer's own host address, or `null` -- as the
     // reference/pointer this place's own address holds. A caller here
-    // already knows the address to store (an `object_table.ObjectTable`
-    // lookup for a class, or a boxed `Value`'s own host address for a
-    // pointer -- `place_value.writeValue`'s pointer arm, the call site that
-    // retires the "no call site yet" gap this comment used to record)
-    // rather than one following it FROM somewhere else. A stored class
+    // already knows the native body or pointee address to store rather than
+    // one following it FROM somewhere else. A stored class
     // reference or pointer value is itself just a pointer-width bit
     // pattern, the same width `deref`'s class case and `index`'s pointer
     // case already read back out via `readStoredPointer` -- this is that
@@ -218,7 +215,7 @@ public struct Place {
     // grows a second scalar<->bytes codec. Only a native scalar type
     // (`native_scalar.isNativeScalarType`) is legal here; a non-scalar
     // place refuses rather than guessing at a byte interpretation.
-    public imported!"quickbite.backends.interpreter.runtime_value".Value loadScalar() @safe {
+    public imported!"quickbite.backends.interpreter.expression_result".ExpressionResult loadScalar() @safe {
         import quickbite.backends.interpreter.native_scalar: isNativeScalarType, readScalar;
         import quickbite.backends.interpreter.layout: typeByteSize;
 
@@ -235,7 +232,7 @@ public struct Place {
     // place's address at this place's own static type, via `native_scalar.
     // writeScalar`. Refuses the same way `loadScalar` does for a
     // non-scalar place.
-    public void storeScalar(in imported!"quickbite.backends.interpreter.runtime_value".Value value) @safe {
+    public void storeScalar(in imported!"quickbite.backends.interpreter.expression_result".ExpressionResult value) @safe {
         import quickbite.backends.interpreter.native_scalar: isNativeScalarType, writeScalar;
         import quickbite.backends.interpreter.layout: typeByteSize;
 
