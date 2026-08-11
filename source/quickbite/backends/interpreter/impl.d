@@ -9218,12 +9218,24 @@ private struct Walker {
             // beside the address instead, so this cast is where it has to be
             // recorded -- otherwise the resulting reference has no dynamic
             // type and every later interface cast or virtual call off it
-            // fails. An address that already denotes an object keeps the
-            // class it was created with: that registration is at least as
-            // precise as the one this cast asserts.
-            if (auto address = classIdentityAddress(value))
-                if (address !in nativeClassTypes)
+            // fails. An address can be reused by a later, unrelated
+            // allocation once the object that lived there is freed, so a
+            // prior registration is only trustworthy when it is at least as
+            // precise as what this cast asserts: overwrite it unless the
+            // registered class already descends from (or is) the one named
+            // here, which is the case for a real object being reinterpreted
+            // through a less specific pointer type.
+            if (auto address = classIdentityAddress(value)) {
+                auto registered = address in nativeClassTypes;
+                auto registeredClass = registered is null
+                    ? null
+                    : registered.toBasetype.isTypeClass;
+                if (
+                    registeredClass is null ||
+                    !classDescendsFromOrIs(registeredClass.sym, classType.sym)
+                )
                     nativeClassTypes[address] = classType;
+            }
             return value;
         }
 
@@ -11508,6 +11520,19 @@ private imported!"dmd.dclass".ClassDeclaration[] classHierarchy(
     for (auto current = class_; current !is null; current = current.baseClass)
         classes ~= current;
     return classes;
+}
+
+// Whether `class_` is `ancestor` or one of its subclasses, i.e. whether an
+// instance of `class_` is-a `ancestor`.
+private bool classDescendsFromOrIs(
+    imported!"dmd.dclass".ClassDeclaration class_,
+    imported!"dmd.dclass".ClassDeclaration ancestor,
+) {
+    foreach (current; classHierarchy(class_))
+        if (current is ancestor)
+            return true;
+
+    return false;
 }
 
 

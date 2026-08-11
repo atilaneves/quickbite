@@ -4639,6 +4639,63 @@ static foreach (backend; Matrix!(
     }
 }
 
+// A fresh allocation can land at the address of a prior allocation that has
+// since been freed. An object `emplace`d into that reused storage has the
+// class it was just constructed with, not the class of whatever object
+// previously occupied the address: a virtual call reaches the new object's
+// own override. SystemLinker is the oracle.
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.inexpressible,
+        "Ctfe cannot read Mallocator.instance at compile time"),
+    Omit!(Bytecode, Because.refusal,
+        "backend process exits with status 139, writing through a null "
+        ~ "element address while emplacing into allocator storage"),
+)) {
+    @("cast.reusedStorageTakesTheClassEmplacedThere." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            import core.lifetime: emplace;
+            import std.experimental.allocator.mallocator: Mallocator;
+
+            class Base {
+                int describe() {
+                    return 0;
+                }
+            }
+
+            class A: Base {
+                override int describe() {
+                    return 1;
+                }
+            }
+
+            class B: Base {
+                override int describe() {
+                    return 2;
+                }
+            }
+
+            unittest {
+                auto first = Mallocator.instance.allocate(
+                    __traits(classInstanceSize, A),
+                );
+                auto a = emplace!A(first);
+                assert(a.describe == 1);
+                Mallocator.instance.deallocate(first);
+
+                auto second = Mallocator.instance.allocate(
+                    __traits(classInstanceSize, B),
+                );
+                auto b = emplace!B(second);
+                scope(exit) Mallocator.instance.deallocate(second);
+
+                assert(b.describe == 2);
+            }
+        });
+    }
+}
+
 static foreach (backend; Matrix!()) {
     @("cast.arrayElementAddressToStaticArrayPointer." ~ backend.stringof)
     @Tags(backend.stringof)
