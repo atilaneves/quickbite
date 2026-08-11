@@ -24,6 +24,16 @@ else
 private CompilerAbi[string] _dependencyImageAbis;
 private CompilerAbi[const(void)*] _closureAbis;
 
+private struct DependencyImageSegment {
+    public size_t begin;
+    public size_t end;
+    public void* imageBase;
+    public CompilerAbi compilerAbi;
+}
+
+private DependencyImageSegment[] _dependencyImageSegments;
+private bool _dependencyImageNeedsPathLookup;
+
 
 public void loadDependencyImages(in string[] dependencyImages) {
     foreach (dependencyImage; dependencyImages) {
@@ -61,12 +71,20 @@ public void unregisterClosureAbi(in void* address) {
 }
 
 public CompilerAbi compilerAbiFor(in void* symbol) {
+    if (auto compilerAbi = cast(const(void)*) symbol in _closureAbis)
+        return *compilerAbi;
+
+    const address = cast(size_t) symbol;
+    foreach (segment; _dependencyImageSegments)
+        if (address >= segment.begin && address < segment.end)
+            return segment.compilerAbi;
+
+    if (!_dependencyImageNeedsPathLookup)
+        return hostCompilerAbi;
+
     import core.sys.posix.dlfcn: dladdr, Dl_info;
     import std.path: absolutePath, buildNormalizedPath;
     import std.string: fromStringz;
-
-    if (auto compilerAbi = cast(const(void)*) symbol in _closureAbis)
-        return *compilerAbi;
 
     Dl_info info;
     if (dladdr(symbol, &info) == 0 || info.dli_fname is null)
@@ -185,6 +203,60 @@ private void loadDependencyImage(
 
     _dependencyImageAbis[dependencyImage.absolutePath.buildNormalizedPath] =
         compilerAbi;
+    if (!registerDependencyImageSegments(dependencyImage, compilerAbi))
+        _dependencyImageNeedsPathLookup = true;
+}
+
+// Record the load segments once, while the image path is already part of image
+// setup. Calls can then derive ABI provenance from the resolved code address
+// without rediscovering and allocating its filesystem path every time.
+private bool registerDependencyImageSegments(
+    in string dependencyImage,
+    in CompilerAbi compilerAbi,
+) {
+    version (linux) {
+        import core.internal.elf.dl: SharedObject, SharedObjects;
+        import core.sys.elf: PT_LOAD;
+        import std.path: absolutePath, buildNormalizedPath;
+
+        const expectedPath = dependencyImage.absolutePath.buildNormalizedPath;
+        SharedObject matched;
+        bool found;
+        foreach (object; SharedObjects) {
+            if (object.name != dependencyImage &&
+                object.name != expectedPath)
+                continue;
+            matched = object;
+            found = true;
+            break;
+        }
+        if (found) {
+            bool alreadyRegistered;
+            foreach (ref segment; _dependencyImageSegments)
+                if (segment.imageBase == matched.baseAddress) {
+                    segment.compilerAbi = compilerAbi;
+                    alreadyRegistered = true;
+                }
+            if (alreadyRegistered)
+                return true;
+
+            const base = cast(size_t) matched.baseAddress;
+            foreach (ref header;
+                matched.info.dlpi_phdr[0 .. matched.info.dlpi_phnum]
+            ) {
+                if (header.p_type != PT_LOAD || header.p_memsz == 0)
+                    continue;
+                _dependencyImageSegments ~= DependencyImageSegment(
+                    base + header.p_vaddr,
+                    base + header.p_vaddr + header.p_memsz,
+                    matched.baseAddress,
+                    compilerAbi,
+                );
+            }
+            return true;
+        }
+    }
+    return false;
 }
 
 
