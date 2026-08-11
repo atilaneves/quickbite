@@ -1083,6 +1083,45 @@ static foreach (backend; Matrix!()) {
     }
 }
 
+// A struct declared inside a function reaches that function's `auto ref`
+// parameter through its context pointer. Calling one of the struct's methods
+// after the enclosing function has returned still reads the caller's variable.
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.inexpressible,
+        "CTFE cannot read a function's parameter once that function has "
+        ~ "returned: `variable 'value' cannot be read at compile time`, "
+        ~ "reproduced with stock dmd on the same shape"),
+    Omit!(Bytecode, Because.unconfirmed,
+        "the bytecode core does not yet give a function-local struct access "
+        ~ "to the enclosing function's variables"),
+)) {
+    @("closure.nestedStructReadsEnclosingRefParameter." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct Reading {
+                int amount;
+            }
+
+            auto wrap(V)(scope auto ref V value) {
+                struct Compare {
+                    bool equals(U)(U other) {
+                        return value.amount == other.amount;
+                    }
+                }
+
+                return Compare();
+            }
+
+            unittest {
+                auto reading = Reading(3);
+                auto expected = Reading(3);
+                assert(wrap(reading).equals(expected));
+            }
+        });
+    }
+}
+
 // A TypeInfo reference retains its identity when stored in an aggregate and
 // read back.
 static foreach (backend; Matrix!()) {

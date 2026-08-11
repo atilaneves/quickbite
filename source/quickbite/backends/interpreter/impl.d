@@ -295,6 +295,16 @@ private struct Walker {
     // delegate slots retain their callable ExpressionResult out-of-band while their
     // ordinary `{context, function}` guest bytes remain ABI-shaped.
     private ExpressionResult[void*] nativeDelegateSlots;
+    // A struct declared inside a function reads that function's locals through
+    // its hidden context field, and its methods can run long after the
+    // enclosing activation returned. An interpreted activation is a
+    // `FrameBlock`, not a guest address the field's bytes could name, so this
+    // table retains the enclosing activation chain (nearest first) keyed by
+    // that field's own address -- the same out-of-band shape
+    // `nativeDelegateSlots` uses, and carried across value copies by
+    // `copyStoredMetadata`. The retained handles keep the frames' GC-owned
+    // storage alive for exactly as long as an instance can still be called.
+    private FrameBlock[][void*] nestedContextFrames;
     private imported!"quickbite.backends.interpreter.native_call_adapter".
         InterpreterInboundTrampolineSession* durableInboundSession;
     private Expression[VarDeclaration] lazyArgumentExpressions;
@@ -782,8 +792,19 @@ private struct Walker {
                 typeInfoValues ~= value;
             }
 
+        size_t[] contextOffsets;
+        FrameBlock[][] contextFrames;
+        foreach (address, frames; nestedContextFrames)
+            if (cast(size_t) address >= oldStart && cast(size_t) address < oldEnd) {
+                contextOffsets ~= cast(size_t) address - oldStart;
+                contextFrames ~= frames;
+            }
+
         clearStoredMetadata(type, newAddress);
 
+        foreach (index, offset; contextOffsets)
+            nestedContextFrames[cast(void*) (cast(ubyte*) newAddress + offset)] =
+                contextFrames[index];
         foreach (index, offset; delegateOffsets)
             nativeDelegateSlots[cast(void*) (cast(ubyte*) newAddress + offset)] =
                 delegateValues[index];
@@ -854,6 +875,18 @@ private struct Walker {
                 typeInfoAddresses ~= slot.key;
         foreach (slot; typeInfoAddresses)
             nativeTypeInfoSlots.remove(cast(void*) slot);
+
+        const(void)*[] contextAddresses;
+        foreach (slot; nestedContextFrames.byKeyValue)
+            if (rangesOverlap(
+                cast(size_t) slot.key,
+                (void*).sizeof,
+                start,
+                end - start,
+            ))
+                contextAddresses ~= slot.key;
+        foreach (slot; contextAddresses)
+            nestedContextFrames.remove(cast(void*) slot);
     }
 
     private static bool rangesOverlap(
@@ -2906,6 +2939,7 @@ private struct Walker {
         child.nativeClassOwners = nativeClassOwners.dup;
         child.nativeExceptionMetadata = nativeExceptionMetadata.dup;
         child.nativeDelegateSlots = nativeDelegateSlots.dup;
+        child.nestedContextFrames = nestedContextFrames.dup;
         child.lazyArgumentExpressions = lazyArgumentExpressions.dup;
         child.lazyArgumentFrames = lazyArgumentFrames.dup;
     }
@@ -5538,7 +5572,11 @@ private struct Walker {
         auto layout = cachedFrameLayout(function_);
         child._activationFrame = FrameBlock.allocate(layout);
         child.result = ExpressionResult(false);
-        bindCapturedReferenceSlots(function_, child);
+        bindCapturedReferenceSlots(
+            function_,
+            child,
+            nestedReceiverCapturedAddresses(function_, memberReceiver),
+        );
         forkExecutionStateInto(child);
         // For constructor calls, DMD may blit the target variable to zero
         // before the ctor runs (e.g. `box = 0 , box.this(input)`), so the
@@ -5692,6 +5730,7 @@ private struct Walker {
         nativeClassOwners = child.nativeClassOwners;
         nativeExceptionMetadata = child.nativeExceptionMetadata;
         nativeDelegateSlots = child.nativeDelegateSlots;
+        nestedContextFrames = child.nestedContextFrames;
         nativeFunctionPointerSlots = child.nativeFunctionPointerSlots;
         nativeTypeInfoSlots = child.nativeTypeInfoSlots;
         lazyArgumentExpressions = child.lazyArgumentExpressions;
@@ -5714,6 +5753,7 @@ private struct Walker {
         nativeClassOwners = child.nativeClassOwners;
         nativeExceptionMetadata = child.nativeExceptionMetadata;
         nativeDelegateSlots = child.nativeDelegateSlots;
+        nestedContextFrames = child.nestedContextFrames;
         nativeFunctionPointerSlots = child.nativeFunctionPointerSlots;
         nativeTypeInfoSlots = child.nativeTypeInfoSlots;
         lazyArgumentExpressions = child.lazyArgumentExpressions;
@@ -9396,7 +9436,76 @@ private struct Walker {
                 ] = symbolicTypeInfoValues[index];
         }
 
+        bindNestedContextFrames(literal.sd, result);
+
         return result;
+    }
+
+    // A struct declared inside a function gets a hidden context field
+    // (DMD's `AggregateDeclaration.vthis`) naming the enclosing activation.
+    // Record the activations live right now against that field's own address,
+    // so a method call on this instance can still reach them after the
+    // enclosing function has returned. Nearest activation first, matching
+    // `_enclosingFrames`' own order.
+    private void bindNestedContextFrames(
+        imported!"dmd.dstruct".StructDeclaration declaration,
+        in ExpressionResult value,
+    ) {
+        import quickbite.backends.interpreter.place: Place;
+
+        if (declaration is null || declaration.vthis is null)
+            return;
+
+        if (!value.isNativeAggregate)
+            return;
+
+        auto native = AggregateValue.native(value);
+        auto address = Place(native.address, native.type)
+            .field(declaration.vthis)
+            .address;
+        nestedContextFrames[address] = [_activationFrame] ~ _enclosingFrames;
+    }
+
+    // The captured-variable addresses a method of a function-local struct
+    // must bind to: its receiver's own recorded context activations, resolved
+    // per captured variable exactly as `capturedBindingAddress` resolves one
+    // against the currently enclosing frames. The receiver is the authority
+    // here because the enclosing function may already have returned, so this
+    // walker's own frames no longer name those variables at all.
+    private void*[VarDeclaration] nestedReceiverCapturedAddresses(
+        imported!"dmd.func".FuncDeclaration function_,
+        in ExpressionResult receiver,
+    ) {
+        import quickbite.backends.interpreter.frame_layout: capturedVariables;
+        import quickbite.backends.interpreter.place: Place;
+
+        if (!receiver.isNativeAggregate)
+            return null;
+
+        auto native = AggregateValue.native(receiver);
+        auto structType = native.type.toBasetype.isTypeStruct;
+        if (structType is null || structType.sym is null)
+            return null;
+
+        auto contextField = structType.sym.vthis;
+        if (contextField is null)
+            return null;
+
+        auto frames = Place(native.address, native.type)
+            .field(contextField)
+            .address in nestedContextFrames;
+        if (frames is null)
+            return null;
+
+        void*[VarDeclaration] addresses;
+        foreach (variable; capturedVariables(function_))
+            foreach (frame; *frames)
+                if (frame.hasSlot(variable)) {
+                    addresses[variable] = frame.bindingAddress(variable);
+                    break;
+                }
+
+        return addresses;
     }
 
     // DMD's `defaultInitLiteral` for a union only ever fills the FIRST
@@ -10637,6 +10746,7 @@ private struct Walker {
         nativeClassOwners = child.nativeClassOwners;
         nativeExceptionMetadata = child.nativeExceptionMetadata;
         nativeDelegateSlots = child.nativeDelegateSlots;
+        nestedContextFrames = child.nestedContextFrames;
         nativeFunctionPointerSlots = child.nativeFunctionPointerSlots;
         nativeTypeInfoSlots = child.nativeTypeInfoSlots;
         lazyArgumentExpressions = child.lazyArgumentExpressions;
