@@ -7851,6 +7851,16 @@ unsupportedExpression:
         if (isClassInfoNamePointerMember(dot))
             return runClassInfoNameOwnerExpression(dot.e1, dot.type);
 
+        // `TypeInfo_Const.base`, the field `TypeInfo_Shared` inherits: the
+        // TypeInfo the qualified type's own TypeInfo wraps.
+        if (declarationName(dot.var) == "base")
+            if (auto typeid_ = dot.e1.isTypeidExp)
+                if (auto type = typeidObjectType(typeid_))
+                    return ExpressionResult.typeName(
+                        typeInfoName(unqualifiedTypeInfoType(type)),
+                    );
+
+
         const receiver = runExpression(dot.e1);
         if (receiver == ExpressionResult.null_)
             throw new Exception(text(
@@ -7867,6 +7877,12 @@ unsupportedExpression:
 
         if (receiver.isTypeName && declarationName(dot.var) == "name")
             return characterArrayValue(dot.type, receiver.asTypeNameString);
+
+        // `ClassInfo.m_flags`: the class-level facts a collector consults,
+        // chief among them whether the object body holds any indirection and
+        // so needs scanning.
+        if (receiver.isTypeName && declarationName(dot.var) == "m_flags")
+            return classInfoFlags(receiver.asTypeNameString);
 
         // Native dynamic arrays own their length in typed guest storage.
         // `TypeAArray.dotExp` (typesem.d) always lowers `aa.length` to a
@@ -7946,6 +7962,14 @@ unsupportedExpression:
         }
 
         throw new Exception("Unsupported interpreter field read.");
+    }
+
+    private ExpressionResult classInfoFlags(in string className) {
+        auto class_ = classDeclarationByQualifiedName(className);
+        if (class_ is null)
+            throw new Exception("Unsupported interpreter TypeInfo flags.");
+
+        return ExpressionResult(classFlagsWord(class_));
     }
 
     private ExpressionResult typeInfoClassInitializer(
@@ -10532,6 +10556,17 @@ unsupportedExpression:
             return value;
         }
 
+        // `typeid` yields the TypeInfo describing a type, and for a class or
+        // interface that TypeInfo's own dynamic type is `TypeInfo_Class`, so
+        // casting one to `TypeInfo_Class` (or to a base of it) succeeds and
+        // keeps describing the same type.
+        if (
+            value.isTypeName &&
+            isClassTypeInfoClass(classType.sym) &&
+            classDeclarationByQualifiedName(value.asTypeNameString) !is null
+        )
+            return value;
+
         if (!classHasType(value, className(classType.sym)))
             return ExpressionResult.null_;
 
@@ -12988,16 +13023,40 @@ private imported!"dmd.dclass".ClassDeclaration classDeclarationByNameInScope(
     imported!"dmd.dsymbol".ScopeDsymbol scope_,
     in string name,
 ) {
+    return classDeclarationByNameInMembers(scope_.members, name);
+}
+
+
+private imported!"dmd.dclass".ClassDeclaration classDeclarationByNameInMembers(
+    imported!"dmd.dsymbol".Dsymbols* members,
+    in string name,
+) {
     import dmd.dsymbol: foreachDsymbol;
+    import dmd.dsymbolsem: include;
 
     imported!"dmd.dclass".ClassDeclaration found;
-    foreachDsymbol(scope_.members, (symbol) {
+    foreachDsymbol(members, (symbol) {
         if (auto class_ = symbol.isClassDeclaration) {
             if (className(class_) == name || classInfoName(class_) == name) {
                 found = class_;
                 return 1;
             }
         }
+
+        // A declaration carrying an attribute -- `private class C`, a
+        // `version` or `static if` block -- keeps its members inside that
+        // attribute rather than directly in the enclosing scope, and the
+        // attribute itself is not a scope, so the search descends through it
+        // to reach the class the attribute applies to.
+        if (auto attribute = symbol.isAttribDeclaration)
+            if (
+                auto class_ = classDeclarationByNameInMembers(
+                    attribute.include(null), name,
+                )
+            ) {
+                found = class_;
+                return 1;
+            }
 
         if (auto nested = symbol.isScopeDsymbol)
             if (auto class_ = classDeclarationByNameInScope(nested, name)) {
@@ -13062,6 +13121,17 @@ private string className(imported!"dmd.dclass".ClassDeclaration class_) @safe {
 }
 
 
+// Whether `class_` is `TypeInfo_Class` itself or a base of it -- the classes
+// a `TypeInfo` describing a class or interface can be cast to.
+private bool isClassTypeInfoClass(
+    imported!"dmd.dclass".ClassDeclaration class_,
+) {
+    import std.algorithm: canFind;
+
+    return ["TypeInfo_Class", "TypeInfo", "Object"].canFind(className(class_));
+}
+
+
 private string typeInfoName(imported!"dmd.mtype".Type type) {
     if (type is null)
         return "";
@@ -13071,6 +13141,80 @@ private string typeInfoName(imported!"dmd.mtype".Type type) {
         return classInfoName(classType.sym);
 
     return typeChars(type);
+}
+
+
+// The type whose TypeInfo a qualified type's own TypeInfo carries in `base`.
+// `shared` is stripped on its own, leaving any constness behind; otherwise
+// the type goes all the way down to mutable.
+private imported!"dmd.mtype".Type unqualifiedTypeInfoType(
+    imported!"dmd.mtype".Type type,
+) {
+    import dmd.typesem: mutableOf, unSharedOf;
+
+    if (type is null)
+        return null;
+
+    return type.isShared ? type.unSharedOf : type.mutableOf;
+}
+
+
+// The `ClassInfo.m_flags` word compiled D stores for `class_`.
+private ushort classFlagsWord(imported!"dmd.dclass".ClassDeclaration class_) {
+    import dmd.dclass: ClassFlags;
+    import dmd.dsymbolsem: isAbstract;
+
+    // An interface has no object body of its own, so none of the flags that
+    // describe one (pointers, constructor, destructor) apply to it.
+    if (class_.isInterfaceDeclaration !is null)
+        return cast(ushort) (
+            ClassFlags.hasOffTi |
+            ClassFlags.hasTypeInfo |
+            ClassFlags.hasNameSig |
+            (class_.isCOMinterface ? ClassFlags.isCOMclass : ClassFlags.none)
+        );
+
+    uint flags =
+        ClassFlags.hasOffTi |
+        ClassFlags.hasGetMembers |
+        ClassFlags.hasTypeInfo |
+        ClassFlags.hasNameSig;
+
+    if (class_.isCOMclass)
+        flags |= ClassFlags.isCOMclass;
+    if (class_.isCPPclass)
+        flags |= ClassFlags.isCPPclass;
+    if (class_.ctor !is null)
+        flags |= ClassFlags.hasCtor;
+    if (class_.isAbstract)
+        flags |= ClassFlags.isAbstract;
+
+    foreach (current; classHierarchy(class_))
+        if (current.dtor !is null) {
+            flags |= ClassFlags.hasDtor;
+            break;
+        }
+
+    if (!classFieldsHaveIndirections(class_))
+        flags |= ClassFlags.noPointers;
+
+    return cast(ushort) flags;
+}
+
+
+// Whether any field the class declares, or inherits, needs collector
+// scanning. A class's own header (vtable and monitor) does not count.
+private bool classFieldsHaveIndirections(
+    imported!"dmd.dclass".ClassDeclaration class_,
+) {
+    import quickbite.backends.interpreter.layout: typeHasPointers;
+
+    foreach (current; classHierarchy(class_))
+        foreach (field; current.fields)
+            if (field !is null && field.type !is null && typeHasPointers(field.type))
+                return true;
+
+    return false;
 }
 
 

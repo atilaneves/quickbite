@@ -1033,6 +1033,79 @@ static foreach (backend; Matrix!(
     }
 }
 
+// A class TypeInfo's `m_flags` reports `noPointers` exactly when no field
+// anywhere in the class hierarchy carries an indirection, so a garbage
+// collector can decide whether an object's body needs scanning.
+static foreach (backend; Matrix!()) {
+    @("typeid.classFlagsReportWhetherFieldsCarryIndirections." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            class Scalars {
+                int value;
+            }
+
+            class Referring {
+                Object other;
+            }
+
+            class InheritsReference : Referring {
+                int extra;
+            }
+
+            unittest {
+                enum noPointers = TypeInfo_Class.ClassFlags.noPointers;
+
+                assert((typeid(Scalars).m_flags & noPointers) != 0);
+                assert((typeid(Referring).m_flags & noPointers) == 0);
+                assert((typeid(InheritsReference).m_flags & noPointers) == 0);
+            }
+        });
+    }
+}
+
+// A visibility attribute changes nothing about the type it applies to, so a
+// `private` class describes itself through `typeid` exactly as any other does.
+static foreach (backend; Matrix!()) {
+    @("typeid.classFlagsReadThroughVisibilityAttribute." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            private class Hidden {
+                int value;
+            }
+
+            unittest {
+                assert(
+                    (typeid(Hidden).m_flags &
+                        TypeInfo_Class.ClassFlags.noPointers) != 0,
+                );
+            }
+        });
+    }
+}
+
+// `typeid` of a `shared` class yields a `TypeInfo_Shared`, whose `base` is the
+// unqualified type's own `TypeInfo_Class`.
+static foreach (backend; Matrix!()) {
+    @("typeid.sharedClassTypeInfoExposesUnqualifiedBase." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            class Scalars {
+                int value;
+            }
+
+            unittest {
+                auto base = cast(TypeInfo_Class) typeid(shared Scalars).base;
+
+                assert(base is typeid(Scalars));
+                assert((base.m_flags & TypeInfo_Class.ClassFlags.noPointers) != 0);
+            }
+        });
+    }
+}
+
 // `emplace` initializes an allocator-backed class by copying the dynamic
 // TypeInfo initializer. That copy includes each field's declared initializer,
 // not merely a correctly sized zero-filled span.
