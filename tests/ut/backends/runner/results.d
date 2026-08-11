@@ -166,6 +166,20 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, IR, SystemLinker
     }
 }
 
+@("runTests.reportsIrBackendErrorsAsFailures")
+@Tags(IR.stringof)
+unittest {
+    // D default-initializes an uninitialized pointer local to null.
+    const results = runBackendSourceFixtureTestResults!IR(q{
+        unittest {
+            int* pointer;
+        }
+    });
+
+    results.length.should == 1;
+    results[0].passed.should == false;
+}
+
 static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode, IR, SystemLinker, LLVMJit)) {
     @("runTests.reportsDmdUnittestSymbolNames." ~ backend.stringof)
     @Tags(backend.stringof)

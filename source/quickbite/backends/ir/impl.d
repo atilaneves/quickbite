@@ -29,8 +29,8 @@ public class IR: imported!"quickbite.backends".TreeNodeBackend {
         try {
             run(compileUnitTest(unitTest));
             return EvalResult("");
-        } catch (Exception exception) {
-            return EvalResult(EvalResult.Diagnostic(exception.msg));
+        } catch (Throwable throwable) {
+            return EvalResult(EvalResult.Diagnostic(throwable.msg));
         }
     }
 }
