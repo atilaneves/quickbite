@@ -1064,6 +1064,91 @@ unittest {
     }
 }
 
+// A struct that is a field of a class object is one object, not a copy of
+// one. Calling a member function on it lets that function write the field's
+// own members, and a later read of the field observes those writes.
+@("dependencyImage.externDMemberFunctionOnClassField." ~ backend.stringof)
+@Tags(backend.stringof)
+unittest {
+    import quickbite.frontend.compiler: parseSnippetWithCheckActionContext;
+    import std.path: buildPath;
+
+    const sandbox = immutable Sandbox();
+    with(sandbox) {
+        const importPath = "imports";
+        const depPath = buildPath(
+            importPath,
+            "dep_image_class_field_fixture_" ~ backend.stringof ~ ".d",
+        );
+        writeFile(depPath, q{
+            module dep_image_class_field_fixture;
+
+            struct Tracker {
+                int[] entries;
+
+                void dropFirst() {
+                    entries = entries[1 .. $];
+                }
+            }
+        }.uniqueDepModule("dep_image_class_field_fixture", backend.stringof));
+
+        const imagePath = buildSharedLibrary(
+            sandbox,
+            "dep_image_class_field_fixture_" ~ backend.stringof,
+            [depPath],
+        );
+
+        writeFile(depPath, q{
+            module dep_image_class_field_fixture;
+
+            struct Tracker {
+                int[] entries;
+                void dropFirst();
+            }
+        }.uniqueDepModule("dep_image_class_field_fixture", backend.stringof));
+
+        auto moduleResult = parseSnippetWithCheckActionContext(
+            q{
+                import dep_image_class_field_fixture;
+
+                class Holder {
+                    Tracker tracker;
+
+                    void dropFirstEntry() {
+                        tracker.dropFirst;
+                    }
+                }
+
+                unittest {
+                    auto holder = new Holder;
+                    holder.tracker.entries = [10, 20, 30];
+
+                    holder.dropFirstEntry;
+
+                    assert(holder.tracker.entries.length == 2);
+                    assert(holder.tracker.entries[0] == 20);
+                }
+            }.uniqueDepModule("dep_image_class_field_fixture", backend.stringof),
+            [inSandboxPath(importPath)],
+        );
+
+        const oracle = (new SystemLinker(
+            [imagePath],
+            [inSandboxPath(importPath)],
+        )).runTests(moduleResult.module_);
+        oracle.length.should == 1;
+        oracle[0].passed.should == true;
+
+        const actual = runDependencyImage!backend(
+            [imagePath],
+            [inSandboxPath(importPath)],
+            moduleResult.module_,
+        );
+        actual.length.should == 1;
+        actual[0].passed.should == true;
+    }
+}
+
 @("dependencyImage.externDMemberFunctionWithArguments." ~ backend.stringof)
 @Tags(backend.stringof)
 unittest {

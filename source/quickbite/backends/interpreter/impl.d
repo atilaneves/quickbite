@@ -10028,6 +10028,17 @@ private struct Walker {
         if (field is null || receiver.type is null)
             return NativeOperand.init;
 
+        // A field of `this` is part of the object this activation was entered
+        // with, not of a copy of it, so its address is the caller's storage.
+        // Lending it to the call is what lets the callee's writes to that
+        // field's own members survive the return.
+        if (field.e1.isThisExp !is null) {
+            const thisFieldAddress = addressOfExpression(receiver, EXP.address);
+            return thisFieldAddress.isPointer
+                ? NativeOperand(receiver.type, thisFieldAddress.pointerAddress)
+                : NativeOperand.init;
+        }
+
         auto fieldReceiver = field.e1.isVarExp;
         if (fieldReceiver is null)
             return NativeOperand.init;
