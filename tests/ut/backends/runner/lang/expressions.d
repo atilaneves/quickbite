@@ -4741,6 +4741,41 @@ static foreach (backend; Matrix!(
     }
 }
 
+// A raw-pointer cast to an interface names a view onto whatever object
+// lives at that address; it does not change what the object itself is. A
+// later virtual call through the original class reference must still reach
+// the class's own override. SystemLinker is the oracle.
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.inexpressible,
+        "`pointer cast from a class to void* is not supported at compile "
+        ~ "time`"),
+)) {
+    @("cast.interfaceViewDoesNotChangeTheObjectsClass." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            interface Viewer {
+                int value();
+            }
+
+            class Subject: Viewer {
+                override int value() {
+                    return 42;
+                }
+            }
+
+            unittest {
+                auto subject = new Subject;
+                void* address = cast(void*) subject;
+                auto viewer = cast(Viewer) address;
+
+                assert(viewer !is null);
+                assert(subject.value == 42);
+            }
+        });
+    }
+}
+
 static foreach (backend; Matrix!()) {
     @("cast.arrayElementAddressToStaticArrayPointer." ~ backend.stringof)
     @Tags(backend.stringof)

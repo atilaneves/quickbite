@@ -9301,9 +9301,19 @@ private struct Walker {
                 auto registeredClass = registered is null
                     ? null
                     : registered.toBasetype.isTypeClass;
+                // An interface has no fields of its own and is never itself
+                // the runtime class of an instance -- it names a view onto
+                // whatever object is there. Recording it here would replace
+                // a real class record with a type that later virtual calls
+                // and member lookups cannot resolve an implementation
+                // against, so a cast naming an interface never touches the
+                // registration.
                 if (
-                    registeredClass is null ||
-                    !classDescendsFromOrIs(registeredClass.sym, classType.sym)
+                    classType.sym.isInterfaceDeclaration is null &&
+                    (
+                        registeredClass is null ||
+                        !classDescendsFromOrIs(registeredClass.sym, classType.sym)
+                    )
                 )
                     nativeClassTypes[address] = classType;
             }
