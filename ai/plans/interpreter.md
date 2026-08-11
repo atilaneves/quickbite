@@ -12,10 +12,10 @@ Interpreter may know anything about that package. Production code must not
 special-case Cerealed names, modules, paths, types, or behavior. Every failure
 class becomes a standalone D semantic supported independently of the package.
 
-The acceptance command is the default LDC-hosted benchmark:
+The acceptance command is the default LDC-hosted two-backend benchmark:
 
 ```text
-./bin/bench.sh -w 0 -r 1 -b interpreter --dub cerealed
+./bin/bench.sh -b interpreter -b system-linker --dub cerealed -w 0 -r 1
 ```
 
 A DMD-hosted run is a useful diagnostic control, but it is not the acceptance
@@ -40,10 +40,10 @@ caller-provided typed destinations. Separating the top-level contracts removes
 display work now; destination passing removes the remaining execution-result
 materialization.
 
-The empirical, external Cerealed gate is green on master: its whole unittest
-suite runs on `Interpreter` in the default LDC host. The acceptance command is
-now a standing regression gate while formatter migration and broader
-Interpreter surface work continue.
+The external Cerealed command is a standing regression gate. Acceptance
+requires the whole suite to run on `Interpreter` in the default LDC host and
+to agree with `SystemLinker`; a skip, crash, timeout, or out-of-memory result
+is a release blocker rather than a performance result.
 
 **Ordering correction (2026-07-09).** The paragraph above holds only for
 `value.md`'s *latency measurement*. Its representation *decision* is no longer
@@ -53,6 +53,310 @@ the dependency now runs the other way for one class of gaps — frontier failure
 classes that are representation-induced defer to `value.md`'s native-layout
 track instead of being shimmed here. See the triage rule in §8.
 
+## Execution architecture
+
+This section is authoritative for execution-state ownership, interpreted D
+calls, and the migration away from child-`Walker` state copying. `value.md`
+remains authoritative for value and place representation, while `ffi.md`
+remains authoritative for the native-call seam. The wider precedent survey
+behind those plans remains in `RESEARCH.md`; this section records the narrower
+call-state evidence and the design it supports.
+
+### State of the art
+
+The relevant implementations differ in language and product goal, but agree
+on the lifetime split that matters here:
+
+- LuaJIT keeps heap, roots, interned strings, and registries in one
+  `global_State`. A `lua_State` points at that shared state, while calls use
+  compact headers and slots on its stack. Calls do not copy the Lua universe.
+  See [LuaJIT state][luajit-state] and [LuaJIT frames][luajit-frames].
+- JavaScriptCore's low-level interpreter represents a call with a
+  register-backed `CallFrame`: caller, return address, code block, callee,
+  argument count, receiver, arguments, and locals. The JavaScriptCore VM stays
+  shared. See [JavaScriptCore `CallFrame`][jsc-call-frame].
+- rustc's MIR interpreter owns one `InterpCx` with one virtual `Memory`; its
+  machine supplies the stack of `Frame` values. `Memory` owns the allocation
+  map and extra function-pointer map, while calls push and pop frames. Miri
+  extends the same machine with semantic checking rather than snapshotting the
+  memory at calls. See [rustc interpreter context][rustc-eval-context],
+  [rustc interpreter memory][rustc-memory], and [Miri's machine][miri-machine].
+- DMD's CTFE evaluator creates a small `InterState` for a call and uses the
+  shared CTFE stack for values and frames. This is the closest same-language
+  precedent. See [DMD's CTFE evaluator][dmd-interpret].
+- Clang's constant interpreter has explicit interpreter frames and reusable
+  stack storage. It replaced repeated AST-evaluator work with typed bytecode,
+  but its relevant lesson here is independent of bytecode: a call adds a
+  frame to one interpreter state. See [Clang's constant interpreter][clang-ci].
+- Cling is an incremental compiler and JIT, not an AST or bytecode interpreter.
+  Its one persistent `Interpreter` owns an `IncrementalParser` and
+  `IncrementalExecutor`; transactions are incremental source submissions, not
+  function calls. Generated function calls use ordinary native frames. See
+  [Cling's `Interpreter`][cling-interpreter].
+
+LuaJIT and JavaScriptCore are the performance precedents. rustc/Miri and DMD
+are the semantic precedents. Cling is useful only for locating the incremental
+session boundary. None provides precedent for eagerly duplicating growing,
+mutable execution registries at every interpreted D call and merging them
+afterwards.
+
+The common asymptotic contract is:
+
+```text
+call setup        O(arguments + frame storage)
+registry access   expected O(1) per relevant operation
+live frame memory O(call depth + escaped frame storage)
+metadata memory   O(metadata actually created)
+```
+
+Call setup must not depend on the number of callables, objects, exceptions, or
+slot addresses accumulated by earlier calls. Copying a registry of size `n`
+at each of `m` calls costs `O(m * n)` and becomes quadratic when calls grow the
+registry. That is an ownership defect, not a workload-specific optimisation
+opportunity.
+
+### Clean-sheet design
+
+The Interpreter remains a no-emit AST interpreter. Recursive descent through
+an expression or statement tree is appropriate; constructing another object
+that combines evaluator machinery, execution-wide state, and call-local state
+for every interpreted D call is not.
+
+The existing `TreeNodeBackend` interface remains the external seam. Behind it,
+one deep `Execution` module conceptually exposes one operation:
+
+```text
+execute(entry function, execution mode) -> EvalResult
+```
+
+The module hides frame allocation, receiver and parameter binding, `ref`,
+`out`, and `lazy` semantics, closure capture, interpreted/native dispatch,
+callback re-entry, return and exception propagation, and result construction.
+Tests exercise the same backend interface as callers. DMD, storage, layout,
+and GC are in-process dependencies and do not justify new public adapters. The
+typed-address FFI bridge remains a real internal seam because multiple
+backends use it and the Interpreter has distinct callback and exception work.
+
+The clean design has four lifetimes:
+
+```text
+frontend session
+    immutable AST-derived facts and layout caches, tied to one DMD arena
+runtime
+    module storage, address metadata, callable identity, native callback state
+root execution
+    one running entry, temporary roots, diagnostics, activation stack
+activation
+    one interpreted D function invocation
+```
+
+The current backend may combine runtime and root-execution storage until REPL
+persistence or multi-test process semantics require the distinction. It may
+not combine either with an activation.
+
+An activation owns:
+
+- its current function and fresh `FrameBlock`;
+- lexical enclosing-frame handles or a captured environment;
+- its receiver place;
+- only its own lazy thunks;
+- its ordinary or `ref` return target;
+- return, loop, `goto`, `switch`, `finally`, and exception-control state; and
+- expression scratch whose meaning ends with that invocation.
+
+The evaluator borrows the one runtime and the current activation. An
+interpreted D call creates an activation, evaluates its body, and removes the
+activation on every return and unwind path. During the migration Quickbite's
+ordinary compiled function recursion may still remember where AST evaluation
+resumes; the interpreted D function is still evaluated, not called as native
+code. A continuation machine or non-recursive dispatch loop is unnecessary
+unless stack-depth failures or a profile later justify encoding suspended AST
+evaluation explicitly.
+
+The eventual private call seam normalises free calls, member calls, nested
+calls, delegates, function pointers, constructors, `ref` returns, and native
+callback re-entry into one invocation path. It establishes the result
+destination, evaluates each receiver and argument exactly once in D order,
+allocates and binds the activation, dispatches the body or native leaf, and
+unwinds the activation. The endpoint follows `value.md`:
+
+- a statement produces no value;
+- an lvalue produces a typed place;
+- an rvalue constructs into a caller-provided typed destination; and
+- a call receives its result destination before the callee runs.
+
+`ExpressionResult` is a migration carrier, not part of this target interface.
+Destination passing is not required for the immediate Cerealed repair.
+
+Associative arrays are ordinary D runtime values, not an Interpreter data
+structure. The target stores the active host compiler/runtime's
+ABI-compatible AA handle in interpreted storage and executes or calls the
+ordinary compiler-selected `core.internal.newaa` and `object` operations.
+QuickBite must not inspect or reproduce druntime's private table layout; D code
+and the native-call seam remain responsible for it. Reaching that target
+deletes `native_assoc_array.d`'s `NativeAssocArray`, `AssocArrayHook`, the
+Walker's AA hook implementation, and the Interpreter's separate key equality,
+insertion, deletion, duplication, and iteration semantics. Do not replace them
+with a differently named Interpreter-owned map. Interpreted-only key and value
+types may require the native-layout `TypeInfo` and callback work already owned
+by `value.md` and `ffi.md`; that is a migration dependency, not a reason to
+keep a second AA implementation as the endpoint. See
+[druntime's AA implementation][druntime-newaa].
+
+### Ownership invariants
+
+- One root execution has one shared execution state. Every interpreted D call
+  and synchronous native callback re-entry observes that same state.
+- Each activation owns fresh frame storage. `ref`, `out`, receiver, and
+  captured bindings retain typed addresses into existing storage; they do not
+  copy values for later reconciliation.
+- An address plus its static D type is the authority for a place. Side metadata
+  may describe bytes that cannot encode an interpreted callable, dynamic class
+  type, or native exception directly; it never becomes a second value store.
+- Callable identities are unique and monotonic within the execution that owns
+  them. Address-keyed slot metadata is not monotonic: ordinary stores, clears,
+  copies, moves, and reallocations insert, replace, relocate, and remove its
+  entries in step with the bytes.
+- A callee's writes to shared storage and execution metadata are visible
+  immediately and survive an exception. Interpreted D calls are not
+  transactions, and return/unwind performs no snapshot merge or rollback.
+- A lazy argument is a thunk over its source expression and the caller
+  environment needed to evaluate it. Forwarding forwards that thunk; lazy
+  state is activation-local, never an execution-wide map.
+- An escaping delegate retains the storage or explicit closure environment
+  containing its captures. It never retains a pointer to movable activation
+  bookkeeping. A native callback retained past a call is valid only while its
+  owning runtime and durable trampoline session remain live.
+- Callback re-entry adds an ordinary activation while the interrupted
+  activation stays live. It shares module storage, callable identity,
+  address metadata, roots, and exception metadata with the interrupted call.
+- Activation selection and expression-scope cleanup are restored on normal
+  return and every unwind path. Unsupported semantics become the
+  Interpreter's diagnostic; native exceptions are translated at the FFI seam;
+  internal invariant failures remain distinguishable from D program behavior.
+
+### Why the current duplication exists
+
+The original `Walker` represented variables and aggregates with parallel,
+variable-keyed cell and alias maps. A child `Walker` therefore needed a copy
+of those maps and a large writeback phase to approximate another call frame.
+Commit `9611022d` centralised hundreds of repeated assignments in one helper,
+but preserved that ownership model. Native frame storage subsequently deleted
+most cell maps; the surviving callable, class, exception, and symbolic-slot
+registries kept the inherited copy/merge protocol even though their lifetime
+is execution-wide.
+
+The remaining state divides as follows:
+
+- **Execution:** callable identities and delegates; symbolic function,
+  delegate, and `TypeInfo` slot metadata; native class type and owner metadata;
+  native exception metadata and throwable roots.
+- **Activation:** `FrameBlock`, enclosing frames, current function, receiver,
+  lazy bindings, synthetic `$`, result and `ref`-return state, and statement
+  control.
+- **Expression scope:** evaluated reference-argument indices and temporary
+  pointer owners.
+- **Module/runtime:** module and static storage, lazily materialised class
+  `.init` storage, and the durable callback session.
+
+`Walker` currently carries fields from every row, so its construction looks
+like state inheritance. The target removes that ambiguity: the evaluator
+borrows execution/runtime state and selects an activation; neither is copied.
+
+### Minimum migration for bounded Cerealed execution
+
+The current Cerealed work stops at the smallest coherent prefix of the target
+architecture:
+
+1. Allocate one `InterpreterExecutionState` at the root entry.
+2. Put only the proven execution-lifetime registries in it: throwable roots
+   and chain metadata; symbolic function, delegate, and `TypeInfo` slots;
+   function identities and delegate definitions; native class types and
+   owners; and native exception metadata.
+3. Make every child `Walker` borrow that exact state before capture,
+   receiver, or parameter binding can consult it.
+4. Delete those registries' per-call `.dup` operations and all corresponding
+   merge-back assignments. Mutations become visible immediately on ordinary
+   return and exception unwinding.
+5. Preserve the current recursive AST evaluator, child `Walker` shell,
+   per-call `FrameBlock`, activation-local receiver/control fields, lazy-map
+   behavior, expression carrier, and native-call path.
+6. Fix every correctness regression exposed by the lifetime split against
+   `SystemLinker`. Symbolic callable metadata must follow general interpreted
+   storage copy, clear, and relocation rules; do not restore snapshots or add
+   an array-, delegate-, or Cerealed-specific path.
+7. Run the exact gate:
+
+   ```text
+   ./bin/bench.sh -b interpreter -b system-linker \
+       --dub cerealed -w 0 -r 1
+   ```
+
+   Both rows must execute and agree on all 156 tests. The Interpreter must
+   complete without a skip, timeout, or out-of-memory failure within the same
+   order of time and allocation as known-good `02c0c9b5` (about 12-13 seconds
+   and 8 GiB allocated on the establishing host), rather than scaling with
+   calls times accumulated registry size. Record elapsed time, allocation, and
+   peak RSS; the enforceable portability gate is completion inside `ci.sh`'s
+   existing resource limits.
+8. Run the focused lifetime/callable/exception tests, `bin/ut --random`, and
+   `ci.sh`.
+
+If the exact benchmark is correct and bounded, stop. If it remains unbounded,
+profile the surviving per-call work and take only the next measured cause.
+Do not begin the complete architecture migration merely because more cleanup
+is possible.
+
+This immediate slice deliberately leaves each child `Walker` as a transitional
+activation container. Once it borrows execution state in `O(1)`, renaming or
+splitting the 11,000-line implementation has no place in the Cerealed repair.
+
+### Later migration, in dependency order
+
+The remaining clean-sheet migration is:
+
+1. Extract an explicit `Activation` from the call-local `Walker` fields while
+   preserving behavior and recursive AST descent.
+2. Replace inherited lazy maps with activation-owned thunk bindings that
+   retain the exact caller environment needed for evaluation.
+3. Centralise activation entry and exit, then route every interpreted call and
+   native callback through the one private invocation path. Delete child
+   `Walker`, fork, and merge machinery.
+4. Represent return, break, continue, `goto`, and interpreted throw as explicit
+   evaluation outcomes instead of mutable evaluator flags or host exceptions
+   used for language control flow.
+5. Complete `value.md`'s place/destination-passing migration behind the same
+   execution interface and delete `ExpressionResult`.
+6. Replace `NativeAssocArray` values with ABI-compatible D AA handles. Route
+   lowered AA operations through ordinary D bodies or the native-call seam,
+   then delete `native_assoc_array.d`, `AssocArrayHook`, and the Walker's AA
+   semantic implementation. The existing AA backend matrix must continue to
+   agree with `SystemLinker`; no replacement Interpreter-owned table is
+   acceptable.
+7. Split implementation files only where a private semantic module hides real
+   complexity and improves locality. Do not expose shallow helper interfaces
+   merely to reduce `impl.d`'s line count.
+8. Profile again. Dense frame indices, frame reuse, scratch reuse, AST/type
+   caches, or an explicit continuation loop require evidence from the
+   surviving implementation.
+
+### Rejected immediate work
+
+- No bytecode, threaded dispatch, JIT, or package-specific call path.
+- No continuation-based rewrite of recursive AST descent.
+- No frame arena, pooling, dense-slot rewrite, scratch-buffer scheme, name
+  cache, AST cache, or native-call cache in the Cerealed repair.
+- No execution-wide lazy map. Lazy bindings belong to activations; their
+  current transitional copying remains until the thunk migration or a profile
+  proves it is the next blocker.
+- No associative-array representation migration in the bounded-execution
+  repair. `NativeAssocArray` must ultimately be deleted, but that change has a
+  wider `TypeInfo`, callback, storage, and native-call verification surface.
+- No broad module extraction, frontend abstraction rewrite, persistent REPL
+  runtime, debugger, suspension model, or concurrent execution requirement.
+- No claim that every execution-state entry is monotonic. Only identity
+  allocation is; address-keyed slot metadata mirrors mutable storage.
+
 ## 2. Non-goals
 
 ```text
@@ -60,9 +364,9 @@ track instead of being shimmed here. See the triage rule in §8.
 - value representation choice (boxed vs native layout): ai/plans/value.md;
 - new language features DMD does not lower for us (we execute DMD's AST, not
   raw source — templates and `static foreach` arrive pre-lowered);
-- performance of the interpreter (correctness first; execution latency is
-  owned by `interpreter-performance.md`, while representation remains
-  `value.md`'s axis).
+- general interpreter tuning, owned by `interpreter-performance.md`;
+  execution-state lifetime correctness and bounded call setup remain here;
+- value-representation performance, owned by `value.md`.
 ```
 
 ## 3. Oracle
@@ -114,8 +418,9 @@ interpreter-performance.md
                Interpreter execution latency. It may optimise the machinery
                delivered here but may not redefine language behavior or the
                `SystemLinker` oracle. Measurement infrastructure may proceed
-               in parallel; production optimisation waits for `value.md`'s
-               representation end state.
+               in parallel. Correcting execution-state ownership and removing
+               per-call state snapshots belongs to this plan; tuning the
+               surviving machinery belongs there.
 ```
 
 `LINK.d` alone does not identify a callable's ABI: DMD and LDC order explicit D
@@ -131,7 +436,8 @@ compiled D.
 
 ### 4.1 Standing work order
 
-1. Keep the default LDC-hosted Cerealed acceptance command green.
+1. Restore, then keep, the default LDC-hosted Cerealed acceptance command
+   green.
 2. Take the next confirmed omission from §9.11 or a newly measured package.
 3. Distil it into a standalone, package-independent D behavior, then implement
    that behavior against `SystemLinker`.
@@ -139,11 +445,12 @@ compiled D.
 
 ### 4.2 Unittest execution is not REPL evaluation
 
-`TreeNodeBackend` has two entry points:
+`TreeNodeBackend` keeps unittest execution and REPL evaluation distinct:
 
 ```text
-executeUnitTest(UnitTestDeclaration) -> TestResult
-evaluateRepl(FuncDeclaration)        -> EvalResult
+runTests(Module) -> TestResult[]
+    uses executeUnitTest(UnitTestDeclaration) -> EvalResult
+eval(FuncDeclaration) / evalFormattedDisplay(FuncDeclaration) -> EvalResult
 ```
 
 The separation is the contract. A successful unittest reaches `TestResult`
@@ -2756,10 +3063,10 @@ back into its `SystemLinker`-oracle matrix after fixing the named red behavior:
 
 ## 10. Standing Cerealed regression gate
 
-The default LDC-hosted command is green on master and must remain green:
+The default LDC-hosted command must be restored and then remain green:
 
 ```text
-./bin/bench.sh -w 0 -r 1 -b interpreter --dub cerealed
+./bin/bench.sh -b interpreter -b system-linker --dub cerealed -w 0 -r 1
 ```
 
 Every new semantic rung keeps an approved oracle-backed,
@@ -2781,19 +3088,30 @@ do not restore legacy marshalling or value machinery for a later package.
 Behaviour-preserving items; each is a ride-along for a nearby rung PR, not a
 rung of its own.
 
-- Single walk-entry owner. `Interpreter.eval`, `executeUnitTest`, and
-  `evalFormattedDisplay` (`impl.d`) each repeat the same setup ritual: clear
-  the frame-layout cache, fresh `ObjectTable`/`ModuleTable`, allocate the
-  activation frame, close the durable inbound session on exit, catch
-  `Exception` into a diagnostic. Fold the ritual into one private entry point
-  taking `inUnitTest` explicitly. That owner's comment is where the walk
-  preconditions belong — notably that every walk starts from a cleared
-  thread-local frame-layout cache because AST arena replacement can reuse
-  `FuncDeclaration` addresses across compiler lifetimes (the
-  `clearFrameLayoutCache` comment is the authority).
 - Cross-backend diagnostic wording moves out of
   `backends/interpreter/messages.d` one function at a time, into a
   `backends/`-level wording module, at the moment a second backend needs the
   function. The one function already shared is `uninitializedVariableMessage`
   (imported by `backends/ir/compiler.d`); it seeds the module. No new
   cross-package imports of `interpreter.messages`.
+
+[luajit-state]:
+  https://github.com/LuaJIT/LuaJIT/blob/v2.1/src/lj_obj.h
+[luajit-frames]:
+  https://github.com/LuaJIT/LuaJIT/blob/v2.1/src/lj_frame.h
+[jsc-call-frame]:
+  https://github.com/WebKit/WebKit/blob/main/Source/JavaScriptCore/interpreter/CallFrame.h
+[rustc-eval-context]:
+  https://github.com/rust-lang/rust/blob/master/compiler/rustc_const_eval/src/interpret/eval_context.rs
+[rustc-memory]:
+  https://github.com/rust-lang/rust/blob/master/compiler/rustc_const_eval/src/interpret/memory.rs
+[miri-machine]:
+  https://github.com/rust-lang/miri/blob/master/src/machine.rs
+[dmd-interpret]:
+  https://github.com/dlang/dmd/blob/master/compiler/src/dmd/dinterpret.d
+[clang-ci]:
+  https://github.com/llvm/llvm-project/tree/main/clang/lib/AST/ByteCode
+[cling-interpreter]:
+  https://github.com/root-project/cling/blob/master/include/cling/Interpreter/Interpreter.h
+[druntime-newaa]:
+  https://github.com/dlang/dmd/blob/master/druntime/src/core/internal/newaa.d

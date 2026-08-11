@@ -71,6 +71,7 @@ public class Interpreter: imported!"quickbite.backends".TreeNodeBackend {
             clearFrameLayoutCache;
             Walker walker;
             scope(exit) walker.closeDurableInboundSession;
+            walker._executionState = new InterpreterExecutionState;
             walker.moduleTable = new ModuleTable;
             walker.inUnitTest = mode == ExecutionMode.unitTest;
             import quickbite.frontend.dmd.functions: ensureFunctionBodySemantic;
@@ -189,6 +190,46 @@ private struct ClassArrayFieldDefaults {
         const(void)*] table;
 }
 
+// One root evaluation owns this context, and every nested call borrows it.
+// Callable identities are monotonic, but address-keyed slot metadata follows
+// storage lifetime: writes replace it and copies, moves, and clears relocate or
+// remove it. Callees publish every change immediately; unwinding never merges
+// a private snapshot, and the context dies with the evaluation.
+// Maps containing ExpressionResults or Throwables also keep the native storage
+// they describe reachable for as long as an address may cross activations.
+private struct InterpreterExecutionState {
+    // Captured host Throwables and their interpreter-visible chain links are
+    // created by the native exception bridge and read by later member calls.
+    public Throwable[const(void)*] nativeThrowableRoots;
+    public imported!"quickbite.backends.interpreter.expression_result".
+        ExpressionResult[void*] nativeThrowableNext;
+
+    // Writes to guest ABI slots register symbolic interpreted callables and
+    // TypeInfos; any later activation that reads the same address must see
+    // the entry, including after the writing call returns or throws.
+    public imported!"quickbite.backends.interpreter.expression_result".
+        ExpressionResult[const(void)*] nativeFunctionPointerSlots;
+    public imported!"quickbite.backends.interpreter.expression_result".
+        ExpressionResult[void*] nativeTypeInfoSlots;
+    public imported!"quickbite.backends.interpreter.expression_result".
+        ExpressionResult[void*] nativeDelegateSlots;
+
+    // Function and delegate identities are allocated once per evaluation.
+    // Both directions and the next id therefore form one shared registry.
+    public imported!"dmd.func".FuncDeclaration[size_t] functionPointers;
+    public size_t[imported!"dmd.func".FuncDeclaration] functionPointerIds;
+    public size_t nextFunctionPointerId;
+    public RuntimeDelegate[size_t] delegates;
+
+    // Object-address metadata is installed at allocation or native ingress
+    // and remains authoritative for every alias in every later activation.
+    public imported!"dmd.mtype".Type[void*] nativeClassTypes;
+    public imported!"quickbite.backends.interpreter.expression_result".
+        ExpressionResult[void*] nativeClassOwners;
+    public imported!"quickbite.backends.interpreter.expression_result".
+        ExpressionResult[void*] nativeExceptionMetadata;
+}
+
 private class InterpretedException: Exception {
     public imported!"quickbite.backends.interpreter.expression_result".ExpressionResult object;
 
@@ -234,26 +275,54 @@ private struct Walker {
     import quickbite.backends.interpreter.runtime_values: defaultValue;
     import quickbite.backends.interpreter.expression_result: ExpressionResult;
 
-    private Throwable[const(void)*] nativeThrowableRoots;
-    // Captured native Throwable chains outlive the call bridge as rooted
-    // interpreter values. Keying by the native body lets Throwable.next use
-    // that captured authority without reinterpreting druntime's tagged link.
-    private ExpressionResult[void*] nativeThrowableNext;
-
     private TemporaryPointerOwners* _temporaryPointerOwners;
+    private InterpreterExecutionState* _executionState;
 
-    // Interpreted function declarations have no host code address. A guest
-    // function-pointer slot therefore retains the interpreter callable in a
-    // host-only side table keyed by its real native slot address, exactly as
-    // an interpreted delegate does. The slot itself stays a valid null host
-    // pointer; no symbolic pointer carrier is ever written into guest bytes.
-    private ExpressionResult[const(void)*] nativeFunctionPointerSlots;
+    private @property ref Throwable[const(void)*] nativeThrowableRoots() {
+        return _executionState.nativeThrowableRoots;
+    }
 
-    // TypeInfo values for interpreted-only guest types have no resident host
-    // object address. Their class-reference slots keep null ABI bytes while
-    // this table retains the symbolic singleton keyed by the real slot
-    // address, matching interpreted delegates and function pointers.
-    private ExpressionResult[void*] nativeTypeInfoSlots;
+    private @property ref ExpressionResult[void*] nativeThrowableNext() {
+        return _executionState.nativeThrowableNext;
+    }
+
+    private @property ref ExpressionResult[const(void)*]
+        nativeFunctionPointerSlots()
+    {
+        return _executionState.nativeFunctionPointerSlots;
+    }
+
+    private @property ref ExpressionResult[void*] nativeTypeInfoSlots() {
+        return _executionState.nativeTypeInfoSlots;
+    }
+
+    private @property ref ExpressionResult[void*] nativeDelegateSlots() {
+        return _executionState.nativeDelegateSlots;
+    }
+
+    private @property ref FuncDeclaration[size_t] functionPointers() {
+        return _executionState.functionPointers;
+    }
+
+    private @property ref size_t[FuncDeclaration] functionPointerIds() {
+        return _executionState.functionPointerIds;
+    }
+
+    private @property ref size_t nextFunctionPointerId() {
+        return _executionState.nextFunctionPointerId;
+    }
+
+    private @property ref imported!"dmd.mtype".Type[void*] nativeClassTypes() {
+        return _executionState.nativeClassTypes;
+    }
+
+    private @property ref ExpressionResult[void*] nativeClassOwners() {
+        return _executionState.nativeClassOwners;
+    }
+
+    private @property ref ExpressionResult[void*] nativeExceptionMetadata() {
+        return _executionState.nativeExceptionMetadata;
+    }
 
     // Non-null only while `runRefArgumentExpression` is walking one call
     // argument.  `runIndexExpression` records its already-evaluated result in
@@ -264,25 +333,6 @@ private struct Walker {
     // Lazily allocated, execution-wide native `.init` places.
     private ClassArrayFieldDefaults* classArrayFieldDefaults;
 
-    private FuncDeclaration[size_t] functionPointers;
-    private size_t[FuncDeclaration] functionPointerIds;
-    private size_t nextFunctionPointerId;
-    private RuntimeDelegate[size_t] delegates;
-    // A native class reference carries only its body address; retain the
-    // dynamic class Type by that address for Object-typed aliases.
-    private imported!"dmd.mtype".Type[void*] nativeClassTypes;
-    // A VM-allocated class reference exposes only its body address. Keep its
-    // allocation handle by that address so later aliases retain the storage
-    // that owns the body.
-    private ExpressionResult[void*] nativeClassOwners;
-    // A borrowed native Throwable reference carries only its object address.
-    // Its interpreter-visible fields live in a native aggregate keyed by that
-    // real address; the host object remains opaque ABI-owned storage.
-    private ExpressionResult[void*] nativeExceptionMetadata;
-    // Interpreted delegates have no guest ABI function pointer. Native
-    // delegate slots retain their callable ExpressionResult out-of-band while their
-    // ordinary `{context, function}` guest bytes remain ABI-shaped.
-    private ExpressionResult[void*] nativeDelegateSlots;
     private imported!"quickbite.backends.interpreter.native_call_adapter".
         InterpreterInboundTrampolineSession* durableInboundSession;
     private Expression[VarDeclaration] lazyArgumentExpressions;
@@ -663,27 +713,22 @@ private struct Walker {
         import dmd.astenums: TY;
 
         if (variable.type.toBasetype.ty == TY.Tdelegate) {
-            nativeDelegateSlots[bindingPlace(variable).address] = value;
-            import quickbite.backends.interpreter.place_value: writeValue;
-            writeValue(bindingPlace(variable), ExpressionResult.null_);
+            writeStoredValue(bindingPlace(variable), value);
             return;
         }
 
         if (value.isFunctionPointer) {
-            nativeFunctionPointerSlots[bindingPlace(variable).address] = value;
-            import quickbite.backends.interpreter.place_value: writeValue;
-            writeValue(bindingPlace(variable), ExpressionResult.null_);
+            writeStoredValue(bindingPlace(variable), value);
             return;
         }
 
-        import quickbite.backends.interpreter.place_value:
-            valueMatchesPlace, writeValue;
+        import quickbite.backends.interpreter.place_value: valueMatchesPlace;
 
         if (
             variable.type.toBasetype.isTypeAArray !is null &&
             value == ExpressionResult.null_
         ) {
-            writeValue(bindingPlace(variable), value);
+            writeStoredValue(bindingPlace(variable), value);
             return;
         }
 
@@ -711,7 +756,7 @@ private struct Walker {
             // the object body. Keep that slot authoritative so taking the
             // parameter by `ref` forwards the same live reference rather than
             // the frame's initial null bytes.
-            writeValue(bindingPlace(variable), value);
+            writeStoredValue(bindingPlace(variable), value);
             return;
         }
 
@@ -739,10 +784,30 @@ private struct Walker {
     ) {
         import quickbite.backends.interpreter.layout: typeByteSize;
 
+        copyStoredMetadataRange(
+            oldAddress,
+            newAddress,
+            typeByteSize(type),
+            consumeSource,
+        );
+    }
+
+    private void copyStoredMetadataRange(
+        void* oldAddress,
+        void* newAddress,
+        in size_t byteLength,
+        in bool consumeSource = false,
+    ) {
+        if (
+            nativeDelegateSlots.length == 0 &&
+            nativeFunctionPointerSlots.length == 0 &&
+            nativeTypeInfoSlots.length == 0
+        )
+            return;
+
         if (oldAddress is newAddress)
             return;
 
-        const byteLength = typeByteSize(type);
         const oldStart = cast(size_t) oldAddress;
         const oldEnd = oldStart + byteLength;
 
@@ -770,7 +835,7 @@ private struct Walker {
                 typeInfoValues ~= value;
             }
 
-        clearStoredMetadata(type, newAddress);
+        clearStoredMetadataRange(newAddress, byteLength);
 
         foreach (index, offset; delegateOffsets)
             nativeDelegateSlots[cast(void*) (cast(ubyte*) newAddress + offset)] =
@@ -792,7 +857,7 @@ private struct Walker {
                 byteLength,
             )
         )
-            clearStoredMetadata(type, oldAddress);
+            clearStoredMetadataRange(oldAddress, byteLength);
     }
 
     // Any write invalidates every symbolic entry whose slot overlaps the
@@ -804,8 +869,22 @@ private struct Walker {
     ) {
         import quickbite.backends.interpreter.layout: typeByteSize;
 
+        clearStoredMetadataRange(address, typeByteSize(type));
+    }
+
+    private void clearStoredMetadataRange(
+        void* address,
+        in size_t byteLength,
+    ) {
+        if (
+            nativeDelegateSlots.length == 0 &&
+            nativeFunctionPointerSlots.length == 0 &&
+            nativeTypeInfoSlots.length == 0
+        )
+            return;
+
         const start = cast(size_t) address;
-        const end = start + typeByteSize(type);
+        const end = start + byteLength;
 
         const(void)*[] delegateAddresses;
         foreach (slot; nativeDelegateSlots.byKeyValue)
@@ -913,6 +992,21 @@ private struct Walker {
         import quickbite.backends.interpreter.aggregate_value: AggregateValue;
         import quickbite.backends.interpreter.place_value: readValue;
 
+        import dmd.astenums: TY;
+
+        if (place.type.toBasetype.ty == TY.Tdelegate)
+            if (auto delegate_ = place.address in nativeDelegateSlots)
+                return *delegate_;
+        auto pointerType = place.type.toBasetype.isTypePointer;
+        if (
+            pointerType !is null &&
+            pointerType.nextOf.toBasetype.isTypeFunction !is null
+        )
+            if (
+                auto function_ = cast(const(void)*) place.address
+                    in nativeFunctionPointerSlots
+            )
+                return *function_;
         if (place.type.toBasetype.isTypeClass !is null)
             if (auto typeInfo = place.address in nativeTypeInfoSlots)
                 return *typeInfo;
@@ -2317,6 +2411,16 @@ private struct Walker {
             if (auto variable = var.var.isVarDeclaration)
                 return bindingPointerValue(variable);
 
+        // A struct method's `this` is an alias to the caller's receiver, not
+        // an ordinary local declaration. Its address therefore comes from
+        // the receiver place retained when this activation was entered.
+        if (
+            e1.isThisExp !is null &&
+            e1.type.toBasetype.isTypeStruct !is null &&
+            thisAddress !is null
+        )
+            return ExpressionResult.pointerValue(thisAddress);
+
         if (auto delegate_ = e1.isDelegateExp)
             return runDelegateExpression(delegate_);
 
@@ -2589,8 +2693,8 @@ private struct Walker {
         child._activationFrame = FrameBlock.allocate(layout);
         child.addressOfRefReturn = true;
         child.result = ExpressionResult(false);
-        bindCapturedReferenceSlots(call.f, child);
         forkExecutionStateInto(child);
+        bindCapturedReferenceSlots(call.f, child);
         child.bindFunctionParameters(
             call.f,
             arguments,
@@ -2646,18 +2750,7 @@ private struct Walker {
         // see `moduleTable`'s own field comment.
         child.moduleTable = moduleTable;
         child._temporaryPointerOwners = _temporaryPointerOwners;
-        child.nativeThrowableRoots = nativeThrowableRoots.dup;
-        child.nativeThrowableNext = nativeThrowableNext.dup;
-        child.nativeFunctionPointerSlots = nativeFunctionPointerSlots.dup;
-        child.nativeTypeInfoSlots = nativeTypeInfoSlots.dup;
-        child.functionPointers = functionPointers.dup;
-        child.functionPointerIds = functionPointerIds.dup;
-        child.nextFunctionPointerId = nextFunctionPointerId;
-        child.delegates = delegates.dup;
-        child.nativeClassTypes = nativeClassTypes.dup;
-        child.nativeClassOwners = nativeClassOwners.dup;
-        child.nativeExceptionMetadata = nativeExceptionMetadata.dup;
-        child.nativeDelegateSlots = nativeDelegateSlots.dup;
+        child._executionState = _executionState;
         child.lazyArgumentExpressions = lazyArgumentExpressions.dup;
         child.lazyArgumentFrames = lazyArgumentFrames.dup;
     }
@@ -3442,16 +3535,6 @@ private struct Walker {
     private ExpressionResult readBindingValue(VarDeclaration variable) {
         materializeDatasegInitializer(variable);
 
-        import dmd.astenums: TY;
-
-        if (hasBindingPlace(variable) && variable.type.toBasetype.ty == TY.Tdelegate)
-            if (auto delegate_ = bindingPlace(variable).address in nativeDelegateSlots)
-                return *delegate_;
-
-        if (hasBindingPlace(variable))
-            if (auto function_ = bindingPlace(variable).address in nativeFunctionPointerSlots)
-                return *function_;
-
         if (hasBindingPlace(variable))
             return readStoredValue(bindingPlace(variable));
 
@@ -3496,7 +3579,7 @@ private struct Walker {
             runtime.hasReceiver = true;
         }
 
-        delegates[functionPointer.functionPointerId] = runtime;
+        _executionState.delegates[functionPointer.functionPointerId] = runtime;
         return functionPointer;
     }
 
@@ -3518,7 +3601,7 @@ private struct Walker {
             runtime.hasReceiver = true;
         }
 
-        delegates[functionPointer.functionPointerId] = runtime;
+        _executionState.delegates[functionPointer.functionPointerId] = runtime;
         return functionPointer;
     }
 
@@ -4119,7 +4202,10 @@ private struct Walker {
                 argumentExpressions,
             );
 
-        if (callee.isFunctionPointer && callee.functionPointerId in delegates)
+        if (
+            callee.isFunctionPointer &&
+            callee.functionPointerId in _executionState.delegates
+        )
             return runDelegateCall(
                 callee,
                 arguments,
@@ -4214,7 +4300,7 @@ private struct Walker {
         imported!"dmd.expression".Expression[] argumentExpressions,
         in EvaluatedReferenceArgument[] evaluatedArguments = null,
     ) {
-        auto runtime = callee.functionPointerId in delegates;
+        auto runtime = callee.functionPointerId in _executionState.delegates;
         if (runtime is null)
             throw new Exception("Unsupported eval call.");
 
@@ -4932,21 +5018,33 @@ private struct Walker {
             return value;
 
         import quickbite.backends.interpreter.aggregate_value: AggregateValue;
+        import quickbite.backends.interpreter.native_assoc_array: allocateValue;
         import quickbite.backends.interpreter.place: Place;
-        import quickbite.backends.interpreter.place_value: readValue;
 
         auto source = nativeAssocArray(value);
-        ExpressionResult[] keys;
-        ExpressionResult[] values;
-        foreach (index; 0 .. source.length) {
-            keys ~= readValue(Place(source.keyAt(index).address, source.keyType));
-            values ~= readValue(Place(source.valueAt(index).address, source.valueType));
-        }
-        return AggregateValue.reconstructAssocArray(
-            AggregateValue.native(value).type,
-            keys,
-            values,
+        auto aggregate = allocateValue(AggregateValue.native(value).type);
+        auto destination = nativeAssocArray(
+            ExpressionResult.nativeAggregateValue(aggregate),
         );
+        foreach (index; 0 .. source.length) {
+            const key = readStoredValue(Place(
+                source.keyAt(index).address,
+                source.keyType,
+            ));
+            const storedValue = readStoredValue(Place(
+                source.valueAt(index).address,
+                source.valueType,
+            ));
+
+            bool found;
+            auto keySlot = nativeAssocKeySlot(destination, key);
+            auto valueAddress = destination.getOrAdd(keySlot.address, found);
+            writeStoredValue(
+                Place(valueAddress, destination.valueType),
+                storedValue,
+            );
+        }
+        return ExpressionResult.nativeAggregateValue(aggregate);
     }
 
     private bool assocArrayEqual(in ExpressionResult left, in ExpressionResult right) {
@@ -5076,8 +5174,8 @@ private struct Walker {
         auto layout = cachedFrameLayout(function_);
         child._activationFrame = FrameBlock.allocate(layout);
         child.result = ExpressionResult(false);
-        bindCapturedReferenceSlots(function_, child, closureAddresses);
         forkExecutionStateInto(child);
+        bindCapturedReferenceSlots(function_, child, closureAddresses);
         child.bindFunctionParameters(
             function_,
             arguments,
@@ -5191,8 +5289,8 @@ private struct Walker {
         auto layout = cachedFrameLayout(function_);
         child._activationFrame = FrameBlock.allocate(layout);
         child.result = ExpressionResult(false);
-        bindCapturedReferenceSlots(function_, child);
         forkExecutionStateInto(child);
+        bindCapturedReferenceSlots(function_, child);
         // For constructor calls, DMD may blit the target variable to zero
         // before the ctor runs (e.g. `box = 0 , box.this(input)`), so the
         // receiver evaluates to a non-struct scalar.  Seed `thisValue` from
@@ -5336,17 +5434,6 @@ private struct Walker {
         in ExpressionResult[] arguments,
         in bool captureLocals = false,
     ) {
-        mergeNativeThrowableRoots(child);
-        nextFunctionPointerId = child.nextFunctionPointerId;
-        functionPointers = child.functionPointers;
-        functionPointerIds = child.functionPointerIds;
-        delegates = child.delegates;
-        nativeClassTypes = child.nativeClassTypes;
-        nativeClassOwners = child.nativeClassOwners;
-        nativeExceptionMetadata = child.nativeExceptionMetadata;
-        nativeDelegateSlots = child.nativeDelegateSlots;
-        nativeFunctionPointerSlots = child.nativeFunctionPointerSlots;
-        nativeTypeInfoSlots = child.nativeTypeInfoSlots;
         lazyArgumentExpressions = child.lazyArgumentExpressions;
         lazyArgumentFrames = child.lazyArgumentFrames;
     }
@@ -5358,25 +5445,9 @@ private struct Walker {
         ref Walker child,
         in ExpressionResult[] arguments,
     ) {
-        mergeNativeThrowableRoots(child);
-        nextFunctionPointerId = child.nextFunctionPointerId;
-        functionPointers = child.functionPointers;
-        functionPointerIds = child.functionPointerIds;
-        delegates = child.delegates;
-        nativeClassTypes = child.nativeClassTypes;
-        nativeClassOwners = child.nativeClassOwners;
-        nativeExceptionMetadata = child.nativeExceptionMetadata;
-        nativeDelegateSlots = child.nativeDelegateSlots;
-        nativeFunctionPointerSlots = child.nativeFunctionPointerSlots;
-        nativeTypeInfoSlots = child.nativeTypeInfoSlots;
         lazyArgumentExpressions = child.lazyArgumentExpressions;
         lazyArgumentFrames = child.lazyArgumentFrames;
         child.returned = false;
-    }
-
-    private void mergeNativeThrowableRoots(ref Walker child) {
-        foreach (pointer, throwable; child.nativeThrowableRoots)
-            nativeThrowableRoots[pointer] = throwable;
     }
 
     private ExpressionResult structValueFromCell(in ExpressionResult current, ref NativeStruct cell) {
@@ -5926,8 +5997,8 @@ private struct Walker {
         if (!left.isFunctionPointer || !right.isFunctionPointer)
             return left == right;
 
-        auto leftRuntime = left.functionPointerId in delegates;
-        auto rightRuntime = right.functionPointerId in delegates;
+        auto leftRuntime = left.functionPointerId in _executionState.delegates;
+        auto rightRuntime = right.functionPointerId in _executionState.delegates;
         if (leftRuntime is null || rightRuntime is null)
             return left == right;
 
@@ -6359,7 +6430,10 @@ private struct Walker {
                 "` is `null` and cannot be dereferenced",
             ));
 
-        if (receiver.isFunctionPointer && receiver.functionPointerId in delegates)
+        if (
+            receiver.isFunctionPointer &&
+            receiver.functionPointerId in _executionState.delegates
+        )
             return delegateProperty(receiver, declarationName(dot.var));
 
         if (receiver.isTypeName && declarationName(dot.var) == "name")
@@ -6516,7 +6590,7 @@ private struct Walker {
     }
 
     private ExpressionResult delegateProperty(in ExpressionResult receiver, in string name) {
-        auto runtime = receiver.functionPointerId in delegates;
+        auto runtime = receiver.functionPointerId in _executionState.delegates;
         if (runtime is null)
             throw new Exception("Unsupported interpreter field read.");
 
@@ -6953,8 +7027,8 @@ private struct Walker {
         child.assignToRefReturn = true;
         child.refReturnAssignedValue = value;
         child.result = ExpressionResult(false);
-        bindCapturedReferenceSlots(function_, child);
         forkExecutionStateInto(child);
+        bindCapturedReferenceSlots(function_, child);
         child.thisValue = receiver;
         child.hasThis = true;
         child.bindThisReferenceAddress(function_, receiver);
@@ -7089,8 +7163,8 @@ private struct Walker {
         child.assignToRefReturn = true;
         child.refReturnAssignedValue = value;
         child.result = ExpressionResult(false);
-        bindCapturedReferenceSlots(call.f, child);
         forkExecutionStateInto(child);
+        bindCapturedReferenceSlots(call.f, child);
         child.bindFunctionParameters(
             call.f,
             arguments,
@@ -7113,20 +7187,44 @@ private struct Walker {
         imported!"dmd.expression".ArrayLengthExp target,
         in ExpressionResult value,
     ) {
+        const current = runExpression(target.e1);
+        const newLength = cast(size_t) value.asLong;
+        writeLocation(
+            target.e1,
+            resizedStoredArray(target.e1.type, current, newLength),
+        );
+    }
+
+    private ExpressionResult resizedStoredArray(
+        imported!"dmd.mtype".Type type,
+        in ExpressionResult current,
+        in size_t newLength,
+    ) {
         import quickbite.backends.interpreter.aggregate_value: AggregateValue;
+        import quickbite.backends.interpreter.place: Place;
         import quickbite.frontend.dmd.types: arrayElementType;
 
-        const current = runExpression(target.e1);
-        const oldLength = current == ExpressionResult.null_ ? 0 : AggregateValue.length(current);
-        const newLength = cast(size_t) value.asLong;
-
-        ExpressionResult[] elements;
-        foreach (index; 0 .. newLength)
-            elements ~= index < oldLength
-                ? AggregateValue.elementAt(current, index)
-                : runDefaultValue(arrayElementType(target.e1.type));
-
-        writeLocation(target.e1, reconstructStoredArray(target.e1.type, elements));
+        ExpressionResult[] noElements;
+        const source = current == ExpressionResult.null_
+            ? reconstructStoredArray(type, noElements)
+            : current;
+        const oldLength = AggregateValue.length(source);
+        const previousData = AggregateValue.nativeArrayAddress(source);
+        const resized = AggregateValue.withArrayLength(source, newLength);
+        auto elementType = arrayElementType(type);
+        relocatePriorAppendedElementSlots(
+            elementType,
+            previousData,
+            resized,
+            oldLength,
+        );
+        auto destination = Place(AggregateValue.native(resized).address, type);
+        foreach (index; oldLength .. newLength)
+            writeStoredValue(
+                destination.index(index),
+                runDefaultValue(elementType),
+            );
+        return resized;
     }
 
     private ExpressionResult runDefaultValue(imported!"dmd.mtype".Type type) {
@@ -8189,7 +8287,7 @@ private struct Walker {
     private ExpressionResult runLoweredAssignExpression(
         imported!"dmd.expression".LoweredAssignExp assign,
     ) {
-        import quickbite.frontend.dmd.types: arrayElementType, isDynamicArrayType;
+        import quickbite.frontend.dmd.types: isDynamicArrayType;
         import std.conv: text;
 
         auto arrayLength = assign.e1.isArrayLengthExp;
@@ -8214,15 +8312,12 @@ private struct Walker {
 
         const newLength = cast(size_t) lengthValue.asLong;
 
-        ExpressionResult[] elements;
-        foreach (index; 0 .. newLength)
-            elements ~= index < AggregateValue.length(current)
-                ? AggregateValue.elementAt(current, index)
-                : runDefaultValue(arrayElementType(variable.type));
-
         // DMD lowers postfix `.length++`/`.length--` through a synthetic
         // `ref` local, so resize via that binding's native place.
-        writeLocation(var, reconstructStoredArray(variable.type, elements));
+        writeLocation(
+            var,
+            resizedStoredArray(variable.type, current, newLength),
+        );
         return lengthValue;
     }
 
@@ -8296,7 +8391,7 @@ private struct Walker {
                 : null;
             foreach (rawElement; nativeAppendElements(variable.type, value)) {
                 const index = AggregateValue.elementCount(appended);
-                const previous = appended;
+                const previousData = AggregateValue.nativeArrayAddress(appended);
                 // The appended element itself may be a live delegate value
                 // (a fresh closure or a copied delegate local), which has no
                 // native ABI function address -- `place_value.writeValue`'s
@@ -8312,7 +8407,12 @@ private struct Walker {
                 auto element = isLiveDelegate ? ExpressionResult.null_ : rawElement;
                 appended = AggregateValue.withAppendedArrayElement(appended, element);
                 if (elementType !is null)
-                    relocatePriorAppendedElementSlots(elementType, previous, appended, index);
+                    relocatePriorAppendedElementSlots(
+                        elementType,
+                        previousData,
+                        appended,
+                        index,
+                    );
                 if (isLiveDelegate) {
                     nativeDelegateSlots[
                         AggregateValue.elementAddress(appended, index)
@@ -8354,39 +8454,31 @@ private struct Walker {
     // the newly appended element's own registration above needs relocating
     // for, just for every earlier element instead of only the latest one.
     // Detect the reallocation by comparing the slice's data pointer before
-    // (`previous`) and after (`appended`) this iteration's append, and if
-    // it moved, relocate every one of `previous`'s `count` elements from
-    // its old per-element address to its corresponding new one --
-    // `copyStoredMetadata` carries every symbolic entry in each element's
-    // byte range, including entries in nested structs and static arrays. The
-    // old registrations remain because another live slice may still alias
-    // the old allocation.
+    // and after this iteration's append. If it moved, relocate the prior
+    // storage as one byte range: symbolic entries already retain their byte
+    // offsets, including entries in nested structs and static arrays. The old
+    // registrations remain because another live slice may still alias the old
+    // allocation.
     private void relocatePriorAppendedElementSlots(
         imported!"dmd.mtype".Type elementType,
-        in ExpressionResult previous,
+        in const(void)* previousData,
         in ExpressionResult appended,
         in size_t count,
     ) {
-        import quickbite.backends.interpreter.place: Place;
+        import quickbite.backends.interpreter.layout: typeByteSize;
 
         if (count == 0)
             return;
 
-        auto previousAggregate = AggregateValue.native(previous);
-        auto appendedAggregate = AggregateValue.native(appended);
-        const oldData = Place(previousAggregate.address, previousAggregate.type)
-            .sliceDataPointer;
-        const newData = Place(appendedAggregate.address, appendedAggregate.type)
-            .sliceDataPointer;
-        if (oldData is newData)
+        const appendedData = AggregateValue.nativeArrayAddress(appended);
+        if (previousData is appendedData)
             return;
 
-        foreach (i; 0 .. count)
-            copyStoredMetadata(
-                elementType,
-                AggregateValue.elementAddress(previous, i),
-                AggregateValue.elementAddress(appended, i),
-            );
+        copyStoredMetadataRange(
+            cast(void*) previousData,
+            cast(void*) appendedData,
+            count * typeByteSize(elementType),
+        );
     }
 
     // Appending a wide character to `string` writes its UTF-8 code units,
@@ -9299,10 +9391,8 @@ private struct Walker {
         in ExpressionResult pointer,
         in size_t index,
     ) {
-        import dmd.astenums: TY;
         import quickbite.backends.interpreter.layout: typeByteSize;
         import quickbite.backends.interpreter.place: Place;
-        import quickbite.backends.interpreter.place_value: readValue;
 
         auto elementType = pointerType.toBasetype.nextOf.toBasetype;
         auto address = nativeElementAddress(
@@ -9310,17 +9400,7 @@ private struct Walker {
             index,
             typeByteSize(elementType),
         );
-        if (elementType.ty == TY.Tdelegate)
-            if (auto delegate_ = address in nativeDelegateSlots)
-                return *delegate_;
-        if (auto function_ = address in nativeFunctionPointerSlots)
-            return *function_;
-        if (
-            elementType.isTypeAArray !is null ||
-            canContainStoredMetadata(elementType)
-        )
-            return readStoredValue(Place(address, elementType));
-        return readValue(Place(address, elementType));
+        return readStoredValue(Place(address, elementType));
     }
 
     private void storeNativePointerElement(
@@ -9331,7 +9411,6 @@ private struct Walker {
     ) {
         import quickbite.backends.interpreter.layout: typeByteSize;
         import quickbite.backends.interpreter.place: Place;
-        import quickbite.backends.interpreter.place_value: writeValue;
 
         auto elementType = pointerType.toBasetype.nextOf.toBasetype;
         auto address = nativeElementAddress(
@@ -9339,29 +9418,7 @@ private struct Walker {
             index,
             typeByteSize(elementType),
         );
-        if (elementType.isTypeDelegate !is null) {
-            writeStoredValue(Place(address, elementType), value);
-            clearUninitializedBindingAddress(pointer.pointerAddress);
-            return;
-        }
-        // `TypeNext.nextOf` is mutable in DMD's API, so this cannot be const.
-        auto functionPointerType = elementType.isTypePointer;
-        if (
-            functionPointerType !is null &&
-            functionPointerType.nextOf.toBasetype.isTypeFunction !is null
-        ) {
-            if (value.isFunctionPointer) {
-                nativeFunctionPointerSlots[address] = value;
-                Place(address, elementType).storeReference(null);
-                clearUninitializedBindingAddress(pointer.pointerAddress);
-                return;
-            }
-            nativeFunctionPointerSlots.remove(address);
-        }
-        if (canContainStoredMetadata(elementType))
-            writeStoredValue(Place(address, elementType), value);
-        else
-            writeValue(Place(address, elementType), value);
+        writeStoredValue(Place(address, elementType), value);
         // A native pointer can denote a still-void frame binding directly.
         // Once the first element is written, a later aggregate read must use
         // those frame bytes rather than materializing `.init` over them.
@@ -9960,15 +10017,10 @@ private struct Walker {
             child.thisValue = structVal;
             child.hasThis = true;
             forkExecutionStateInto(child);
+            child.bindThisReferenceAddress(new_.member, child.thisValue);
             child.bindFunctionParameters(new_.member, arguments);
-            try {
-                child.runStatement(new_.member.fbody);
-            } catch (InterpretedException exception) {
-                mergeNewStructConstructorState(child);
-                throw exception;
-            }
+            child.runStatement(new_.member.fbody);
             structVal = child.thisValue;
-            mergeNewStructConstructorState(child);
         } else if (new_.arguments !is null) {
             // Aggregate initialiser: assign arguments positionally to fields.
             import quickbite.backends.interpreter.layout: structFields;
@@ -9999,7 +10051,6 @@ private struct Walker {
     ) {
         import quickbite.backends.interpreter.layout: typeByteSize, typeHasPointers;
         import quickbite.backends.interpreter.place: Place;
-        import quickbite.backends.interpreter.place_value: writeValue;
 
         auto block = NativeBlock.allocate(
             typeByteSize(targetType),
@@ -10007,19 +10058,9 @@ private struct Walker {
                 ? NativeBlock.Scan.conservative
                 : NativeBlock.Scan.no,
         );
-        writeValue(Place(block.address, targetType), value);
+        writeStoredValue(Place(block.address, targetType), value, true);
         retainTemporaryPointerOwner(block);
         return ExpressionResult.pointerValue(block.address);
-    }
-
-    // `runNewStructPointerExpression`'s own constructor-call merge, the heap
-    // struct sibling of `mergeNewClassExpressionState`. A constructor can
-    // allocate classes or capture host exception metadata before it throws,
-    // so those address-keyed maps must survive the child walk.
-    private void mergeNewStructConstructorState(ref Walker child) {
-        nativeClassTypes = child.nativeClassTypes;
-        nativeClassOwners = child.nativeClassOwners;
-        nativeExceptionMetadata = child.nativeExceptionMetadata;
     }
 
     // `new T(args)` where T's constructor is a body-less native leaf: construct
@@ -10120,16 +10161,6 @@ private struct Walker {
     }
 
     private void mergeNewClassExpressionState(ref Walker child) {
-        nextFunctionPointerId = child.nextFunctionPointerId;
-        functionPointers = child.functionPointers;
-        functionPointerIds = child.functionPointerIds;
-        delegates = child.delegates;
-        nativeClassTypes = child.nativeClassTypes;
-        nativeClassOwners = child.nativeClassOwners;
-        nativeExceptionMetadata = child.nativeExceptionMetadata;
-        nativeDelegateSlots = child.nativeDelegateSlots;
-        nativeFunctionPointerSlots = child.nativeFunctionPointerSlots;
-        nativeTypeInfoSlots = child.nativeTypeInfoSlots;
         lazyArgumentExpressions = child.lazyArgumentExpressions;
         lazyArgumentFrames = child.lazyArgumentFrames;
     }

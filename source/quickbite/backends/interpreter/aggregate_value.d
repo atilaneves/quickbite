@@ -475,36 +475,63 @@ public struct AggregateValue {
         in imported!"quickbite.backends.interpreter.expression_result".ExpressionResult value,
         in imported!"quickbite.backends.interpreter.expression_result".ExpressionResult element,
     ) {
-        import quickbite.backends.interpreter.native_array: NativeArray;
         import quickbite.backends.interpreter.place: Place;
         import quickbite.backends.interpreter.place_value: writeValue;
-        import quickbite.backends.interpreter.expression_result: ExpressionResult;
 
         if (!value.isNativeAggregate)
             throw new Exception(
                 "AggregateValue.withAppendedArrayElement needs a native array.",
             );
+
+        const length = elementCount(value);
+        auto appended = withArrayLength(value, length + 1);
+        auto aggregate = native(appended);
+        writeValue(Place(aggregate.address, aggregate.type).index(length), element);
+        return appended;
+    }
+
+    public static imported!"quickbite.backends.interpreter.expression_result".ExpressionResult withArrayLength(
+        in imported!"quickbite.backends.interpreter.expression_result".ExpressionResult value,
+        in size_t newLength,
+    ) {
+        import quickbite.backends.interpreter.native_aggregate: NativeAggregate;
+        import quickbite.backends.interpreter.native_array: NativeArray;
+        import quickbite.backends.interpreter.place: Place;
+        import quickbite.backends.interpreter.expression_result: ExpressionResult;
+
+        if (!value.isNativeAggregate)
+            throw new Exception("AggregateValue.withArrayLength needs a native array.");
+
         auto aggregate = native(value);
         auto slice = baseTypeOf(aggregate.type).isTypeDArray;
-        if (slice !is null) {
-            const length = elementCount(value);
-            auto address = cast(void*) Place(
-                aggregate.address,
-                aggregate.type,
-            ).sliceDataPointer;
-            auto array = NativeArray.borrow(slice.next, address, length);
-            if (array.tryExpandUsedTo(length + 1)) {
-                writeValue(Place(array.element(length).ptr, slice.next), element);
-                array.writeSliceHeader(aggregate.address);
-                return value;
-            }
+        if (slice is null)
+            throw new Exception("AggregateValue.withArrayLength needs a dynamic array.");
+
+        const oldLength = elementCount(value);
+        auto array = NativeArray.borrow(
+            slice.next,
+            cast(void*) Place(aggregate.address, aggregate.type).sliceDataPointer,
+            oldLength,
+        );
+        if (newLength <= oldLength) {
+            array.setLength(newLength);
+            array.writeSliceHeader(aggregate.address);
+            return value;
         }
 
-        ExpressionResult[] elements;
-        foreach (index; 0 .. elementCount(value))
-            elements ~= elementAt(value, index);
-        elements ~= element;
-        return reconstructArray(aggregate.type, elements);
+        if (array.tryExpandUsedTo(newLength)) {
+            array.writeSliceHeader(aggregate.address);
+            return value;
+        }
+
+        auto grown = NativeArray.allocate(slice.next, newLength);
+        grown.block.bytes[0 .. array.block.byteLength] = array.block.bytes[];
+        grown.writeSliceHeader(aggregate.address);
+        return ExpressionResult.nativeAggregateValue(NativeAggregate(
+            aggregate.type,
+            aggregate.storage,
+            grown.block,
+        ));
     }
 
     public static imported!"quickbite.backends.interpreter.expression_result".ExpressionResult withStructField(
