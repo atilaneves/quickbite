@@ -111,8 +111,7 @@ acceptance configuration.
 Interpreter and Bytecode execute inside the LDC host. Their body-less native D
 calls must therefore use the ABI provenance of the code that defines each
 callable; `LINK.d` alone does not select DMD or LDC explicit-argument order.
-The legacy Interpreter path lives in `quickbite.ffi.oldffi`; Bytecode migrates
-to the address-only `quickbite.ffi.ffi` described by `ffi.md`.
+Both go through the address-only `quickbite.ffi.ffi` described by `ffi.md`.
 
 DMD-backend-generated code is different: its `extern(D)` calls use DMD's ABI,
 so the LDC benchmark host executes that code through the DMD-built executor.

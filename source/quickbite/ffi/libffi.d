@@ -66,7 +66,7 @@ ffi_status ffi_prep_cif(
 
 // Variadic CIF: `nfixedargs` are the declared fixed parameters, `ntotalargs`
 // includes the per-call variadic arguments. Variadic calls cannot share a
-// cached non-variadic CIF (ffi.md §34.14).
+// cached non-variadic CIF.
 ffi_status ffi_prep_cif_var(
     ffi_cif* cif,
     uint abi,
@@ -84,8 +84,8 @@ void ffi_call(
 ) @nogc;
 
 // A libffi closure: a runtime-generated native function pointer whose calls are
-// routed back into a handler. The reverse bridge (ffi.md §34.16) uses one per
-// interpreted delegate passed into native code. libffi defines it as
+// routed back into a handler. The reverse bridge uses one per interpreted
+// delegate passed into native code. libffi defines it as
 // `{ char tramp[FFI_TRAMPOLINE_SIZE]; ffi_cif*; void function(...); void* }`,
 // 56 bytes on x86-64 SysV (tramp[32] + three pointers); the opaque blob is
 // over-sized so ffi_closure_alloc reserves enough.

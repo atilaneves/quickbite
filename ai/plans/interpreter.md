@@ -31,7 +31,6 @@ benchmark result unrepresentative.
 native leaves encountered along the way. The Interpreter uses the typed-address
 `quickbite.ffi.ffi` bridge; Interpreter-specific preparation,
 callback re-entry, and exception translation stay in its backend adapter.
-`quickbite.ffi.oldffi` remains only for Bytecode's parallel migration lane.
 
 The unittest execution boundary returns success or a diagnostic directly. It
 does not format the final interpreter result: display is a separate REPL
@@ -56,8 +55,6 @@ track instead of being shimmed here. See the triage rule in §8.
 ## 2. Non-goals
 
 ```text
-- Bytecode's migration from `quickbite.ffi.oldffi` and deletion of that legacy
-  package (`bytecode.md` and `ffi.md`);
 - the Bytecode/IR backends' execution (ai/plans/bytecode.md);
 - value representation choice (boxed vs native layout): ai/plans/value.md;
 - new language features DMD does not lower for us (we execute DMD's AST, not
@@ -123,8 +120,6 @@ interpreter-performance.md
 `LINK.d` alone does not identify a callable's ABI: DMD and LDC order explicit D
 arguments differently. Every resolved callable carries the ABI of its defining
 compiler; neither the bridge nor an adapter may hard-code DMD or LDC globally.
-Bytecode owns the final `quickbite.ffi.oldffi` consumer and deletes that package
-when its parallel address-only migration is complete.
 
 Pointer slicing is ordinary D semantics and stays in this plan. Constructing
 `ptr[lower .. upper]` creates a view at the adjusted address and length; it
@@ -2321,20 +2316,14 @@ sites reach that heuristic: `throwRangeError` (a hardcoded
 prefix pattern) and `nativeExceptionObject` (FFI-caught native throwables,
 `className` from the real `throwable.classinfo.name`).
 
-Reproducing defect 1 (Error misclassification) needed care: `ffi/oldffi.d`'s
-native call site only ever `catch (Exception exception)`s ("Error stays
-fatal" per its own comment), so a natively-thrown `Error` subclass can *not*
-reach `nativeExceptionRoot` as the directly-thrown object — it propagates as
-a raw, uncaught native `Throwable` straight through the whole interpreter
-call stack (confirmed: a first fixture that threw a dependency-image `Error`
-subclass directly crashed the whole `bin/ut` process with a native
-backtrace, not a graceful `TestResult` failure — a real but separate,
-out-of-scope bug). The reachable route is `nativeCallExceptionFrom`'s
-`.next`-chain recursion in the legacy bridge, which follows `.next` regardless
-of its dynamic type: a native `Exception` (caught normally) chained to an
-`Error` via `.next` carries that `Error`'s `classinfo.name` into
-`nativeExceptionBaseObject` when the interpreted code reads and rethrows
-`caught.next`.
+The FFI boundary catches only `Exception` (`native_call_adapter.d`), so a
+natively-thrown `Error` subclass never reaches `nativeExceptionRoot` as the
+directly-thrown object: it propagates as a raw, uncaught native `Throwable`
+through the whole interpreter call stack and kills the process instead of
+producing a failed `TestResult`. That remains an open, separate bug. The one
+route by which an `Error` does reach `nativeExceptionRoot` is
+`nativeCallExceptionFrom`'s `.next`-chain recursion, which follows `.next`
+regardless of its dynamic type.
 
 Red-first evidence (both added to `tests/ut/backends/runner/sys/
 dependency_image.d`, `SystemLinker` oracle vs `Interpreter`, pre-fix):

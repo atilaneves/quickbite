@@ -17,10 +17,9 @@ The product work order is:
    `SystemLinker`, using only ordinary D semantics. The acceptance command is
    the default LDC-hosted benchmark; Cerealed is a feature-discovery and
    integration workload, never a source of package-specific behavior.
-2. Remove the Interpreter's old value representation and FFI conversion:
-   migrate it away from `quickbite.ffi.oldffi`, delete marshal/unmarshal and
-   writeback paths, and reduce its private runtime carrier to transient
-   expression results rather than storage authority.
+2. Remove the Interpreter's old value representation: reduce its private
+   runtime carrier to transient expression results rather than storage
+   authority.
 3. Execute the formatter in every remaining backend and delete the shared
    `quickbite.lang.Value`.
 4. Expand the Interpreter language surface beyond the subset the Cerealed
@@ -35,14 +34,11 @@ serial because the compiler, program, and machine changes converge.
 With the module split established, the most parallel workflow is:
 
 1. The Interpreter agent owns `backends/interpreter/**` and the necessary
-   legacy-FFI correctness work until Cerealed is green.
+   FFI correctness work until Cerealed is green.
 2. The Bytecode agent exclusively owns `backends/bytecode/core/**`, continuing
    the compositional refactor and native slice-layout correction.
-3. The new-FFI agent exclusively owns `quickbite.ffi.ffi` and does not edit a
-   backend or `quickbite.ffi.oldffi`.
-4. After the parallel work lands, the Bytecode agent integrates the new FFI;
-   after Cerealed is green, the Interpreter migration follows under
-   `value.md`.
+3. The FFI agent exclusively owns `quickbite.ffi.ffi` and does not edit a
+   backend.
 
 ## Process Model
 
@@ -77,9 +73,7 @@ Backends:
   from `SystemLinker` its behaviour is characterized, not treated as
   truth (`single-oracle.md`).
 - `Interpreter` — tree-walking AST interpreter. Current centre of
-  gravity: execute Cerealed completely (`interpreter.md`). It temporarily
-  calls native leaves through `quickbite.ffi.oldffi`; removing that dependency
-  is priority 2 (`value.md`).
+  gravity: execute Cerealed completely (`interpreter.md`).
 - `Bytecode` — first-generation bytecode VM (legacy core), being
   strangler-replaced by the typed-frame new core behind the
   `BytecodeNewCore` handle (`bytecode.md`).
@@ -96,12 +90,10 @@ Live plans:
 - `interpreter.md` — make the default LDC-hosted Interpreter run every Cerealed
   unittest through package-independent D semantics, then hand off to the
   representation cleanup.
-- `ffi.md` — the new address-only native-call mechanism for native-layout
-  Bytecode. The current marshaller-based implementation moves to
-  `quickbite.ffi.oldffi`; the new implementation is `quickbite.ffi.ffi`.
-- `value.md` — Interpreter native storage, migration away from
-  `quickbite.ffi.oldffi`, prelude display formatting, and shared `Value`
-  deletion.
+- `ffi.md` — `quickbite.ffi.ffi`, the address-only native-call mechanism every
+  backend calls native leaves through.
+- `value.md` — Interpreter native storage, prelude display formatting, and
+  shared `Value` deletion.
 - `bytecode.md` — typed-frame bytecode VM. The new core became the `Bytecode`
   default on 2026-07-09; the plan now owns post-flip coverage, REPL formatter,
   native-runtime, and benchmark follow-up work.

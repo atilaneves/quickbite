@@ -4026,9 +4026,9 @@ private struct Walker {
                     throwNativeException(exception);
                 }
 
-                // An FFI-uncrossable signature type (e.g. an associative array,
-                // ffi.md §34.3.1 item 0) gets an honest diagnostic naming the
-                // type rather than the misleading no-available-source message.
+                // An FFI-uncrossable signature type (e.g. an associative array)
+                // gets an honest diagnostic naming the type rather than the
+                // misleading no-available-source message.
                 const unsupportedType = unsupportedNativeTypeMessage(call.f);
                 throw new Exception(
                     unsupportedType is null
@@ -4189,9 +4189,9 @@ private struct Walker {
     }
 
     // Run an interpreted delegate that native code called back into through the
-    // FFI reverse bridge (ffi.md §34.16). The callback supplies only values (no
-    // source argument expressions), so synthesise null placeholders, as the
-    // static-initialiser delegate path does.
+    // FFI reverse bridge. The callback supplies only values (no source argument
+    // expressions), so synthesise null placeholders, as the static-initialiser
+    // delegate path does.
     private ExpressionResult invokeNativeCallback(
         in ExpressionResult callee,
         in ExpressionResult[] arguments,
@@ -4245,7 +4245,7 @@ private struct Walker {
 
     // Call a native delegate the interpreter holds as an opaque
     // {context, funcptr} value read from a native typed result place, the
-    // inverse of the §34.16 callback bridge.
+    // inverse of the inbound callback bridge.
     private ExpressionResult runNativeDelegateCall(
         in ExpressionResult callee,
         imported!"dmd.expression".CallExp call,
@@ -9926,7 +9926,7 @@ private struct Walker {
 
             // A body-less native constructor cannot have its (null) body run;
             // route it through the FFI bridge so the heap struct is constructed
-            // natively instead of left default-initialised (ffi.md §34.13).
+            // natively instead of left default-initialised.
             if (hasNoAvailableSource(new_.member))
                 return runNewStructNativeConstructor(new_, targetType, structVal);
 
@@ -10017,7 +10017,7 @@ private struct Walker {
 
     // `new T(args)` where T's constructor is a body-less native leaf: construct
     // the struct through the FFI bridge (seeding `this` from `.init`) and return
-    // a pointer to the constructed value (ffi.md §34.13).
+    // a pointer to the constructed value.
     private ExpressionResult runNewStructNativeConstructor(
         imported!"dmd.expression".NewExp new_,
         imported!"dmd.mtype".Type targetType,
@@ -10595,7 +10595,7 @@ classFieldArrayLiteralDefault(
 
 // The call site's actual argument types, in source order, so the FFI core can
 // type a C variadic call's trailing arguments (the signature carries only the
-// fixed parameters, ffi.md §34.14).
+// fixed parameters).
 private imported!"dmd.mtype".Type[] nativeArgumentTypes(
     imported!"dmd.expression".Expression[] expressions,
 ) {

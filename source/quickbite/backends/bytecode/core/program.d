@@ -57,7 +57,7 @@ package(quickbite.backends.bytecode) struct StructDisplayField {
 
 // The static type of a function result: a scalar, a dynamic array (`string`
 // included, its basetype is also `Tarray`), or a by-value struct. A
-// dynamic-array result is a 16-byte {ptr, length} descriptor — for a
+// dynamic-array result is a 16-byte {length, ptr} descriptor — for a
 // literal-initialised `string`, pointing into the immutable program data
 // segment; otherwise into the machine's `heap` root, which keeps its backing
 // memory alive — with `elementType` giving the element scalar. A struct
@@ -112,24 +112,24 @@ package(quickbite.backends.bytecode) struct ResultType {
     }
 }
 
-// Bytes of a dynamic-array slice descriptor laid out in the frame: a native
-// `void* ptr` into VM-owned heap memory followed by a `size_t length`. The
-// native bridge reverses these fields to D's ABI `{length, ptr}` descriptor.
+// Bytes of a dynamic-array slice descriptor laid out in the frame: a
+// `size_t length` followed by a native `void* ptr` into VM-owned heap
+// memory, the same order compiled D lays a slice out in, so the native
+// bridge hands a descriptor across unchanged.
 package(quickbite.backends.bytecode) enum sliceDescriptorSize =
     2 * size_t.sizeof;
 
 // Byte offset of a slice descriptor's `ptr` field relative to the
 // descriptor's own base offset `base` (a frame slot, module-data offset, or
-// a descriptor-sized buffer's start) — the one place the `{ptr, length}`
+// a descriptor-sized buffer's start) — the one place the `{length, ptr}`
 // layout `sliceDescriptorSize` documents is expressed as field offsets, so
 // compiler.d, machine.d, and reify.d compute them the same way instead of
 // re-deriving `base` / `base + size_t.sizeof` inline. Pairs with
-// `sliceDescriptorLengthOffset`; flipping the descriptor to `{length, ptr}`
-// becomes a one-module edit to these two functions.
+// `sliceDescriptorLengthOffset`.
 package(quickbite.backends.bytecode) size_t sliceDescriptorPtrOffset(
     in size_t base,
 ) @safe @nogc nothrow pure {
-    return base;
+    return base + size_t.sizeof;
 }
 
 // Byte offset of a slice descriptor's `length` field relative to the
@@ -137,15 +137,16 @@ package(quickbite.backends.bytecode) size_t sliceDescriptorPtrOffset(
 package(quickbite.backends.bytecode) size_t sliceDescriptorLengthOffset(
     in size_t base,
 ) @safe @nogc nothrow pure {
-    return base + size_t.sizeof;
+    return base;
 }
 
 // A native (libc) call's argument area is N contiguous slots of this
 // stride, one per argument, laid out at
 // `argumentArea + index * nativeArgumentSlotSize` regardless of each
-// argument's own width, so the marshaller can locate argument `index` without
-// knowing the widths of the arguments before it. The stride accommodates the
-// widest bridge value, currently a two-word dynamic-array descriptor.
+// argument's own width, so `native_call.d` can locate argument `index`
+// without knowing the widths of the arguments before it. The stride
+// accommodates the widest bridge value, currently a two-word dynamic-array
+// descriptor.
 package(quickbite.backends.bytecode) enum nativeArgumentSlotSize =
     sliceDescriptorSize;
 
@@ -197,12 +198,12 @@ package(quickbite.backends.bytecode) enum Op: ubyte {
     // inline static-array slot at frame offset `a` (a value-type byte copy).
     loadStaticArray,
     // Allocate `b * c` bytes of VM-owned writable heap, then write the slice
-    // descriptor {ptr, length} into the frame: a: descriptor offset, b: element
+    // descriptor {length, ptr} into the frame: a: descriptor offset, b: element
     // size, c: element count (the length).
     allocArray,
     // Allocate `elementSize * length` bytes of VM-owned writable heap, filled
     // with the element type's default-init byte, where `length` is a size_t read
-    // from frame offset c, then write the slice descriptor {ptr, length} into the
+    // from frame offset c, then write the slice descriptor {length, ptr} into the
     // frame at offset a. Operand b packs the fill byte in its high 8 bits and the
     // element size in its low 8 bits (`(fill << 8) | elementSize`); the fill is
     // 0x00 for most types and 0xFF for `char`. Backs `new T[](runtimeLength)`.
@@ -228,7 +229,7 @@ package(quickbite.backends.bytecode) enum Op: ubyte {
     // size_t length read from frame offset c (`arr.length = n`). Allocate a fresh
     // block, copy the `min(oldLength, newLength)` existing elements, fill any
     // growth with the element's default-init byte, root the block, and overwrite
-    // the descriptor with {newPtr, newLength}. Operand b packs the fill byte
+    // the descriptor with {newLength, newPtr}. Operand b packs the fill byte
     // (high 8 bits) and element size (low 8 bits), like allocArrayDynamic.
     setArrayLength,
     // Resize the dynamic array whose descriptor is at frame offset a using the
@@ -236,12 +237,12 @@ package(quickbite.backends.bytecode) enum Op: ubyte {
     // The new length is read from frame offset c. Backs `S[].length = n` when
     // `S.init` is not a uniform byte fill.
     setArrayLengthFromTemplate,
-    // Write a null slice descriptor {ptr = 0, length = 0} to frame offset a.
+    // Write a null slice descriptor {length = 0, ptr = 0} to frame offset a.
     nullSlice,
-    // Write a native dynamic-array descriptor {literalBlocks[b].ptr, c}
+    // Write a native dynamic-array descriptor {c, literalBlocks[b].ptr}
     // directly into frame offset a, from a literal's `literalBlocks` index
     // (b) and length in elements (c). Every `string` value — literal or not
-    // — is an ordinary 16-byte {ptr, length} descriptor identical to any
+    // — is an ordinary 16-byte {length, ptr} descriptor identical to any
     // other `T[]`; this is simply the literal-load opcode for that shape. The
     // pointer is `literalBlocks[b].ptr`, not `data.ptr + b`: `data` is one
     // append-growable array that reallocates (and moves) as later literals
@@ -292,7 +293,7 @@ package(quickbite.backends.bytecode) enum Op: ubyte {
     // Form a sub-slice descriptor sharing the source's backing memory:
     // a: destination descriptor offset, b: source descriptor offset, c: offset
     // of an adjacent {lo, hi} pair of size_t bounds. The new descriptor is
-    // {srcPtr + lo * elemSize, hi - lo}; the element size is fixed by the
+    // {hi - lo, srcPtr + lo * elemSize}; the element size is fixed by the
     // opcode, matching the indexLoad/indexStore split.
     subSlice1,
     subSlice2,
@@ -321,7 +322,7 @@ package(quickbite.backends.bytecode) enum Op: ubyte {
     sliceCopyN,
     // Copy a range of `T[N][]` rows: the source slice descriptor at frame
     // offset b into the destination slice descriptor at frame offset a,
-    // where both descriptors' elements are 16-byte `{ptr, length}` row
+    // where both descriptors' elements are 16-byte `{length, ptr}` row
     // descriptors pointing at separately heap-allocated `T[N]` blocks (this
     // VM's `T[N][]` row representation), not `sliceCopy16`'s flat
     // by-value descriptor copy. `sliceCopy16` is correct for a `T[][]` row
@@ -374,7 +375,7 @@ package(quickbite.backends.bytecode) enum Op: ubyte {
     // Append the element at frame offset b to the dynamic-array slice descriptor
     // at frame offset a: allocate a fresh heap block of (length + 1) elements,
     // copy the existing elements, write the new element, root the block, and
-    // overwrite the descriptor with {newPtr, length + 1}. Reallocating (rather
+    // overwrite the descriptor with {length + 1, newPtr}. Reallocating (rather
     // than growing in place) matches compiled D, so a slice of an array is not
     // corrupted by appending to a neighbour. The element size is fixed by the
     // opcode (1, 2, 4, 8, or 16 bytes), matching the indexLoad/indexStore split.
@@ -392,7 +393,7 @@ package(quickbite.backends.bytecode) enum Op: ubyte {
     appendElementN,
     // Concatenate the two slice descriptors at frame offsets b and c into a
     // fresh heap block holding all of b's elements followed by all of c's, then
-    // write the descriptor {newPtr, len(b) + len(c)} to frame offset a. The
+    // write the descriptor {len(b) + len(c), newPtr} to frame offset a. The
     // block is rooted in `heap`. Both operands are copied, so the originals are
     // untouched (`a ~ b` makes a NEW array). The element size is fixed by the
     // opcode (1, 4, or 16 bytes), matching the indexLoad/indexStore split.
@@ -409,7 +410,7 @@ package(quickbite.backends.bytecode) enum Op: ubyte {
 
     // Duplicate the slice descriptor at frame offset b into a fresh heap block
     // holding an independent copy of all its elements, then write the
-    // descriptor {newPtr, length} to frame offset a. The block is rooted in
+    // descriptor {length, newPtr} to frame offset a. The block is rooted in
     // `heap`. Mutating either array leaves the other intact (`arr.dup` /
     // `arr.idup`). The element size is fixed by the opcode (1, 2, 4, 8, or 16
     // bytes), matching the indexLoad/indexStore split; 16 bytes is a whole
@@ -480,7 +481,7 @@ package(quickbite.backends.bytecode) enum Op: ubyte {
     // and d is the element byte width. This is the address primitive shared
     // by pointer- and slice-backed compiler places.
     pointerAddress,
-    // Form a slice descriptor {pointer + lo * elementSize, hi - lo} at frame
+    // Form a slice descriptor {hi - lo, pointer + lo * elementSize} at frame
     // offset a from the raw `size_t` pointer value at frame offset b and an
     // adjacent {lo, hi} pair of `size_t` bounds at frame offset c. Backs
     // `p[lo .. hi]`; unchecked against the original block, like compiled D. The
@@ -767,7 +768,7 @@ package(quickbite.backends.bytecode) enum TranscodeMode: ushort {
 package(quickbite.backends.bytecode) enum unsignedConvertFlag = 0x100;
 
 // OR'd into an AA opcode's key-width operand (`Instruction.e`) to mark the key
-// as compared by the content its {ptr, length} descriptor points at (a plain
+// as compared by the content its {length, ptr} descriptor points at (a plain
 // `string` key), rather than by the descriptor's own bytes. The width packed
 // alongside it (`keyMeta & (assocArrayKeyIsArrayFlag - 1)`) is then always
 // `sliceDescriptorSize`; every other supported key packs its own scalar width
@@ -794,7 +795,7 @@ package(quickbite.backends.bytecode) enum assocArrayKeyIsStructLayoutFlag =
 // (`assocArrayKeyIsStructLayoutFlag`): `offset`/`width` locate the field's
 // own bytes within the key block (mirroring `field.offset` from DMD's
 // struct layout), and `isArray` selects how `keysEqual` (machine.d) compares
-// them -- content, through the {ptr, length} descriptor at `offset`, for a
+// them -- content, through the {length, ptr} descriptor at `offset`, for a
 // plain `string` field (`width` is then always `sliceDescriptorSize`), or
 // the field's own raw bytes directly for anything else. Mirrors
 // `compileStructIdentity`'s (compiler.d) field-by-field pattern for `==`,
@@ -1284,23 +1285,18 @@ package(quickbite.backends.bytecode) struct CompiledFunction {
 package(quickbite.backends.bytecode) struct NativeCall {
     imported!"dmd.func".FuncDeclaration function_;
     imported!"dmd.mtype".Type[] argumentTypes;
-    // Per-argument frame offset of the pointed-to local for an out-parameter
-    // argument (e.g. strtod's `&endptr`); `noOutParameterOffset` marks an
-    // argument that is not one.
-    ushort[] outParameterOffsets;
     // A host class receiver crosses the FFI boundary as its raw object pointer.
     // `nativeClassReceiverType` is null for an ordinary native function call.
-    ushort nativeClassReceiverOffset = noOutParameterOffset;
+    ushort nativeClassReceiverOffset = noReceiverOffset;
     imported!"dmd.mtype".TypeClass nativeClassReceiverType;
     // A native struct method receives a pointer to the VM's inline receiver
     // block as its hidden `this` argument.
-    ushort nativeStructReceiverOffset = noOutParameterOffset;
+    ushort nativeStructReceiverOffset = noReceiverOffset;
     imported!"dmd.mtype".TypeStruct nativeStructReceiverType;
 }
 
-// Sentinel `NativeCall.outParameterOffsets` entry for an argument that is not
-// an out parameter.
-package(quickbite.backends.bytecode) enum noOutParameterOffset = ushort.max;
+// Sentinel `NativeCall` receiver offset for a call with no hidden receiver.
+package(quickbite.backends.bytecode) enum noReceiverOffset = ushort.max;
 
 // How to render a failed assertion: read both operands from the frame and
 // format them per their static type around the inverted operator.

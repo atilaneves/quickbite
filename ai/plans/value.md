@@ -145,9 +145,7 @@ longer imports or aliases it.
    adapter. `quickbite.ffi.ffi` is designed independently for native-layout
    backends and never sees `ExpressionResult`: the Interpreter hands it typed
    argument and result addresses without compatibility methods or a legacy
-   fallback. `quickbite.ffi.oldffi` remains only for Bytecode's parallel
-   migration lane; `bytecode.md` owns removal of that final consumer and
-   deletion of the legacy package.
+   fallback.
 
 9. FFI-crossing and addressable aggregates live in native ABI layout
    behind a thin handle reusing DMD's own offsets. A cross-language
@@ -372,15 +370,12 @@ longer imports or aliases it.
 18. **FFI end state: no marshalling.** This is a structural guarantee:
     an aggregate argument's bytes already sit at a real address and a native
     return is written straight into typed result storage. A small backend
-    adapter hands argument and result addresses to the new
-    `quickbite.ffi.ffi`, which owns ABI descriptors, CIF construction, and
-    calls.
+    adapter hands argument and result addresses to `quickbite.ffi.ffi`, which
+    owns ABI descriptors, CIF construction, and calls.
     Adapter-owned callback lifetime/re-entry and native exception translation
     remain only where demanded by supported Interpreter behavior. That is call
     plumbing, not marshalling debt; the irreducible remainder (`ffi_call`
-    dispatch) only a JIT removes. None of `quickbite.ffi.oldffi`'s marshalling
-    surface is copied into the new bridge. Bytecode retains that package until
-    its parallel address-only migration deletes the final legacy consumer.
+    dispatch) only a JIT removes.
 
     Preserved evidence (do not re-litigate): a bolt-on native-layout
     marshaller was measured to be the wrong unit of change — its
