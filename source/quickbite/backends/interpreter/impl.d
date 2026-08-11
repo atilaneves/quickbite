@@ -167,6 +167,97 @@ private struct EvaluatedReferenceArgument {
     public imported!"dmd.expression".Expression selectedLvalue;
 }
 
+// One call owns its evaluated values, source expressions, and `ref`/`out`
+// address metadata. Zero- and one-argument calls stay entirely in the caller's
+// stack value. Larger calls lay the three aligned arrays into one scanned GC
+// block, so evaluation performs exactly one allocation independent of the
+// arrays' growth policies while retaining the existing slice-shaped seams.
+private struct CallArguments {
+    private size_t _length;
+    private void* _storage;
+    private imported!"quickbite.backends.interpreter.expression_result".
+        ExpressionResult _singleValue;
+    private imported!"dmd.expression".Expression _singleExpression;
+    private EvaluatedReferenceArgument _singleReference;
+
+    public this(in size_t length) {
+        import core.memory: GC;
+
+        _length = length;
+        if (length <= 1)
+            return;
+
+        _storage = GC.malloc(storageByteLength(length));
+        values[] = typeof(_singleValue).init;
+        expressions[] = null;
+        references[] = EvaluatedReferenceArgument.init;
+    }
+
+    public @property size_t length() const @safe @nogc nothrow pure {
+        return _length;
+    }
+
+    public @property imported!"quickbite.backends.interpreter.expression_result".
+        ExpressionResult[] values()
+    {
+        if (_length == 0)
+            return null;
+        if (_length == 1)
+            return (&_singleValue)[0 .. 1];
+        return (cast(typeof(_singleValue)*) _storage)[0 .. _length];
+    }
+
+    public @property imported!"dmd.expression".Expression[] expressions() {
+        if (_length == 0)
+            return null;
+        if (_length == 1)
+            return (&_singleExpression)[0 .. 1];
+        return (cast(typeof(_singleExpression)*) (
+            cast(ubyte*) _storage + expressionsOffset(_length)
+        ))[0 .. _length];
+    }
+
+    public @property EvaluatedReferenceArgument[] references() {
+        if (_length == 0)
+            return null;
+        if (_length == 1)
+            return (&_singleReference)[0 .. 1];
+        return (cast(EvaluatedReferenceArgument*) (
+            cast(ubyte*) _storage + referencesOffset(_length)
+        ))[0 .. _length];
+    }
+
+    private static size_t storageByteLength(in size_t length)
+    @safe @nogc nothrow pure {
+        return referencesOffset(length) +
+            EvaluatedReferenceArgument.sizeof * length;
+    }
+
+    private static size_t expressionsOffset(in size_t length)
+    @safe @nogc nothrow pure {
+        return alignOffset(
+            typeof(_singleValue).sizeof * length,
+            typeof(_singleExpression).alignof,
+        );
+    }
+
+    private static size_t referencesOffset(in size_t length)
+    @safe @nogc nothrow pure {
+        return alignOffset(
+            expressionsOffset(length) +
+                typeof(_singleExpression).sizeof * length,
+            EvaluatedReferenceArgument.alignof,
+        );
+    }
+
+    private static size_t alignOffset(
+        in size_t offset,
+        in size_t alignment,
+    ) @safe @nogc nothrow pure {
+        return (offset + alignment - 1) & ~(alignment - 1);
+    }
+}
+
 private struct UninitializedBindings {
     public bool[void*] addresses;
 }
@@ -2948,13 +3039,16 @@ private struct Walker {
             throw new Exception(unsupported);
         const native = hasNoAvailableSource(call.f);
 
-        ExpressionResult[] arguments;
-        Expression[] argumentExpressions;
-        EvaluatedReferenceArgument[] evaluatedArguments;
+        auto callArguments = CallArguments(
+            call.arguments is null ? 0 : call.arguments.length,
+        );
+        auto arguments = callArguments.values;
+        auto argumentExpressions = callArguments.expressions;
+        auto evaluatedArguments = callArguments.references;
         if (call.arguments !is null)
             foreach (index, argument; *call.arguments) {
                 EvaluatedReferenceArgument evaluated;
-                arguments ~= index < call.f.parameters.length &&
+                arguments[index] = index < call.f.parameters.length &&
                     isReferenceParameter(
                         call.f,
                         index,
@@ -2966,9 +3060,12 @@ private struct Walker {
                     index < call.f.parameters.length &&
                     (*call.f.parameters)[index].type.toBasetype.isTypeClass !is null
                 )
-                    arguments[$ - 1] = rootedNativeClassValue(argument, arguments[$ - 1]);
-                argumentExpressions ~= argument;
-                evaluatedArguments ~= evaluated;
+                    arguments[index] = rootedNativeClassValue(
+                        argument,
+                        arguments[index],
+                    );
+                argumentExpressions[index] = argument;
+                evaluatedArguments[index] = evaluated;
             }
 
         if (native) {
@@ -4216,9 +4313,12 @@ private struct Walker {
             return runStringForeachApplyCall(call, stringForeachApply);
         }
 
-        ExpressionResult[] arguments;
-        Expression[] argumentExpressions;
-        EvaluatedReferenceArgument[] evaluatedArguments;
+        auto callArguments = CallArguments(
+            call.arguments is null ? 0 : call.arguments.length,
+        );
+        auto arguments = callArguments.values;
+        auto argumentExpressions = callArguments.expressions;
+        auto evaluatedArguments = callArguments.references;
         if (call.arguments !is null) {
             foreach (index, argument; *call.arguments) {
                 auto parameter = call.f is null ||
@@ -4230,21 +4330,30 @@ private struct Walker {
                 if (parameter !is null && parameterIsLazy(parameter))
                     // The lazy argument is captured as an expression below;
                     // this aligned entry is never bound or evaluated.
-                    arguments ~= ExpressionResult.void_;
+                    arguments[index] = ExpressionResult.void_;
                 else if (nativeCall && nativeReferenceParameter(call.f, index))
-                    arguments ~= runRefArgumentExpression(argument, evaluated);
+                    arguments[index] = runRefArgumentExpression(
+                        argument,
+                        evaluated,
+                    );
                 else if (parameter !is null &&
                     isReferenceParameter(call.f, index, parameter))
-                    arguments ~= runRefArgumentExpression(argument, evaluated);
+                    arguments[index] = runRefArgumentExpression(
+                        argument,
+                        evaluated,
+                    );
                 else
-                    arguments ~= runExpression(argument);
+                    arguments[index] = runExpression(argument);
                 if (
                     parameter !is null &&
                     parameter.type.toBasetype.isTypeClass !is null
                 )
-                    arguments[$ - 1] = rootedNativeClassValue(argument, arguments[$ - 1]);
-                argumentExpressions ~= argument;
-                evaluatedArguments ~= evaluated;
+                    arguments[index] = rootedNativeClassValue(
+                        argument,
+                        arguments[index],
+                    );
+                argumentExpressions[index] = argument;
+                evaluatedArguments[index] = evaluated;
             }
         }
 
@@ -7415,13 +7524,16 @@ private struct Walker {
         if (hasNoAvailableSource(function_))
             return false;
 
-        ExpressionResult[] arguments;
-        imported!"dmd.expression".Expression[] argumentExpressions;
-        EvaluatedReferenceArgument[] evaluatedArguments;
+        auto callArguments = CallArguments(
+            call.arguments is null ? 0 : call.arguments.length,
+        );
+        auto arguments = callArguments.values;
+        auto argumentExpressions = callArguments.expressions;
+        auto evaluatedArguments = callArguments.references;
         if (call.arguments !is null)
             foreach (index, argument; *call.arguments) {
                 EvaluatedReferenceArgument evaluated;
-                arguments ~= index < function_.parameters.length &&
+                arguments[index] = index < function_.parameters.length &&
                     isReferenceParameter(
                         function_,
                         index,
@@ -7429,8 +7541,8 @@ private struct Walker {
                     )
                     ? runRefArgumentExpression(argument, evaluated)
                     : runExpression(argument);
-                argumentExpressions ~= argument;
-                evaluatedArguments ~= evaluated;
+                argumentExpressions[index] = argument;
+                evaluatedArguments[index] = evaluated;
             }
 
         Walker child;
@@ -7520,13 +7632,16 @@ private struct Walker {
         if (call.f.needThis)
             return false;
 
-        ExpressionResult[] arguments;
-        imported!"dmd.expression".Expression[] argumentExpressions;
-        EvaluatedReferenceArgument[] evaluatedArguments;
+        auto callArguments = CallArguments(
+            call.arguments is null ? 0 : call.arguments.length,
+        );
+        auto arguments = callArguments.values;
+        auto argumentExpressions = callArguments.expressions;
+        auto evaluatedArguments = callArguments.references;
         if (call.arguments !is null)
             foreach (index, argument; *call.arguments) {
                 EvaluatedReferenceArgument evaluated;
-                arguments ~= index < call.f.parameters.length &&
+                arguments[index] = index < call.f.parameters.length &&
                     isReferenceParameter(
                         call.f,
                         index,
@@ -7534,8 +7649,8 @@ private struct Walker {
                     )
                     ? runRefArgumentExpression(argument, evaluated)
                     : runExpression(argument);
-                argumentExpressions ~= argument;
-                evaluatedArguments ~= evaluated;
+                argumentExpressions[index] = argument;
+                evaluatedArguments[index] = evaluated;
             }
 
         if (hasNoAvailableSource(call.f)) {
@@ -10465,10 +10580,13 @@ private struct Walker {
             }
 
             // User-defined constructor: run it and capture the resulting this.
-            ExpressionResult[] arguments;
+            auto callArguments = CallArguments(
+                new_.arguments is null ? 0 : new_.arguments.length,
+            );
+            auto arguments = callArguments.values;
             if (new_.arguments !is null)
-                foreach (argument; *new_.arguments)
-                    arguments ~= runExpression(argument);
+                foreach (index, argument; *new_.arguments)
+                    arguments[index] = runExpression(argument);
 
             Walker child;
             child.runningCalledFunction = true;
@@ -10538,12 +10656,15 @@ private struct Walker {
             NativeCallException, NativeCallResult;
         import dmd.expression: Expression;
 
-        ExpressionResult[] arguments;
-        Expression[] argumentExpressions;
+        auto callArguments = CallArguments(
+            new_.arguments is null ? 0 : new_.arguments.length,
+        );
+        auto arguments = callArguments.values;
+        auto argumentExpressions = callArguments.expressions;
         if (new_.arguments !is null)
-            foreach (argument; *new_.arguments) {
-                arguments ~= runExpression(argument);
-                argumentExpressions ~= argument;
+            foreach (index, argument; *new_.arguments) {
+                arguments[index] = runExpression(argument);
+                argumentExpressions[index] = argument;
             }
 
         try {
@@ -10577,10 +10698,13 @@ private struct Walker {
         if (classType is null || classType.sym is null)
             throw new Exception(text("Unsupported eval expression: ", new_.op));
 
-        ExpressionResult[] arguments;
+        auto callArguments = CallArguments(
+            new_.arguments is null ? 0 : new_.arguments.length,
+        );
+        auto arguments = callArguments.values;
         if (new_.arguments !is null)
-            foreach (argument; *new_.arguments)
-                arguments ~= runExpression(argument);
+            foreach (index, argument; *new_.arguments)
+                arguments[index] = runExpression(argument);
 
         auto object = AggregateValue.allocateClass(allocationType);
         nativeClassTypes[AggregateValue.nativeClassBodyAddress(object)] = allocationType;
