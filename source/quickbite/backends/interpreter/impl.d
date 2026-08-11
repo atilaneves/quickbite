@@ -1192,12 +1192,77 @@ private struct Walker {
         return variable !is null && hasBindingPlace(variable);
     }
 
+    // PROTOTYPE(place-projection-write): only storage-owned/ref-forwarded
+    // struct/array trees take the direct write experiment. Pointer
+    // dereferences retain the old path and its null/provenance diagnostics.
+    private bool hasDirectWriteProjectionPlace(
+        imported!"dmd.expression".Expression expression,
+    ) {
+        if (!hasProjectionPlace(expression))
+            return false;
+
+        if (expression.isVarExp !is null)
+            return true;
+        if (auto dot = expression.isDotVarExp)
+            return hasDirectWriteProjectionPlace(dot.e1);
+        if (auto index = expression.isIndexExp)
+            return index.e1.type !is null &&
+                index.e1.type.toBasetype.isTypePointer is null &&
+                hasDirectWriteProjectionPlace(index.e1);
+        if (auto cast_ = expression.isCastExp)
+            return hasDirectWriteProjectionPlace(cast_.e1);
+        return false;
+    }
+
+    private bool isDirectProjectionWriteTarget(
+        imported!"dmd.expression".Expression expression,
+    ) {
+        if (!hasDirectWriteProjectionPlace(expression) || expression.type is null)
+            return false;
+
+        const type = expression.type.toBasetype;
+        if (type.isTypeStruct !is null || type.isTypeSArray !is null)
+            return false;
+
+        imported!"dmd.expression".IndexExp[16] indexes;
+        size_t indexCount;
+        if (!collectDirectWriteProjectionIndexes(expression, indexes, indexCount))
+            return false;
+
+        return true;
+    }
+
+    private bool collectDirectWriteProjectionIndexes(
+        imported!"dmd.expression".Expression expression,
+        ref imported!"dmd.expression".IndexExp[16] indexes,
+        ref size_t count,
+    ) {
+        if (auto index = expression.isIndexExp) {
+            if (count == indexes.length)
+                return false;
+            indexes[count++] = index;
+            return collectDirectWriteProjectionIndexes(
+                index.e1,
+                indexes,
+                count,
+            );
+        }
+        if (auto dot = expression.isDotVarExp)
+            return collectDirectWriteProjectionIndexes(dot.e1, indexes, count);
+        if (auto cast_ = expression.isCastExp)
+            return collectDirectWriteProjectionIndexes(cast_.e1, indexes, count);
+        return expression.isVarExp !is null;
+    }
+
     // PROTOTYPE(place-projection): compose the addressable expression once.
     // `$` belongs to its containing index and therefore reads the base
     // place's length before that index expression runs, preserving the same
     // receiver-before-index order as `runIndexExpression`.
     private Place projectionPlace(
         imported!"dmd.expression".Expression expression,
+        in bool writeBounds = false,
+        scope imported!"dmd.expression".Expression[] evaluatedIndexes = null,
+        scope size_t[] evaluatedIndexValues = null,
     ) {
         import quickbite.backends.interpreter.lvalue_place: placeOfLvalue;
         import quickbite.backends.interpreter.messages: indexOutOfBoundsMessage;
@@ -1212,8 +1277,17 @@ private struct Walker {
                 expression,
                 (variable) @safe => addressableBindingBase(variable),
                 (indexExpression) @system {
-                    const value = cast(size_t) cast(ulong)
-                        runExpression(indexExpression).asLong;
+                    size_t value;
+                    bool alreadyEvaluated;
+                    foreach (i, evaluated; evaluatedIndexes)
+                        if (evaluated is indexExpression) {
+                            value = evaluatedIndexValues[i];
+                            alreadyEvaluated = true;
+                            break;
+                        }
+                    if (!alreadyEvaluated)
+                        value = cast(size_t) cast(ulong)
+                            runExpression(indexExpression).asLong;
                     if (
                         pendingBoundsCheck &&
                         pendingIndex !is null &&
@@ -1224,7 +1298,7 @@ private struct Walker {
                             value,
                             pendingLength,
                             isSliceValue(pendingIndex.e1),
-                            runningCalledFunction,
+                            writeBounds || runningCalledFunction,
                         ));
                     return value;
                 },
@@ -1245,6 +1319,104 @@ private struct Walker {
             throwRangeError(exception.msg);
             assert(0);
         }
+    }
+
+    // PROTOTYPE(place-projection-write): a selected lvalue write updates the
+    // authoritative bytes and address-keyed metadata at that place. It does
+    // not rebuild or write back any enclosing aggregate snapshot.
+    private void writeProjectionPlace(
+        imported!"dmd.expression".Expression target,
+        in ExpressionResult value,
+    ) {
+        auto destination = directWriteProjectionPlace(target);
+        writeStoredValue(
+            destination,
+            storageValue(target.type, value),
+        );
+        clearProjectionRootUninitialized(target);
+    }
+
+    private Place directWriteProjectionPlace(
+        imported!"dmd.expression".Expression target,
+    ) {
+        import quickbite.backends.interpreter.layout: staticArrayLength;
+        import quickbite.backends.interpreter.messages: indexOutOfBoundsMessage;
+
+        imported!"dmd.expression".IndexExp[16] indexes;
+        size_t count;
+        const collected = collectDirectWriteProjectionIndexes(
+            target,
+            indexes,
+            count,
+        );
+        assert(collected);
+        if (count < 2)
+            return projectionPlace(target, true);
+
+        // A dynamic-array `$` needs the selected base's runtime length before
+        // its expression can run. The ordinary composer supplies that while
+        // walking base-first, matching compiled D's dependency-imposed order.
+        // Without that dependency, D evaluates the final bracket first.
+        foreach (index; indexes[0 .. count])
+            if (
+                index.lengthVar !is null &&
+                index.e1.type.toBasetype.isTypeSArray is null
+            )
+                return projectionPlace(target, true);
+
+        imported!"dmd.expression".Expression[16] expressions;
+        size_t[16] values;
+        foreach (i, index; indexes[0 .. count]) {
+            auto staticArray = index.e1.type.toBasetype.isTypeSArray;
+            if (index.lengthVar !is null) {
+                assert(staticArray !is null);
+                setLocal(
+                    index.lengthVar,
+                    ExpressionResult(staticArrayLength(staticArray)),
+                );
+            }
+
+            expressions[i] = index.e2;
+            values[i] = cast(size_t) cast(ulong) runExpression(index.e2).asLong;
+            if (
+                staticArray !is null &&
+                values[i] >= staticArrayLength(staticArray)
+            )
+                throwRangeError(indexOutOfBoundsMessage(
+                    values[i],
+                    staticArrayLength(staticArray),
+                    /* isSlice */ false,
+                    /* runningCalledFunction */ true,
+                ));
+        }
+
+        return projectionPlace(
+            target,
+            true,
+            expressions[0 .. count],
+            values[0 .. count],
+        );
+    }
+
+    private void clearProjectionRootUninitialized(
+        imported!"dmd.expression".Expression expression,
+    ) {
+        if (auto variableExpression = expression.isVarExp) {
+            auto variable = variableExpression.var.isVarDeclaration;
+            if (variable !is null)
+                clearUninitializedBindingAddress(bindingPlace(variable).address);
+            return;
+        }
+        if (auto dot = expression.isDotVarExp) {
+            clearProjectionRootUninitialized(dot.e1);
+            return;
+        }
+        if (auto index = expression.isIndexExp) {
+            clearProjectionRootUninitialized(index.e1);
+            return;
+        }
+        if (auto cast_ = expression.isCastExp)
+            clearProjectionRootUninitialized(cast_.e1);
     }
 
     // DMD declaration inspection is `@system`; the returned address is still
@@ -6327,6 +6499,25 @@ private struct Walker {
     private ExpressionResult runCompoundAssignExpression(
         imported!"dmd.expression".BinExp assign,
     ) {
+        // PROTOTYPE(place-projection-write): compound assignment is one
+        // lvalue evaluation. Retaining its Place avoids both the aggregate
+        // receiver snapshot and the old second evaluation during writeback.
+        if (
+            (assign.e1.isDotVarExp !is null || assign.e1.isIndexExp !is null) &&
+            isDirectProjectionWriteTarget(assign.e1)
+        ) {
+            auto destination = directWriteProjectionPlace(assign.e1);
+            const left = readStoredValue(destination);
+            const right = runExpression(assign.e2);
+            const value = compoundAssignedValue(assign, left, right);
+            writeStoredValue(
+                destination,
+                storageValue(assign.e1.type, value),
+            );
+            clearProjectionRootUninitialized(assign.e1);
+            return readStoredValue(destination);
+        }
+
         const left = runExpression(assign.e1);
         const right = runExpression(assign.e2);
         const value = compoundAssignedValue(assign, left, right);
@@ -6889,6 +7080,10 @@ private struct Walker {
         if (auto index = assign.e1.isIndexExp)
             return runIndexAssignExpression(index, assign.e2);
 
+        if (auto dot = assign.e1.isDotVarExp)
+            if (isDirectProjectionWriteTarget(dot))
+                return runProjectionAssignExpression(dot, assign.e2);
+
         if (auto slice = assign.e1.isSliceExp)
             return runSliceAssignExpression(slice, assign.e2);
 
@@ -6954,6 +7149,25 @@ private struct Walker {
         return value;
     }
 
+    private ExpressionResult runProjectionAssignExpression(
+        imported!"dmd.expression".Expression target,
+        imported!"dmd.expression".Expression rhs,
+    ) {
+        auto destination = directWriteProjectionPlace(target);
+        // Mutable because function literal construction expects DMD's
+        // mutable AST node even though this helper does not modify it.
+        auto literal = rhs.isFuncExp;
+        const value = literal is null
+            ? runExpression(rhs)
+            : runFunctionLiteralDeclaration(literal);
+        writeStoredValue(
+            destination,
+            storageValue(target.type, value),
+        );
+        clearProjectionRootUninitialized(target);
+        return value;
+    }
+
     private void writeLocation(
         imported!"dmd.expression".Expression target,
         in ExpressionResult value,
@@ -7004,6 +7218,11 @@ private struct Walker {
         }
 
         if (auto dot = target.isDotVarExp) {
+            if (isDirectProjectionWriteTarget(dot)) {
+                writeProjectionPlace(dot, value);
+                return;
+            }
+
             const receiver = runExpression(dot.e1);
             if (receiver.isNativeAggregate) {
                 import dmd.astenums: TY;
@@ -7806,6 +8025,14 @@ private struct Walker {
         imported!"dmd.expression".Expression rhs,
     ) {
         import quickbite.frontend.dmd.types: isPointerType, isStaticArrayType;
+
+        // PROTOTYPE(place-projection-write): compose the selected element
+        // before the RHS, matching the existing index-assignment order, and
+        // write it without materialising/rebuilding the enclosing arrays or
+        // structs. Aggregate element assignments retain the established path
+        // so their postblit/destructor handling is unchanged.
+        if (isDirectProjectionWriteTarget(index))
+            return runProjectionAssignExpression(index, rhs);
 
         if (isPointerType(index.e1.type)) {
             const pointer = runExpression(index.e1);
@@ -10685,12 +10912,34 @@ private struct Walker {
         }
 
         if (post.e1.isDotVarExp !is null) {
+            if (isDirectProjectionWriteTarget(post.e1)) {
+                auto destination = directWriteProjectionPlace(post.e1);
+                const oldValue = readStoredValue(destination);
+                writeStoredValue(
+                    destination,
+                    storageValue(post.e1.type, oldValue + delta),
+                );
+                clearProjectionRootUninitialized(post.e1);
+                return oldValue;
+            }
+
             const oldValue = runExpression(post.e1);
             writeLocation(post.e1, oldValue + delta);
             return oldValue;
         }
 
         if (post.e1.isIndexExp !is null) {
+            if (isDirectProjectionWriteTarget(post.e1)) {
+                auto destination = directWriteProjectionPlace(post.e1);
+                const oldValue = readStoredValue(destination);
+                writeStoredValue(
+                    destination,
+                    storageValue(post.e1.type, oldValue + delta),
+                );
+                clearProjectionRootUninitialized(post.e1);
+                return oldValue;
+            }
+
             const oldValue = runExpression(post.e1);
             writeLocation(post.e1, oldValue + delta);
             return oldValue;
