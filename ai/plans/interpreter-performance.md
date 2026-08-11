@@ -13,66 +13,35 @@ completeness, `value.md` owns representation, and `bench.md` owns trustworthy
 measurement. Correctness work takes precedence when the Interpreter and
 `SystemLinker` disagree.
 
-Representation work is a prerequisite for production optimisation. The
-Interpreter's transitional representation removal is complete; its surviving
-carrier is the narrow `ExpressionResult`. Production optimisation still waits
-for the IR and Bytecode formatter slices and the resulting shared-`Value`
-deletion required by `value.md`. Measurement infrastructure may land earlier.
-Never optimise, share, or otherwise entrench a representation component that
-`value.md` schedules for deletion.
+The measurement corpus is a handful of real dub projects: the maintainer's
+own (Cerealed, automem, ...) plus a few top-10 code.dlang.org packages, 5-10
+projects total. The long-term goal is any dub project; the near-term gate is
+these. The standing acceptance command below covers the first.
 
-## Measured Baseline
+Representation work is a prerequisite for production optimisation. `value.md`
+items 8-10 still have to convert the Interpreter to destination-passing
+evaluation and delete the `ExpressionResult` carrier; the IR and Bytecode
+formatter slices separately gate the shared-`Value` deletion. Production
+optimisation waits for the carrier deletion. Measurement infrastructure may
+land earlier. Never optimise, share, or otherwise entrench a representation
+component that `value.md` schedules for deletion.
 
-On commit `7bf3c583`, with the LDC 1.42 optimised benchmark host and Cerealed's
-156 unittests:
+## Baseline prerequisite
 
-```text
-frontend                          about 2.4 s
-interpreter post-parse            12.49-13.46 s
-interpreter GC-used-size delta    about 8.42 GiB
-system-linker post-parse          about 1.17 s
-```
+Before selecting an optimisation target or choosing `value.md` item 8's
+temporary-storage design, establish a baseline under the full measurement
+contract. The harness must retain and validate every measured Interpreter
+result, the two-backend command must agree with `SystemLinker`, and `ci.sh`
+must exercise at least one checked Cerealed sample. Earlier numbers that do
+not satisfy those conditions are not evidence. `forkExecutionStateInto`'s
+per-call associative-array duplication (§4) remains a structural fact, not a
+measured target, until this prerequisite is met.
 
-At that commit, the post-parse numbers used `-w 0 -r 1 --skip-check` to avoid
-the benchmark driver's then-separate untimed execution. They are single
-samples, so they establish scale rather than an acceptance threshold.
-
-A whole-process `perf` profile of the same Interpreter command showed
-substantial time in druntime allocation machinery and these Interpreter-owned
-operations:
-
-```text
-NativeBlock associative-array duplication       3.99% self
-NativeBlock associative-array lookup/insertion  2.07% self
-VarDeclaration-to-address map duplication        0.77% self
-runExpression                                    1.29% self
-```
-
-The profile also contained GC marking from preparation and the harness's
-pre-sample `GC.collect`; it therefore does not assign all GC samples to the
-timed Interpreter body. It does prove that associative-array duplication is a
-hot Interpreter operation. The 8.42 GiB figure is the increase in
-`GC.stats.usedSize` while collection is disabled, not an allocation-site
-breakdown.
-
-`forkExecutionStateInto` currently duplicates many associative arrays for
-every interpreted call. The profile identifies real cost, but the hottest
-`NativeBlock` registry measured there belonged to the superseded
-identity-to-body storage world. This evidence does not make an allocation
-identity registry a production-code optimisation target. The profile does not
-yet account for the whole runtime or allocation delta.
-
-The Symmetry Investments collector is not a viable comparison at this
-baseline. Registering symgc 0.0.8 through `import symgc.gcobj` and selecting
-`gc:sdcq` exposes two collector failures before a usable row is published. The
-harness's explicit pre-sample `GC.collect` corrupts symgc's dense-slab free
-heap while finalizing unreachable objects. Omitting that collection and
-disabling automatic collection lets a small Interpreter fixture finish, but
-DMD shutdown then crashes when `Global.deinitialize` frees a large allocation
-whose page descriptor has no extent. Symgc's own 29-module unittest suite
-passes with the same LDC, so this is a workload compatibility defect rather
-than a missing registration or custom-toolchain requirement. Collector work is
-not on this plan's critical path.
+The Symmetry Investments collector is not a viable comparison workload:
+symgc 0.0.8 fails under this harness (pre-sample `GC.collect` corrupts its
+dense-slab free heap; with collection suppressed, DMD shutdown crashes in
+`Global.deinitialize`) even though symgc's own unittest suite passes with
+the same LDC. Collector work is not on this plan's critical path.
 
 ## Measurement Contract
 
@@ -152,16 +121,16 @@ boundary exists, but cannot close a performance item. Re-baseline after
 representation completion and before changing surviving Interpreter machinery
 for speed.
 
-### 2. Finish The Shared Value-Representation End State
+### 2. Finish The Value-Representation End State
 
-Complete `value.md` before production performance changes. The Interpreter
-already uses the narrow `ExpressionResult` and has no remaining formatting,
-reification, or transitional representation maps. The pending work is the IR
-and Bytecode formatter migration followed by deletion of the shared `Value`.
-Pointer lifetimes use ordinary GC scanning from native frames and blocks, with
-a scoped temporary owner only while a newly produced raw address has not yet
-reached scanned storage; an execution-wide root registry is not an
-optimisation target and must not return.
+Complete `value.md` items 8-10 — destination-passing conversion and deletion
+of the `ExpressionResult` carrier — before production performance changes;
+the IR and Bytecode formatter migration and shared-`Value` deletion proceed
+independently and do not gate this plan. Pointer lifetimes use ordinary GC
+scanning from native frames and blocks, with a scoped temporary owner only
+while a newly produced raw address has not yet reached scanned storage; an
+execution-wide root registry is not an optimisation target and must not
+return.
 
 Completion means the Interpreter satisfies `value.md`'s end-state criteria and
 the performance profile contains only machinery intended to survive. Do not
@@ -169,10 +138,9 @@ move a transitional map into a shared context merely because copying it is hot.
 
 ### 3. Re-baseline After Representation Completion
 
-Repeat the full measurement contract. Compare the new profile with this plan's
-historical baseline, but choose targets only from the new scoped CPU and
-allocation evidence. Rewrite the remaining order if representation deletion
-changes the dominant costs.
+Repeat the full measurement contract and choose targets only from the new
+scoped CPU and allocation evidence. Rewrite the remaining order if
+representation deletion changes the dominant costs.
 
 ### 4. Stop Copying Surviving Execution-Global State Per Call
 
@@ -231,21 +199,16 @@ until their lifetime can be proved.
 Re-profile after call-state and frame changes. Count allocation calls and bytes
 for:
 
-- argument arrays in `runCallExpression`;
+- argument arrays in call execution;
 - native-call operand and callback arrays;
 - string and diagnostic duplication;
-- aggregate-handle temporaries;
-- associative-array helper keys and values; and
-- surviving expression-carrier copies.
+- aggregate-handle temporaries; and
+- associative-array helper keys and values.
 
 Reuse scratch buffers owned by the current activation where recursion permits,
 or use stack/static-capacity storage for small common arities. A scratch buffer
-must not outlive its frame or alias a nested call's active buffer.
-
-Do not attribute cost to a surviving expression carrier from its presence
-alone. Measure its copy and construction costs, and optimise it only if a
-scoped profile identifies them. Do not restore recursively boxed aggregate
-storage or a universal runtime value.
+must not outlive its frame or alias a nested call's active buffer. Do not
+restore recursively boxed aggregate storage or a universal runtime value.
 
 ### 7. Reduce AST And Type Dispatch Cost
 

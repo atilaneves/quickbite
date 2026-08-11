@@ -34,10 +34,11 @@ callback re-entry, and exception translation stay in its backend adapter.
 
 The unittest execution boundary returns success or a diagnostic directly. It
 does not format the final interpreter result: display is a separate REPL
-concern owned with `value.md`'s prelude formatter. Expressions and nested
-function returns inside a unittest still produce interpreter-private runtime
-results; separating the top-level contracts does not turn expression execution
-into a `void` operation.
+concern owned with `value.md`'s prelude formatter. `value.md` items 8-10 will
+move expressions and nested function returns inside a unittest to
+caller-provided typed destinations. Separating the top-level contracts removes
+display work now; destination passing removes the remaining execution-result
+materialization.
 
 The empirical, external Cerealed gate is green on master: its whole unittest
 suite runs on `Interpreter` in the default LDC host. The acceptance command is
@@ -100,14 +101,14 @@ value.md       how the interpreter represents runtime results and addressable
                loads) is value.md's, handled per the §8 triage rule — red
                fixture here, Interpreter omitted, root fix there. The #386
                shims for such classes were a one-off exception (since
-               retired), not precedent. value.md decisions 15-18 (2026-07-20)
-               commit its end state (native-layout storage, a place is an
-               address plus its static type, no FFI marshalling; deleting
-               `Value` is the
-               completion signal) and a two-track migration in which THIS
-               plan is the workingness track and leads; the representation
-               track lands in parallel behavior-neutral slices plus one
-               small authority switch.
+               retired), not precedent. value.md decisions 15-19 commit its
+               end state (native-layout storage, a place is an address plus
+               its static type, destination-passing evaluation, no FFI
+               marshalling; the expression-carrier and shared-`Value`
+               deletions are independent completion markers) and a
+               two-track migration in which THIS plan is the workingness
+               track and leads; the representation track lands as
+               oracle-green slices per value.md items 8-10.
 bytecode.md    a different backend; native-layout execution. Out of scope.
 interpreter-performance.md
                Interpreter execution latency. It may optimise the machinery
@@ -151,12 +152,13 @@ expression cell executes the frontend-synthesized formatter and returns its
 string. Statement/no-display cells may use the same execution machinery
 without manufacturing a display value.
 
-Inside the walker, `runExpression` remains a recursive operation because all
-real D code, including unittests, computes expressions and calls value-returning
-functions. Its return type is not a public backend contract and need not remain
-`quickbite.lang.Value`; per `value.md`, it becomes an interpreter-private
-execution-result carrier containing only the immediate results, native handles,
-locations, callables, and metadata the walker needs.
+Inside the walker, expression evaluation remains recursive because all real D
+code, including unittests, computes expressions and calls value-returning
+functions. Its endpoint is `value.md` decision 7: a call receives its caller's
+typed destination, an lvalue yields a place, scalar work uses statically typed
+host locals, and a statement executes with no result. Items 8-10 own the
+migration from the current interpreter-private expression carrier to that
+destination-passing contract.
 
 ## 5. The masking bug: CTFE-as-diagnostic (Phase 0, prerequisite)
 
@@ -581,7 +583,7 @@ walker cannot execute (`core.internal.atomic`). A function with
 interpretable D source must be executed; failure to execute it is an
 interpreter or value-model gap to fix at the root, never to special-case.
 `std.conv.text` is the one deliberate exemption (perf scaffolding, already
-scheduled for removal by `value.md` remaining work item 1).
+scheduled for removal by `value.md` remaining work item 10).
 
 **Mechanical guard (landed, owed-fixtures follow-up).** The chokepoint is
 `Walker.runCallExpression` (impl.d). Every name-based intercept there —
@@ -616,7 +618,7 @@ Exemption list (`isExemptInterception`), each with its retirement condition:
 ```text
 std.conv.text                             §8's pre-existing deliberate
                                            exemption; retire per value.md
-                                           remaining work item 1.
+                                           remaining work item 10.
 core.internal.array.operations.arrayOp!(  discovered by this guard, not
 ...)                                      previously in §9.10; retire with
                                            §9.10's native-layout-aggregates
@@ -2766,11 +2768,13 @@ remains free of Cerealed-specific names and behavior.
 
 ## 11. Beyond cerealed
 
-Cerealed is the first driving package, not the finish line. After the shared
-formatter work, repeat the same measure, distil, approve, red-to-green loop
-against a second package that exercises a different ordinary D surface. Do not
-restore legacy marshalling or value machinery merely to start that next
-package sooner.
+Cerealed is the first driving package, not the finish line. Automem is the
+second package and exercises allocators, reference-counted ownership,
+interfaces, nested callables, and native-layout mutation. Once both package
+gates are green, the next prioritized Interpreter work is `value.md` item 8:
+destination-passing entry points and a genuine no-result statement path.
+Package-driven workingness continues in parallel through `value.md` item 4;
+do not restore legacy marshalling or value machinery for a later package.
 
 ## 12. Structural maintenance queue
 

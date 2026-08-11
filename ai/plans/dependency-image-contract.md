@@ -71,10 +71,11 @@ superseded implementation detail, not D language behavior.
 ### Compiler ABI is part of image identity
 
 A dependency image that contains D code records the compiler ABI that produced
-it. That identity participates in preparation inputs, cache keys, backend
-loading decisions, and native symbol resolution. A resolved D callable is an
-address plus the defining image's ABI provenance; loading it into a DMD- or
-LDC-built host does not change that provenance. `LINK.d` alone is not enough.
+it and has an identity for each loaded image generation. Those identities
+participate in preparation inputs, backend loading decisions, and native
+symbol resolution. A resolved D callable is an address plus its defining
+image generation and ABI provenance; loading it into a DMD- or LDC-built host
+does not change that provenance. `LINK.d` alone is not enough.
 The legacy path-only loader derives that identity from the compiler-authored
 ELF `.comment` section and rejects missing or ambiguous metadata; callers that
 already carry provenance supply it explicitly per image.
@@ -86,8 +87,12 @@ with that host; otherwise execution needs a matching process boundary or an
 image built for the host compiler. C symbols continue to use the platform C
 ABI and need no D-compiler ordering metadata.
 
-`quickbite.ffi.ffi` consumes this provenance and only orders addresses for the
-actual callable. It never rewrites the value layout.
+`quickbite.ffi.ffi` consumes this provenance and owns the resolved-target
+cache. Replacing an image generation invalidates its target entries without
+invalidating prepared physical ABI shapes. The dependency-image layer owns
+the generation and ABI facts, not the target cache or prepared call plans.
+The bridge only orders addresses for the actual callable; it never rewrites
+the value layout.
 
 ### Dependency preparation owns archives
 
@@ -160,6 +165,10 @@ Keep the current lifetime policy:
 - use collision-free test symbols because loaded image state can outlive a
   fixture;
 - do not introduce unloading in this cleanup.
+
+Each load set still receives a distinct generation identity even while old
+images remain process-global. Symbol resolution must not reuse an address
+from an earlier generation merely because that image cannot be unloaded.
 
 Use one dependency-image loading implementation. Fold LLVMJit's private copy
 into `quickbite.ffi.loadDependencyImages` unless the frontend-free LDC

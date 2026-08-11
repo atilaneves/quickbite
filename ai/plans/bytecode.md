@@ -247,11 +247,12 @@ rendering knowledge beyond "these bytes at this type".
   call itself. Invoking a native function whose signature is only known at
   VM runtime means implementing the SysV x86_64 calling convention —
   INTEGER/SSE struct classification, the hidden `sret` pointer for large
-  returns, `real` via x87, variadics. The bridge builds libffi CIFs from
-  DMD type signatures and caches them per bridge entry alongside symbol
-  resolution. There is no marshalling layer: values cross unchanged through
-  their existing typed addresses; the call goes through a cached FFI
-  descriptor.
+  returns, `real` via x87, variadics. `quickbite.ffi.ffi` separately caches
+  prepared physical ABI plans by canonical call shape and resolved targets
+  by dependency-image generation plus callable identity. A bytecode bridge
+  entry may retain references to both; it does not own either cache. There is
+  no marshalling layer: values cross unchanged through their existing typed
+  addresses.
   `real` in signatures is a known libffi hazard on x86_64 and gets explicit
   fixtures (matching the compiled oracle's `real` precision).
 - Native argument slot stride is an addressing contract only: it is wide
@@ -689,9 +690,10 @@ and Cerealed gate no longer expose earlier gaps.
 - Druntime lowerings with available source execute as D bytecode. Body-less
   leaves use the native bridge.
 - Native-layout values cross `quickbite.ffi.ffi` through typed addresses.
-  Cached libffi descriptors perform the call; bridge entries cache typed
-  signatures, callable ABI provenance, CIFs, and symbol resolution. The bridge
-  contains no conversion, reconstruction, writeback, or slice-word swapping.
+  The bridge owns separate prepared-plan and resolved-target caches; bytecode
+  bridge entries retain references scoped by the FFI plan's provenance rules.
+  The bridge contains no conversion, reconstruction, writeback, or slice-word
+  swapping.
 - Native `Throwable`s crossing the boundary are converted to VM unwinding, and
   VM exceptions crossing an inbound thunk become native unwinding.
 

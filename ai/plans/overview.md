@@ -13,13 +13,13 @@ are fixed costs. Everything after that is our target.
 
 The product work order is:
 
-1. Make the Interpreter run every Cerealed unittest and agree with
-   `SystemLinker`, using only ordinary D semantics. The acceptance command is
-   the default LDC-hosted benchmark; Cerealed is a feature-discovery and
-   integration workload, never a source of package-specific behavior.
-2. Remove the Interpreter's old value representation: reduce its private
-   runtime carrier to transient expression results rather than storage
-   authority.
+1. Make the Interpreter run every Cerealed and automem unittest and agree with
+   `SystemLinker`, using only ordinary D semantics. The default LDC-hosted
+   benchmark is the acceptance command; packages are feature-discovery and
+   integration workloads, never sources of package-specific behavior.
+2. Delete the Interpreter's universal expression carrier through
+   destination-passing evaluation, beginning with the no-result statement
+   path (`value.md` item 8).
 3. Execute the formatter in every remaining backend and delete the shared
    `quickbite.lang.Value`.
 4. Expand the Interpreter language surface beyond the subset the Cerealed
@@ -87,13 +87,16 @@ Backends:
 
 Live plans:
 
-- `interpreter.md` — make the default LDC-hosted Interpreter run every Cerealed
-  unittest through package-independent D semantics, then hand off to the
-  representation cleanup.
+- `interpreter.md` — make the default LDC-hosted Interpreter run the package
+  gates through package-independent D semantics, then hand off to the
+  destination-passing cleanup.
 - `ffi.md` — `quickbite.ffi.ffi`, the address-only native-call mechanism every
   backend calls native leaves through.
 - `value.md` — Interpreter native storage, prelude display formatting, and
   shared `Value` deletion.
+- `RESEARCH.md` — pinned primary-source survey supporting the value-carrier,
+  destination-passing, FFI-cache, and callback decisions owned normatively by
+  `value.md` and `ffi.md`.
 - `bytecode.md` — typed-frame bytecode VM. The new core became the `Bytecode`
   default on 2026-07-09; the plan now owns post-flip coverage, REPL formatter,
   native-runtime, and benchmark follow-up work.

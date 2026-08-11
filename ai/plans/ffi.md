@@ -9,11 +9,24 @@ that platform surface, including vectors, aggregate classification, hidden
 operands, register pressure, variadics, and C++ invisible references. It does
 not mean supporting a partial list selected by the first Bytecode consumers.
 
-Bytecode values already occupy stable storage in the host's native D layout.
-The bridge therefore accepts typed addresses, invokes a resolved callable, and
-writes the result into caller-provided typed storage. It never converts a
-backend value representation into an ABI representation because there is only
-one representation.
+Native-layout backend values (Interpreter and Bytecode alike) already occupy
+stable storage in the host's native D layout. The bridge therefore accepts
+typed addresses, invokes a resolved callable, and writes the result into
+caller-provided typed storage. It never converts a backend value
+representation into an ABI representation because there is only one
+representation.
+
+The long-term contract is exhaustive; implementation and tuning order is
+driven by the measurement corpus (`interpreter-performance.md`). Each
+unsupported real D/ABI behaviour the corpus surfaces is reduced to a
+`SystemLinker`-oracle language fixture and implemented directly; tuning
+choices (cache eviction, eager versus first-use preparation) are judged by
+incremental edit-to-test-verdict latency on those projects, never by an
+isolated calls-per-second benchmark.
+
+The precedent survey and primary-source evidence for this boundary live in
+`RESEARCH.md`. This plan is the normative contract when the survey describes
+an alternative or hypothesis rather than a settled choice.
 
 ## Module boundary
 
@@ -154,33 +167,69 @@ a value conversion path.
 
 `quickbite.ffi.ffi` owns only native-call mechanics:
 
-- symbol resolution or consumption of an already-resolved callable;
+- symbol resolution and its generation-scoped target cache;
 - semantic-to-physical call lowering;
 - DMD-type-to-`ffi_type` mapping for non-vector calls;
 - x86-64 SysV register and stack placement for vector-containing calls;
-- CIF preparation and, when useful, caching;
+- prepared-call construction and its physical-shape cache;
 - ordering native value addresses for the callable's ABI;
 - native invocation through libffi or the private SysV transport; and
 - propagation of native exceptions without translation at this boundary.
 
-Bytecode owns evaluation, storage, lifetimes, typed temporaries, receiver
+The backend owns evaluation, storage, lifetimes, typed temporaries, receiver
 selection, and the address of every argument and result. The bridge never asks
-Bytecode to describe how to convert a value.
+a backend to describe how to convert a value.
 
-Dependency discovery, image construction, and cache invalidation remain in
-the dependency-image plans. Loading an image may be a small shared utility,
-but it does not expand the call API or erase the image's ABI provenance.
+The two in-process caches have different invalidation identities. A prepared
+ABI shape is determined by calling convention, compiler ABI, normalized
+physical parameter/result layouts, variadic state, and any declaration
+provenance that affects lowering. A resolved target is determined by
+dependency/image generation plus symbol or callable identity.
+`quickbite.ffi.ffi` owns both caches but keeps them separate: equal canonical
+physical ABI shapes share one prepared plan, while a target entry belongs to
+exactly one symbol-resolution generation. A backend bridge entry may retain
+references to a prepared plan and resolved callable but owns neither cache.
+Raw DMD AST addresses are not keys that survive a frontend lifetime.
+
+There is no serialization of prepared state: a fresh process must rebuild
+the DMD types anyway, and lowering plus `ffi_prep_cif` is cheap once they
+exist. The only durable cross-process artifacts are dub dependency artifacts
+and their dependency images with recorded ABI provenance
+(`dependency-image-contract.md`, `dub-deps.md`). The end goal is a
+long-lived session process that keeps these caches across edits — blocked
+today by dmd frontend global state — so the keying above must already let
+shape and target invalidate independently; the session model then slots in
+without redesigning the caches or the invocation boundary. Eager bootstrap
+versus first-use preparation is decided by corpus measurement, also without
+changing the boundary.
+
+Dependency discovery and image construction remain in the dependency-image
+plans. That layer supplies the image-generation and compiler-ABI provenance
+that invalidates resolved targets without invalidating prepared ABI shapes.
+Loading an image may be a small shared utility, but it does not expand the
+call API or erase the image's ABI provenance.
 
 ## Adjacent work
 
-Inbound callbacks are a separate direction of travel and are not part of the
-outbound call mechanism. Their eventual design must preserve typed-address
-storage and callable-specific ABI provenance rather than growing a marshalling
-seam into this API.
+Inbound callbacks are a separate direction of travel, not part of the
+outbound call mechanism, and stay backend-adapter-owned (the Interpreter
+adapter already owns callback lifetime and re-entry). Outbound and inbound
+share exactly one thing: semantic-to-physical ABI classification. Everything
+else is inbound-specific and absent outbound — a real ABI-valid trampoline
+per escaped callable (executable memory with an explicit lifetime and
+release story), rooting of the interpreted descriptor and context for as
+long as native code may call it, re-entry policy (entering the evaluator
+from arbitrary native frames, reverse exception translation, thread
+attachment), and invalidation of pointers native code retains across an
+edit. A shared inbound mechanism is designed only when a second backend
+needs one; until then an interpreted callable pays nothing before it
+actually escapes, and any eventual design preserves typed-address storage
+and callable-specific ABI provenance rather than growing a marshalling seam
+into this API.
 
-Symbol resolution, dependency images, and any future CIF cache must preserve
-the callable's compiler-ABI and declaration provenance without changing the
-call boundary.
+Symbol resolution, dependency images, and the prepared-plan cache must
+preserve the callable's compiler-ABI and declaration provenance without
+changing the call boundary.
 
 ## Completion criteria
 
