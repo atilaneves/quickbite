@@ -77,11 +77,33 @@ package bool tryAssocArrayHook(
 
     foreach (candidate; hooks) {
         if (name.startsWith(candidate.prefix)) {
+            if (candidate.hook == AssocArrayHook.dup &&
+                !hasAssocArrayParameterOrReturn(function_))
+                return false;
             hook = candidate.hook;
             return true;
         }
     }
 
+    return false;
+}
+
+private bool hasAssocArrayParameterOrReturn(
+    imported!"dmd.func".FuncDeclaration function_,
+) {
+    auto signature = function_.type is null
+        ? null
+        : function_.type.toBasetype.isTypeFunction;
+    if (signature is null)
+        return false;
+    if (signature.next !is null &&
+        signature.next.toBasetype.isTypeAArray !is null)
+        return true;
+    if (signature.parameterList.parameters !is null)
+        foreach (parameter; *signature.parameterList.parameters)
+            if (parameter.type !is null &&
+                parameter.type.toBasetype.isTypeAArray !is null)
+                return true;
     return false;
 }
 

@@ -5420,6 +5420,27 @@ static foreach (backend; Matrix!()) {
     }
 }
 
+// The outer slice of a nested dynamic array still has ordinary dynamic-array
+// `.dup` semantics. Its element type also being a dynamic array must not turn
+// the instantiated operation into an associative-array duplicate.
+static foreach (backend; Matrix!()) {
+    @("dynamicArray.dupOfNestedArrayDetachesOuterCopy." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            unittest {
+                int[][] original = [[1, 2]];
+                int[][] copy = original.dup;
+
+                assert(copy == original);
+                copy ~= [3, 4];
+                assert(original.length == 1);
+                assert(copy.length == 2);
+            }
+        });
+    }
+}
+
 // Bytecode ("Unsupported bytecode assignment target."), Bytecode
 // ("Unsupported type in bytecode core: int[]"), and IR (unsupported array
 // literal expression) cannot run this .idup fixture.
