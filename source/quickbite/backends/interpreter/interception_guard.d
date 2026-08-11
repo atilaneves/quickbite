@@ -147,7 +147,7 @@ private bool isExemptInterception(
     // `core.internal.util.array.enforceRawArraysConformableNogc` has D
     // source (a real length/no-overlap check); the raw function-pointer
     // branch of `Walker.runCallExpression` fakes it by always returning
-    // `Value(false)` -- worse than the other shims here, since it does not
+    // `ExpressionResult(false)` -- worse than the other shims here, since it does not
     // even reproduce the real function's contract (the real function
     // returns `void`, not `bool`). Discovered while adding this guard, not
     // previously in §9.10's inventory. Retire by executing the real body

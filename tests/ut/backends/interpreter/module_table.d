@@ -8,7 +8,7 @@ import quickbite.backends.interpreter.module_table: ModuleTable;
 import quickbite.backends.interpreter.native_block: NativeBlock;
 import quickbite.backends.interpreter.native_scalar: writeScalar, readScalar;
 import quickbite.backends.interpreter.layout: typeByteSize;
-import quickbite.backends.interpreter.runtime_value: Value;
+import quickbite.backends.interpreter.expression_result: ExpressionResult;
 
 private:
 
@@ -116,11 +116,11 @@ unittest {
     auto address = table.storageFor(variable);
     auto bytes = (cast(ubyte*) address)[0 .. typeByteSize(variable.type)];
 
-    // Runtime-computed, not a bare literal passed straight to `Value`.
+    // Runtime-computed, not a bare literal passed straight to `ExpressionResult`.
     int written = 3;
     written = written * 7 + 1;
 
-    writeScalar(variable.type, bytes, Value(written));
+    writeScalar(variable.type, bytes, ExpressionResult(written));
 
     readScalar(variable.type, bytes).asLong.should == written;
 }

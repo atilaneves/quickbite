@@ -36,10 +36,11 @@ public struct FrameBlock {
     // The host address of `variable`'s slot: this block's base address plus
     // the layout's own offset for that slot, mirroring how `NativeStruct.
     // field` indexes into its block at a DMD-derived field offset. Calling
-    // this on a local with no slot (an aliasing `ref`/`out`/`lazy` parameter
-    // or `ref` body local, never assigned one by `computeFrameLayout`) is a
-    // programming error, refused by the `in` contract rather than silently
-    // returning an address that belongs to some other slot. `@trusted` for
+    // this on a local with no slot (such as a `lazy` parameter or a storage-
+    // free declaration) is a programming error, refused by the `in` contract
+    // rather than silently returning an address that belongs to some other
+    // slot. `ref`/`out` parameters and `ref` body locals do have pointer-width
+    // reference slots. `@trusted` for
     // the pointer arithmetic on the raw block address: the offset is one of
     // the layout's own packed slot offsets, so `base + offset` stays within
     // the block `base` was allocated with -- the same guarantee
@@ -62,7 +63,7 @@ public struct FrameBlock {
 
     // Whether this activation owns a frame slot for `variable` (of EITHER
     // kind), so a caller can guard `slotAddress` (and anything built on
-    // it) instead of hitting its `in` contract for an aliasing local.
+    // it) instead of hitting its `in` contract for an unslotted declaration.
     public bool hasSlot(VarDeclaration variable) const @safe {
         return _layout.has(variable);
     }
@@ -71,9 +72,9 @@ public struct FrameBlock {
     // of its own declared type, as opposed to a REFERENCE slot holding a
     // caller-supplied address (`hasReferenceSlot` below) or no slot at
     // all. The native binding path gates on this, never on `hasSlot` alone: a
-    // reference slot's bytes are an address, not a `place_value`
-    // composition of `variable`'s own declared type, so mirroring it the
-    // same way would write the wrong bytes into the wrong-sized slot.
+    // reference slot's bytes are an address, not storage for `variable`'s own
+    // declared type, so writing the declared value there would overwrite the
+    // address with the wrong layout.
     public bool hasOwningSlot(VarDeclaration variable) const @safe {
         return _layout.has(variable)
             && _layout[variable].kind == FrameLayout.Slot.Kind.owning;
@@ -96,10 +97,9 @@ public struct FrameBlock {
     // identically-shaped read.
     //
     // THROWS on a caller that got that wrong, rather than stating it as an
-    // `in` contract the way `slotAddress`/`slotOffset` above do, for the
-    // reason `object_table.ObjectTable.storageFor` gives at length for its
-    // own size check: `-release` strips a contract, and that is precisely
-    // the build where silent memory corruption matters most. The
+    // `in` contract the way `slotAddress`/`slotOffset` above do:
+    // `-release` strips a contract, and that is precisely the build where
+    // silent memory corruption matters most. The
     // distinction from those two is not taste. Their contract is belt and
     // braces -- the very next thing they do is `_layout[variable]`, an
     // associative-array lookup that raises `RangeError` on a missing key in

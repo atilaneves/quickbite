@@ -238,6 +238,17 @@
 - Do not omit untested backend rows: verify every mature backend and include
   each one that passes.
 
+- In `@safe pure` generic guest formatters, dispatch class and interface
+  references before falling back to `std.conv.text`; its reference formatting
+  is `@system` and impure even when the runtime reference is null.
+
+- When replacing a boxed value store with typed native places, handle DMD's
+  `Tnull` as its own place-composable leaf. Supporting null only for
+  pointer-like destinations does not cover `auto value = null`.
+
+- In zsh, do not assign to reserved readonly parameters such as `status`; use
+  a task-specific variable name.
+
 - After routing an aggregate rvalue through a shared place, delete downstream
   predicates that reinterpret its bytes as the old transport metadata. A
   place load exposes the language value, not a legacy descriptor wrapper.
@@ -448,6 +459,19 @@
   conversion hides bad pointers nested inside structs or passed by reference
   and turns temporary migration code into permanent architecture.
 
+- Do not derive an activation frame solely from source-level declarations.
+  Run the required DMD semantic pass first, use DMD's variable visitors for
+  body and expression declarations, and add DMD-owned function metadata that
+  is not body-discoverable (notably `vresult`). Synthetic declarations have
+  their lowered storage shape: for example, a struct `with` receiver is an
+  owning `S* __withSym = &subject`, while a late-created `$` length variable
+  may require scoped symbolic evaluator metadata if it did not exist when the
+  frame layout was frozen.
+
 - A semantic DMD type used to describe a native-call fixture must use the same
   alignment attributes as the compiled fixture type. Similar-looking `align`
   placements can describe different offsets and therefore different ABIs.
+
+- When splitting execution from `displayEvalResult`, preserve its terminal
+  `Throwable` boundary. D runtime assertion and bounds failures are `Error`s,
+  not `Exception`s, and must still become backend diagnostics.

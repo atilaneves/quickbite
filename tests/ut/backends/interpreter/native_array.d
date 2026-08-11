@@ -15,7 +15,7 @@ unittest {
     import dmd.mtype: Type, TypeDArray;
     import quickbite.backends.interpreter.aggregate_value: AggregateValue;
     import quickbite.backends.interpreter.native_aggregate: NativeAggregate;
-    import quickbite.backends.interpreter.runtime_value: Value;
+    import quickbite.backends.interpreter.expression_result: ExpressionResult;
 
     int[] storage;
     storage.reserve(2);
@@ -31,17 +31,17 @@ unittest {
         int.sizeof,
         NativeBlock.Scan.no,
     );
-    const value = Value.nativeAggregateValue(NativeAggregate(
+    const value = ExpressionResult.nativeAggregateValue(NativeAggregate(
         new TypeDArray(Type.tint32),
         header,
         unrelatedRetention,
     ));
 
-    const appended = AggregateValue.withAppendedArrayElement(value, Value(2));
+    const appended = AggregateValue.withAppendedArrayElement(value, ExpressionResult(2));
 
     AggregateValue.nativeArrayAddress(appended).should == originalAddress;
-    AggregateValue.elementAt(appended, 0).should == Value(1);
-    AggregateValue.elementAt(appended, 1).should == Value(2);
+    AggregateValue.elementAt(appended, 0).should == ExpressionResult(1);
+    AggregateValue.elementAt(appended, 1).should == ExpressionResult(2);
 }
 
 

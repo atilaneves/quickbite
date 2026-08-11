@@ -4,8 +4,8 @@ module quickbite.backends.interpreter.native_aggregate;
 private:
 
 
-// The sole aggregate expression carrier after the authority switch.  Guest
-// aggregate bits live in `_storage` at their DMD type's native layout.  The
+// The sole aggregate expression carrier. Guest aggregate bits live in
+// `_storage` at their DMD type's native layout. The
 // block handle roots the allocation; copying this value never copies guest
 // bytes and therefore preserves aliasing for structs, static arrays, slice
 // headers, class bodies, and associative-array handles alike.
@@ -49,8 +49,8 @@ public struct NativeAggregate {
         return _storage.address;
     }
 
-    // Native aggregate display is owned by AggregateValue's typed consumers;
-    // the recursive RuntimeValue formatter must never walk raw guest bytes.
+    // Keep accidental host rendering opaque. Expression display executes the
+    // guest formatter before the result crosses the interpreter boundary.
     public string toString() const pure nothrow @safe {
         return "<native aggregate>";
     }
