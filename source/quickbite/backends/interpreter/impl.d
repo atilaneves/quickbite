@@ -1095,6 +1095,23 @@ private struct Walker {
         throw new InterpretedException(object, exception.msg);
     }
 
+    // A failed assert throws a guest `AssertError`, exactly as compiled D
+    // does, so a guest `catch (AssertError)` matches it by class name and by
+    // the native object's identity.
+    private void throwAssertError(in string message) {
+        import core.exception: AssertError;
+
+        auto native = new AssertError(message);
+        throw new InterpretedException(
+            nativeExceptionBaseObject(
+                message,
+                native.classinfo.name,
+                cast(void*) native,
+            ),
+            message,
+        );
+    }
+
     private void rootNativeException(
         imported!"quickbite.backends.interpreter.native_call_adapter".NativeCallException exception,
     ) {
@@ -1662,9 +1679,12 @@ private struct Walker {
                 assertFailureMessage;
 
             if (!isTruthy(runExpression(assert_.e1)))
-                throw new Exception(
-                    assertFailureMessage(assert_, runningCalledFunction, inUnitTest, &runExpression),
-                );
+                throwAssertError(assertFailureMessage(
+                    assert_,
+                    runningCalledFunction,
+                    inUnitTest,
+                    &runExpression,
+                ));
             return ExpressionResult(true);
         }
 
@@ -2331,6 +2351,14 @@ private struct Walker {
 
         if (auto delegate_ = e1.isDelegateExp)
             return runDelegateExpression(delegate_);
+
+        // D's comma expression yields its right operand, including that
+        // operand's lvalue identity. Constructor lowering uses this shape to
+        // sequence initialization before referring to the fresh temporary.
+        if (auto comma = e1.isCommaExp) {
+            runExpression(comma.e1);
+            return addressOfExpression(comma.e2, op);
+        }
 
         // Taking the address of a dereference recovers the pointer value;
         // evaluating the dereference first would incorrectly require a
@@ -4094,8 +4122,31 @@ private struct Walker {
                 receiver = readValue(
                     Place(receiverPointerAddress.pointerAddress, dot.e1.type),
                 );
+            } else if (
+                dot.e1.isCommaExp !is null &&
+                dot.e1.type.toBasetype.isTypeStruct !is null
+            ) {
+                // DMD lowers a constructed struct temporary to
+                // `(Temp __t = void, __t).this(args)`. Take that comma's
+                // address so the constructor runs against the temporary's own
+                // storage; running the comma as a value would construct into
+                // a detached copy and leave the temporary default-initialized
+                // for its later destructor.
+                import dmd.tokens: EXP;
+                import quickbite.backends.interpreter.place: Place;
+                import quickbite.backends.interpreter.place_value: readValue;
+
+                receiverPointerAddress = addressOfExpression(dot.e1, EXP.address);
+                hasReceiverPointerAddress = receiverPointerAddress.isPointer;
+                receiver = readValue(
+                    Place(receiverPointerAddress.pointerAddress, dot.e1.type),
+                );
             } else
                 receiver = runExpression(dot.e1);
+            auto receiverDestructor = constructedReceiverDestructor(dot.e1);
+            scope(exit)
+                if (receiverDestructor !is null)
+                    runExpression(receiverDestructor);
             receiver = rootedNativeClassValue(dot.e1, receiver);
             const interpreterAllocatedClass = receiver.isNativeAggregate &&
                 dot.e1.type.toBasetype.isTypeClass !is null;
@@ -4346,6 +4397,38 @@ private struct Walker {
         }
 
         throw new Exception("Unsupported eval call.");
+    }
+
+    // A constructor used directly as a member receiver owns a full-expression
+    // temporary. DMD records that cleanup on the synthesized declaration
+    // rather than emitting a DtorExpStatement, so return it to the call site
+    // that spans the temporary's lifetime.
+    private imported!"dmd.expression".Expression
+    constructedReceiverDestructor(
+        imported!"dmd.expression".Expression receiver,
+    ) {
+        auto constructor = receiver.isCallExp;
+        if (
+            constructor is null ||
+            constructor.f is null ||
+            constructor.f.isCtorDeclaration is null
+        )
+            return null;
+
+        auto member = constructor.e1.isDotVarExp;
+        if (member is null)
+            return null;
+
+        auto comma = member.e1.isCommaExp;
+        if (comma is null)
+            return null;
+
+        auto declaration = comma.e1.isDeclarationExp;
+        if (declaration is null)
+            return null;
+
+        auto variable = declaration.declaration.isVarDeclaration;
+        return variable is null ? null : variable.edtor;
     }
 
     private ExpressionResult runRefArgumentExpression(
@@ -5745,6 +5828,11 @@ private struct Walker {
         // writable exactly when that place is.
         if (auto target = assignmentTarget(expression))
             return isWritableLocation(target);
+
+        // A comma expression denotes its right operand, so it is writable
+        // exactly when that operand is.
+        if (auto comma = expression.isCommaExp)
+            return isWritableLocation(comma.e2);
 
         return
             expression.isVarExp !is null ||
