@@ -2791,37 +2791,34 @@ automem is the second driving package. Acceptance:
 ./bin/bench.sh -b interpreter -b system-linker --dub automem -w 0 -r 1
 ```
 
-It runs to completion; all 14 packages prepare and the frontend row times.
-Post-parse timing is still skipped: 26 tests disagree with the oracle. Every
-automem inventory earlier in this document predates that and is superseded by
-the table below.
+It runs to completion and the frontend row times, but post-parse timing is still
+skipped because tests disagree with the oracle. Re-measure with the command
+above; the automem inventories earlier in this document were taken while the run
+still crashed and none of their classes or counts survive. The open classes:
 
 ```text
-   5  Unsupported interpreter field access        ut/*.d L188 L245 L260 L366 L383
-   5  Memory leak in TestAllocator                L28 L84 L105 L116 L354
-   5  wrong value (Expected: 1 ×4, [0,1,2,3,4])   L179 L191 L216 L233 L80
-   3  Unsupported interpreter assignment target   L433 L460 L474
-   2  Unsupported eval expression: cast_          L497 L524
-   2  Place.index out of range, static array      L276 L299
-   1  Unsupported eval expression: classReference L41
-   1  Unsupported eval expression: loweredAssignExp L537
-   1  data pointers must carry a native binding address L65
-   1  wrong value (Expected: "[1, 2, 3]")         L545
+Unsupported interpreter field access
+Unsupported interpreter assignment target
+Unsupported eval expression: cast_ / classReference / loweredAssignExp
+Memory leak in TestAllocator
+Place.index out of range for static array place
+data pointers must carry a native binding address
+plain wrong values
 ```
 
 Each class takes one subagent and §8's one-standalone-fixture-per-reason rule;
 they are correctness bugs, not crashes, so `SystemLinker` arbitrates every one.
 
-Two properties of this queue that are not visible from the table. The field-access
-class is a **wall**: clearing it advances all five of its tests into
+Two properties of this queue that a re-measure will not show. The field-access
+class is a **wall**: clearing it does not retire its tests, it advances them into
 `Unsupported interpreter call arguments`, `Array slice needs native aggregate
-storage`, and `Interpreter binding value is not place-composable`, all clustered
-on `GC.addRange` over a `void[]` class-body slice — so the table shrinks more
-slowly than it looks, and those three successors belong to no class above. The
+storage`, and `Interpreter binding value is not place-composable`, clustered on
+`GC.addRange` over a `void[]` class-body slice — successors that belong to no
+class above, so the queue drains more slowly than its width suggests. The
 `Memory leak in TestAllocator` class is a **symptom, not a site**: a native call
 that mutates a copy instead of the receiver leaves a freed block recorded, and
 the allocator's destructor then throws from inside `opAssign` before it rebinds,
-so the observed failure surfaces several tests after the divergence. Locate the
+so the failure surfaces well after the test that actually diverged. Locate the
 divergence, never the reported test.
 
 Start from branch `automem-interpreter-disagreements` (`e0bd8482`), which carries
