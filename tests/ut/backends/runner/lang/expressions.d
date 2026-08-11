@@ -85,8 +85,9 @@ static foreach (backend; Matrix!(
 // allocation address so its destructor releases that same allocation.
 // SystemLinker is the oracle.
 static foreach (backend; Matrix!(
-    Omit!(Ctfe, Because.diverges,
-        "Ctfe cannot read `Mallocator.instance` at compile time"),
+    Omit!(Ctfe, Because.inexpressible,
+        "`static variable 'instance' cannot be read at compile time` "
+        ~ "(Mallocator.instance)"),
     Omit!(Bytecode, Because.unconfirmed,
         "the bytecode core does not yet support this dynamic-array access"),
 )) {
@@ -139,8 +140,9 @@ static foreach (backend; Matrix!(
 // the original field, so later indexing observes the expanded length.
 // SystemLinker is the oracle.
 static foreach (backend; Matrix!(
-    Omit!(Ctfe, Because.diverges,
-        "Ctfe cannot read `Mallocator.instance` at compile time"),
+    Omit!(Ctfe, Because.inexpressible,
+        "`static variable 'instance' cannot be read at compile time` "
+        ~ "(Mallocator.instance)"),
     Omit!(Bytecode, Because.unconfirmed,
         "the bytecode core does not yet support this dynamic-array access"),
 )) {
@@ -918,8 +920,8 @@ static foreach (backend; Matrix!()) {
 // A class expression's dynamic TypeInfo exposes the complete class-instance
 // initializer, whose length is the storage required for that dynamic class.
 static foreach (backend; Matrix!(
-    Omit!(Ctfe, Because.diverges,
-        "DMD CTFE cannot read a class TypeInfo initializer at compile time"),
+    Omit!(Ctfe, Because.inexpressible,
+        "`static variable 'typeid(Payload)' cannot be read at compile time`"),
     Omit!(Bytecode, Because.diverges,
         "Bytecode's class TypeInfo initializer is empty; characterized below"),
 )) {
@@ -994,8 +996,8 @@ unittest {
 // interface reference. The state allocator must receive the complete
 // dynamically typed class-instance span used for that interface object.
 static foreach (backend; Matrix!(
-    Omit!(Ctfe, Because.diverges,
-        "DMD CTFE cannot read the mutable disposal observation at compile time"),
+    Omit!(Ctfe, Because.inexpressible,
+        "`static variable 'disposedLength' cannot be read at compile time`"),
     Omit!(Bytecode, Because.refusal,
         "Unsupported assignment in bytecode core: fakePureErrno() = errnosave"),
 )) {
@@ -1039,9 +1041,10 @@ static foreach (backend; Matrix!(
 // the method parameter it compares. Removing the matched element then shifts
 // the remaining slice elements in place.
 static foreach (backend; Matrix!(
-    Omit!(Bytecode, Because.unconfirmed,
+    Omit!(Bytecode, Because.refusal,
         "the bytecode core does not yet give a nested predicate access to the "
-        ~ "enclosing method's parameter, so the match never succeeds"),
+        ~ "enclosing method's parameter, so `matches` never returns true and "
+        ~ "the assertion inside `remove` fails (`false != true`)"),
 )) {
     @("closure.nestedPredicateRemovesMatchingAllocation." ~ backend.stringof)
     @Tags(backend.stringof)
@@ -4619,9 +4622,10 @@ static foreach (backend; Matrix!(
 static foreach (backend; Matrix!(
     Omit!(Ctfe, Because.inexpressible,
         "`pointer cast from a class to void* is not supported at compile time`"),
-    Omit!(Bytecode, Because.unconfirmed,
+    Omit!(Bytecode, Because.refusal,
         "the bytecode core does not yet consult the runtime type when casting "
-        ~ "between class references, so the failing downcast answers non-null"),
+        ~ "between class references, so the failing downcast answers "
+        ~ "non-null (`<address> !is 0`)"),
 )) {
     @("cast.classFromPointerReinterpretsAddress." ~ backend.stringof)
     @Tags(backend.stringof)
@@ -9580,10 +9584,8 @@ static foreach (backend; Matrix!()) {
 // mutation reaches the source rather than a detached value copy.
 // SystemLinker is the oracle.
 static foreach (backend; Matrix!(
-    Omit!(Ctfe, Because.diverges,
-        "Ctfe cannot read the mutable module-scope `box` at compile time"),
-    Omit!(Bytecode, Because.unconfirmed,
-        "the bytecode core invokes the method on a detached struct value"),
+    Omit!(Ctfe, Because.inexpressible,
+        "`static variable 'box' cannot be read at compile time`"),
 )) {
     @("refCall.memberCallThroughReturnedStructMutatesSource." ~ backend.stringof)
     @Tags(backend.stringof)
@@ -9615,8 +9617,9 @@ static foreach (backend; Matrix!(
 // owns the constructor result. Its destructor must therefore receive that
 // same temporary after the member call. SystemLinker is the oracle.
 static foreach (backend; Matrix!(
-    Omit!(Ctfe, Because.diverges,
-        "Ctfe destroys a detached copy instead of the temporary's slice"),
+    Omit!(Ctfe, Because.refusal,
+        "Ctfe destroys a detached copy instead of the temporary's slice, so "
+        ~ "`storage[0]` is never written (`0 != 42`)"),
     Omit!(Bytecode, Because.unconfirmed,
         "the bytecode core does not run the temporary's destructor"),
 )) {
@@ -9736,10 +9739,7 @@ static foreach (backend; Matrix!(
 // Casting a slice changes the element type of the view, not the storage it
 // denotes. Whole-slice assignment through that cast must update the original
 // backing array. SystemLinker is the oracle.
-static foreach (backend; Matrix!(
-    Omit!(Bytecode, Because.unconfirmed,
-        "the bytecode core writes a detached casted slice"),
-)) {
+static foreach (backend; Matrix!()) {
     @("assign.castedSliceWritesOriginalStorage." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -9886,10 +9886,12 @@ static foreach (backend; Matrix!(
 // boundary so the later unittest dispatches to the original object.
 // SystemLinker is the oracle.
 static foreach (backend; Matrix!(
-    Omit!(Ctfe, Because.diverges,
-        "Ctfe cannot read mutable module globals across unittests"),
-    Omit!(Bytecode, Because.unconfirmed,
-        "the bytecode core resets module globals between unittests"),
+    Omit!(Ctfe, Because.inexpressible,
+        "`static variable 'implementation' cannot be read at compile time`"),
+    Omit!(Bytecode, Because.refusal,
+        "the bytecode core resets module globals between unittests, so " ~
+        "`receiver` is null in the second unittest " ~
+        "(`function call through null class reference` `null`)"),
 )) {
     @("call.globalInterfaceRetainsIdentityAcrossUnittests." ~ backend.stringof)
     @Tags(backend.stringof)

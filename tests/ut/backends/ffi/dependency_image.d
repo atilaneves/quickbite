@@ -461,11 +461,14 @@ private CtorOrderingFixture buildCtorOrderingFixture(
 static foreach (backend; Matrix!(
     Omit!(Ctfe, Because.inexpressible,
         "CTFE cannot call a native dependency image"),
-    Omit!(Bytecode, Because.unconfirmed,
-        "calls into a dependency image for plain function arguments and " ~
-        "returns, but not for member functions, class and interface " ~
-        "dispatch, delegates, exceptions or module-level variables: those " ~
-        "read wrong values or crash"),
+    Omit!(Bytecode, Because.refusal,
+        "member-function calls, class/interface dispatch through the image, "
+        ~ "delegate callbacks, and most constructor/postblit hooks either "
+        ~ "crash the process (exit status 139, e.g. externDMemberFunction, "
+        ~ "externDDelegateCallback) or answer wrong (`Expected: true` / "
+        ~ "`Got: false`, e.g. externDClassVirtualDispatch, "
+        ~ "externGsharedGlobalRead); plain scalar/slice arguments, returns, "
+        ~ "and out-parameters already pass"),
 )) {
 @("dependencyImage.externDFunction." ~ backend.stringof)
 @Tags(backend.stringof)
