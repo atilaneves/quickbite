@@ -9758,6 +9758,91 @@ static foreach (backend; Matrix!(
     }
 }
 
+// `arr[] = value` with a single scalar right-hand side fills every element of
+// the slice with that value; it is not an element-wise copy from another
+// array. That still holds through a cast that only changes the view's
+// element type, not the storage it denotes. SystemLinker is the oracle.
+static foreach (backend; Matrix!()) {
+    @("assign.castedSliceFilledWithScalar." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            char fill(char value) {
+                return value;
+            }
+
+            unittest {
+                char[3] storage;
+                // `view` is cast to `immutable` only to give the assignment
+                // below something to cast away; it still aliases the mutable
+                // local `storage`, which is never actually shared as
+                // immutable, so writing through it here is safe in practice.
+                immutable(char)[] view = cast(immutable(char)[]) storage[];
+                () @trusted { (cast(char[]) view)[] = fill('z'); }();
+                assert(storage[] == "zzz");
+            }
+        });
+    }
+}
+
+// `arr[] = value` with a single scalar right-hand side fills every element
+// with that value, including a static-array struct field's whole slice.
+// SystemLinker is the oracle.
+static foreach (backend; Matrix!()) {
+    @("assign.structFieldSliceFilledWithScalar." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct Holder {
+                char[4] buf;
+            }
+
+            char fill(char value) {
+                return value;
+            }
+
+            unittest {
+                Holder holder;
+                holder.buf[] = fill('.');
+
+                assert(holder.buf[0] == '.');
+                assert(holder.buf[1] == '.');
+                assert(holder.buf[2] == '.');
+                assert(holder.buf[3] == '.');
+            }
+        });
+    }
+}
+
+// `arr[a .. b] = value` with a single scalar right-hand side fills only that
+// sub-range with the value, leaving the rest of a static-array struct field
+// untouched. SystemLinker is the oracle.
+static foreach (backend; Matrix!()) {
+    @("assign.structFieldSubRangeFilledWithScalar." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct Holder {
+                int[4] nums;
+            }
+
+            int fill(int value) {
+                return value;
+            }
+
+            unittest {
+                Holder holder;
+                holder.nums[1 .. 3] = fill(7);
+
+                assert(holder.nums[0] == 0);
+                assert(holder.nums[1] == 7);
+                assert(holder.nums[2] == 7);
+                assert(holder.nums[3] == 0);
+            }
+        });
+    }
+}
+
 // `void[]` still denotes byte-addressable storage: its slice bounds and
 // assignment length are measured in bytes. Copying between two `void[]`
 // slices must therefore copy those bytes despite the element type having no

@@ -8683,10 +8683,18 @@ private struct Walker {
         const block = isBlockSliceAssignment(slice, rhs);
         const value = runExpression(rhs);
 
+        // A fill assignment (`s.field[] = scalar;` or `s.field[a .. b] =
+        // scalar;`) evaluates `rhs` to a single element-typed value, not an
+        // array to index into -- only the copy form (`s.field[] =
+        // otherArray[];`) yields something `value[index - lower]` can index.
+        // `AggregateValue.isArray` distinguishes the two, matching the
+        // variable slice-assignment path above.
         foreach (index; lower .. upper) {
             const element = block
                 ? copyArrayValue(value, slice.type.toBasetype.nextOf)
-                : AggregateValue.elementAt(value, index - lower);
+                : AggregateValue.isArray(value)
+                    ? AggregateValue.elementAt(value, index - lower)
+                    : value;
             AggregateValue.withArrayElement(current, index, element);
         }
         return value;
@@ -8780,10 +8788,17 @@ private struct Walker {
         const block = isBlockSliceAssignment(slice, rhs);
         const value = runExpression(rhs);
 
+        // A fill assignment (`(cast(T[]) view)[] = scalar;`) evaluates `rhs`
+        // to a single element-typed value, not an array to index into --
+        // only the copy form yields something `value[index - lower]` can
+        // index. `AggregateValue.isArray` distinguishes the two, matching
+        // the variable slice-assignment path above.
         foreach (index; lower .. upper) {
             const element = block
                 ? copyArrayValue(value, slice.type.toBasetype.nextOf)
-                : AggregateValue.elementAt(value, index - lower);
+                : AggregateValue.isArray(value)
+                    ? AggregateValue.elementAt(value, index - lower)
+                    : value;
             AggregateValue.withArrayElement(current, index, element);
         }
         return value;
