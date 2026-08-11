@@ -8,6 +8,20 @@ public bool hasNoAvailableSource(
     return function_.fbody is null;
 }
 
+// A function whose body cannot be executed by an interpreter: either there is
+// no body at all, or semantic analysis rejected the one that was parsed and
+// replaced it with an `ErrorStatement`. A rejected body reaches here only for
+// a non-root declaration, because a root module must have compiled cleanly
+// before execution starts; for such a declaration the compiled dependency
+// image is the authority, since the root's flags do not retroactively apply to
+// an already-compiled dependency.
+public bool hasNoInterpretableSource(
+    imported!"dmd.func".FuncDeclaration function_,
+) {
+    return function_.fbody is null ||
+        function_.fbody.isErrorStatement !is null;
+}
+
 // Imported functions are analyzed on demand. DMD can defer semantic3 work
 // created while analyzing the body, so drain that queue before a backend reads
 // parameters or the body. The inline-asm shim is likewise post-semantic.
@@ -17,6 +31,11 @@ public void ensureFunctionBodySemantic(
     import dmd.dsymbol: PASS;
     import dmd.dsymbolsem: runDeferredSemantic3;
     import dmd.funcsem: functionSemantic3;
+
+    // A prototype has nothing to analyze, and analyzing it under the root's
+    // flags is what would replace its absent body with an `ErrorStatement`.
+    if (function_.fbody is null)
+        return;
 
     if (function_.semanticRun >= PASS.semantic3done)
         return;

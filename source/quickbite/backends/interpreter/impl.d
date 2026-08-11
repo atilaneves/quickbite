@@ -2589,10 +2589,10 @@ private struct Walker {
         in imported!"dmd.tokens".EXP op,
     ) {
         import dmd.expression: Expression;
-        import dmd.funcsem: functionSemantic3;
         import quickbite.backends.interpreter.frame_layout:
             isReferenceParameter;
-        import quickbite.frontend.dmd.functions: hasNoAvailableSource;
+        import quickbite.frontend.dmd.functions:
+            ensureFunctionBodySemantic, hasNoInterpretableSource;
         import std.conv: text;
 
         const unsupported =
@@ -2606,10 +2606,10 @@ private struct Walker {
         if (auto dot = call.e1.isDotVarExp)
             return memberRefReturningCallAddress(call, dot, unsupported);
 
-        functionSemantic3(call.f);
+        ensureFunctionBodySemantic(call.f);
         if (call.f.needThis)
             throw new Exception(unsupported);
-        const native = hasNoAvailableSource(call.f);
+        const native = hasNoInterpretableSource(call.f);
 
         ExpressionResult[] arguments;
         Expression[] argumentExpressions;
@@ -2699,7 +2699,7 @@ private struct Walker {
         import quickbite.backends.interpreter.frame_layout:
             isReferenceParameter;
         import quickbite.frontend.dmd.functions:
-            ensureFunctionBodySemantic, hasNoAvailableSource;
+            ensureFunctionBodySemantic, hasNoInterpretableSource;
 
         const receiver = runExpression(dot.e1);
         if (receiver == ExpressionResult.null_)
@@ -2709,7 +2709,7 @@ private struct Walker {
 
         auto function_ = resolveMemberFunction(call.f, receiver);
         ensureFunctionBodySemantic(function_);
-        const native = hasNoAvailableSource(function_);
+        const native = hasNoInterpretableSource(function_);
 
         ExpressionResult[] arguments;
         Expression[] argumentExpressions;
@@ -3971,17 +3971,19 @@ private struct Walker {
             isReferenceParameter;
 
         if (call.f !is null) {
-            import dmd.funcsem: functionSemantic3;
-            functionSemantic3(call.f);
+            import quickbite.frontend.dmd.functions: ensureFunctionBodySemantic;
+
+            ensureFunctionBodySemantic(call.f);
         }
 
         bool nativeCall;
         if (call.f !is null) {
             import quickbite.backends.interpreter.interception_guard:
                 bodyContainsAsm;
-            import quickbite.frontend.dmd.functions: hasNoAvailableSource;
+            import quickbite.frontend.dmd.functions: hasNoInterpretableSource;
 
-            nativeCall = hasNoAvailableSource(call.f) || bodyContainsAsm(call.f);
+            nativeCall = hasNoInterpretableSource(call.f) ||
+                bodyContainsAsm(call.f);
         }
 
         if (call.f !is null) {
@@ -4217,7 +4219,7 @@ private struct Walker {
                     return ExpressionResult(receiver == arguments[0]);
 
                 import quickbite.frontend.dmd.functions:
-                    hasNoAvailableSource, noAvailableSourceMessage;
+                    hasNoInterpretableSource, noAvailableSourceMessage;
 
                 if (
                     call.f.isCtorDeclaration !is null &&
@@ -4240,7 +4242,7 @@ private struct Walker {
                 // member resolves by symbol and receives the native body as
                 // hidden `this`; it never reads word zero as a vtable.
                 if (
-                    hasNoAvailableSource(function_) &&
+                    hasNoInterpretableSource(function_) &&
                     (!interpreterAllocatedClass || function_.vtblIndex < 0)
                 ) {
                     import quickbite.backends.interpreter.native_call_adapter:
@@ -4268,6 +4270,9 @@ private struct Walker {
                             evaluatedArguments,
                             returnsReceiver,
                             nativeResult,
+                            hasReceiverPointerAddress
+                                ? receiverPointerAddress.pointerAddress
+                                : null,
                         ))
                             return nativeResult.value;
                     } catch (NativeCallException exception) {
@@ -4295,8 +4300,7 @@ private struct Walker {
         }
 
         if (call.f !is null) {
-            import quickbite.frontend.dmd.functions:
-                hasNoAvailableSource, noAvailableSourceMessage;
+            import quickbite.frontend.dmd.functions: noAvailableSourceMessage;
             import quickbite.backends.interpreter.native_call_adapter:
                 NativeCallException, NativeCallResult;
 
@@ -7277,7 +7281,7 @@ private struct Walker {
         import quickbite.backends.interpreter.frame_layout:
             isReferenceParameter;
         import quickbite.frontend.dmd.functions:
-            ensureFunctionBodySemantic, hasNoAvailableSource;
+            ensureFunctionBodySemantic, hasNoInterpretableSource;
 
         if (call.f is null || !returnsRef(call.f))
             return false;
@@ -7317,7 +7321,7 @@ private struct Walker {
                 evaluatedArguments ~= evaluated;
             }
 
-        if (hasNoAvailableSource(function_)) {
+        if (hasNoInterpretableSource(function_)) {
             import quickbite.backends.interpreter.native_call_adapter:
                 NativeCallException, NativeCallResult;
             import quickbite.backends.interpreter.place: Place;
@@ -7400,12 +7404,12 @@ private struct Walker {
         imported!"dmd.expression".CallExp call,
         in ExpressionResult value,
     ) {
-        import dmd.funcsem: functionSemantic3;
         import quickbite.backends.interpreter.frame_layout:
             isReferenceParameter;
-        import quickbite.frontend.dmd.functions: hasNoAvailableSource;
+        import quickbite.frontend.dmd.functions:
+            ensureFunctionBodySemantic, hasNoInterpretableSource;
 
-        functionSemantic3(call.f);
+        ensureFunctionBodySemantic(call.f);
         if (call.f.needThis)
             return false;
 
@@ -7427,7 +7431,7 @@ private struct Walker {
                 evaluatedArguments ~= evaluated;
             }
 
-        if (hasNoAvailableSource(call.f)) {
+        if (hasNoInterpretableSource(call.f)) {
             import quickbite.backends.interpreter.native_call_adapter:
                 NativeCallException, NativeCallResult;
             import quickbite.backends.interpreter.place: Place;
@@ -9880,10 +9884,18 @@ private struct Walker {
     // materialized once in a typed temporary by the call adapter.
     private imported!"quickbite.backends.interpreter.native_call_adapter".NativeOperand nativeReceiverOperand(
         imported!"dmd.expression".Expression receiver,
+        void* precomputedAddress = null,
     ) {
         import dmd.tokens: EXP;
         import quickbite.backends.interpreter.native_call_adapter: NativeOperand;
         import quickbite.backends.interpreter.layout: declaredType;
+
+        // The caller already resolved the receiver expression to the object it
+        // designates (a pointer dereference, say). That address is the true
+        // receiver, so the native call must write back through it rather than
+        // through a copy re-derived from the expression.
+        if (precomputedAddress !is null)
+            return NativeOperand(receiver.type, precomputedAddress);
 
         if (auto variableExpression = receiver.isVarExp) {
             auto variable = variableExpression.var.isVarDeclaration;
@@ -9975,6 +9987,7 @@ private struct Walker {
         in EvaluatedReferenceArgument[] evaluatedArguments,
         in bool returnsReceiver,
         out imported!"quickbite.backends.interpreter.native_call_adapter".NativeCallResult result,
+        void* receiverAddress = null,
     ) {
         import quickbite.backends.interpreter.native_call_adapter:
             InterpreterInboundTrampolineSession, NativeCallRequest,
@@ -9991,7 +10004,7 @@ private struct Walker {
             receiver: receiver,
             receiverOperand: receiverExpression is null
                 ? NativeOperand.init
-                : nativeReceiverOperand(receiverExpression),
+                : nativeReceiverOperand(receiverExpression, receiverAddress),
             virtualDispatch: receiverType !is null &&
                 receiverType.toBasetype.isTypeClass !is null,
             returnsReceiver: returnsReceiver,
