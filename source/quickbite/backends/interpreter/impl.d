@@ -31,6 +31,11 @@ public class Interpreter: imported!"quickbite.backends".TreeNodeBackend {
     // makes a virtual call dispatch to the original object.
     private imported!"dmd.mtype".Type[void*] _nativeClassTypes;
     private ExpressionResult[void*] _nativeClassOwners;
+    // A function-local struct instance stored in such a global keeps working
+    // across the boundary too: its hidden context field names the same
+    // enclosing-activation chain the module table's bytes already anchor, so
+    // this table shares their lifetime for exactly the same reason.
+    private FrameBlock[][void*] _nestedContextFrames;
 
     private enum ExecutionMode {
         regular,
@@ -87,6 +92,7 @@ public class Interpreter: imported!"quickbite.backends".TreeNodeBackend {
             scope(exit) {
                 _nativeClassTypes = walker.nativeClassTypes;
                 _nativeClassOwners = walker.nativeClassOwners;
+                _nestedContextFrames = walker.nestedContextFrames;
                 walker.closeDurableInboundSession;
             }
             if (_moduleTable is null)
@@ -94,6 +100,7 @@ public class Interpreter: imported!"quickbite.backends".TreeNodeBackend {
             walker.moduleTable = _moduleTable;
             walker.nativeClassTypes = _nativeClassTypes.dup;
             walker.nativeClassOwners = _nativeClassOwners.dup;
+            walker.nestedContextFrames = _nestedContextFrames.dup;
             walker.inUnitTest = mode == ExecutionMode.unitTest;
             import quickbite.frontend.dmd.functions: ensureFunctionBodySemantic;
 

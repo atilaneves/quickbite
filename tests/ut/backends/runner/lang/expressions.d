@@ -1126,6 +1126,47 @@ static foreach (backend; Matrix!(
     }
 }
 
+// A function-local struct stored in a module global keeps working across the
+// unittest boundary: a later unittest can still call a method that reaches
+// back into the now-returned enclosing function's parameter.
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.inexpressible,
+        "`static variable 'stored' cannot be read at compile time`"),
+    Omit!(Bytecode, Because.refusal,
+        "`Unsupported expression in bytecode core: value.amount`"),
+)) {
+    @("closure.nestedStructInGlobalReadsCaptureInLaterExecution." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct Reading {
+                int amount;
+            }
+
+            auto wrap(V)(scope auto ref V value) {
+                struct Compare {
+                    bool equals(U)(U other) {
+                        return value.amount == other.amount;
+                    }
+                }
+
+                return Compare();
+            }
+
+            typeof(wrap(Reading(1))) stored;
+
+            unittest {
+                stored = wrap(Reading(3));
+            }
+
+            unittest {
+                assert(stored.equals(Reading(3)));
+            }
+        });
+    }
+}
+
 // A TypeInfo reference retains its identity when stored in an aggregate and
 // read back.
 static foreach (backend; Matrix!()) {
