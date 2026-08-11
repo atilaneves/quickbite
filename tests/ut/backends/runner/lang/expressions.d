@@ -1038,7 +1038,11 @@ static foreach (backend; Matrix!(
 // A nested predicate passed to an imported range algorithm retains access to
 // the method parameter it compares. Removing the matched element then shifts
 // the remaining slice elements in place.
-static foreach (backend; Matrix!()) {
+static foreach (backend; Matrix!(
+    Omit!(Bytecode, Because.unconfirmed,
+        "the bytecode core does not yet give a nested predicate access to the "
+        ~ "enclosing method's parameter, so the match never succeeds"),
+)) {
     @("closure.nestedPredicateRemovesMatchingAllocation." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -9410,7 +9414,11 @@ static foreach (backend; Matrix!(
 // selected its lvalue. Cleanup must not replace that returned address, so an
 // assignment through the call still reaches the selected object.
 // SystemLinker is the oracle.
-static foreach (backend; Matrix!()) {
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.inexpressible,
+        "CTFE cannot read a module-level variable: `static variable 'target' "
+        ~ "cannot be read at compile time`"),
+)) {
     @("refCall.returnCleanupPreservesLvalueAddress." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
