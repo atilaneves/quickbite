@@ -4525,6 +4525,120 @@ static foreach (backend; Matrix!(
     }
 }
 
+// `emplace` establishes a class object in caller-provided storage. Casting
+// that storage's address to the class denotes the object now living there, so
+// the result behaves as one: it converts to an interface the class
+// implements, a virtual call reaches the class's own override, and `typeid`
+// reports the class. SystemLinker is the oracle.
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.refusal,
+        "core.lifetime.emplace reports that the backing slice is too small"),
+    Omit!(Bytecode, Because.refusal,
+        "core.lifetime.emplace reports that the backing slice is too small"),
+)) {
+    @("cast.emplacedStoragePointerActsAsItsClass." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            import core.lifetime: emplace;
+
+            interface Describer {
+                int describe();
+            }
+
+            class Payload: Describer {
+                override int describe() {
+                    return 42;
+                }
+            }
+
+            unittest {
+                enum words =
+                    (__traits(classInstanceSize, Payload) + ulong.sizeof - 1)
+                    / ulong.sizeof;
+                ulong[words] storage;
+                emplace!Payload(cast(void[]) storage[]);
+
+                auto payload = cast(Payload) cast(void*) storage.ptr;
+                Describer describer = payload;
+
+                assert(describer !is null);
+                assert(describer.describe == 42);
+                assert(typeid(payload) is typeid(Payload));
+            }
+        });
+    }
+}
+
+// What `cast` to a class reference means depends on the source. From another
+// class reference D consults the runtime type and answers `null` when the
+// object is not of the target class. From a raw pointer there is no runtime
+// type to consult, so the cast reinterprets the address and cannot answer
+// `null` for a non-null pointer. SystemLinker is the oracle.
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.inexpressible,
+        "`pointer cast from a class to void* is not supported at compile time`"),
+    Omit!(Bytecode, Because.unconfirmed,
+        "the bytecode core does not yet consult the runtime type when casting "
+        ~ "between class references, so the failing downcast answers non-null"),
+)) {
+    @("cast.classFromPointerReinterpretsAddress." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            class Base {
+            }
+
+            class Derived: Base {
+            }
+
+            unittest {
+                Base base = new Base;
+
+                assert(cast(Derived) base is null);
+
+                void* address = cast(void*) base;
+                assert(cast(Derived) address !is null);
+            }
+        });
+    }
+}
+
+// Reinterpreting a class object's address does not change what the object is.
+// After a round trip through a pointer, and a cast naming only a base class,
+// the object still has the dynamic type it was created with: a virtual call
+// reaches the most derived override. SystemLinker is the oracle.
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.inexpressible,
+        "`pointer cast from a class to void* is not supported at compile time`"),
+)) {
+    @("cast.pointerRoundTripKeepsDynamicClass." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            class Base {
+                int describe() {
+                    return 1;
+                }
+            }
+
+            class Derived: Base {
+                override int describe() {
+                    return 2;
+                }
+            }
+
+            unittest {
+                Base instance = new Derived;
+                Base reinterpreted = cast(Base) cast(void*) instance;
+
+                assert(reinterpreted.describe == 2);
+                assert(typeid(instance) is typeid(Derived));
+            }
+        });
+    }
+}
+
 static foreach (backend; Matrix!()) {
     @("cast.arrayElementAddressToStaticArrayPointer." ~ backend.stringof)
     @Tags(backend.stringof)

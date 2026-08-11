@@ -2791,10 +2791,9 @@ automem is the second driving package. Acceptance:
 ./bin/bench.sh -b interpreter -b system-linker --dub automem -w 0 -r 1
 ```
 
-It runs to completion and the frontend row times, but post-parse timing is still
-skipped because tests disagree with the oracle. Re-measure with the command
-above; the automem inventories earlier in this document were taken while the run
-still crashed and none of their classes or counts survive. The open classes:
+Post-parse timing is skipped until the Interpreter agrees with the oracle on
+every automem test. Re-measure with the command above before starting; the open
+classes:
 
 ```text
 Unsupported interpreter field access
