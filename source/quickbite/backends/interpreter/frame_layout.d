@@ -266,14 +266,12 @@ public FrameLayout cachedFrameLayout(
 // slot of either kind (a `lazy` argument is a delegate over the caller's
 // own live frame, not an address `computeFrameLayout` could pack anywhere
 // -- see `bindLazyFunctionParameter`/`runLazyArgument` in `impl.d`). A
-// `ref`/`out` parameter IS included here (`parameterIsReference` below
-// routes it to a reference slot instead of skipping it), unlike
-// `isAliasingLocal`'s treatment of the same storage classes for a BODY
-// local. Walks DMD's own parameter array via DMD's own dynamic-cast
-// accessors and `storage_class` flags -- read-only traversal of
-// already-computed DMD state, no arithmetic of our own, so this is the
-// `@trusted` boundary the way `layout.classFieldsImpl` trusts its own
-// base-to-derived class walk.
+// `ref`/`out` parameter is included: `computeFrameLayout` identifies it with
+// `isReferenceParameter` and gives it a pointer-width reference slot. Walks
+// DMD's own parameter array via DMD's own dynamic-cast accessors and
+// `storage_class` flags -- read-only traversal of already-computed DMD state,
+// no arithmetic of our own, so this is the `@trusted` boundary the way
+// `layout.classFieldsImpl` trusts its own base-to-derived class walk.
 private imported!"dmd.declaration".VarDeclaration[] activationParameters(
     imported!"dmd.func".FuncDeclaration function_,
 ) @trusted {
@@ -322,16 +320,11 @@ public bool isReferenceParameter(
 }
 
 
-// Whether `variable` (a BODY local; a parameter never reaches this --
-// `computeFrameLayout` classifies every parameter itself, via
-// `activationParameters`/`parameterIsReference` above) has no per-
-// activation frame slot to own: either it aliases another frame's storage
-// instead of owning its own (a `ref` body local), or it never owns
-// per-activation storage in the first place -- a `static`/`__gshared`/
-// module-level local (`VarDeclaration.isDataseg`), which lives in the
-// module table instead of any one activation's frame, or an `enum`
-// manifest constant (`STC.manifest`), which has no storage at all: DMD
-// substitutes its value at every use rather than allocating it anywhere.
+// Whether `variable` (a body local; parameters are classified separately)
+// gets no per-activation frame slot. A `lazy` local or manifest constant has
+// no storage, while a `static`, `__gshared`, or module-level declaration lives
+// in the module table. A body variable with `isReference` is deliberately not
+// storage-free: `computeFrameLayout` gives it a pointer-width reference slot.
 private bool isStorageFreeLocal(imported!"dmd.declaration".VarDeclaration variable) @trusted {
     import dmd.astenums: STC;
 

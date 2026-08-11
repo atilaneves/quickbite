@@ -36,10 +36,11 @@ public struct FrameBlock {
     // The host address of `variable`'s slot: this block's base address plus
     // the layout's own offset for that slot, mirroring how `NativeStruct.
     // field` indexes into its block at a DMD-derived field offset. Calling
-    // this on a local with no slot (an aliasing `ref`/`out`/`lazy` parameter
-    // or `ref` body local, never assigned one by `computeFrameLayout`) is a
-    // programming error, refused by the `in` contract rather than silently
-    // returning an address that belongs to some other slot. `@trusted` for
+    // this on a local with no slot (such as a `lazy` parameter or a storage-
+    // free declaration) is a programming error, refused by the `in` contract
+    // rather than silently returning an address that belongs to some other
+    // slot. `ref`/`out` parameters and `ref` body locals do have pointer-width
+    // reference slots. `@trusted` for
     // the pointer arithmetic on the raw block address: the offset is one of
     // the layout's own packed slot offsets, so `base + offset` stays within
     // the block `base` was allocated with -- the same guarantee
@@ -62,7 +63,7 @@ public struct FrameBlock {
 
     // Whether this activation owns a frame slot for `variable` (of EITHER
     // kind), so a caller can guard `slotAddress` (and anything built on
-    // it) instead of hitting its `in` contract for an aliasing local.
+    // it) instead of hitting its `in` contract for an unslotted declaration.
     public bool hasSlot(VarDeclaration variable) const @safe {
         return _layout.has(variable);
     }

@@ -2489,24 +2489,6 @@ private struct Walker {
         return arrayPointer(index, 0, op, true /* selfAddress */);
     }
 
-    // Stable allocation id for `&s.field`, memoized per (receiver variable,
-    // field index) when the receiver resolves to a plain `VarExp`. A
-    // one-level-nested receiver (`&s.inner.x`/`&c.inner.x`, `dot.e1` itself a
-    // `DotVarExp` whose own `e1` resolves to a plain `VarExp`) is memoized
-    // too, with a two-index `FieldPathKey`. Any other receiver shape
-    // (e.g. `&call().field`, or two or more levels of nesting) gets a fresh
-    // id every time. Either way the id is recorded as a field snapshot so
-    // writeLocation's PtrExp path can refuse writing through it.
-    // A class-typed receiver's field index comes from `classFieldIndex`, not
-    // `structFieldIndex`: the latter
-    // resolves the receiver's type via `receiverStructType`, which returns
-    // `null` for a class and previously made this function throw
-    // "Unsupported interpreter field access." for every `&c.field`, before
-    // any class-cell machinery could even run. `variable`'s static type
-    // never changes, so dispatching once here on the receiver's own type is
-    // safe -- the two field-index spaces never collide in
-    // `fieldPathAddressAllocations`, whose root is that variable.
-
     // The address of a ref return's lvalue, evaluated in the returning
     // function's own frame (`addressOfRefReturn` mode).
     private ExpressionResult refReturnAddress(
@@ -5784,11 +5766,9 @@ private struct Walker {
         }
     }
 
-    // A dynamic-array expression result can carry the allocation identity of
-    // authoritative array storage even when its syntax is not a plain
-    // variable (for example, a same-width scalar cast). Recover that storage
-    // for a binding's own typed view instead of retaining only a detached
-    // element snapshot.
+    // Retain a lazy argument's expression and caller frame. Each use evaluates
+    // the expression against that live frame, as required by D's lazy
+    // parameter semantics.
     private void bindLazyFunctionParameter(
         VarDeclaration parameter,
         Expression argumentExpression,
