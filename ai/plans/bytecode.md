@@ -587,9 +587,13 @@ paths are expected to exercise these architectural fronts:
 2. Execute available Phobos and druntime source, including templates,
    delegates, closures, classes, exceptions, and module initialization.
 3. Widen the body-less-leaf call surface the compiler will emit:
-   `tryCompileNativeCall` still declines any argument or return type outside
-   its scalar/pointer/slice/struct list. Keep typed storage and address
-   selection in this plan; keep CIF and callable-ABI mechanics in `ffi.md`.
+   `tryCompileNativeCall`'s compile-time return-type list (`compiler.d`) is
+   the only argument/return gate before `quickbite.ffi.ffi` validation at the
+   actual call; a shape that bridge rejects surfaces as a no-available-source
+   diagnostic, not a compile-time decline. Widen the return-type list and give
+   `ref`/`out` arguments real lvalue addresses instead of falling through to a
+   value copy. Keep typed storage and address selection in this plan; keep CIF
+   and callable-ABI mechanics in `ffi.md`.
 4. Synthesize runtime type metadata and inbound VM entry thunks when druntime,
    callbacks, finalizers, associative-array methods, or virtual dispatch force
    them.

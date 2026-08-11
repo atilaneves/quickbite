@@ -11355,9 +11355,17 @@ private struct Compiler {
         const argumentCount = call.arguments is null ? 0 : call.arguments.length;
         const argumentArea = allocateNativeArgumentArea(argumentCount);
         auto argumentTypes = new Type[argumentCount];
-        // Every argument must be a scalar `int`/`long`/`size_t`, a
-        // string-literal `const(char)*`, a `&local` out parameter, or a
-        // pointer local passed by value; any other shape bails.
+        // The return-type list above is the only compile-time gate on the
+        // call as a whole. Individual arguments are not similarly gated: a
+        // scalar, a string-literal `const(char)*`, a `&local` out parameter,
+        // and a pointer local passed by value each get their own emission
+        // below, but any other shape (a `double`, a `float`, a small int, a
+        // by-value slice or struct, a delegate, a `ref`/`out` parameter, ...)
+        // falls through to the plain `emitCallArgument` call at the bottom of
+        // the loop rather than bailing here. `quickbite.ffi.ffi` validation
+        // at the actual native-call boundary is the real gate for those
+        // shapes; a shape it rejects surfaces as the no-available-source
+        // diagnostic at run time, not a compile-time decline.
         foreach (index; 0 .. argumentCount) {
             auto argument = (*call.arguments)[index];
             const slot = cast(ushort)
