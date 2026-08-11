@@ -46,7 +46,10 @@ static foreach (backend; AliasSeq!(Interpreter)) {
 // Calling an imported method must complete semantic analysis for its nested
 // predicate and the range-algorithm templates instantiated by that predicate.
 // Imported modules are not roots, so those bodies are analyzed on demand.
-static foreach (backend; Matrix!()) {
+static foreach (backend; Matrix!(
+    Omit!(Bytecode, Because.refusal,
+        "backend process exits with status 139"),
+)) {
     @("call.importedMethodWithNestedPredicate." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
