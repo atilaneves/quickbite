@@ -152,6 +152,76 @@ public struct AggregateValue {
         return ExpressionResult.nativeAggregateValue(NativeAggregate(type, header));
     }
 
+    // An untyped view of an aggregate's own storage: the slice denotes the
+    // same bytes rather than a copy, so writes through it are visible in the
+    // source, and the source block is retained to keep the view valid.
+    public static imported!"quickbite.backends.interpreter.expression_result".ExpressionResult nativeAggregateByteSlice(
+        in imported!"quickbite.backends.interpreter.expression_result".ExpressionResult value,
+        imported!"dmd.mtype".Type type,
+    ) @safe {
+        import quickbite.backends.interpreter.layout: typeByteSize;
+        import quickbite.backends.interpreter.native_array: NativeArray;
+        import quickbite.backends.interpreter.native_block: NativeBlock;
+        import quickbite.backends.interpreter.expression_result: ExpressionResult;
+
+        auto source = native(value);
+        auto slice = baseTypeOf(type).isTypeDArray;
+        if (slice is null)
+            throw new Exception(
+                "AggregateValue.nativeAggregateByteSlice needs a slice type.",
+            );
+
+        auto header = NativeBlock.allocate(
+            NativeArray.sliceHeaderByteLength,
+            NativeBlock.Scan.conservative,
+        );
+        borrowArray(
+            slice.next,
+            source.address,
+            typeByteSize(source.type),
+        ).writeSliceHeader(header, 0);
+        return ExpressionResult.nativeAggregateValue(NativeAggregate(
+            type,
+            header,
+            source.storage,
+        ));
+    }
+
+    // A class instance's initializer bytes are the object body itself viewed
+    // as an untyped span. The result borrows the body rather than copying it
+    // and retains that block, so the view stays valid for as long as it is
+    // reachable.
+    public static imported!"quickbite.backends.interpreter.expression_result".ExpressionResult classBodyByteSlice(
+        in imported!"quickbite.backends.interpreter.expression_result".ExpressionResult value,
+        imported!"dmd.mtype".Type type,
+    ) @safe {
+        import quickbite.backends.interpreter.native_array: NativeArray;
+        import quickbite.backends.interpreter.native_block: NativeBlock;
+        import quickbite.backends.interpreter.expression_result: ExpressionResult;
+
+        auto source = native(value);
+        auto slice = baseTypeOf(type).isTypeDArray;
+        if (slice is null || baseTypeOf(source.type).isTypeClass is null)
+            throw new Exception(
+                "AggregateValue.classBodyByteSlice needs class and slice types.",
+            );
+
+        auto header = NativeBlock.allocate(
+            NativeArray.sliceHeaderByteLength,
+            NativeBlock.Scan.conservative,
+        );
+        borrowArray(
+            slice.next,
+            source.retained.address,
+            source.retained.byteLength,
+        ).writeSliceHeader(header, 0);
+        return ExpressionResult.nativeAggregateValue(NativeAggregate(
+            type,
+            header,
+            source.retained,
+        ));
+    }
+
     public static imported!"quickbite.backends.interpreter.expression_result".ExpressionResult slice(
         in imported!"quickbite.backends.interpreter.expression_result".ExpressionResult value,
         imported!"dmd.mtype".Type resultType,
@@ -368,13 +438,22 @@ public struct AggregateValue {
         in imported!"quickbite.backends.interpreter.expression_result".ExpressionResult value,
         in size_t index,
     ) @safe {
+        import dmd.astenums: TY;
         import quickbite.backends.interpreter.place: Place;
         import quickbite.backends.interpreter.place_value: readValue;
+        import quickbite.backends.interpreter.expression_result: ExpressionResult;
 
         if (!value.isNativeAggregate)
             throw new Exception("AggregateValue.elementAt needs a native array.");
         auto aggregate = native(value);
-        return readValue(Place(aggregate.address, aggregate.type).index(index));
+        auto element = Place(aggregate.address, aggregate.type).index(index);
+        // `void` has no value to decode, so an element of a `void[]` is just
+        // the byte at that position -- which is all a `void[]` copy (allocator
+        // storage, an initializer image) ever moves.
+        auto array = baseTypeOf(aggregate.type).isTypeDArray;
+        return array !is null && baseTypeOf(array.next).ty == TY.Tvoid
+            ? ExpressionResult(byteAt(element.address))
+            : readValue(element);
     }
 
     // The native aggregate owns the complete static-array bytes or the
@@ -586,6 +665,14 @@ private imported!"dmd.mtype".Type baseTypeOf(imported!"dmd.mtype".Type type) @tr
 // established byte length into owned NativeBlock storage.
 private ubyte[] bytesAt(void* address, in size_t length) pure nothrow @trusted {
     return (cast(ubyte*) address)[0 .. length];
+}
+
+
+// `Place.index` produced this address by bounds-checking the index against
+// the slice header's own length, so the single byte at it is readable guest
+// storage.
+private ubyte byteAt(void* address) pure nothrow @trusted {
+    return *cast(ubyte*) address;
 }
 
 

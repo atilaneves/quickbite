@@ -2065,17 +2065,36 @@ private struct Walker {
         imported!"dmd.expression".VarExp var,
     ) {
         import dmd.typesem: defaultInitLiteral;
+        import quickbite.backends.interpreter.aggregate_value: AggregateValue;
 
         auto symbol = var.var.isSymbolDeclaration;
         if (symbol is null)
             assert(0, "non-variable VarExp was not a SymbolDeclaration");
 
         auto type = symbol.dsym is null ? symbol.type : symbol.dsym.type;
-        auto structType = type is null ? null : type.toBasetype.isTypeStruct;
-        if (structType is null)
-            assert(0, "SymbolDeclaration VarExp was not a struct initializer");
+        // `__traits(initSymbol, T)` denotes T's initializer image as an
+        // untyped span: the bytes `emplace` copies into raw storage before any
+        // constructor runs. A type whose default is not all-zero (a `char`
+        // field, a declared field default) needs those real bytes, so the span
+        // views an initialized instance rather than blank storage. The same
+        // declaration spelled with T's own type is instead T's `.init` value.
+        const initializerImage = isVoidSliceType(symbol.type);
 
-        return runExpression(structType.defaultInitLiteral(var.loc));
+        if (auto structType = type is null ? null : type.toBasetype.isTypeStruct) {
+            const initial = runExpression(structType.defaultInitLiteral(var.loc));
+            if (!initializerImage)
+                return initial;
+            return AggregateValue.nativeAggregateByteSlice(initial, symbol.type);
+        }
+
+        auto classType = type is null ? null : type.toBasetype.isTypeClass;
+        if (initializerImage && classType !is null && classType.sym !is null) {
+            auto object = AggregateValue.allocateClass(type);
+            initializeNativeClassBody(this, type, object);
+            return AggregateValue.classBodyByteSlice(object, symbol.type);
+        }
+
+        assert(0, "SymbolDeclaration VarExp was not an aggregate initializer");
     }
 
     private ExpressionResult runLogicalAndExpression(
@@ -4086,6 +4105,21 @@ private struct Walker {
                 );
 
             if (call.f !is null && call.f.needThis) {
+                // A class TypeInfo's `initializer` is the class-instance
+                // initializer span: `classInstanceSize` bytes holding every
+                // field's declared default. An interpreted-only TypeInfo has
+                // no resident body druntime could read that from, so build
+                // the instance image here.
+                if (
+                    receiver.isTypeName &&
+                    functionName(call.f) == "initializer" &&
+                    arguments.length == 0
+                )
+                    return typeInfoClassInitializer(
+                        receiver.asTypeNameString,
+                        call.type,
+                    );
+
                 // An interpreted-only TypeInfo has symbolic identity but no
                 // resident class body on which druntime's member can run.
                 // TypeInfo.opEquals defines equality by that identity (and
@@ -6627,6 +6661,21 @@ private struct Walker {
         throw new Exception("Unsupported interpreter field read.");
     }
 
+    private ExpressionResult typeInfoClassInitializer(
+        in string className,
+        imported!"dmd.mtype".Type resultType,
+    ) {
+        import quickbite.backends.interpreter.aggregate_value: AggregateValue;
+
+        auto class_ = classDeclarationByQualifiedName(className);
+        if (class_ is null)
+            throw new Exception("Unsupported interpreter TypeInfo initializer.");
+
+        auto object = AggregateValue.allocateClass(class_.type);
+        initializeNativeClassBody(this, class_.type, object);
+        return AggregateValue.classBodyByteSlice(object, resultType);
+    }
+
     private NativeArray classSliceField(
         ref NativeBlock cell,
         imported!"dmd.dclass".ClassDeclaration class_,
@@ -8828,6 +8877,8 @@ private struct Walker {
     }
 
     private ExpressionResult classCastValue(imported!"dmd.expression".CastExp cast_) {
+        import quickbite.frontend.dmd.types: isPointerType;
+
         auto value = runExpression(cast_.e1);
         value = rootedNativeClassValue(cast_.e1, value);
         if (value == ExpressionResult.null_)
@@ -8836,6 +8887,14 @@ private struct Walker {
         auto classType = cast_.to.toBasetype.isTypeClass;
         if (classType is null || classType.sym is null)
             throw new Exception("Unsupported class cast target.");
+
+        // D checks the runtime type, and yields `null` on a mismatch, only
+        // when the source is itself a class or interface reference. From a
+        // raw pointer the cast reinterprets the address: the storage need not
+        // hold a constructed object yet, which is how `emplace` reaches the
+        // instance it is about to initialise.
+        if (isPointerType(cast_.e1.type))
+            return value;
 
         if (!classHasType(value, className(classType.sym)))
             return ExpressionResult.null_;
@@ -9535,11 +9594,17 @@ private struct Walker {
         in size_t index,
         in ExpressionResult value,
     ) {
+        import dmd.astenums: TY;
+        import dmd.mtype: Type;
         import quickbite.backends.interpreter.layout: typeByteSize;
         import quickbite.backends.interpreter.place: Place;
         import quickbite.backends.interpreter.place_value: writeValue;
 
         auto elementType = pointerType.toBasetype.nextOf.toBasetype;
+        // Indexing a `void*` addresses raw bytes, so the destination is a
+        // byte: `void` itself carries no value the place codec could store.
+        if (elementType.ty == TY.Tvoid)
+            elementType = Type.tuns8;
         auto address = nativeElementAddress(
             pointer.pointerAddress,
             index,
@@ -10567,8 +10632,14 @@ private struct Walker {
         imported!"dmd.expression".Expression expression,
         in ExpressionResult evaluated,
     ) {
+        // A cast between class references denotes the same object, so the
+        // operand's own rooted value still applies. A cast from anything else
+        // -- a `void*` aimed at raw storage, say -- denotes no such object,
+        // and the evaluated result is the only answer.
         if (auto cast_ = expression.isCastExp)
-            return rootedNativeClassValue(cast_.e1, evaluated);
+            if (cast_.e1.type !is null &&
+                cast_.e1.type.toBasetype.isTypeClass !is null)
+                return rootedNativeClassValue(cast_.e1, evaluated);
 
         auto var = expression.isVarExp;
         auto variable = var is null ? null : var.var.isVarDeclaration;
@@ -10724,6 +10795,16 @@ private imported!"quickbite.backends.interpreter.expression_result".ExpressionRe
         ? null
         : function_.parent.isStructDeclaration;
     return structDecl !is null ? defaultValue(structDecl.type) : receiver;
+}
+
+
+private bool isVoidSliceType(imported!"dmd.mtype".Type type) {
+    import dmd.astenums: TY;
+
+    if (type is null)
+        return false;
+    auto slice = type.toBasetype.isTypeDArray;
+    return slice !is null && slice.next.toBasetype.ty == TY.Tvoid;
 }
 
 
