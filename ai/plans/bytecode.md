@@ -570,9 +570,6 @@ Otherwise take an "Architecture work forced by the baseline" front.
   work belongs only to file-disjoint tracks. This plan owns Bytecode's use of
   `quickbite.ffi.ffi`; `ffi.md` supplies the bridge without editing Bytecode
   core.
-- After each editing session, run the repository-mandated
-  `ninja bin/ut` and `bin/ut --random`. Replay a failing random order with its
-  `--seed` before deciding whether the failure is related.
 - A plan update names the next concrete failing row or semantic so another
   implementer does not duplicate work. Remove resolved queue entries instead
   of recording what prior changes did. Git history is that record.
@@ -663,8 +660,6 @@ and Cerealed gate no longer expose earlier gaps.
 - Compare language behaviour and diagnostic text with `SystemLinker`, byte for
   byte. Characterize `Ctfe` separately when it diverges.
 - Verify a promoted row red before production changes and green afterward.
-- Run `ninja bin/ut`, then `bin/ut --random`, after each editing session. Use
-  the reported seed for any failure investigation.
 - Run `ci.sh` before creating a PR. Do not accept a benchmark failure merely
   because the current PR advances only part of the full VM.
 

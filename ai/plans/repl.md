@@ -392,46 +392,7 @@ expressiveness gaps are exposed by straight-line behaviour tests.
 Strict TDD per slice: failing test → dumbest green → refactor → ask.
 Dependencies are noted; order within independent slices is flexible.
 
-1. ~~**Structured transcript** (`Cell[]`)~~ (done in
-   `repl-structured-transcript` — `EvalSession` now stores accepted
-   module/local history as `TranscriptCell[]` and joins it only when
-   synthesizing snapshot source; no new tests). Verified with `ninja bin/ut`
-   and `bin/ut --random` (seed `405471795`).
-2. ~~**Per-cell `#line` attribution + diagnostic cleanup**~~ (done in
-   `repl-line-attribution` — accepted transcript cells now emit
-   `#line 1 "<repl cell N>"`, so diagnostics report cell-local source
-   locations instead of cumulative invisible transcript lines). Verified
-   with `ninja bin/ut` and `bin/ut --random` (seed `377061793`).
-3. ~~**Last-value binding** (T4)~~ (done in `repl-line-attribution` —
-   expression cells expose the latest accepted result as `it`; failed
-   expression cells do not advance it). Verified with `ninja bin/ut` and
-   `bin/ut --random` (seed `4078371892`).
-4. **Redefinition** (T5; depends on 1): module-decl replacement first,
-   local rename-the-old second. Module-level same-signature function
-   replacement is done in `repl-line-attribution`; rejected replacements
-   keep the old definition; distinct function overloads are pinned as
-   preserved. Simple local variable rebinding is done for statement cells
-   and preserves intervening references to the old binding. Verified with
-   `ninja bin/ut` and `bin/ut --random` (latest seed `3968792440`).
-5. **Module-level variables** (T2, T3): T2 is partially done in
-   `repl-line-attribution` for the Interpreter. A module function that
-   references a prior REPL local declaration promotes that declaration into
-   the module transcript, so `int counter; int get() { return counter; }`
-   can observe later statement mutation under the Interpreter while
-   preserving existing local/display semantics for ordinary declarations.
-   CTFE's global-mutation rejection is pinned. Verified with
-   `ninja bin/ut`, `bin/ut`, and `bin/ut --random` (seed `3004154049`);
-   T3 module constructors and native lifting remain pending.
-6. ~~**Evaluator/Runner migration**~~ (done — single `eval` primitive,
-   failure-as-data, and the capability split now live in
-   `source/quickbite/backends/evaluator.d` and `runner.d`).
-7. ~~**Backend-owned sessions**~~ (done in `repl-backend-sessions` —
-   `Backend` now provides an overrideable replay-backed
-   `createReplSession` default, pure backends run REPL cells through
-   `ReplSession.submit`, and the REPL keeps separate frontend and backend
-   sessions so later persistent backends can own execution state). Verified
-   with `ninja bin/ut` and `bin/ut --random` (seed `3527759054`).
-8. **Formatter prelude** (the canonical display formatter,
+1. **Formatter prelude** (the canonical display formatter,
    `ai/plans/value.md`; independent of 7; testable today under CTFE and
    compiled unittests). The formatter surface and the first frontend wiring
    rungs are active for formatter-capable backends; `value.md` owns the
@@ -443,7 +404,7 @@ Dependencies are noted; order within independent slices is flexible.
    work stays in `value.md`: keep expanding the per-backend gate, then retire
    each backend's interim display scaffolding only after its display rows are
    covered by formatter execution.
-9. **Native REPL session** (depends on 5, 7, 8, and a working
+2. **Native REPL session** (depends on 5, 7, 8, and a working
    codegen-and-load path from the dmd-backend work): delta modules,
    lifting, per-cell link/load, symbol continuity. Gated by T1, T2/T3 on
    the native backend, the full existing REPL matrix, and B1's split
