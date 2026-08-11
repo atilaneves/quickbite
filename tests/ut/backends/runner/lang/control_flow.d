@@ -56,15 +56,12 @@ static foreach (backend; Matrix!()) {
     }
 }
 
-// DMD lowers a synchronized statement to `_d_monitorenter`/`_d_monitorexit`
-// calls. SystemLinker and LLVMJit dispatch those to real druntime, locking
-// the object's real native monitor header. The Interpreter has no native
-// monitor header for a guest object to lock, so it intercepts both calls as
-// no-ops instead; guest code already executes serially inside one Walker, so
-// the statement's block still runs with the same control flow a real lock
-// would give it. Every row here checks only that the block executes -- for
-// the Interpreter row specifically, that is exercising the no-op
-// interception path, not any native object-layout guarantee.
+// DMD lowers a synchronized statement to balanced
+// `_d_monitorenter`/`_d_monitorexit` calls around the block. Acquiring the
+// lock does not change what the statement does with control: the block runs
+// once, and it runs to completion before the lock is released. A
+// single-threaded program can observe exactly that much, which is what this
+// row checks -- it says nothing about mutual exclusion between threads.
 static foreach (backend; Matrix!(
     Omit!(Ctfe, Because.inexpressible,
         "CTFE cannot execute the body-less _d_monitorenter runtime hook"),
