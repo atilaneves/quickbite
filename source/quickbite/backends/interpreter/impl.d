@@ -2523,6 +2523,9 @@ private struct Walker {
         if (!returnsRef(call.f))
             return addressOfCallResultTemporary(call);
 
+        if (auto dot = call.e1.isDotVarExp)
+            return memberRefReturningCallAddress(call, dot, unsupported);
+
         functionSemantic3(call.f);
         if (call.f.needThis)
             throw new Exception(unsupported);
@@ -2600,6 +2603,178 @@ private struct Walker {
         mergeFunctionState(call.f, argumentExpressions, child, arguments);
 
         return returnedLvalueAddress(call.f, argumentExpressions, child);
+    }
+
+    // The address of the lvalue a ref-returning *member* call yields. The
+    // callee's `this` must alias the receiver expression's own storage: the
+    // returned lvalue is typically a receiver field, and its address is only
+    // meaningful to the caller if it points into the caller's aggregate
+    // rather than into a copied receiver value.
+    private ExpressionResult memberRefReturningCallAddress(
+        imported!"dmd.expression".CallExp call,
+        imported!"dmd.expression".DotVarExp dot,
+        in string unsupported,
+    ) {
+        import dmd.expression: Expression;
+        import quickbite.backends.interpreter.frame_layout:
+            isReferenceParameter;
+        import quickbite.frontend.dmd.functions:
+            ensureFunctionBodySemantic, hasNoAvailableSource;
+
+        const receiver = runExpression(dot.e1);
+        if (receiver == ExpressionResult.null_)
+            throw new Exception(
+                "function call through null class reference `null`",
+            );
+
+        auto function_ = resolveMemberFunction(call.f, receiver);
+        ensureFunctionBodySemantic(function_);
+        const native = hasNoAvailableSource(function_);
+
+        ExpressionResult[] arguments;
+        Expression[] argumentExpressions;
+        EvaluatedReferenceArgument[] evaluatedArguments;
+        if (call.arguments !is null)
+            foreach (index, argument; *call.arguments) {
+                EvaluatedReferenceArgument evaluated;
+                arguments ~= index < function_.parameters.length &&
+                    isReferenceParameter(
+                        function_,
+                        index,
+                        (*function_.parameters)[index],
+                    )
+                    ? runRefArgumentExpression(argument, evaluated)
+                    : runExpression(argument);
+                if (
+                    index < function_.parameters.length &&
+                    (*function_.parameters)[index].type.toBasetype.isTypeClass !is null
+                )
+                    arguments[$ - 1] =
+                        rootedNativeClassValue(argument, arguments[$ - 1]);
+                argumentExpressions ~= argument;
+                evaluatedArguments ~= evaluated;
+            }
+
+        if (native) {
+            import quickbite.backends.interpreter.native_call_adapter:
+                NativeCallException, NativeCallResult;
+
+            imported!"dmd.mtype".Type receiverType = receiverClassType(dot.e1);
+            if (receiverType is null)
+                receiverType = receiverStructType(dot.e1);
+
+            NativeCallResult nativeResult;
+            try {
+                if (!invokeNativeDeclaration(
+                    function_,
+                    receiver,
+                    receiverType,
+                    dot.e1,
+                    arguments,
+                    argumentExpressions,
+                    evaluatedArguments,
+                    false,
+                    nativeResult,
+                ))
+                    throw new Exception(unsupported);
+            } catch (NativeCallException exception) {
+                throwNativeException(exception);
+            }
+            return ExpressionResult.pointerValue(nativeResult.referenceAddress);
+        }
+
+        Walker child;
+        child.runningCalledFunction = true;
+        child.currentFunction = function_;
+        auto layout = cachedFrameLayout(function_);
+        child._activationFrame = FrameBlock.allocate(layout);
+        child.addressOfRefReturn = true;
+        child.result = ExpressionResult(false);
+        bindCapturedReferenceSlots(function_, child);
+        forkExecutionStateInto(child);
+        child.thisValue = receiver;
+        child.hasThis = true;
+        child.bindThisReferenceAddress(function_, receiver);
+        child.bindFunctionParameters(
+            function_,
+            arguments,
+            argumentExpressions,
+            _activationFrame,
+            evaluatedArguments,
+        );
+        aliasThisToReceiverStorage(child, function_, dot.e1);
+
+        try {
+            child.runStatement(function_.fbody);
+        } catch (InterpretedException exception) {
+            mergeMemberFunctionState(
+                function_,
+                dot.e1,
+                argumentExpressions,
+                child,
+                arguments,
+            );
+            throw exception;
+        }
+        mergeMemberFunctionState(
+            function_,
+            dot.e1,
+            argumentExpressions,
+            child,
+            arguments,
+        );
+        return returnedLvalueAddress(function_, argumentExpressions, child);
+    }
+
+    // Alias a member callee's `this` to the receiver expression's real
+    // storage address. A `ref`-returning or ref-assigned member call must
+    // read and mutate the caller's own aggregate: field addresses computed
+    // inside the callee (`&_field`, `return _field;`) only reach the
+    // caller's struct if `this` is a borrowed view of that exact address,
+    // never a detached copy of the receiver's value.
+    private void aliasThisToReceiverStorage(
+        ref Walker child,
+        imported!"dmd.func".FuncDeclaration function_,
+        imported!"dmd.expression".Expression receiverExpression,
+    ) {
+        import dmd.tokens: EXP;
+
+        if (
+            function_.vthis is null ||
+            function_.vthis.isThisDeclaration is null
+        )
+            return;
+
+        // A `this` receiver's address is this activation's own aliased
+        // receiver address; composing it via `addressOfExpression` has no
+        // lvalue expression to work from.
+        const receiverAddress =
+            receiverExpression.isThisExp !is null && thisAddress !is null
+            ? ExpressionResult.pointerValue(thisAddress)
+            : addressOfExpression(receiverExpression, EXP.address);
+        if (!receiverAddress.isPointer)
+            return;
+
+        child.thisAddress = receiverAddress.pointerAddress;
+        if (child._activationFrame.hasReferenceSlot(function_.vthis))
+            child._activationFrame.setReferenceSlot(
+                function_.vthis,
+                child.thisAddress,
+            );
+        if (function_.vthis.type.toBasetype.isTypeStruct !is null) {
+            import quickbite.backends.interpreter.layout: typeByteSize;
+            import quickbite.backends.interpreter.native_aggregate:
+                NativeAggregate;
+            import quickbite.backends.interpreter.native_block: NativeBlock;
+
+            child.thisValue = ExpressionResult.nativeAggregateValue(NativeAggregate(
+                function_.vthis.type,
+                NativeBlock.borrow(
+                    receiverAddress.pointerAddress,
+                    typeByteSize(function_.vthis.type),
+                ),
+            ));
+        }
     }
 
     // A `ref` foreach variable over an input range may bind to a `front`
@@ -4140,6 +4315,22 @@ private struct Walker {
         imported!"dmd.expression".Expression argument,
         out EvaluatedReferenceArgument evaluated,
     ) {
+        // A ref-returning call used as a `ref` argument passes the returned
+        // lvalue itself onward: bind the callee's reference slot to that
+        // lvalue's address so writes through the parameter reach it, instead
+        // of a copied call result.
+        if (auto call = argument.isCallExp)
+            if (call.f !is null && returnsRef(call.f)) {
+                import dmd.tokens: EXP;
+                import quickbite.backends.interpreter.place: Place;
+
+                const address = refReturningCallAddress(call, EXP.address);
+                if (address.isPointer) {
+                    evaluated.address = address.pointerAddress;
+                    return readStoredValue(Place(evaluated.address, argument.type));
+                }
+            }
+
         if (argument.isDotVarExp !is null) {
             import dmd.tokens: EXP;
             import quickbite.backends.interpreter.place: Place;
@@ -6899,10 +7090,10 @@ private struct Walker {
         imported!"dmd.expression".CallExp call,
         in ExpressionResult value,
     ) {
-        import dmd.funcsem: functionSemantic3;
         import quickbite.backends.interpreter.frame_layout:
             isReferenceParameter;
-        import quickbite.frontend.dmd.functions: hasNoAvailableSource;
+        import quickbite.frontend.dmd.functions:
+            ensureFunctionBodySemantic, hasNoAvailableSource;
 
         if (call.f is null || !returnsRef(call.f))
             return false;
@@ -6916,9 +7107,7 @@ private struct Walker {
             throw new Exception("function call through null class reference `null`");
 
         auto function_ = resolveMemberFunction(call.f, receiver);
-        functionSemantic3(function_);
-        if (hasNoAvailableSource(function_))
-            return false;
+        ensureFunctionBodySemantic(function_);
 
         ExpressionResult[] arguments;
         imported!"dmd.expression".Expression[] argumentExpressions;
@@ -6934,9 +7123,50 @@ private struct Walker {
                     )
                     ? runRefArgumentExpression(argument, evaluated)
                     : runExpression(argument);
+                if (
+                    index < function_.parameters.length &&
+                    (*function_.parameters)[index].type.toBasetype.isTypeClass !is null
+                )
+                    arguments[$ - 1] =
+                        rootedNativeClassValue(argument, arguments[$ - 1]);
                 argumentExpressions ~= argument;
                 evaluatedArguments ~= evaluated;
             }
+
+        if (hasNoAvailableSource(function_)) {
+            import quickbite.backends.interpreter.native_call_adapter:
+                NativeCallException, NativeCallResult;
+            import quickbite.backends.interpreter.place: Place;
+
+            imported!"dmd.mtype".Type receiverType = receiverClassType(dot.e1);
+            if (receiverType is null)
+                receiverType = receiverStructType(dot.e1);
+
+            try {
+                NativeCallResult nativeResult;
+                if (!invokeNativeDeclaration(
+                    function_,
+                    receiver,
+                    receiverType,
+                    dot.e1,
+                    arguments,
+                    argumentExpressions,
+                    evaluatedArguments,
+                    false,
+                    nativeResult,
+                ))
+                    return false;
+                auto returnType = function_.type.toBasetype.isTypeFunction
+                    .next.toBasetype;
+                writeStoredValue(
+                    Place(nativeResult.referenceAddress, returnType),
+                    value,
+                );
+                return true;
+            } catch (NativeCallException exception) {
+                throwNativeException(exception);
+            }
+        }
 
         Walker child;
         child.runningCalledFunction = true;
@@ -6958,37 +7188,7 @@ private struct Walker {
             _activationFrame,
             evaluatedArguments,
         );
-        if (
-            function_.vthis !is null &&
-            function_.vthis.isThisDeclaration !is null
-        ) {
-            import dmd.tokens: EXP;
-
-            const receiverAddress = addressOfExpression(dot.e1, EXP.address);
-            if (receiverAddress.isPointer) {
-                child.thisAddress = receiverAddress.pointerAddress;
-                if (child._activationFrame.hasReferenceSlot(function_.vthis))
-                    child._activationFrame.setReferenceSlot(
-                        function_.vthis,
-                        child.thisAddress,
-                    );
-                if (function_.vthis.type.toBasetype.isTypeStruct !is null) {
-                    import quickbite.backends.interpreter.layout: typeByteSize;
-                    import quickbite.backends.interpreter.native_aggregate:
-                        NativeAggregate;
-                    import quickbite.backends.interpreter.native_block:
-                        NativeBlock;
-
-                    child.thisValue = ExpressionResult.nativeAggregateValue(NativeAggregate(
-                        function_.vthis.type,
-                        NativeBlock.borrow(
-                            receiverAddress.pointerAddress,
-                            typeByteSize(function_.vthis.type),
-                        ),
-                    ));
-                }
-            }
-        }
+        aliasThisToReceiverStorage(child, function_, dot.e1);
 
         try {
             child.runStatement(function_.fbody);
