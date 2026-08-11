@@ -29,16 +29,19 @@ private string uniqueDepModule(string source, string base, string suffix) {
 }
 
 
+// Construct `backend` for a dependency-image fixture, regardless of whether
+// its constructor also wants an oracle-style `importPaths` argument
+// (`SystemLinker`/`LLVMJit`) or just the link files (`Interpreter`/
+// `Bytecode`).
 private auto runDependencyImage(alias backend)(
     const string[] linkFiles,
     const string[] importPaths,
     Module module_,
 ) {
-    static if (is(backend == LLVMJit)) {
+    static if (is(backend == SystemLinker) || is(backend == LLVMJit))
         return (new backend(linkFiles, importPaths)).runTests(module_);
-    } else {
+    else
         return (new backend(linkFiles)).runTests(module_);
-    }
 }
 
 private struct CtorOrderingFixture {
@@ -4862,21 +4865,6 @@ unittest {
 }
 }
 
-// Construct `backend` for a dependency-image fixture, regardless of whether
-// its constructor also wants an oracle-style `importPaths` argument
-// (`SystemLinker`/`LLVMJit`) or just the link files (`Interpreter`/
-// `Bytecode`).
-private auto runDependencyImageFixture(alias backend)(
-    const string[] linkFiles,
-    const string[] importPaths,
-    Module module_,
-) {
-    static if (is(backend == SystemLinker) || is(backend == LLVMJit))
-        return (new backend(linkFiles, importPaths)).runTests(module_);
-    else
-        return (new backend(linkFiles)).runTests(module_);
-}
-
 // A struct-typed native-call return whose field layout mixes a scalar with
 // a dynamic-array (`string`) field, unlike every all-scalar struct-return
 // fixture above: both fields of the returned value must read back with the
@@ -4952,7 +4940,7 @@ unittest {
             [inSandboxPath(importPath)],
         );
 
-        const actual = runDependencyImageFixture!backend(
+        const actual = runDependencyImage!backend(
             [imagePath],
             [inSandboxPath(importPath)],
             moduleResult.module_,
