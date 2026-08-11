@@ -1619,6 +1619,49 @@ static foreach (backend; Matrix!()) {
     }
 }
 
+// A method introduced into a class by a `mixin template`, overriding a
+// base class method, still participates in virtual dispatch: a call
+// through a base-typed reference reaches the mixed-in override rather
+// than the base implementation.
+static foreach (backend; Matrix!()) {
+    @("class.mixedInOverrideDispatchesVirtually." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            mixin template Describes() {
+                override int describe() {
+                    return field + 2;
+                }
+            }
+
+            class Base {
+                int describe() {
+                    return 1;
+                }
+            }
+
+            class Child : Base {
+                int field;
+
+                this(int field) {
+                    this.field = field;
+                }
+
+                mixin Describes;
+            }
+
+            int classify(int seed) {
+                Base value = new Child(seed);
+                return value.describe;
+            }
+
+            unittest {
+                assert(classify(5) == 7);
+            }
+        });
+    }
+}
+
 // A `Base`-typed local holding a `Derived` object, a virtual call through
 // that `Base` reference (dynamic dispatch must still reach
 // `Derived.score`), a downcast to a `Derived`-typed local,

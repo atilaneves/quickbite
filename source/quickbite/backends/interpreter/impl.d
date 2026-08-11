@@ -11545,8 +11545,15 @@ private bool isClassHierarchyMember(
     imported!"dmd.dclass".ClassDeclaration class_,
     imported!"dmd.func".FuncDeclaration function_,
 ) {
+    // `.parent` is the lexically nearest enclosing symbol, which for a
+    // method introduced by a `mixin template` is the `TemplateMixin`
+    // instantiation, not the class doing the mixing in. `toParent` names
+    // the logically enclosing symbol instead, skipping over any
+    // `TemplateMixin` layers (`dmd.dsymbol.Dsymbol.toParent`'s own
+    // documentation), which is what a vtbl-hierarchy membership check
+    // means by "belongs to this class".
     foreach (current; classHierarchy(class_))
-        if (function_.parent is current)
+        if (function_.toParent is current)
             return true;
 
     return false;
