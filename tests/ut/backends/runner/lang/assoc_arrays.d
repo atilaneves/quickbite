@@ -2,6 +2,7 @@ module ut.backends.runner.lang.assoc_arrays;
 
 
 import ut.backends;
+import quickbite.frontend.compiler: FrontendFlags;
 
 
 /++
@@ -1683,5 +1684,104 @@ static foreach (backend; Matrix!(
                 assert(total == 6);
             }
         });
+    }
+}
+
+// Distilled from `cerealed`'s `tests/bugs.d` "assoc.array.with.pair"
+// unittest (`auto p = Pair("foo", 5); auto map = [p: 105];`), which used to
+// crash the Interpreter under `-preview=dip1000` (the flag `dub describe`
+// reports for `cerealed`'s own unittest build, inherited transitively from
+// a dependency -- `bin/bench.sh -b interpreter --dub cerealed` forwards it
+// via `dubCompilerArguments`, `benchmarks/cli.d`). DMD's own
+// `tryLowerAALiteral`/`functionArguments` (dmd's `expressionsem.d`) hoists
+// a non-empty keys or values array literal passed to the `scope`-inferred
+// `_d_assocarrayliteralTX(keys, values)` hook into an
+// `__arrayliteral_on_stack*` temporary -- a `DeclarationExp` nested INSIDE
+// the AA literal's `.lowering`, not among the pre-lowering keys/values this
+// file's other fixtures exercise. `frame_layout.computeFrameLayout` sizes a
+// function's activation frame by walking its body for every local DMD's
+// own tree walkers observe (`bodyLocals`, `dmd.visitor.foreachvar`), but
+// `dmd.visitor.postorder`'s `PostorderExpressionVisitor` -- the driver
+// behind that walk -- has a `.lowering`-aware override for
+// `CatExp`/`CatAssignExp`/`EqualExp` (each walks `.lowering` INSTEAD of its
+// original operands once semantic sets it) but not for
+// `AssocArrayLiteralExp`: its own override always walks `.keys`/`.values`,
+// never `.lowering`, so the walk over `map`'s own unittest body reserved no
+// frame slot for the temp its AA literal's lowering synthesized -- however
+// deep it lives in the body -- and evaluating it threw "has no native
+// place" (in `<root>`: the top-level `execute` entry point for a directly-
+// run unittest never assigns `currentFunction`, only a nested call's own
+// child interpreter does). Fixed generally, not as an AA-literal special
+// case narrowly scoped to `bodyLocals`: `appendVarsInExpression`
+// (`frame_layout.d`) additionally finds every reachable
+// `AssocArrayLiteralExp` in an expression tree itself and walks any
+// `.lowering` it carries, recursing through a `DeclarationExp`'s own
+// initializer the same way `dmd.visitor.foreachvar`'s `VarWalker` already
+// does (something `PostorderExpressionVisitor`'s generic structural
+// descent never does for `DeclarationExp` at all) -- used by both
+// `bodyLocals` (this fixture's own path) and the sibling module-scope
+// fixture below. `runBackendSourceFixtureTests`'s new `FrontendFlags`
+// overload enables `-preview=dip1000` the same way `dependency_image.d`'s
+// sandboxed fixture already does.
+static foreach (backend; Matrix!()) {
+    @("assocArray.structKeyLiteralInsideUnittestBindsStackTemp." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct Pair {
+                string s;
+                int i;
+            }
+
+            unittest {
+                auto p = Pair("foo", 5);
+                auto map = [p: 105];
+                assert(map[p] == 105);
+            }
+        }, [], FrontendFlags(["-preview=dip1000"]));
+    }
+}
+
+// The sibling MODULE-scope shape: a dataseg variable's own initializer
+// expression is a bare `Expression`, never part of any `FuncDeclaration`'s
+// body, so `bodyLocals`'s fix above (which walks a function's OWN body)
+// never reserves it a frame either -- lazily materializing it
+// (`materializeDatasegInitializer`) reused whichever frame the triggering
+// read's OWN function happened to have, sized for THAT function's locals,
+// never this initializer's. Fixed by giving a dataseg variable's own
+// initializer expression a dedicated frame around just its own evaluation,
+// sized from the same `appendVarsInExpression`-based walk
+// (`evaluateDatasegInitializerExpression`/`computeExpressionFrameLayout`,
+// impl.d/frame_layout.d). `Ctfe`, `Bytecode` and `LLVMJit` are omitted:
+// none of the three is regressed by this fix -- `Ctfe` gives its own
+// permanent, unrelated "cannot be read at compile time" refusal for a
+// mutable module variable read from a function call (this file's other
+// fixtures hit the same wall, e.g. `classinfoNameKeyReachesStoredValue`
+// above); `Bytecode` core declines any runtime-evaluated module-scope
+// scalar initializer outright, AA or not; `LLVMJit` crashes on this exact
+// `-preview=dip1000` AST shape -- a gap nothing here narrows down further,
+// left for its own backlog item.
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.inexpressible,
+        "static variable `table` cannot be read at compile time"),
+    Omit!(Bytecode, Because.refusal,
+        "Unsupported module scalar initializer in bytecode core: table"),
+    Omit!(LLVMJit, Because.unconfirmed, "JIT child died (signal 11)"),
+)) {
+    @("assocArray.moduleScopeLiteralWithFunctionCallKeyBindsStackTemp." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            int key() { return 5; }
+
+            int[int] table = [key(): 105, key() + 1: 200];
+
+            unittest {
+                assert(table[5] == 105);
+                assert(table[6] == 200);
+            }
+        }, [], FrontendFlags(["-preview=dip1000"]));
     }
 }

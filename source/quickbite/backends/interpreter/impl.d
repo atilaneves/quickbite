@@ -3001,7 +3001,7 @@ variableExpression:
                     setLocal(variable, defaultValue(variable));
                     const value = storageValue(
                         variable.type,
-                        runExpression(initializer.exp),
+                        evaluateDatasegInitializerExpression(initializer.exp),
                     );
                     setLocal(variable, value);
                     return value;
@@ -4642,6 +4642,35 @@ unsupportedExpression:
         return ExpressionResult.pointerValue(bindingPlace(variable).address);
     }
 
+    // Evaluates a dataseg variable's own initializer expression in a frame
+    // sized for THAT EXPRESSION alone, not whatever function happens to be
+    // running when the lazy materialization triggers. A module-scope AA
+    // literal's `_d_assocarrayliteralTX` lowering hoists its keys/values
+    // arrays into `__arrayliteral_on_stack*` temporaries parented to the
+    // initializer's own (module) scope, never to any `FuncDeclaration`'s
+    // body (`frame_layout.computeExpressionFrameLayout`'s own comment) --
+    // reusing the triggering function's already-computed frame, or the
+    // frame-less root the top-level `execute` entry point starts with,
+    // leaves such a temp with no slot anywhere, so `setLocal` rejects it
+    // ("has no native place"). The initializer can only name other module-
+    // scope declarations and its own literal/temp values -- never a local
+    // of whatever function triggered this -- so swapping in a dedicated
+    // frame around just this evaluation is exact, not an approximation.
+    private ExpressionResult evaluateDatasegInitializerExpression(
+        imported!"dmd.expression".Expression expression,
+    ) {
+        import quickbite.backends.interpreter.frame_layout:
+            computeExpressionFrameLayout;
+
+        auto outer = _activationFrame;
+        scope(exit) _activationFrame = outer;
+
+        _activationFrame = FrameBlock.allocate(
+            computeExpressionFrameLayout(expression),
+        );
+        return runExpression(expression);
+    }
+
     private void materializeDatasegInitializer(VarDeclaration variable) {
         if (
             !variable.isDataseg || externDataSymbolAddress(variable) !is null ||
@@ -4665,7 +4694,9 @@ unsupportedExpression:
         if (variable._init is null) {
             import dmd.typesem: defaultInitLiteral;
 
-            setLocal(variable, runExpression(variable.type.defaultInitLiteral(variable.loc)));
+            setLocal(variable, evaluateDatasegInitializerExpression(
+                variable.type.defaultInitLiteral(variable.loc),
+            ));
             return;
         }
 
@@ -4686,7 +4717,7 @@ unsupportedExpression:
             setLocal(variable, defaultValue(variable));
             setLocal(variable, storageValue(
                 variable.type,
-                runExpression(initializerExp),
+                evaluateDatasegInitializerExpression(initializerExp),
             ));
         }
     }

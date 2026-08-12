@@ -112,7 +112,17 @@ public ModuleParseResult parseSnippetWithCheckActionContext(
     in string source,
     in string[] importPaths,
 ) {
-    return compiler.parseSnippetWithCheckActionContext(source, importPaths);
+    return compiler.parseSnippetWithCheckActionContext(
+        source, importPaths, FrontendFlags.init,
+    );
+}
+
+public ModuleParseResult parseSnippetWithCheckActionContext(
+    in string source,
+    in string[] importPaths,
+    in FrontendFlags flags,
+) {
+    return compiler.parseSnippetWithCheckActionContext(source, importPaths, flags);
 }
 
 public ModuleParseResult parseModuleWithCheckActionContext(
@@ -498,8 +508,18 @@ final class Compiler {
         in string source,
         in string[] importPaths,
     ) {
+        return parseSnippetWithCheckActionContext(source, importPaths, FrontendFlags.init);
+    }
+
+    ModuleParseResult parseSnippetWithCheckActionContext(
+        in string source,
+        in string[] importPaths,
+        in FrontendFlags flags,
+    ) {
         import dmd.astenums: CHECKACTION;
         import dmd.globals: global;
+        import std.array: join;
+        import std.conv: text;
 
         mutex.lock;
         scope(exit) mutex.unlock;
@@ -509,7 +529,14 @@ final class Compiler {
         global.params.checkAction = CHECKACTION.context;
         scope(exit) global.params.checkAction = originalCheckAction;
 
-        return parseSourceLocked(source, importPaths, "checkaction=context", true);
+        return parseSourceLocked(
+            source,
+            importPaths,
+            text("checkaction=context", "\0", flags.compilerArguments.join("\0")),
+            true,
+            null,
+            flags,
+        );
     }
 
     ModuleParseResult parseModuleWithCheckActionContext(
