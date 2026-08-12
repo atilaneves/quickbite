@@ -312,6 +312,11 @@
   lflags` to the image link. General rule: the `--dub` path relays dub's build
   info verbatim; missing link inputs is the same class of bug as missing flags.
 
+- Link DMD-built dependency archives through DMD's driver, not bare `cc`.
+  Compiler installations may keep shared Phobos outside the system linker's
+  default search paths even though DMD's configuration can find it. Preserve
+  whole-archive ordering when forwarding the archives through the driver.
+
 - `makeRunners` constructs every backend eagerly, so an LDC bench run builds the
   llvmjit backend even though it is unavailable under LDC and never timed.
   Its ctor `dlopen`s the DMD-compiled dependency image into the LDC host; for a
