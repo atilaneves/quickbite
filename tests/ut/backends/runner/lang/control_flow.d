@@ -56,6 +56,61 @@ static foreach (backend; Matrix!()) {
     }
 }
 
+// DMD lowers a synchronized statement to balanced
+// `_d_monitorenter`/`_d_monitorexit` calls around the block. Acquiring the
+// lock does not change what the statement does with control: the block runs
+// once, and it runs to completion before the lock is released. A
+// single-threaded program can observe exactly that much, which is what this
+// row checks -- it says nothing about mutual exclusion between threads.
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.inexpressible,
+        "CTFE cannot execute the body-less _d_monitorenter runtime hook"),
+    Omit!(Bytecode, Because.refusal,
+        "SIGSEGV in the native _d_monitorenter runtime hook"),
+)) {
+    @("synchronized.objectMonitor." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            unittest {
+                auto lock = new Object;
+                int entered;
+                synchronized (lock) {
+                    entered = 1;
+                }
+                assert(entered == 1);
+            }
+        });
+    }
+}
+
+// Synchronization must preserve the object's dynamic class identity. DMD
+// lowers the block to runtime monitor calls, after which the same reference
+// must still support an ordinary checked downcast.
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.inexpressible,
+        "CTFE cannot execute the body-less _d_monitorenter runtime hook"),
+    Omit!(Bytecode, Because.refusal,
+        "SIGSEGV in the native _d_monitorenter runtime hook"),
+)) {
+    @("synchronized.preservesDynamicClassIdentity." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            class Lock: Object {
+            }
+
+            unittest {
+                Object lock = new Lock;
+
+                synchronized (lock) {
+                    assert(cast(Lock) lock !is null);
+                }
+            }
+        });
+    }
+}
+
 static foreach (backend; Matrix!()) {
     @("function.inParameters." ~ backend.stringof)
     @Tags(backend.stringof)

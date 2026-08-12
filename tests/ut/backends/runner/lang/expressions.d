@@ -16,6 +16,235 @@ private void runSse2BackendSourceFixtureTests(T)(in string moduleSource) {
 }
 
 
+// Slice-assigning a struct's dynamic-array field writes through the storage
+// that field already denotes; it does not rebind the field to fresh storage.
+// A second slice of that same storage therefore observes the write.
+static foreach (backend; Matrix!()) {
+    @("struct.fieldSliceAssignmentWritesExistingStorage." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct Holder {
+                int[] values;
+            }
+
+            unittest {
+                auto holder = Holder(new int[3]);
+                auto sameStorage = holder.values;
+
+                holder.values[] = [1, 2, 3];
+
+                assert(sameStorage == [1, 2, 3]);
+                assert(holder.values.ptr == sameStorage.ptr);
+            }
+        });
+    }
+}
+
+
+// A struct field slice assignment with an inverted range (`lower > upper`)
+// must throw before the right-hand side is evaluated, the same as the
+// existing out-of-range `upper` check on this path. SystemLinker is the
+// oracle.
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.inexpressible,
+        "CTFE rejects the slice while compiling, so the run-time error the "        ~ "assertion names never happens: `slice `[3..1]` exceeds array "
+        ~ "bounds `[0..3]``"),
+)) {
+    @("struct.fieldSliceAssignmentWithInvertedBoundsThrowsRangeError." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct Holder {
+                int[] values;
+            }
+
+            int seed(int value) {
+                return value;
+            }
+
+            unittest {
+                auto holder = Holder(new int[3]);
+                size_t lower = cast(size_t) seed(3);
+                size_t upper = cast(size_t) seed(1);
+
+                holder.values[lower .. upper] = [9];
+            }
+        }).shouldThrowWithMessage(
+            "slice [3 .. 1] has a larger lower index than upper index",
+        );
+    }
+}
+
+
+// `emplace` establishes a typed object in allocator-provided storage. Moving
+// another value into that object writes the struct itself, not the `void[]`
+// storage expression from which the destination pointer was derived.
+// SystemLinker is the oracle.
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.inexpressible,
+        "Ctfe cannot read Mallocator.instance at compile time"),
+    Omit!(Bytecode, Because.refusal,
+        "SIGSEGV in writeHeapElement (machine.d:3234): `element` is an " ~
+        "invalid pointer (0x2)"),
+)) {
+    @("struct.moveIntoEmplacedLargeStruct." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            import core.lifetime: emplace;
+            import std.algorithm.mutation: move;
+            import std.experimental.allocator.mallocator: Mallocator;
+
+            struct State {
+                int marker;
+                char[1024] buffer;
+            }
+
+            unittest {
+                auto bytes = Mallocator.instance.allocate(State.sizeof);
+                scope(exit) Mallocator.instance.deallocate(bytes);
+
+                auto destination = emplace!State(bytes);
+                State source;
+                source.marker = 42;
+                move(source, *destination);
+                assert(destination.marker == 42);
+            }
+        });
+    }
+}
+
+
+// Returning a struct with a destructor transfers a slice field's ownership
+// according to D's value semantics.  The returned value must retain the
+// allocation address so its destructor releases that same allocation.
+// SystemLinker is the oracle.
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.inexpressible,
+        "`static variable 'instance' cannot be read at compile time` "
+        ~ "(Mallocator.instance)"),
+    Omit!(Bytecode, Because.unconfirmed,
+        "the bytecode core does not yet support this dynamic-array access"),
+)) {
+    @("struct.returnedOwnerPreservesSliceAddress." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            import std.experimental.allocator.mallocator: Mallocator;
+
+            auto owners(T)(T[] values...) {
+                return Owner!T(values);
+            }
+
+            struct Owner(T) {
+                private T[] _storage;
+                private long _length;
+
+                this(T[] values...) {
+                    _storage = cast(T[]) Mallocator.instance.allocate(
+                        values.length * T.sizeof,
+                    );
+                    _storage[] = values[];
+                    _length = values.length;
+                }
+
+                ~this() {
+                    Mallocator.instance.deallocate(_storage);
+                    _length = 0;
+                }
+
+                T[] range() return scope {
+                    return _storage[0 .. _length];
+                }
+            }
+
+            unittest {
+                import std.algorithm: equal;
+
+                auto owner = owners(0, 1, 2, 3);
+                int[4] expected = [0, 1, 2, 3];
+                assert(equal(owner.range, expected[]));
+            }
+        });
+    }
+}
+
+
+// A ref-returning function exposes the caller's slice header itself.  Passing
+// that result to a native function which may replace the header must update
+// the original field, so later indexing observes the expanded length.
+// SystemLinker is the oracle.
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.inexpressible,
+        "`static variable 'instance' cannot be read at compile time` "
+        ~ "(Mallocator.instance)"),
+    Omit!(Bytecode, Because.unconfirmed,
+        "the bytecode core does not yet support this dynamic-array access"),
+)) {
+    @("refReturn.sliceHeaderNativeWritebackUpdatesStructField." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            import std.experimental.allocator: expandArray;
+            import std.experimental.allocator.mallocator: Mallocator;
+
+            struct Vector {
+                private char[] _elements;
+                private long _length;
+
+                this(char[] values...) {
+                    _elements = cast(char[]) Mallocator.instance.allocate(
+                        values.length,
+                    );
+                    _elements[] = values[];
+                    _length = values.length;
+                }
+
+                ~this() {
+                    Mallocator.instance.deallocate(cast(void[]) _elements);
+                }
+
+                void put(char value) {
+                    expand(_length + 1);
+                    _elements[_length - 1] = value;
+                }
+
+                void put(const(char)[] values) {
+                    const oldLength = _length;
+                    expand(_length + values.length);
+                    _elements[oldLength .. _length] = values[];
+                }
+
+                private void expand(long newLength) {
+                    if (newLength > _elements.length) {
+                        const newCapacity = (newLength * 3) / 2;
+                        Mallocator.instance.expandArray(
+                            mutableElements,
+                            newCapacity - _elements.length,
+                        );
+                    }
+                    _length = newLength;
+                }
+
+                private ref char[] mutableElements() return {
+                    auto pointer = &_elements;
+                    return *pointer;
+                }
+            }
+
+            unittest {
+                auto vector = Vector('f', 'o', 'o');
+                vector.put('b');
+                vector.put(['a', 'r']);
+                vector.put("quux");
+            }
+        });
+    }
+}
+
+
 static foreach (backend; Matrix!()) {
     @("associativeArray.directLocalRefArgumentMutatesSource." ~ backend.stringof)
     @Tags(backend.stringof)
@@ -620,6 +849,52 @@ static foreach (backend; AliasSeq!(Interpreter)) {
     }
 }
 
+// Calling through an interface reference must retain the identity of a class
+// constructed by `emplace`, including when the call occurs in a nested
+// function. The nested function observes and mutates the same class object.
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.refusal,
+        "core.lifetime.emplace reports that the backing slice is too small"),
+    Omit!(Bytecode, Because.refusal,
+        "core.lifetime.emplace reports that the backing slice is too small"),
+)) {
+    @("call.emplacedClassInterfaceMethodFromNestedFunction." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            import core.lifetime: emplace;
+
+            interface Allocator {
+                void deallocate();
+            }
+
+            class Implementation: Allocator {
+                int calls;
+
+                override void deallocate() {
+                    ++calls;
+                }
+            }
+
+            unittest {
+                enum words =
+                    (__traits(classInstanceSize, Implementation)
+                        + ulong.sizeof - 1)
+                    / ulong.sizeof;
+                ulong[words] storage;
+                auto implementation =
+                    emplace!Implementation(cast(void[]) storage[]);
+                implementation.calls = 0;
+                Allocator allocator = implementation;
+
+                () @trusted { allocator.deallocate; }();
+
+                assert(implementation.calls == 1);
+            }
+        });
+    }
+}
+
 static foreach (backend; Matrix!()) {
     @("floating.realComparisonPreservesRealPrecision." ~ backend.stringof)
     @Tags(backend.stringof)
@@ -674,6 +949,333 @@ static foreach (backend; Matrix!()) {
 
             unittest {
                 assert(classify(3) == 7);
+            }
+        });
+    }
+}
+
+// A class expression's dynamic TypeInfo exposes the complete class-instance
+// initializer, whose length is the storage required for that dynamic class.
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.inexpressible,
+        "`static variable 'typeid(Payload)' cannot be read at compile time`"),
+    Omit!(Bytecode, Because.diverges,
+        "Bytecode's class TypeInfo initializer is empty; characterized below"),
+)) {
+    @("typeid.classReferenceInitializerHasInstanceSize." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            class Payload {
+                int value;
+            }
+
+            unittest {
+                Payload payload = new Payload;
+                assert(typeid(payload).initializer.length ==
+                    __traits(classInstanceSize, Payload));
+            }
+        });
+    }
+}
+
+// `emplace` initializes an allocator-backed class by copying the dynamic
+// TypeInfo initializer. That copy includes each field's declared initializer,
+// not merely a correctly sized zero-filled span.
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.inexpressible,
+        "Ctfe cannot read Mallocator.instance at compile time"),
+    Omit!(Bytecode, Because.refusal,
+        "Unsupported assignment in bytecode core: fakePureErrno() = errnosave"),
+)) {
+    @("typeid.classInitializerBytesInitializeEmplacedFields." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            import core.lifetime: emplace;
+            import std.experimental.allocator.mallocator: Mallocator;
+
+            class Payload {
+                int value = 42;
+            }
+
+            unittest {
+                auto allocation = Mallocator.instance.allocate(
+                    __traits(classInstanceSize, Payload),
+                );
+                scope(exit) Mallocator.instance.deallocate(allocation);
+                auto payload = emplace!Payload(allocation);
+                assert(payload.value == 42);
+            }
+        });
+    }
+}
+
+// Bytecode currently exposes an empty initializer for a class TypeInfo. Keep
+// that divergence explicit until Bytecode can match compiled D's instance
+// initializer bytes.
+@("typeid.classReferenceInitializerIsEmpty.Bytecode")
+@Tags(Bytecode.stringof)
+unittest {
+    runBackendSourceFixtureTests!Bytecode(q{
+        class Payload {
+            int value;
+        }
+
+        unittest {
+            Payload payload = new Payload;
+            assert(typeid(payload).initializer.length == 0);
+        }
+    });
+}
+
+// Replacing a reference-counted allocator with its null state drops its final
+// interface reference. The state allocator must receive the complete
+// dynamically typed class-instance span used for that interface object.
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.inexpressible,
+        "`static variable 'disposedLength' cannot be read at compile time`"),
+    Omit!(Bytecode, Because.refusal,
+        "Unsupported assignment in bytecode core: fakePureErrno() = errnosave"),
+)) {
+    @("destructor.referenceCountedAllocatorReleasesInterfaceStorage." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            import std.experimental.allocator: allocatorObject, RCIAllocator;
+            import std.experimental.allocator.mallocator: Mallocator;
+
+            __gshared size_t disposedLength;
+
+            struct TrackingAllocator {
+                enum uint alignment = Mallocator.instance.alignment;
+                size_t* disposedLength;
+
+                void[] allocate(size_t length) @nogc nothrow {
+                    return Mallocator.instance.allocate(length);
+                }
+
+                bool deallocate(void[] allocation) @nogc nothrow pure {
+                    *disposedLength = allocation.length;
+                    return true;
+                }
+            }
+
+            unittest {
+                disposedLength = 0;
+                TrackingAllocator allocator;
+                allocator.disposedLength = &disposedLength;
+                auto dynamicAllocator = allocatorObject(allocator);
+                dynamicAllocator = RCIAllocator.init;
+                assert(disposedLength > 0);
+            }
+        });
+    }
+}
+
+// A nested predicate passed to an imported range algorithm retains access to
+// the method parameter it compares. Removing the matched element then shifts
+// the remaining slice elements in place.
+static foreach (backend; Matrix!(
+    Omit!(Bytecode, Because.refusal,
+        "the bytecode core does not yet give a nested predicate access to the "
+        ~ "enclosing method's parameter, so `matches` never returns true and "
+        ~ "the assertion inside `remove` fails (`false != true`)"),
+)) {
+    @("closure.nestedPredicateRemovesMatchingAllocation." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct ByteRange {
+                void* ptr;
+                size_t length;
+            }
+
+            struct Allocations {
+                ByteRange[] entries;
+
+                bool remove(void[] bytes) scope pure {
+                    import std.algorithm: canFind, countUntil;
+
+                    bool matches(ByteRange other) {
+                        return other.ptr == bytes.ptr &&
+                            other.length == bytes.length;
+                    }
+
+                    assert(entries.canFind!matches);
+                    const index = entries.countUntil!matches;
+                    foreach (i; index .. entries.length - 1)
+                        entries[i] = entries[i + 1];
+                    entries = entries[0 .. $ - 1];
+                    return true;
+                }
+            }
+
+            unittest {
+                ubyte[2] first;
+                ubyte[3] second;
+                auto allocations = Allocations([
+                    ByteRange(first.ptr, first.length),
+                    ByteRange(second.ptr, second.length),
+                ]);
+                assert(allocations.remove(first[]));
+                assert(allocations.entries.length == 1);
+                assert(allocations.entries[0].ptr == second.ptr);
+            }
+        });
+    }
+}
+
+// A struct declared inside a function reaches that function's `auto ref`
+// parameter through its context pointer. Calling one of the struct's methods
+// after the enclosing function has returned still reads the caller's variable.
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.inexpressible,
+        "CTFE cannot read a function's parameter once that function has "
+        ~ "returned: `variable 'value' cannot be read at compile time`, "
+        ~ "reproduced with stock dmd on the same shape"),
+    Omit!(Bytecode, Because.unconfirmed,
+        "the bytecode core does not yet give a function-local struct access "
+        ~ "to the enclosing function's variables"),
+)) {
+    @("closure.nestedStructReadsEnclosingRefParameter." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct Reading {
+                int amount;
+            }
+
+            auto wrap(V)(scope auto ref V value) {
+                struct Compare {
+                    bool equals(U)(U other) {
+                        return value.amount == other.amount;
+                    }
+                }
+
+                return Compare();
+            }
+
+            unittest {
+                auto reading = Reading(3);
+                auto expected = Reading(3);
+                assert(wrap(reading).equals(expected));
+            }
+        });
+    }
+}
+
+// A function-local struct stored in a module global keeps working across the
+// unittest boundary: a later unittest can still call a method that reaches
+// back into the now-returned enclosing function's parameter.
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.inexpressible,
+        "`static variable 'stored' cannot be read at compile time`"),
+    Omit!(Bytecode, Because.refusal,
+        "`Unsupported expression in bytecode core: value.amount`"),
+)) {
+    @("closure.nestedStructInGlobalReadsCaptureInLaterExecution." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct Reading {
+                int amount;
+            }
+
+            auto wrap(V)(scope auto ref V value) {
+                struct Compare {
+                    bool equals(U)(U other) {
+                        return value.amount == other.amount;
+                    }
+                }
+
+                return Compare();
+            }
+
+            typeof(wrap(Reading(1))) stored;
+
+            unittest {
+                stored = wrap(Reading(3));
+            }
+
+            unittest {
+                assert(stored.equals(Reading(3)));
+            }
+        });
+    }
+}
+
+// A struct declared inside a function can call a method on a delegate it
+// captured from that function, the same as any other captured variable.
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.inexpressible,
+        "`variable 'dg' cannot be read at compile time`"),
+    Omit!(Bytecode, Because.refusal,
+        "`index [32] is out of bounds for array of length 4`"),
+)) {
+    @("closure.nestedStructMethodCallsCapturedDelegate." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            auto wrap() {
+                int base = 40;
+                int delegate() dg = () => base + 2;
+
+                struct Caller {
+                    int call() {
+                        return dg();
+                    }
+                }
+
+                return Caller();
+            }
+
+            unittest {
+                assert(wrap().call() == 42);
+            }
+        });
+    }
+}
+
+// Each instance of a function-local struct captures the enclosing
+// activation that constructed it. A recursive call's inner instance reads
+// its own capture, not an outer, still-live activation's.
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.inexpressible,
+        "`static variable 'result' cannot be read at compile time`"),
+    Omit!(Bytecode, Because.refusal, "0 != 1"),
+)) {
+    @("closure.nestedStructReadsOwnActivationDuringRecursion." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct Reading {
+                int amount;
+            }
+
+            int result;
+
+            auto wrap(Reading value, int depth) {
+                struct Compare {
+                    bool equals(Reading other) {
+                        return value.amount == other.amount;
+                    }
+                }
+
+                if (depth == 0)
+                    return Compare();
+
+                auto inner = wrap(Reading(3), 0);
+                result = inner.equals(Reading(3)) ? 1 : 0;
+                return Compare();
+            }
+
+            unittest {
+                wrap(Reading(999), 1);
+                assert(result == 1);
             }
         });
     }
@@ -1123,6 +1725,49 @@ static foreach (backend; Matrix!()) {
 
             unittest {
                 assert(classify(5) == 12);
+            }
+        });
+    }
+}
+
+// A method introduced into a class by a `mixin template`, overriding a
+// base class method, still participates in virtual dispatch: a call
+// through a base-typed reference reaches the mixed-in override rather
+// than the base implementation.
+static foreach (backend; Matrix!()) {
+    @("class.mixedInOverrideDispatchesVirtually." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            mixin template Describes() {
+                override int describe() {
+                    return field + 2;
+                }
+            }
+
+            class Base {
+                int describe() {
+                    return 1;
+                }
+            }
+
+            class Child : Base {
+                int field;
+
+                this(int field) {
+                    this.field = field;
+                }
+
+                mixin Describes;
+            }
+
+            int classify(int seed) {
+                Base value = new Child(seed);
+                return value.describe;
+            }
+
+            unittest {
+                assert(classify(5) == 7);
             }
         });
     }
@@ -4040,6 +4685,502 @@ static foreach (backend; Matrix!()) {
     }
 }
 
+// `emplace` constructs a class object in caller-provided storage. Qualifying
+// that reference as `shared` must preserve its dynamic class identity and
+// continue to refer to the same object.
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.refusal,
+        "core.lifetime.emplace reports that the backing slice is too small"),
+    Omit!(Bytecode, Because.refusal,
+        "core.lifetime.emplace reports that the backing slice is too small"),
+)) {
+    @("cast.emplacedClassToShared." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            import core.lifetime: emplace;
+
+            interface Allocator {
+            }
+
+            class Implementation: Allocator {
+            }
+
+            unittest {
+                enum words =
+                    (__traits(classInstanceSize, Implementation)
+                        + ulong.sizeof - 1)
+                    / ulong.sizeof;
+                ulong[words] storage;
+                auto object =
+                    emplace!Implementation(cast(void[]) storage[]);
+                auto sharedObject =
+                    cast(shared Implementation) object;
+
+                assert(sharedObject !is null);
+            }
+        });
+    }
+}
+
+// `emplace` establishes a class object in caller-provided storage. Casting
+// that storage's address to the class denotes the object now living there, so
+// the result behaves as one: it converts to an interface the class
+// implements, a virtual call reaches the class's own override, and `typeid`
+// reports the class. SystemLinker is the oracle.
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.refusal,
+        "core.lifetime.emplace reports that the backing slice is too small"),
+    Omit!(Bytecode, Because.refusal,
+        "core.lifetime.emplace reports that the backing slice is too small"),
+)) {
+    @("cast.emplacedStoragePointerActsAsItsClass." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            import core.lifetime: emplace;
+
+            interface Describer {
+                int describe();
+            }
+
+            class Payload: Describer {
+                override int describe() {
+                    return 42;
+                }
+            }
+
+            unittest {
+                enum words =
+                    (__traits(classInstanceSize, Payload) + ulong.sizeof - 1)
+                    / ulong.sizeof;
+                ulong[words] storage;
+                emplace!Payload(cast(void[]) storage[]);
+
+                auto payload = cast(Payload) cast(void*) storage.ptr;
+                Describer describer = payload;
+
+                assert(describer !is null);
+                assert(describer.describe == 42);
+                assert(typeid(payload) is typeid(Payload));
+            }
+        });
+    }
+}
+
+// What `cast` to a class reference means depends on the source. From another
+// class reference D consults the runtime type and answers `null` when the
+// object is not of the target class. From a raw pointer there is no runtime
+// type to consult, so the cast reinterprets the address and cannot answer
+// `null` for a non-null pointer. SystemLinker is the oracle.
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.inexpressible,
+        "`pointer cast from a class to void* is not supported at compile time`"),
+    Omit!(Bytecode, Because.refusal,
+        "the bytecode core does not yet consult the runtime type when casting "
+        ~ "between class references, so the failing downcast answers "
+        ~ "non-null (`<address> !is 0`)"),
+)) {
+    @("cast.classFromPointerReinterpretsAddress." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            class Base {
+            }
+
+            class Derived: Base {
+            }
+
+            unittest {
+                Base base = new Base;
+
+                assert(cast(Derived) base is null);
+
+                void* address = cast(void*) base;
+                assert(cast(Derived) address !is null);
+            }
+        });
+    }
+}
+
+// Reinterpreting a class object's address does not change what the object is.
+// After a round trip through a pointer, and a cast naming only a base class,
+// the object still has the dynamic type it was created with: a virtual call
+// reaches the most derived override. SystemLinker is the oracle.
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.inexpressible,
+        "`pointer cast from a class to void* is not supported at compile time`"),
+)) {
+    @("cast.pointerRoundTripKeepsDynamicClass." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            class Base {
+                int describe() {
+                    return 1;
+                }
+            }
+
+            class Derived: Base {
+                override int describe() {
+                    return 2;
+                }
+            }
+
+            unittest {
+                Base instance = new Derived;
+                Base reinterpreted = cast(Base) cast(void*) instance;
+
+                assert(reinterpreted.describe == 2);
+                assert(typeid(instance) is typeid(Derived));
+            }
+        });
+    }
+}
+
+// A fresh allocation can land at the address of a prior allocation that has
+// since been freed. An object `emplace`d into that reused storage has the
+// class it was just constructed with, not the class of whatever object
+// previously occupied the address: a virtual call reaches the new object's
+// own override. SystemLinker is the oracle.
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.inexpressible,
+        "Ctfe cannot read Mallocator.instance at compile time"),
+    Omit!(Bytecode, Because.refusal,
+        "backend process exits with status 139, writing through a null "
+        ~ "element address while emplacing into allocator storage"),
+)) {
+    @("cast.reusedStorageTakesTheClassEmplacedThere." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            import core.lifetime: emplace;
+            import std.experimental.allocator.mallocator: Mallocator;
+
+            class Base {
+                int describe() {
+                    return 0;
+                }
+            }
+
+            class A: Base {
+                override int describe() {
+                    return 1;
+                }
+            }
+
+            class B: Base {
+                override int describe() {
+                    return 2;
+                }
+            }
+
+            unittest {
+                auto first = Mallocator.instance.allocate(
+                    __traits(classInstanceSize, A),
+                );
+                auto a = emplace!A(first);
+                assert(a.describe == 1);
+                Mallocator.instance.deallocate(first);
+
+                auto second = Mallocator.instance.allocate(
+                    __traits(classInstanceSize, B),
+                );
+                auto b = emplace!B(second);
+                scope(exit) Mallocator.instance.deallocate(second);
+
+                assert(b.describe == 2);
+            }
+        });
+    }
+}
+
+// A raw-pointer cast to an interface names a view onto whatever object
+// lives at that address; it does not change what the object itself is. A
+// later virtual call through the original class reference must still reach
+// the class's own override. SystemLinker is the oracle.
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.inexpressible,
+        "`pointer cast from a class to void* is not supported at compile "
+        ~ "time`"),
+)) {
+    @("cast.interfaceViewDoesNotChangeTheObjectsClass." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            interface Viewer {
+                int value();
+            }
+
+            class Subject: Viewer {
+                override int value() {
+                    return 42;
+                }
+            }
+
+            unittest {
+                auto subject = new Subject;
+                void* address = cast(void*) subject;
+                auto viewer = cast(Viewer) address;
+
+                assert(viewer !is null);
+                assert(subject.value == 42);
+            }
+        });
+    }
+}
+
+// `emplace` establishes an object of the class it names, whatever the storage
+// held before. Emplacing a base class over storage that already holds a
+// derived object makes the storage a base object: a virtual call through it
+// reaches the base's own implementation, not the derived override the earlier
+// occupant had. SystemLinker is the oracle.
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.refusal,
+        "core.lifetime.emplace reports that the backing slice is too small"),
+    Omit!(Bytecode, Because.refusal,
+        "core.lifetime.emplace reports that the backing slice is too small"),
+)) {
+    @("cast.baseEmplacedOverDerivedStorageTakesTheBaseClass." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            import core.lifetime: emplace;
+
+            class Base {
+                int describe() {
+                    return 1;
+                }
+            }
+
+            class Derived: Base {
+                override int describe() {
+                    return 2;
+                }
+            }
+
+            unittest {
+                enum derivedWords =
+                    (__traits(classInstanceSize, Derived) + ulong.sizeof - 1)
+                    / ulong.sizeof;
+                enum baseWords =
+                    (__traits(classInstanceSize, Base) + ulong.sizeof - 1)
+                    / ulong.sizeof;
+                ulong[derivedWords] storage;
+
+                emplace!Derived(cast(void[]) storage[]);
+                emplace!Base(cast(void[]) storage[0 .. baseWords]);
+
+                auto base = cast(Base) cast(void*) storage.ptr;
+
+                assert(base.describe == 1);
+            }
+        });
+    }
+}
+
+// A cast to a derived class names a view onto whatever object lives at that
+// address; it does not make the object one. Naming the derived class through
+// a raw pointer therefore leaves a live base object as it was, and a later
+// virtual call on it still reaches the base's own implementation.
+// SystemLinker is the oracle.
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.inexpressible,
+        "`pointer cast from a class to void* is not supported at compile "
+        ~ "time`"),
+)) {
+    @("cast.derivedViewDoesNotChangeALiveObjectsClass." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            class Base {
+                int describe() {
+                    return 1;
+                }
+            }
+
+            class Derived: Base {
+                override int describe() {
+                    return 2;
+                }
+            }
+
+            unittest {
+                Base base = new Base;
+                auto view = cast(Derived) cast(void*) base;
+                assert(view !is null);
+
+                Base again = cast(Base) cast(void*) base;
+                assert(again.describe == 1);
+            }
+        });
+    }
+}
+
+// Slice-assigning a class's whole initializer image over already-emplaced
+// storage, through a plain array variable rather than the raw pointer
+// `emplace` itself uses, still establishes an object of the new class there:
+// a later virtual call through that storage reaches the new class's own
+// override, not the class that occupied it before. SystemLinker is the
+// oracle.
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.refusal,
+        "core.lifetime.emplace reports that the backing slice is too small"),
+    Omit!(Bytecode, Because.refusal,
+        "`Unsupported dynamic array initializer in bytecode core: B`"),
+)) {
+    @("cast.variableSliceAssignmentCarriesTheNewClassIdentity." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            import core.lifetime: emplace;
+
+            class Base {
+                int describe() {
+                    return 0;
+                }
+            }
+
+            class A: Base {
+                override int describe() {
+                    return 1;
+                }
+            }
+
+            class B: Base {
+                override int describe() {
+                    return 2;
+                }
+            }
+
+            unittest {
+                enum words =
+                    (__traits(classInstanceSize, A) + ulong.sizeof - 1)
+                    / ulong.sizeof;
+                ulong[words] storage;
+                emplace!A(cast(void[]) storage[]);
+
+                void[] chunk = cast(void[]) storage[];
+                chunk[] = __traits(initSymbol, B)[];
+
+                auto b = cast(B) cast(void*) storage.ptr;
+                assert(b.describe == 2);
+            }
+        });
+    }
+}
+
+// Slice-assigning a class's whole initializer image over already-emplaced
+// storage, through a cast rather than the raw pointer `emplace` itself uses,
+// still establishes an object of the new class there: a later virtual call
+// through that storage reaches the new class's own override, not the class
+// that occupied it before. SystemLinker is the oracle.
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.refusal,
+        "core.lifetime.emplace reports that the backing slice is too small"),
+    Omit!(Bytecode, Because.refusal,
+        "`Unsupported dynamic array initializer in bytecode core: B`"),
+)) {
+    @("cast.castedSliceAssignmentCarriesTheNewClassIdentity." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            import core.lifetime: emplace;
+
+            class Base {
+                int describe() {
+                    return 0;
+                }
+            }
+
+            class A: Base {
+                override int describe() {
+                    return 1;
+                }
+            }
+
+            class B: Base {
+                override int describe() {
+                    return 2;
+                }
+            }
+
+            unittest {
+                enum words =
+                    (__traits(classInstanceSize, A) + ulong.sizeof - 1)
+                    / ulong.sizeof;
+                ulong[words] storage;
+                emplace!A(cast(void[]) storage[]);
+
+                (cast(void[]) storage[])[] = __traits(initSymbol, B)[];
+
+                auto b = cast(B) cast(void*) storage.ptr;
+                assert(b.describe == 2);
+            }
+        });
+    }
+}
+
+// Slice-assigning a class's whole initializer image over already-emplaced
+// storage, through a struct field rather than the raw pointer `emplace`
+// itself uses, still establishes an object of the new class there: a later
+// virtual call through that storage reaches the new class's own override,
+// not the class that occupied it before. SystemLinker is the oracle.
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.refusal,
+        "core.lifetime.emplace reports that the backing slice is too small"),
+    Omit!(Bytecode, Because.refusal,
+        "`Unsupported dynamic array initializer in bytecode core: B`"),
+)) {
+    @("cast.structFieldSliceAssignmentCarriesTheNewClassIdentity." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            import core.lifetime: emplace;
+
+            class Base {
+                int describe() {
+                    return 0;
+                }
+            }
+
+            class A: Base {
+                override int describe() {
+                    return 1;
+                }
+            }
+
+            class B: Base {
+                override int describe() {
+                    return 2;
+                }
+            }
+
+            struct Holder {
+                void[] chunk;
+            }
+
+            unittest {
+                enum words =
+                    (__traits(classInstanceSize, A) + ulong.sizeof - 1)
+                    / ulong.sizeof;
+                ulong[words] storage;
+                emplace!A(cast(void[]) storage[]);
+
+                Holder holder;
+                holder.chunk = storage[];
+                holder.chunk[] = __traits(initSymbol, B)[];
+
+                auto b = cast(B) cast(void*) storage.ptr;
+                assert(b.describe == 2);
+            }
+        });
+    }
+}
+
 static foreach (backend; Matrix!()) {
     @("cast.arrayElementAddressToStaticArrayPointer." ~ backend.stringof)
     @Tags(backend.stringof)
@@ -6494,8 +7635,7 @@ static foreach (backend; Matrix!()) {
 // a wrong VALUE on a correct guest program, on master too -- but the native
 // mirror's own verify step must not turn that pre-existing wrong answer
 // into an internal `AssertError` crash.
-static foreach (backend; Matrix!(
-)) {
+static foreach (backend; Matrix!()) {
     @("class.sharedNestedBodyRewrittenBySiblingBindingDoesNotCrash." ~
         backend.stringof)
     @Tags(backend.stringof)
@@ -7294,6 +8434,33 @@ static foreach (backend; Matrix!()) {
                 int[] field = value.values;
                 assert(field[0] == 99);
                 assert(observe(value) == 99);
+            }
+        });
+    }
+}
+
+// Growing a dynamic array by assigning to its `.length` keeps the elements it
+// already holds and default-initialises the ones added past the old end. A
+// constructor body is no different from anywhere else in this respect: an
+// array assigned earlier in the constructor still holds its elements when a
+// later statement grows it.
+static foreach (backend; Matrix!()) {
+    @("class.constructorArrayResizePreservesAssignedElements." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            class Holder {
+                int[] values;
+
+                this() {
+                    values = [1, 2];
+                    values.length = 3;
+                }
+            }
+
+            unittest {
+                auto holder = new Holder;
+                assert(holder.values == [1, 2, 0]);
             }
         });
     }
@@ -8847,6 +10014,608 @@ static foreach (backend; Matrix!()) {
                 counter.slot() = 42;
                 assert(counter.value == 42);
                 assert(counter.calls == 1);
+            }
+        });
+    }
+}
+
+// A ref-returning call used as a struct member receiver denotes the original
+// lvalue.  The method's `this` must therefore bind to that returned place, so
+// mutation reaches the source rather than a detached value copy.
+// SystemLinker is the oracle.
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.inexpressible,
+        "`static variable 'box' cannot be read at compile time`"),
+)) {
+    @("refCall.memberCallThroughReturnedStructMutatesSource." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct Box {
+                int value;
+
+                void set(int newValue) {
+                    value = newValue;
+                }
+            }
+
+            Box box;
+
+            ref Box getBox() {
+                return box;
+            }
+
+            unittest {
+                getBox.set(42);
+                assert(box.value == 42);
+            }
+        });
+    }
+}
+
+// A member call on a freshly constructed struct denotes the temporary that
+// owns the constructor result. Its destructor must therefore receive that
+// same temporary after the member call. SystemLinker is the oracle.
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.refusal,
+        "Ctfe destroys a detached copy instead of the temporary's slice, so "
+        ~ "`storage[0]` is never written (`0 != 42`)"),
+    Omit!(Bytecode, Because.refusal, "0 != 42"),
+)) {
+    @("call.constructedTemporaryWithDestructorUsesItsStorage." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct Owner {
+                int[] memory;
+
+                this(int[] memory) {
+                    this.memory = memory;
+                }
+
+                ~this() {
+                    memory[0] = 42;
+                }
+
+                size_t length() const {
+                    return memory.length;
+                }
+            }
+
+            unittest {
+                int[32] storage;
+                assert(Owner(storage[]).length == 32);
+                assert(storage[0] == 42);
+            }
+        });
+    }
+}
+
+// A constructed temporary used as a ref-returning member call's assignment
+// target (`Owner(...).slot = value`) still denotes that temporary. Its
+// destructor must run exactly once, at the end of the enclosing full
+// expression, the same as when the member call is merely read. SystemLinker
+// is the oracle.
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.refusal,
+        "the temporary's destructor never runs, so the count it keeps in "
+        ~ "`storage[0]` stays at zero (`0 != 1`)"),
+    Omit!(Bytecode, Because.refusal, "0 != 1"),
+)) {
+    @("call.constructedTemporaryIsDestroyedAfterAssigningThroughIt." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct Owner {
+                int[] memory;
+
+                this(int[] memory) {
+                    this.memory = memory;
+                }
+
+                ~this() {
+                    ++memory[0];
+                }
+
+                ref int slot() {
+                    return memory[1];
+                }
+            }
+
+            unittest {
+                int[4] storage;
+                Owner(storage[]).slot = 7;
+                assert(storage[1] == 7);
+                assert(storage[0] == 1);
+            }
+        });
+    }
+}
+
+// A constructed temporary whose ref-returning member call has its address
+// taken (here, passed as a `ref` argument) still denotes that temporary. Its
+// destructor must run exactly once, at the end of the enclosing full
+// expression, the same as when the member call is merely read. SystemLinker
+// is the oracle.
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.refusal,
+        "the temporary's destructor never runs, so the count it keeps in "
+        ~ "`storage[0]` stays at zero (`0 != 1`)"),
+    Omit!(Bytecode, Because.refusal, "0 != 1"),
+)) {
+    @("call.constructedTemporaryIsDestroyedAfterPassingItsAddressByRef." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct Owner {
+                int[] memory;
+
+                this(int[] memory) {
+                    this.memory = memory;
+                }
+
+                ~this() {
+                    ++memory[0];
+                }
+
+                ref int slot() {
+                    return memory[1];
+                }
+            }
+
+            void setThrough(ref int target, int newValue) {
+                target = newValue;
+            }
+
+            unittest {
+                int[4] storage;
+                setThrough(Owner(storage[]).slot, 9);
+                assert(storage[1] == 9);
+                assert(storage[0] == 1);
+            }
+        });
+    }
+}
+
+// A temporary created within an expression lives until the end of the full
+// expression that created it, not until a member call through it returns.
+// Later use of state its destructor mutates, still in the same expression,
+// must observe the value from before that destructor ran. SystemLinker is
+// the oracle.
+static foreach (backend; Matrix!()) {
+    @("call.constructedTemporaryOutlivesTheMemberCall." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct Owner {
+                int[] memory;
+
+                this(int[] memory) {
+                    this.memory = memory;
+                }
+
+                ~this() {
+                    memory[0] = 42;
+                }
+
+                size_t length() const {
+                    return memory.length;
+                }
+            }
+
+            unittest {
+                int[4] storage;
+                const total = Owner(storage[]).length + storage[0];
+                assert(total == 4);
+            }
+        });
+    }
+}
+
+// Return-scope destruction happens after the ref-return expression has
+// selected its lvalue. Cleanup must not replace that returned address, so an
+// assignment through the call still reaches the selected object.
+// SystemLinker is the oracle.
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.inexpressible,
+        "CTFE cannot read a module-level variable: `static variable 'target' "
+        ~ "cannot be read at compile time`"),
+)) {
+    @("refCall.returnCleanupPreservesLvalueAddress." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct Cleanup {
+                ~this() {}
+            }
+
+            int target;
+
+            ref int getTarget() {
+                Cleanup cleanup;
+                return target;
+            }
+
+            unittest {
+                getTarget = 42;
+                assert(target == 42);
+            }
+        });
+    }
+}
+
+private enum destructorTryScopeExitSource = q{
+    import core.exception: AssertError;
+
+    struct Resource {
+        ~this() {
+            assert(false, "expected destructor failure");
+        }
+    }
+
+    unittest {
+        bool caught;
+        try {
+            Resource resource;
+        } catch (AssertError) {
+            caught = true;
+        }
+        assert(caught);
+    }
+};
+
+// CTFE and Bytecode diverge from compiled D: both report the destructor's
+// AssertError as an uncaught test failure instead of entering the catch.
+static foreach (backend; AliasSeq!(Ctfe, Bytecode)) {
+    @("destructor.tryScopeExitExceptionIsCaught." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        const results =
+            runBackendSourceFixtureTestResults!backend(
+                destructorTryScopeExitSource,
+            );
+        results.length.should == 1;
+        results[0].passed.should == false;
+        results[0].message.should == "expected destructor failure";
+    }
+}
+
+// A local declared inside a try statement is destroyed before control leaves
+// that statement. An exception from that scope-exit destructor is therefore
+// handled by the try statement's following catch clause.
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.diverges,
+        "see sibling pin above (scope-exit AssertError is uncaught)"),
+    Omit!(Bytecode, Because.diverges,
+        "see sibling pin above (scope-exit AssertError is uncaught)"),
+)) {
+    @("destructor.tryScopeExitExceptionIsCaught." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(destructorTryScopeExitSource);
+    }
+}
+
+// Casting a slice changes the element type of the view, not the storage it
+// denotes. Whole-slice assignment through that cast must update the original
+// backing array. SystemLinker is the oracle.
+static foreach (backend; Matrix!()) {
+    @("assign.castedSliceWritesOriginalStorage." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            unittest {
+                char[3] storage;
+                // `view` is cast to `immutable` only to give the assignment
+                // below something to cast away; it still aliases the mutable
+                // local `storage`, which is never actually shared as
+                // immutable, so writing through it here is safe in practice.
+                immutable(char)[] view = cast(immutable(char)[]) storage[];
+                () @trusted { (cast(char[]) view)[] = "foo"; }();
+                assert(storage[] == "foo");
+            }
+        });
+    }
+}
+
+// A slice assignment through a cast with an out-of-range upper bound must
+// throw before writing anything, even when the resulting range is
+// zero-width -- the same bounds check the uncast slice-assignment path
+// already applies. SystemLinker is the oracle.
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.inexpressible,
+        "CTFE rejects the slice while compiling, so the run-time error the "
+        ~ "assertion names never happens: `slice `[5..5]` exceeds array "
+        ~ "bounds `[0..3]``"),
+)) {
+    @("assign.castedSliceWithOutOfRangeBoundsThrowsRangeError." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            int seed(int value) {
+                return value;
+            }
+
+            unittest {
+                char[3] storage;
+                // `view` is cast to `immutable` only to give the assignment
+                // below something to cast away; it still aliases the mutable
+                // local `storage`, which is never actually shared as
+                // immutable, so writing through it here is safe in practice.
+                immutable(char)[] view = cast(immutable(char)[]) storage[];
+                size_t lower = cast(size_t) seed(5);
+                size_t upper = cast(size_t) seed(5);
+
+                () @trusted { (cast(char[]) view)[lower .. upper] = 'x'; }();
+            }
+        }).shouldThrowWithMessage(
+            "slice [5 .. 5] extends past source array of length 3",
+        );
+    }
+}
+
+
+// A slice assignment on a plain array variable with an inverted range
+// (`lower > upper`) must throw before the right-hand side is evaluated, the
+// same as the existing out-of-range `upper` check on this path. SystemLinker
+// is the oracle.
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.inexpressible,
+        "CTFE rejects the slice while compiling, so the run-time error the "
+        ~ "assertion names never happens: `slice `[3..1]` exceeds array "
+        ~ "bounds `[0..3]``"),
+)) {
+    @("assign.sliceAssignmentWithInvertedBoundsThrowsRangeError." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            int seed(int value) {
+                return value;
+            }
+
+            unittest {
+                int[] a = new int[3];
+                size_t lower = cast(size_t) seed(3);
+                size_t upper = cast(size_t) seed(1);
+
+                a[lower .. upper] = [9];
+            }
+        }).shouldThrowWithMessage(
+            "slice [3 .. 1] has a larger lower index than upper index",
+        );
+    }
+}
+
+
+// `arr[] = value` with a single scalar right-hand side fills every element of
+// the slice with that value; it is not an element-wise copy from another
+// array. That still holds through a cast that only changes the view's
+// element type, not the storage it denotes. SystemLinker is the oracle.
+static foreach (backend; Matrix!()) {
+    @("assign.castedSliceFilledWithScalar." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            char fill(char value) {
+                return value;
+            }
+
+            unittest {
+                char[3] storage;
+                // `view` is cast to `immutable` only to give the assignment
+                // below something to cast away; it still aliases the mutable
+                // local `storage`, which is never actually shared as
+                // immutable, so writing through it here is safe in practice.
+                immutable(char)[] view = cast(immutable(char)[]) storage[];
+                () @trusted { (cast(char[]) view)[] = fill('z'); }();
+                assert(storage[] == "zzz");
+            }
+        });
+    }
+}
+
+// `arr[] = value` with a single scalar right-hand side fills every element
+// with that value, including a static-array struct field's whole slice.
+// SystemLinker is the oracle.
+static foreach (backend; Matrix!()) {
+    @("assign.structFieldSliceFilledWithScalar." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct Holder {
+                char[4] buf;
+            }
+
+            char fill(char value) {
+                return value;
+            }
+
+            unittest {
+                Holder holder;
+                holder.buf[] = fill('.');
+
+                assert(holder.buf[0] == '.');
+                assert(holder.buf[1] == '.');
+                assert(holder.buf[2] == '.');
+                assert(holder.buf[3] == '.');
+            }
+        });
+    }
+}
+
+// `arr[a .. b] = value` with a single scalar right-hand side fills only that
+// sub-range with the value, leaving the rest of a static-array struct field
+// untouched. SystemLinker is the oracle.
+static foreach (backend; Matrix!()) {
+    @("assign.structFieldSubRangeFilledWithScalar." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct Holder {
+                int[4] nums;
+            }
+
+            int fill(int value) {
+                return value;
+            }
+
+            unittest {
+                Holder holder;
+                holder.nums[1 .. 3] = fill(7);
+
+                assert(holder.nums[0] == 0);
+                assert(holder.nums[1] == 7);
+                assert(holder.nums[2] == 7);
+                assert(holder.nums[3] == 0);
+            }
+        });
+    }
+}
+
+// `void[]` still denotes byte-addressable storage: its slice bounds and
+// assignment length are measured in bytes. Copying between two `void[]`
+// slices must therefore copy those bytes despite the element type having no
+// independently representable D value. SystemLinker is the oracle.
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.inexpressible,
+        "Ctfe cannot read Mallocator.instance at compile time"),
+    Omit!(Bytecode, Because.refusal,
+        "SIGSEGV in writeHeapElement (machine.d:3234): `element` is an " ~
+        "invalid pointer (0x2)"),
+)) {
+    @("assign.voidSlicesCopyBytes." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            import std.experimental.allocator.mallocator: Mallocator;
+
+            unittest {
+                auto source = Mallocator.instance.allocate(3);
+                auto destination = Mallocator.instance.allocate(3);
+                scope(exit) {
+                    Mallocator.instance.deallocate(source);
+                    Mallocator.instance.deallocate(destination);
+                }
+
+                auto sourceBytes = cast(ubyte*) source.ptr;
+                sourceBytes[0] = 10;
+                sourceBytes[1] = 11;
+                sourceBytes[2] = 12;
+                destination[] = source[];
+                auto destinationBytes = cast(ubyte*) destination.ptr;
+                assert(destinationBytes[0] == 10);
+                assert(destinationBytes[1] == 11);
+                assert(destinationBytes[2] == 12);
+            }
+        });
+    }
+}
+
+// Slice-assigning into a struct field typed `void[]` denotes the same
+// byte-addressable storage as any other `void[]`: writing through the field
+// must copy bytes into the storage the field already points at, despite
+// `void` having no independently representable value. SystemLinker is the
+// oracle.
+static foreach (backend; Matrix!()) {
+    @("assign.structFieldVoidSliceCopiesBytes." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct Holder {
+                void[] data;
+            }
+
+            unittest {
+                ubyte[3] source;
+                source[0] = 10;
+                source[1] = 11;
+                source[2] = 12;
+
+                ubyte[3] storage;
+                Holder holder;
+                holder.data = storage[];
+
+                holder.data[] = source[];
+
+                assert(storage[0] == 10);
+                assert(storage[1] == 11);
+                assert(storage[2] == 12);
+            }
+        });
+    }
+}
+
+// A cast to `void[]` changes a view's element type but not the storage it
+// denotes. Slice-assigning through that cast must copy bytes into the
+// original array, despite `void` having no independently representable
+// value. SystemLinker is the oracle.
+static foreach (backend; Matrix!()) {
+    @("assign.castedVoidSliceCopiesBytes." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            unittest {
+                ubyte[3] source;
+                source[0] = 10;
+                source[1] = 11;
+                source[2] = 12;
+
+                ubyte[3] storage;
+                auto view = storage[];
+
+                (cast(void[]) view)[] = source[];
+
+                assert(storage[0] == 10);
+                assert(storage[1] == 11);
+                assert(storage[2] == 12);
+            }
+        });
+    }
+}
+
+// Module globals survive from one unittest to the next. A class reference
+// stored behind an interface must retain its dynamic identity across that
+// boundary so the later unittest dispatches to the original object.
+// SystemLinker is the oracle.
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.inexpressible,
+        "`static variable 'implementation' cannot be read at compile time`"),
+    Omit!(Bytecode, Because.refusal,
+        "the bytecode core resets module globals between unittests, so " ~
+        "`receiver` is null in the second unittest " ~
+        "(`function call through null class reference` `null`)"),
+)) {
+    @("call.globalInterfaceRetainsIdentityAcrossUnittests." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            interface Receiver {
+                void call();
+            }
+
+            class Implementation: Receiver {
+                int calls;
+
+                override void call() {
+                    ++calls;
+                }
+            }
+
+            Receiver receiver;
+            Implementation implementation;
+
+            unittest {
+                implementation = new Implementation;
+                receiver = implementation;
+            }
+
+            unittest {
+                receiver.call;
+                assert(implementation.calls == 1);
             }
         });
     }
@@ -12872,5 +14641,50 @@ static foreach (backend; AliasSeq!(Bytecode)) {
         }).shouldThrowWithMessage(
             "index [0] is out of bounds for array of length 0",
         );
+    }
+}
+
+// A ref-returning member call's receiver expression denotes the lvalue that
+// member call runs against; D evaluates it exactly once, whether the member
+// call is an assignment target or merely read. SystemLinker is the oracle.
+static foreach (backend; Matrix!()) {
+    @("refCall.receiverExpressionEvaluatedOnce." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct Holder {
+                int stored;
+
+                ref int slot() {
+                    return stored;
+                }
+            }
+
+            ref Holder get(ref Holder holder, ref int evaluations) {
+                ++evaluations;
+                return holder;
+            }
+
+            unittest {
+                Holder holder;
+                int evaluations;
+
+                get(holder, evaluations).slot = 5;
+
+                assert(evaluations == 1);
+                assert(holder.stored == 5);
+            }
+
+            unittest {
+                Holder holder;
+                holder.stored = 7;
+                int evaluations;
+
+                auto value = get(holder, evaluations).slot;
+
+                assert(evaluations == 1);
+                assert(value == 7);
+            }
+        });
     }
 }

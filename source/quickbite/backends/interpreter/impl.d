@@ -18,6 +18,25 @@ public class Interpreter: imported!"quickbite.backends".TreeNodeBackend {
 
     public alias eval = Evaluator.eval;
 
+    // Module-level guest state has module lifetime, not per-execution
+    // lifetime: a global written by one unittest is still written when the
+    // next one runs. One table, shared by every execution of this backend
+    // instance, is what makes that true.
+    private ModuleTable* _moduleTable;
+    // A class reference stored in such a global outlives the execution that
+    // created it, but its dynamic class and owning allocation live outside
+    // the guest bytes, keyed by body address. They describe the same storage
+    // the module table holds, so they share its lifetime: drop them at the
+    // end of an execution and a surviving reference loses the identity that
+    // makes a virtual call dispatch to the original object.
+    private imported!"dmd.mtype".Type[void*] _nativeClassTypes;
+    private ExpressionResult[void*] _nativeClassOwners;
+    // A function-local struct instance stored in such a global keeps working
+    // across the boundary too: its hidden context field names the same
+    // enclosing-activation chain the module table's bytes already anchor, so
+    // this table shares their lifetime for exactly the same reason.
+    private FrameBlock[][void*] _nestedContextFrames;
+
     private enum ExecutionMode {
         regular,
         unitTest,
@@ -70,11 +89,21 @@ public class Interpreter: imported!"quickbite.backends".TreeNodeBackend {
 
             clearFrameLayoutCache;
             Walker walker;
-            scope(exit) walker.closeDurableInboundSession;
+            scope(exit) {
+                _nativeClassTypes = walker.nativeClassTypes;
+                _nativeClassOwners = walker.nativeClassOwners;
+                _nestedContextFrames = walker.nestedContextFrames;
+                walker.closeDurableInboundSession;
+            }
             walker._executionState = new InterpreterExecutionState;
             walker._executionState.invokeNativeCallback =
                 &walker.invokeNativeCallback;
-            walker.moduleTable = new ModuleTable;
+            if (_moduleTable is null)
+                _moduleTable = new ModuleTable;
+            walker.moduleTable = _moduleTable;
+            walker.nativeClassTypes = _nativeClassTypes.dup;
+            walker.nativeClassOwners = _nativeClassOwners.dup;
+            walker.nestedContextFrames = _nestedContextFrames.dup;
             walker.inUnitTest = mode == ExecutionMode.unitTest;
             import quickbite.frontend.dmd.functions: ensureFunctionBodySemantic;
 
@@ -370,6 +399,11 @@ private struct TemporaryPointerOwners {
     public imported!"quickbite.backends.interpreter.native_block".NativeBlock[]
         blocks;
     public size_t expressionDepth;
+    // A constructed member-call receiver's destructor (see
+    // `constructedReceiverDestructor`), queued here instead of run when the
+    // call returns, so it fires once the enclosing full expression finishes
+    // evaluating, in reverse construction order.
+    public imported!"dmd.expression".Expression[] pendingReceiverDestructors;
 }
 
 // Native places for class array-literal `.init` fields, keyed by the address
@@ -435,6 +469,18 @@ private struct InterpreterExecutionState {
         ExpressionResult[void*] nativeClassOwners;
     public imported!"quickbite.backends.interpreter.expression_result".
         ExpressionResult[void*] nativeExceptionMetadata;
+
+    // A struct declared inside a function reads that function's locals through
+    // its hidden context field, and its methods can run long after the
+    // enclosing activation returned. An interpreted activation is a
+    // `FrameBlock`, not a guest address the field's bytes could name, so this
+    // table retains the enclosing activation chain (nearest first) keyed by
+    // that field's own address -- the same out-of-band shape
+    // `nativeDelegateSlots` uses, and carried across value copies by
+    // `copyStoredMetadata`. The retained handles keep the frames' GC-owned
+    // storage alive for exactly as long as an instance can still be called.
+    public imported!"quickbite.backends.interpreter.frame_block".FrameBlock[][void*]
+        nestedContextFrames;
 }
 
 private class InterpretedException: Exception {
@@ -521,6 +567,10 @@ private struct Walker {
 
     private @property ref imported!"dmd.mtype".Type[void*] nativeClassTypes() {
         return _executionState.nativeClassTypes;
+    }
+
+    private @property ref FrameBlock[][void*] nestedContextFrames() {
+        return _executionState.nestedContextFrames;
     }
 
     private @property ref ExpressionResult[void*] nativeClassOwners() {
@@ -1017,7 +1067,8 @@ private struct Walker {
         if (
             nativeDelegateSlots.length == 0 &&
             nativeFunctionPointerSlots.length == 0 &&
-            nativeTypeInfoSlots.length == 0
+            nativeTypeInfoSlots.length == 0 &&
+            nestedContextFrames.length == 0
         )
             return;
 
@@ -1046,8 +1097,21 @@ private struct Walker {
             }
         }
 
+        size_t[] contextOffsets;
+        FrameBlock[][] contextFrames;
+        foreach (offset; 0 .. byteLength) {
+            auto address = cast(void*) (cast(ubyte*) oldAddress + offset);
+            if (auto frames = address in nestedContextFrames) {
+                contextOffsets ~= offset;
+                contextFrames ~= *frames;
+            }
+        }
+
         clearStoredMetadataRange(newAddress, byteLength);
 
+        foreach (index, offset; contextOffsets)
+            nestedContextFrames[cast(void*) (cast(ubyte*) newAddress + offset)] =
+                contextFrames[index];
         foreach (index, offset; delegateOffsets)
             nativeDelegateSlots[cast(void*) (cast(ubyte*) newAddress + offset)] =
                 delegateValues[index];
@@ -1090,7 +1154,8 @@ private struct Walker {
         if (
             nativeDelegateSlots.length == 0 &&
             nativeFunctionPointerSlots.length == 0 &&
-            nativeTypeInfoSlots.length == 0
+            nativeTypeInfoSlots.length == 0 &&
+            nestedContextFrames.length == 0
         )
             return;
 
@@ -1134,6 +1199,16 @@ private struct Walker {
                 )
             )
                 nativeTypeInfoSlots.remove(cast(void*) candidate);
+            if (
+                cast(void*) candidate in nestedContextFrames &&
+                rangesOverlap(
+                    candidate,
+                    (void*).sizeof,
+                    start,
+                    byteLength,
+                )
+            )
+                nestedContextFrames.remove(cast(void*) candidate);
         }
     }
 
@@ -1270,6 +1345,17 @@ private struct Walker {
             "raw pointer owner escaped its expression scope",
         );
         _temporaryPointerOwners.blocks ~= owner;
+    }
+
+    private void queueReceiverDestructor(
+        imported!"dmd.expression".Expression destructor,
+    ) @safe {
+        assert(
+            _temporaryPointerOwners !is null &&
+                _temporaryPointerOwners.expressionDepth != 0,
+            "receiver destructor queued outside its expression scope",
+        );
+        _temporaryPointerOwners.pendingReceiverDestructors ~= destructor;
     }
 
     private void storeBinding(VarDeclaration variable, in ExpressionResult value) {
@@ -1732,6 +1818,23 @@ private struct Walker {
         rootNativeException(exception);
         const object = nativeExceptionObject(exception);
         throw new InterpretedException(object, exception.msg);
+    }
+
+    // A failed assert throws a guest `AssertError`, exactly as compiled D
+    // does, so a guest `catch (AssertError)` matches it by class name and by
+    // the native object's identity.
+    private void throwAssertError(in string message) {
+        import core.exception: AssertError;
+
+        auto native = new AssertError(message);
+        throw new InterpretedException(
+            nativeExceptionBaseObject(
+                message,
+                native.classinfo.name,
+                cast(void*) native,
+            ),
+            message,
+        );
     }
 
     private void rootNativeException(
@@ -2233,12 +2336,27 @@ private struct Walker {
             _temporaryPointerOwners = new TemporaryPointerOwners;
 
         const firstOwner = _temporaryPointerOwners.blocks.length;
+        const firstDestructor =
+            _temporaryPointerOwners.pendingReceiverDestructors.length;
         const outermost = _temporaryPointerOwners.expressionDepth == 0;
         ++_temporaryPointerOwners.expressionDepth;
         scope(exit) {
             --_temporaryPointerOwners.expressionDepth;
-            if (outermost)
+            if (outermost) {
+                // A temporary lives until the end of the full expression
+                // that created it. Run every receiver destructor queued
+                // while evaluating this full expression now, in reverse
+                // construction order, before releasing its temporary
+                // storage.
+                auto destructors =
+                    _temporaryPointerOwners.pendingReceiverDestructors[
+                        firstDestructor .. $];
+                _temporaryPointerOwners.pendingReceiverDestructors.length =
+                    firstDestructor;
+                foreach_reverse (destructor; destructors)
+                    runExpression(destructor);
                 _temporaryPointerOwners.blocks.length = firstOwner;
+            }
         }
 
         return runExpressionImpl(expression);
@@ -2463,9 +2581,12 @@ assertExpression:
                 assertFailureMessage;
 
             if (!isTruthy(runExpression(assert_.e1)))
-                throw new Exception(
-                    assertFailureMessage(assert_, runningCalledFunction, inUnitTest, &runExpression),
-                );
+                throwAssertError(assertFailureMessage(
+                    assert_,
+                    runningCalledFunction,
+                    inUnitTest,
+                    &runExpression,
+                ));
             return ExpressionResult(true);
         }
 
@@ -2936,17 +3057,33 @@ unsupportedExpression:
         imported!"dmd.expression".VarExp var,
     ) {
         import dmd.typesem: defaultInitLiteral;
+        import quickbite.backends.interpreter.aggregate_value: AggregateValue;
 
         auto symbol = var.var.isSymbolDeclaration;
         if (symbol is null)
             assert(0, "non-variable VarExp was not a SymbolDeclaration");
 
         auto type = symbol.dsym is null ? symbol.type : symbol.dsym.type;
-        auto structType = type is null ? null : type.toBasetype.isTypeStruct;
-        if (structType is null)
-            assert(0, "SymbolDeclaration VarExp was not a struct initializer");
 
-        return runExpression(structType.defaultInitLiteral(var.loc));
+        if (auto structType = type is null ? null : type.toBasetype.isTypeStruct)
+            return runExpression(structType.defaultInitLiteral(var.loc));
+
+        // `__traits(initSymbol, T)` denotes T's initializer image as an
+        // untyped span: the bytes `emplace` copies into raw storage before any
+        // constructor runs. A type whose default is not all-zero (a `char`
+        // field, a declared field default) needs those real bytes, so the span
+        // views an initialized instance rather than blank storage. The same
+        // declaration spelled with T's own type is instead T's `.init` value.
+        const initializerImage = isVoidSliceType(symbol.type);
+
+        auto classType = type is null ? null : type.toBasetype.isTypeClass;
+        if (initializerImage && classType !is null && classType.sym !is null) {
+            auto object = AggregateValue.allocateClass(type);
+            initializeNativeClassBody(this, type, object);
+            return AggregateValue.classBodyByteSlice(object, symbol.type);
+        }
+
+        assert(0, "SymbolDeclaration VarExp was not an aggregate initializer");
     }
 
     private ExpressionResult runLogicalAndExpression(
@@ -3191,6 +3328,25 @@ unsupportedExpression:
         if (auto delegate_ = e1.isDelegateExp)
             return runDelegateExpression(delegate_);
 
+        // `this` is not an ordinary binding to compose an address from: the
+        // receiver's address is the one this activation was entered with. A
+        // struct constructor's implicit `return this` reaches here, and must
+        // answer the temporary the constructor ran against.
+        if (e1.isThisExp !is null) {
+            if (thisAddress !is null)
+                return ExpressionResult.pointerValue(thisAddress);
+            if (currentFunction !is null && currentFunction.vthis !is null)
+                return bindingPointerValue(currentFunction.vthis);
+        }
+
+        // D's comma expression yields its right operand, including that
+        // operand's lvalue identity. Constructor lowering uses this shape to
+        // sequence initialization before referring to the fresh temporary.
+        if (auto comma = e1.isCommaExp) {
+            runExpression(comma.e1);
+            return addressOfExpression(comma.e2, op);
+        }
+
         // Taking the address of a dereference recovers the pointer value;
         // evaluating the dereference first would incorrectly require a
         // separate addressable value for the pointee.
@@ -3387,10 +3543,10 @@ unsupportedExpression:
         in imported!"dmd.tokens".EXP op,
     ) {
         import dmd.expression: Expression;
-        import dmd.funcsem: functionSemantic3;
         import quickbite.backends.interpreter.frame_layout:
             isReferenceParameter;
-        import quickbite.frontend.dmd.functions: hasNoAvailableSource;
+        import quickbite.frontend.dmd.functions:
+            ensureFunctionBodySemantic, hasNoInterpretableSource;
         import std.conv: text;
 
         const unsupported =
@@ -3401,10 +3557,13 @@ unsupportedExpression:
         if (!returnsRef(call.f))
             return addressOfCallResultTemporary(call);
 
-        functionSemantic3(call.f);
+        if (auto dot = call.e1.isDotVarExp)
+            return memberRefReturningCallAddress(call, dot, unsupported);
+
+        ensureFunctionBodySemantic(call.f);
         if (call.f.needThis)
             throw new Exception(unsupported);
-        const native = hasNoAvailableSource(call.f);
+        const native = hasNoInterpretableSource(call.f);
 
         auto callArguments = CallArguments(
             call.arguments is null ? 0 : call.arguments.length,
@@ -3486,6 +3645,202 @@ unsupportedExpression:
         mergeFunctionState(call.f, argumentExpressions, child, arguments);
 
         return returnedLvalueAddress(call.f, argumentExpressions, child);
+    }
+
+    // Resolve a member call's receiver expression exactly once: its address
+    // (needed to alias a struct `this` to the caller's real storage) and the
+    // value read through that address (needed for the null-receiver check,
+    // virtual dispatch, and a native callee). A receiver with no address
+    // (an rvalue) falls back to evaluating it ordinarily -- still exactly
+    // once. Composing the address and the value as two independent
+    // evaluations of `receiverExpression` would re-run any side effect it
+    // carries (e.g. a ref-returning call) an extra time. A receiver that is
+    // itself a constructed temporary owns a full-expression cleanup, queued
+    // here for the same reason.
+    private void resolveMemberCallReceiver(
+        imported!"dmd.expression".Expression receiverExpression,
+        out ExpressionResult receiverAddress,
+        out ExpressionResult receiver,
+    ) {
+        import dmd.tokens: EXP;
+        import quickbite.backends.interpreter.place: Place;
+
+        receiverAddress = addressOfExpression(receiverExpression, EXP.address);
+        receiver = receiverAddress.isPointer
+            ? readStoredValue(
+                Place(receiverAddress.pointerAddress, receiverExpression.type),
+            )
+            : runExpression(receiverExpression);
+        queueConstructedReceiverDestructor(receiverExpression);
+    }
+
+    // The address of the lvalue a ref-returning *member* call yields. The
+    // callee's `this` must alias the receiver expression's own storage: the
+    // returned lvalue is typically a receiver field, and its address is only
+    // meaningful to the caller if it points into the caller's aggregate
+    // rather than into a copied receiver value.
+    private ExpressionResult memberRefReturningCallAddress(
+        imported!"dmd.expression".CallExp call,
+        imported!"dmd.expression".DotVarExp dot,
+        in string unsupported,
+    ) {
+        import dmd.expression: Expression;
+        import quickbite.backends.interpreter.frame_layout:
+            isReferenceParameter;
+        import quickbite.frontend.dmd.functions:
+            ensureFunctionBodySemantic, hasNoInterpretableSource;
+
+        ExpressionResult receiverAddress;
+        ExpressionResult receiver;
+        resolveMemberCallReceiver(dot.e1, receiverAddress, receiver);
+        if (receiver == ExpressionResult.null_)
+            throw new Exception(
+                "function call through null class reference `null`",
+            );
+
+        auto function_ = resolveMemberFunction(call.f, receiver);
+        ensureFunctionBodySemantic(function_);
+        const native = hasNoInterpretableSource(function_);
+
+        ExpressionResult[] arguments;
+        Expression[] argumentExpressions;
+        EvaluatedReferenceArgument[] evaluatedArguments;
+        if (call.arguments !is null)
+            foreach (index, argument; *call.arguments) {
+                EvaluatedReferenceArgument evaluated;
+                arguments ~= index < function_.parameters.length &&
+                    isReferenceParameter(
+                        function_,
+                        index,
+                        (*function_.parameters)[index],
+                    )
+                    ? runRefArgumentExpression(argument, evaluated)
+                    : runExpression(argument);
+                if (
+                    index < function_.parameters.length &&
+                    (*function_.parameters)[index].type.toBasetype.isTypeClass !is null
+                )
+                    arguments[$ - 1] =
+                        rootedNativeClassValue(argument, arguments[$ - 1]);
+                argumentExpressions ~= argument;
+                evaluatedArguments ~= evaluated;
+            }
+
+        if (native) {
+            import quickbite.backends.interpreter.native_call_adapter:
+                NativeCallException, NativeCallResult;
+
+            imported!"dmd.mtype".Type receiverType = receiverClassType(dot.e1);
+            if (receiverType is null)
+                receiverType = receiverStructType(dot.e1);
+
+            NativeCallResult nativeResult;
+            try {
+                if (!invokeNativeDeclaration(
+                    function_,
+                    receiver,
+                    receiverType,
+                    dot.e1,
+                    arguments,
+                    argumentExpressions,
+                    evaluatedArguments,
+                    false,
+                    nativeResult,
+                ))
+                    throw new Exception(unsupported);
+            } catch (NativeCallException exception) {
+                throwNativeException(exception);
+            }
+            return ExpressionResult.pointerValue(nativeResult.referenceAddress);
+        }
+
+        Walker child;
+        child.runningCalledFunction = true;
+        child.currentFunction = function_;
+        auto layout = cachedFrameLayout(function_);
+        child._activationFrame = FrameBlock.allocate(layout);
+        child.addressOfRefReturn = true;
+        child.result = ExpressionResult(false);
+        forkExecutionStateInto(child);
+        scope(exit) child.retireActivationFrameMetadata;
+        bindCapturedReferenceSlots(function_, child);
+        child.thisValue = receiver;
+        child.hasThis = true;
+        child.bindThisReferenceAddress(function_, receiver);
+        child.bindFunctionParameters(
+            function_,
+            arguments,
+            argumentExpressions,
+            _activationFrame,
+            evaluatedArguments,
+        );
+        aliasThisToReceiverStorage(child, function_, receiverAddress);
+
+        try {
+            child.runStatement(function_.fbody);
+        } catch (InterpretedException exception) {
+            mergeMemberFunctionState(
+                function_,
+                dot.e1,
+                argumentExpressions,
+                child,
+                arguments,
+            );
+            throw exception;
+        }
+        mergeMemberFunctionState(
+            function_,
+            dot.e1,
+            argumentExpressions,
+            child,
+            arguments,
+        );
+        return returnedLvalueAddress(function_, argumentExpressions, child);
+    }
+
+    // Alias a member callee's `this` to the receiver's real storage address,
+    // already resolved by the caller (`resolveMemberCallReceiver`). A
+    // `ref`-returning or ref-assigned member call must read and mutate the
+    // caller's own aggregate: field addresses computed inside the callee
+    // (`&_field`, `return _field;`) only reach the caller's struct if `this`
+    // is a borrowed view of that exact address, never a detached copy of the
+    // receiver's value. Taking the receiver's address here a second,
+    // independent way would re-run a side-effecting receiver expression
+    // (e.g. a ref-returning call) an extra time.
+    private void aliasThisToReceiverStorage(
+        ref Walker child,
+        imported!"dmd.func".FuncDeclaration function_,
+        in ExpressionResult receiverAddress,
+    ) {
+        if (
+            function_.vthis is null ||
+            function_.vthis.isThisDeclaration is null
+        )
+            return;
+
+        if (!receiverAddress.isPointer)
+            return;
+
+        child.thisAddress = receiverAddress.pointerAddress;
+        if (child._activationFrame.hasReferenceSlot(function_.vthis))
+            child._activationFrame.setReferenceSlot(
+                function_.vthis,
+                child.thisAddress,
+            );
+        if (function_.vthis.type.toBasetype.isTypeStruct !is null) {
+            import quickbite.backends.interpreter.layout: typeByteSize;
+            import quickbite.backends.interpreter.native_aggregate:
+                NativeAggregate;
+            import quickbite.backends.interpreter.native_block: NativeBlock;
+
+            child.thisValue = ExpressionResult.nativeAggregateValue(NativeAggregate(
+                function_.vthis.type,
+                NativeBlock.borrow(
+                    receiverAddress.pointerAddress,
+                    typeByteSize(function_.vthis.type),
+                ),
+            ));
+        }
     }
 
     // A `ref` foreach variable over an input range may bind to a `front`
@@ -4630,17 +4985,19 @@ unsupportedExpression:
             isReferenceParameter;
 
         if (call.f !is null) {
-            import dmd.funcsem: functionSemantic3;
-            functionSemantic3(call.f);
+            import quickbite.frontend.dmd.functions: ensureFunctionBodySemantic;
+
+            ensureFunctionBodySemantic(call.f);
         }
 
         bool nativeCall;
         if (call.f !is null) {
             import quickbite.backends.interpreter.interception_guard:
                 bodyContainsAsm;
-            import quickbite.frontend.dmd.functions: hasNoAvailableSource;
+            import quickbite.frontend.dmd.functions: hasNoInterpretableSource;
 
-            nativeCall = hasNoAvailableSource(call.f) || bodyContainsAsm(call.f);
+            nativeCall = hasNoInterpretableSource(call.f) ||
+                bodyContainsAsm(call.f);
         }
 
         if (call.f !is null) {
@@ -4855,8 +5212,52 @@ unsupportedExpression:
                 receiver = readValue(
                     Place(receiverPointerAddress.pointerAddress, dot.e1.type),
                 );
+            } else if (
+                dot.e1.isCommaExp !is null &&
+                dot.e1.type.toBasetype.isTypeStruct !is null
+            ) {
+                // DMD lowers a constructed struct temporary to
+                // `(Temp __t = void, __t).this(args)`. Take that comma's
+                // address so the constructor runs against the temporary's own
+                // storage; running the comma as a value would construct into
+                // a detached copy and leave the temporary default-initialized
+                // for its later destructor.
+                import dmd.tokens: EXP;
+                import quickbite.backends.interpreter.place: Place;
+                import quickbite.backends.interpreter.place_value: readValue;
+
+                receiverPointerAddress = addressOfExpression(dot.e1, EXP.address);
+                hasReceiverPointerAddress = receiverPointerAddress.isPointer;
+                receiver = readValue(
+                    Place(receiverPointerAddress.pointerAddress, dot.e1.type),
+                );
+            } else if (
+                dot.e1.isCallExp !is null &&
+                dot.e1.type.toBasetype.isTypeStruct !is null &&
+                dot.e1.isCallExp.f !is null &&
+                returnsRef(dot.e1.isCallExp.f)
+            ) {
+                // A ref-returning call denotes the lvalue it returned
+                // (`isWritableLocation`'s own `CallExp` case): the later
+                // `this`-rebind must reach that exact storage, not a copy.
+                // Take its address once here too, so a side-effecting
+                // receiver call (`get(holder, evaluations).slot`) runs
+                // exactly once rather than the rebind re-running it via a
+                // second `addressOfExpression`.
+                import dmd.tokens: EXP;
+                import quickbite.backends.interpreter.place: Place;
+                import quickbite.backends.interpreter.place_value: readValue;
+
+                receiverPointerAddress = addressOfExpression(dot.e1, EXP.address);
+                hasReceiverPointerAddress = receiverPointerAddress.isPointer;
+                receiver = receiverPointerAddress.isPointer
+                    ? readValue(
+                        Place(receiverPointerAddress.pointerAddress, dot.e1.type),
+                    )
+                    : runExpression(dot.e1);
             } else
                 receiver = runExpression(dot.e1);
+            queueConstructedReceiverDestructor(dot.e1);
             if (dot.e1.type.toBasetype.isTypeClass !is null)
                 receiver = rootedNativeClassValue(dot.e1, receiver);
             const interpreterAllocatedClass = receiver.isNativeAggregate &&
@@ -4867,6 +5268,21 @@ unsupportedExpression:
                 );
 
             if (call.f !is null && call.f.needThis) {
+                // A class TypeInfo's `initializer` is the class-instance
+                // initializer span: `classInstanceSize` bytes holding every
+                // field's declared default. An interpreted-only TypeInfo has
+                // no resident body druntime could read that from, so build
+                // the instance image here.
+                if (
+                    receiver.isTypeName &&
+                    declarationName(call.f) == "initializer" &&
+                    arguments.length == 0
+                )
+                    return typeInfoClassInitializer(
+                        receiver.asTypeNameString,
+                        call.type,
+                    );
+
                 // An interpreted-only TypeInfo has symbolic identity but no
                 // resident class body on which druntime's member can run.
                 // TypeInfo.opEquals defines equality by that identity (and
@@ -4881,7 +5297,7 @@ unsupportedExpression:
                     return ExpressionResult(receiver == arguments[0]);
 
                 import quickbite.frontend.dmd.functions:
-                    hasNoAvailableSource, noAvailableSourceMessage;
+                    hasNoInterpretableSource, noAvailableSourceMessage;
 
                 if (
                     call.f.isCtorDeclaration !is null &&
@@ -4904,7 +5320,7 @@ unsupportedExpression:
                 // member resolves by symbol and receives the native body as
                 // hidden `this`; it never reads word zero as a vtable.
                 if (
-                    hasNoAvailableSource(function_) &&
+                    hasNoInterpretableSource(function_) &&
                     (!interpreterAllocatedClass || function_.vtblIndex < 0)
                 ) {
                     import quickbite.backends.interpreter.native_call_adapter:
@@ -4932,6 +5348,9 @@ unsupportedExpression:
                             evaluatedArguments,
                             returnsReceiver,
                             nativeResult,
+                            hasReceiverPointerAddress
+                                ? receiverPointerAddress.pointerAddress
+                                : null,
                         ))
                             return nativeResult.value;
                     } catch (NativeCallException exception) {
@@ -4959,12 +5378,14 @@ unsupportedExpression:
         }
 
         if (call.f !is null) {
-            import quickbite.frontend.dmd.functions:
-                hasNoAvailableSource, noAvailableSourceMessage;
+            import quickbite.frontend.dmd.functions: noAvailableSourceMessage;
             import quickbite.backends.interpreter.native_call_adapter:
                 NativeCallException, NativeCallResult;
 
             if (nativeCall) {
+                if (isMonitorOperation(call.f))
+                    return ExpressionResult.void_;
+
                 try {
                     NativeCallResult nativeResult;
                     if (!call.f.needThis && invokeNativeDeclaration(
@@ -5100,6 +5521,50 @@ unsupportedExpression:
         throw new Exception("Unsupported eval call.");
     }
 
+    // A constructor used directly as a member receiver owns a full-expression
+    // temporary. DMD records that cleanup on the synthesized declaration
+    // rather than emitting a DtorExpStatement, so queue it here to run at the
+    // end of the enclosing full expression instead of when the member call
+    // returns. Every member-call receiver-resolution site routes through
+    // this, so a constructed-temporary receiver is destroyed exactly once
+    // regardless of whether the member call is read, assigned through, or
+    // has its address taken.
+    private void queueConstructedReceiverDestructor(
+        imported!"dmd.expression".Expression receiver,
+    ) {
+        auto destructor = constructedReceiverDestructor(receiver);
+        if (destructor !is null)
+            queueReceiverDestructor(destructor);
+    }
+
+    private imported!"dmd.expression".Expression
+    constructedReceiverDestructor(
+        imported!"dmd.expression".Expression receiver,
+    ) {
+        auto constructor = receiver.isCallExp;
+        if (
+            constructor is null ||
+            constructor.f is null ||
+            constructor.f.isCtorDeclaration is null
+        )
+            return null;
+
+        auto member = constructor.e1.isDotVarExp;
+        if (member is null)
+            return null;
+
+        auto comma = member.e1.isCommaExp;
+        if (comma is null)
+            return null;
+
+        auto declaration = comma.e1.isDeclarationExp;
+        if (declaration is null)
+            return null;
+
+        auto variable = declaration.declaration.isVarDeclaration;
+        return variable is null ? null : variable.edtor;
+    }
+
     // A writable aggregate receiver is already stored in its caller-owned
     // place. The child method borrows those exact bytes as `this`; creating a
     // detached by-value snapshot here would allocate and then be discarded
@@ -5125,6 +5590,22 @@ unsupportedExpression:
         out EvaluatedReferenceArgument evaluated,
         in bool materializeValue = true,
     ) {
+        // A ref-returning call used as a `ref` argument passes the returned
+        // lvalue itself onward: bind the callee's reference slot to that
+        // lvalue's address so writes through the parameter reach it, instead
+        // of a copied call result.
+        if (auto call = argument.isCallExp)
+            if (call.f !is null && returnsRef(call.f)) {
+                import dmd.tokens: EXP;
+                import quickbite.backends.interpreter.place: Place;
+
+                const address = refReturningCallAddress(call, EXP.address);
+                if (address.isPointer) {
+                    evaluated.address = address.pointerAddress;
+                    return readStoredValue(Place(evaluated.address, argument.type));
+                }
+            }
+
         if (argument.isDotVarExp !is null) {
             import dmd.tokens: EXP;
             import quickbite.backends.interpreter.place: Place;
@@ -5442,7 +5923,13 @@ unsupportedExpression:
         if (auto override_ = overridingFunction(class_, function_))
             return override_;
 
+        if (auto interface_ = matchingInterfaceFunction(class_, function_))
+            return interface_;
+
         if (auto vtbl = vtblFunction(class_, function_))
+            return vtbl;
+
+        if (auto vtbl = matchingVtableFunction(class_, function_))
             return vtbl;
 
         if (auto candidate = matchingMemberFunction(class_, function_))
@@ -6236,10 +6723,13 @@ unsupportedExpression:
         in ExpressionResult[] arguments,
         imported!"dmd.expression".Expression[] argumentExpressions,
         in EvaluatedReferenceArgument[] evaluatedArguments = null,
-        // Set by a caller that already composed the receiver's place or
-        // evaluated a `PtrExp` operand and retained its address. The
-        // `this`-rebind below borrows that same address instead of walking
-        // the receiver a second time.
+        // Set by a caller that already composed the receiver's place,
+        // evaluated a `PtrExp` operand, or evaluated a ref-returning `CallExp`
+        // receiver, and retained its address. The `this`-rebind below borrows
+        // that same address instead of walking the receiver a second time,
+        // which matters when the receiver expression is side-effecting (e.g.
+        // `p()` in `p().get()`, `i++` in `a[i++].method()`, or the call
+        // itself in `get(holder, evaluations).slot`).
         const(ExpressionResult)* precomputedReceiverPointerAddress = null,
     ) {
         const memberReceiver = nativeMemberReceiver(function_, receiver);
@@ -6266,7 +6756,11 @@ unsupportedExpression:
         child.result = ExpressionResult(false);
         forkExecutionStateInto(child);
         scope(exit) child.retireActivationFrameMetadata;
-        bindCapturedReferenceSlots(function_, child);
+        bindCapturedReferenceSlots(
+            function_,
+            child,
+            nestedReceiverCapturedAddresses(function_, memberReceiver),
+        );
         // For constructor calls, DMD may blit the target variable to zero
         // before the ctor runs (e.g. `box = 0 , box.this(input)`), so the
         // receiver evaluates to a non-struct scalar.  Seed `thisValue` from
@@ -6571,6 +7065,16 @@ unsupportedExpression:
         if (auto target = assignmentTarget(expression))
             return isWritableLocation(target);
 
+        // A `ref`-returning call denotes the lvalue it returned, so a member
+        // call on it must reach that lvalue's storage rather than a copy.
+        if (auto call = expression.isCallExp)
+            return call.f !is null && returnsRef(call.f);
+
+        // A comma expression denotes its right operand, so it is writable
+        // exactly when that operand is.
+        if (auto comma = expression.isCommaExp)
+            return isWritableLocation(comma.e2);
+
         return
             expression.isVarExp !is null ||
             expression.isDotVarExp !is null ||
@@ -6810,12 +7314,6 @@ unsupportedExpression:
                 continue;
 
             child._activationFrame.setReferenceSlot(variable, address);
-
-            import dmd.astenums: TY;
-            if (variable.type.toBasetype.ty == TY.Tdelegate)
-                if (auto delegate_ = address in nativeDelegateSlots)
-                    child.nativeDelegateSlots[address] = *delegate_;
-
         }
     }
 
@@ -7540,6 +8038,21 @@ unsupportedExpression:
         throw new Exception("Unsupported interpreter field read.");
     }
 
+    private ExpressionResult typeInfoClassInitializer(
+        in string className,
+        imported!"dmd.mtype".Type resultType,
+    ) {
+        import quickbite.backends.interpreter.aggregate_value: AggregateValue;
+
+        auto class_ = classDeclarationByQualifiedName(className);
+        if (class_ is null)
+            throw new Exception("Unsupported interpreter TypeInfo initializer.");
+
+        auto object = AggregateValue.allocateClass(class_.type);
+        initializeNativeClassBody(this, class_.type, object);
+        return AggregateValue.classBodyByteSlice(object, resultType);
+    }
+
     private NativeArray classSliceField(
         ref NativeBlock cell,
         imported!"dmd.dclass".ClassDeclaration class_,
@@ -8034,10 +8547,10 @@ unsupportedExpression:
         imported!"dmd.expression".CallExp call,
         in ExpressionResult value,
     ) {
-        import dmd.funcsem: functionSemantic3;
         import quickbite.backends.interpreter.frame_layout:
             isReferenceParameter;
-        import quickbite.frontend.dmd.functions: hasNoAvailableSource;
+        import quickbite.frontend.dmd.functions:
+            ensureFunctionBodySemantic, hasNoInterpretableSource;
 
         if (call.f is null || !returnsRef(call.f))
             return false;
@@ -8046,14 +8559,14 @@ unsupportedExpression:
         if (dot is null)
             return writeFreeRefReturningCallLocation(call, value);
 
-        const receiver = runExpression(dot.e1);
+        ExpressionResult receiverAddress;
+        ExpressionResult receiver;
+        resolveMemberCallReceiver(dot.e1, receiverAddress, receiver);
         if (receiver == ExpressionResult.null_)
             throw new Exception("function call through null class reference `null`");
 
         auto function_ = resolveMemberFunction(call.f, receiver);
-        functionSemantic3(function_);
-        if (hasNoAvailableSource(function_))
-            return false;
+        ensureFunctionBodySemantic(function_);
 
         auto callArguments = CallArguments(
             call.arguments is null ? 0 : call.arguments.length,
@@ -8073,9 +8586,50 @@ unsupportedExpression:
                     )
                     ? runRefArgumentExpression(argument, evaluated, false)
                     : runExpression(argument);
+                if (
+                    index < function_.parameters.length &&
+                    (*function_.parameters)[index].type.toBasetype.isTypeClass !is null
+                )
+                    arguments[index] =
+                        rootedNativeClassValue(argument, arguments[index]);
                 argumentExpressions[index] = argument;
                 evaluatedArguments[index] = evaluated;
             }
+
+        if (hasNoInterpretableSource(function_)) {
+            import quickbite.backends.interpreter.native_call_adapter:
+                NativeCallException, NativeCallResult;
+            import quickbite.backends.interpreter.place: Place;
+
+            imported!"dmd.mtype".Type receiverType = receiverClassType(dot.e1);
+            if (receiverType is null)
+                receiverType = receiverStructType(dot.e1);
+
+            try {
+                NativeCallResult nativeResult;
+                if (!invokeNativeDeclaration(
+                    function_,
+                    receiver,
+                    receiverType,
+                    dot.e1,
+                    arguments,
+                    argumentExpressions,
+                    evaluatedArguments,
+                    false,
+                    nativeResult,
+                ))
+                    return false;
+                auto returnType = function_.type.toBasetype.isTypeFunction
+                    .next.toBasetype;
+                writeStoredValue(
+                    Place(nativeResult.referenceAddress, returnType),
+                    value,
+                );
+                return true;
+            } catch (NativeCallException exception) {
+                throwNativeException(exception);
+            }
+        }
 
         Walker child;
         child.runningCalledFunction = true;
@@ -8098,37 +8652,7 @@ unsupportedExpression:
             _activationFrame,
             evaluatedArguments,
         );
-        if (
-            function_.vthis !is null &&
-            function_.vthis.isThisDeclaration !is null
-        ) {
-            import dmd.tokens: EXP;
-
-            const receiverAddress = addressOfExpression(dot.e1, EXP.address);
-            if (receiverAddress.isPointer) {
-                child.thisAddress = receiverAddress.pointerAddress;
-                if (child._activationFrame.hasReferenceSlot(function_.vthis))
-                    child._activationFrame.setReferenceSlot(
-                        function_.vthis,
-                        child.thisAddress,
-                    );
-                if (function_.vthis.type.toBasetype.isTypeStruct !is null) {
-                    import quickbite.backends.interpreter.layout: typeByteSize;
-                    import quickbite.backends.interpreter.native_aggregate:
-                        NativeAggregate;
-                    import quickbite.backends.interpreter.native_block:
-                        NativeBlock;
-
-                    child.thisValue = ExpressionResult.nativeAggregateValue(NativeAggregate(
-                        function_.vthis.type,
-                        NativeBlock.borrow(
-                            receiverAddress.pointerAddress,
-                            typeByteSize(function_.vthis.type),
-                        ),
-                    ));
-                }
-            }
-        }
+        aliasThisToReceiverStorage(child, function_, receiverAddress);
 
         try {
             child.runStatement(function_.fbody);
@@ -8156,12 +8680,13 @@ unsupportedExpression:
         imported!"dmd.expression".CallExp call,
         in ExpressionResult value,
     ) {
-        import dmd.funcsem: functionSemantic3;
         import quickbite.backends.interpreter.frame_layout:
             isReferenceParameter;
-        import quickbite.frontend.dmd.functions: hasNoAvailableSource;
+        import quickbite.frontend.dmd.functions:
+            ensureFunctionBodySemantic, hasNoAvailableSource,
+            hasNoInterpretableSource;
 
-        functionSemantic3(call.f);
+        ensureFunctionBodySemantic(call.f);
         if (call.f.needThis)
             return false;
         const native = hasNoAvailableSource(call.f);
@@ -8188,7 +8713,7 @@ unsupportedExpression:
                 evaluatedArguments[index] = evaluated;
             }
 
-        if (native) {
+        if (hasNoInterpretableSource(call.f)) {
             import quickbite.backends.interpreter.native_call_adapter:
                 NativeCallException, NativeCallResult;
             import quickbite.backends.interpreter.place: Place;
@@ -8314,6 +8839,28 @@ unsupportedExpression:
 
         if (value.isTypeName && isCharacterArrayType(type))
             return characterArrayValue(type, value.asTypeNameString);
+
+        // `void[]` denotes raw bytes, so coercing an aggregate to it is a
+        // reinterpretation of that aggregate's own storage -- exactly what
+        // `void[] bytes = someStruct;` and the allocator APIs that traffic in
+        // `void[]` mean by it -- not a value conversion. There is no scalar
+        // cast that could express it, so answer a byte view aliasing the
+        // source instead of falling through to `backendCastValue`.
+        if (value.isNativeAggregate) {
+            import dmd.astenums: TY;
+
+            auto array = type.toBasetype.isTypeDArray;
+            auto source = AggregateValue.native(value).type.toBasetype;
+            if (
+                array !is null &&
+                array.nextOf.toBasetype.ty == TY.Tvoid &&
+                (
+                    source.isTypeStruct !is null ||
+                    source.isTypeSArray !is null
+                )
+            )
+                return AggregateValue.nativeAggregateByteSlice(value, type);
+        }
 
         CastTarget target;
         if (!tryCastTarget(type, target))
@@ -9069,6 +9616,34 @@ unsupportedExpression:
         return value;
     }
 
+    // A slice assignment's destination range must be rejected before `rhs` is
+    // even evaluated -- matching compiled D, which raises before any side
+    // effect in `rhs` runs. `lower > upper` takes priority over an
+    // out-of-range `upper`, the same order druntime's own `ArraySliceError`
+    // (`core.exception`) picks; message text matches it verbatim, so
+    // `SystemLinker` agrees exactly. An unchecked `upper > length` would
+    // additionally index a per-path element buffer out of range with a HOST
+    // `RangeError` rather than raising the guest one.
+    private void checkSliceAssignmentBounds(
+        in size_t lower,
+        in size_t upper,
+        in size_t length,
+    ) {
+        import std.conv: text;
+
+        if (lower > upper)
+            throwRangeError(text(
+                "slice [", lower, " .. ", upper,
+                "] has a larger lower index than upper index",
+            ));
+
+        if (upper > length)
+            throwRangeError(text(
+                "slice [", lower, " .. ", upper,
+                "] extends past source array of length ", length,
+            ));
+    }
+
     private ExpressionResult runSliceAssignExpression(
         imported!"dmd.expression".SliceExp slice,
         imported!"dmd.expression".Expression rhs,
@@ -9085,6 +9660,8 @@ unsupportedExpression:
                 return runIndexedSliceAssignExpression(slice, index, rhs);
             if (auto dot = slice.e1.isDotVarExp)
                 return runFieldSliceAssignExpression(slice, dot, rhs);
+            if (slice.e1.isCastExp !is null)
+                return runCastedSliceAssignExpression(slice, rhs);
             throw new Exception(text(
                 "Unsupported interpreter assignment target: slice of ",
                 slice.e1.op,
@@ -9120,21 +9697,7 @@ unsupportedExpression:
             ? AggregateValue.length(current)
             : cast(size_t) runExpression(slice.upr).asLong;
 
-        // An out-of-bounds `upper` must be rejected here, before `rhs` is
-        // even evaluated (matching compiled D, which raises this before any
-        // side effect in `rhs` runs) and before the cell-write loop below
-        // indexes `elements[lower .. upper]` -- `elements` only ever holds
-        // `current.length` entries, so an unchecked `upper > current.length`
-        // would index it out of range with a HOST `RangeError` even when
-        // `variable` has no promoted cell at all. Message text matches
-        // druntime's own `ArraySliceError` verbatim (confirmed against a
-        // compiled `int[] a = [1, 2]; a[0 .. 5] = 9;`), so `SystemLinker`
-        // agrees exactly.
-        if (upper > AggregateValue.length(current))
-            throwRangeError(text(
-                "slice [", lower, " .. ", upper,
-                "] extends past source array of length ", AggregateValue.length(current),
-            ));
+        checkSliceAssignmentBounds(lower, upper, AggregateValue.length(current));
 
         rejectOverlappingSliceAssignment(
             variable,
@@ -9167,10 +9730,41 @@ unsupportedExpression:
 
         auto destination = bindingPlace(variable);
         foreach (index; lower .. upper)
-            writeStoredValue(destination.index(index), elements[index]);
+            writeStoredArrayElement(destination.index(index), elements[index]);
         clearUninitializedBindingAddress(destination.address);
 
+        // This variable's own data pointer denotes the same bytes a native
+        // pointer to it would, so a whole-range write through it establishes
+        // a class's identity exactly as `runPointerSliceAssignExpression`
+        // already records for the pointer form of the same write.
+        if (lower == 0)
+            recordCopiedClassIdentity(
+                cast(void*) AggregateValue.nativeArrayAddress(current),
+                value,
+            );
+
         return value;
+    }
+
+    // Writing one element of an array whose element type is `void`: the
+    // element is a byte of raw storage, because `void` names no value the
+    // place codec could store. Assigning between `void[]` slices is a byte
+    // copy in D -- their bounds and assignment length are measured in bytes
+    // -- so retyping the destination place to `ubyte` stores exactly the byte
+    // `AggregateValue.elementAt` read from the source.
+    private void writeStoredArrayElement(
+        imported!"quickbite.backends.interpreter.place".Place element,
+        in ExpressionResult value,
+    ) {
+        import dmd.astenums: TY;
+        import dmd.mtype: Type;
+        import quickbite.backends.interpreter.place: Place;
+
+        if (element.type.toBasetype.ty == TY.Tvoid) {
+            writeStoredValue(Place(element.address, Type.tuns8), value);
+            return;
+        }
+        writeStoredValue(element, value);
     }
 
     // An indexed array-of-arrays element is already an independently
@@ -9233,6 +9827,20 @@ unsupportedExpression:
         const lower = cast(size_t) runExpression(slice.lwr).asLong;
         const upper = cast(size_t) runExpression(slice.upr).asLong;
 
+        // Reject an inverted range before `rhs` is evaluated -- matching
+        // compiled D, which raises before any side effect in `rhs` runs --
+        // and before the write loop below computes `upper - lower`: with an
+        // unsigned `size_t`, `lower > upper` wraps that subtraction to a huge
+        // count, turning the loop into a runaway walk through native memory
+        // instead of the guest range error compiled D raises. Message text
+        // matches druntime's own `ArraySliceError` verbatim, so
+        // `SystemLinker` agrees exactly.
+        if (lower > upper)
+            throwRangeError(text(
+                "slice [", lower, " .. ", upper,
+                "] has a larger lower index than upper index",
+            ));
+
         const block = isBlockSliceAssignment(slice, rhs);
         const value = runExpression(rhs);
 
@@ -9256,6 +9864,8 @@ unsupportedExpression:
                     lower + index,
                     elementAt(index),
                 );
+            if (lower == 0)
+                recordCopiedClassIdentity(pointer.pointerAddress, value);
             return value;
         }
 
@@ -9263,6 +9873,32 @@ unsupportedExpression:
             "Unsupported interpreter assignment target: slice of ",
             slice.e1.op,
         ));
+    }
+
+    // Copying a class's whole initializer image over storage establishes an
+    // object of that class there: it is exactly the write that precedes any
+    // constructor, and after it the storage holds that class's fields. So the
+    // destination now denotes an object of the source's class, whatever it
+    // denoted before -- the bytes that said otherwise are gone.
+    private void recordCopiedClassIdentity(
+        void* destination,
+        in ExpressionResult source,
+    ) {
+        import quickbite.backends.interpreter.aggregate_value: AggregateValue;
+
+        // A destination whose own bytes are its storage (a static-array
+        // lvalue) has no data pointer distinct from its own address, so
+        // there is nothing here to key an identity by; only a destination
+        // reached through a dynamic array's data pointer participates.
+        if (destination is null)
+            return;
+
+        auto image = cast(void*) AggregateValue.nativeArrayAddress(source);
+        if (image is null)
+            return;
+
+        if (auto type = image in nativeClassTypes)
+            nativeClassTypes[destination] = *type;
     }
 
     private void rejectOverlappingSliceAssignment(
@@ -9294,17 +9930,21 @@ unsupportedExpression:
             throw new Exception("Range violation");
     }
 
-    // A slice assignment through a struct field (`s.buf[i .. j] = source[]`):
-    // splice the written elements into the field's current array and write
-    // the updated struct back through the field's location.
+    // A slice assignment through a struct field (`s.buf[i .. j] = source[]`)
+    // writes the assigned elements one by one through the storage the field
+    // already denotes -- `fieldSliceStorage` below resolves which storage
+    // that is. Rebuilding a whole new array and storing it back into the
+    // field slot instead would replace the field's data pointer with a fresh
+    // allocation's, silently severing an identity its owner may depend on --
+    // e.g. a field backed by a `Mallocator`-returned block whose destructor
+    // later frees the field's pointer: swapping in a differently-sourced
+    // block there corrupts the allocator on free.
     private ExpressionResult runFieldSliceAssignExpression(
         imported!"dmd.expression".SliceExp slice,
         imported!"dmd.expression".DotVarExp dot,
         imported!"dmd.expression".Expression rhs,
     ) {
-        const fieldIndex = structFieldIndex(dot);
-        const receiver = runExpression(dot.e1);
-        const current = AggregateValue.fieldAt(receiver, fieldIndex);
+        const current = fieldSliceStorage(dot);
 
         const lower = slice.lwr is null
             ? 0
@@ -9313,20 +9953,157 @@ unsupportedExpression:
             ? AggregateValue.length(current)
             : cast(size_t) runExpression(slice.upr).asLong;
 
+        checkSliceAssignmentBounds(lower, upper, AggregateValue.length(current));
+
         const block = isBlockSliceAssignment(slice, rhs);
         const value = runExpression(rhs);
 
-        ExpressionResult[] elements;
-        foreach (index; 0 .. AggregateValue.length(current))
-            elements ~= index < lower || index >= upper
-                ? AggregateValue.elementAt(current, index)
-                : block ? copyArrayValue(value, slice.type.toBasetype.nextOf)
-                : AggregateValue.elementAt(value, index - lower);
+        // A fill assignment (`s.field[] = scalar;` or `s.field[a .. b] =
+        // scalar;`) evaluates `rhs` to a single element-typed value, not an
+        // array to index into -- only the copy form (`s.field[] =
+        // otherArray[];`) yields something `value[index - lower]` can index.
+        // `AggregateValue.isArray` distinguishes the two, matching the
+        // variable slice-assignment path above.
+        foreach (index; lower .. upper) {
+            const element = block
+                ? copyArrayValue(value, slice.type.toBasetype.nextOf)
+                : AggregateValue.isArray(value)
+                    ? AggregateValue.elementAt(value, index - lower)
+                    : value;
+            AggregateValue.withArrayElement(current, index, element);
+        }
 
-        writeLocation(dot.e1, AggregateValue.withStructField(receiver,
-            fieldIndex,
-            reconstructStoredArray(dot.var.type, elements),
+        // A dynamic-array field's data pointer denotes the same bytes a
+        // native pointer to it would, so a whole-range write through it
+        // establishes a class's identity exactly as
+        // `runPointerSliceAssignExpression` already records for the pointer
+        // form of the same write. A static-array field has no data pointer
+        // distinct from its own address; `recordCopiedClassIdentity` no-ops
+        // for it.
+        if (lower == 0)
+            recordCopiedClassIdentity(
+                cast(void*) AggregateValue.nativeArrayAddress(current),
+                value,
+            );
+
+        return value;
+    }
+
+    // The array storage a struct field's own slice assignment must land in,
+    // as an aggregate its caller can index through. D gives an array field
+    // two different storage shapes, and a value read out of the field is a
+    // faithful handle on that storage for only one of them:
+    //
+    // - A dynamic-array field's own bytes are a `{ length, ptr }` header,
+    //   and its elements live wherever `ptr` points. Reading the field
+    //   copies those header bytes (`place_value.readValue`'s
+    //   `AggregateValue.copyFromAddress`), and the copy still holds the
+    //   field's real data pointer, so indexing through it -- which
+    //   dereferences that pointer -- reaches the field's own elements.
+    //
+    // - A static-array field's own bytes ARE its elements. The same read
+    //   therefore yields a detached copy of the data, and every write
+    //   through it is discarded with that copy. Its storage has to be
+    //   composed from the receiver's own address instead, which is what the
+    //   arm below does; only that address names the bytes the struct holds.
+    private ExpressionResult fieldSliceStorage(
+        imported!"dmd.expression".DotVarExp dot,
+    ) {
+        import quickbite.backends.interpreter.layout: declaredType, typeByteSize;
+        import quickbite.backends.interpreter.native_aggregate: NativeAggregate;
+        import quickbite.backends.interpreter.native_block: NativeBlock;
+        import quickbite.backends.interpreter.place: Place;
+        import quickbite.frontend.dmd.types: isStaticArrayType;
+        import dmd.tokens: EXP;
+        import std.conv: text;
+
+        auto field = dot.var.isVarDeclaration;
+        if (field is null || !isStaticArrayType(declaredType(field)))
+            return AggregateValue.fieldAt(runExpression(dot.e1), structFieldIndex(dot));
+
+        const receiver = addressOfExpression(dot.e1, EXP.address);
+        if (!receiver.isPointer)
+            throw new Exception(text(
+                "Unsupported interpreter assignment target: static-array field slice of ",
+                dot.e1.op,
+            ));
+
+        // A class receiver holds a reference to its object body, so its
+        // fields sit at offsets from the referenced body rather than from
+        // the reference slot itself; a struct receiver's fields sit inline
+        // at its own address.
+        auto receiverPlace = Place(receiver.pointerAddress, dot.e1.type);
+        if (dot.e1.type.toBasetype.isTypeClass !is null)
+            receiverPlace = receiverPlace.deref;
+
+        // `NativeBlock.borrow`'s precondition is that the bytes stay live
+        // for as long as any handle derived from the block can reach them.
+        // They are the receiver's own field bytes, and the receiver is an
+        // lvalue that outlives this assignment -- a frame slot, a dataseg
+        // block, or a class body reached through a live reference -- so
+        // nothing here can outlive them. Borrowing rather than copying is
+        // the whole point: the assignment must land in those exact bytes.
+        auto fieldType = declaredType(field);
+        return ExpressionResult.nativeAggregateValue(NativeAggregate(
+            fieldType,
+            NativeBlock.borrow(
+                receiverPlace.field(field).address,
+                typeByteSize(fieldType),
+            ),
         ));
+    }
+
+    // A slice assignment through a cast (`(cast(char[]) view)[] = "foo"`):
+    // casting a slice changes the element type of the view, never the storage
+    // it denotes, so the assignment must land in the array the cast operand
+    // already points at. Evaluating the cast yields a slice header holding
+    // that same data pointer, so writing elements through it with
+    // `AggregateValue.withArrayElement` reaches the original backing array.
+    // Rebuilding an array from the written elements instead would leave the
+    // result in a fresh allocation the source never sees.
+    private ExpressionResult runCastedSliceAssignExpression(
+        imported!"dmd.expression".SliceExp slice,
+        imported!"dmd.expression".Expression rhs,
+    ) {
+        const current = runExpression(slice.e1);
+
+        const lower = slice.lwr is null
+            ? 0
+            : cast(size_t) runExpression(slice.lwr).asLong;
+        const upper = slice.upr is null
+            ? AggregateValue.length(current)
+            : cast(size_t) runExpression(slice.upr).asLong;
+
+        checkSliceAssignmentBounds(lower, upper, AggregateValue.length(current));
+
+        const block = isBlockSliceAssignment(slice, rhs);
+        const value = runExpression(rhs);
+
+        // A fill assignment (`(cast(T[]) view)[] = scalar;`) evaluates `rhs`
+        // to a single element-typed value, not an array to index into --
+        // only the copy form yields something `value[index - lower]` can
+        // index. `AggregateValue.isArray` distinguishes the two, matching
+        // the variable slice-assignment path above.
+        foreach (index; lower .. upper) {
+            const element = block
+                ? copyArrayValue(value, slice.type.toBasetype.nextOf)
+                : AggregateValue.isArray(value)
+                    ? AggregateValue.elementAt(value, index - lower)
+                    : value;
+            AggregateValue.withArrayElement(current, index, element);
+        }
+
+        // A cast changes a view's element type, not the storage it denotes,
+        // so its data pointer still denotes the same bytes a native pointer
+        // to that storage would: a whole-range write through it establishes
+        // a class's identity exactly as `runPointerSliceAssignExpression`
+        // already records for the pointer form of the same write.
+        if (lower == 0)
+            recordCopiedClassIdentity(
+                cast(void*) AggregateValue.nativeArrayAddress(current),
+                value,
+            );
+
         return value;
     }
 
@@ -9787,6 +10564,8 @@ unsupportedExpression:
     }
 
     private ExpressionResult classCastValue(imported!"dmd.expression".CastExp cast_) {
+        import quickbite.frontend.dmd.types: isPointerType;
+
         auto value = runExpression(cast_.e1);
         value = rootedNativeClassValue(cast_.e1, value);
         if (value == ExpressionResult.null_)
@@ -9795,6 +10574,42 @@ unsupportedExpression:
         auto classType = cast_.to.toBasetype.isTypeClass;
         if (classType is null || classType.sym is null)
             throw new Exception("Unsupported class cast target.");
+
+        // D checks the runtime type, and yields `null` on a mismatch, only
+        // when the source is itself a class or interface reference. From a
+        // raw pointer the cast reinterprets the address: the storage need not
+        // hold a constructed object yet, which is how `emplace` reaches the
+        // instance it is about to initialise.
+        if (isPointerType(cast_.e1.type)) {
+            // A cast names a view onto whatever object is at the address; it
+            // does not make the object one. What the object is was settled
+            // when the class was established over that storage, and only
+            // establishing another class there can change it -- a cast cannot
+            // tell whether that has since happened, so it must not guess.
+            //
+            // Compiled code recovers the class from the vptr the storage
+            // already holds. The interpreter keeps that identity beside the
+            // address, so an address it has never seen carries none: for
+            // storage reached only through a raw pointer -- foreign memory,
+            // or a chunk about to be initialised -- naming the class here is
+            // the only statement of what lives there, and without it every
+            // later interface cast or virtual call off the result fails.
+            // Record only in that case; an address that already answers is
+            // left exactly as it is.
+            //
+            // An interface never becomes an object's class either way: it has
+            // no fields of its own and names a view onto whatever object is
+            // there, so a class the interface record replaced could no longer
+            // resolve an implementation for a later virtual call.
+            if (auto address = classIdentityAddress(value)) {
+                if (
+                    classType.sym.isInterfaceDeclaration is null &&
+                    address !in nativeClassTypes
+                )
+                    nativeClassTypes[address] = classType;
+            }
+            return value;
+        }
 
         if (!classHasType(value, className(classType.sym)))
             return ExpressionResult.null_;
@@ -10093,7 +10908,76 @@ unsupportedExpression:
                 ] = value;
         }
 
+        bindNestedContextFrames(literal.sd, result);
+
         return result;
+    }
+
+    // A struct declared inside a function gets a hidden context field
+    // (DMD's `AggregateDeclaration.vthis`) naming the enclosing activation.
+    // Record the activations live right now against that field's own address,
+    // so a method call on this instance can still reach them after the
+    // enclosing function has returned. Nearest activation first, matching
+    // `_enclosingFrames`' own order.
+    private void bindNestedContextFrames(
+        imported!"dmd.dstruct".StructDeclaration declaration,
+        in ExpressionResult value,
+    ) {
+        import quickbite.backends.interpreter.place: Place;
+
+        if (declaration is null || declaration.vthis is null)
+            return;
+
+        if (!value.isNativeAggregate)
+            return;
+
+        auto native = AggregateValue.native(value);
+        auto address = Place(native.address, native.type)
+            .field(declaration.vthis)
+            .address;
+        nestedContextFrames[address] = [_activationFrame] ~ _enclosingFrames;
+    }
+
+    // The captured-variable addresses a method of a function-local struct
+    // must bind to: its receiver's own recorded context activations, resolved
+    // per captured variable exactly as `capturedBindingAddress` resolves one
+    // against the currently enclosing frames. The receiver is the authority
+    // here because the enclosing function may already have returned, so this
+    // walker's own frames no longer name those variables at all.
+    private void*[VarDeclaration] nestedReceiverCapturedAddresses(
+        imported!"dmd.func".FuncDeclaration function_,
+        in ExpressionResult receiver,
+    ) {
+        import quickbite.backends.interpreter.frame_layout: capturedVariables;
+        import quickbite.backends.interpreter.place: Place;
+
+        if (!receiver.isNativeAggregate)
+            return null;
+
+        auto native = AggregateValue.native(receiver);
+        auto structType = native.type.toBasetype.isTypeStruct;
+        if (structType is null || structType.sym is null)
+            return null;
+
+        auto contextField = structType.sym.vthis;
+        if (contextField is null)
+            return null;
+
+        auto frames = Place(native.address, native.type)
+            .field(contextField)
+            .address in nestedContextFrames;
+        if (frames is null)
+            return null;
+
+        void*[VarDeclaration] addresses;
+        foreach (variable; capturedVariables(function_))
+            foreach (frame; *frames)
+                if (frame.hasSlot(variable)) {
+                    addresses[variable] = frame.bindingAddress(variable);
+                    break;
+                }
+
+        return addresses;
     }
 
     // DMD's `defaultInitLiteral` for a union only ever fills the FIRST
@@ -10561,10 +11445,16 @@ unsupportedExpression:
         in size_t index,
         in ExpressionResult value,
     ) {
+        import dmd.astenums: TY;
+        import dmd.mtype: Type;
         import quickbite.backends.interpreter.layout: typeByteSize;
         import quickbite.backends.interpreter.place: Place;
 
         auto elementType = pointerType.toBasetype.nextOf.toBasetype;
+        // Indexing a `void*` addresses raw bytes, so the destination is a
+        // byte: `void` itself carries no value the place codec could store.
+        if (elementType.ty == TY.Tvoid)
+            elementType = Type.tuns8;
         auto address = nativeElementAddress(
             pointer.pointerAddress,
             index,
@@ -10593,10 +11483,18 @@ unsupportedExpression:
     // materialized once in a typed temporary by the call adapter.
     private imported!"quickbite.backends.interpreter.native_call_adapter".NativeOperand nativeReceiverOperand(
         imported!"dmd.expression".Expression receiver,
+        void* precomputedAddress = null,
     ) {
         import dmd.tokens: EXP;
         import quickbite.backends.interpreter.native_call_adapter: NativeOperand;
         import quickbite.backends.interpreter.layout: declaredType;
+
+        // The caller already resolved the receiver expression to the object it
+        // designates (a pointer dereference, say). That address is the true
+        // receiver, so the native call must write back through it rather than
+        // through a copy re-derived from the expression.
+        if (precomputedAddress !is null)
+            return NativeOperand(receiver.type, precomputedAddress);
 
         if (auto variableExpression = receiver.isVarExp) {
             auto variable = variableExpression.var.isVarDeclaration;
@@ -10619,6 +11517,17 @@ unsupportedExpression:
         auto field = receiver.isDotVarExp;
         if (field is null || receiver.type is null)
             return NativeOperand.init;
+
+        // A field of `this` is part of the object this activation was entered
+        // with, not of a copy of it, so its address is the caller's storage.
+        // Lending it to the call is what lets the callee's writes to that
+        // field's own members survive the return.
+        if (field.e1.isThisExp !is null) {
+            const thisFieldAddress = addressOfExpression(receiver, EXP.address);
+            return thisFieldAddress.isPointer
+                ? NativeOperand(receiver.type, thisFieldAddress.pointerAddress)
+                : NativeOperand.init;
+        }
 
         auto fieldReceiver = field.e1.isVarExp;
         if (fieldReceiver is null)
@@ -10688,6 +11597,7 @@ unsupportedExpression:
         in EvaluatedReferenceArgument[] evaluatedArguments,
         in bool returnsReceiver,
         out imported!"quickbite.backends.interpreter.native_call_adapter".NativeCallResult result,
+        void* receiverAddress = null,
     ) {
         import quickbite.backends.interpreter.native_call_adapter:
             InterpreterInboundTrampolineSession, NativeCallRequest,
@@ -10713,7 +11623,7 @@ unsupportedExpression:
             receiver: receiver,
             receiverOperand: receiverExpression is null
                 ? NativeOperand.init
-                : nativeReceiverOperand(receiverExpression),
+                : nativeReceiverOperand(receiverExpression, receiverAddress),
             virtualDispatch: receiverType !is null &&
                 receiverType.toBasetype.isTypeClass !is null,
             returnsReceiver: returnsReceiver,
@@ -11327,7 +12237,6 @@ unsupportedExpression:
                 arguments[index] = runExpression(argument);
 
         auto object = AggregateValue.allocateClass(allocationType);
-        nativeClassTypes[AggregateValue.nativeClassBodyAddress(object)] = allocationType;
         nativeClassOwners[AggregateValue.nativeClassBodyAddress(object)] = object;
         initializeNativeClassBody(this, allocationType, object);
         if (new_.member is null)
@@ -11598,8 +12507,14 @@ unsupportedExpression:
         imported!"dmd.expression".Expression expression,
         in ExpressionResult evaluated,
     ) {
+        // A cast between class references denotes the same object, so the
+        // operand's own rooted value still applies. A cast from anything else
+        // -- a `void*` aimed at raw storage, say -- denotes no such object,
+        // and the evaluated result is the only answer.
         if (auto cast_ = expression.isCastExp)
-            return rootedNativeClassValue(cast_.e1, evaluated);
+            if (cast_.e1.type !is null &&
+                cast_.e1.type.toBasetype.isTypeClass !is null)
+                return rootedNativeClassValue(cast_.e1, evaluated);
 
         auto var = expression.isVarExp;
         auto variable = var is null ? null : var.var.isVarDeclaration;
@@ -11780,6 +12695,16 @@ private imported!"quickbite.backends.interpreter.expression_result".ExpressionRe
 }
 
 
+private bool isVoidSliceType(imported!"dmd.mtype".Type type) {
+    import dmd.astenums: TY;
+
+    if (type is null)
+        return false;
+    auto slice = type.toBasetype.isTypeDArray;
+    return slice !is null && slice.next.toBasetype.ty == TY.Tvoid;
+}
+
+
 // A newly allocated native class body begins as zeroed guest storage, but
 // D's field defaults need not be zero. Seed each declared field through the
 // same place codec used by assignments; the returned NativeAggregate retains
@@ -11799,7 +12724,19 @@ private void initializeNativeClassBody(
     if (classType is null || classType.sym is null)
         throw new Exception("initializeNativeClassBody needs a class type.");
 
-    auto body = Place(AggregateValue.nativeClassBodyAddress(object), type);
+    // This is where raw storage becomes an object of `type`: the class's
+    // fields are laid into it here. A native class reference carries only its
+    // body address, so the class that address denotes is kept beside it, and
+    // establishing a class over storage is the one moment that answer
+    // changes. Re-establishing another class over the same storage therefore
+    // replaces it outright -- what the storage was before has been
+    // overwritten.
+    //
+    // Not `const`: the field writes below go through this address.
+    auto address = AggregateValue.nativeClassBodyAddress(object);
+    walker.nativeClassTypes[address] = type;
+
+    auto body = Place(address, type);
     foreach (field; classFields(classType.sym)) {
         auto value = defaultValue(field.type);
         if (field._init !is null) {
@@ -11900,7 +12837,20 @@ private imported!"dmd.func".FuncDeclaration vtblFunction(
     if (index >= class_.vtbl.length)
         return null;
 
-    return class_.vtbl[index].isFuncDeclaration;
+    // A vtable index is only meaningful within the table it was assigned
+    // against. `base` may be an interface method whose index numbers the
+    // interface's own table, so the same index into an implementing class's
+    // vtbl names an unrelated method; accept the entry only when it really
+    // belongs to this class hierarchy and has the signature being called.
+    auto function_ = class_.vtbl[index].isFuncDeclaration;
+    if (
+        function_ is null ||
+        !isClassHierarchyMember(class_, function_) ||
+        !sameFunctionSignature(function_, base)
+    )
+        return null;
+
+    return function_;
 }
 
 
@@ -11919,6 +12869,76 @@ private imported!"dmd.func".FuncDeclaration matchingMemberFunction(
 }
 
 
+// The concrete method implementing `base` reached through one of `class_`'s
+// interfaces. An interface's vtbl holds the interface's own declarations, so
+// this answers the declaration a call site's signature names even when the
+// implementing class never mentions the interface method by that identity.
+private imported!"dmd.func".FuncDeclaration matchingInterfaceFunction(
+    imported!"dmd.dclass".ClassDeclaration class_,
+    imported!"dmd.func".FuncDeclaration base,
+) {
+    foreach (interface_; class_.interfaces)
+        if (auto function_ = matchingInterfaceFunction(*interface_, base))
+            return function_;
+
+    return null;
+}
+
+
+private imported!"dmd.func".FuncDeclaration matchingInterfaceFunction(
+    ref imported!"dmd.dclass".BaseClass interface_,
+    imported!"dmd.func".FuncDeclaration base,
+) {
+    foreach (function_; interface_.vtbl)
+        if (function_ !is null && sameFunctionSignature(function_, base))
+            return function_;
+
+    foreach (ref baseInterface; interface_.baseInterfaces)
+        if (auto function_ = matchingInterfaceFunction(baseInterface, base))
+            return function_;
+
+    return null;
+}
+
+
+// The entry of `class_`'s own vtable that matches `base`'s signature, found
+// by scanning rather than by index -- the fallback for a `base` whose
+// `vtblIndex` numbers a different table than this class's.
+private imported!"dmd.func".FuncDeclaration matchingVtableFunction(
+    imported!"dmd.dclass".ClassDeclaration class_,
+    imported!"dmd.func".FuncDeclaration base,
+) {
+    foreach (entry; class_.vtbl)
+        if (auto function_ = entry.isFuncDeclaration)
+            if (
+                isClassHierarchyMember(class_, function_) &&
+                sameFunctionSignature(function_, base)
+            )
+                return function_;
+
+    return null;
+}
+
+
+private bool isClassHierarchyMember(
+    imported!"dmd.dclass".ClassDeclaration class_,
+    imported!"dmd.func".FuncDeclaration function_,
+) {
+    // `.parent` is the lexically nearest enclosing symbol, which for a
+    // method introduced by a `mixin template` is the `TemplateMixin`
+    // instantiation, not the class doing the mixing in. `toParent` names
+    // the logically enclosing symbol instead, skipping over any
+    // `TemplateMixin` layers (`dmd.dsymbol.Dsymbol.toParent`'s own
+    // documentation), which is what a vtbl-hierarchy membership check
+    // means by "belongs to this class".
+    foreach (current; classHierarchy(class_))
+        if (function_.toParent is current)
+            return true;
+
+    return false;
+}
+
+
 private bool sameFunctionSignature(
     imported!"dmd.func".FuncDeclaration candidate,
     imported!"dmd.func".FuncDeclaration base,
@@ -11933,11 +12953,20 @@ private bool sameFunctionSignature(
     )
         return true;
 
-    if (candidate.parameters is null || base.parameters is null)
-        return candidate.parameters is base.parameters;
-
-    if (candidate.parameters.length != base.parameters.length)
+    // A parameterless declaration has `parameters` either null or empty
+    // depending on how it was built; both mean "no parameters", so compare
+    // counts rather than the array identities.
+    const candidateParameterCount = candidate.parameters is null
+        ? 0
+        : candidate.parameters.length;
+    const baseParameterCount = base.parameters is null
+        ? 0
+        : base.parameters.length;
+    if (candidateParameterCount != baseParameterCount)
         return false;
+
+    if (candidateParameterCount == 0)
+        return true;
 
     foreach (index, parameter; *candidate.parameters) {
         auto baseParameter = (*base.parameters)[index];
@@ -12127,6 +13156,18 @@ private string typeChars(imported!"dmd.mtype".Type type) @trusted {
     import std.string: fromStringz;
 
     return type.toChars.fromStringz.idup;
+}
+
+// DMD lowers `synchronized (obj) { ... }` into balanced `_d_monitorenter` and
+// `_d_monitorexit` runtime calls around the block. A guest object has no
+// native monitor header for druntime to lock, and guest code runs serially
+// within one walker, so answering nothing preserves the statement's control
+// flow exactly.
+private bool isMonitorOperation(
+    imported!"dmd.func".FuncDeclaration function_,
+) {
+    const name = function_.ident is null ? "" : function_.ident.toString;
+    return name == "_d_monitorenter" || name == "_d_monitorexit";
 }
 
 private struct RuntimeDelegate {

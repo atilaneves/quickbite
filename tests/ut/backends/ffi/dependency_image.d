@@ -44,6 +44,334 @@ private auto runDependencyImage(alias backend)(
         return (new backend(linkFiles)).runTests(module_);
 }
 
+// These fixtures each build their own dependency `.so` by hand and call
+// `runDependencyImage!backend` directly instead of going through
+// `runBackendSourceFixtureTests`/`Matrix!()`, so `SystemLinker` -- normally
+// the oracle every matrix carries automatically -- is not implied here. Each
+// fixture below constructs its own `SystemLinker` inline as that oracle
+// instead. `Ctfe` is excluded because it cannot `dlopen` a compiled shared
+// library at compile time (the same `Because.inexpressible` reason automem's
+// `Mallocator`-based fixtures give elsewhere in this suite). `Bytecode` is
+// included on purpose even where its dependency boundary does not yet call
+// into the compiled image, to characterize its current refusal message.
+private alias DependencyImageBackends = AliasSeq!(Interpreter, Bytecode, LLVMJit);
+
+// A dependency is compiled under its own compiler flags. Enabling DIP1000 for
+// the importing project cannot retroactively reject a dependency method that
+// was already compiled without it; calls resolve to the dependency image.
+static foreach (backend; DependencyImageBackends) {
+@("dependencyImage.projectPreviewDoesNotReanalyseDependencyBody." ~
+    backend.stringof)
+@Tags(backend.stringof)
+unittest {
+    import quickbite.frontend.compiler:
+        FrontendFlags,
+        parseRootModules;
+    import std.path: buildPath;
+
+    const sandbox = immutable Sandbox();
+    with(sandbox) {
+        const importPath = "imports";
+        const moduleName =
+            "dep_image_project_preview_fixture_" ~ backend.stringof;
+        const dependencyPath = buildPath(importPath, moduleName ~ ".d");
+        writeFile(dependencyPath, q{
+            module dep_image_project_preview_fixture;
+
+            struct ByteRange {
+                void* pointer;
+                size_t length;
+            }
+
+            struct Ranges {
+                ByteRange[] entries;
+
+                bool discard(void[] bytes) scope @safe {
+                    import std.algorithm: remove;
+
+                    bool matches(ByteRange other) {
+                        return other.pointer == bytes.ptr &&
+                            other.length == bytes.length;
+                    }
+
+                    entries = entries.remove!matches;
+                    return true;
+                }
+            }
+        }.uniqueDepModule(
+            "dep_image_project_preview_fixture",
+            backend.stringof,
+        ));
+
+        const imagePath = buildSharedLibrary(
+            sandbox,
+            moduleName,
+            [dependencyPath],
+        );
+
+        const projectPath = buildPath("project", "fixture.d");
+        writeFile(projectPath, q{
+            module root_preview_fixture;
+
+            import dep_image_project_preview_fixture;
+
+            unittest {
+                ubyte[2] first;
+                ubyte[3] second;
+                auto ranges = Ranges([
+                    ByteRange(first.ptr, first.length),
+                    ByteRange(second.ptr, second.length),
+                ]);
+                assert(ranges.discard(first[]));
+                assert(ranges.entries.length == 1);
+                assert(ranges.entries[0].pointer == second.ptr);
+            }
+        }.uniqueDepModule(
+            "dep_image_project_preview_fixture",
+            backend.stringof,
+        ).uniqueDepModule(
+            "root_preview_fixture",
+            backend.stringof,
+        ));
+
+        auto moduleResult = parseRootModules(
+            [inSandboxPath(projectPath)],
+            [inSandboxPath(importPath)],
+            FrontendFlags(["-preview=dip1000"]),
+        )[0];
+
+        const oracle = (new SystemLinker(
+            [imagePath],
+            [inSandboxPath(importPath)],
+        )).runTests(moduleResult.module_);
+        oracle.length.should == 1;
+        oracle[0].passed.should == true;
+
+        const actual = runDependencyImage!backend(
+            [imagePath],
+            [inSandboxPath(importPath)],
+            moduleResult.module_,
+        );
+        actual.length.should == 1;
+        static if (is(backend == Bytecode)) {
+            // Bytecode's dependency boundary currently refuses the lazily
+            // rejected source body instead of calling the compiled image.
+            actual[0].passed.should == false;
+            actual[0].message.should ==
+                "Unsupported statement in bytecode core: Error";
+        } else
+            actual[0].passed.should == true;
+    }
+}
+}
+
+
+// Mutating a dependency struct through a pointer runs against the pointed-to
+// object. If a later dependency method must execute from the compiled image,
+// it must receive that same object, including slice fields changed by the
+// interpreted method.
+static foreach (backend; DependencyImageBackends) {
+@("dependencyImage.nativeMethodSeesInterpretedPointerReceiverState." ~
+    backend.stringof)
+@Tags(backend.stringof)
+unittest {
+    import quickbite.frontend.compiler:
+        FrontendFlags,
+        parseRootModules;
+    import std.path: buildPath;
+
+    const sandbox = immutable Sandbox();
+    with(sandbox) {
+        const importPath = "imports";
+        const moduleName =
+            "dep_image_pointer_receiver_fixture_" ~ backend.stringof;
+        const dependencyPath = buildPath(importPath, moduleName ~ ".d");
+        writeFile(dependencyPath, q{
+            module dep_image_pointer_receiver_fixture;
+
+            struct ByteRange {
+                void* pointer;
+                size_t length;
+            }
+
+            struct Ranges {
+                ByteRange[] entries;
+
+                void remember(void* pointer, size_t length) scope @safe {
+                    entries ~= ByteRange(pointer, length);
+                }
+
+                bool discard(void[] bytes) scope @safe {
+                    import std.algorithm: remove;
+
+                    bool matches(ByteRange other) {
+                        return other.pointer == bytes.ptr &&
+                            other.length == bytes.length;
+                    }
+
+                    entries = entries.remove!matches;
+                    return true;
+                }
+            }
+        }.uniqueDepModule(
+            "dep_image_pointer_receiver_fixture",
+            backend.stringof,
+        ));
+
+        const imagePath = buildSharedLibrary(
+            sandbox,
+            moduleName,
+            [dependencyPath],
+        );
+
+        const projectPath = buildPath("project", "fixture.d");
+        writeFile(projectPath, q{
+            module root_pointer_receiver_fixture;
+
+            import dep_image_pointer_receiver_fixture;
+
+            unittest {
+                ubyte[2] first;
+                ubyte[3] second;
+                Ranges ranges;
+                auto pointer = &ranges;
+                pointer.remember(first.ptr, first.length);
+                pointer.remember(second.ptr, second.length);
+                assert(pointer.entries.length == 2);
+                assert(pointer.discard(first[]));
+                assert(pointer.entries.length == 1);
+                assert(pointer.entries[0].pointer == second.ptr);
+            }
+        }.uniqueDepModule(
+            "dep_image_pointer_receiver_fixture",
+            backend.stringof,
+        ).uniqueDepModule(
+            "root_pointer_receiver_fixture",
+            backend.stringof,
+        ));
+
+        auto moduleResult = parseRootModules(
+            [inSandboxPath(projectPath)],
+            [inSandboxPath(importPath)],
+            FrontendFlags(["-preview=dip1000"]),
+        )[0];
+
+        const oracle = (new SystemLinker(
+            [imagePath],
+            [inSandboxPath(importPath)],
+        )).runTests(moduleResult.module_);
+        oracle.length.should == 1;
+        oracle[0].passed.should == true;
+
+        const actual = runDependencyImage!backend(
+            [imagePath],
+            [inSandboxPath(importPath)],
+            moduleResult.module_,
+        );
+        actual.length.should == 1;
+        static if (is(backend == Bytecode)) {
+            // Bytecode's dependency boundary currently refuses the lazily
+            // rejected source body instead of calling the compiled image.
+            actual[0].passed.should == false;
+            actual[0].message.should ==
+                "Unsupported statement in bytecode core: Error";
+        } else
+            actual[0].passed.should == true;
+    }
+}
+}
+
+
+// A local declared inside a try statement is destroyed before control leaves
+// that statement. If its dependency-image destructor throws, the following
+// catch handles that exception just as it handles one thrown by the body.
+static foreach (backend; DependencyImageBackends) {
+@("dependencyImage.nativeDestructorExceptionIsCaughtAtTryScopeExit." ~
+    backend.stringof)
+@Tags(backend.stringof)
+unittest {
+    import quickbite.frontend.compiler: parseSnippetWithCheckActionContext;
+    import std.path: buildPath;
+
+    const sandbox = immutable Sandbox();
+    with(sandbox) {
+        const importPath = "imports";
+        const moduleName =
+            "dep_image_destructor_exception_fixture_" ~ backend.stringof;
+        const dependencyPath = buildPath(importPath, moduleName ~ ".d");
+        writeFile(dependencyPath, q{
+            module dep_image_destructor_exception_fixture;
+
+            struct Resource {
+                ~this() {
+                    assert(false, "expected destructor failure");
+                }
+            }
+        }.uniqueDepModule(
+            "dep_image_destructor_exception_fixture",
+            backend.stringof,
+        ));
+
+        const imagePath = buildSharedLibrary(
+            sandbox,
+            moduleName,
+            [dependencyPath],
+        );
+
+        writeFile(dependencyPath, q{
+            module dep_image_destructor_exception_fixture;
+
+            struct Resource {
+                ~this();
+            }
+        }.uniqueDepModule(
+            "dep_image_destructor_exception_fixture",
+            backend.stringof,
+        ));
+
+        auto moduleResult = parseSnippetWithCheckActionContext(q{
+            import core.exception: AssertError;
+            import dep_image_destructor_exception_fixture;
+
+            unittest {
+                bool caught;
+                try {
+                    Resource resource;
+                } catch (AssertError) {
+                    caught = true;
+                }
+                assert(caught);
+            }
+        }.uniqueDepModule(
+            "dep_image_destructor_exception_fixture",
+            backend.stringof,
+        ), [inSandboxPath(importPath)]);
+
+        const oracle = (new SystemLinker(
+            [imagePath],
+            [inSandboxPath(importPath)],
+        )).runTests(moduleResult.module_);
+        oracle.length.should == 1;
+        oracle[0].passed.should == true;
+
+        const actual = runDependencyImage!backend(
+            [imagePath],
+            [inSandboxPath(importPath)],
+            moduleResult.module_,
+        );
+        actual.length.should == 1;
+        static if (is(backend == Bytecode)) {
+            // Bytecode reaches the native destructor, but reports its
+            // exception as an uncaught test failure.
+            actual[0].passed.should == false;
+            actual[0].message.should == "expected destructor failure";
+        } else
+            actual[0].passed.should == true;
+    }
+}
+}
+
+
 private struct CtorOrderingFixture {
     string[] imagePaths;
     string[] importPaths;
@@ -125,7 +453,23 @@ private CtorOrderingFixture buildCtorOrderingFixture(
     }
 }
 
-static foreach (backend; AliasSeq!(LLVMJit, Interpreter)) {
+// Every fixture below builds its own dependency `.so` and constructs a
+// `SystemLinker` inline as the oracle its result is compared against. The
+// `SystemLinker` row therefore runs compiled code against itself, which checks
+// the fixture's own scaffolding -- that the image builds, loads, and answers --
+// independently of whichever backend is under test.
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.inexpressible,
+        "CTFE cannot call a native dependency image"),
+    Omit!(Bytecode, Because.refusal,
+        "member-function calls, class/interface dispatch through the image, "
+        ~ "delegate callbacks, and most constructor/postblit hooks either "
+        ~ "crash the process (exit status 139, e.g. externDMemberFunction, "
+        ~ "externDDelegateCallback) or answer wrong (`Expected: true` / "
+        ~ "`Got: false`, e.g. externDClassVirtualDispatch, "
+        ~ "externGsharedGlobalRead); plain scalar/slice arguments, returns, "
+        ~ "and out-parameters already pass"),
+)) {
 @("dependencyImage.externDFunction." ~ backend.stringof)
 @Tags(backend.stringof)
 unittest {
@@ -185,6 +529,7 @@ unittest {
         actual[0].passed.should == true;
     }
 }
+
 
 @("dependencyImage.externDTwoArgumentFunction." ~ backend.stringof)
 @Tags(backend.stringof)
@@ -499,6 +844,84 @@ unittest {
     }
 }
 
+// A `ref`-returning member function yields the receiver's own field, not a
+// copy of it. Assigning through the call writes that field, and a later read
+// of the same call observes the write.
+@("dependencyImage.externDMemberRefReturn." ~ backend.stringof)
+@Tags(backend.stringof)
+unittest {
+    import quickbite.frontend.compiler: parseSnippetWithCheckActionContext;
+    import std.path: buildPath;
+
+    const sandbox = immutable Sandbox();
+    with(sandbox) {
+        const importPath = "imports";
+        const depPath = buildPath(importPath, "dep_image_member_ref_return_fixture_" ~ backend.stringof ~ ".d");
+        writeFile(depPath, q{
+            module dep_image_member_ref_return_fixture;
+
+            struct Holder {
+                private int stored;
+
+                this(int value) {
+                    stored = value;
+                }
+
+                ref int slot() {
+                    return stored;
+                }
+            }
+        }.uniqueDepModule("dep_image_member_ref_return_fixture", backend.stringof));
+
+        const imagePath = buildSharedLibrary(
+            sandbox,
+            "dep_image_member_ref_return_fixture_" ~ backend.stringof,
+            [depPath],
+        );
+
+        writeFile(depPath, q{
+            module dep_image_member_ref_return_fixture;
+
+            struct Holder {
+                private int stored;
+
+                this(int value);
+                ref int slot();
+            }
+        }.uniqueDepModule("dep_image_member_ref_return_fixture", backend.stringof));
+
+        auto moduleResult = parseSnippetWithCheckActionContext(
+            q{
+                import dep_image_member_ref_return_fixture;
+
+                unittest {
+                    auto holder = Holder(41);
+                    assert(holder.slot == 41);
+
+                    holder.slot = 42;
+                    assert(holder.slot == 42);
+                }
+            }.uniqueDepModule("dep_image_member_ref_return_fixture", backend.stringof),
+            [inSandboxPath(importPath)],
+        );
+
+        const oracle = (new SystemLinker(
+            [imagePath],
+            [inSandboxPath(importPath)],
+        )).runTests(moduleResult.module_);
+        oracle.length.should == 1;
+        oracle[0].passed.should == true;
+
+        const actual = runDependencyImage!backend(
+            [imagePath],
+            [inSandboxPath(importPath)],
+            moduleResult.module_,
+        );
+        actual.length.should == 1;
+        actual[0].passed.should == true;
+    }
+}
+
 @("dependencyImage.externDTypedSliceFunction." ~ backend.stringof)
 @Tags(backend.stringof)
 unittest {
@@ -718,6 +1141,91 @@ unittest {
                     assert(counter.read == 42);
                 }
             }.uniqueDepModule("dep_image_member_fixture", backend.stringof),
+            [inSandboxPath(importPath)],
+        );
+
+        const oracle = (new SystemLinker(
+            [imagePath],
+            [inSandboxPath(importPath)],
+        )).runTests(moduleResult.module_);
+        oracle.length.should == 1;
+        oracle[0].passed.should == true;
+
+        const actual = runDependencyImage!backend(
+            [imagePath],
+            [inSandboxPath(importPath)],
+            moduleResult.module_,
+        );
+        actual.length.should == 1;
+        actual[0].passed.should == true;
+    }
+}
+
+// A struct that is a field of a class object is one object, not a copy of
+// one. Calling a member function on it lets that function write the field's
+// own members, and a later read of the field observes those writes.
+@("dependencyImage.externDMemberFunctionOnClassField." ~ backend.stringof)
+@Tags(backend.stringof)
+unittest {
+    import quickbite.frontend.compiler: parseSnippetWithCheckActionContext;
+    import std.path: buildPath;
+
+    const sandbox = immutable Sandbox();
+    with(sandbox) {
+        const importPath = "imports";
+        const depPath = buildPath(
+            importPath,
+            "dep_image_class_field_fixture_" ~ backend.stringof ~ ".d",
+        );
+        writeFile(depPath, q{
+            module dep_image_class_field_fixture;
+
+            struct Tracker {
+                int[] entries;
+
+                void dropFirst() {
+                    entries = entries[1 .. $];
+                }
+            }
+        }.uniqueDepModule("dep_image_class_field_fixture", backend.stringof));
+
+        const imagePath = buildSharedLibrary(
+            sandbox,
+            "dep_image_class_field_fixture_" ~ backend.stringof,
+            [depPath],
+        );
+
+        writeFile(depPath, q{
+            module dep_image_class_field_fixture;
+
+            struct Tracker {
+                int[] entries;
+                void dropFirst();
+            }
+        }.uniqueDepModule("dep_image_class_field_fixture", backend.stringof));
+
+        auto moduleResult = parseSnippetWithCheckActionContext(
+            q{
+                import dep_image_class_field_fixture;
+
+                class Holder {
+                    Tracker tracker;
+
+                    void dropFirstEntry() {
+                        tracker.dropFirst;
+                    }
+                }
+
+                unittest {
+                    auto holder = new Holder;
+                    holder.tracker.entries = [10, 20, 30];
+
+                    holder.dropFirstEntry;
+
+                    assert(holder.tracker.entries.length == 2);
+                    assert(holder.tracker.entries[0] == 20);
+                }
+            }.uniqueDepModule("dep_image_class_field_fixture", backend.stringof),
             [inSandboxPath(importPath)],
         );
 

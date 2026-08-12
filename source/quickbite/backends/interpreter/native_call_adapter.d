@@ -777,8 +777,8 @@ private bool executeNativeInvocation(ref NativeInvocation invocation) {
                 ? &invocation.variadicMetadata
                 : null,
         );
-    } catch (Exception exception) {
-        throw nativeCallExceptionFrom(exception);
+    } catch (Throwable throwable) {
+        throw nativeCallExceptionFrom(throwable);
     }
 }
 

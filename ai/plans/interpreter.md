@@ -3087,6 +3087,75 @@ destination-passing entry points and a genuine no-result statement path.
 Package-driven workingness continues in parallel through `value.md` item 4;
 do not restore legacy marshalling or value machinery for a later package.
 
+### 11.1 automem — open disagreement queue
+
+automem is the second driving package. Acceptance:
+
+```text
+./bin/bench.sh -b interpreter -b system-linker --dub automem -w 0 -r 1
+```
+
+Post-parse timing is skipped until the Interpreter agrees with the oracle on
+every automem test. Re-measure with the command above before starting; the open
+classes:
+
+```text
+Unsupported interpreter field access
+Unsupported interpreter assignment target
+Unsupported eval expression: cast_ / classReference / loweredAssignExp
+Memory leak in TestAllocator
+Place.index out of range for static array place
+data pointers must carry a native binding address
+plain wrong values
+```
+
+Each class takes one subagent and §8's one-standalone-fixture-per-reason rule;
+they are correctness bugs, not crashes, so `SystemLinker` arbitrates every one.
+
+One member of the wrong-value class is already isolated: an element of a static
+array of structs does not get its declared field defaults, so
+`struct R { char[4] c = "...."; } R[2] arr;` reads `0xFF` bytes where compiled D
+reads `'.'`. A single struct gets its defaults; only the array elements miss
+them. Expect this to disguise itself as corruption in an unrelated fixture
+before it is fixed — it did exactly that during review.
+
+Two properties of this queue that a re-measure will not show. The field-access
+class is a **wall**: clearing it does not retire its tests, it advances them into
+`Unsupported interpreter call arguments`, `Array slice needs native aggregate
+storage`, and `Interpreter binding value is not place-composable`, clustered on
+`GC.addRange` over a `void[]` class-body slice — successors that belong to no
+class above, so the queue drains more slowly than its width suggests. The
+`Memory leak in TestAllocator` class is a **symptom, not a site**: a native call
+that mutates a copy instead of the receiver leaves a freed block recorded, and
+the allocator's destructor then throws from inside `opAssign` before it rebinds,
+so the failure surfaces well after the test that actually diverged. Locate the
+divergence, never the reported test.
+
+Start from branch `automem-interpreter-disagreements` (`e0bd8482`), which carries
+the field-access class with three fixtures whose Ctfe and Bytecode rows still
+need adjudicating.
+
+### 11.3 Evict the address-keyed tables
+
+The table holding each class object's identity, and the two beside it
+(class owners, nested-struct context frames), never evict: every guest object
+an execution allocates is retained for the backend instance's lifetime.
+Deriving retention from surviving roots needs a reachability pass over module
+storage, which an address-keyed table cannot support as it stands. One
+decision covers all three, and it is the same decision as whether identity
+should be keyed by address at all.
+
+### 11.4 `new`-expression constructors never bind captures
+
+The two `new`-expression call sites in the Interpreter fork and retire a child
+activation for the constructor but never call `bindCapturedReferenceSlots`, so
+a function-local struct's constructor cannot read a captured variable the way
+its ordinary methods can. No failing case is known: a struct constructed with
+`new` whose constructor reads a capture currently resolves it some other way
+(through the receiver's own context field, not this binding step) and passes
+on every backend. Recorded because the asymmetry with the other four
+call-spawning sites is real, not because a bug is known to follow from it.
+
 ## 12. Structural maintenance queue
 
 Behaviour-preserving items; each is a ride-along for a nearby rung PR, not a
