@@ -2982,6 +2982,83 @@ static foreach (backend; Matrix!()) {
     }
 }
 
+// A static array LOCAL declared with a scalar initializer (not a sub-slice
+// assignment) broadcasts that scalar to every element -- ordinary D
+// semantics for `T[N] x = scalar;`, both the zero case (which coincides with
+// the type's own default value) and a non-zero one (which does not).
+static foreach (backend; Matrix!(
+    Omit!(Bytecode, Because.refusal,
+        "Unsupported static array initializer in bytecode core: x"),
+)) {
+    @("staticArray.declarationFromScalarBroadcastsToEveryElement." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            unittest {
+                int[3] x = 0;
+                assert(x[0] == 0);
+                assert(x[1] == 0);
+                assert(x[2] == 0);
+
+                int[3] y = 7;
+                assert(y[0] == 7);
+                assert(y[1] == 7);
+                assert(y[2] == 7);
+            }
+        });
+    }
+}
+
+// Re-assigning a static array LOCAL from a scalar (`x = scalar;`, no
+// sub-slice on the left-hand side) parses the same as `x[] = scalar;` --
+// DMD's own `-vcg-ast` pretty-printer confirms the rewrite -- and broadcasts
+// the scalar to every element the same way. A default (uninitialized-
+// initializer) declaration keeps this fixture isolated from
+// `staticArray.declarationFromScalarBroadcastsToEveryElement` above: that
+// fixture's own `T[N] x = scalar;` form is a different AST shape (a
+// `VarDeclaration` initializer, not a `SliceExp` assignment) with its own
+// separate gap.
+static foreach (backend; Matrix!()) {
+    @("staticArray.reassignmentFromScalarBroadcastsToEveryElement." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            unittest {
+                int[3] x;
+                x = 5;
+                assert(x[0] == 5);
+                assert(x[1] == 5);
+                assert(x[2] == 5);
+            }
+        });
+    }
+}
+
+// A struct whose static-array field is constructed from a scalar
+// (`S(0)`) broadcasts that scalar to every element of the field, the same
+// way a bare local declaration does above.
+static foreach (backend; Matrix!()) {
+    @("staticArray.structFieldConstructedFromScalarBroadcastsToEveryElement." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct S {
+                int[3] a;
+            }
+
+            unittest {
+                S s = S(0);
+                assert(s.a[0] == 0);
+                assert(s.a[1] == 0);
+                assert(s.a[2] == 0);
+            }
+        });
+    }
+}
+
 // A non-basic-type (struct) element wider than 8 bytes: broadcasting a single
 // value across a range must copy its full width into every destination
 // element, the same way the byte/short/long scalar broadcasts above do.

@@ -361,6 +361,16 @@ public bool valueMatchesPlace(
     if (type.isTypePointer !is null)
         return value.isPointer || value == ExpressionResult.null_;
 
+    // A scalar destined for a static-array place is a broadcast fill --
+    // ordinary D semantics for `T[N] x = scalar;` (declaration) and its
+    // reassignment form when it reaches this generic scalar path rather than
+    // the dedicated slice-assignment or struct-literal-field broadcasts,
+    // which already accept the identical shape. Recursing into the element
+    // type answers the same question `writeValue`'s own `Tsarray` arm below
+    // relies on before broadcasting.
+    if (auto arrayType = type.isTypeSArray)
+        return valueMatchesPlace(arrayType.next, value);
+
     return false;
 }
 
@@ -587,6 +597,21 @@ public void writeValue(
 
     if (type.isTypeDelegate !is null && value == ExpressionResult.null_) {
         zeroBytes(place.address, typeByteSize(type));
+        return;
+    }
+
+    // A scalar reaching a static-array place (already screened non-aggregate
+    // by the `value.isNativeAggregate` arm above) is a broadcast fill --
+    // ordinary D semantics for `T[N] x = scalar;`, mirroring
+    // `Walker.structLiteralFieldValue`'s identical broadcast for a struct's
+    // own array-typed field. Each element write recurses back through this
+    // same function, so a multidimensional static array (whose element type
+    // is itself a `Tsarray`) broadcasts all the way down to the scalar leaf.
+    if (auto arrayType = type.isTypeSArray) {
+        import quickbite.backends.interpreter.layout: staticArrayLength;
+
+        foreach (index; 0 .. staticArrayLength(arrayType))
+            writeValue(place.index(index), value);
         return;
     }
 
