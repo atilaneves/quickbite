@@ -519,12 +519,13 @@ unittest {
     ) !is null);
 }
 
-@("results.DisagreeingUnitIsSkippedNotFatal")
+@("results.DisagreeingUnitMarksRunFailed")
 unittest {
     Runner[string] runners;
     runners["good"] = new IndexedFailureRunner(99);
     runners["bad"] = new IndexedFailureRunner(0);
 
+    bool correctnessFailed;
     const checkedResults = checkRunnerResults(
         runners,
         ["good", "bad"],
@@ -532,10 +533,13 @@ unittest {
             standaloneUnit("disagreeing", testModule),
             standaloneUnit("agreeing", testModule),
         ],
+        correctnessFailed,
     );
 
-    // The disagreeing unit is skipped (not timed on any backend) instead of
-    // aborting the whole bench...
+    correctnessFailed.should == true;
+
+    // The disagreeing unit is skipped so later units can still be checked,
+    // but the completed benchmark run must return a failing status.
     assert(pairKey("disagreeing", "good") !in checkedResults);
     assert(pairKey("disagreeing", "bad") !in checkedResults);
 
