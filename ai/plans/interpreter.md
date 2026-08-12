@@ -2823,16 +2823,14 @@ Start from branch `automem-interpreter-disagreements` (`e0bd8482`), which carrie
 the field-access class with three fixtures whose Ctfe and Bytecode rows still
 need adjudicating.
 
-### 11.3 Class identity is keyed by address and recorded at the wrong moment
+### 11.3 Record a class object's identity where it is constructed
 
-A class reference is a bare address; its dynamic class lives in a side table
-keyed by the body's address. That class is recorded when a pointer is cast to a
-class, with a precedence rule: never record an interface, otherwise overwrite
-unless what is recorded is already that class or derives from it.
-
-The rule cannot be made correct, because a cast is a view and the cast site
-cannot know whether the storage was re-emplaced since the last record. Two
-shapes are wrong today, both verified against the oracle:
+Identity is recorded at cast sites today. Nothing chose that; it is what filled
+the hole left when a class reference became a bare address, so treat it as
+provisional rather than as a design to preserve. No rule at a cast site can be
+correct: a cast is a view, and the cast site cannot know whether the storage was
+re-emplaced since the class was last recorded. Two shapes are wrong today, both
+verified against the oracle:
 
 - an ancestor emplaced over descendant storage keeps the descendant's class, so
   it answers the descendant's override — `emplace!Derived(storage)`, then
