@@ -172,6 +172,39 @@ static foreach (backend; Matrix!()) {
     }
 }
 
+// A delegate-typed field written through a POINTER receiver, both outside
+// a constructor (`p.g = ...`, `p` a plain `S*` local) and from inside the
+// constructor via `this` (`this.f = ...`) when the struct itself was
+// heap-allocated with `new S(...)`. Neither literal captures anything, so
+// this exercises only the out-of-band `nativeDelegateSlots` registration
+// itself, not closure-context lifetime. Both writes must be visible
+// calling back through the same pointer afterward, matching `SystemLinker`.
+static foreach (backend; Matrix!()) {
+    @("struct.delegateFieldWriteThroughPointerIsCallable." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct S {
+                int delegate(int) f;
+                int delegate(int) g;
+
+                this(int seed) {
+                    f = x => x + 1;
+                }
+            }
+
+            unittest {
+                auto p = new S(10);
+                p.g = x => x * 2;
+
+                assert(p.f(2) == 3);
+                assert(p.g(3) == 6);
+            }
+        });
+    }
+}
+
 static foreach (backend; Matrix!()) {
     @("struct.multipleScalarFields." ~ backend.stringof)
     @Tags(backend.stringof)

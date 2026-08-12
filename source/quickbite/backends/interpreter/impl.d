@@ -1316,6 +1316,7 @@ private struct Walker {
         in size_t fieldIndex,
         in ExpressionResult fieldValue,
     ) {
+        import dmd.astenums: TY;
         import quickbite.backends.interpreter.aggregate_value: AggregateValue;
         import quickbite.backends.interpreter.layout: structFields;
         import quickbite.backends.interpreter.place: Place;
@@ -1323,10 +1324,20 @@ private struct Walker {
         auto field = structFields(receiverType.toBasetype.isTypeStruct)[fieldIndex];
         const symbolicTypeInfo = field.type.toBasetype.isTypeClass !is null &&
             fieldValue.isTypeName;
+        // A live delegate value (an interpreted closure, not `null`) has no
+        // native ABI function address, so `AggregateValue.withStructField`'s
+        // own `place_value.writeValue` call -- unlike `writeStoredValue`
+        // below -- has no out-of-band fallback and throws for it. Seed this
+        // fresh copy's field with `null` here instead; `writeStoredValue`
+        // below writes the REAL `fieldValue` once `destination`'s own field
+        // address is known, registering it in `nativeDelegateSlots` the same
+        // way it always does for a live delegate.
+        const liveDelegate = field.type.toBasetype.ty == TY.Tdelegate &&
+            fieldValue != ExpressionResult.null_;
         auto result = AggregateValue.withStructField(
             receiver,
             fieldIndex,
-            symbolicTypeInfo ? ExpressionResult.null_ : fieldValue,
+            symbolicTypeInfo || liveDelegate ? ExpressionResult.null_ : fieldValue,
         );
         auto source = AggregateValue.native(receiver);
         auto destination = AggregateValue.native(result);
