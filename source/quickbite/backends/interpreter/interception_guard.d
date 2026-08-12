@@ -128,13 +128,15 @@ private bool isExemptInterception(
     if (prettyName.startsWith("core.internal.array.operations.arrayOp!("))
         return true;
 
-    // Associative-array runtime hooks (`core.internal.newaa._d_aa*`,
-    // `object.dup`/`keys`/`values`, `_d_aaApply2`) and blit-copyable
-    // struct-array `object.dup` instantiations all have D source; Walker
-    // models their semantics directly instead. Discovered while adding this
-    // guard, not previously in §9.10's inventory. Retire when the array
-    // representations move to native layout (§9.10).
-    if (isAssocArrayHookName(prettyName))
+    // Blit-copyable struct-array `object.dup` instantiations (no copy
+    // constructor/postblit) have D source that reaches a source-less
+    // allocator; `Walker.runBlitStructArrayDupCall` copies the elements
+    // directly instead. Associative-array runtime hooks
+    // (`core.internal.newaa._d_aa*`, `object.dup`/`keys`/`values` for AA
+    // types, `_d_aaApply2`) used to be exempted here too, but druntime's own
+    // AA hooks interpret like any other D-bodied function now that a guest
+    // AA is a real, native-layout `Impl*` handle.
+    if (isBlitStructArrayDupName(function_))
         return true;
 
     // `rt.aApply`'s `_aApplycd1`/`_aApplywd1`/`_aApplydc1`/`_aApplyRwd1` are
@@ -220,29 +222,12 @@ private bool isStdConvTextName(
     return isStdConvText(function_);
 }
 
-private bool isAssocArrayHookName(in string prettyName) {
-    import std.algorithm: canFind, startsWith;
+private bool isBlitStructArrayDupName(
+    imported!"dmd.func".FuncDeclaration function_,
+) {
+    import quickbite.backends.interpreter.builtins: isBlitStructArrayDup;
 
-    static immutable prefixes = [
-        "core.internal.newaa._d_aaLen!(",
-        "core.internal.newaa._d_aaGetRvalueX!(",
-        "core.internal.newaa._d_aaGetY!(",
-        "core.internal.newaa._d_aaIn!(",
-        "core.internal.newaa._d_aaDel!(",
-        "core.internal.newaa._d_aaEqual!(",
-        "object.dup!(",
-        "object.keys!(",
-        "object.values!(",
-    ];
-
-    if (prettyName.canFind("_d_aaApply2!("))
-        return true;
-
-    foreach (prefix; prefixes)
-        if (prettyName.startsWith(prefix))
-            return true;
-
-    return false;
+    return isBlitStructArrayDup(function_);
 }
 
 private bool isStringForeachApplyName(in string prettyName) {

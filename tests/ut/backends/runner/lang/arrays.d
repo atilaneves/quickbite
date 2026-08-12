@@ -3860,6 +3860,33 @@ static foreach (backend; Matrix!()) {
     }
 }
 
+// `object.classinfo.name` is an lvalue (a field of the class's `TypeInfo`),
+// so an `auto ref` key parameter binds it by reference and the address must
+// keep the name's characters reachable across the whole lookup.
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.inexpressible,
+        "dereference of invalid pointer `Registrant()`"),
+)) {
+    @("assocArray.classinfoNameKeyReachesStoredValue." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            class Registrant {
+            }
+
+            unittest {
+                int[string] table;
+                auto object = new Registrant;
+                table[object.classinfo.name] = 42;
+
+                assert((object.classinfo.name in table) !is null);
+                assert(table[object.classinfo.name] == 42);
+                assert(table.length == 1);
+            }
+        });
+    }
+}
+
 // `foreach (k, v; aa)` must read each key back at its own real width, not a
 // hardcoded 4-byte `int` truncation of it.
 static foreach (backend; Matrix!()) {
@@ -4324,6 +4351,71 @@ static foreach (backend; Matrix!()) {
                 assert(counts.length == 1);
                 assert((FullName("Ada", "Lovelace") in counts) is null);
                 assert((FullName("Grace", "Hopper") in counts) !is null);
+            }
+        });
+    }
+}
+
+// A struct key with custom `opEquals`/`toHash` that only compare/hash the
+// first field: druntime's AA hooks call the key type's own
+// `opEquals`/`toHash` (via `TypeInfo_Struct.xopEquals`/`xtoHash`) rather
+// than comparing raw bytes, so two keys differing only in the field the
+// custom hash and equality ignore must still collide into the same entry.
+static foreach (backend; Matrix!(
+    Omit!(Bytecode, Because.refusal,
+        "0 is `null` -- the bytecode VM's own map still does structural " ~
+        "key comparison and never dispatches a key's custom " ~
+        "opEquals/toHash; migrating it onto druntime's AA hooks like " ~
+        "Interpreter is tracked in issue #478"),
+    Omit!(Ctfe, Because.refusal,
+        "0x0 is `null` -- dmd's own CTFE AA evaluator compares struct " ~
+        "keys structurally too and never dispatches a custom " ~
+        "opEquals/toHash, so the two keys land in different slots; " ~
+        "upstream dmd CTFE behaviour, not a quickbite bug"),
+)) {
+    @("assocArray.customOpEqualsToHashKeyIgnoresUnhashedField." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct Key {
+                int id;
+                int other;
+
+                bool opEquals(const Key rhs) const {
+                    return id == rhs.id;
+                }
+
+                size_t toHash() const nothrow @safe {
+                    return id;
+                }
+            }
+
+            unittest {
+                int[Key] counts;
+                counts[Key(1, 100)] = 42;
+
+                assert((Key(1, 999) in counts) !is null);
+                assert(counts[Key(1, 999)] == 42);
+                assert(counts.length == 1);
+            }
+        });
+    }
+}
+
+// `int[int][int]` auto-vivification one level deep: `a[1][2] = 3` on a
+// completely empty outer map must materialise both the fresh outer entry
+// and the inner map it points at in the same statement.
+static foreach (backend; Matrix!()) {
+    @("assocArray.nestedAutoVivificationCreatesInnerMapOnFirstWrite." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            unittest {
+                int[int][int] a;
+                a[1][2] = 3;
+                assert(a[1][2] == 3);
             }
         });
     }
@@ -5073,7 +5165,7 @@ static foreach (backend; Matrix!()) {
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, Interpreter)) {
+static foreach (backend; AliasSeq!(Ctfe)) {
     @("assocArray.readMissingKeyThrowsDiagnostic." ~ backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
@@ -5097,10 +5189,12 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter)) {
 }
 
 // Compiled missing-key reads raise druntime's plain "Range violation"; the
-// key/array-name text is CTFE-only.
+// key/array-name text is CTFE-only. Interpreter now interprets druntime's
+// own `_d_aaGetRvalueX`/`onRangeError` hook bodies rather than a bespoke
+// lookup that formatted the key and array name itself, so it raises the
+// same plain message SystemLinker's compiled code does.
 static foreach (backend; Matrix!(
-    Omit!(Ctfe, Because.diverges, "see sibling pin above (Ctfe, Interpreter)"),
-    Omit!(Interpreter, Because.diverges, "see sibling pin above (Ctfe, Interpreter)"),
+    Omit!(Ctfe, Because.diverges, "see sibling pin above (Ctfe)"),
 )) {
     @("assocArray.readMissingKeyThrowsDiagnostic." ~ backend.stringof)
     @Tags(backend.stringof)

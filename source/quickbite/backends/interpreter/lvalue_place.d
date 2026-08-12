@@ -25,8 +25,8 @@ private:
 // comment for why it currently never resolves through the only consumer), a
 // chain of field accesses reached through `DotVarExp` receivers (a struct
 // receiver's field sits inline at a fixed offset from the receiver's own
-// address; a class receiver holds a reference, so its field composes through
-// `Place.deref` onto the object body first), a `PtrExp` (`*p`) that composes
+// address; a class or raw-pointer receiver holds a reference/address, so its
+// field composes through `Place.deref` onto the referent first), a `PtrExp` (`*p`) that composes
 // through `Place.deref` onto the pointee, or an `IndexExp` over a base place
 // that is itself one of these shapes. `resolveBase` supplies the base address
 // for a variable, and `evalIndex` evaluates an `IndexExp`'s own index
@@ -145,10 +145,20 @@ public imported!"quickbite.backends.interpreter.place".Place placeOfLvalue(
             return receiver.field(field);
         if (receiver.type.isTypeClass !is null)
             return receiver.deref.field(field);
+        // A raw pointer-to-struct receiver (`p.field`, D's implicit
+        // `(*p).field` sugar -- e.g. a druntime AA bucket's `p.entry.value`,
+        // `p: Bucket*`) holds a stored address exactly like a class
+        // reference does; `Place.deref`'s pointer case already reads that
+        // address back out and lands on the pointee at its own type
+        // (`pointer.next`), so `.field` composes from there the same way
+        // it does for a struct receiver reached directly.
+        if (receiver.type.isTypePointer !is null)
+            return receiver.deref.field(field);
 
         throw new UnsupportedLvalueShapeException(
             "quickbite.backends.interpreter.lvalue_place.placeOfLvalue: "
-            ~ "DotVarExp receiver is not a struct- or class-typed place",
+            ~ "DotVarExp receiver is not a struct-, class-, or "
+            ~ "pointer-typed place",
         );
     }
 

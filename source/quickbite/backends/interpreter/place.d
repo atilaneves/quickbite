@@ -181,9 +181,16 @@ public struct Place {
         if (_type.isTypeClass)
             return Place(readStoredPointer(_address), _type);
 
+        // An AA place holds interpreted druntime's own `Impl*` handle, the
+        // same one-word stored-reference shape a class place holds for its
+        // object body.
+        if (_type.isTypeAArray)
+            return Place(readStoredPointer(_address), _type);
+
         throw new Exception(
             "quickbite.backends.interpreter.place.Place.deref: only a "
-            ~ "pointer or class place can be dereferenced",
+            ~ "pointer, class, or associative-array place can be "
+            ~ "dereferenced",
         );
     }
 
@@ -215,10 +222,15 @@ public struct Place {
     // `null` reference and a non-GC (FFI/foreign) address are both fine
     // anywhere: there is nothing for the collector to lose track of.
     public void storeReference(void* reference) @safe {
-        if (_type.isTypePointer is null && _type.isTypeClass is null)
+        if (
+            _type.isTypePointer is null &&
+            _type.isTypeClass is null &&
+            _type.isTypeAArray is null
+        )
             throw new Exception(
                 "quickbite.backends.interpreter.place.Place.storeReference: "
-                ~ "only a pointer or class place can store a reference",
+                ~ "only a pointer, class, or associative-array place can "
+                ~ "store a reference",
             );
 
         if (referenceIsGcOwned(reference) && !destinationIsScanned(_address))

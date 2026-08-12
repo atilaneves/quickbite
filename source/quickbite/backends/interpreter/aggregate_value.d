@@ -74,32 +74,6 @@ public struct AggregateValue {
         return ExpressionResult.nativeAggregateValue(NativeAggregate(type, header, backing.block));
     }
 
-    public static imported!"quickbite.backends.interpreter.expression_result".ExpressionResult reconstructAssocArray(
-        imported!"dmd.mtype".Type type,
-        in imported!"quickbite.backends.interpreter.expression_result".ExpressionResult[] keys,
-        in imported!"quickbite.backends.interpreter.expression_result".ExpressionResult[] values,
-    ) @safe {
-        import quickbite.backends.interpreter.native_assoc_array: allocateValue, headerAt;
-        import quickbite.backends.interpreter.native_block: NativeBlock;
-        import quickbite.backends.interpreter.place: Place;
-        import quickbite.backends.interpreter.place_value: writeValue;
-        import quickbite.backends.interpreter.expression_result: ExpressionResult;
-
-        if (keys.length != values.length)
-            throw new Exception("AggregateValue.reconstructAssocArray key/value count mismatch.");
-
-        auto aggregate = allocateValue(type);
-        auto header = headerAt(aggregate.address);
-        foreach (index, key; keys) {
-            auto keySlot = allocateTypedBlock(header.keyType);
-            writeValue(Place(keySlot.address, header.keyType), key);
-            bool found;
-            auto valueAddress = header.getOrAdd(keySlot.address, found);
-            writeValue(Place(valueAddress, header.valueType), values[index]);
-        }
-        return ExpressionResult.nativeAggregateValue(aggregate);
-    }
-
     public static imported!"quickbite.backends.interpreter.expression_result".ExpressionResult allocateClass(
         imported!"dmd.mtype".Type type,
     ) @safe {
@@ -342,15 +316,12 @@ public struct AggregateValue {
         return type.isTypeSArray !is null || type.isTypeDArray !is null;
     }
 
-    public static bool isAssocArray(
-        in imported!"quickbite.backends.interpreter.expression_result".ExpressionResult value,
-    ) @safe {
-        return value.isNativeAggregate &&
-            baseTypeOf(native(value).type).isTypeAArray !is null;
-    }
-
     // Aggregate reads stay behind this boundary and use native-layout handles
     // in one place. Scalars deliberately remain ExpressionResult operations.
+    // An associative-array's `.length` is never read through here: `aa.length`
+    // is always lowered to a call to `object._d_aaLen!(K, V)(aa)`
+    // (`TypeAArray.dotExp`, typesem.d) before the interpreter sees it, and an
+    // AA value itself is a plain pointer handle, never a native aggregate.
     public static size_t length(
         in imported!"quickbite.backends.interpreter.expression_result".ExpressionResult value,
     ) @safe {
@@ -358,11 +329,6 @@ public struct AggregateValue {
             throw new Exception("AggregateValue.length needs a native aggregate.");
         auto aggregate = native(value);
         auto type = baseTypeOf(aggregate.type);
-        if (type.isTypeAArray !is null) {
-            import quickbite.backends.interpreter.native_assoc_array: headerAt;
-
-            return headerAt(aggregate.address).length;
-        }
         if (type.isTypeSArray !is null || type.isTypeDArray !is null)
             return elementCount(value);
         throw new Exception("AggregateValue.length needs an array aggregate.");
