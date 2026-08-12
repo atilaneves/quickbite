@@ -72,6 +72,8 @@ public class Interpreter: imported!"quickbite.backends".TreeNodeBackend {
             Walker walker;
             scope(exit) walker.closeDurableInboundSession;
             walker._executionState = new InterpreterExecutionState;
+            walker._executionState.invokeNativeCallback =
+                &walker.invokeNativeCallback;
             walker.moduleTable = new ModuleTable;
             walker.inUnitTest = mode == ExecutionMode.unitTest;
             import quickbite.frontend.dmd.functions: ensureFunctionBodySemantic;
@@ -395,6 +397,14 @@ private struct FrameMetadataLifetime {
 // Maps containing ExpressionResults or Throwables also keep the native storage
 // they describe reachable for as long as an address may cross activations.
 private struct InterpreterExecutionState {
+    // Native code may retain a callback installed by any nested activation.
+    // The root's dispatcher remains live for the whole evaluation, and every
+    // child borrows the same session through this shared execution state.
+    public imported!"quickbite.backends.interpreter.native_call_adapter".
+        DelegateInvoker invokeNativeCallback;
+    public imported!"quickbite.backends.interpreter.native_call_adapter".
+        InterpreterInboundTrampolineSession* durableInboundSession;
+
     // Captured host Throwables and their interpreter-visible chain links are
     // created by the native exception bridge and read by later member calls.
     public Throwable[const(void)*] nativeThrowableRoots;
@@ -530,8 +540,10 @@ private struct Walker {
     // Lazily allocated, execution-wide native `.init` places.
     private ClassArrayFieldDefaults* classArrayFieldDefaults;
 
-    private imported!"quickbite.backends.interpreter.native_call_adapter".
-        InterpreterInboundTrampolineSession* durableInboundSession;
+    private @property ref imported!"quickbite.backends.interpreter.native_call_adapter".
+        InterpreterInboundTrampolineSession* durableInboundSession() {
+        return _executionState.durableInboundSession;
+    }
     private Expression[VarDeclaration] lazyArgumentExpressions;
     // The caller's own `_activationFrame` at the moment its `lazy` argument
     // was bound. Evaluating the thunk temporarily selects that frame, whose
@@ -5259,7 +5271,7 @@ unsupportedExpression:
         try {
             if (durableInboundSession is null)
                 durableInboundSession = new InterpreterInboundTrampolineSession(
-                    &invokeNativeCallback,
+                    _executionState.invokeNativeCallback,
                 );
             auto request = NativeCallRequest(
                 delegateSignature: functionType,
@@ -10693,7 +10705,7 @@ unsupportedExpression:
         );
         if (durableInboundSession is null)
             durableInboundSession = new InterpreterInboundTrampolineSession(
-                &invokeNativeCallback,
+                _executionState.invokeNativeCallback,
             );
         auto request = NativeCallRequest(
             declaration: function_,

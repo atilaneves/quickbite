@@ -3023,6 +3023,112 @@ unittest {
     }
 }
 
+// A nested function may hand an unscoped delegate to native code for later
+// use. Returning from that function ends only the installing call; the native
+// owner may still invoke the captured delegate while the root call is live.
+@("dependencyImage.externDDurableDelegateInstalledByNestedCall." ~
+    backend.stringof)
+@Tags(backend.stringof)
+unittest {
+    import quickbite.frontend.compiler: parseSnippetWithCheckActionContext;
+    import std.path: buildPath;
+
+    const sandbox = immutable Sandbox();
+    with(sandbox) {
+        const importPath = "imports";
+        const depPath = buildPath(
+            importPath,
+            "dep_image_nested_durable_callback_fixture_" ~
+                backend.stringof ~ ".d",
+        );
+        writeFile(depPath, q{
+            module dep_image_nested_durable_callback_fixture;
+
+            extern(D) {
+                int delegate(int) storedCallback;
+
+                void registerCallback(int delegate(int) callback) {
+                    storedCallback = callback;
+                }
+
+                int disturb(int value) {
+                    return value;
+                }
+
+                int invokeRegisteredCallback(int value) {
+                    return storedCallback(value);
+                }
+            }
+        }.uniqueDepModule(
+            "dep_image_nested_durable_callback_fixture",
+            backend.stringof,
+        ));
+
+        const imagePath = buildSharedLibrary(
+            sandbox,
+            "dep_image_nested_durable_callback_fixture_" ~ backend.stringof,
+            [depPath],
+        );
+
+        writeFile(depPath, q{
+            module dep_image_nested_durable_callback_fixture;
+
+            extern(D) {
+                void registerCallback(int delegate(int) callback);
+                int disturb(int value);
+                int invokeRegisteredCallback(int value);
+            }
+        }.uniqueDepModule(
+            "dep_image_nested_durable_callback_fixture",
+            backend.stringof,
+        ));
+
+        auto moduleResult = parseSnippetWithCheckActionContext(
+            q{
+                import dep_image_nested_durable_callback_fixture;
+
+                unittest {
+                    void install() {
+                        int base = 40;
+                        int delegate(int) callback =
+                            (int n) => n + base;
+                        registerCallback(callback);
+                    }
+
+                    int churn(int input) {
+                        int value = input;
+                        return disturb(value);
+                    }
+
+                    int value = 2;
+                    install();
+                    assert(churn(value) == value);
+                    assert(invokeRegisteredCallback(value) == 42);
+                }
+            }.uniqueDepModule(
+                "dep_image_nested_durable_callback_fixture",
+                backend.stringof,
+            ),
+            [inSandboxPath(importPath)],
+        );
+
+        const oracle = (new SystemLinker(
+            [imagePath],
+            [inSandboxPath(importPath)],
+        )).runTests(moduleResult.module_);
+        oracle.length.should == 1;
+        oracle[0].passed.should == true;
+
+        const actual = runDependencyImage!backend(
+            [imagePath],
+            [inSandboxPath(importPath)],
+            moduleResult.module_,
+        );
+        actual.length.should == 1;
+        actual[0].passed.should == true;
+    }
+}
+
 // A two-argument delegate handed to a dependency-image function that calls it
 // back. The callback subtracts its arguments, which makes their order
 // observable: `(10, 3)` must arrive as `a == 10, b == 3` and yield 7, not -7.

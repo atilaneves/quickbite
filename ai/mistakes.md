@@ -217,6 +217,10 @@
 - Do not amend an existing commit unless the user explicitly asks for an
   amend. Make a new commit for follow-up changes.
 
+- A native callback retained beyond an interpreted child call must dispatch
+  through root-execution state, not a delegate whose context points at the
+  child Walker's stack frame.
+
 - Do not use Python scripts to rewrite repository files. Use `apply_patch` for
   semantic edits and reserve dedicated formatters for bulk formatting.
 
