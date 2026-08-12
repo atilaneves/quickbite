@@ -3145,6 +3145,17 @@ storage, which an address-keyed table cannot support as it stands. One
 decision covers all three, and it is the same decision as whether identity
 should be keyed by address at all.
 
+### 11.4 `new`-expression constructors never bind captures
+
+The two `new`-expression call sites in the Interpreter fork and retire a child
+activation for the constructor but never call `bindCapturedReferenceSlots`, so
+a function-local struct's constructor cannot read a captured variable the way
+its ordinary methods can. No failing case is known: a struct constructed with
+`new` whose constructor reads a capture currently resolves it some other way
+(through the receiver's own context field, not this binding step) and passes
+on every backend. Recorded because the asymmetry with the other four
+call-spawning sites is real, not because a bug is known to follow from it.
+
 ## 12. Structural maintenance queue
 
 Behaviour-preserving items; each is a ride-along for a nearby rung PR, not a
