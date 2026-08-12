@@ -1743,6 +1743,51 @@ static foreach (backend; Matrix!()) {
     }
 }
 
+// The actual `cerealed` "assoc.array.with.pair" crash (`AggregateValue.elementAt
+// needs a native array.`) traces to a DIFFERENT AA in the same package's test
+// suite, not the struct-keyed literal above: `tests/structs.d`'s
+// `DummyStruct` has a `double[int] aa` field, and decoding it
+// (`Decerealiser.value!DummyStruct`) inserts into that empty field AA one
+// key/value pair at a time (`val[k] = v;`, `cerealed/src/cerealed/cereal.d`).
+// That insert lowers to druntime's `_d_aaGetY`/`_aaGetX`
+// (`core.internal.newaa`), whose `_newEntry` zero-fills a freshly allocated
+// entry's value through a raw pointer slice --
+// `(cast(ubyte*)&entry.value)[0 .. V.sizeof] = 0;` -- for any value type
+// whose `.init` is not the all-zero bit pattern (`double.init` is NaN, so
+// `__traits(isZeroInit, double)` is false and this line runs). No `Pair`,
+// `dip1000` or even `cerealed` needed to reach it: any AA insert of such a
+// value type does, distilled below to a bare `double[int]`.
+//
+// `runPointerSliceAssignExpression` (`impl.d`) evaluates that pointer-slice
+// assignment through a local `elementAt` closure choosing between a "block"
+// fill (`copyArrayValue`, for `matrix[] = row;`-shaped array-of-array fills)
+// and indexing the right-hand value as an array (`AggregateValue.elementAt`).
+// Every sibling slice-assignment path
+// (`runVariableSliceAssignExpression`/`runFieldSliceAssignExpression`/
+// `runCastedSliceAssignExpression`) additionally guards that second arm with
+// `AggregateValue.isArray(value)`, falling back to the scalar `value` itself
+// for a fill assignment (`p[i .. j] = 0;`) whose right-hand side was never an
+// array to index into -- `runPointerSliceAssignExpression`'s closure alone
+// lacked that guard, so it always called `AggregateValue.elementAt` on the
+// scalar `0`, which is not a native aggregate at all.
+static foreach (backend; Matrix!()) {
+    @("assocArray.nonZeroInitValueEntryZeroFillsThroughPointerSlice." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            unittest {
+                double[int] aa;
+                aa[5] = 3.0;
+
+                assert(aa.length == 1);
+                assert((5 in aa) !is null);
+                assert(aa[5] == 3.0);
+            }
+        });
+    }
+}
+
 // The sibling MODULE-scope shape: a dataseg variable's own initializer
 // expression is a bare `Expression`, never part of any `FuncDeclaration`'s
 // body, so `bodyLocals`'s fix above (which walks a function's OWN body)

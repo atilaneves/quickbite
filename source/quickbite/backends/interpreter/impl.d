@@ -9644,10 +9644,21 @@ unsupportedExpression:
         if (upper == lower)
             return value;
 
+        // A fill assignment (`p[i .. j] = scalar;`, e.g. druntime's own
+        // `(cast(ubyte*)&entry.value)[0 .. V.sizeof] = 0` zeroing a new AA
+        // entry) evaluates `rhs` to a single element-typed value, not an
+        // array to index into -- only the copy form yields something
+        // `value[index - lower]` can index. `AggregateValue.isArray`
+        // distinguishes the two, matching every other slice-assignment path
+        // (`runVariableSliceAssignExpression`, `runFieldSliceAssignExpression`,
+        // `runCastedSliceAssignExpression`), which this one had fallen out of
+        // step with.
         ExpressionResult elementAt(in size_t index) {
             return block
                 ? copyArrayValue(value, slice.type.toBasetype.nextOf)
-                : AggregateValue.elementAt(value, index);
+                : AggregateValue.isArray(value)
+                    ? AggregateValue.elementAt(value, index)
+                    : value;
         }
 
         if (pointer.isPointer) {
