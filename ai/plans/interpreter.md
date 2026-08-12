@@ -12,11 +12,8 @@ Interpreter may know anything about that package. Production code must not
 special-case Cerealed names, modules, paths, types, or behavior. Every failure
 class becomes a standalone D semantic supported independently of the package.
 
-The acceptance command is the default LDC-hosted two-backend benchmark:
-
-```text
-./bin/bench.sh -b interpreter -b system-linker --dub cerealed -w 0 -r 1
-```
+The default LDC-hosted two-backend acceptance command and its resource
+calibration are the standing regression gate in §10.
 
 A DMD-hosted run is a useful diagnostic control, but it is not the acceptance
 or performance target: `bench.sh` uses LDC because DMD's optimiser makes the
@@ -263,89 +260,74 @@ The remaining state divides as follows:
 like state inheritance. The target removes that ambiguity: the evaluator
 borrows execution/runtime state and selects an activation; neither is copied.
 
-### Minimum migration for bounded Cerealed execution
+### Bounded execution contract
 
-The current Cerealed work stops at the smallest coherent prefix of the target
+The standing gate in §10 protects the smallest coherent prefix of the target
 architecture:
 
-1. Allocate one `InterpreterExecutionState` at the root entry.
-2. Put only the proven execution-lifetime registries in it: throwable roots
-   and chain metadata; symbolic function, delegate, and `TypeInfo` slots;
-   function identities and delegate definitions; native class types and
-   owners; and native exception metadata.
-3. Make every child `Walker` borrow that exact state before capture,
-   receiver, or parameter binding can consult it.
-4. Delete those registries' per-call `.dup` operations and all corresponding
-   merge-back assignments. Mutations become visible immediately on ordinary
-   return and exception unwinding.
-5. Preserve the current recursive AST evaluator, child `Walker` shell,
-   per-call `FrameBlock`, activation-local receiver/control fields, lazy-map
-   behavior, expression carrier, and native-call path.
-6. Fix every correctness regression exposed by the lifetime split against
-   `SystemLinker`. Symbolic callable metadata must follow general interpreted
-   storage copy, clear, and relocation rules; do not restore snapshots or add
-   an array-, delegate-, or Cerealed-specific path.
-7. Run the exact gate:
+- A root allocates one `InterpreterExecutionState`; every child `Walker`
+  borrows it before capture, receiver, or parameter binding can consult it.
+- The shared state owns throwable roots and chain metadata; symbolic function,
+  delegate, and `TypeInfo` slots; function identities and delegate definitions;
+  native class types and owners; and native exception metadata. Calls publish
+  mutations immediately rather than copying and merging these registries.
+- Each child `Walker` remains a transitional activation container with a fresh
+  `FrameBlock`, activation-local receiver/control state, lazy bindings, and the
+  recursive AST evaluator. Callable metadata associated with a frame is
+  retired with that frame unless an escaping closure retains it.
+- Addressable receivers, slices, and `ref`/`out` arguments borrow their typed
+  places. They are not snapshotted merely to pass them into another call.
+- Packed call arguments, native-call staging, and aggregate-construction
+  scratch have lexical lifetimes and are released only after their synchronous
+  consumer has copied the result. Guest allocations, activation frames, and
+  values that can escape are not reclaimed by this rule.
+- Symbolic callable metadata follows general interpreted storage copy, clear,
+  and relocation rules. An array-, delegate-, or Cerealed-specific snapshot
+  path is not a substitute.
 
-   ```text
-   ./bin/bench.sh -b interpreter -b system-linker \
-       --dub cerealed -w 0 -r 1
-   ```
-
-   Both rows must execute and agree on all 156 tests. The Interpreter must
-   complete without a skip, timeout, or out-of-memory failure within the same
-   order of time and allocation as known-good `02c0c9b5` (about 12-13 seconds
-   and 8 GiB allocated on the establishing host), rather than scaling with
-   calls times accumulated registry size. Record elapsed time, allocation, and
-   peak RSS; the enforceable portability gate is completion inside `ci.sh`'s
-   existing resource limits.
-8. Run the focused lifetime/callable/exception tests, `bin/ut --random`, and
-   `ci.sh`.
-
-If the exact benchmark is correct and bounded, stop. If it remains unbounded,
-profile the surviving per-call work and take only the next measured cause.
-Do not begin the complete architecture migration merely because more cleanup
-is possible.
-
-This immediate slice deliberately leaves each child `Walker` as a transitional
-activation container. Once it borrows execution state in `O(1)`, renaming or
-splitting the 11,000-line implementation has no place in the Cerealed repair.
+This contract deliberately preserves child `Walker` and recursive AST descent.
+Renaming or splitting the evaluator is not part of the bounded gate.
 
 ### Later migration, in dependency order
 
 The remaining clean-sheet migration is:
 
-1. Extract an explicit `Activation` from the call-local `Walker` fields while
+1. Give each root execution one durable inbound trampoline session. A callback
+   retained by native code must remain callable when it was created by a nested
+   interpreted call; child `Walker`s borrow the session and only the root closes
+   it.
+2. Extract an explicit `Activation` from the call-local `Walker` fields while
    preserving behavior and recursive AST descent.
-2. Replace inherited lazy maps with activation-owned thunk bindings that
+3. Replace inherited lazy maps with activation-owned thunk bindings that
    retain the exact caller environment needed for evaluation.
-3. Centralise activation entry and exit, then route every interpreted call and
+4. Centralise activation entry and exit, then route every interpreted call and
    native callback through the one private invocation path. Delete child
    `Walker`, fork, and merge machinery.
-4. Represent return, break, continue, `goto`, and interpreted throw as explicit
+5. Represent return, break, continue, `goto`, and interpreted throw as explicit
    evaluation outcomes instead of mutable evaluator flags or host exceptions
    used for language control flow.
-5. Complete `value.md`'s place/destination-passing migration behind the same
+6. Complete `value.md`'s place/destination-passing migration behind the same
    execution interface and delete `ExpressionResult`.
-6. Replace `NativeAssocArray` values with ABI-compatible D AA handles. Route
+7. Replace `NativeAssocArray` values with ABI-compatible D AA handles. Route
    lowered AA operations through ordinary D bodies or the native-call seam,
    then delete `native_assoc_array.d`, `AssocArrayHook`, and the Walker's AA
    semantic implementation. The existing AA backend matrix must continue to
    agree with `SystemLinker`; no replacement Interpreter-owned table is
    acceptable.
-7. Split implementation files only where a private semantic module hides real
+8. Split implementation files only where a private semantic module hides real
    complexity and improves locality. Do not expose shallow helper interfaces
    merely to reduce `impl.d`'s line count.
-8. Profile again. Dense frame indices, frame reuse, scratch reuse, AST/type
-   caches, or an explicit continuation loop require evidence from the
-   surviving implementation.
+9. Profile again. Dense frame indices, frame reuse, AST/type caches, or an
+   explicit continuation loop require evidence from the surviving
+   implementation.
 
-### Rejected immediate work
+### Rejected directions
 
 - No bytecode, threaded dispatch, JIT, or package-specific call path.
 - No continuation-based rewrite of recursive AST descent.
-- No frame arena, pooling, dense-slot rewrite, scratch-buffer scheme, name
-  cache, AST cache, or native-call cache in the Cerealed repair.
+- No frame arena, pooling, dense-slot rewrite, name cache, AST cache, or
+  native-call cache without a profile that identifies it as the next bounded
+  cost.
 - No execution-wide lazy map. Lazy bindings belong to activations; their
   current transitional copying remains until the thunk migration or a profile
   proves it is the next blocker.
@@ -3063,15 +3045,42 @@ back into its `SystemLinker`-oracle matrix after fixing the named red behavior:
 
 ## 10. Standing Cerealed regression gate
 
-The default LDC-hosted command must be restored and then remain green:
+The exact default LDC-hosted command must remain green:
 
 ```text
 ./bin/bench.sh -b interpreter -b system-linker --dub cerealed -w 0 -r 1
 ```
 
-Every new semantic rung keeps an approved oracle-backed,
-package-independent fixture and must not regress that command. Production code
-remains free of Cerealed-specific names and behavior.
+Acceptance requires both rows to execute and agree on all 156 tests. A skip,
+backend disagreement, crash, timeout, or out-of-memory result is a failure.
+The portability gate is completion inside `ci.sh`'s existing resource limits.
+
+The establishing measurement for the corrected workload completed with exit
+status 0:
+
+```text
+Interpreter   156/156   233724.925 ms
+SystemLinker  156/156     1241.986 ms
+GC used delta             8286906.8 KiB
+maximum RSS               8859432 KiB
+```
+
+These measurements calibrate the workload on the establishing host; they are
+not cross-machine timing thresholds. In particular, do not use `02c0c9b5`'s
+12-13 second Interpreter run as a target. That revision failed to bind the
+live heap receiver for `Random` construction, causing 99 generated arrays to
+have length 1 instead of the hundreds of elements produced by compiled D. It
+therefore timed a smaller, incorrect workload. `SystemLinker` is the sole
+behaviour oracle.
+
+If the exact command is correct and bounded, stop. If it becomes unbounded,
+profile the surviving per-call work and take only the next measured cause. Do
+not begin the complete architecture migration merely because more cleanup is
+possible.
+
+Every new semantic rung keeps an approved oracle-backed, package-independent
+fixture and must not regress this gate. Production code remains free of
+Cerealed-specific names and behavior.
 
 ## 11. Beyond cerealed
 
