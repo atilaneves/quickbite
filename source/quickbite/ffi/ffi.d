@@ -394,6 +394,17 @@ private struct PhysicalCall {
             ));
     }
 
+    // @trusted: `_storage` is either null or the base pointer returned by
+    // this value's own `GC.calloc` call. `call` releases the uncopied staging
+    // value only after the synchronous ABI call and result copy finish.
+    private void release() pure nothrow @nogc @trusted {
+        import core.memory: GC;
+
+        auto storage = _storage;
+        _storage = null;
+        GC.free(storage);
+    }
+
     // `_storage` is one exact allocation containing the five aligned staging
     // ranges below. Each cast exposes only the range whose size was included
     // in `storageByteLength`.
@@ -527,6 +538,7 @@ public bool call(
     import dmd.astenums: TY;
 
     PhysicalCall physical;
+    scope(exit) physical.release;
     if (!preparePhysicalCall(
         callable,
         arguments,

@@ -396,6 +396,17 @@ private struct NativeInvocation {
             _storage = GC.calloc(storageByteLength(argumentCount));
     }
 
+    // @trusted: `_storage` is either null or the base pointer returned by
+    // this value's own `GC.calloc` call. `invokeNative` releases the uncopied
+    // staging value after native execution and result extraction complete.
+    public void release() pure nothrow @nogc @trusted {
+        import core.memory: GC;
+
+        auto storage = _storage;
+        _storage = null;
+        GC.free(storage);
+    }
+
     // `_storage` is allocated for exactly `_argumentCount` TypedAddresses
     // followed by the aligned roots range; this bounded cast exposes only the
     // first range.
@@ -498,6 +509,7 @@ public bool invokeNative(
     out NativeCallResult result,
 ) {
     NativeInvocation invocation;
+    scope(exit) invocation.release;
     if (!prepareNativeInvocation(request, invocation) ||
         !executeNativeInvocation(invocation))
         return false;

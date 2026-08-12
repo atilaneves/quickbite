@@ -118,10 +118,9 @@ public struct Place {
         return Place(placeAdd(_address, i * typeByteSize(array.next)), array.next);
     }
 
-    // PROTOTYPE(place-projection): read only the length stored at an
+    // Read only the length stored at an
     // addressable array place. This avoids materialising the complete array
-    // merely to select its length; the experiment will be discarded or
-    // redesigned after the Cerealed measurement.
+    // merely to select its length.
     public size_t arrayLength() @safe {
         import quickbite.backends.interpreter.layout: staticArrayLength;
         import quickbite.backends.interpreter.native_array:

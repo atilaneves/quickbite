@@ -193,6 +193,17 @@ private struct CallArguments {
         references[] = EvaluatedReferenceArgument.init;
     }
 
+    // @trusted: `_storage` is either null or the base pointer returned by
+    // this value's own `GC.malloc` call. Call sites release the uncopied
+    // staging value only after every slice derived from it is dead.
+    public void release() pure nothrow @nogc @trusted {
+        import core.memory: GC;
+
+        auto storage = _storage;
+        _storage = null;
+        GC.free(storage);
+    }
+
     public @property size_t length() const @safe @nogc nothrow pure {
         return _length;
     }
@@ -278,6 +289,17 @@ private struct NativeCallArguments {
             _storage = GC.calloc(storageByteLength(_length));
         foreach (index, expression; expressions)
             types[index] = expression.type;
+    }
+
+    // @trusted: `_storage` is either null or the base pointer returned by
+    // this value's own `GC.calloc` call. Call sites release the uncopied
+    // staging value only after the synchronous native invocation returns.
+    public void release() pure nothrow @nogc @trusted {
+        import core.memory: GC;
+
+        auto storage = _storage;
+        _storage = null;
+        GC.free(storage);
     }
 
     // `_storage` contains exactly `_length` Types followed by the aligned
@@ -1300,13 +1322,13 @@ private struct Walker {
         return Place(bindingAddress(variable), declaredType(variable));
     }
 
-    // PROTOTYPE(place-projection): conservatively recognizes only lvalue
+    // Conservatively recognizes only lvalue
     // trees which `lvalue_place.placeOfLvalue` can compose from storage this
     // activation can actually resolve. Deciding before evaluation matters:
     // falling back after a partially-composed tree could repeat an index
     // side effect. Class receivers retain the existing path because it also
-    // performs dynamic-object metadata handling which this experiment does
-    // not attempt to redesign.
+    // performs dynamic-object metadata handling which this path does not
+    // replace.
     private bool hasProjectionPlace(
         imported!"dmd.expression".Expression expression,
     ) {
@@ -1368,8 +1390,8 @@ private struct Walker {
         return variable !is null && hasBindingPlace(variable);
     }
 
-    // PROTOTYPE(place-projection-write): only storage-owned/ref-forwarded
-    // struct/array trees take the direct write experiment. Pointer
+    // Only storage-owned/ref-forwarded struct/array trees take the direct
+    // write path. Pointer
     // dereferences retain the old path and its null/provenance diagnostics.
     private bool hasDirectWriteProjectionPlace(
         imported!"dmd.expression".Expression expression,
@@ -1430,7 +1452,7 @@ private struct Walker {
         return expression.isVarExp !is null;
     }
 
-    // PROTOTYPE(place-projection): compose the addressable expression once.
+    // Compose the addressable expression once.
     // `$` belongs to its containing index and therefore reads the base
     // place's length before that index expression runs, preserving the same
     // receiver-before-index order as `runIndexExpression`.
@@ -1497,7 +1519,7 @@ private struct Walker {
         }
     }
 
-    // PROTOTYPE(place-projection-write): a selected lvalue write updates the
+    // A selected lvalue write updates the
     // authoritative bytes and address-keyed metadata at that place. It does
     // not rebuild or write back any enclosing aggregate snapshot.
     private void writeProjectionPlace(
@@ -2217,7 +2239,7 @@ private struct Walker {
         import dmd.tokens: EXP;
         import quickbite.backends.interpreter.runtime_values: integerValue, realValue;
 
-        // PROTOTYPE(opcode-dispatch): DMD's `isX` helpers each test this same
+        // DMD's `isX` helpers each test this same
         // discriminator. Jump straight to the one existing handler selected
         // by it instead of repeating that test for every preceding AST kind.
         switch (expression.op) with (EXP) {
@@ -2634,7 +2656,7 @@ functionExpression:
 
 arrayLengthExpression:
         if (auto arrayLength = expression.isArrayLengthExp) {
-            // PROTOTYPE(place-projection): an addressable receiver already
+            // An addressable receiver already
             // has authoritative typed storage. Read only its header/fixed
             // length instead of allocating a by-value receiver snapshot.
             if (hasProjectionPlace(arrayLength.e1))
@@ -3375,6 +3397,7 @@ unsupportedExpression:
         auto callArguments = CallArguments(
             call.arguments is null ? 0 : call.arguments.length,
         );
+        scope(exit) callArguments.release;
         auto arguments = callArguments.values;
         auto argumentExpressions = callArguments.expressions;
         auto evaluatedArguments = callArguments.references;
@@ -4711,6 +4734,7 @@ unsupportedExpression:
         auto callArguments = CallArguments(
             call.arguments is null ? 0 : call.arguments.length,
         );
+        scope(exit) callArguments.release;
         auto arguments = callArguments.values;
         auto argumentExpressions = callArguments.expressions;
         auto evaluatedArguments = callArguments.references;
@@ -5222,6 +5246,7 @@ unsupportedExpression:
             ? null
             : cast(TypeFunction) delegateType.nextOf;
         auto nativeArguments = NativeCallArguments(argumentExpressions);
+        scope(exit) nativeArguments.release;
         fillNativeCallOperands(
             null,
             arguments,
@@ -7102,7 +7127,7 @@ unsupportedExpression:
     private ExpressionResult runCompoundAssignExpression(
         imported!"dmd.expression".BinExp assign,
     ) {
-        // PROTOTYPE(place-projection-write): compound assignment is one
+        // Compound assignment is one
         // lvalue evaluation. Retaining its Place avoids both the aggregate
         // receiver snapshot and the old second evaluation during writeback.
         if (
@@ -7315,7 +7340,7 @@ unsupportedExpression:
         import quickbite.backends.interpreter.messages: receiverName;
         import std.conv: text;
 
-        // PROTOTYPE(place-projection): select a field directly from an
+        // Select a field directly from an
         // addressable struct receiver. `readStoredValue` still returns an
         // ordinary by-value field result; only the discarded whole-receiver
         // snapshot disappears.
@@ -8021,6 +8046,7 @@ unsupportedExpression:
         auto callArguments = CallArguments(
             call.arguments is null ? 0 : call.arguments.length,
         );
+        scope(exit) callArguments.release;
         auto arguments = callArguments.values;
         auto argumentExpressions = callArguments.expressions;
         auto evaluatedArguments = callArguments.references;
@@ -8131,6 +8157,7 @@ unsupportedExpression:
         auto callArguments = CallArguments(
             call.arguments is null ? 0 : call.arguments.length,
         );
+        scope(exit) callArguments.release;
         auto arguments = callArguments.values;
         auto argumentExpressions = callArguments.expressions;
         auto evaluatedArguments = callArguments.references;
@@ -8638,7 +8665,7 @@ unsupportedExpression:
     ) {
         import quickbite.frontend.dmd.types: isPointerType, isStaticArrayType;
 
-        // PROTOTYPE(place-projection-write): compose the selected element
+        // Compose the selected element
         // before the RHS, matching the existing index-assignment order, and
         // write it without materialising/rebuilding the enclosing arrays or
         // structs. Aggregate element assignments retain the established path
@@ -9867,14 +9894,24 @@ unsupportedExpression:
         imported!"dmd.expression".ArrayLiteralExp array,
     ) {
         import dmd.astenums: TY;
+        import quickbite.backends.interpreter.scratch_array: releaseScratchArray;
 
         auto elementType = array.type.toBasetype.nextOf;
         const isDelegateArray = elementType !is null
             && elementType.toBasetype.ty == TY.Tdelegate;
 
-        ExpressionResult[] values;
-        size_t[] liveDelegateIndices;
-        ExpressionResult[] liveDelegateValues;
+        const length = array.elements is null ? 0 : (*array.elements).length;
+        auto values = new ExpressionResult[](length);
+        scope(exit) releaseScratchArray(values);
+        auto liveDelegateIndices = isDelegateArray
+            ? new size_t[](length)
+            : null;
+        scope(exit) releaseScratchArray(liveDelegateIndices);
+        auto liveDelegateValues = isDelegateArray
+            ? new ExpressionResult[](length)
+            : null;
+        scope(exit) releaseScratchArray(liveDelegateValues);
+        size_t liveDelegateCount;
         if (array.elements !is null)
             // DMD's sparse form: a null element means the value is in `basis`
             // (see ArrayLiteralExp.getElement).
@@ -9885,17 +9922,20 @@ unsupportedExpression:
                     ? runExpression(source)
                     : runFunctionLiteralDeclaration(literal);
                 if (isDelegateArray && value != ExpressionResult.null_) {
-                    liveDelegateIndices ~= index;
-                    liveDelegateValues ~= value;
+                    liveDelegateIndices[liveDelegateCount] = index;
+                    liveDelegateValues[liveDelegateCount] = value;
+                    ++liveDelegateCount;
                     value = ExpressionResult.null_;
                 }
-                values ~= value;
+                values[index] = value;
             }
 
         auto result = reconstructStoredArray(array.type, values);
-        foreach (position, index; liveDelegateIndices)
+        foreach (position; 0 .. liveDelegateCount) {
+            const index = liveDelegateIndices[position];
             nativeDelegateSlots[AggregateValue.elementAddress(result, index)] =
                 liveDelegateValues[position];
+        }
         return result;
     }
 
@@ -9905,14 +9945,17 @@ unsupportedExpression:
     ) {
         import quickbite.backends.interpreter.aggregate_value: AggregateValue;
         import quickbite.backends.interpreter.place: Place;
+        import quickbite.backends.interpreter.scratch_array: releaseScratchArray;
 
         if (!canContainStoredMetadata(type))
             return AggregateValue.reconstructArray(type, elements);
 
-        ExpressionResult[] nativeElements;
-        nativeElements.reserve(elements.length);
-        foreach (element; elements)
-            nativeElements ~= element.isTypeName ? ExpressionResult.null_ : element;
+        auto nativeElements = new ExpressionResult[](elements.length);
+        scope(exit) releaseScratchArray(nativeElements);
+        foreach (index, element; elements)
+            nativeElements[index] = element.isTypeName
+                ? ExpressionResult.null_
+                : element;
 
         auto result = AggregateValue.reconstructArray(type, nativeElements);
         auto destination = Place(AggregateValue.native(result).address, type);
@@ -9966,12 +10009,11 @@ unsupportedExpression:
     ) {
         import dmd.astenums: TY;
         import quickbite.backends.interpreter.place: Place;
+        import quickbite.backends.interpreter.scratch_array: releaseScratchArray;
 
-        ExpressionResult[] fields;
-        imported!"dmd.declaration".VarDeclaration[] liveDelegateFields;
-        ExpressionResult[] liveDelegateValues;
-        imported!"dmd.declaration".VarDeclaration[] symbolicTypeInfoFields;
-        ExpressionResult[] symbolicTypeInfoValues;
+        const fieldCount = literal.sd is null ? 0 : literal.sd.fields.length;
+        auto fields = new ExpressionResult[](fieldCount);
+        scope(exit) releaseScratchArray(fields);
         if (literal.sd !is null)
             foreach (index; 0 .. literal.sd.fields.length) {
                 const hasElement = literal.elements !is null
@@ -9982,50 +10024,61 @@ unsupportedExpression:
                 // registering it in the field's metadata slot.
                 auto elementLiteral = element is null ? null : element.isFuncExp;
                 auto value = element is null
-                    ? structLiteralDefaultFieldValue(literal, index, fields)
+                    ? structLiteralDefaultFieldValue(
+                        literal,
+                        index,
+                        fields[0 .. index],
+                    )
                     : structLiteralFieldValue(literal, index, elementLiteral is null
                         ? runExpression(element)
                         : runFunctionLiteralDeclaration(elementLiteral));
-
-                auto field = structLiteralField(literal, index);
-                if (
-                    field !is null &&
-                    field.type.toBasetype.ty == TY.Tdelegate &&
-                    value != ExpressionResult.null_
-                ) {
-                    liveDelegateFields ~= field;
-                    liveDelegateValues ~= value;
-                    value = ExpressionResult.null_;
-                }
-                if (
-                    field !is null &&
-                    field.type.toBasetype.isTypeClass !is null &&
-                    value.isTypeName
-                ) {
-                    symbolicTypeInfoFields ~= field;
-                    symbolicTypeInfoValues ~= value;
-                    value = ExpressionResult.null_;
-                }
-
-                fields ~= value;
+                fields[index] = value;
             }
 
-        auto result = AggregateValue.reconstructStruct(literal.type, fields);
-
-        if (liveDelegateFields.length != 0) {
-            auto native = AggregateValue.native(result);
-            foreach (index, field; liveDelegateFields)
-                nativeDelegateSlots[
-                    Place(native.address, native.type).field(field).address
-                ] = liveDelegateValues[index];
+        ExpressionResult[] nativeFields;
+        scope(exit) releaseScratchArray(nativeFields);
+        foreach (index, value; fields) {
+            auto field = structLiteralField(literal, index);
+            if (field is null)
+                continue;
+            if (
+                field.type.toBasetype.ty == TY.Tdelegate &&
+                value != ExpressionResult.null_ ||
+                field.type.toBasetype.isTypeClass !is null &&
+                value.isTypeName
+            ) {
+                if (nativeFields is null) {
+                    nativeFields = new ExpressionResult[](fields.length);
+                    nativeFields[] = fields[];
+                }
+                nativeFields[index] = ExpressionResult.null_;
+            }
         }
 
-        if (symbolicTypeInfoFields.length != 0) {
-            auto native = AggregateValue.native(result);
-            foreach (index, field; symbolicTypeInfoFields)
+        auto result = AggregateValue.reconstructStruct(
+            literal.type,
+            nativeFields is null ? fields : nativeFields,
+        );
+
+        auto native = AggregateValue.native(result);
+        foreach (index, value; fields) {
+            auto field = structLiteralField(literal, index);
+            if (field is null)
+                continue;
+            if (
+                field.type.toBasetype.ty == TY.Tdelegate &&
+                value != ExpressionResult.null_
+            )
+                nativeDelegateSlots[
+                    Place(native.address, native.type).field(field).address
+                ] = value;
+            if (
+                field.type.toBasetype.isTypeClass !is null &&
+                value.isTypeName
+            )
                 nativeTypeInfoSlots[
                     Place(native.address, native.type).field(field).address
-                ] = symbolicTypeInfoValues[index];
+                ] = value;
         }
 
         return result;
@@ -10629,6 +10682,7 @@ unsupportedExpression:
             NativeOperand, invokeNative;
 
         auto nativeArguments = NativeCallArguments(argumentExpressions);
+        scope(exit) nativeArguments.release;
         fillNativeCallOperands(
             function_,
             arguments,
@@ -10833,7 +10887,7 @@ unsupportedExpression:
             return readValue(Place(address, header.valueType));
         }
 
-        // PROTOTYPE(place-projection): compose an addressable array/pointer
+        // Compose an addressable array/pointer
         // receiver once and load only the selected element. The returned
         // `ExpressionResult` remains a by-value result; call and other rvalue
         // receivers retain the original materialisation path below.
@@ -11133,6 +11187,7 @@ unsupportedExpression:
             auto callArguments = CallArguments(
                 new_.arguments is null ? 0 : new_.arguments.length,
             );
+            scope(exit) callArguments.release;
             auto arguments = callArguments.values;
             if (new_.arguments !is null)
                 foreach (index, argument; *new_.arguments)
@@ -11210,6 +11265,7 @@ unsupportedExpression:
         auto callArguments = CallArguments(
             new_.arguments is null ? 0 : new_.arguments.length,
         );
+        scope(exit) callArguments.release;
         auto arguments = callArguments.values;
         auto argumentExpressions = callArguments.expressions;
         if (new_.arguments !is null)
@@ -11252,6 +11308,7 @@ unsupportedExpression:
         auto callArguments = CallArguments(
             new_.arguments is null ? 0 : new_.arguments.length,
         );
+        scope(exit) callArguments.release;
         auto arguments = callArguments.values;
         if (new_.arguments !is null)
             foreach (index, argument; *new_.arguments)
