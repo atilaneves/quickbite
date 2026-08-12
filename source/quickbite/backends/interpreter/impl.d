@@ -1595,6 +1595,32 @@ private struct Walker {
             clearProjectionRootUninitialized(cast_.e1);
     }
 
+    // The ordinary aggregate read path materialises a void-initialised root
+    // before exposing any of its bytes. A direct receiver/slice place must
+    // preserve that first-read behaviour even though it skips the read.
+    private void materializeProjectionRoot(
+        imported!"dmd.expression".Expression expression,
+    ) {
+        if (auto variableExpression = expression.isVarExp) {
+            auto variable = variableExpression.var.isVarDeclaration;
+            if (variable !is null && isUninitializedBinding(variable)) {
+                setLocal(variable, defaultLocalValue(variable));
+                clearUninitializedBindingAddress(bindingPlace(variable).address);
+            }
+            return;
+        }
+        if (auto dot = expression.isDotVarExp) {
+            materializeProjectionRoot(dot.e1);
+            return;
+        }
+        if (auto index = expression.isIndexExp) {
+            materializeProjectionRoot(index.e1);
+            return;
+        }
+        if (auto cast_ = expression.isCastExp)
+            materializeProjectionRoot(cast_.e1);
+    }
+
     // DMD declaration inspection is `@system`; the returned address is still
     // restricted to storage owned by the frame/module/native binding tables.
     //
@@ -3361,7 +3387,7 @@ unsupportedExpression:
                         index,
                         (*call.f.parameters)[index],
                     )
-                    ? runRefArgumentExpression(argument, evaluated)
+                    ? runRefArgumentExpression(argument, evaluated, native)
                     : runExpression(argument);
                 if (
                     index < call.f.parameters.length &&
@@ -4562,6 +4588,7 @@ unsupportedExpression:
         import quickbite.backends.interpreter.builtins:
             binaryBuiltinCall,
             interpreterBuiltinArgumentCount,
+            isStdConvText,
             tryInterpreterBuiltin,
             unaryBuiltinCall;
         import quickbite.backends.interpreter.frame_layout:
@@ -4709,6 +4736,7 @@ unsupportedExpression:
                     arguments[index] = runRefArgumentExpression(
                         argument,
                         evaluated,
+                        isStdConvText(call.f),
                     );
                 else
                     arguments[index] = runExpression(argument);
@@ -4727,7 +4755,7 @@ unsupportedExpression:
 
         if (call.f !is null) {
             import quickbite.backends.interpreter.builtins:
-                isStdConvText, stdConvTextCall;
+                stdConvTextCall;
 
             if (isStdConvText(call.f)) {
                 import dmd.mtype: Type;
@@ -4757,7 +4785,21 @@ unsupportedExpression:
             ExpressionResult receiverPointerAddress;
             bool hasReceiverPointerAddress;
             ExpressionResult receiver;
-            if (auto pointerReceiver = dot.e1.isPtrExp) {
+            if (
+                !nativeCall &&
+                dot.e1.type.toBasetype.isTypeStruct !is null &&
+                hasDirectWriteProjectionPlace(dot.e1)
+            ) {
+                materializeProjectionRoot(dot.e1);
+                // Mutable because the borrowed-block constructor accepts the
+                // writable receiver address that the method will mutate.
+                auto receiverPlace = directWriteProjectionPlace(dot.e1);
+                receiverPointerAddress = ExpressionResult.pointerValue(
+                    receiverPlace.address,
+                );
+                hasReceiverPointerAddress = true;
+                receiver = borrowedAggregateValue(receiverPlace);
+            } else if (auto pointerReceiver = dot.e1.isPtrExp) {
                 receiverPointerAddress = runExpression(pointerReceiver.e1);
                 hasReceiverPointerAddress = true;
                 receiver = dereferencePointerValue(
@@ -4779,7 +4821,8 @@ unsupportedExpression:
                 );
             } else
                 receiver = runExpression(dot.e1);
-            receiver = rootedNativeClassValue(dot.e1, receiver);
+            if (dot.e1.type.toBasetype.isTypeClass !is null)
+                receiver = rootedNativeClassValue(dot.e1, receiver);
             const interpreterAllocatedClass = receiver.isNativeAggregate &&
                 dot.e1.type.toBasetype.isTypeClass !is null;
             if (receiver == ExpressionResult.null_)
@@ -5021,9 +5064,30 @@ unsupportedExpression:
         throw new Exception("Unsupported eval call.");
     }
 
+    // A writable aggregate receiver is already stored in its caller-owned
+    // place. The child method borrows those exact bytes as `this`; creating a
+    // detached by-value snapshot here would allocate and then be discarded
+    // when `runMemberFunction` rebinds `this` to the same address.
+    private ExpressionResult borrowedAggregateValue(Place place) {
+        import quickbite.backends.interpreter.layout: typeByteSize;
+        import quickbite.backends.interpreter.native_aggregate:
+            NativeAggregate;
+        import quickbite.backends.interpreter.native_block: NativeBlock;
+
+        return ExpressionResult.nativeAggregateValue(NativeAggregate(
+            place.type,
+            NativeBlock.borrow(place.address, typeByteSize(place.type)),
+        ));
+    }
+
+    // Evaluate a reference argument's lvalue operands exactly once. When the
+    // call binds the composed address directly, the pointee is not an rvalue
+    // and needs no snapshot; unsupported lvalue shapes still materialize so
+    // the existing synthetic-reference fallback retains its value.
     private ExpressionResult runRefArgumentExpression(
         imported!"dmd.expression".Expression argument,
         out EvaluatedReferenceArgument evaluated,
+        in bool materializeValue = true,
     ) {
         if (argument.isDotVarExp !is null) {
             import dmd.tokens: EXP;
@@ -5033,6 +5097,8 @@ unsupportedExpression:
             const address = addressOfExpression(argument, EXP.address);
             if (address.isPointer) {
                 evaluated.address = address.pointerAddress;
+                if (!materializeValue)
+                    return ExpressionResult.void_;
                 return readValue(Place(evaluated.address, argument.type));
             }
         }
@@ -5041,6 +5107,8 @@ unsupportedExpression:
             const address = runExpression(pointer.e1);
             if (address.isPointer) {
                 evaluated.address = address.pointerAddress;
+                if (!materializeValue)
+                    return ExpressionResult.void_;
                 return loadNativePointerElement(pointer.e1.type, address, 0);
             }
         }
@@ -5049,7 +5117,11 @@ unsupportedExpression:
             auto selected = isTruthy(runExpression(conditional.econd))
                 ? conditional.e1
                 : conditional.e2;
-            const value = runRefArgumentExpression(selected, evaluated);
+            const value = runRefArgumentExpression(
+                selected,
+                evaluated,
+                materializeValue,
+            );
             if (evaluated.selectedLvalue is null)
                 evaluated.selectedLvalue = selected;
             return value;
@@ -5061,8 +5133,11 @@ unsupportedExpression:
             return ExpressionResult.void_;
         if (variable !is null) {
             const address = bindingPointerValue(variable);
-            if (address.isPointer)
+            if (address.isPointer) {
                 evaluated.address = address.pointerAddress;
+                if (!materializeValue)
+                    return ExpressionResult.void_;
+            }
         }
 
         auto previous = _evaluatedReferenceArgumentIndices;
@@ -6124,13 +6199,10 @@ unsupportedExpression:
         in ExpressionResult[] arguments,
         imported!"dmd.expression".Expression[] argumentExpressions,
         in EvaluatedReferenceArgument[] evaluatedArguments = null,
-        // Set by a caller that already evaluated a `PtrExp` or `IndexExp`
-        // receiver's side-effecting operand itself (to compute `receiver`
-        // above) and kept the resulting address around. The `this`-rebind
-        // below needs that same address; reusing it here -- instead of
-        // re-deriving it from `receiverExpression` -- keeps a side-effecting
-        // operand (e.g. `p()` in `p().get()`, or `i++` in `a[i++].method()`)
-        // evaluated exactly once.
+        // Set by a caller that already composed the receiver's place or
+        // evaluated a `PtrExp` operand and retained its address. The
+        // `this`-rebind below borrows that same address instead of walking
+        // the receiver a second time.
         const(ExpressionResult)* precomputedReceiverPointerAddress = null,
     ) {
         const memberReceiver = nativeMemberReceiver(function_, receiver);
@@ -6221,7 +6293,9 @@ unsupportedExpression:
                 placeExpression = receiverExpression;
 
             ExpressionResult address;
-            if (
+            if (precomputedReceiverPointerAddress !is null) {
+                address = *precomputedReceiverPointerAddress;
+            } else if (
                 placeExpression.isThisExp !is null &&
                 thisAddress !is null
             ) {
@@ -6237,14 +6311,6 @@ unsupportedExpression:
                     thisAddress,
                     placeExpression.isDotVarExp.e1.type,
                 ).field(placeExpression.isDotVarExp.var.isVarDeclaration).address);
-            } else if (
-                (
-                    placeExpression.isPtrExp !is null ||
-                    placeExpression.isIndexExp !is null
-                ) &&
-                precomputedReceiverPointerAddress !is null
-            ) {
-                address = *precomputedReceiverPointerAddress;
             } else {
                 address = addressOfExpression(placeExpression, EXP.address);
             }
@@ -7967,7 +8033,7 @@ unsupportedExpression:
                         index,
                         (*function_.parameters)[index],
                     )
-                    ? runRefArgumentExpression(argument, evaluated)
+                    ? runRefArgumentExpression(argument, evaluated, false)
                     : runExpression(argument);
                 argumentExpressions[index] = argument;
                 evaluatedArguments[index] = evaluated;
@@ -8060,6 +8126,7 @@ unsupportedExpression:
         functionSemantic3(call.f);
         if (call.f.needThis)
             return false;
+        const native = hasNoAvailableSource(call.f);
 
         auto callArguments = CallArguments(
             call.arguments is null ? 0 : call.arguments.length,
@@ -8076,13 +8143,13 @@ unsupportedExpression:
                         index,
                         (*call.f.parameters)[index],
                     )
-                    ? runRefArgumentExpression(argument, evaluated)
+                    ? runRefArgumentExpression(argument, evaluated, native)
                     : runExpression(argument);
                 argumentExpressions[index] = argument;
                 evaluatedArguments[index] = evaluated;
             }
 
-        if (hasNoAvailableSource(call.f)) {
+        if (native) {
             import quickbite.backends.interpreter.native_call_adapter:
                 NativeCallException, NativeCallResult;
             import quickbite.backends.interpreter.place: Place;
@@ -10231,6 +10298,14 @@ unsupportedExpression:
         imported!"dmd.expression".SliceExp slice,
         out size_t lower,
     ) {
+        auto baseType = slice.e1.type.toBasetype;
+        if (
+            (baseType.isTypeSArray !is null ||
+                baseType.isTypeDArray !is null) &&
+            hasDirectWriteProjectionPlace(slice.e1)
+        )
+            return runAddressableSliceExpression(slice, lower);
+
         const source = runExpression(slice.e1);
         if (slice.lengthVar !is null)
             setLocal(slice.lengthVar, ExpressionResult(AggregateValue.length(source)));
@@ -10342,6 +10417,51 @@ unsupportedExpression:
         if (!source.isNativeAggregate)
             throw new Exception("Array slice needs native aggregate storage.");
         return AggregateValue.slice(source, slice.type, lower, upper);
+    }
+
+    // Slicing an addressable array reads only its header/length and forms a
+    // view over its existing bytes. Materialising the complete array first is
+    // both unnecessary and wrong for a static-array field: the resulting
+    // slice must alias the field, not a detached snapshot.
+    private ExpressionResult runAddressableSliceExpression(
+        imported!"dmd.expression".SliceExp slice,
+        out size_t lower,
+    ) {
+        import dmd.astenums: TY;
+        import quickbite.backends.interpreter.layout: typeByteSize;
+
+        materializeProjectionRoot(slice.e1);
+        // Mutable because a slice exposes a writable view of this place.
+        auto source = directWriteProjectionPlace(slice.e1);
+        const sourceLength = source.arrayLength;
+        if (slice.lengthVar !is null)
+            setLocal(slice.lengthVar, ExpressionResult(sourceLength));
+
+        lower = slice.lwr is null
+            ? 0
+            : cast(size_t) runExpression(slice.lwr).asLong;
+        const upper = slice.upr is null
+            ? sourceLength
+            : cast(size_t) runExpression(slice.upr).asLong;
+        if (lower > upper || upper > sourceLength)
+            throwRangeError("Range violation");
+
+        auto sourceType = source.type.toBasetype;
+        auto data = sourceType.isTypeDArray !is null
+            ? source.sliceDataPointer
+            : source.address;
+        const elementSize = typeByteSize(sourceType.nextOf);
+        data = nativeElementAddress(data, lower, elementSize);
+
+        const length =
+            slice.type.toBasetype.nextOf.toBasetype.ty == TY.Tvoid
+            ? (upper - lower) * elementSize
+            : upper - lower;
+        return AggregateValue.reconstructNativeArrayWithLength(
+            slice.type,
+            length,
+            data,
+        );
     }
 
     private ExpressionResult runIndexExpression(imported!"dmd.expression".IndexExp index) {
