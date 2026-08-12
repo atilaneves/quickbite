@@ -4502,3 +4502,57 @@ static foreach (backend; Matrix!()) {
         });
     }
 }
+
+
+// `classinfo` is not a reserved identifier: a struct may declare an ordinary
+// field of that name, and passing it by `ref` must alias the field's real
+// storage, so the callee's write is visible through the struct afterward.
+static foreach (backend; Matrix!()) {
+    @("struct.fieldNamedClassinfoBindsByRef." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct S {
+                int classinfo;
+            }
+
+            void increment(ref int x) {
+                ++x;
+            }
+
+            unittest {
+                S s;
+                increment(s.classinfo);
+                assert(s.classinfo == 1);
+            }
+        });
+    }
+}
+
+
+// `name` is not reserved either: a class may declare an ordinary field of
+// that name, and reading/writing it through a pointer-to-class dereference
+// (the same receiver shape DMD's `classinfo.name` lowering produces) must
+// still alias the field's real storage.
+static foreach (backend; Matrix!()) {
+    @("struct.classFieldNamedNameThroughPointerBindsByRef." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            class C {
+                int name;
+            }
+
+            void increment(ref int x) {
+                ++x;
+            }
+
+            unittest {
+                auto c = new C();
+                C* pc = &c;
+                increment((*pc).name);
+                assert((*pc).name == 1);
+            }
+        });
+    }
+}

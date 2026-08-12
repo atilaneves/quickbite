@@ -3544,6 +3544,54 @@ unsupportedExpression:
         return arrayPointer(index, 0, op, true /* selfAddress */);
     }
 
+    // Whether `dot.var` is DMD's synthetic `.classinfo` property rather than
+    // a real declared field that merely shares the name (`struct S { int
+    // classinfo; }`, or a hypothetical class field). The synthetic property
+    // itself never reaches here as a `DotVarExp`: `TypeClass.dotExp`
+    // (typesem.d) only falls back to `Id.classinfo` handling once a member
+    // search for that name comes up empty, and that fallback lowers
+    // `x.classinfo` straight to a vtbl `PtrExp` (or an `AddrExp` of the
+    // static `TypeInfoClassDeclaration` for `Type.classinfo`) -- never a
+    // `DotVarExp`. So a `DotVarExp` whose member is literally named
+    // "classinfo" can only be a real field; requiring the receiver to be
+    // class-typed *and* the resolved member to not be a real instance field
+    // keeps this predicate inert for genuine field reads (both here and in
+    // `runDotVarExpression`, which shares it) while staying correct if a
+    // synthetic shape like this were ever produced. Reading `e1`/`var` is
+    // not `@safe`; this only follows existing AST links.
+    private static bool isSyntheticClassInfoMember(
+        imported!"dmd.expression".DotVarExp dot,
+    ) @trusted {
+        if (declarationName(dot.var) != "classinfo")
+            return false;
+        if (dot.e1.type is null || dot.e1.type.toBasetype.isTypeClass is null)
+            return false;
+        auto variable = dot.var.isVarDeclaration;
+        return variable is null || !variable.isField;
+    }
+
+    // Whether `dot.var` is `TypeInfo_Class.name` read off the vtable-derived
+    // `.classinfo` pointer (`x.classinfo.name`), identified by the pointer's
+    // static type being exactly `ClassInfo`/`TypeInfo_Class` -- not merely
+    // "some class type". A user field literally named `name`, reached
+    // through an unrelated class-typed pointer dereference (`(*pc).name`),
+    // produces the same `PtrExp` receiver shape but a different static
+    // type, so checking type identity (rather than "is a class") keeps that
+    // case off this symbolic path, both here and in `runDotVarExpression`.
+    private static bool isClassInfoNamePointerMember(
+        imported!"dmd.expression".DotVarExp dot,
+    ) @trusted {
+        import dmd.mtype: Type;
+
+        if (declarationName(dot.var) != "name")
+            return false;
+        auto pointer = dot.e1.isPtrExp;
+        if (pointer is null || pointer.type is null)
+            return false;
+        auto classType = pointer.type.toBasetype.isTypeClass;
+        return classType !is null && classType.sym is Type.typeinfoclass;
+    }
+
     // Whether `dot`'s field-access spine reads `classinfo` at some level, in
     // any shape DMD produces for it -- the synthetic member itself
     // (`x.classinfo`, also as the receiver of `x.classinfo.name`), the
@@ -3556,16 +3604,12 @@ unsupportedExpression:
         imported!"dmd.expression".DotVarExp dot,
     ) @trusted {
         for (auto current = dot; current !is null; current = current.e1.isDotVarExp) {
-            if (declarationName(current.var) == "classinfo")
+            if (isSyntheticClassInfoMember(current))
+                return true;
+            if (isClassInfoNamePointerMember(current))
                 return true;
             if (declarationName(current.var) != "name")
                 continue;
-            if (
-                current.e1.isPtrExp !is null &&
-                current.e1.type !is null &&
-                current.e1.type.toBasetype.isTypeClass !is null
-            )
-                return true;
             if (auto symbol = current.e1.isSymOffExp)
                 if (symbolOffsetTypeInfoType(symbol) !is null)
                     return true;
@@ -7716,7 +7760,7 @@ unsupportedExpression:
                         }
         }
 
-        if (declarationName(dot.var) == "classinfo")
+        if (isSyntheticClassInfoMember(dot))
             return runClassInfoExpression(dot);
 
         if (declarationName(dot.var) == "name")
@@ -7731,9 +7775,8 @@ unsupportedExpression:
                 if (auto type = symbolOffsetTypeInfoType(symbol))
                     return characterArrayValue(dot.type, typeInfoName(type));
 
-        if (declarationName(dot.var) == "name")
-            if (dot.e1.isPtrExp !is null)
-                return runClassInfoNameOwnerExpression(dot.e1, dot.type);
+        if (isClassInfoNamePointerMember(dot))
+            return runClassInfoNameOwnerExpression(dot.e1, dot.type);
 
         const receiver = runExpression(dot.e1);
         if (receiver == ExpressionResult.null_)
