@@ -185,19 +185,13 @@ unwinds the activation. The endpoint follows `value.md`:
 `ExpressionResult` is a migration carrier, not part of this target interface.
 Destination passing is not required for the immediate Cerealed repair.
 
-Associative arrays are ordinary D runtime values, not an Interpreter data
-structure. The target stores the active host compiler/runtime's
-ABI-compatible AA handle in interpreted storage and executes or calls the
-ordinary compiler-selected `core.internal.newaa` and `object` operations.
-QuickBite must not inspect or reproduce druntime's private table layout; D code
-and the native-call seam remain responsible for it. Reaching that target
-deletes `native_assoc_array.d`'s `NativeAssocArray`, `AssocArrayHook`, the
-Walker's AA hook implementation, and the Interpreter's separate key equality,
-insertion, deletion, duplication, and iteration semantics. Do not replace them
-with a differently named Interpreter-owned map. Interpreted-only key and value
-types may require the native-layout `TypeInfo` and callback work already owned
-by `value.md` and `ffi.md`; that is a migration dependency, not a reason to
-keep a second AA implementation as the endpoint. See
+Guest associative arrays are druntime `Impl*` tables built by interpreted
+`core.internal.newaa` code, but two `Impl` fields still hold interpreter-world
+objects — a symbolic `entryTI` and an interpreted `hashFn` delegate — so an AA
+must not cross the native-call seam. The remaining work is proving those
+fields are never read or called by natively-executing druntime code, or
+making them native-true via the native-layout `TypeInfo` work, then replacing
+`externCAssocArrayRejected`'s refusal with a round-trip capability test. See
 [druntime's AA implementation][druntime-newaa].
 
 ### Ownership invariants
@@ -304,16 +298,10 @@ The remaining clean-sheet migration is:
    used for language control flow.
 5. Complete `value.md`'s place/destination-passing migration behind the same
    execution interface and delete `ExpressionResult`.
-6. Replace `NativeAssocArray` values with ABI-compatible D AA handles. Route
-   lowered AA operations through ordinary D bodies or the native-call seam,
-   then delete `native_assoc_array.d`, `AssocArrayHook`, and the Walker's AA
-   semantic implementation. The existing AA backend matrix must continue to
-   agree with `SystemLinker`; no replacement Interpreter-owned table is
-   acceptable.
-7. Split implementation files only where a private semantic module hides real
+6. Split implementation files only where a private semantic module hides real
    complexity and improves locality. Do not expose shallow helper interfaces
    merely to reduce `impl.d`'s line count.
-8. Profile again. Dense frame indices, frame reuse, AST/type caches, or an
+7. Profile again. Dense frame indices, frame reuse, AST/type caches, or an
    explicit continuation loop require evidence from the surviving
    implementation.
 
@@ -327,9 +315,6 @@ The remaining clean-sheet migration is:
 - No execution-wide lazy map. Lazy bindings belong to activations; their
   current transitional copying remains until the thunk migration or a profile
   proves it is the next blocker.
-- No associative-array representation migration in the bounded-execution
-  repair. `NativeAssocArray` must ultimately be deleted, but that change has a
-  wider `TypeInfo`, callback, storage, and native-call verification surface.
 - No broad module extraction, frontend abstraction rewrite, persistent REPL
   runtime, debugger, suspension model, or concurrent execution requirement.
 - No claim that every execution-state entry is monotonic. Only identity
@@ -873,7 +858,7 @@ scheduled for removal by `value.md` remaining work item 10).
 **Mechanical guard (landed, owed-fixtures follow-up).** The chokepoint is
 `Walker.runCallExpression` (impl.d). Every name-based intercept there —
 `tryInterpreterBuiltin`, `isDruntimeArrayOpAddAssign`, the `memcpy` name
-check, `tryAssocArrayHook`, `tryAtomicHook`,
+check, `tryAtomicHook`,
 `isStringForeachApplyCall`, `isStdConvText`, and the raw-function-pointer
 `enforceRawArraysConformableNogc` special case — now calls
 `enforceInterceptionPolicy(callee, interceptorName)`
@@ -908,10 +893,6 @@ core.internal.array.operations.arrayOp!(  discovered by this guard, not
 ...)                                      previously in §9.10; retire with
                                            §9.10's native-layout-aggregates
                                            item.
-core.internal.newaa._d_aa*!(...),         discovered by this guard, not
-object.dup/keys/values!(...),             previously in §9.10; retire when
-_d_aaApply2!(...)                         the AA representation moves to
-                                           native layout (§9.10).
 rt.aApply's _aApplycd1/_aApplywd1/        discovered by this guard, not
 _aApplydc1/_aApplyRwd1                    previously in §9.10; extern(C)-
                                            mangled but D-bodied; retire when
@@ -1059,10 +1040,10 @@ returns the initialized `this` value, matching `SystemLinker`.
 index/slice/field assignment through the unsupported base form, and a
 `buf ~= arrayOrStruct` non-scalar append.
 
-**In scope.** The specific lvalue shapes in the six throw functions
+**In scope.** The specific lvalue shapes in the five throw functions
 (`writeLocation`, `writeIndexLocation`, `runIndexAssignExpression`,
-`runAssocArraySlotAssignExpression`, `runNestedIndexAssignExpression`,
-`runSliceAssignExpression`, `impl.d` ~3210–3582) that cerealed hits; non-scalar
+`runNestedIndexAssignExpression`, `runSliceAssignExpression`, `impl.d`
+~3210–3582) that cerealed hits; non-scalar
 `concatenateElemAssign`. **Out of scope.** Tuple/destructuring lvalues and
 write-through-global-pointer unless cerealed needs them.
 
@@ -3029,14 +3010,6 @@ back into its `SystemLinker`-oracle matrix after fixing the named red behavior:
   ordinary function, as every proven matrix fixture does) silently returns
   the wrong value, with no diagnostic. Found via `tests/example.d`; no
   matrix fixture pins it yet.
-- Nested-AA auto-vivification through plain index assignment
-  (`int[int][int] a; a[1][2] = 3;`) fails with "Associative-array lvalue
-  needs a variable" once combined with enough surrounding module content,
-  despite the identical `arrays.d`
-  `nestedWriteAutoVivifiesBrandNewOuterKey` fixture being `Matrix!()`-clean
-  in isolation (the matrix currently records an `Interpreter` omission only
-  for the compound-`+=` sibling shape). Found via `tests/example.d`; no
-  matrix fixture pins the combined-content trigger yet.
 
 ## 10. Standing Cerealed regression gate
 
