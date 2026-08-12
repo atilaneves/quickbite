@@ -292,32 +292,28 @@ Renaming or splitting the evaluator is not part of the bounded gate.
 
 The remaining clean-sheet migration is:
 
-1. Give each root execution one durable inbound trampoline session. A callback
-   retained by native code must remain callable when it was created by a nested
-   interpreted call; child `Walker`s borrow the session and only the root closes
-   it.
-2. Extract an explicit `Activation` from the call-local `Walker` fields while
+1. Extract an explicit `Activation` from the call-local `Walker` fields while
    preserving behavior and recursive AST descent.
-3. Replace inherited lazy maps with activation-owned thunk bindings that
+2. Replace inherited lazy maps with activation-owned thunk bindings that
    retain the exact caller environment needed for evaluation.
-4. Centralise activation entry and exit, then route every interpreted call and
+3. Centralise activation entry and exit, then route every interpreted call and
    native callback through the one private invocation path. Delete child
    `Walker`, fork, and merge machinery.
-5. Represent return, break, continue, `goto`, and interpreted throw as explicit
+4. Represent return, break, continue, `goto`, and interpreted throw as explicit
    evaluation outcomes instead of mutable evaluator flags or host exceptions
    used for language control flow.
-6. Complete `value.md`'s place/destination-passing migration behind the same
+5. Complete `value.md`'s place/destination-passing migration behind the same
    execution interface and delete `ExpressionResult`.
-7. Replace `NativeAssocArray` values with ABI-compatible D AA handles. Route
+6. Replace `NativeAssocArray` values with ABI-compatible D AA handles. Route
    lowered AA operations through ordinary D bodies or the native-call seam,
    then delete `native_assoc_array.d`, `AssocArrayHook`, and the Walker's AA
    semantic implementation. The existing AA backend matrix must continue to
    agree with `SystemLinker`; no replacement Interpreter-owned table is
    acceptable.
-8. Split implementation files only where a private semantic module hides real
+7. Split implementation files only where a private semantic module hides real
    complexity and improves locality. Do not expose shallow helper interfaces
    merely to reduce `impl.d`'s line count.
-9. Profile again. Dense frame indices, frame reuse, AST/type caches, or an
+8. Profile again. Dense frame indices, frame reuse, AST/type caches, or an
    explicit continuation loop require evidence from the surviving
    implementation.
 
