@@ -2823,6 +2823,38 @@ Start from branch `automem-interpreter-disagreements` (`e0bd8482`), which carrie
 the field-access class with three fixtures whose Ctfe and Bytecode rows still
 need adjudicating.
 
+### 11.3 Class identity is keyed by address and recorded at the wrong moment
+
+A class reference is a bare address; its dynamic class lives in a side table
+keyed by the body's address. That class is recorded when a pointer is cast to a
+class, with a precedence rule: never record an interface, otherwise overwrite
+unless what is recorded is already that class or derives from it.
+
+The rule cannot be made correct, because a cast is a view and the cast site
+cannot know whether the storage was re-emplaced since the last record. Two
+shapes are wrong today, both verified against the oracle:
+
+- an ancestor emplaced over descendant storage keeps the descendant's class, so
+  it answers the descendant's override — `emplace!Derived(storage)`, then
+  `emplace!Base(storage[0 .. Base-size])`, then a virtual call;
+- a derived cast taken on a live base object overwrites its record, so a later
+  legitimate base receiver answers the derived override —
+  `Base b = new Base; cast(Derived) cast(void*) b;`.
+
+Record identity where storage BECOMES an object instead, and demote the cast to
+recording only when nothing is recorded for that address. The construction
+moments are unambiguous and already exist here: the class-initializer image copy
+(`typeInfoClassInitializer` / `classBodyByteSlice`), which is what `emplace`
+copies into a chunk before running the constructor, and whatever `new` uses.
+Check first that the initializer copy knows its destination address at the point
+it runs — if it does not, that is the thing to solve.
+
+The same table, and the two beside it (class owners, nested-struct context
+frames), also never evict: every guest object an execution allocates is retained
+for the backend instance's lifetime. Deriving retention from surviving roots
+needs a reachability pass over module storage, which an address-keyed table
+cannot support as it stands. One decision covers all three.
+
 ## 12. Structural maintenance queue
 
 Behaviour-preserving items; each is a ride-along for a nearby rung PR, not a
