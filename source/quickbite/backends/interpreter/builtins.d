@@ -29,6 +29,26 @@ package bool tryAssocArrayHook(
     if (function_ is null)
         return false;
 
+    if (function_.ident is null)
+        return false;
+
+    switch (function_.ident.toString) {
+        case "_d_aaApply2":
+        case "_d_aaLen":
+        case "_d_aaGetRvalueX":
+        case "_d_aaGetY":
+        case "_d_aaIn":
+        case "_d_aaDel":
+        case "_d_aaEqual":
+        case "dup":
+        case "keys":
+        case "values":
+            break;
+
+        default:
+            return false;
+    }
+
     const name = text(function_.toPrettyChars);
     if (name.canFind("_d_aaApply2!(")) {
         hook = AssocArrayHook.apply2;
@@ -57,12 +77,72 @@ package bool tryAssocArrayHook(
 
     foreach (candidate; hooks) {
         if (name.startsWith(candidate.prefix)) {
+            if (candidate.hook == AssocArrayHook.dup &&
+                !hasAssocArrayParameterOrReturn(function_))
+                return false;
             hook = candidate.hook;
             return true;
         }
     }
 
     return false;
+}
+
+private bool hasAssocArrayParameterOrReturn(
+    imported!"dmd.func".FuncDeclaration function_,
+) {
+    auto signature = function_.type is null
+        ? null
+        : function_.type.toBasetype.isTypeFunction;
+    if (signature is null)
+        return false;
+    if (signature.next !is null &&
+        signature.next.toBasetype.isTypeAArray !is null)
+        return true;
+    if (signature.parameterList.parameters !is null)
+        foreach (parameter; *signature.parameterList.parameters)
+            if (parameter.type !is null &&
+                parameter.type.toBasetype.isTypeAArray !is null)
+                return true;
+    return false;
+}
+
+// Druntime's struct-array `.dup` reaches a source-less allocator even though
+// a struct without copy construction needs only an ordinary shallow element
+// copy. Keep copy constructors and postblits on the D-body path, where their
+// user-defined semantics remain authoritative.
+package bool isBlitStructArrayDup(
+    imported!"dmd.func".FuncDeclaration function_,
+) {
+    import std.algorithm: startsWith;
+    import std.conv: text;
+
+    if (function_ is null || function_.ident is null ||
+        function_.ident.toString != "dup" ||
+        function_.parent is null || function_.parent.isTemplateInstance is null ||
+        !text(function_.toPrettyChars).startsWith("object.dup!("))
+        return false;
+
+    auto signature = function_.type is null
+        ? null
+        : function_.type.toBasetype.isTypeFunction;
+    if (signature is null || signature.next is null ||
+        signature.parameterList.length != 1)
+        return false;
+
+    auto resultArray = signature.next.toBasetype.isTypeDArray;
+    auto parameterType = signature.parameterList[0].type;
+    auto parameterArray = parameterType is null
+        ? null
+        : parameterType.toBasetype.isTypeDArray;
+    if (resultArray is null || parameterArray is null)
+        return false;
+
+    auto resultStruct = resultArray.next.toBasetype.isTypeStruct;
+    auto parameterStruct = parameterArray.next.toBasetype.isTypeStruct;
+    return resultStruct !is null && parameterStruct !is null &&
+        resultStruct.sym is parameterStruct.sym &&
+        !resultStruct.sym.hasCopyConstruction;
 }
 
 package enum AtomicHook {
@@ -87,6 +167,23 @@ package bool tryAtomicHook(
 
     if (function_ is null)
         return false;
+
+    if (function_.ident is null)
+        return false;
+
+    switch (function_.ident.toString) {
+        case "atomicLoad":
+        case "atomicStore":
+        case "atomicExchange":
+        case "atomicFetchAdd":
+        case "atomicFetchSub":
+        case "atomicValueIsProperlyAligned":
+        case "atomicPtrIsProperlyAligned":
+            break;
+
+        default:
+            return false;
+    }
 
     if (function_.parent is null || function_.parent.isTemplateInstance is null)
         return false;

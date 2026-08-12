@@ -7,11 +7,7 @@ if [[ ! -f build.ninja ]]; then
 fi
 dmd -unittest -checkaction=context -main -run tests/example.d
 bin/bench.sh
-# The cerealed run segfaults in the interpreter's associative-array
-# duplication before it reports anything, on master as well as here, so it
-# fails CI without telling anyone what is wrong. Restore this line once that
-# crash is fixed.
-# bin/bench.sh -b interpreter -b system-linker --dub cerealed
+bin/bench.sh -b interpreter -b system-linker --dub cerealed -w 0 -r 1
 ninja bin/qb
 uv run tests/run_repl.py
 ninja bin/ut
