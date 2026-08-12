@@ -8726,6 +8726,18 @@ private struct Walker {
             ? AggregateValue.length(current)
             : cast(size_t) runExpression(slice.upr).asLong;
 
+        // Reject an inverted range before an out-of-range `upper`, matching
+        // druntime's own `ArraySliceError`, which picks its wording the same
+        // way (`core.exception`: `lower > upper` takes priority). Both checks
+        // run before `rhs` is evaluated -- matching compiled D, which raises
+        // before any side effect in `rhs` runs -- and message text matches
+        // druntime's verbatim, so `SystemLinker` agrees exactly.
+        if (lower > upper)
+            throwRangeError(text(
+                "slice [", lower, " .. ", upper,
+                "] has a larger lower index than upper index",
+            ));
+
         if (upper > AggregateValue.length(current))
             throwRangeError(text(
                 "slice [", lower, " .. ", upper,
@@ -8828,6 +8840,8 @@ private struct Walker {
         imported!"dmd.expression".SliceExp slice,
         imported!"dmd.expression".Expression rhs,
     ) {
+        import std.conv: text;
+
         const current = runExpression(slice.e1);
 
         const lower = slice.lwr is null
@@ -8836,6 +8850,24 @@ private struct Walker {
         const upper = slice.upr is null
             ? AggregateValue.length(current)
             : cast(size_t) runExpression(slice.upr).asLong;
+
+        // Reject an inverted range before an out-of-range `upper`, matching
+        // druntime's own `ArraySliceError`, which picks its wording the same
+        // way (`core.exception`: `lower > upper` takes priority). Both checks
+        // run before `rhs` is evaluated -- matching compiled D, which raises
+        // before any side effect in `rhs` runs -- and message text matches
+        // druntime's verbatim, so `SystemLinker` agrees exactly.
+        if (lower > upper)
+            throwRangeError(text(
+                "slice [", lower, " .. ", upper,
+                "] has a larger lower index than upper index",
+            ));
+
+        if (upper > AggregateValue.length(current))
+            throwRangeError(text(
+                "slice [", lower, " .. ", upper,
+                "] extends past source array of length ", AggregateValue.length(current),
+            ));
 
         const block = isBlockSliceAssignment(slice, rhs);
         const value = runExpression(rhs);

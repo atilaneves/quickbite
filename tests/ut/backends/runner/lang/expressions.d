@@ -42,6 +42,42 @@ static foreach (backend; Matrix!()) {
 }
 
 
+// A struct field slice assignment with an inverted range (`lower > upper`)
+// must throw before the right-hand side is evaluated, the same as the
+// existing out-of-range `upper` check on this path. SystemLinker is the
+// oracle.
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.inexpressible,
+        "CTFE rejects the slice while compiling, so the run-time error the "        ~ "assertion names never happens: `slice `[3..1]` exceeds array "
+        ~ "bounds `[0..3]``"),
+)) {
+    @("struct.fieldSliceAssignmentWithInvertedBoundsThrowsRangeError." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct Holder {
+                int[] values;
+            }
+
+            int seed(int value) {
+                return value;
+            }
+
+            unittest {
+                auto holder = Holder(new int[3]);
+                size_t lower = cast(size_t) seed(3);
+                size_t upper = cast(size_t) seed(1);
+
+                holder.values[lower .. upper] = [9];
+            }
+        }).shouldThrowWithMessage(
+            "slice [3 .. 1] has a larger lower index than upper index",
+        );
+    }
+}
+
+
 // `emplace` establishes a typed object in allocator-provided storage. Moving
 // another value into that object writes the struct itself, not the `void[]`
 // storage expression from which the destination pointer was derived.
@@ -49,8 +85,9 @@ static foreach (backend; Matrix!()) {
 static foreach (backend; Matrix!(
     Omit!(Ctfe, Because.inexpressible,
         "Ctfe cannot read Mallocator.instance at compile time"),
-    Omit!(Bytecode, Because.unconfirmed,
-        "the bytecode core cannot assign fakePureErrno while allocating"),
+    Omit!(Bytecode, Because.refusal,
+        "SIGSEGV in writeHeapElement (machine.d:3234): `element` is an " ~
+        "invalid pointer (0x2)"),
 )) {
     @("struct.moveIntoEmplacedLargeStruct." ~ backend.stringof)
     @Tags(backend.stringof)
@@ -9785,8 +9822,7 @@ static foreach (backend; Matrix!(
     Omit!(Ctfe, Because.refusal,
         "Ctfe destroys a detached copy instead of the temporary's slice, so "
         ~ "`storage[0]` is never written (`0 != 42`)"),
-    Omit!(Bytecode, Because.unconfirmed,
-        "the bytecode core does not run the temporary's destructor"),
+    Omit!(Bytecode, Because.refusal, "0 != 42"),
 )) {
     @("call.constructedTemporaryWithDestructorUsesItsStorage." ~ backend.stringof)
     @Tags(backend.stringof)
@@ -9958,6 +9994,44 @@ static foreach (backend; Matrix!()) {
     }
 }
 
+// A slice assignment through a cast with an out-of-range upper bound must
+// throw before writing anything, even when the resulting range is
+// zero-width -- the same bounds check the uncast slice-assignment path
+// already applies. SystemLinker is the oracle.
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.inexpressible,
+        "CTFE rejects the slice while compiling, so the run-time error the "
+        ~ "assertion names never happens: `slice `[5..5]` exceeds array "
+        ~ "bounds `[0..3]``"),
+)) {
+    @("assign.castedSliceWithOutOfRangeBoundsThrowsRangeError." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            int seed(int value) {
+                return value;
+            }
+
+            unittest {
+                char[3] storage;
+                // `view` is cast to `immutable` only to give the assignment
+                // below something to cast away; it still aliases the mutable
+                // local `storage`, which is never actually shared as
+                // immutable, so writing through it here is safe in practice.
+                immutable(char)[] view = cast(immutable(char)[]) storage[];
+                size_t lower = cast(size_t) seed(5);
+                size_t upper = cast(size_t) seed(5);
+
+                () @trusted { (cast(char[]) view)[lower .. upper] = 'x'; }();
+            }
+        }).shouldThrowWithMessage(
+            "slice [5 .. 5] extends past source array of length 3",
+        );
+    }
+}
+
+
 // `arr[] = value` with a single scalar right-hand side fills every element of
 // the slice with that value; it is not an element-wise copy from another
 // array. That still holds through a cast that only changes the view's
@@ -10050,8 +10124,9 @@ static foreach (backend; Matrix!()) {
 static foreach (backend; Matrix!(
     Omit!(Ctfe, Because.inexpressible,
         "Ctfe cannot read Mallocator.instance at compile time"),
-    Omit!(Bytecode, Because.unconfirmed,
-        "the bytecode core cannot assign fakePureErrno while allocating"),
+    Omit!(Bytecode, Because.refusal,
+        "SIGSEGV in writeHeapElement (machine.d:3234): `element` is an " ~
+        "invalid pointer (0x2)"),
 )) {
     @("assign.voidSlicesCopyBytes." ~ backend.stringof)
     @Tags(backend.stringof)
