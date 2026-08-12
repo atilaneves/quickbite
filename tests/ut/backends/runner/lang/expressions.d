@@ -4819,6 +4819,93 @@ static foreach (backend; Matrix!(
     }
 }
 
+// `emplace` establishes an object of the class it names, whatever the storage
+// held before. Emplacing a base class over storage that already holds a
+// derived object makes the storage a base object: a virtual call through it
+// reaches the base's own implementation, not the derived override the earlier
+// occupant had. SystemLinker is the oracle.
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.refusal,
+        "core.lifetime.emplace reports that the backing slice is too small"),
+    Omit!(Bytecode, Because.refusal,
+        "core.lifetime.emplace reports that the backing slice is too small"),
+)) {
+    @("cast.baseEmplacedOverDerivedStorageTakesTheBaseClass." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            import core.lifetime: emplace;
+
+            class Base {
+                int describe() {
+                    return 1;
+                }
+            }
+
+            class Derived: Base {
+                override int describe() {
+                    return 2;
+                }
+            }
+
+            unittest {
+                enum derivedWords =
+                    (__traits(classInstanceSize, Derived) + ulong.sizeof - 1)
+                    / ulong.sizeof;
+                enum baseWords =
+                    (__traits(classInstanceSize, Base) + ulong.sizeof - 1)
+                    / ulong.sizeof;
+                ulong[derivedWords] storage;
+
+                emplace!Derived(cast(void[]) storage[]);
+                emplace!Base(cast(void[]) storage[0 .. baseWords]);
+
+                auto base = cast(Base) cast(void*) storage.ptr;
+
+                assert(base.describe == 1);
+            }
+        });
+    }
+}
+
+// A cast to a derived class names a view onto whatever object lives at that
+// address; it does not make the object one. Naming the derived class through
+// a raw pointer therefore leaves a live base object as it was, and a later
+// virtual call on it still reaches the base's own implementation.
+// SystemLinker is the oracle.
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.inexpressible,
+        "`pointer cast from a class to void* is not supported at compile "
+        ~ "time`"),
+)) {
+    @("cast.derivedViewDoesNotChangeALiveObjectsClass." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            class Base {
+                int describe() {
+                    return 1;
+                }
+            }
+
+            class Derived: Base {
+                override int describe() {
+                    return 2;
+                }
+            }
+
+            unittest {
+                Base base = new Base;
+                auto view = cast(Derived) cast(void*) base;
+                assert(view !is null);
+
+                Base again = cast(Base) cast(void*) base;
+                assert(again.describe == 1);
+            }
+        });
+    }
+}
+
 static foreach (backend; Matrix!()) {
     @("cast.arrayElementAddressToStaticArrayPointer." ~ backend.stringof)
     @Tags(backend.stringof)

@@ -8642,6 +8642,8 @@ private struct Walker {
                     lower + index,
                     elementAt(index),
                 );
+            if (lower == 0)
+                recordCopiedClassIdentity(pointer.pointerAddress, value);
             return value;
         }
 
@@ -8649,6 +8651,25 @@ private struct Walker {
             "Unsupported interpreter assignment target: slice of ",
             slice.e1.op,
         ));
+    }
+
+    // Copying a class's whole initializer image over storage establishes an
+    // object of that class there: it is exactly the write that precedes any
+    // constructor, and after it the storage holds that class's fields. So the
+    // destination now denotes an object of the source's class, whatever it
+    // denoted before -- the bytes that said otherwise are gone.
+    private void recordCopiedClassIdentity(
+        void* destination,
+        in ExpressionResult source,
+    ) {
+        import quickbite.backends.interpreter.aggregate_value: AggregateValue;
+
+        auto image = cast(void*) AggregateValue.nativeArrayAddress(source);
+        if (image is null)
+            return;
+
+        if (auto type = image in nativeClassTypes)
+            nativeClassTypes[destination] = *type;
     }
 
     private void rejectOverlappingSliceAssignment(
@@ -9315,36 +9336,30 @@ private struct Walker {
         // hold a constructed object yet, which is how `emplace` reaches the
         // instance it is about to initialise.
         if (isPointerType(cast_.e1.type)) {
-            // Compiled code recovers the dynamic class from the vptr the
-            // storage already holds; the interpreter keeps that identity
-            // beside the address instead, so this cast is where it has to be
-            // recorded -- otherwise the resulting reference has no dynamic
-            // type and every later interface cast or virtual call off it
-            // fails. An address can be reused by a later, unrelated
-            // allocation once the object that lived there is freed, so a
-            // prior registration is only trustworthy when it is at least as
-            // precise as what this cast asserts: overwrite it unless the
-            // registered class already descends from (or is) the one named
-            // here, which is the case for a real object being reinterpreted
-            // through a less specific pointer type.
+            // A cast names a view onto whatever object is at the address; it
+            // does not make the object one. What the object is was settled
+            // when the class was established over that storage, and only
+            // establishing another class there can change it -- a cast cannot
+            // tell whether that has since happened, so it must not guess.
+            //
+            // Compiled code recovers the class from the vptr the storage
+            // already holds. The interpreter keeps that identity beside the
+            // address, so an address it has never seen carries none: for
+            // storage reached only through a raw pointer -- foreign memory,
+            // or a chunk about to be initialised -- naming the class here is
+            // the only statement of what lives there, and without it every
+            // later interface cast or virtual call off the result fails.
+            // Record only in that case; an address that already answers is
+            // left exactly as it is.
+            //
+            // An interface never becomes an object's class either way: it has
+            // no fields of its own and names a view onto whatever object is
+            // there, so a class the interface record replaced could no longer
+            // resolve an implementation for a later virtual call.
             if (auto address = classIdentityAddress(value)) {
-                auto registered = address in nativeClassTypes;
-                auto registeredClass = registered is null
-                    ? null
-                    : registered.toBasetype.isTypeClass;
-                // An interface has no fields of its own and is never itself
-                // the runtime class of an instance -- it names a view onto
-                // whatever object is there. Recording it here would replace
-                // a real class record with a type that later virtual calls
-                // and member lookups cannot resolve an implementation
-                // against, so a cast naming an interface never touches the
-                // registration.
                 if (
                     classType.sym.isInterfaceDeclaration is null &&
-                    (
-                        registeredClass is null ||
-                        !classDescendsFromOrIs(registeredClass.sym, classType.sym)
-                    )
+                    address !in nativeClassTypes
                 )
                     nativeClassTypes[address] = classType;
             }
@@ -10895,7 +10910,6 @@ private struct Walker {
                 arguments ~= runExpression(argument);
 
         auto object = AggregateValue.allocateClass(allocationType);
-        nativeClassTypes[AggregateValue.nativeClassBodyAddress(object)] = allocationType;
         nativeClassOwners[AggregateValue.nativeClassBodyAddress(object)] = object;
         initializeNativeClassBody(this, allocationType, object);
         if (new_.member is null)
@@ -11372,7 +11386,19 @@ private void initializeNativeClassBody(
     if (classType is null || classType.sym is null)
         throw new Exception("initializeNativeClassBody needs a class type.");
 
-    auto body = Place(AggregateValue.nativeClassBodyAddress(object), type);
+    // This is where raw storage becomes an object of `type`: the class's
+    // fields are laid into it here. A native class reference carries only its
+    // body address, so the class that address denotes is kept beside it, and
+    // establishing a class over storage is the one moment that answer
+    // changes. Re-establishing another class over the same storage therefore
+    // replaces it outright -- what the storage was before has been
+    // overwritten.
+    //
+    // Not `const`: the field writes below go through this address.
+    auto address = AggregateValue.nativeClassBodyAddress(object);
+    walker.nativeClassTypes[address] = type;
+
+    auto body = Place(address, type);
     foreach (field; classFields(classType.sym)) {
         auto value = defaultValue(field.type);
         if (field._init !is null) {
@@ -11639,19 +11665,6 @@ private imported!"dmd.dclass".ClassDeclaration[] classHierarchy(
     for (auto current = class_; current !is null; current = current.baseClass)
         classes ~= current;
     return classes;
-}
-
-// Whether `class_` is `ancestor` or one of its subclasses, i.e. whether an
-// instance of `class_` is-a `ancestor`.
-private bool classDescendsFromOrIs(
-    imported!"dmd.dclass".ClassDeclaration class_,
-    imported!"dmd.dclass".ClassDeclaration ancestor,
-) {
-    foreach (current; classHierarchy(class_))
-        if (current is ancestor)
-            return true;
-
-    return false;
 }
 
 
