@@ -846,15 +846,7 @@ static foreach (backend; Matrix!()) {
 // `a[1] == b` (nested AA read as the FIRST operand of a plain, non-assert
 // `==`): control case for the corruption below. A later, unrelated AA
 // write must not see any effect from this comparison's operand codegen.
-// Interpreter has its own, separate gap on `a[1][k] = v` ("Associative-array
-// lvalue needs a variable"), unrelated to the write-back bug this test
-// targets -- same pre-existing omission as
-// `nestedWriteAutoVivifiesBrandNewOuterKey` above.
-static foreach (backend; Matrix!(
-    Omit!(Interpreter, Because.unconfirmed,
-        "a brand-new-outer-key nested write throws " ~
-        "\"Associative-array lvalue needs a variable\""),
-)) {
+static foreach (backend; Matrix!()) {
     @("assocArray.nestedReadAsFirstEqualityOperandLeavesLaterWritesUnaffected."
         ~ backend.stringof)
     @Tags(backend.stringof)
@@ -890,13 +882,8 @@ static foreach (backend; Matrix!(
 // consumed it). The NEXT plain, unrelated AA insert (`m[5] = 6` below)
 // then wrote its own freshly-autovivified handle through that stale
 // pointer, silently aliasing `a[1]`'s storage onto `m` -- corrupting a
-// variable the comparison never touched. Interpreter omitted for the same
-// pre-existing, unrelated gap as the control case above.
-static foreach (backend; Matrix!(
-    Omit!(Interpreter, Because.unconfirmed,
-        "a brand-new-outer-key nested write throws " ~
-        "\"Associative-array lvalue needs a variable\""),
-)) {
+// variable the comparison never touched.
+static foreach (backend; Matrix!()) {
     @("assocArray.nestedReadAsSecondEqualityOperandLeavesLaterWritesUnaffected."
         ~ backend.stringof)
     @Tags(backend.stringof)
@@ -962,14 +949,8 @@ static foreach (backend; Matrix!()) {
 // `a[1][2] = 3` on a brand-new OUTER key (`a[1]` does not yet exist): the
 // outer level auto-vivifies a fresh, still-empty inner map, and the write
 // into that inner map must be visible back through the outer map's own
-// storage, not just a local copy of the freshly-created handle. Interpreter
-// has its own, separate gap on the same fixture ("Associative-array lvalue
-// needs a variable"), unrelated to the Bytecode issue this test targets.
-static foreach (backend; Matrix!(
-    Omit!(Interpreter, Because.unconfirmed,
-        "a brand-new-outer-key nested write throws " ~
-        "\"Associative-array lvalue needs a variable\""),
-)) {
+// storage, not just a local copy of the freshly-created handle.
+static foreach (backend; Matrix!()) {
     @("assocArray.nestedWriteAutoVivifiesBrandNewOuterKey." ~
         backend.stringof)
     @Tags(backend.stringof)
@@ -1002,11 +983,8 @@ static foreach (backend; Matrix!(
 // compiler-generated pointer temp once and represents the compound
 // assignment as an index off that same temp, so the read and write sides
 // share one lookup and a missing key auto-vivifies with its default value
-// first (`_d_aaGetY` always inserts). Interpreter declines with "Expected
-// array." for this shape -- a separate, unconfirmed backend gap.
-static foreach (backend; Matrix!(
-    Omit!(Interpreter, Because.unconfirmed, "Expected array."),
-)) {
+// first (`_d_aaGetY` always inserts).
+static foreach (backend; Matrix!()) {
     @("assocArray.compoundAddAssignAutoVivifiesMissingKeyAndAddsIntoExisting."
         ~ backend.stringof)
     @Tags(backend.stringof)
@@ -1027,13 +1005,7 @@ static foreach (backend; Matrix!(
 
 // `a[k1][k2] += rhs` on an existing nested entry: the same hidden-pointer
 // compound-assignment lowering as the flat case above, one level down.
-// Interpreter declines with "Associative-array lvalue needs a variable" --
-// the same gap `nestedWriteAutoVivifiesBrandNewOuterKey` above already
-// characterizes for plain nested writes.
-static foreach (backend; Matrix!(
-    Omit!(Interpreter, Because.unconfirmed,
-        "Associative-array lvalue needs a variable"),
-)) {
+static foreach (backend; Matrix!()) {
     @("assocArray.nestedCompoundAddAssignAddsIntoExistingInnerEntry." ~
         backend.stringof)
     @Tags(backend.stringof)
