@@ -8444,6 +8444,34 @@ private struct Walker {
         return value;
     }
 
+    // A slice assignment's destination range must be rejected before `rhs` is
+    // even evaluated -- matching compiled D, which raises before any side
+    // effect in `rhs` runs. `lower > upper` takes priority over an
+    // out-of-range `upper`, the same order druntime's own `ArraySliceError`
+    // (`core.exception`) picks; message text matches it verbatim, so
+    // `SystemLinker` agrees exactly. An unchecked `upper > length` would
+    // additionally index a per-path element buffer out of range with a HOST
+    // `RangeError` rather than raising the guest one.
+    private void checkSliceAssignmentBounds(
+        in size_t lower,
+        in size_t upper,
+        in size_t length,
+    ) {
+        import std.conv: text;
+
+        if (lower > upper)
+            throwRangeError(text(
+                "slice [", lower, " .. ", upper,
+                "] has a larger lower index than upper index",
+            ));
+
+        if (upper > length)
+            throwRangeError(text(
+                "slice [", lower, " .. ", upper,
+                "] extends past source array of length ", length,
+            ));
+    }
+
     private ExpressionResult runSliceAssignExpression(
         imported!"dmd.expression".SliceExp slice,
         imported!"dmd.expression".Expression rhs,
@@ -8497,21 +8525,7 @@ private struct Walker {
             ? AggregateValue.length(current)
             : cast(size_t) runExpression(slice.upr).asLong;
 
-        // An out-of-bounds `upper` must be rejected here, before `rhs` is
-        // even evaluated (matching compiled D, which raises this before any
-        // side effect in `rhs` runs) and before the cell-write loop below
-        // indexes `elements[lower .. upper]` -- `elements` only ever holds
-        // `current.length` entries, so an unchecked `upper > current.length`
-        // would index it out of range with a HOST `RangeError` even when
-        // `variable` has no promoted cell at all. Message text matches
-        // druntime's own `ArraySliceError` verbatim (confirmed against a
-        // compiled `int[] a = [1, 2]; a[0 .. 5] = 9;`), so `SystemLinker`
-        // agrees exactly.
-        if (upper > AggregateValue.length(current))
-            throwRangeError(text(
-                "slice [", lower, " .. ", upper,
-                "] extends past source array of length ", AggregateValue.length(current),
-            ));
+        checkSliceAssignmentBounds(lower, upper, AggregateValue.length(current));
 
         rejectOverlappingSliceAssignment(
             variable,
@@ -8546,6 +8560,16 @@ private struct Walker {
         foreach (index; lower .. upper)
             writeStoredArrayElement(destination.index(index), elements[index]);
         clearUninitializedBindingAddress(destination.address);
+
+        // This variable's own data pointer denotes the same bytes a native
+        // pointer to it would, so a whole-range write through it establishes
+        // a class's identity exactly as `runPointerSliceAssignExpression`
+        // already records for the pointer form of the same write.
+        if (lower == 0)
+            recordCopiedClassIdentity(
+                cast(void*) AggregateValue.nativeArrayAddress(current),
+                value,
+            );
 
         return value;
     }
@@ -8631,6 +8655,20 @@ private struct Walker {
         const lower = cast(size_t) runExpression(slice.lwr).asLong;
         const upper = cast(size_t) runExpression(slice.upr).asLong;
 
+        // Reject an inverted range before `rhs` is evaluated -- matching
+        // compiled D, which raises before any side effect in `rhs` runs --
+        // and before the write loop below computes `upper - lower`: with an
+        // unsigned `size_t`, `lower > upper` wraps that subtraction to a huge
+        // count, turning the loop into a runaway walk through native memory
+        // instead of the guest range error compiled D raises. Message text
+        // matches druntime's own `ArraySliceError` verbatim, so
+        // `SystemLinker` agrees exactly.
+        if (lower > upper)
+            throwRangeError(text(
+                "slice [", lower, " .. ", upper,
+                "] has a larger lower index than upper index",
+            ));
+
         const block = isBlockSliceAssignment(slice, rhs);
         const value = runExpression(rhs);
 
@@ -8675,6 +8713,13 @@ private struct Walker {
         in ExpressionResult source,
     ) {
         import quickbite.backends.interpreter.aggregate_value: AggregateValue;
+
+        // A destination whose own bytes are its storage (a static-array
+        // lvalue) has no data pointer distinct from its own address, so
+        // there is nothing here to key an identity by; only a destination
+        // reached through a dynamic array's data pointer participates.
+        if (destination is null)
+            return;
 
         auto image = cast(void*) AggregateValue.nativeArrayAddress(source);
         if (image is null)
@@ -8727,8 +8772,6 @@ private struct Walker {
         imported!"dmd.expression".DotVarExp dot,
         imported!"dmd.expression".Expression rhs,
     ) {
-        import std.conv: text;
-
         const current = fieldSliceStorage(dot);
 
         const lower = slice.lwr is null
@@ -8738,23 +8781,7 @@ private struct Walker {
             ? AggregateValue.length(current)
             : cast(size_t) runExpression(slice.upr).asLong;
 
-        // Reject an inverted range before an out-of-range `upper`, matching
-        // druntime's own `ArraySliceError`, which picks its wording the same
-        // way (`core.exception`: `lower > upper` takes priority). Both checks
-        // run before `rhs` is evaluated -- matching compiled D, which raises
-        // before any side effect in `rhs` runs -- and message text matches
-        // druntime's verbatim, so `SystemLinker` agrees exactly.
-        if (lower > upper)
-            throwRangeError(text(
-                "slice [", lower, " .. ", upper,
-                "] has a larger lower index than upper index",
-            ));
-
-        if (upper > AggregateValue.length(current))
-            throwRangeError(text(
-                "slice [", lower, " .. ", upper,
-                "] extends past source array of length ", AggregateValue.length(current),
-            ));
+        checkSliceAssignmentBounds(lower, upper, AggregateValue.length(current));
 
         const block = isBlockSliceAssignment(slice, rhs);
         const value = runExpression(rhs);
@@ -8773,6 +8800,20 @@ private struct Walker {
                     : value;
             AggregateValue.withArrayElement(current, index, element);
         }
+
+        // A dynamic-array field's data pointer denotes the same bytes a
+        // native pointer to it would, so a whole-range write through it
+        // establishes a class's identity exactly as
+        // `runPointerSliceAssignExpression` already records for the pointer
+        // form of the same write. A static-array field has no data pointer
+        // distinct from its own address; `recordCopiedClassIdentity` no-ops
+        // for it.
+        if (lower == 0)
+            recordCopiedClassIdentity(
+                cast(void*) AggregateValue.nativeArrayAddress(current),
+                value,
+            );
+
         return value;
     }
 
@@ -8852,8 +8893,6 @@ private struct Walker {
         imported!"dmd.expression".SliceExp slice,
         imported!"dmd.expression".Expression rhs,
     ) {
-        import std.conv: text;
-
         const current = runExpression(slice.e1);
 
         const lower = slice.lwr is null
@@ -8863,23 +8902,7 @@ private struct Walker {
             ? AggregateValue.length(current)
             : cast(size_t) runExpression(slice.upr).asLong;
 
-        // Reject an inverted range before an out-of-range `upper`, matching
-        // druntime's own `ArraySliceError`, which picks its wording the same
-        // way (`core.exception`: `lower > upper` takes priority). Both checks
-        // run before `rhs` is evaluated -- matching compiled D, which raises
-        // before any side effect in `rhs` runs -- and message text matches
-        // druntime's verbatim, so `SystemLinker` agrees exactly.
-        if (lower > upper)
-            throwRangeError(text(
-                "slice [", lower, " .. ", upper,
-                "] has a larger lower index than upper index",
-            ));
-
-        if (upper > AggregateValue.length(current))
-            throwRangeError(text(
-                "slice [", lower, " .. ", upper,
-                "] extends past source array of length ", AggregateValue.length(current),
-            ));
+        checkSliceAssignmentBounds(lower, upper, AggregateValue.length(current));
 
         const block = isBlockSliceAssignment(slice, rhs);
         const value = runExpression(rhs);
@@ -8897,6 +8920,18 @@ private struct Walker {
                     : value;
             AggregateValue.withArrayElement(current, index, element);
         }
+
+        // A cast changes a view's element type, not the storage it denotes,
+        // so its data pointer still denotes the same bytes a native pointer
+        // to that storage would: a whole-range write through it establishes
+        // a class's identity exactly as `runPointerSliceAssignExpression`
+        // already records for the pointer form of the same write.
+        if (lower == 0)
+            recordCopiedClassIdentity(
+                cast(void*) AggregateValue.nativeArrayAddress(current),
+                value,
+            );
+
         return value;
     }
 

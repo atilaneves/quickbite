@@ -4943,6 +4943,170 @@ static foreach (backend; Matrix!(
     }
 }
 
+// Slice-assigning a class's whole initializer image over already-emplaced
+// storage, through a plain array variable rather than the raw pointer
+// `emplace` itself uses, still establishes an object of the new class there:
+// a later virtual call through that storage reaches the new class's own
+// override, not the class that occupied it before. SystemLinker is the
+// oracle.
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.refusal,
+        "core.lifetime.emplace reports that the backing slice is too small"),
+    Omit!(Bytecode, Because.refusal,
+        "`Unsupported dynamic array initializer in bytecode core: B`"),
+)) {
+    @("cast.variableSliceAssignmentCarriesTheNewClassIdentity." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            import core.lifetime: emplace;
+
+            class Base {
+                int describe() {
+                    return 0;
+                }
+            }
+
+            class A: Base {
+                override int describe() {
+                    return 1;
+                }
+            }
+
+            class B: Base {
+                override int describe() {
+                    return 2;
+                }
+            }
+
+            unittest {
+                enum words =
+                    (__traits(classInstanceSize, A) + ulong.sizeof - 1)
+                    / ulong.sizeof;
+                ulong[words] storage;
+                emplace!A(cast(void[]) storage[]);
+
+                void[] chunk = cast(void[]) storage[];
+                chunk[] = __traits(initSymbol, B)[];
+
+                auto b = cast(B) cast(void*) storage.ptr;
+                assert(b.describe == 2);
+            }
+        });
+    }
+}
+
+// Slice-assigning a class's whole initializer image over already-emplaced
+// storage, through a cast rather than the raw pointer `emplace` itself uses,
+// still establishes an object of the new class there: a later virtual call
+// through that storage reaches the new class's own override, not the class
+// that occupied it before. SystemLinker is the oracle.
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.refusal,
+        "core.lifetime.emplace reports that the backing slice is too small"),
+    Omit!(Bytecode, Because.refusal,
+        "`Unsupported dynamic array initializer in bytecode core: B`"),
+)) {
+    @("cast.castedSliceAssignmentCarriesTheNewClassIdentity." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            import core.lifetime: emplace;
+
+            class Base {
+                int describe() {
+                    return 0;
+                }
+            }
+
+            class A: Base {
+                override int describe() {
+                    return 1;
+                }
+            }
+
+            class B: Base {
+                override int describe() {
+                    return 2;
+                }
+            }
+
+            unittest {
+                enum words =
+                    (__traits(classInstanceSize, A) + ulong.sizeof - 1)
+                    / ulong.sizeof;
+                ulong[words] storage;
+                emplace!A(cast(void[]) storage[]);
+
+                (cast(void[]) storage[])[] = __traits(initSymbol, B)[];
+
+                auto b = cast(B) cast(void*) storage.ptr;
+                assert(b.describe == 2);
+            }
+        });
+    }
+}
+
+// Slice-assigning a class's whole initializer image over already-emplaced
+// storage, through a struct field rather than the raw pointer `emplace`
+// itself uses, still establishes an object of the new class there: a later
+// virtual call through that storage reaches the new class's own override,
+// not the class that occupied it before. SystemLinker is the oracle.
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.refusal,
+        "core.lifetime.emplace reports that the backing slice is too small"),
+    Omit!(Bytecode, Because.refusal,
+        "`Unsupported dynamic array initializer in bytecode core: B`"),
+)) {
+    @("cast.structFieldSliceAssignmentCarriesTheNewClassIdentity." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            import core.lifetime: emplace;
+
+            class Base {
+                int describe() {
+                    return 0;
+                }
+            }
+
+            class A: Base {
+                override int describe() {
+                    return 1;
+                }
+            }
+
+            class B: Base {
+                override int describe() {
+                    return 2;
+                }
+            }
+
+            struct Holder {
+                void[] chunk;
+            }
+
+            unittest {
+                enum words =
+                    (__traits(classInstanceSize, A) + ulong.sizeof - 1)
+                    / ulong.sizeof;
+                ulong[words] storage;
+                emplace!A(cast(void[]) storage[]);
+
+                Holder holder;
+                holder.chunk = storage[];
+                holder.chunk[] = __traits(initSymbol, B)[];
+
+                auto b = cast(B) cast(void*) storage.ptr;
+                assert(b.describe == 2);
+            }
+        });
+    }
+}
+
 static foreach (backend; Matrix!()) {
     @("cast.arrayElementAddressToStaticArrayPointer." ~ backend.stringof)
     @Tags(backend.stringof)
@@ -10115,6 +10279,39 @@ static foreach (backend; Matrix!(
             }
         }).shouldThrowWithMessage(
             "slice [5 .. 5] extends past source array of length 3",
+        );
+    }
+}
+
+
+// A slice assignment on a plain array variable with an inverted range
+// (`lower > upper`) must throw before the right-hand side is evaluated, the
+// same as the existing out-of-range `upper` check on this path. SystemLinker
+// is the oracle.
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.inexpressible,
+        "CTFE rejects the slice while compiling, so the run-time error the "
+        ~ "assertion names never happens: `slice `[3..1]` exceeds array "
+        ~ "bounds `[0..3]``"),
+)) {
+    @("assign.sliceAssignmentWithInvertedBoundsThrowsRangeError." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            int seed(int value) {
+                return value;
+            }
+
+            unittest {
+                int[] a = new int[3];
+                size_t lower = cast(size_t) seed(3);
+                size_t upper = cast(size_t) seed(1);
+
+                a[lower .. upper] = [9];
+            }
+        }).shouldThrowWithMessage(
+            "slice [3 .. 1] has a larger lower index than upper index",
         );
     }
 }
