@@ -217,6 +217,10 @@
 - Do not amend an existing commit unless the user explicitly asks for an
   amend. Make a new commit for follow-up changes.
 
+- A native callback retained beyond an interpreted child call must dispatch
+  through root-execution state, not a delegate whose context points at the
+  child Walker's stack frame.
+
 - Do not use Python scripts to rewrite repository files. Use `apply_patch` for
   semantic edits and reserve dedicated formatters for bulk formatting.
 
@@ -307,6 +311,11 @@
   RAND_poll`. Forward `dub describe --data=libs` (as `-l<name>`) and `--data=
   lflags` to the image link. General rule: the `--dub` path relays dub's build
   info verbatim; missing link inputs is the same class of bug as missing flags.
+
+- Link DMD-built dependency archives through DMD's driver, not bare `cc`.
+  Compiler installations may keep shared Phobos outside the system linker's
+  default search paths even though DMD's configuration can find it. Preserve
+  whole-archive ordering when forwarding the archives through the driver.
 
 - `makeRunners` constructs every backend eagerly, so an LDC bench run builds the
   llvmjit backend even though it is unavailable under LDC and never timed.

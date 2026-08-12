@@ -156,6 +156,18 @@ public struct FrameBlock {
         return _block.byteLength;
     }
 
+    // Whether `address` belongs to this activation's own inline storage.
+    // Reference slots deliberately do not make their pointees part of this
+    // block: a forwarded address is owned by an earlier activation.
+    public bool ownsAddress(const(void)* address) const @trusted {
+        if (address is null || _block.byteLength == 0)
+            return false;
+
+        const start = cast(size_t) _block.address;
+        const candidate = cast(size_t) address;
+        return candidate >= start && candidate < start + _block.byteLength;
+    }
+
     public inout(NativeBlock) block() inout pure nothrow @nogc @safe {
         return _block;
     }

@@ -65,9 +65,9 @@ private:
 // inside the chain it hands this function needs no length reported back.
 public imported!"quickbite.backends.interpreter.place".Place placeOfLvalue(
     imported!"dmd.expression".Expression expr,
-    void* delegate(imported!"dmd.declaration".VarDeclaration) @safe resolveBase,
-    size_t delegate(imported!"dmd.expression".Expression) @system evalIndex,
-    void delegate(
+    scope void* delegate(imported!"dmd.declaration".VarDeclaration) @safe resolveBase,
+    scope size_t delegate(imported!"dmd.expression".Expression) @system evalIndex,
+    scope void delegate(
         imported!"dmd.expression".IndexExp,
         imported!"quickbite.backends.interpreter.place".Place,
     ) @safe onIndexBase = null,
@@ -195,7 +195,7 @@ public imported!"quickbite.backends.interpreter.place".Place placeOfLvalue(
 // callers there are the shapes that apply that dereference themselves.
 private imported!"quickbite.backends.interpreter.place".Place symOffTarget(
     imported!"dmd.expression".SymOffExp symbol,
-    void* delegate(imported!"dmd.declaration".VarDeclaration) @safe resolveBase,
+    scope void* delegate(imported!"dmd.declaration".VarDeclaration) @safe resolveBase,
 ) @safe {
     import quickbite.backends.interpreter.place: Place;
 

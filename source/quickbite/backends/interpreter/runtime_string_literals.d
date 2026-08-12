@@ -26,21 +26,36 @@ public imported!"quickbite.backends.interpreter.expression_result".ExpressionRes
 
     switch (string_.sz) {
         case wcharCodeUnitWidth:
-            return AggregateValue.reconstructArray(
+            return reconstructedStringArray(
                 string_.type,
-                characterValues(stringCodeUnits!wchar(string_)),
+                stringCodeUnits!wchar(string_),
             );
         case dcharCodeUnitWidth:
-            return AggregateValue.reconstructArray(
+            return reconstructedStringArray(
                 string_.type,
-                characterValues(stringCodeUnits!dchar(string_)),
+                stringCodeUnits!dchar(string_),
             );
         default:
-            return AggregateValue.reconstructArray(
+            return reconstructedStringArray(
                 string_.type,
-                characterValues(stringChars(string_)),
+                stringChars(string_),
             );
     }
+}
+
+
+private imported!"quickbite.backends.interpreter.expression_result".ExpressionResult
+reconstructedStringArray(T)(
+    imported!"dmd.mtype".Type type,
+    T[] codeUnits,
+) {
+    import quickbite.backends.interpreter.aggregate_value: AggregateValue;
+    import quickbite.backends.interpreter.scratch_array: releaseScratchArray;
+
+    scope(exit) releaseScratchArray(codeUnits);
+    auto values = characterValues(codeUnits);
+    scope(exit) releaseScratchArray(values);
+    return AggregateValue.reconstructArray(type, values);
 }
 
 
@@ -71,21 +86,21 @@ pointerStringStorage(
 
 
 private imported!"quickbite.backends.interpreter.expression_result".ExpressionResult[]
-characterValues(T)(in T[] codeUnits) @safe pure {
+characterValues(T)(in T[] codeUnits) pure {
     import quickbite.backends.interpreter.expression_result: ExpressionResult;
 
-    ExpressionResult[] values;
-    foreach (codeUnit; codeUnits)
-        values ~= ExpressionResult(codeUnit);
+    auto values = new ExpressionResult[](codeUnits.length);
+    foreach (index, codeUnit; codeUnits)
+        values[index] = ExpressionResult(codeUnit);
     return values;
 }
 
 public T[] stringCodeUnits(T)(
     imported!"dmd.expression".StringExp string_,
 ) {
-    T[] values;
+    auto values = new T[](string_.numberOfCodeUnits);
     foreach (index; 0 .. string_.numberOfCodeUnits)
-        values ~= cast(T) string_.getIndex(index);
+        values[index] = cast(T) string_.getIndex(index);
 
     return values;
 }
@@ -95,17 +110,29 @@ public char[] stringChars(
 ) {
     import std.utf: encode;
 
-    char[] values;
+    size_t valuesLength;
     foreach (index; 0 .. string_.numberOfCodeUnits) {
         const codeUnit = string_.getIndex(index);
-        if (string_.sz == charCodeUnitWidth) {
-            values ~= cast(char) codeUnit;
-        } else {
+        if (string_.sz == charCodeUnitWidth)
+            ++valuesLength;
+        else {
             char[maxUtf8CodeUnits] encoded;
-            const length = encode(encoded, cast(dchar) codeUnit);
-            values ~= encoded[0 .. length];
+            valuesLength += encode(encoded, cast(dchar) codeUnit);
         }
     }
 
+    auto values = new char[](valuesLength);
+    size_t valuesIndex;
+    foreach (index; 0 .. string_.numberOfCodeUnits) {
+        const codeUnit = string_.getIndex(index);
+        if (string_.sz == charCodeUnitWidth)
+            values[valuesIndex++] = cast(char) codeUnit;
+        else {
+            char[maxUtf8CodeUnits] encoded;
+            const length = encode(encoded, cast(dchar) codeUnit);
+            values[valuesIndex .. valuesIndex + length] = encoded[0 .. length];
+            valuesIndex += length;
+        }
+    }
     return values;
 }

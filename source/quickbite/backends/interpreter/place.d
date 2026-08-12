@@ -118,6 +118,27 @@ public struct Place {
         return Place(placeAdd(_address, i * typeByteSize(array.next)), array.next);
     }
 
+    // Read only the length stored at an
+    // addressable array place. This avoids materialising the complete array
+    // merely to select its length.
+    public size_t arrayLength() @safe {
+        import quickbite.backends.interpreter.layout: staticArrayLength;
+        import quickbite.backends.interpreter.native_array:
+            NativeArray, readSliceHeaderBytes;
+
+        if (auto array = _type.isTypeSArray)
+            return staticArrayLength(array);
+        if (_type.isTypeDArray !is null)
+            return readSliceHeaderBytes(
+                placeBytes(_address, NativeArray.sliceHeaderByteLength),
+            ).length;
+
+        throw new Exception(
+            "quickbite.backends.interpreter.place.Place.arrayLength: only a "
+            ~ "static-array or slice place has a length",
+        );
+    }
+
     // The data pointer stored in a slice header. Unlike `index`, this is
     // defined for an empty slice: `array.ptr` observes its retained backing
     // address without dereferencing an element.

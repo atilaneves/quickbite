@@ -127,26 +127,53 @@ public string buildDubDependencyImage(
     in string[] linkerFlags = null,
 ) {
     import std.algorithm.iteration: map;
-    import std.array: array;
+    import std.array: array, join;
     import std.conv: text;
-    import std.file: mkdirRecurse;
-    import std.path: buildPath;
-    import std.process: execute;
+    import std.file: exists, mkdirRecurse, remove, write;
+    import std.path: buildPath, setExtension;
+    import std.process: escapeShellFileName, execute;
 
     mkdirRecurse(outDir);
     const imagePath = buildPath(outDir, "lib" ~ packageName ~ "_dub_deps.so");
-    auto command = [ // const fails: appended to below
-        "cc",
-        "-shared",
-        "-o",
-        imagePath,
-        "-Wl,--whole-archive",
+    const linkInputPath = buildPath(outDir, ".quickbite_dub_deps_link.d");
+    const linkerResponsePath =
+        buildPath(outDir, ".quickbite_dub_deps_link.rsp");
+    const generatedPaths = [
+        linkInputPath,
+        linkerResponsePath,
+        imagePath.setExtension("o"),
     ];
-    command ~= dependencyArchives
-        ~ "-Wl,--no-whole-archive"
-        ~ "-lphobos2"
+    scope(exit)
+        foreach (path; generatedPaths)
+            if (path.exists)
+                path.remove;
+
+    write(linkInputPath, "module quickbite_dub_dependency_image_link;\n");
+    const linkerArguments = ["--whole-archive"]
+        ~ dependencyArchives
+        ~ "--no-whole-archive"
         ~ systemLibs.map!(lib => "-l" ~ lib).array
-        ~ linkerFlags.dup;
+        ~ linkerFlags;
+    // DMD groups linker options separately from linker files, which would move
+    // the whole-archive delimiters away from the archives. A compiler-driver
+    // response keeps every linker argument in its original order.
+    write(
+        linkerResponsePath,
+        linkerArguments
+            .map!(argument =>
+                "-Xlinker\n" ~ argument.escapeShellFileName ~ "\n")
+            .join,
+    );
+
+    const command = [
+        "dmd",
+        "-shared",
+        "-fPIC",
+        "-defaultlib=libphobos2.so",
+        "-of=" ~ imagePath,
+        linkInputPath,
+        "-Xcc=@" ~ linkerResponsePath,
+    ];
 
     const result = execute(command);
     if (result.status != 0)

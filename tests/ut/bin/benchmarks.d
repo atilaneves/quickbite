@@ -351,6 +351,122 @@ unittest {
     ];
 }
 
+@("dubDependencyImageLinksArchivesAndExternalInputs")
+unittest {
+    import core.sys.posix.dlfcn: dlclose, dlopen, dlsym, RTLD_NOW;
+    import quickbite.dub: buildDubDependencyImage;
+    import std.file: mkdirRecurse, setAttributes;
+    import std.path: buildPath, pathSeparator;
+    import std.process: environment, execute;
+    import std.string: strip, toStringz;
+
+    with(immutable Sandbox()) {
+        writeFile("dependency.d", q{
+            module dependency;
+
+            extern(C) int dependencySupport();
+
+            extern(C) int dependencyValue() {
+                return dependencySupport() + 1;
+            }
+        });
+        const dependencyObject = inSandboxPath("dependency.o");
+        execute([
+            "dmd",
+            "-c",
+            "-fPIC",
+            "-of=" ~ dependencyObject,
+            inSandboxPath("dependency.d"),
+        ]).status.should == 0;
+        const dependencyArchive = inSandboxPath("libdependency.a");
+        execute([
+            "ar",
+            "rcs",
+            dependencyArchive,
+            dependencyObject,
+        ]).status.should == 0;
+
+        writeFile("support.d", q{
+            module support;
+
+            extern(C) int dependencySupport() {
+                return 41;
+            }
+        });
+        const supportObject = inSandboxPath("support.o");
+        execute([
+            "dmd",
+            "-c",
+            "-fPIC",
+            "-of=" ~ supportObject,
+            inSandboxPath("support.d"),
+        ]).status.should == 0;
+        const supportArchive = inSandboxPath("libdependency_support.a");
+        execute([
+            "ar",
+            "rcs",
+            supportArchive,
+            supportObject,
+        ]).status.should == 0;
+
+        const originalPath = environment.get("PATH");
+        const realDmd = execute(["which", "dmd"]).output.strip.idup;
+        const toolchainPath = inSandboxPath("toolchain");
+        mkdirRecurse(toolchainPath);
+        writeFile("toolchain/dmd", `#!/bin/sh
+PATH="$QUICKBITE_TEST_ORIGINAL_PATH"
+export PATH
+exec "$QUICKBITE_TEST_REAL_DMD" "$@"
+`);
+        writeFile("toolchain/cc", `#!/bin/sh
+for argument in "$@"; do
+    if [ "$argument" = "-lphobos2" ]; then
+        echo 'cannot find compiler-local -lphobos2' >&2
+        exit 1
+    fi
+done
+exit 2
+`);
+        setAttributes(buildPath(toolchainPath, "dmd"), 0x1ED);
+        setAttributes(buildPath(toolchainPath, "cc"), 0x1ED);
+
+        const previousOriginalPath =
+            environment.get("QUICKBITE_TEST_ORIGINAL_PATH");
+        const previousRealDmd = environment.get("QUICKBITE_TEST_REAL_DMD");
+        environment["QUICKBITE_TEST_ORIGINAL_PATH"] = originalPath;
+        environment["QUICKBITE_TEST_REAL_DMD"] = realDmd;
+        environment["PATH"] = toolchainPath ~ pathSeparator ~ originalPath;
+        scope(exit) {
+            environment["PATH"] = originalPath;
+            if (previousOriginalPath is null)
+                environment.remove("QUICKBITE_TEST_ORIGINAL_PATH");
+            else
+                environment["QUICKBITE_TEST_ORIGINAL_PATH"] =
+                    previousOriginalPath;
+            if (previousRealDmd is null)
+                environment.remove("QUICKBITE_TEST_REAL_DMD");
+            else
+                environment["QUICKBITE_TEST_REAL_DMD"] = previousRealDmd;
+        }
+
+        const imagePath = buildDubDependencyImage(
+            "driver_inputs",
+            [dependencyArchive],
+            sandboxPath,
+            ["dependency_support"],
+            ["-L" ~ sandboxPath, "-z", "defs"],
+        );
+
+        auto library = dlopen(imagePath.toStringz, RTLD_NOW);
+        assert(library !is null);
+        scope(exit) dlclose(library);
+        const dependencyValue =
+            cast(int function()) dlsym(library, "dependencyValue");
+        assert(dependencyValue !is null);
+        dependencyValue().should == 42;
+    }
+}
+
 @("dubInfoUsesDependencyImageInsteadOfRawArchives")
 unittest {
     import std.path: buildPath;

@@ -4879,6 +4879,57 @@ static foreach (backend; Matrix!()) {
     }
 }
 
+// Duplicating an associative array preserves each function pointer's callable
+// identity while detaching the copy from later mutations to the original.
+static foreach (backend; Matrix!()) {
+    @("assocArray.dupCopiesFunctionPointerValues." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            alias Handler = void function(ref int);
+
+            void increment(ref int value) {
+                value = value + 1;
+            }
+
+            unittest {
+                Handler[string] original;
+                original["increment"] = &increment;
+                Handler[string] copy = original.dup;
+                original.remove("increment");
+
+                int value = 41;
+                copy["increment"](value);
+                assert(value == 42);
+            }
+        });
+    }
+}
+
+// A heap-allocated struct's constructor has addressable receiver storage, so
+// writes through `&this` form the value observed through the returned pointer.
+static foreach (backend; Matrix!()) {
+    @("structThis.heapConstructorHasAddress." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct Item {
+                int[4] values;
+
+                this(int value) {
+                    Item* pointer = &this;
+                    pointer.values[0] = value;
+                }
+            }
+
+            unittest {
+                Item* item = new Item(41);
+                assert(item.values[0] == 41);
+            }
+        });
+    }
+}
+
 // Bytecode ("Unsupported bytecode assignment target.") and IR ("Unsupported
 // IR expression `null`") cannot run AA insertion.
 static foreach (backend; Matrix!()) {
@@ -5369,6 +5420,49 @@ static foreach (backend; Matrix!()) {
     }
 }
 
+// The outer slice of a nested dynamic array still has ordinary dynamic-array
+// `.dup` semantics. Its element type also being a dynamic array must not turn
+// the instantiated operation into an associative-array duplicate.
+static foreach (backend; Matrix!()) {
+    @("dynamicArray.dupOfNestedArrayDetachesOuterCopy." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            unittest {
+                int[][] original = [[1, 2]];
+                int[][] copy = original.dup;
+
+                assert(copy == original);
+                copy ~= [3, 4];
+                assert(original.length == 1);
+                assert(copy.length == 2);
+            }
+        });
+    }
+}
+
+// Duplicating an array with struct elements is still a shallow array copy;
+// the struct element shape must not force that ordinary `.dup` through a
+// source-less allocator.
+static foreach (backend; Matrix!()) {
+    @("dynamicArray.dupOfStructElements." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct Item {
+                int value;
+            }
+
+            unittest {
+                Item[] original = [Item(41)];
+                Item[] copy = original.dup;
+
+                assert(copy == original);
+            }
+        });
+    }
+}
+
 // Bytecode ("Unsupported bytecode assignment target."), Bytecode
 // ("Unsupported type in bytecode core: int[]"), and IR (unsupported array
 // literal expression) cannot run this .idup fixture.
@@ -5755,6 +5849,50 @@ static foreach (backend; Matrix!(
                     arr ~= i;
 
                 assert(arr.ptr is ptr);
+            }
+        });
+    }
+}
+
+// Shrinking a dynamic array changes only its descriptor's length; it does not
+// relocate the backing storage. Ctfe omitted because pointer identity on a
+// GC-backed slice lowers to an address cast that CTFE refuses.
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.inexpressible,
+        "pointer-identity `is` on a GC-backed slice lowers to an address cast CTFE refuses at compile time"),
+    Omit!(Bytecode, Because.diverges, "see sibling pin below (Bytecode)"),
+)) {
+    @("dynamicArray.shrinkPreservesBackingAddress." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            unittest {
+                auto values = [1, 2, 3];
+                auto address = values.ptr;
+
+                values.length = 1;
+
+                assert(values.ptr is address);
+                assert(values[0] == 1);
+            }
+        });
+    }
+}
+
+// Bytecode currently reallocates the backing storage while shrinking a
+// dynamic array, so pin that divergence separately from compiled D.
+static foreach (backend; AliasSeq!(Bytecode)) {
+    @("dynamicArray.shrinkPreservesBackingAddress." ~ backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            unittest {
+                auto values = [1, 2, 3];
+                auto address = values.ptr;
+
+                values.length = 1;
+
+                assert(values.ptr !is address);
+                assert(values[0] == 1);
             }
         });
     }

@@ -249,12 +249,14 @@ private imported!"quickbite.backends.interpreter.expression_result".ExpressionRe
 ) {
     import quickbite.backends.interpreter.aggregate_value: AggregateValue;
     import quickbite.backends.interpreter.expression_result: ExpressionResult;
+    import quickbite.backends.interpreter.scratch_array: releaseScratchArray;
 
     const length = cast(size_t) staticArray.dim.toInteger;
 
-    ExpressionResult[] elements;
-    foreach (_; 0 .. length)
-        elements ~= defaultValue(staticArray.nextOf);
+    auto elements = new ExpressionResult[](length);
+    scope(exit) releaseScratchArray(elements);
+    foreach (index; 0 .. length)
+        elements[index] = defaultValue(staticArray.nextOf);
 
     return AggregateValue.reconstructArray(staticArray, elements);
 }
@@ -264,13 +266,15 @@ private imported!"quickbite.backends.interpreter.expression_result".ExpressionRe
 ) {
     import quickbite.backends.interpreter.aggregate_value: AggregateValue;
     import quickbite.backends.interpreter.expression_result: ExpressionResult;
+    import quickbite.backends.interpreter.scratch_array: releaseScratchArray;
 
     if (structType is null || structType.sym is null)
         throw new Exception("Unsupported DMD default value.");
 
-    ExpressionResult[] fields;
-    foreach (field; structType.sym.fields)
-        fields ~= defaultValue(field.type);
+    auto fields = new ExpressionResult[](structType.sym.fields.length);
+    scope(exit) releaseScratchArray(fields);
+    foreach (index, field; structType.sym.fields)
+        fields[index] = defaultValue(field.type);
 
     return AggregateValue.reconstructStruct(structType, fields);
 }
