@@ -1207,6 +1207,80 @@ static foreach (backend; Matrix!(
     }
 }
 
+// A struct declared inside a function can call a method on a delegate it
+// captured from that function, the same as any other captured variable.
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.inexpressible,
+        "`variable 'dg' cannot be read at compile time`"),
+    Omit!(Bytecode, Because.refusal,
+        "`index [32] is out of bounds for array of length 4`"),
+)) {
+    @("closure.nestedStructMethodCallsCapturedDelegate." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            auto wrap() {
+                int base = 40;
+                int delegate() dg = () => base + 2;
+
+                struct Caller {
+                    int call() {
+                        return dg();
+                    }
+                }
+
+                return Caller();
+            }
+
+            unittest {
+                assert(wrap().call() == 42);
+            }
+        });
+    }
+}
+
+// Each instance of a function-local struct captures the enclosing
+// activation that constructed it. A recursive call's inner instance reads
+// its own capture, not an outer, still-live activation's.
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.inexpressible,
+        "`static variable 'result' cannot be read at compile time`"),
+    Omit!(Bytecode, Because.refusal, "0 != 1"),
+)) {
+    @("closure.nestedStructReadsOwnActivationDuringRecursion." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct Reading {
+                int amount;
+            }
+
+            int result;
+
+            auto wrap(Reading value, int depth) {
+                struct Compare {
+                    bool equals(Reading other) {
+                        return value.amount == other.amount;
+                    }
+                }
+
+                if (depth == 0)
+                    return Compare();
+
+                auto inner = wrap(Reading(3), 0);
+                result = inner.equals(Reading(3)) ? 1 : 0;
+                return Compare();
+            }
+
+            unittest {
+                wrap(Reading(999), 1);
+                assert(result == 1);
+            }
+        });
+    }
+}
+
 // A TypeInfo reference retains its identity when stored in an aggregate and
 // read back.
 static foreach (backend; Matrix!()) {

@@ -3761,8 +3761,9 @@ unsupportedExpression:
         child._activationFrame = FrameBlock.allocate(layout);
         child.addressOfRefReturn = true;
         child.result = ExpressionResult(false);
-        bindCapturedReferenceSlots(function_, child);
         forkExecutionStateInto(child);
+        scope(exit) child.retireActivationFrameMetadata;
+        bindCapturedReferenceSlots(function_, child);
         child.thisValue = receiver;
         child.hasThis = true;
         child.bindThisReferenceAddress(function_, receiver);
@@ -6753,14 +6754,13 @@ unsupportedExpression:
         auto layout = cachedFrameLayout(function_);
         child._activationFrame = FrameBlock.allocate(layout);
         child.result = ExpressionResult(false);
+        forkExecutionStateInto(child);
+        scope(exit) child.retireActivationFrameMetadata;
         bindCapturedReferenceSlots(
             function_,
             child,
             nestedReceiverCapturedAddresses(function_, memberReceiver),
         );
-        forkExecutionStateInto(child);
-        scope(exit) child.retireActivationFrameMetadata;
-        bindCapturedReferenceSlots(function_, child);
         // For constructor calls, DMD may blit the target variable to zero
         // before the ctor runs (e.g. `box = 0 , box.this(input)`), so the
         // receiver evaluates to a non-struct scalar.  Seed `thisValue` from
@@ -7314,12 +7314,6 @@ unsupportedExpression:
                 continue;
 
             child._activationFrame.setReferenceSlot(variable, address);
-
-            import dmd.astenums: TY;
-            if (variable.type.toBasetype.ty == TY.Tdelegate)
-                if (auto delegate_ = address in nativeDelegateSlots)
-                    child.nativeDelegateSlots[address] = *delegate_;
-
         }
     }
 
