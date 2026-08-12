@@ -9853,6 +9853,94 @@ static foreach (backend; Matrix!(
     }
 }
 
+// A constructed temporary used as a ref-returning member call's assignment
+// target (`Owner(...).slot = value`) still denotes that temporary. Its
+// destructor must run exactly once, at the end of the enclosing full
+// expression, the same as when the member call is merely read. SystemLinker
+// is the oracle.
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.refusal,
+        "the temporary's destructor never runs, so the count it keeps in "
+        ~ "`storage[0]` stays at zero (`0 != 1`)"),
+    Omit!(Bytecode, Because.refusal, "0 != 1"),
+)) {
+    @("call.constructedTemporaryIsDestroyedAfterAssigningThroughIt." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct Owner {
+                int[] memory;
+
+                this(int[] memory) {
+                    this.memory = memory;
+                }
+
+                ~this() {
+                    ++memory[0];
+                }
+
+                ref int slot() {
+                    return memory[1];
+                }
+            }
+
+            unittest {
+                int[4] storage;
+                Owner(storage[]).slot = 7;
+                assert(storage[1] == 7);
+                assert(storage[0] == 1);
+            }
+        });
+    }
+}
+
+// A constructed temporary whose ref-returning member call has its address
+// taken (here, passed as a `ref` argument) still denotes that temporary. Its
+// destructor must run exactly once, at the end of the enclosing full
+// expression, the same as when the member call is merely read. SystemLinker
+// is the oracle.
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.refusal,
+        "the temporary's destructor never runs, so the count it keeps in "
+        ~ "`storage[0]` stays at zero (`0 != 1`)"),
+    Omit!(Bytecode, Because.refusal, "0 != 1"),
+)) {
+    @("call.constructedTemporaryIsDestroyedAfterPassingItsAddressByRef." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct Owner {
+                int[] memory;
+
+                this(int[] memory) {
+                    this.memory = memory;
+                }
+
+                ~this() {
+                    ++memory[0];
+                }
+
+                ref int slot() {
+                    return memory[1];
+                }
+            }
+
+            void setThrough(ref int target, int newValue) {
+                target = newValue;
+            }
+
+            unittest {
+                int[4] storage;
+                setThrough(Owner(storage[]).slot, 9);
+                assert(storage[1] == 9);
+                assert(storage[0] == 1);
+            }
+        });
+    }
+}
+
 // A temporary created within an expression lives until the end of the full
 // expression that created it, not until a member call through it returns.
 // Later use of state its destructor mutates, still in the same expression,

@@ -2767,7 +2767,9 @@ private struct Walker {
     // (an rvalue) falls back to evaluating it ordinarily -- still exactly
     // once. Composing the address and the value as two independent
     // evaluations of `receiverExpression` would re-run any side effect it
-    // carries (e.g. a ref-returning call) an extra time.
+    // carries (e.g. a ref-returning call) an extra time. A receiver that is
+    // itself a constructed temporary owns a full-expression cleanup, queued
+    // here for the same reason.
     private void resolveMemberCallReceiver(
         imported!"dmd.expression".Expression receiverExpression,
         out ExpressionResult receiverAddress,
@@ -2782,6 +2784,7 @@ private struct Walker {
                 Place(receiverAddress.pointerAddress, receiverExpression.type),
             )
             : runExpression(receiverExpression);
+        queueConstructedReceiverDestructor(receiverExpression);
     }
 
     // The address of the lvalue a ref-returning *member* call yields. The
@@ -4298,9 +4301,7 @@ private struct Walker {
                     : runExpression(dot.e1);
             } else
                 receiver = runExpression(dot.e1);
-            auto receiverDestructor = constructedReceiverDestructor(dot.e1);
-            if (receiverDestructor !is null)
-                queueReceiverDestructor(receiverDestructor);
+            queueConstructedReceiverDestructor(dot.e1);
             receiver = rootedNativeClassValue(dot.e1, receiver);
             const interpreterAllocatedClass = receiver.isNativeAggregate &&
                 dot.e1.type.toBasetype.isTypeClass !is null;
@@ -4557,9 +4558,20 @@ private struct Walker {
 
     // A constructor used directly as a member receiver owns a full-expression
     // temporary. DMD records that cleanup on the synthesized declaration
-    // rather than emitting a DtorExpStatement, so return it to the call site,
-    // which queues it to run at the end of the enclosing full expression
-    // instead of when this call returns.
+    // rather than emitting a DtorExpStatement, so queue it here to run at the
+    // end of the enclosing full expression instead of when the member call
+    // returns. Every member-call receiver-resolution site routes through
+    // this, so a constructed-temporary receiver is destroyed exactly once
+    // regardless of whether the member call is read, assigned through, or
+    // has its address taken.
+    private void queueConstructedReceiverDestructor(
+        imported!"dmd.expression".Expression receiver,
+    ) {
+        auto destructor = constructedReceiverDestructor(receiver);
+        if (destructor !is null)
+            queueReceiverDestructor(destructor);
+    }
+
     private imported!"dmd.expression".Expression
     constructedReceiverDestructor(
         imported!"dmd.expression".Expression receiver,
