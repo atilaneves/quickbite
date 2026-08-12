@@ -12,7 +12,7 @@ Interpreter may know anything about that package. Production code must not
 special-case Cerealed names, modules, paths, types, or behavior. Every failure
 class becomes a standalone D semantic supported independently of the package.
 
-The default LDC-hosted two-backend acceptance command and its resource
+The standing LDC-hosted two-backend acceptance command and its resource
 calibration are the standing regression gate in §10.
 
 A DMD-hosted run is a useful diagnostic control, but it is not the acceptance
@@ -3040,7 +3040,7 @@ back into its `SystemLinker`-oracle matrix after fixing the named red behavior:
 
 ## 10. Standing Cerealed regression gate
 
-The exact default LDC-hosted command must remain green:
+The exact standing LDC-hosted command must remain green:
 
 ```text
 ./bin/bench.sh -b interpreter -b system-linker --dub cerealed -w 0 -r 1
