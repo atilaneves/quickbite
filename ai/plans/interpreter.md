@@ -2823,35 +2823,15 @@ Start from branch `automem-interpreter-disagreements` (`e0bd8482`), which carrie
 the field-access class with three fixtures whose Ctfe and Bytecode rows still
 need adjudicating.
 
-### 11.3 Record a class object's identity where it is constructed
+### 11.3 Evict the address-keyed tables
 
-Identity is recorded at cast sites today. Nothing chose that; it is what filled
-the hole left when a class reference became a bare address, so treat it as
-provisional rather than as a design to preserve. No rule at a cast site can be
-correct: a cast is a view, and the cast site cannot know whether the storage was
-re-emplaced since the class was last recorded. Two shapes are wrong today, both
-verified against the oracle:
-
-- an ancestor emplaced over descendant storage keeps the descendant's class, so
-  it answers the descendant's override — `emplace!Derived(storage)`, then
-  `emplace!Base(storage[0 .. Base-size])`, then a virtual call;
-- a derived cast taken on a live base object overwrites its record, so a later
-  legitimate base receiver answers the derived override —
-  `Base b = new Base; cast(Derived) cast(void*) b;`.
-
-Record identity where storage BECOMES an object instead, and demote the cast to
-recording only when nothing is recorded for that address. The construction
-moments are unambiguous and already exist here: the class-initializer image copy
-(`typeInfoClassInitializer` / `classBodyByteSlice`), which is what `emplace`
-copies into a chunk before running the constructor, and whatever `new` uses.
-Check first that the initializer copy knows its destination address at the point
-it runs — if it does not, that is the thing to solve.
-
-The same table, and the two beside it (class owners, nested-struct context
-frames), also never evict: every guest object an execution allocates is retained
-for the backend instance's lifetime. Deriving retention from surviving roots
-needs a reachability pass over module storage, which an address-keyed table
-cannot support as it stands. One decision covers all three.
+The table holding each class object's identity, and the two beside it
+(class owners, nested-struct context frames), never evict: every guest object
+an execution allocates is retained for the backend instance's lifetime.
+Deriving retention from surviving roots needs a reachability pass over module
+storage, which an address-keyed table cannot support as it stands. One
+decision covers all three, and it is the same decision as whether identity
+should be keyed by address at all.
 
 ## 12. Structural maintenance queue
 
