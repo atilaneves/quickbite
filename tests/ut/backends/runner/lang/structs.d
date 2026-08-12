@@ -50,6 +50,32 @@ static foreach (backend; Matrix!()) {
 }
 
 static foreach (backend; Matrix!()) {
+    @("struct.functionPointerFieldLiteralConstruction." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            alias Handler = int function(int);
+
+            static int increment(int x) {
+                return x + 1;
+            }
+
+            struct Holder {
+                Handler fn;
+            }
+
+            unittest {
+                Holder h = Holder(&increment);
+                assert(h.fn(1) == 2);
+
+                h.fn = &increment;
+                assert(h.fn(3) == 4);
+            }
+        });
+    }
+}
+
+static foreach (backend; Matrix!()) {
     @("struct.liveDelegateFieldPreservesCallable." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {

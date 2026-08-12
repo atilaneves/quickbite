@@ -1334,10 +1334,23 @@ private struct Walker {
         // way it always does for a live delegate.
         const liveDelegate = field.type.toBasetype.ty == TY.Tdelegate &&
             fieldValue != ExpressionResult.null_;
+        // A function-pointer value is the same story: it's a distinct
+        // `FunctionPointer` ExpressionResult variant, not a `Pointer`, so
+        // `AggregateValue.withStructField`'s `place_value.writeValue` call
+        // throws for it just like it does for a live delegate. Seed `null`
+        // here too; `writeStoredValue` below registers it in
+        // `nativeFunctionPointerSlots` once `destination`'s field address
+        // is known.
+        auto fieldPointerType = field.type.toBasetype.isTypePointer;
+        const liveFunctionPointer = fieldPointerType !is null &&
+            fieldPointerType.nextOf.toBasetype.isTypeFunction !is null &&
+            fieldValue.isFunctionPointer;
         auto result = AggregateValue.withStructField(
             receiver,
             fieldIndex,
-            symbolicTypeInfo || liveDelegate ? ExpressionResult.null_ : fieldValue,
+            symbolicTypeInfo || liveDelegate || liveFunctionPointer
+                ? ExpressionResult.null_
+                : fieldValue,
         );
         auto source = AggregateValue.native(receiver);
         auto destination = AggregateValue.native(result);
@@ -10842,6 +10855,13 @@ unsupportedExpression:
     // writes -- and registers the live value at the field's own address
     // once that address exists. `writeStoredValue` carries the registration
     // forward again when this rvalue is copied into durable storage.
+    //
+    // A field typed pointer-to-function (`int function(int)`) is the same
+    // story with `nativeFunctionPointerSlots` standing in for
+    // `nativeDelegateSlots`: `place_value.writeValue`'s pointer arm only
+    // ever accepts a `Pointer` ExpressionResult or `null`, never the
+    // distinct `FunctionPointer` variant, so a live function-pointer field
+    // gets the same null-then-register treatment here.
     private ExpressionResult structLiteralValue(
         imported!"dmd.expression".StructLiteralExp literal,
     ) {
@@ -10879,11 +10899,15 @@ unsupportedExpression:
             auto field = structLiteralField(literal, index);
             if (field is null)
                 continue;
+            auto pointerType = field.type.toBasetype.isTypePointer;
             if (
                 field.type.toBasetype.ty == TY.Tdelegate &&
                 value != ExpressionResult.null_ ||
                 field.type.toBasetype.isTypeClass !is null &&
-                value.isTypeName
+                value.isTypeName ||
+                pointerType !is null &&
+                pointerType.nextOf.toBasetype.isTypeFunction !is null &&
+                value.isFunctionPointer
             ) {
                 if (nativeFields is null) {
                     nativeFields = new ExpressionResult[](fields.length);
@@ -10915,6 +10939,15 @@ unsupportedExpression:
                 value.isTypeName
             )
                 nativeTypeInfoSlots[
+                    Place(native.address, native.type).field(field).address
+                ] = value;
+            auto pointerType = field.type.toBasetype.isTypePointer;
+            if (
+                pointerType !is null &&
+                pointerType.nextOf.toBasetype.isTypeFunction !is null &&
+                value.isFunctionPointer
+            )
+                nativeFunctionPointerSlots[
                     Place(native.address, native.type).field(field).address
                 ] = value;
         }
