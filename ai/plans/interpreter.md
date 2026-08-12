@@ -1610,8 +1610,7 @@ current PR head. Reconstruct the red state instead:
 3. Run the focused fixture against SystemLinker and Interpreter.
 4. Record SystemLinker green and Interpreter red, including the exact failure.
 5. Add the same fixture on this PR branch.
-6. Keep or adjust the implementation so the focused fixture, ninja bin/ut, and
-   bin/ut --random are green.
+6. Keep or adjust the implementation so the focused fixture is green.
 7. Commit the fixture, any implementation correction, and this plan update
    together.
 ```
