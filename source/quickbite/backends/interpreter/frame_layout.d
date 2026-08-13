@@ -53,6 +53,84 @@ public struct FrameLayout {
 }
 
 
+// Packs one frame slot at a time at the current cursor, aligned up to the
+// slot's own alignment, tracking the largest alignment any slot used so
+// `finish` can align the final cursor for `FrameLayout.byteLength`. Shared
+// by `computeFrameLayout` and `computeExpressionFrameLayout` so the two
+// pack a slot -- and so a whole frame -- by one rule, not two hand-kept-
+// in-sync copies of it.
+private struct FramePacker {
+    import dmd.declaration: VarDeclaration;
+
+    FrameLayout.Slot[VarDeclaration] slots;
+    size_t cursor;
+    size_t maxAlignment = 1;
+
+    void place(
+        VarDeclaration variable,
+        in size_t size,
+        in size_t alignment,
+        FrameLayout.Slot.Kind kind,
+    ) {
+        if (variable in slots)
+            return;
+
+        cursor = alignedUp(cursor, alignment);
+        slots[variable] = FrameLayout.Slot(cursor, size, kind);
+        cursor += size;
+        if (alignment > maxAlignment)
+            maxAlignment = alignment;
+    }
+
+    // An OWNING slot sized/aligned from `type`, DMD's own
+    // `layout.typeByteSize`/`typeAlignment`.
+    void placeOwning(VarDeclaration variable, imported!"dmd.mtype".Type type) @trusted {
+        import quickbite.backends.interpreter.layout: typeAlignment, typeByteSize;
+
+        place(variable, typeByteSize(type), typeAlignment(type), FrameLayout.Slot.Kind.owning);
+    }
+
+    FrameLayout finish() {
+        return FrameLayout(slots, alignedUp(cursor, maxAlignment));
+    }
+}
+
+
+// Places one storage-owning local -- a body variable declared inside a
+// function, or a lowering-synthesized temp inside a lone expression -- into
+// `packer`: skips a storage-free local (`isStorageFreeLocal`), gives a
+// `ref`/`out` or by-reference local a pointer-width REFERENCE slot, and
+// otherwise an OWNING slot sized/aligned from its own declared type
+// (skipping an unsized type). Shared by `computeFrameLayout`'s body-locals
+// loop and `computeExpressionFrameLayout` so the two place a local
+// identically.
+private void placeLocal(
+    ref FramePacker packer,
+    imported!"dmd.declaration".VarDeclaration variable,
+) @trusted {
+    import quickbite.backends.interpreter.layout: declaredType, typeIsSized;
+
+    if (isStorageFreeLocal(variable))
+        return;
+
+    if (variable.isReference) {
+        packer.place(
+            variable,
+            (void*).sizeof,
+            (void*).alignof,
+            FrameLayout.Slot.Kind.reference,
+        );
+        return;
+    }
+
+    auto type = declaredType(variable);
+    if (!typeIsSized(type))
+        return;
+
+    packer.placeOwning(variable, type);
+}
+
+
 // Assigns one frame slot to `function_`'s activation, in encounter order:
 // each of its parameters (an OWNING slot for a plain value parameter,
 // sized/aligned from DMD's own `layout.typeByteSize`/`typeAlignment`; a
@@ -76,33 +154,14 @@ public struct FrameLayout {
 public FrameLayout computeFrameLayout(
     imported!"dmd.func".FuncDeclaration function_,
 ) @trusted {
-    import quickbite.backends.interpreter.layout:
-        declaredType, typeAlignment, typeByteSize, typeIsSized;
+    import quickbite.backends.interpreter.layout: declaredType, typeIsSized;
     import dmd.declaration: VarDeclaration;
 
-    FrameLayout.Slot[VarDeclaration] slots;
-    size_t cursor;
-    size_t maxAlignment = 1;
-
-    void place(
-        VarDeclaration variable,
-        in size_t size,
-        in size_t alignment,
-        FrameLayout.Slot.Kind kind,
-    ) {
-        if (variable in slots)
-            return;
-
-        cursor = alignedUp(cursor, alignment);
-        slots[variable] = FrameLayout.Slot(cursor, size, kind);
-        cursor += size;
-        if (alignment > maxAlignment)
-            maxAlignment = alignment;
-    }
+    FramePacker packer;
 
     foreach (index, parameter; activationParameters(function_)) {
         if (isReferenceParameter(function_, index, parameter)) {
-            place(
+            packer.place(
                 parameter,
                 (void*).sizeof,
                 (void*).alignof,
@@ -115,19 +174,14 @@ public FrameLayout computeFrameLayout(
         if (!typeIsSized(type))
             continue;
 
-        place(
-            parameter,
-            typeByteSize(type),
-            typeAlignment(type),
-            FrameLayout.Slot.Kind.owning,
-        );
+        packer.placeOwning(parameter, type);
     }
 
     if (
         function_.vthis !is null &&
         function_.vthis.isThisDeclaration !is null
     )
-        place(
+        packer.place(
             function_.vthis,
             (void*).sizeof,
             (void*).alignof,
@@ -137,44 +191,16 @@ public FrameLayout computeFrameLayout(
     if (function_.vresult !is null) {
         auto type = declaredType(function_.vresult);
         if (typeIsSized(type))
-            place(
-                function_.vresult,
-                typeByteSize(type),
-                typeAlignment(type),
-                FrameLayout.Slot.Kind.owning,
-            );
+            packer.placeOwning(function_.vresult, type);
     }
 
     foreach (variable; capturedVariables(function_))
-        place(variable, (void*).sizeof, (void*).alignof, FrameLayout.Slot.Kind.reference);
+        packer.place(variable, (void*).sizeof, (void*).alignof, FrameLayout.Slot.Kind.reference);
 
-    foreach (variable; bodyLocals(function_.fbody)) {
-        if (isStorageFreeLocal(variable))
-            continue;
+    foreach (variable; bodyLocals(function_.fbody))
+        placeLocal(packer, variable);
 
-        if (variable.isReference) {
-            place(
-                variable,
-                (void*).sizeof,
-                (void*).alignof,
-                FrameLayout.Slot.Kind.reference,
-            );
-            continue;
-        }
-
-        auto type = declaredType(variable);
-        if (!typeIsSized(type))
-            continue;
-
-        place(
-            variable,
-            typeByteSize(type),
-            typeAlignment(type),
-            FrameLayout.Slot.Kind.owning,
-        );
-    }
-
-    return FrameLayout(slots, alignedUp(cursor, maxAlignment));
+    return packer.finish();
 }
 
 
@@ -196,57 +222,12 @@ public FrameLayout computeFrameLayout(
 public FrameLayout computeExpressionFrameLayout(
     imported!"dmd.expression".Expression expression,
 ) @trusted {
-    import quickbite.backends.interpreter.layout:
-        declaredType, typeAlignment, typeByteSize, typeIsSized;
-    import dmd.declaration: VarDeclaration;
+    FramePacker packer;
 
-    FrameLayout.Slot[VarDeclaration] slots;
-    size_t cursor;
-    size_t maxAlignment = 1;
+    foreach (variable; expressionLocals(expression))
+        placeLocal(packer, variable);
 
-    void place(
-        VarDeclaration variable,
-        in size_t size,
-        in size_t alignment,
-        FrameLayout.Slot.Kind kind,
-    ) {
-        if (variable in slots)
-            return;
-
-        cursor = alignedUp(cursor, alignment);
-        slots[variable] = FrameLayout.Slot(cursor, size, kind);
-        cursor += size;
-        if (alignment > maxAlignment)
-            maxAlignment = alignment;
-    }
-
-    foreach (variable; expressionLocals(expression)) {
-        if (isStorageFreeLocal(variable))
-            continue;
-
-        if (variable.isReference) {
-            place(
-                variable,
-                (void*).sizeof,
-                (void*).alignof,
-                FrameLayout.Slot.Kind.reference,
-            );
-            continue;
-        }
-
-        auto type = declaredType(variable);
-        if (!typeIsSized(type))
-            continue;
-
-        place(
-            variable,
-            typeByteSize(type),
-            typeAlignment(type),
-            FrameLayout.Slot.Kind.owning,
-        );
-    }
-
-    return FrameLayout(slots, alignedUp(cursor, maxAlignment));
+    return packer.finish();
 }
 
 
