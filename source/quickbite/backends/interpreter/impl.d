@@ -116,7 +116,7 @@ public class Interpreter: imported!"quickbite.backends".TreeNodeBackend {
             case unitTest:
                 return EvalResult("");
             case formatted:
-                return EvalResult(formattedDisplay(walker.result));
+                return EvalResult(formattedDisplay(walker._returnValue));
             }
         } catch (Exception exception) {
             // The interpreter's own message, verbatim: rewriting it through
@@ -406,6 +406,15 @@ private struct TemporaryPointerOwners {
     public imported!"dmd.expression".Expression[] pendingReceiverDestructors;
 }
 
+// One in-progress full expression: where its temporary owners and its queued
+// receiver destructors begin, and whether it is the outermost one -- the only
+// one whose end is a full-expression boundary.
+private struct FullExpression {
+    public size_t firstOwner;
+    public size_t firstDestructor;
+    public bool outermost;
+}
+
 // Native places for class array-literal `.init` fields, keyed by the address
 // of DMD's initializer node. The pointer indirection keeps the table shared
 // when the first insertion happens in a child walker.
@@ -610,7 +619,10 @@ private struct Walker {
     private size_t[const(void)*] _syntheticDollarValues;
     // `= void` is state attached to the authoritative binding address.
     private UninitializedBindings* uninitializedBindingAddresses;
-    private ExpressionResult result;
+    // What a `return` statement produced, read by whoever ran this
+    // activation. Statement execution never writes here: a statement is not
+    // a value.
+    private ExpressionResult _returnValue;
     private bool runningCalledFunction;
     private bool inUnitTest;
     private FuncDeclaration currentFunction;
@@ -708,7 +720,7 @@ private struct Walker {
             }
 
             const savedReturned = returned;
-            const savedResult = result;
+            const savedResult = _returnValue;
             const savedLoopControl = loopControl;
             const savedLoopControlLabel = loopControlLabel;
             returned = false;
@@ -744,7 +756,7 @@ private struct Walker {
             if (!returned && loopControl == LoopControl.none) {
                 returned = savedReturned;
                 if (returned)
-                    result = savedResult;
+                    _returnValue = savedResult;
                 loopControl = savedLoopControl;
                 loopControlLabel = savedLoopControlLabel;
                 if (bodyException !is null)
@@ -794,12 +806,12 @@ private struct Walker {
         if (auto expression = statement.isExpStatement) {
             if (expression.exp is null)
                 return;
-            result = runExpression(expression.exp);
+            executeForEffect(expression.exp);
             return;
         }
 
         if (auto dtor = statement.isDtorExpStatement) {
-            result = runExpression(dtor.exp);
+            executeForEffect(dtor.exp);
             return;
         }
 
@@ -808,11 +820,12 @@ private struct Walker {
                 if (assignToRefReturn)
                     writeLocation(return_.exp, refReturnAssignedValue);
                 else if (addressOfRefReturn)
-                    result = refReturnAddress(return_.exp);
+                    _returnValue = refReturnAddress(return_.exp);
                 else {
-                    result = runExpression(return_.exp);
+                    _returnValue = runExpression(return_.exp);
                     if (return_.exp.type.toBasetype.isTypeClass !is null)
-                        result = rootedNativeClassValue(return_.exp, result);
+                        _returnValue =
+                            rootedNativeClassValue(return_.exp, _returnValue);
                 }
             }
             returned = true;
@@ -2317,7 +2330,7 @@ private struct Walker {
                 clearLoopControl;
             }
             if (for_.increment !is null)
-                runExpression(for_.increment);
+                executeForEffect(for_.increment);
         }
     }
 
@@ -2348,34 +2361,89 @@ private struct Walker {
     }
 
     private ExpressionResult runExpression(imported!"dmd.expression".Expression expression) {
+        const full = beginFullExpression;
+        scope(exit) endFullExpression(full);
+
+        return runExpressionImpl(expression);
+    }
+
+    // Run `expression` for its effects alone: D gives a discarded
+    // expression's value no observable meaning, so no value is produced and
+    // none is materialised. Every statement position is such a position, and
+    // so is a comma expression's left operand, a `cast(void)` operand, and a
+    // `for` increment.
+    private void executeForEffect(imported!"dmd.expression".Expression expression) {
+        const full = beginFullExpression;
+        scope(exit) endFullExpression(full);
+
+        executeForEffectImpl(expression);
+    }
+
+    // The no-result walk itself, inside an already-open full expression --
+    // an arm here exists only where the discarded value is what a whole
+    // sub-walk was for. Everything else evaluates through the value path and
+    // drops the result, which is what an arm for it would replace.
+    private void executeForEffectImpl(imported!"dmd.expression".Expression expression) {
+        // Both operands of a comma expression in a discarding position are
+        // discarded: D already defines the left one's value as unused, and
+        // here the whole expression's value -- the right operand's -- is
+        // unused too.
+        if (auto comma = expression.isCommaExp) {
+            executeForEffectImpl(comma.e1);
+            executeForEffectImpl(comma.e2);
+            return;
+        }
+
+        // DMD lowers a tuple assignment (`target.tupleof = source.tupleof`,
+        // or a `Tuple` constructor's `field[] = values[]`) into a side-effect
+        // prefix followed by per-element assignments. The sequence's value is
+        // its last element's, so a discarding position discards every one of
+        // them.
+        if (auto tuple = expression.isTupleExp) {
+            if (tuple.e0 !is null)
+                executeForEffectImpl(tuple.e0);
+            if (tuple.exps !is null)
+                foreach (element; *tuple.exps)
+                    executeForEffectImpl(element);
+            return;
+        }
+
+        cast(void) runExpressionImpl(expression);
+    }
+
+    // The temporaries a full expression creates live until that expression
+    // ends, so their lifetime is bracketed here rather than owned by any AST
+    // node. Only the outermost bracket ends the full expression: a nested
+    // evaluation is part of the same one.
+    private FullExpression beginFullExpression() {
         if (_temporaryPointerOwners is null)
             _temporaryPointerOwners = new TemporaryPointerOwners;
 
-        const firstOwner = _temporaryPointerOwners.blocks.length;
-        const firstDestructor =
-            _temporaryPointerOwners.pendingReceiverDestructors.length;
-        const outermost = _temporaryPointerOwners.expressionDepth == 0;
+        auto full = FullExpression(
+            _temporaryPointerOwners.blocks.length,
+            _temporaryPointerOwners.pendingReceiverDestructors.length,
+            _temporaryPointerOwners.expressionDepth == 0,
+        );
         ++_temporaryPointerOwners.expressionDepth;
-        scope(exit) {
-            --_temporaryPointerOwners.expressionDepth;
-            if (outermost) {
-                // A temporary lives until the end of the full expression
-                // that created it. Run every receiver destructor queued
-                // while evaluating this full expression now, in reverse
-                // construction order, before releasing its temporary
-                // storage.
-                auto destructors =
-                    _temporaryPointerOwners.pendingReceiverDestructors[
-                        firstDestructor .. $];
-                _temporaryPointerOwners.pendingReceiverDestructors.length =
-                    firstDestructor;
-                foreach_reverse (destructor; destructors)
-                    runExpression(destructor);
-                _temporaryPointerOwners.blocks.length = firstOwner;
-            }
-        }
+        return full;
+    }
 
-        return runExpressionImpl(expression);
+    private void endFullExpression(in FullExpression full) {
+        --_temporaryPointerOwners.expressionDepth;
+        if (!full.outermost)
+            return;
+
+        // Run every receiver destructor queued while evaluating this full
+        // expression now, in reverse construction order, before releasing
+        // its temporary storage.
+        auto destructors =
+            _temporaryPointerOwners.pendingReceiverDestructors[
+                full.firstDestructor .. $];
+        _temporaryPointerOwners.pendingReceiverDestructors.length =
+            full.firstDestructor;
+        foreach_reverse (destructor; destructors)
+            executeForEffect(destructor);
+        _temporaryPointerOwners.blocks.length = full.firstOwner;
     }
 
     private ExpressionResult runExpressionImpl(
@@ -2784,7 +2852,7 @@ bitXorExpression:
 
 commaExpression:
         if (auto comma = expression.isCommaExp) {
-            runExpression(comma.e1);
+            executeForEffect(comma.e1);
             return runExpression(comma.e2);
         }
 
@@ -3055,7 +3123,7 @@ unsupportedExpression:
         // value is its last element (matching the IR lowering), and is discarded
         // in the statement-expression positions this arises in.
         if (tuple.e0 !is null)
-            runExpression(tuple.e0);
+            executeForEffect(tuple.e0);
 
         auto result = ExpressionResult.void_;  // mutated below; `const` cannot express the fold
         if (tuple.exps !is null)
@@ -3354,7 +3422,7 @@ unsupportedExpression:
         // operand's lvalue identity. Constructor lowering uses this shape to
         // sequence initialization before referring to the fresh temporary.
         if (auto comma = e1.isCommaExp) {
-            runExpression(comma.e1);
+            executeForEffect(comma.e1);
             return addressOfExpression(comma.e2, op);
         }
 
@@ -3731,7 +3799,7 @@ unsupportedExpression:
         auto layout = cachedFrameLayout(call.f);
         child._activationFrame = FrameBlock.allocate(layout);
         child.addressOfRefReturn = true;
-        child.result = ExpressionResult(false);
+        child._returnValue = ExpressionResult(false);
         forkExecutionStateInto(child);
         scope(exit) child.retireActivationFrameMetadata;
         bindCapturedReferenceSlots(call.f, child);
@@ -3866,7 +3934,7 @@ unsupportedExpression:
         auto layout = cachedFrameLayout(function_);
         child._activationFrame = FrameBlock.allocate(layout);
         child.addressOfRefReturn = true;
-        child.result = ExpressionResult(false);
+        child._returnValue = ExpressionResult(false);
         forkExecutionStateInto(child);
         scope(exit) child.retireActivationFrameMetadata;
         bindCapturedReferenceSlots(function_, child);
@@ -4035,7 +4103,7 @@ unsupportedExpression:
         imported!"dmd.expression".Expression[] argumentExpressions,
         ref Walker child,
     ) {
-        return child.result;
+        return child._returnValue;
     }
 
     // `selfAddress` distinguishes two shapes that both recurse into the
@@ -4153,7 +4221,7 @@ unsupportedExpression:
         auto var = array.isVarExp;
         if (var is null) {
             if (auto comma = array.isCommaExp) {
-                runExpression(comma.e1);
+                executeForEffect(comma.e1);
                 return arrayPointer(comma.e2, offset, op, selfAddress);
             }
             if (auto question = array.isCondExp)
@@ -6467,7 +6535,7 @@ unsupportedExpression:
         child.currentFunction = function_;
         auto layout = cachedFrameLayout(function_);
         child._activationFrame = FrameBlock.allocate(layout);
-        child.result = ExpressionResult(false);
+        child._returnValue = ExpressionResult(false);
         forkExecutionStateInto(child);
         scope(exit) child.retireActivationFrameMetadata;
         bindCapturedReferenceSlots(function_, child, closureAddresses);
@@ -6498,7 +6566,7 @@ unsupportedExpression:
             arguments,
             captureLocals,
         );
-        return child.result;
+        return child._returnValue;
     }
 
     private ExpressionResult nativeMemberReceiver(
@@ -6583,7 +6651,7 @@ unsupportedExpression:
         child.currentFunction = function_;
         auto layout = cachedFrameLayout(function_);
         child._activationFrame = FrameBlock.allocate(layout);
-        child.result = ExpressionResult(false);
+        child._returnValue = ExpressionResult(false);
         forkExecutionStateInto(child);
         scope(exit) child.retireActivationFrameMetadata;
         bindCapturedReferenceSlots(
@@ -6718,7 +6786,7 @@ unsupportedExpression:
         if (function_.isConstructorFunction)
             return child.thisValue;
 
-        return child.result;
+        return child._returnValue;
     }
 
     private void mergeFunctionState(
@@ -8474,7 +8542,7 @@ unsupportedExpression:
         child._activationFrame = FrameBlock.allocate(layout);
         child.assignToRefReturn = true;
         child.refReturnAssignedValue = value;
-        child.result = ExpressionResult(false);
+        child._returnValue = ExpressionResult(false);
         forkExecutionStateInto(child);
         scope(exit) child.retireActivationFrameMetadata;
         bindCapturedReferenceSlots(function_, child);
@@ -8587,7 +8655,7 @@ unsupportedExpression:
         child._activationFrame = FrameBlock.allocate(layout);
         child.assignToRefReturn = true;
         child.refReturnAssignedValue = value;
-        child.result = ExpressionResult(false);
+        child._returnValue = ExpressionResult(false);
         forkExecutionStateInto(child);
         scope(exit) child.retireActivationFrameMetadata;
         bindCapturedReferenceSlots(call.f, child);
@@ -10263,7 +10331,7 @@ unsupportedExpression:
             return runExpression(cast_.e1);
 
         if (type.ty == TY.Tvoid) {
-            runExpression(cast_.e1);
+            executeForEffect(cast_.e1);
             return ExpressionResult.void_;
         }
 
@@ -11955,7 +12023,7 @@ unsupportedExpression:
             child.currentFunction = new_.member;
             auto layout = cachedFrameLayout(new_.member);
             child._activationFrame = FrameBlock.allocate(layout);
-            child.result = ExpressionResult(false);
+            child._returnValue = ExpressionResult(false);
             child.thisValue = structVal;
             child.hasThis = true;
             forkExecutionStateInto(child);
@@ -12106,7 +12174,7 @@ unsupportedExpression:
         child.currentFunction = new_.member;
         auto layout = cachedFrameLayout(new_.member);
         child._activationFrame = FrameBlock.allocate(layout);
-        child.result = ExpressionResult(false);
+        child._returnValue = ExpressionResult(false);
         forkExecutionStateInto(child);
         scope(exit) child.retireActivationFrameMetadata;
         child.thisValue = ExpressionResult.pointerValue(

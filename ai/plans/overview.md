@@ -18,8 +18,7 @@ The product work order is:
    benchmark is the acceptance command; packages are feature-discovery and
    integration workloads, never sources of package-specific behavior.
 2. Delete the Interpreter's universal expression carrier through
-   destination-passing evaluation, beginning with the no-result statement
-   path (`value.md` item 8).
+   destination-passing evaluation (`value.md` items 8-10).
 3. Execute the formatter in every remaining backend and delete the shared
    `quickbite.lang.Value`.
 4. Expand the Interpreter language surface beyond the subset the Cerealed

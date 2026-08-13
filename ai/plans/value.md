@@ -19,10 +19,9 @@ survey describes an alternative or hypothesis rather than a settled choice.
 
 `ExpressionResult` (a 25-alternative `SumType`) is still the Interpreter's
 universal expression currency: every recursive expression evaluation returns
-it, statement execution materializes a result unconditionally, an assignment
-round-trips its right-hand side through the carrier before the place write,
-and the native-call adapter's request/result structs carry it in both
-directions. Deleting `expression_result.d` is the Interpreter-side completion
+it, an assignment round-trips its right-hand side through the carrier before
+the place write, and the native-call adapter's request/result structs carry
+it in both directions. Deleting `expression_result.d` is the Interpreter-side completion
 marker (items 8-10). Deleting the shared `Value` is a separate marker gated
 by the IR and Bytecode formatter migrations; neither marker waits for the
 other. Production Interpreter optimisation waits for the carrier deletion;
@@ -747,17 +746,20 @@ Item numbers remain stable for existing cross-references. Production
 Interpreter optimisation begins only after item 10 deletes the carrier;
 timings follow `overview.md`'s measurement contract.
 
-### Item 8 — Destination-passing entry points and the no-result path
+### Item 8 — Destination-passing construction
 
-Design and land decision 7's four operations over the existing
-`Place`/`place_value.d` seam, including decision 19's temporary-lifetime and
-construction-state rules. Measure fixed frame offsets against segmented
-scratch on the gate corpus (`overview.md`'s measurement contract) before
-selecting either;
-this slice owns the names, signatures, storage choice, and lifetime encoding.
-Convert statement execution to the no-result operation: today every expression
-statement materializes a full carrier result and stores it in walker state
-nothing reads, on the unittest hot path.
+Decision 7's no-result operation exists and every discarding position uses
+it; place evaluation and assignment already compose over the
+`Place`/`place_value.d` seam. What remains is the construction operation and
+decision 19's addressable temporaries. Measure fixed frame offsets against
+segmented scratch on the gate corpus (`overview.md`'s measurement contract)
+before selecting either; this slice owns the storage choice, the
+construction-state encoding, and the temporary-lifetime rules.
+
+A no-result arm is worth writing only where the discarded value is what a
+whole sub-walk was for. Everything else still evaluates through the value
+path, so the carrier's per-expression materialization retires with
+construction, not with more arms.
 
 ### Item 9 — Assignment through construction
 
