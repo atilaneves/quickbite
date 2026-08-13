@@ -114,13 +114,14 @@ public imported!"quickbite.backends.interpreter.expression_result".ExpressionRes
     if (sliceType !is null)
         return AggregateValue.copyFromAddress(type, place.address);
 
-    // An associative-array place stores only Quickbite's native header
-    // pointer.  Copy that pointer-sized value as one aggregate handle; AA
-    // lookup/mutation stays in the interpreter's native_assoc_array hooks.
-    if (type.isTypeAArray !is null)
-        return bytesAreZero(place.address, typeByteSize(type))
-            ? ExpressionResult.null_
-            : AggregateValue.copyFromAddress(type, place.address);
+    // An associative-array place stores only the one-word `Impl*` handle
+    // interpreted druntime's own AA hooks (`core.internal.newaa`) build and
+    // read; the interpreter never dereferences it itself, so it reads back
+    // exactly like a class reference or pointer place.
+    if (type.isTypeAArray !is null) {
+        auto address = place.deref.address;
+        return address is null ? ExpressionResult.null_ : ExpressionResult.pointerValue(address);
+    }
 
     // A class slot's stored body address is the class value's identity.
     if (type.isTypeClass !is null) {
@@ -250,13 +251,6 @@ private bool isClassType(imported!"dmd.mtype".Type type) @trusted {
 }
 
 
-// The AA carrier is a header pointer, whose layout does not change when D
-// propagates qualifiers into the key/value types.
-private bool isAssocArrayType(imported!"dmd.mtype".Type type) @trusted {
-    return type.toBasetype.isTypeAArray !is null;
-}
-
-
 // `Type.toBasetype` is not `@safe`; the null type has one value and its
 // native place is therefore always the all-zero representation.
 private bool isNullType(imported!"dmd.mtype".Type type) @trusted {
@@ -359,6 +353,21 @@ public bool valueMatchesPlace(
         return value.isComplexScalar;
 
     if (type.isTypePointer !is null)
+        return value.isPointer || value == ExpressionResult.null_;
+
+    // A scalar destined for a static-array place is a broadcast fill --
+    // ordinary D semantics for `T[N] x = scalar;` (declaration) and its
+    // reassignment form when it reaches this generic scalar path rather than
+    // the dedicated slice-assignment or struct-literal-field broadcasts,
+    // which already accept the identical shape. Recursing into the element
+    // type answers the same question `writeValue`'s own `Tsarray` arm below
+    // relies on before broadcasting.
+    if (auto arrayType = type.isTypeSArray)
+        return valueMatchesPlace(arrayType.next, value);
+
+    // An AA place holds interpreted druntime's own `Impl*` handle -- a
+    // pointer-shaped value or null, exactly like a raw pointer place.
+    if (type.isTypeAArray !is null)
         return value.isPointer || value == ExpressionResult.null_;
 
     return false;
@@ -482,12 +491,7 @@ public void writeValue(
         // reference does. Other aggregates still require their exact native
         // layout type before copying their complete byte span.
         const classReference = isClassType(source.type) && isClassType(type);
-        // An AA value is solely its header handle.  Qualifying an AA qualifies
-        // its value type (`const(long[string])`), not that one-word handle,
-        // so a qualified destination is a valid copy without pretending its
-        // key/value storage has the same DMD type.
-        const assocArrayHandle = isAssocArrayType(source.type) && isAssocArrayType(type);
-        if (!sameBaseType(source.type, type) && !classReference && !assocArrayHandle)
+        if (!sameBaseType(source.type, type) && !classReference)
             throw new Exception(
                 "quickbite.backends.interpreter.place_value.writeValue: "
                 ~ "native aggregate type mismatch " ~ typeName(source.type)
@@ -580,13 +584,34 @@ public void writeValue(
         return;
     }
 
-    if (type.isTypeAArray !is null && value == ExpressionResult.null_) {
-        zeroBytes(place.address, typeByteSize(type));
+    auto assocArrayType = type.isTypeAArray;
+    if (assocArrayType !is null) {
+        if (!value.isPointer && value != ExpressionResult.null_)
+            throw new Exception(
+                "quickbite.backends.interpreter.place_value.writeValue: "
+                ~ "associative-array place requires a handle pointer or null",
+            );
+        place.storeReference(pointerAddress(value));
         return;
     }
 
     if (type.isTypeDelegate !is null && value == ExpressionResult.null_) {
         zeroBytes(place.address, typeByteSize(type));
+        return;
+    }
+
+    // A scalar reaching a static-array place (already screened non-aggregate
+    // by the `value.isNativeAggregate` arm above) is a broadcast fill --
+    // ordinary D semantics for `T[N] x = scalar;`, mirroring
+    // `Walker.structLiteralFieldValue`'s identical broadcast for a struct's
+    // own array-typed field. Each element write recurses back through this
+    // same function, so a multidimensional static array (whose element type
+    // is itself a `Tsarray`) broadcasts all the way down to the scalar leaf.
+    if (auto arrayType = type.isTypeSArray) {
+        import quickbite.backends.interpreter.layout: staticArrayLength;
+
+        foreach (index; 0 .. staticArrayLength(arrayType))
+            writeValue(place.index(index), value);
         return;
     }
 
@@ -775,6 +800,11 @@ public bool isPlaceComposable(imported!"dmd.mtype".Type type) @safe {
         return isPlaceComposable(arrayType.next);
 
     if (type.isTypePointer !is null)
+        return true;
+
+    // An AA place is one pointer-sized `Impl*` handle word, exactly like a
+    // pointer place.
+    if (type.isTypeAArray !is null)
         return true;
 
     if (isNullType(type))

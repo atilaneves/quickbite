@@ -813,7 +813,7 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter, Bytecode)) {
     }
 }
 
-static foreach (backend; AliasSeq!(Ctfe, Interpreter)) {
+static foreach (backend; AliasSeq!(Ctfe)) {
     @("repl.backend.displaysAssocArrayResults." ~ backend.stringof)
     unittest {
         import quickbite.repl: runReplLoop;
@@ -824,6 +824,26 @@ static foreach (backend; AliasSeq!(Ctfe, Interpreter)) {
         );
 
         output.should == ["[1:10, 2:20]"];
+    }
+}
+
+// Interpreter formats an AA literal in druntime's own bucket order, not
+// insertion order: it now interprets druntime's real `_d_aaGetY`/`Impl`
+// hook bodies (rather than a bespoke insertion-ordered lookup), so its
+// iteration order is whatever those buckets land in for this literal --
+// confirmed against real compiled D (`dmd -run`) printing the identical
+// literal as `[2:20, 1:10]`.
+static foreach (backend; AliasSeq!(Interpreter)) {
+    @("repl.backend.displaysAssocArrayResultsInBucketOrder." ~ backend.stringof)
+    unittest {
+        import quickbite.repl: runReplLoop;
+
+        const output = runReplLoop(
+            newBackend!backend,
+            ["[1: 10, 2: 20]", ":q"],
+        );
+
+        output.should == ["[2:20, 1:10]"];
     }
 }
 

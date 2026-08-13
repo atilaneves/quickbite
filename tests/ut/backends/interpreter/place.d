@@ -221,7 +221,7 @@ unittest {
 }
 
 
-@("Place.deref.nonPointerNonClassPlaceThrows")
+@("Place.deref.nonDereferenceablePlaceThrows")
 unittest {
     auto type = structTypeOf(pSource, "P");
     auto block = NativeBlock.allocate(typeByteSize(type), NativeBlock.Scan.no);
@@ -229,7 +229,8 @@ unittest {
 
     root.deref.shouldThrowWithMessage(
         "quickbite.backends.interpreter.place.Place.deref: only a "
-        ~ "pointer or class place can be dereferenced",
+        ~ "pointer, class, or associative-array place can be "
+        ~ "dereferenced",
     );
 }
 

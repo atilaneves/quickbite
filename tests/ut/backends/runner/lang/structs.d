@@ -50,6 +50,32 @@ static foreach (backend; Matrix!()) {
 }
 
 static foreach (backend; Matrix!()) {
+    @("struct.functionPointerFieldLiteralConstruction." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            alias Handler = int function(int);
+
+            static int increment(int x) {
+                return x + 1;
+            }
+
+            struct Holder {
+                Handler fn;
+            }
+
+            unittest {
+                Holder h = Holder(&increment);
+                assert(h.fn(1) == 2);
+
+                h.fn = &increment;
+                assert(h.fn(3) == 4);
+            }
+        });
+    }
+}
+
+static foreach (backend; Matrix!()) {
     @("struct.liveDelegateFieldPreservesCallable." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -167,6 +193,39 @@ static foreach (backend; Matrix!()) {
                 assert(handlers.length == 2);
                 assert(handlers[0].action() == 42);
                 assert(handlers[1].action() == 43);
+            }
+        });
+    }
+}
+
+// A delegate-typed field written through a POINTER receiver, both outside
+// a constructor (`p.g = ...`, `p` a plain `S*` local) and from inside the
+// constructor via `this` (`this.f = ...`) when the struct itself was
+// heap-allocated with `new S(...)`. Neither literal captures anything, so
+// this exercises only the delegate-slot bookkeeping for a pointer-typed
+// write target, not closure-context lifetime. Both writes must be visible
+// calling back through the same pointer afterward, matching `SystemLinker`.
+static foreach (backend; Matrix!()) {
+    @("struct.delegateFieldWriteThroughPointerIsCallable." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct S {
+                int delegate(int) f;
+                int delegate(int) g;
+
+                this(int seed) {
+                    f = x => x + 1;
+                }
+            }
+
+            unittest {
+                auto p = new S(10);
+                p.g = x => x * 2;
+
+                assert(p.f(2) == 3);
+                assert(p.g(3) == 6);
             }
         });
     }
@@ -4469,6 +4528,60 @@ static foreach (backend; Matrix!()) {
 
                 s.a = [1, 2, 3];
                 assert(s.a.ptr is &s.a[0]);
+            }
+        });
+    }
+}
+
+
+// `classinfo` is not a reserved identifier: a struct may declare an ordinary
+// field of that name, and passing it by `ref` must alias the field's real
+// storage, so the callee's write is visible through the struct afterward.
+static foreach (backend; Matrix!()) {
+    @("struct.fieldNamedClassinfoBindsByRef." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct S {
+                int classinfo;
+            }
+
+            void increment(ref int x) {
+                ++x;
+            }
+
+            unittest {
+                S s;
+                increment(s.classinfo);
+                assert(s.classinfo == 1);
+            }
+        });
+    }
+}
+
+
+// `name` is not reserved either: a class may declare an ordinary field of
+// that name, and reading/writing it through a pointer-to-class dereference
+// (the same receiver shape DMD's `classinfo.name` lowering produces) must
+// still alias the field's real storage.
+static foreach (backend; Matrix!()) {
+    @("struct.classFieldNamedNameThroughPointerBindsByRef." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            class C {
+                int name;
+            }
+
+            void increment(ref int x) {
+                ++x;
+            }
+
+            unittest {
+                auto c = new C();
+                C* pc = &c;
+                increment((*pc).name);
+                assert((*pc).name == 1);
             }
         });
     }

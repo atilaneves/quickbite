@@ -991,14 +991,6 @@ private struct Walker {
         import quickbite.backends.interpreter.place_value: valueMatchesPlace;
 
         if (
-            variable.type.toBasetype.isTypeAArray !is null &&
-            value == ExpressionResult.null_
-        ) {
-            writeStoredValue(bindingPlace(variable), value);
-            return;
-        }
-
-        if (
             variable.type.toBasetype.isTypeClass !is null &&
             value.isTypeName
         ) {
@@ -1316,6 +1308,7 @@ private struct Walker {
         in size_t fieldIndex,
         in ExpressionResult fieldValue,
     ) {
+        import dmd.astenums: TY;
         import quickbite.backends.interpreter.aggregate_value: AggregateValue;
         import quickbite.backends.interpreter.layout: structFields;
         import quickbite.backends.interpreter.place: Place;
@@ -1323,10 +1316,33 @@ private struct Walker {
         auto field = structFields(receiverType.toBasetype.isTypeStruct)[fieldIndex];
         const symbolicTypeInfo = field.type.toBasetype.isTypeClass !is null &&
             fieldValue.isTypeName;
+        // A live delegate value (an interpreted closure, not `null`) has no
+        // native ABI function address, so `AggregateValue.withStructField`'s
+        // own `place_value.writeValue` call -- unlike `writeStoredValue`
+        // below -- has no out-of-band fallback and throws for it. Seed this
+        // fresh copy's field with `null` here instead; `writeStoredValue`
+        // below writes the REAL `fieldValue` once `destination`'s own field
+        // address is known, registering it in `nativeDelegateSlots` the same
+        // way it always does for a live delegate.
+        const liveDelegate = field.type.toBasetype.ty == TY.Tdelegate &&
+            fieldValue != ExpressionResult.null_;
+        // A function-pointer value is the same story: it's a distinct
+        // `FunctionPointer` ExpressionResult variant, not a `Pointer`, so
+        // `AggregateValue.withStructField`'s `place_value.writeValue` call
+        // throws for it just like it does for a live delegate. Seed `null`
+        // here too; `writeStoredValue` below registers it in
+        // `nativeFunctionPointerSlots` once `destination`'s field address
+        // is known.
+        auto fieldPointerType = field.type.toBasetype.isTypePointer;
+        const liveFunctionPointer = fieldPointerType !is null &&
+            fieldPointerType.nextOf.toBasetype.isTypeFunction !is null &&
+            fieldValue.isFunctionPointer;
         auto result = AggregateValue.withStructField(
             receiver,
             fieldIndex,
-            symbolicTypeInfo ? ExpressionResult.null_ : fieldValue,
+            symbolicTypeInfo || liveDelegate || liveFunctionPointer
+                ? ExpressionResult.null_
+                : fieldValue,
         );
         auto source = AggregateValue.native(receiver);
         auto destination = AggregateValue.native(result);
@@ -2568,8 +2584,13 @@ arrayLiteralExpression:
             return arrayValue(array);
 
 assocArrayLiteralExpression:
+        // DMD's `AssocArrayLiteralExp::semantic` (`tryLowerAALiteral`,
+        // expressionsem.d) always rewrites the literal into a call to
+        // `object._d_assocarrayliteralTX!(K, V)(keys, values)` and records it
+        // on `.lowering`; running that lowered call interprets druntime's own
+        // literal construction instead of reconstructing one here.
         if (auto assocArray = expression.isAssocArrayLiteralExp)
-            return assocArrayValue(assocArray);
+            return runExpression(assocArray.lowering);
 
 structLiteralExpression:
         if (auto struct_ = expression.isStructLiteralExp)
@@ -2980,21 +3001,11 @@ variableExpression:
                     setLocal(variable, defaultValue(variable));
                     const value = storageValue(
                         variable.type,
-                        runExpression(initializer.exp),
+                        evaluateDatasegInitializerExpression(initializer.exp),
                     );
                     setLocal(variable, value);
                     return value;
                 }
-            }
-
-            // A native AA default is an owning header allocation, not an
-            // immutable empty expression value. Dataseg storage must retain that
-            // handle on its first read, so later hooks observe the same table.
-            import quickbite.frontend.dmd.types: isAssocArrayType;
-            if (variable.isDataseg && isAssocArrayType(variable.type)) {
-                const value = defaultValue(variable);
-                setLocal(variable, value);
-                return value;
             }
 
             return defaultValue(variable);
@@ -3371,6 +3382,16 @@ unsupportedExpression:
         if (auto dot = e1.isDotVarExp) {
             import quickbite.frontend.dmd.types: isStaticArrayType;
 
+            // `classinfo` resolves symbolically on this backend: no native
+            // `TypeInfo_Class` body exists, so composing a field address
+            // through it would dereference the receiver's own leading field
+            // bytes as a metadata pointer. `x.classinfo.name` reaches here
+            // as a `ref` argument because a `TypeInfo` field is an lvalue;
+            // give the evaluated value one ordinary retained temporary,
+            // exactly as a by-value call result bound by reference gets.
+            if (isSymbolicClassInfoProjection(dot))
+                return addressOfTemporaryValue(dot.type, runExpression(dot));
+
             if (isStaticArrayType(dot.type))
                 return arrayPointer(dot, 0, op);
 
@@ -3533,6 +3554,79 @@ unsupportedExpression:
             );
 
         return arrayPointer(index, 0, op, true /* selfAddress */);
+    }
+
+    // Whether `dot.var` is DMD's synthetic `.classinfo` property rather than
+    // a real declared field that merely shares the name (`struct S { int
+    // classinfo; }`, or a hypothetical class field). The synthetic property
+    // itself never reaches here as a `DotVarExp`: `TypeClass.dotExp`
+    // (typesem.d) only falls back to `Id.classinfo` handling once a member
+    // search for that name comes up empty, and that fallback lowers
+    // `x.classinfo` straight to a vtbl `PtrExp` (or an `AddrExp` of the
+    // static `TypeInfoClassDeclaration` for `Type.classinfo`) -- never a
+    // `DotVarExp`. So a `DotVarExp` whose member is literally named
+    // "classinfo" can only be a real field; requiring the receiver to be
+    // class-typed *and* the resolved member to not be a real instance field
+    // keeps this predicate inert for genuine field reads (both here and in
+    // `runDotVarExpression`, which shares it) while staying correct if a
+    // synthetic shape like this were ever produced. Reading `e1`/`var` is
+    // not `@safe`; this only follows existing AST links.
+    private static bool isSyntheticClassInfoMember(
+        imported!"dmd.expression".DotVarExp dot,
+    ) @trusted {
+        if (declarationName(dot.var) != "classinfo")
+            return false;
+        if (dot.e1.type is null || dot.e1.type.toBasetype.isTypeClass is null)
+            return false;
+        auto variable = dot.var.isVarDeclaration;
+        return variable is null || !variable.isField;
+    }
+
+    // Whether `dot.var` is `TypeInfo_Class.name` read off the vtable-derived
+    // `.classinfo` pointer (`x.classinfo.name`), identified by the pointer's
+    // static type being exactly `ClassInfo`/`TypeInfo_Class` -- not merely
+    // "some class type". A user field literally named `name`, reached
+    // through an unrelated class-typed pointer dereference (`(*pc).name`),
+    // produces the same `PtrExp` receiver shape but a different static
+    // type, so checking type identity (rather than "is a class") keeps that
+    // case off this symbolic path, both here and in `runDotVarExpression`.
+    private static bool isClassInfoNamePointerMember(
+        imported!"dmd.expression".DotVarExp dot,
+    ) @trusted {
+        import dmd.mtype: Type;
+
+        if (declarationName(dot.var) != "name")
+            return false;
+        auto pointer = dot.e1.isPtrExp;
+        if (pointer is null || pointer.type is null)
+            return false;
+        auto classType = pointer.type.toBasetype.isTypeClass;
+        return classType !is null && classType.sym is Type.typeinfoclass;
+    }
+
+    // Whether `dot`'s field-access spine reads `classinfo` at some level, in
+    // any shape DMD produces for it -- the synthetic member itself
+    // (`x.classinfo`, also as the receiver of `x.classinfo.name`), the
+    // lowered vtable load (`name` off a class-typed dereference), or the
+    // constant-folded static form (`name` off a `TypeInfo` symbol offset).
+    // These are exactly the receivers `runDotVarExpression` answers
+    // symbolically, so no native place exists behind them. Reading `e1` is
+    // not `@safe`; this only follows existing AST links.
+    private static bool isSymbolicClassInfoProjection(
+        imported!"dmd.expression".DotVarExp dot,
+    ) @trusted {
+        for (auto current = dot; current !is null; current = current.e1.isDotVarExp) {
+            if (isSyntheticClassInfoMember(current))
+                return true;
+            if (isClassInfoNamePointerMember(current))
+                return true;
+            if (declarationName(current.var) != "name")
+                continue;
+            if (auto symbol = current.e1.isSymOffExp)
+                if (symbolOffsetTypeInfoType(symbol) !is null)
+                    return true;
+        }
+        return false;
     }
 
     // The address of a ref return's lvalue, evaluated in the returning
@@ -3862,17 +3956,27 @@ unsupportedExpression:
     private ExpressionResult addressOfCallResultTemporary(
         imported!"dmd.expression".CallExp call,
     ) {
+        return addressOfTemporaryValue(call.type, runCallExpression(call));
+    }
+
+    // The address of an evaluated value with no composable native place: one
+    // ordinary typed temporary, retained for the enclosing expression. A
+    // reference slot that stores this address is conservatively scanned and
+    // stays the durable root beyond that expression, the same lifetime
+    // contract `bindSyntheticReferenceSlot` states for its own temporary.
+    private ExpressionResult addressOfTemporaryValue(
+        imported!"dmd.mtype".Type type,
+        in ExpressionResult value,
+    ) {
         import quickbite.backends.interpreter.layout:
             typeByteSize, typeHasPointers;
         import quickbite.backends.interpreter.place: Place;
-        import quickbite.backends.interpreter.place_value: writeValue;
 
-        const value = runCallExpression(call);
-        const scan = typeHasPointers(call.type)
+        const scan = typeHasPointers(type)
             ? NativeBlock.Scan.conservative
             : NativeBlock.Scan.no;
-        auto temporary = NativeBlock.allocate(typeByteSize(call.type), scan);
-        writeStoredValue(Place(temporary.address, call.type), value);
+        auto temporary = NativeBlock.allocate(typeByteSize(type), scan);
+        writeStoredValue(Place(temporary.address, type), value);
         retainTemporaryPointerOwner(temporary);
         return ExpressionResult.pointerValue(temporary.address);
     }
@@ -4017,6 +4121,26 @@ unsupportedExpression:
         );
     }
 
+    // `computeIndex`'s `Place.index` calls raise `IndexOutOfBoundsException`
+    // for a real, already-committed out-of-range guest index -- translate it
+    // to the guest's own range error rather than letting the host exception
+    // type escape. Deliberately narrower than a bare `Exception` catch:
+    // `computeIndex` typically runs a full `runExpression` of an index
+    // expression along the way, which can raise an unrelated host failure
+    // that must not be mislabeled as a guest range error.
+    private ExpressionResult mapIndexOutOfBounds(
+        scope ExpressionResult delegate() @system computeIndex,
+    ) {
+        import quickbite.backends.interpreter.place: IndexOutOfBoundsException;
+
+        try {
+            return computeIndex();
+        } catch (IndexOutOfBoundsException exception) {
+            throwRangeError(exception.msg);
+            assert(0);
+        }
+    }
+
     private ExpressionResult arrayPointer(
         imported!"dmd.expression".Expression array,
         in long offset,
@@ -4068,7 +4192,7 @@ unsupportedExpression:
                         import quickbite.backends.interpreter.lvalue_place:
                             placeOfLvalue;
                         import quickbite.backends.interpreter.place:
-                            Place, IndexOutOfBoundsException;
+                            Place;
                         import quickbite.backends.interpreter.place_value:
                             readValue;
 
@@ -4119,7 +4243,7 @@ unsupportedExpression:
                                     ~ "index out of range for static array place",
                                 );
 
-                            try {
+                            return mapIndexOutOfBounds(delegate ExpressionResult() {
                                 const pointer = ExpressionResult.pointerValue(
                                     resolveInnerPlace()
                                         .index(cast(size_t) elementOffset)
@@ -4132,28 +4256,17 @@ unsupportedExpression:
                                         .index(cast(size_t) offset)
                                         .address,
                                 );
-                            } catch (IndexOutOfBoundsException exception) {
-                                // The row bounds check above already ruled out
-                                // `elementOffset`; any exception here comes
-                                // from `resolveInnerPlace`'s own first-bracket
-                                // bounds check instead.
-                                throwRangeError(exception.msg);
-                            }
+                            });
                         }
 
-                        try {
-                            return nestedIndexPointer(
+                        return mapIndexOutOfBounds(() =>
+                            nestedIndexPointer(
                                 array,
                                 resolveInnerPlace(),
                                 offset,
                                 selfAddress,
-                            );
-                        } catch (IndexOutOfBoundsException exception) {
-                            // The composed `Place.index` call observes bounds
-                            // only after `i++` has committed. Translate its
-                            // host exception without retrying the receiver.
-                            throwRangeError(exception.msg);
-                        }
+                            )
+                        );
                     }
                 }
 
@@ -4182,7 +4295,6 @@ unsupportedExpression:
                     ) {
                         import quickbite.backends.interpreter.lvalue_place:
                             placeOfLvalue, UnsupportedLvalueShapeException;
-                        import quickbite.backends.interpreter.place: Place;
                         import quickbite.backends.interpreter.place_value: readValue;
 
                         // `placeOfLvalue` refuses a receiver shape it does
@@ -4199,47 +4311,49 @@ unsupportedExpression:
                         // exactly as safe as it is for that neighbouring
                         // branch.
                         try {
-                            auto fieldPlace = placeOfLvalue(
-                                nestedField,
-                                (variable) @safe => addressableBindingBase(variable),
-                                (expression) @system =>
-                                    cast(size_t) runExpression(expression).asLong,
-                                // `$` inside a CHAIN `IndexExp`'s own index
-                                // (e.g. `arr[$ - 1]` inside
-                                // `arr[$ - 1].mid.a[j]`) is bound to THAT
-                                // `IndexExp`'s own `lengthVar` from ITS OWN
-                                // receiver's length -- exactly what
-                                // `runIndexExpression` binds as a side
-                                // effect of evaluating an `IndexExp` on the
-                                // ordinary eager path this branch skips.
-                                // `placeOfLvalue` calls this once per
-                                // `IndexExp` it resolves, with that
-                                // `IndexExp` and its own base's `Place`,
-                                // before evaluating the index itself, so
-                                // binding it here needs no separate,
-                                // potentially-double-evaluating pre-walk.
-                                // @trusted: `setLocal` itself carries no
-                                // attribute (defaults to `@system`); this is
-                                // the same local-binding write every
-                                // ordinary `$` binding elsewhere in this
-                                // class already performs (`index.lengthVar`
-                                // a few lines below), called here only to
-                                // make `$` visible to the chain index
-                                // subexpression it names.
-                                (chainIndex, base) @trusted {
-                                    if (chainIndex.lengthVar !is null)
-                                        setLocal(
-                                            chainIndex.lengthVar,
-                                            ExpressionResult(AggregateValue.length(readValue(base))),
-                                        );
-                                },
-                            );
-                            return nestedIndexPointer(
-                                array,
-                                fieldPlace,
-                                offset,
-                                selfAddress,
-                            );
+                            return mapIndexOutOfBounds(() {
+                                auto fieldPlace = placeOfLvalue(
+                                    nestedField,
+                                    (variable) @safe => addressableBindingBase(variable),
+                                    (expression) @system =>
+                                        cast(size_t) runExpression(expression).asLong,
+                                    // `$` inside a CHAIN `IndexExp`'s own index
+                                    // (e.g. `arr[$ - 1]` inside
+                                    // `arr[$ - 1].mid.a[j]`) is bound to THAT
+                                    // `IndexExp`'s own `lengthVar` from ITS OWN
+                                    // receiver's length -- exactly what
+                                    // `runIndexExpression` binds as a side
+                                    // effect of evaluating an `IndexExp` on the
+                                    // ordinary eager path this branch skips.
+                                    // `placeOfLvalue` calls this once per
+                                    // `IndexExp` it resolves, with that
+                                    // `IndexExp` and its own base's `Place`,
+                                    // before evaluating the index itself, so
+                                    // binding it here needs no separate,
+                                    // potentially-double-evaluating pre-walk.
+                                    // @trusted: `setLocal` itself carries no
+                                    // attribute (defaults to `@system`); this is
+                                    // the same local-binding write every
+                                    // ordinary `$` binding elsewhere in this
+                                    // class already performs (`index.lengthVar`
+                                    // a few lines below), called here only to
+                                    // make `$` visible to the chain index
+                                    // subexpression it names.
+                                    (chainIndex, base) @trusted {
+                                        if (chainIndex.lengthVar !is null)
+                                            setLocal(
+                                                chainIndex.lengthVar,
+                                                ExpressionResult(AggregateValue.length(readValue(base))),
+                                            );
+                                    },
+                                );
+                                return nestedIndexPointer(
+                                    array,
+                                    fieldPlace,
+                                    offset,
+                                    selfAddress,
+                                );
+                            });
                         } catch (UnsupportedLvalueShapeException) {
                             // Fall through to the eager path below for a
                             // receiver shape `placeOfLvalue` does not (yet)
@@ -4255,17 +4369,6 @@ unsupportedExpression:
                             // propagate it unchanged rather than reaching
                             // the generic `Exception` arm below.
                             throw exception;
-                        } catch (Exception exception) {
-                            // Every step composed above (`placeOfLvalue`
-                            // past the shape-refusal arm, `fieldPlace.
-                            // index`/`Place.index`) only ever raises a bare
-                            // host `Exception` for an out-of-range index --
-                            // the receiver's shape is already known-good by
-                            // this point, so this is a real guest bounds
-                            // violation on already-committed side effects
-                            // (`i++`'s increment stands), not something
-                            // safe to retry from scratch.
-                            throwRangeError(exception.msg);
                         }
                     }
                 }
@@ -4365,26 +4468,29 @@ unsupportedExpression:
                         // fast path above does.
                         import quickbite.backends.interpreter.lvalue_place:
                             placeOfLvalue, UnsupportedLvalueShapeException;
-                        import quickbite.backends.interpreter.place: Place;
+                        import quickbite.backends.interpreter.place:
+                            Place;
 
                         try {
-                            auto fieldPlace = placeOfLvalue(
-                                field,
-                                (variable) @safe => addressableBindingBase(variable),
-                                (expression) @system =>
-                                    cast(size_t) runExpression(expression).asLong,
-                            );
-                            const pointer = ExpressionResult.pointerValue(
-                                fieldPlace.index(cast(size_t) outerOffset).address,
-                            );
-                            if (selfAddress)
-                                return pointer;
-                            // Same hazard as the `VarExp` arm above.
-                            return ExpressionResult.pointerValue(
-                                Place(cast(void*) pointer.pointerAddress, array.type)
-                                    .index(cast(size_t) offset)
-                                    .address,
-                            );
+                            return mapIndexOutOfBounds(delegate ExpressionResult() {
+                                auto fieldPlace = placeOfLvalue(
+                                    field,
+                                    (variable) @safe => addressableBindingBase(variable),
+                                    (expression) @system =>
+                                        cast(size_t) runExpression(expression).asLong,
+                                );
+                                const pointer = ExpressionResult.pointerValue(
+                                    fieldPlace.index(cast(size_t) outerOffset).address,
+                                );
+                                if (selfAddress)
+                                    return pointer;
+                                // Same hazard as the `VarExp` arm above.
+                                return ExpressionResult.pointerValue(
+                                    Place(cast(void*) pointer.pointerAddress, array.type)
+                                        .index(cast(size_t) offset)
+                                        .address,
+                                );
+                            });
                         } catch (UnsupportedLvalueShapeException) {
                             // Fall through to the detached-copy fallback
                             // below for a receiver shape `placeOfLvalue`
@@ -4397,15 +4503,6 @@ unsupportedExpression:
                             // propagate it unchanged rather than reaching
                             // the generic `Exception` arm below.
                             throw exception;
-                        } catch (Exception exception) {
-                            // `fieldPlace.index`/`Place.index` above only
-                            // ever raise a bare host `Exception` for an
-                            // out-of-range `outerOffset` -- the receiver's
-                            // shape is already known-good by this point, so
-                            // this is a real guest bounds violation, not
-                            // something the detached-copy fallback below
-                            // should silently paper over.
-                            throwRangeError(exception.msg);
                         }
                     }
                 }
@@ -4495,25 +4592,45 @@ unsupportedExpression:
             }
 
             if (auto dot = array.isDotVarExp) {
-                import quickbite.backends.interpreter.layout:
-                    classFields, fieldByteOffset, typeByteSize;
-                import quickbite.frontend.dmd.types:
-                    isDynamicArrayType, isStaticArrayType;
+                // A static-array field's real address, for any receiver
+                // chain `lvalue_place.placeOfLvalue` can compose -- a bare
+                // local (`s.arr`), a class field, or a receiver that is
+                // itself a further field access reached through a struct,
+                // class, or raw-pointer receiver (`p.entry.value`, the
+                // `Entry*` pointer chain a druntime AA bucket composes).
+                // Falling through to the detached-copy fallback below for
+                // any of these silently returns the address of a
+                // byte-for-byte snapshot instead of the field's real
+                // storage: a write through it is lost, and a read reflects
+                // whatever the snapshot held at copy time, not the field's
+                // live value.
+                import quickbite.backends.interpreter.lvalue_place:
+                    placeOfLvalue, UnsupportedLvalueShapeException;
 
-                if (auto receiver = dot.e1.isVarExp)
-                    if (auto variable = receiver.var.isVarDeclaration)
-                        if (auto field = dot.var.isVarDeclaration)
-                            if (hasBindingPlace(variable)) {
-                                auto place = bindingPlace(variable);
-                                if (place.type.toBasetype.isTypeClass !is null)
-                                    place = place.deref;
-                                return ExpressionResult.pointerValue(
-                                    place.field(field).index(cast(size_t) offset).address,
-                                );
-                            }
-
-                auto elementType = dot.type.toBasetype.nextOf.toBasetype;
-                auto structType = elementType.isTypeStruct;
+                try {
+                    return mapIndexOutOfBounds(() {
+                        auto fieldPlace = placeOfLvalue(
+                            dot,
+                            (variable) @safe => addressableBindingBase(variable),
+                            (expression) @system =>
+                                cast(size_t) runExpression(expression).asLong,
+                        );
+                        return ExpressionResult.pointerValue(
+                            fieldPlace.index(cast(size_t) offset).address,
+                        );
+                    });
+                } catch (UnsupportedLvalueShapeException) {
+                    // Fall through to the detached-copy fallback below for
+                    // a receiver shape `placeOfLvalue` does not (yet)
+                    // support -- safe refusal is preferable to inventing a
+                    // copied pointee, the same reasoning the neighbouring
+                    // `IndexExp` branches in this function already apply.
+                } catch (InterpretedException exception) {
+                    // Already the guest's own exception object --
+                    // propagate it unchanged rather than reaching the
+                    // generic `Exception` arm below.
+                    throw exception;
+                }
 
                 const value = runExpression(array);
                 return ExpressionResult.pointerValue(
@@ -4568,6 +4685,35 @@ unsupportedExpression:
         return ExpressionResult.pointerValue(bindingPlace(variable).address);
     }
 
+    // Evaluates a dataseg variable's own initializer expression in a frame
+    // sized for THAT EXPRESSION alone, not whatever function happens to be
+    // running when the lazy materialization triggers. A module-scope AA
+    // literal's `_d_assocarrayliteralTX` lowering hoists its keys/values
+    // arrays into `__arrayliteral_on_stack*` temporaries parented to the
+    // initializer's own (module) scope, never to any `FuncDeclaration`'s
+    // body (`frame_layout.computeExpressionFrameLayout`'s own comment) --
+    // reusing the triggering function's already-computed frame, or the
+    // frame-less root the top-level `execute` entry point starts with,
+    // leaves such a temp with no slot anywhere, so `setLocal` rejects it
+    // ("has no native place"). The initializer can only name other module-
+    // scope declarations and its own literal/temp values -- never a local
+    // of whatever function triggered this -- so swapping in a dedicated
+    // frame around just this evaluation is exact, not an approximation.
+    private ExpressionResult evaluateDatasegInitializerExpression(
+        imported!"dmd.expression".Expression expression,
+    ) {
+        import quickbite.backends.interpreter.frame_layout:
+            computeExpressionFrameLayout;
+
+        auto outer = _activationFrame;
+        scope(exit) _activationFrame = outer;
+
+        _activationFrame = FrameBlock.allocate(
+            computeExpressionFrameLayout(expression),
+        );
+        return runExpression(expression);
+    }
+
     private void materializeDatasegInitializer(VarDeclaration variable) {
         if (
             !variable.isDataseg || externDataSymbolAddress(variable) !is null ||
@@ -4591,7 +4737,9 @@ unsupportedExpression:
         if (variable._init is null) {
             import dmd.typesem: defaultInitLiteral;
 
-            setLocal(variable, runExpression(variable.type.defaultInitLiteral(variable.loc)));
+            setLocal(variable, evaluateDatasegInitializerExpression(
+                variable.type.defaultInitLiteral(variable.loc),
+            ));
             return;
         }
 
@@ -4612,7 +4760,7 @@ unsupportedExpression:
             setLocal(variable, defaultValue(variable));
             setLocal(variable, storageValue(
                 variable.type,
-                runExpression(initializerExp),
+                evaluateDatasegInitializerExpression(initializerExp),
             ));
         }
     }
@@ -5052,20 +5200,6 @@ unsupportedExpression:
 
             enforceInterceptionPolicy(call.f, "isDruntimeArrayOpAddAssign");
             return runArrayOpAddAssignCall(call);
-        }
-
-        if (call.f !is null) {
-            import quickbite.backends.interpreter.builtins:
-                AssocArrayHook, tryAssocArrayHook;
-
-            AssocArrayHook assocArrayHook;
-            if (tryAssocArrayHook(call.f, assocArrayHook)) {
-                import quickbite.backends.interpreter.interception_guard:
-                    enforceInterceptionPolicy;
-
-                enforceInterceptionPolicy(call.f, "tryAssocArrayHook");
-                return runAssocArrayHookCall(call, assocArrayHook);
-            }
         }
 
         if (call.f !is null) {
@@ -5639,6 +5773,47 @@ unsupportedExpression:
                 if (!materializeValue)
                     return ExpressionResult.void_;
                 return loadNativePointerElement(pointer.e1.type, address, 0);
+            }
+        }
+
+        // `ptr[i]` off a POINTER RVALUE (not a variable `placeOfLvalue`
+        // could compose a `Place` for) -- druntime's own nested-AA write
+        // hands exactly this shape as the deeper `_d_aaGetY`'s `aa`
+        // argument: `(_d_aaGetY!(K1,V1)(a, key1, found))[0]`, a `[0]` index
+        // straight off the outer call's returned `V1*` (the outer entry's
+        // own storage), one nesting level per further `[key]`. Without this
+        // arm `evaluated.address` stays unset, `bindReferenceSlot` falls
+        // through to `placeOfLvalue` (which refuses any `CallExp` base --
+        // it has no Walker to evaluate one) and then to the synthetic
+        // reference-slot fallback, so the inner map the deeper call
+        // allocates gets written into a throwaway copy instead of back
+        // through the outer slot; the outer entry's value stays at its
+        // zero-initialized default forever. Same address arithmetic as
+        // `loadNativePointerElement`, just keeping the address instead of
+        // only the value it reads from it.
+        if (auto index = argument.isIndexExp) {
+            import quickbite.frontend.dmd.types: isPointerType;
+            import quickbite.backends.interpreter.layout: typeByteSize;
+
+            if (isPointerType(index.e1.type)) {
+                const pointer_ = runExpression(index.e1);
+                if (pointer_.isPointer) {
+                    const elementIndex = cast(size_t)
+                        cast(ulong) runExpression(index.e2).asLong;
+                    auto elementType = index.e1.type.toBasetype.nextOf.toBasetype;
+                    evaluated.address = nativeElementAddress(
+                        pointer_.pointerAddress,
+                        elementIndex,
+                        typeByteSize(elementType),
+                    );
+                    if (!materializeValue)
+                        return ExpressionResult.void_;
+                    return loadNativePointerElement(
+                        index.e1.type,
+                        pointer_,
+                        elementIndex,
+                    );
+                }
             }
         }
 
@@ -6252,72 +6427,6 @@ unsupportedExpression:
         memmove(destination, source, byteLength);
     }
 
-    // DMD lowers associative array operations to druntime template hooks in
-    // `core.internal.newaa` and `object`; interpret the semantics directly
-    // instead of executing the druntime hook bodies.
-    private ExpressionResult runAssocArrayHookCall(
-        imported!"dmd.expression".CallExp call,
-        in imported!"quickbite.backends.interpreter.builtins".AssocArrayHook hook,
-    ) {
-        import quickbite.backends.interpreter.builtins: AssocArrayHook;
-
-        if (call.arguments is null)
-            throw new Exception("Unsupported eval call.");
-
-        with (AssocArrayHook) final switch (hook) {
-            case length:
-                requireArgumentCount(call, 1);
-                return ExpressionResult(assocArrayLength(assocArrayArgumentValue(
-                    (*call.arguments)[0],
-                )));
-
-            case getRvalue:
-                requireArgumentCount(call, 2);
-                return runAssocArrayReadCall(call);
-
-            case getLvalue:
-                requireArgumentCount(call, 3);
-                return runAssocArrayLvalueCall(call);
-
-            case in_:
-                requireArgumentCount(call, 2);
-                return runAssocArrayInCall(call);
-
-            case remove:
-                requireArgumentCount(call, 2);
-                return runAssocArrayRemoveCall(call);
-
-            case equal:
-                requireArgumentCount(call, 2);
-                return ExpressionResult(assocArrayEqual(
-                    assocArrayArgumentValue((*call.arguments)[0]),
-                    assocArrayArgumentValue((*call.arguments)[1]),
-                ));
-
-            case dup:
-                requireArgumentCount(call, 1);
-                return duplicateAssocArray(assocArrayArgumentValue(
-                    (*call.arguments)[0],
-                ));
-
-            case keys:
-                requireArgumentCount(call, 1);
-                return assocArrayKeys(assocArrayArgumentValue(
-                    (*call.arguments)[0],
-                ), call.type);
-
-            case values:
-                requireArgumentCount(call, 1);
-                return assocArrayValues(assocArrayArgumentValue(
-                    (*call.arguments)[0],
-                ), call.type);
-
-            case apply2:
-                requireArgumentCount(call, 2);
-                return runAssocArrayApply2Call(call);
-        }
-    }
-
     private void requireArgumentCount(
         imported!"dmd.expression".CallExp call,
         in size_t count,
@@ -6326,130 +6435,12 @@ unsupportedExpression:
             throw new Exception("Unsupported eval call.");
     }
 
-    private ExpressionResult runAssocArrayReadCall(
-        imported!"dmd.expression".CallExp call,
-    ) {
-        import quickbite.backends.interpreter.messages: missingKeyMessage;
-
-        const aa = assocArrayArgumentValue((*call.arguments)[0]);
-        const key = runExpression((*call.arguments)[1]);
-
-        if (!isNativeAssocArray(aa))
-            throw new Exception(missingKeyMessage(
-                (*call.arguments)[1],
-                (*call.arguments)[0],
-            ));
-        auto keySlot = nativeAssocKeySlot(nativeAssocArray(aa), key);
-        auto valueAddress = nativeAssocArray(aa).valueAddress(keySlot.address);
-        if (valueAddress is null)
-            throw new Exception(missingKeyMessage(
-                (*call.arguments)[1],
-                (*call.arguments)[0],
-            ));
-        return ExpressionResult.pointerValue(valueAddress);
-    }
-
-    // `aa[key] = value` lowers to a write through the slot pointer returned
-    // by `_d_aaGetY(aa, key, found)`; the write-back happens via the slot
-    // alias recorded for the pointer variable
-    private ExpressionResult runAssocArrayLvalueCall(
-        imported!"dmd.expression".CallExp call,
-    ) {
-        auto aaArgument = (*call.arguments)[0];
-        auto aa = assocArrayArgumentValue(aaArgument);
-        if (aa == ExpressionResult.null_) {
-            import quickbite.backends.interpreter.native_assoc_array: allocateValue;
-
-            aa = ExpressionResult.nativeAggregateValue(allocateValue(
-                aaArgument.type,
-            ));
-            auto variableExpression = aaArgument.isVarExp;
-            if (variableExpression is null)
-                throw new Exception("Associative-array lvalue needs a variable.");
-            auto variable = variableExpression.var.isVarDeclaration;
-            if (variable is null)
-                throw new Exception("Associative-array lvalue needs a variable.");
-            storeBinding(variable, aa);
-        }
-        const key = runExpression((*call.arguments)[1]);
-        bool found;
-        auto header = nativeAssocArray(aa);
-        auto keySlot = nativeAssocKeySlot(header, key);
-        auto valueAddress = header.getOrAdd(keySlot.address, found);
-        if (auto foundVariable = (*call.arguments)[2].isVarExp)
-            if (auto variable = foundVariable.var.isVarDeclaration)
-                setLocal(variable, ExpressionResult(found));
-        return ExpressionResult.pointerValue(valueAddress);
-    }
-
-    private ExpressionResult runAssocArrayInCall(
-        imported!"dmd.expression".CallExp call,
-    ) {
-        const aa = assocArrayArgumentValue((*call.arguments)[0]);
-        const key = runExpression((*call.arguments)[1]);
-
-        if (!isNativeAssocArray(aa))
-            return ExpressionResult.null_;
-        auto keySlot = nativeAssocKeySlot(nativeAssocArray(aa), key);
-        auto valueAddress = nativeAssocArray(aa).valueAddress(keySlot.address);
-        return valueAddress is null ? ExpressionResult.null_ : ExpressionResult.pointerValue(valueAddress);
-    }
-
-    private ExpressionResult runAssocArrayRemoveCall(
-        imported!"dmd.expression".CallExp call,
-    ) {
-        auto var = (*call.arguments)[0].isVarExp;
-        if (var is null)
-            throw new Exception("Unsupported eval call.");
-
-        auto variable = var.var.isVarDeclaration;
-        if (variable is null)
-            throw new Exception("Unsupported eval call.");
-
-        const current = readBindingValue(variable);
-
-        const key = runExpression((*call.arguments)[1]);
-        if (!isNativeAssocArray(current))
-            return ExpressionResult(false);
-        auto header = nativeAssocArray(current);
-        auto keySlot = nativeAssocKeySlot(header, key);
-        return ExpressionResult(header.remove(keySlot.address));
-    }
-
-    private ExpressionResult runAssocArrayApply2Call(
-        imported!"dmd.expression".CallExp call,
-    ) {
-        import quickbite.backends.interpreter.aggregate_value: AggregateValue;
-
-        const aa = assocArrayArgumentValue((*call.arguments)[0]);
-        const keys = assocArrayKeys(aa, null);
-        const values = assocArrayValues(aa, null);
-        auto body = functionPointerExpressionFunction((*call.arguments)[1]);
-        const delegate_ = body is null
-            ? runExpression((*call.arguments)[1])
-            : ExpressionResult.void_;
-
-        foreach (index; 0 .. AggregateValue.length(keys)) {
-            const arguments = [
-                AggregateValue.elementAt(keys, index),
-                nativeArrayElementAt(values, index),
-            ];
-            const result = body is null
-                ? runDelegateCall(delegate_, arguments, [null, null])
-                : runFunction(body, arguments, [null, null], true);
-            if (result.asLong != 0)
-                return result;
-        }
-
-        return ExpressionResult(0);
-    }
-
     // `AggregateValue.elementAt`'s plain memory read sees a delegate-typed
-    // element's zeroed bytes, not its live callable ExpressionResult -- `assocArrayValues`
-    // registers a live delegate entry out-of-band in `nativeDelegateSlots`,
-    // keyed by the RESULT array's own element address, exactly the same gap
-    // `loadNativePointerElement`'s identical `TY.Tdelegate` arm checks
-    // before falling through to a plain read.
+    // element's zeroed bytes, not its live callable ExpressionResult -- a
+    // live delegate entry is registered out-of-band in
+    // `nativeDelegateSlots`, keyed by its own element address, exactly the
+    // same gap `loadNativePointerElement`'s identical `TY.Tdelegate` arm
+    // checks before falling through to a plain read.
     private ExpressionResult nativeArrayElementAt(in ExpressionResult array, in size_t index) {
         import dmd.astenums: TY;
         import quickbite.backends.interpreter.aggregate_value: AggregateValue;
@@ -6461,179 +6452,6 @@ unsupportedExpression:
             if (auto delegate_ = AggregateValue.elementAddress(array, index) in nativeDelegateSlots)
                 return *delegate_;
         return readStoredValue(Place(aggregate.address, aggregate.type).index(index));
-    }
-
-    private size_t assocArrayLength(in ExpressionResult value) {
-        return value == ExpressionResult.null_ ? 0 : nativeAssocArray(value).length;
-    }
-
-    // Druntime AA hooks receive the address of the guest AA handle. A native
-    // pointer therefore denotes the handle slot, not the associative-array
-    // value itself; recover the typed slot before interpreting the argument.
-    private ExpressionResult assocArrayArgumentValue(
-        imported!"dmd.expression".Expression expression,
-    ) {
-        import quickbite.backends.interpreter.place: Place;
-        import quickbite.backends.interpreter.place_value: readValue;
-
-        const value = runExpression(expression);
-        if (!value.isPointer)
-            return value;
-
-        // This is interpreted guest storage, unlike a pointer crossing the
-        // FFI seam. Read its AA handle through the ordinary typed place so
-        // the result stays a NativeAggregate instead of an ABI pointer.
-        return readValue(Place(
-            value.pointerAddress,
-            expression.type.toBasetype.nextOf,
-        ));
-    }
-
-    private ExpressionResult duplicateAssocArray(in ExpressionResult value) {
-        if (value == ExpressionResult.null_)
-            return value;
-
-        import quickbite.backends.interpreter.aggregate_value: AggregateValue;
-        import quickbite.backends.interpreter.native_assoc_array: allocateValue;
-        import quickbite.backends.interpreter.place: Place;
-
-        auto source = nativeAssocArray(value);
-        auto aggregate = allocateValue(AggregateValue.native(value).type);
-        auto destination = nativeAssocArray(
-            ExpressionResult.nativeAggregateValue(aggregate),
-        );
-        foreach (index; 0 .. source.length) {
-            const key = readStoredValue(Place(
-                source.keyAt(index).address,
-                source.keyType,
-            ));
-            const storedValue = readStoredValue(Place(
-                source.valueAt(index).address,
-                source.valueType,
-            ));
-
-            bool found;
-            auto keySlot = nativeAssocKeySlot(destination, key);
-            auto valueAddress = destination.getOrAdd(keySlot.address, found);
-            writeStoredValue(
-                Place(valueAddress, destination.valueType),
-                storedValue,
-            );
-        }
-        return ExpressionResult.nativeAggregateValue(aggregate);
-    }
-
-    private bool assocArrayEqual(in ExpressionResult left, in ExpressionResult right) {
-        if (left == ExpressionResult.null_ || right == ExpressionResult.null_)
-            return assocArrayLength(left) == 0 && assocArrayLength(right) == 0;
-
-        return equalAssocArrayValues(left, right);
-    }
-
-    private ExpressionResult assocArrayKeys(in ExpressionResult value, imported!"dmd.mtype".Type resultType) {
-        import quickbite.backends.interpreter.aggregate_value: AggregateValue;
-
-        if (value == ExpressionResult.null_) {
-            ExpressionResult[] keys;
-            return reconstructStoredArray(resultType, keys);
-        }
-        import dmd.mtype: TypeDArray;
-        import quickbite.backends.interpreter.place: Place;
-        import quickbite.backends.interpreter.place_value: readValue;
-
-        auto header = nativeAssocArray(value);
-        ExpressionResult[] keys;
-        foreach (index; 0 .. header.length)
-            keys ~= readValue(Place(header.keyAt(index).address, header.keyType));
-        return reconstructStoredArray(
-            resultType is null ? new TypeDArray(header.keyType) : resultType,
-            keys,
-        );
-    }
-
-    // A delegate-typed VALUE has no native ABI function address (the same
-    // gap `nativeDelegateSlots`'s own field comment documents, and the
-    // reason `loadNativePointerElement`'s identical `TY.Tdelegate` arm
-    // checks this table before falling through to a plain memory read): the
-    // entry's live callable ExpressionResult lives out-of-band, keyed by the value
-    // slot's own address, exactly as `runAssocArrayLvalueCall`'s
-    // pointer-index write path (`storeNativePointerElement`) already
-    // registers it. `AggregateValue.reconstructArray`'s `writeValue` call
-    // below only ever accepts `ExpressionResult.null_` for a Tdelegate element (an
-    // interpreted delegate is not native-composable bytes), so every live
-    // entry is substituted with `ExpressionResult.null_` for the reconstruction and
-    // then re-registered at the RESULT array's own element address --
-    // mirroring `structLiteralValue`'s identical substitute-then-register
-    // handling of a live delegate struct-literal field.
-    private ExpressionResult assocArrayValues(in ExpressionResult value, imported!"dmd.mtype".Type resultType) {
-        import dmd.astenums: TY;
-        import dmd.mtype: TypeDArray;
-        import quickbite.backends.interpreter.aggregate_value: AggregateValue;
-        import quickbite.backends.interpreter.place: Place;
-        import quickbite.backends.interpreter.place_value: readValue;
-
-        if (value == ExpressionResult.null_) {
-            ExpressionResult[] values;
-            return reconstructStoredArray(resultType, values);
-        }
-
-        auto header = nativeAssocArray(value);
-        const isDelegateValue = header.valueType.toBasetype.ty == TY.Tdelegate;
-        ExpressionResult[] values;
-        size_t[] liveDelegateIndices;
-        ExpressionResult[] liveDelegateValues;
-        foreach (index; 0 .. header.length) {
-            auto address = header.valueAt(index).address;
-            if (isDelegateValue)
-                if (auto delegate_ = address in nativeDelegateSlots) {
-                    liveDelegateIndices ~= index;
-                    liveDelegateValues ~= *delegate_;
-                    values ~= ExpressionResult.null_;
-                    continue;
-                }
-            values ~= readValue(Place(address, header.valueType));
-        }
-        auto result = reconstructStoredArray(
-            resultType is null ? new TypeDArray(header.valueType) : resultType,
-            values,
-        );
-        foreach (position, index; liveDelegateIndices)
-            nativeDelegateSlots[AggregateValue.elementAddress(result, index)] =
-                liveDelegateValues[position];
-        return result;
-    }
-
-    private bool isNativeAssocArray(in ExpressionResult value) {
-        import quickbite.backends.interpreter.aggregate_value: AggregateValue;
-
-        return value.isNativeAggregate &&
-            AggregateValue.native(value).type.toBasetype.isTypeAArray !is null;
-    }
-
-    private imported!"quickbite.backends.interpreter.native_assoc_array".NativeAssocArray* nativeAssocArray(
-        in ExpressionResult value,
-    ) {
-        import quickbite.backends.interpreter.aggregate_value: AggregateValue;
-        import quickbite.backends.interpreter.native_assoc_array: headerAt;
-
-        return headerAt(AggregateValue.native(value).address);
-    }
-
-    private imported!"quickbite.backends.interpreter.native_block".NativeBlock nativeAssocKeySlot(
-        imported!"quickbite.backends.interpreter.native_assoc_array".NativeAssocArray* header,
-        in ExpressionResult key,
-    ) {
-        import quickbite.backends.interpreter.layout: typeByteSize, typeHasPointers;
-        import quickbite.backends.interpreter.native_block: NativeBlock;
-        import quickbite.backends.interpreter.place: Place;
-        import quickbite.backends.interpreter.place_value: writeValue;
-
-        auto slot = NativeBlock.allocate(
-            typeByteSize(header.keyType),
-            typeHasPointers(header.keyType) ? NativeBlock.Scan.conservative : NativeBlock.Scan.no,
-        );
-        writeValue(Place(slot.address, header.keyType), key);
-        return slot;
     }
 
     private ExpressionResult runFunction(
@@ -7451,16 +7269,53 @@ unsupportedExpression:
         if (AggregateValue.isArray(left) && AggregateValue.isArray(right))
             return equalArrayValues(left, right);
 
-        if (AggregateValue.isStruct(left) && AggregateValue.isStruct(right))
-            return equalStructValues(left, right);
+        // DMD attaches an array comparison's `object.__equals` rewrite as
+        // `EqualExp.lowering` rather than replacing the AST node itself
+        // (`expressionsem.d`'s `EqualExp::semantic`, the array-comparison
+        // branch keeps `result = exp`), so an interpreter that walks `e1`/
+        // `e2` directly -- as `equalArrayValues`'s element recursion below
+        // does -- never sees that dispatch and reaches this struct arm for
+        // each element pair instead. A DIRECT struct `==` does not have this
+        // problem: `opOverloadEqual` rewrites it to a real `a.opEquals(b)`
+        // `CallExp` at semantic time, so normal call dispatch already runs
+        // the struct's own (possibly compiler-generated) `opEquals` body --
+        // which is how a struct's own AA-typed field ends up comparing
+        // through the interpreted `_d_aaEqual` call that body contains.
+        // Route this array-reached struct pair through that same dispatch
+        // (`StructDeclaration.xeq`, the resolved `opEquals`/`TypeInfo_Struct.
+        // xopEquals` DMD's own semantic already resolved) instead of
+        // reimplementing struct equality by hand: `equalStructValues`
+        // remains correct only for a POD struct (no `xeq`), where DMD itself
+        // lowers `==` to `is` (`runIdentityExpression`'s own comment) and
+        // raw field/bitwise comparison is exactly right.
+        if (AggregateValue.isStruct(left) && AggregateValue.isStruct(right)) {
+            auto structType = AggregateValue.native(left).type.toBasetype.isTypeStruct;
+            if (structType !is null && structType.sym.xeq !is null)
+                return isTruthy(runMemberFunction(
+                    structType.sym.xeq,
+                    null,
+                    left,
+                    [right],
+                    null,
+                ));
 
-        const leftIsAssocArray = AggregateValue.isAssocArray(left);
-        const rightIsAssocArray = AggregateValue.isAssocArray(right);
-        if (
-            (leftIsAssocArray && (rightIsAssocArray || right == ExpressionResult.null_)) ||
-            (rightIsAssocArray && left == ExpressionResult.null_)
-        )
-            return equalAssocArrayValues(left, right);
+            return equalStructValues(left, right);
+        }
+
+        // `EqualExp::semantic` (expressionsem.d) always lowers `aa1 == aa2`
+        // to a call to `object._d_aaEqual!(K, V)(aa1, aa2)` whenever the
+        // left operand's type is an associative array, so a top-level AA
+        // comparison never reaches this function. An AA-typed STRUCT FIELD
+        // cannot reach the raw fallback below either, now that the struct
+        // arm above dispatches through `xeq`: any struct holding an AA field
+        // is exactly the case DMD's own `needOpEquals` refuses to consider
+        // POD, so it always has a real `xeq` and never falls through to
+        // `equalStructValues`'s field-by-field walk. The raw fallback below
+        // stays correct for what it actually still receives -- plain
+        // pointers, class references, and other scalar-shaped values -- but
+        // it does NOT correctly answer for an AA handle: two content-equal,
+        // identity-distinct AAs are different `Impl*` pointers, so a raw
+        // compare would wrongly report them unequal.
 
         if (left.isFunctionPointer || right.isFunctionPointer)
             return equalDelegateValues(left, right);
@@ -7589,38 +7444,6 @@ unsupportedExpression:
         return readStoredValue(
             Place(aggregate.address, aggregate.type).field(fields[index]),
         );
-    }
-
-    private bool equalAssocArrayValues(in ExpressionResult left, in ExpressionResult right) {
-        import quickbite.backends.interpreter.native_assoc_array: headerAt;
-        import quickbite.backends.interpreter.place: Place;
-        import quickbite.backends.interpreter.place_value: readValue;
-
-        auto leftHeader = left == ExpressionResult.null_
-            ? null
-            : headerAt(AggregateValue.native(left).address);
-        auto rightHeader = right == ExpressionResult.null_
-            ? null
-            : headerAt(AggregateValue.native(right).address);
-        const leftLength = leftHeader is null ? 0 : leftHeader.length;
-        const rightLength = rightHeader is null ? 0 : rightHeader.length;
-        if (leftLength != rightLength)
-            return false;
-        if (leftLength == 0)
-            return true;
-
-        foreach (index; 0 .. leftLength) {
-            auto rightValueAddress = rightHeader.valueAddress(
-                leftHeader.keyAt(index).address,
-            );
-            if (rightValueAddress is null || !equalValues(
-                readValue(Place(leftHeader.valueAt(index).address, leftHeader.valueType)),
-                readValue(Place(rightValueAddress, rightHeader.valueType)),
-            ))
-                return false;
-        }
-
-        return true;
     }
 
     private bool isScalarCompoundAssignExpression(
@@ -7936,7 +7759,7 @@ unsupportedExpression:
                         }
         }
 
-        if (declarationName(dot.var) == "classinfo")
+        if (isSyntheticClassInfoMember(dot))
             return runClassInfoExpression(dot);
 
         if (declarationName(dot.var) == "name")
@@ -7951,9 +7774,8 @@ unsupportedExpression:
                 if (auto type = symbolOffsetTypeInfoType(symbol))
                     return characterArrayValue(dot.type, typeInfoName(type));
 
-        if (declarationName(dot.var) == "name")
-            if (dot.e1.isPtrExp !is null)
-                return runClassInfoNameOwnerExpression(dot.e1, dot.type);
+        if (isClassInfoNamePointerMember(dot))
+            return runClassInfoNameOwnerExpression(dot.e1, dot.type);
 
         const receiver = runExpression(dot.e1);
         if (receiver == ExpressionResult.null_)
@@ -7972,11 +7794,13 @@ unsupportedExpression:
         if (receiver.isTypeName && declarationName(dot.var) == "name")
             return characterArrayValue(dot.type, receiver.asTypeNameString);
 
-        // Native dynamic and associative arrays own their length in typed
-        // guest storage.
+        // Native dynamic arrays own their length in typed guest storage.
+        // `TypeAArray.dotExp` (typesem.d) always lowers `aa.length` to a
+        // call to `object._d_aaLen!(K, V)(aa)` at semantic time, so an
+        // associative-array receiver never reaches this property lookup.
         if (
             receiver.isNativeAggregate &&
-            (AggregateValue.isArray(receiver) || isNativeAssocArray(receiver)) &&
+            AggregateValue.isArray(receiver) &&
             declarationName(dot.var) == "length"
         )
             return ExpressionResult(AggregateValue.length(receiver));
@@ -9862,10 +9686,21 @@ unsupportedExpression:
         if (upper == lower)
             return value;
 
+        // A fill assignment (`p[i .. j] = scalar;`, e.g. druntime's own
+        // `(cast(ubyte*)&entry.value)[0 .. V.sizeof] = 0` zeroing a new AA
+        // entry) evaluates `rhs` to a single element-typed value, not an
+        // array to index into -- only the copy form yields something
+        // `value[index - lower]` can index. `AggregateValue.isArray`
+        // distinguishes the two, matching every other slice-assignment path
+        // (`runVariableSliceAssignExpression`, `runFieldSliceAssignExpression`,
+        // `runCastedSliceAssignExpression`), which this one had fallen out of
+        // step with.
         ExpressionResult elementAt(in size_t index) {
             return block
                 ? copyArrayValue(value, slice.type.toBasetype.nextOf)
-                : AggregateValue.elementAt(value, index);
+                : AggregateValue.isArray(value)
+                    ? AggregateValue.elementAt(value, index)
+                    : value;
         }
 
         if (pointer.isPointer) {
@@ -10843,6 +10678,13 @@ unsupportedExpression:
     // writes -- and registers the live value at the field's own address
     // once that address exists. `writeStoredValue` carries the registration
     // forward again when this rvalue is copied into durable storage.
+    //
+    // A field typed pointer-to-function (`int function(int)`) is the same
+    // story with `nativeFunctionPointerSlots` standing in for
+    // `nativeDelegateSlots`: `place_value.writeValue`'s pointer arm only
+    // ever accepts a `Pointer` ExpressionResult or `null`, never the
+    // distinct `FunctionPointer` variant, so a live function-pointer field
+    // gets the same null-then-register treatment here.
     private ExpressionResult structLiteralValue(
         imported!"dmd.expression".StructLiteralExp literal,
     ) {
@@ -10880,11 +10722,15 @@ unsupportedExpression:
             auto field = structLiteralField(literal, index);
             if (field is null)
                 continue;
+            auto pointerType = field.type.toBasetype.isTypePointer;
             if (
                 field.type.toBasetype.ty == TY.Tdelegate &&
                 value != ExpressionResult.null_ ||
                 field.type.toBasetype.isTypeClass !is null &&
-                value.isTypeName
+                value.isTypeName ||
+                pointerType !is null &&
+                pointerType.nextOf.toBasetype.isTypeFunction !is null &&
+                value.isFunctionPointer
             ) {
                 if (nativeFields is null) {
                     nativeFields = new ExpressionResult[](fields.length);
@@ -10916,6 +10762,15 @@ unsupportedExpression:
                 value.isTypeName
             )
                 nativeTypeInfoSlots[
+                    Place(native.address, native.type).field(field).address
+                ] = value;
+            auto pointerType = field.type.toBasetype.isTypePointer;
+            if (
+                pointerType !is null &&
+                pointerType.nextOf.toBasetype.isTypeFunction !is null &&
+                value.isFunctionPointer
+            )
+                nativeFunctionPointerSlots[
                     Place(native.address, native.type).field(field).address
                 ] = value;
         }
@@ -11208,20 +11063,12 @@ unsupportedExpression:
         in size_t index,
         in ExpressionResult value,
     ) {
-        import quickbite.frontend.dmd.types: isAssocArrayType;
         import quickbite.backends.interpreter.aggregate_value: AggregateValue;
         import quickbite.backends.interpreter.layout: staticArrayLength;
 
         auto field = structLiteralField(literal, index);
         if (field is null)
             return value;
-
-        if (value == ExpressionResult.null_ && isAssocArrayType(field.type))
-        {
-            import quickbite.backends.interpreter.native_assoc_array: allocateValue;
-
-            return ExpressionResult.nativeAggregateValue(allocateValue(field.type));
-        }
 
         auto staticArray = field.type is null ? null : field.type.toBasetype.isTypeSArray;
         if (staticArray is null || AggregateValue.isArray(value))
@@ -11233,21 +11080,6 @@ unsupportedExpression:
             elements ~= value;
 
         return reconstructStoredArray(field.type, elements);
-    }
-
-    // duplicate keys keep the last value, as in compiled D
-    private ExpressionResult assocArrayValue(
-        imported!"dmd.expression".AssocArrayLiteralExp assocArray,
-    ) {
-        import quickbite.backends.interpreter.aggregate_value: AggregateValue;
-
-        ExpressionResult[] keys;
-        ExpressionResult[] values;
-        foreach (index; 0 .. assocArray.keys.length) {
-            keys ~= runExpression((*assocArray.keys)[index]);
-            values ~= runExpression((*assocArray.values)[index]);
-        }
-        return AggregateValue.reconstructAssocArray(assocArray.type, keys, values);
     }
 
     private ExpressionResult runSliceExpression(imported!"dmd.expression".SliceExp slice) {
@@ -11803,23 +11635,14 @@ unsupportedExpression:
         out size_t arrayIndex,
     ) {
         import quickbite.frontend.dmd.types:
-            isAssocArrayType,
             isPointerType;
 
-        if (isAssocArrayType(index.e1.type)) {
-            arrayIndex = 0;
-            const aa = runExpression(index.e1);
-            const key = runExpression(index.e2);
-            import quickbite.backends.interpreter.place: Place;
-            import quickbite.backends.interpreter.place_value: readValue;
-
-            auto header = nativeAssocArray(aa);
-            auto keySlot = nativeAssocKeySlot(header, key);
-            auto address = header.valueAddress(keySlot.address);
-            if (address is null)
-                throw new Exception("Associative-array key is absent.");
-            return readValue(Place(address, header.valueType));
-        }
+        // DMD's `IndexExp::semantic` (expressionsem.d) always rewrites a
+        // non-modifiable `aa[key]` into `_d_aaGetRvalueX!(K, V)(aa, key)[0]`
+        // (`lowerAAIndexRead`) and a modifiable one into a `_d_aaGetY` call
+        // chain (`rewriteAAIndexAssign`) before the interpreter ever sees
+        // this AST, so an `IndexExp` with an associative-array-typed `e1`
+        // never reaches here.
 
         // Compose an addressable array/pointer
         // receiver once and load only the selected element. The returned
@@ -12143,6 +11966,17 @@ unsupportedExpression:
             structVal = child.thisValue;
         } else if (new_.arguments !is null) {
             // Aggregate initialiser: assign arguments positionally to fields.
+            // `withStoredStructField` (not the raw `AggregateValue.
+            // withStructField` call `withStoredStructField` itself uses) is
+            // needed here rather than a direct call: a live delegate or
+            // function-pointer argument (e.g. `new Entry!(K, V)(key, value)`
+            // inside interpreted druntime's own `core.internal.newaa`,
+            // called with a real function pointer for `value`) is a distinct
+            // `RuntimeDelegate`/`FunctionPointer` `ExpressionResult` variant,
+            // not a `Pointer`, so `place_value.writeValue` throws for it --
+            // `withStoredStructField` seeds the field with `null` and
+            // registers the live value out-of-band instead, exactly as the
+            // struct-literal and field-copy call sites already do.
             import quickbite.backends.interpreter.layout: structFields;
 
             auto structType = targetType.isTypeStruct;
@@ -12151,7 +11985,9 @@ unsupportedExpression:
                     throw new Exception(text(
                         "Unsupported eval expression: ", new_.op,
                     ));
-                structVal = AggregateValue.withStructField(structVal,
+
+                structVal = withStoredStructField(structVal,
+                    targetType,
                     index,
                     runExpression(argument),
                 );
@@ -12474,18 +12310,12 @@ unsupportedExpression:
             return readBindingValue(variable);
         }
 
-        import quickbite.frontend.dmd.types: isAssocArrayType, isDynamicArrayType;
+        import quickbite.frontend.dmd.types: isDynamicArrayType;
 
         if (initializer.isNullExp !is null && isDynamicArrayType(variable.type)) {
             import quickbite.backends.interpreter.aggregate_value: AggregateValue;
 
             auto value = reconstructStoredArray(variable.type, []);
-            setLocal(variable, value);
-            return value;
-        }
-
-        if (initializer.isNullExp !is null && isAssocArrayType(variable.type)) {
-            auto value = ExpressionResult.null_;
             setLocal(variable, value);
             return value;
         }

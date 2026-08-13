@@ -29,6 +29,7 @@ int main(string[] args) {
         "ut.backends.runner.results",
         "ut.backends.runner.lang.expressions",
         "ut.backends.runner.lang.arrays",
+        "ut.backends.runner.lang.assoc_arrays",
         "ut.backends.runner.lang.control_flow",
         "ut.backends.runner.lang.diagnostics",
         "ut.backends.runner.lang.exceptions",

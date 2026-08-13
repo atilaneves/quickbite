@@ -36,21 +36,6 @@ public string indexOutOfBoundsMessage(
         : text("array index ", index, " is out of bounds `[0..", length, "]`");
 }
 
-public string missingKeyMessage(
-    imported!"dmd.expression".Expression key,
-    imported!"dmd.expression".Expression aa,
-) {
-    import std.conv: text;
-
-    return text(
-        "key `",
-        text(key.toChars),
-        "` not found in associative array `",
-        text(aa.toChars),
-        "`",
-    );
-}
-
 public bool isTruthy(in imported!"quickbite.backends.interpreter.expression_result".ExpressionResult value) {
     import quickbite.backends.interpreter.expression_result: ExpressionResult;
 

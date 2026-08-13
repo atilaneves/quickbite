@@ -155,6 +155,19 @@ public void runBackendSourceFixtureTests(T)(
         .throwOnTestFailure;
 }
 
+// A variant taking frontend compiler flags directly (e.g. `-preview=dip1000`)
+// for a fixture whose shape only appears under a preview the default
+// snippet parse never enables -- mirrors `dependency_image.d`'s own
+// `FrontendFlags(["-preview=dip1000"])` use for the same reason.
+public void runBackendSourceFixtureTests(T)(
+    in string moduleSource,
+    in string[] importPaths,
+    in imported!"quickbite.frontend.compiler".FrontendFlags frontendFlags,
+) {
+    runBackendSourceFixtureTestResults!T(moduleSource, importPaths, frontendFlags)
+        .throwOnTestFailure;
+}
+
 public TestResult[] runBackendSourceFixtureTestResults(T)(
     in string moduleSource,
 ) {
@@ -165,9 +178,23 @@ public TestResult[] runBackendSourceFixtureTestResults(T)(
     in string moduleSource,
     in string[] importPaths,
 ) {
+    import quickbite.frontend.compiler: FrontendFlags;
+
+    return runBackendSourceFixtureTestResults!T(
+        moduleSource, importPaths, FrontendFlags.init,
+    );
+}
+
+public TestResult[] runBackendSourceFixtureTestResults(T)(
+    in string moduleSource,
+    in string[] importPaths,
+    in imported!"quickbite.frontend.compiler".FrontendFlags frontendFlags,
+) {
     import quickbite.frontend.compiler: parseSnippetWithCheckActionContext;
 
-    auto moduleResult = parseSnippetWithCheckActionContext(moduleSource, importPaths);
+    auto moduleResult = parseSnippetWithCheckActionContext(
+        moduleSource, importPaths, frontendFlags,
+    );
     auto backend = newBackend!T;
     return backend.runTests(moduleResult.module_);
 }
