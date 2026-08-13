@@ -4121,6 +4121,26 @@ unsupportedExpression:
         );
     }
 
+    // `computeIndex`'s `Place.index` calls raise `IndexOutOfBoundsException`
+    // for a real, already-committed out-of-range guest index -- translate it
+    // to the guest's own range error rather than letting the host exception
+    // type escape. Deliberately narrower than a bare `Exception` catch:
+    // `computeIndex` typically runs a full `runExpression` of an index
+    // expression along the way, which can raise an unrelated host failure
+    // that must not be mislabeled as a guest range error.
+    private ExpressionResult mapIndexOutOfBounds(
+        scope ExpressionResult delegate() @system computeIndex,
+    ) {
+        import quickbite.backends.interpreter.place: IndexOutOfBoundsException;
+
+        try {
+            return computeIndex();
+        } catch (IndexOutOfBoundsException exception) {
+            throwRangeError(exception.msg);
+            assert(0);
+        }
+    }
+
     private ExpressionResult arrayPointer(
         imported!"dmd.expression".Expression array,
         in long offset,
@@ -4172,7 +4192,7 @@ unsupportedExpression:
                         import quickbite.backends.interpreter.lvalue_place:
                             placeOfLvalue;
                         import quickbite.backends.interpreter.place:
-                            Place, IndexOutOfBoundsException;
+                            Place;
                         import quickbite.backends.interpreter.place_value:
                             readValue;
 
@@ -4223,7 +4243,7 @@ unsupportedExpression:
                                     ~ "index out of range for static array place",
                                 );
 
-                            try {
+                            return mapIndexOutOfBounds(delegate ExpressionResult() {
                                 const pointer = ExpressionResult.pointerValue(
                                     resolveInnerPlace()
                                         .index(cast(size_t) elementOffset)
@@ -4236,28 +4256,17 @@ unsupportedExpression:
                                         .index(cast(size_t) offset)
                                         .address,
                                 );
-                            } catch (IndexOutOfBoundsException exception) {
-                                // The row bounds check above already ruled out
-                                // `elementOffset`; any exception here comes
-                                // from `resolveInnerPlace`'s own first-bracket
-                                // bounds check instead.
-                                throwRangeError(exception.msg);
-                            }
+                            });
                         }
 
-                        try {
-                            return nestedIndexPointer(
+                        return mapIndexOutOfBounds(() =>
+                            nestedIndexPointer(
                                 array,
                                 resolveInnerPlace(),
                                 offset,
                                 selfAddress,
-                            );
-                        } catch (IndexOutOfBoundsException exception) {
-                            // The composed `Place.index` call observes bounds
-                            // only after `i++` has committed. Translate its
-                            // host exception without retrying the receiver.
-                            throwRangeError(exception.msg);
-                        }
+                            )
+                        );
                     }
                 }
 
@@ -4286,8 +4295,6 @@ unsupportedExpression:
                     ) {
                         import quickbite.backends.interpreter.lvalue_place:
                             placeOfLvalue, UnsupportedLvalueShapeException;
-                        import quickbite.backends.interpreter.place:
-                            Place, IndexOutOfBoundsException;
                         import quickbite.backends.interpreter.place_value: readValue;
 
                         // `placeOfLvalue` refuses a receiver shape it does
@@ -4304,47 +4311,49 @@ unsupportedExpression:
                         // exactly as safe as it is for that neighbouring
                         // branch.
                         try {
-                            auto fieldPlace = placeOfLvalue(
-                                nestedField,
-                                (variable) @safe => addressableBindingBase(variable),
-                                (expression) @system =>
-                                    cast(size_t) runExpression(expression).asLong,
-                                // `$` inside a CHAIN `IndexExp`'s own index
-                                // (e.g. `arr[$ - 1]` inside
-                                // `arr[$ - 1].mid.a[j]`) is bound to THAT
-                                // `IndexExp`'s own `lengthVar` from ITS OWN
-                                // receiver's length -- exactly what
-                                // `runIndexExpression` binds as a side
-                                // effect of evaluating an `IndexExp` on the
-                                // ordinary eager path this branch skips.
-                                // `placeOfLvalue` calls this once per
-                                // `IndexExp` it resolves, with that
-                                // `IndexExp` and its own base's `Place`,
-                                // before evaluating the index itself, so
-                                // binding it here needs no separate,
-                                // potentially-double-evaluating pre-walk.
-                                // @trusted: `setLocal` itself carries no
-                                // attribute (defaults to `@system`); this is
-                                // the same local-binding write every
-                                // ordinary `$` binding elsewhere in this
-                                // class already performs (`index.lengthVar`
-                                // a few lines below), called here only to
-                                // make `$` visible to the chain index
-                                // subexpression it names.
-                                (chainIndex, base) @trusted {
-                                    if (chainIndex.lengthVar !is null)
-                                        setLocal(
-                                            chainIndex.lengthVar,
-                                            ExpressionResult(AggregateValue.length(readValue(base))),
-                                        );
-                                },
-                            );
-                            return nestedIndexPointer(
-                                array,
-                                fieldPlace,
-                                offset,
-                                selfAddress,
-                            );
+                            return mapIndexOutOfBounds(() {
+                                auto fieldPlace = placeOfLvalue(
+                                    nestedField,
+                                    (variable) @safe => addressableBindingBase(variable),
+                                    (expression) @system =>
+                                        cast(size_t) runExpression(expression).asLong,
+                                    // `$` inside a CHAIN `IndexExp`'s own index
+                                    // (e.g. `arr[$ - 1]` inside
+                                    // `arr[$ - 1].mid.a[j]`) is bound to THAT
+                                    // `IndexExp`'s own `lengthVar` from ITS OWN
+                                    // receiver's length -- exactly what
+                                    // `runIndexExpression` binds as a side
+                                    // effect of evaluating an `IndexExp` on the
+                                    // ordinary eager path this branch skips.
+                                    // `placeOfLvalue` calls this once per
+                                    // `IndexExp` it resolves, with that
+                                    // `IndexExp` and its own base's `Place`,
+                                    // before evaluating the index itself, so
+                                    // binding it here needs no separate,
+                                    // potentially-double-evaluating pre-walk.
+                                    // @trusted: `setLocal` itself carries no
+                                    // attribute (defaults to `@system`); this is
+                                    // the same local-binding write every
+                                    // ordinary `$` binding elsewhere in this
+                                    // class already performs (`index.lengthVar`
+                                    // a few lines below), called here only to
+                                    // make `$` visible to the chain index
+                                    // subexpression it names.
+                                    (chainIndex, base) @trusted {
+                                        if (chainIndex.lengthVar !is null)
+                                            setLocal(
+                                                chainIndex.lengthVar,
+                                                ExpressionResult(AggregateValue.length(readValue(base))),
+                                            );
+                                    },
+                                );
+                                return nestedIndexPointer(
+                                    array,
+                                    fieldPlace,
+                                    offset,
+                                    selfAddress,
+                                );
+                            });
                         } catch (UnsupportedLvalueShapeException) {
                             // Fall through to the eager path below for a
                             // receiver shape `placeOfLvalue` does not (yet)
@@ -4360,21 +4369,6 @@ unsupportedExpression:
                             // propagate it unchanged rather than reaching
                             // the generic `Exception` arm below.
                             throw exception;
-                        } catch (IndexOutOfBoundsException exception) {
-                            // `nestedIndexPointer`'s `Place.index` calls
-                            // raise exactly this type for an out-of-range
-                            // index -- the receiver's shape is already
-                            // known-good by this point, so this is a real
-                            // guest bounds violation on already-committed
-                            // side effects (`i++`'s increment stands), not
-                            // something safe to retry from scratch.
-                            // Deliberately narrower than a bare `Exception`
-                            // catch: `placeOfLvalue`'s `evalIndex` callback
-                            // above runs a full `runExpression` of the index
-                            // expression, which can raise an unrelated host
-                            // failure that must not be mislabeled as a
-                            // guest range error.
-                            throwRangeError(exception.msg);
                         }
                     }
                 }
@@ -4475,26 +4469,28 @@ unsupportedExpression:
                         import quickbite.backends.interpreter.lvalue_place:
                             placeOfLvalue, UnsupportedLvalueShapeException;
                         import quickbite.backends.interpreter.place:
-                            Place, IndexOutOfBoundsException;
+                            Place;
 
                         try {
-                            auto fieldPlace = placeOfLvalue(
-                                field,
-                                (variable) @safe => addressableBindingBase(variable),
-                                (expression) @system =>
-                                    cast(size_t) runExpression(expression).asLong,
-                            );
-                            const pointer = ExpressionResult.pointerValue(
-                                fieldPlace.index(cast(size_t) outerOffset).address,
-                            );
-                            if (selfAddress)
-                                return pointer;
-                            // Same hazard as the `VarExp` arm above.
-                            return ExpressionResult.pointerValue(
-                                Place(cast(void*) pointer.pointerAddress, array.type)
-                                    .index(cast(size_t) offset)
-                                    .address,
-                            );
+                            return mapIndexOutOfBounds(delegate ExpressionResult() {
+                                auto fieldPlace = placeOfLvalue(
+                                    field,
+                                    (variable) @safe => addressableBindingBase(variable),
+                                    (expression) @system =>
+                                        cast(size_t) runExpression(expression).asLong,
+                                );
+                                const pointer = ExpressionResult.pointerValue(
+                                    fieldPlace.index(cast(size_t) outerOffset).address,
+                                );
+                                if (selfAddress)
+                                    return pointer;
+                                // Same hazard as the `VarExp` arm above.
+                                return ExpressionResult.pointerValue(
+                                    Place(cast(void*) pointer.pointerAddress, array.type)
+                                        .index(cast(size_t) offset)
+                                        .address,
+                                );
+                            });
                         } catch (UnsupportedLvalueShapeException) {
                             // Fall through to the detached-copy fallback
                             // below for a receiver shape `placeOfLvalue`
@@ -4507,22 +4503,6 @@ unsupportedExpression:
                             // propagate it unchanged rather than reaching
                             // the generic `Exception` arm below.
                             throw exception;
-                        } catch (IndexOutOfBoundsException exception) {
-                            // `fieldPlace.index` raises exactly this type
-                            // for an out-of-range `outerOffset` -- the
-                            // receiver's shape is already known-good by
-                            // this point, so this is a real guest bounds
-                            // violation, not something the detached-copy
-                            // fallback below should silently paper over.
-                            // Deliberately narrower than a bare `Exception`
-                            // catch: `placeOfLvalue`'s `evalIndex` callback
-                            // above runs a full `runExpression` of the
-                            // index expression, which can raise an
-                            // unrelated host failure (e.g. an "Unsupported
-                            // eval expression" for a receiver shape this
-                            // interpreter cannot yet evaluate) that must
-                            // not be mislabeled as a guest range error.
-                            throwRangeError(exception.msg);
                         }
                     }
                 }
@@ -4626,19 +4606,19 @@ unsupportedExpression:
                 // live value.
                 import quickbite.backends.interpreter.lvalue_place:
                     placeOfLvalue, UnsupportedLvalueShapeException;
-                import quickbite.backends.interpreter.place:
-                    IndexOutOfBoundsException;
 
                 try {
-                    auto fieldPlace = placeOfLvalue(
-                        dot,
-                        (variable) @safe => addressableBindingBase(variable),
-                        (expression) @system =>
-                            cast(size_t) runExpression(expression).asLong,
-                    );
-                    return ExpressionResult.pointerValue(
-                        fieldPlace.index(cast(size_t) offset).address,
-                    );
+                    return mapIndexOutOfBounds(() {
+                        auto fieldPlace = placeOfLvalue(
+                            dot,
+                            (variable) @safe => addressableBindingBase(variable),
+                            (expression) @system =>
+                                cast(size_t) runExpression(expression).asLong,
+                        );
+                        return ExpressionResult.pointerValue(
+                            fieldPlace.index(cast(size_t) offset).address,
+                        );
+                    });
                 } catch (UnsupportedLvalueShapeException) {
                     // Fall through to the detached-copy fallback below for
                     // a receiver shape `placeOfLvalue` does not (yet)
@@ -4650,20 +4630,6 @@ unsupportedExpression:
                     // propagate it unchanged rather than reaching the
                     // generic `Exception` arm below.
                     throw exception;
-                } catch (IndexOutOfBoundsException exception) {
-                    // `fieldPlace.index` raises exactly this type for an
-                    // out-of-range `offset` -- the receiver's shape is
-                    // already known-good by this point, so this is a real
-                    // guest bounds violation, not something the
-                    // detached-copy fallback below should silently paper
-                    // over. Deliberately narrower than a bare `Exception`
-                    // catch: `placeOfLvalue`'s `evalIndex` callback above
-                    // runs a full `runExpression` of the index expression,
-                    // which can raise an unrelated host failure (e.g. an
-                    // "Unsupported eval expression" for a receiver shape
-                    // this interpreter cannot yet evaluate) that must not
-                    // be mislabeled as a guest range error.
-                    throwRangeError(exception.msg);
                 }
 
                 const value = runExpression(array);
