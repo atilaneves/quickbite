@@ -639,19 +639,6 @@ private NativeAggregate allocateAggregate(imported!"dmd.mtype".Type type) @safe 
 }
 
 
-private imported!"quickbite.backends.interpreter.native_block".NativeBlock allocateTypedBlock(
-    imported!"dmd.mtype".Type type,
-) @safe {
-    import quickbite.backends.interpreter.layout: typeByteSize, typeHasPointers;
-    import quickbite.backends.interpreter.native_block: NativeBlock;
-
-    return NativeBlock.allocate(
-        typeByteSize(type),
-        typeHasPointers(type) ? NativeBlock.Scan.conservative : NativeBlock.Scan.no,
-    );
-}
-
-
 // DMD's Type API is not annotated @safe; this is a read-only type query.
 private imported!"dmd.mtype".Type baseTypeOf(imported!"dmd.mtype".Type type) @trusted {
     return type.toBasetype;

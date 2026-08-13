@@ -71,7 +71,7 @@ private struct FramePacker {
         in size_t size,
         in size_t alignment,
         FrameLayout.Slot.Kind kind,
-    ) {
+    ) @safe {
         if (variable in slots)
             return;
 
@@ -84,13 +84,13 @@ private struct FramePacker {
 
     // An OWNING slot sized/aligned from `type`, DMD's own
     // `layout.typeByteSize`/`typeAlignment`.
-    void placeOwning(VarDeclaration variable, imported!"dmd.mtype".Type type) @trusted {
+    void placeOwning(VarDeclaration variable, imported!"dmd.mtype".Type type) @safe {
         import quickbite.backends.interpreter.layout: typeAlignment, typeByteSize;
 
         place(variable, typeByteSize(type), typeAlignment(type), FrameLayout.Slot.Kind.owning);
     }
 
-    FrameLayout finish() {
+    FrameLayout finish() @safe {
         return FrameLayout(slots, alignedUp(cursor, maxAlignment));
     }
 }
@@ -107,7 +107,7 @@ private struct FramePacker {
 private void placeLocal(
     ref FramePacker packer,
     imported!"dmd.declaration".VarDeclaration variable,
-) @trusted {
+) @safe {
     import quickbite.backends.interpreter.layout: declaredType, typeIsSized;
 
     if (isStorageFreeLocal(variable))
@@ -221,7 +221,7 @@ public FrameLayout computeFrameLayout(
 // same alignment rule.
 public FrameLayout computeExpressionFrameLayout(
     imported!"dmd.expression".Expression expression,
-) @trusted {
+) @safe {
     FramePacker packer;
 
     foreach (variable; expressionLocals(expression))
@@ -240,7 +240,7 @@ public FrameLayout computeExpressionFrameLayout(
 // same way.
 private imported!"dmd.declaration".VarDeclaration[] expressionLocals(
     imported!"dmd.expression".Expression expression,
-) @trusted {
+) @safe {
     import dmd.declaration: VarDeclaration;
 
     VarDeclaration[] locals;
@@ -282,6 +282,12 @@ private imported!"dmd.declaration".VarDeclaration[] expressionLocals(
 // `walkPostorder`'s own unrelated structural descent, so it costs nothing
 // beyond a second walk) and, for each with a lowering, additionally walks
 // that lowering the normal way.
+//
+// `Expression.foreachVar`, `walkPostorder`, and the `StoppableVisitor`
+// subclass below are DMD's own tree-walking API, none of it `@safe`-
+// annotated; this only drives that walk and forwards each already-live
+// `VarDeclaration` it visits to `append`, the same trust
+// `capturedVariablesImpl` gives DMD's own `outerVars` walk.
 private void appendVarsInExpression(
     imported!"dmd.expression".Expression expression,
     scope void delegate(imported!"dmd.declaration".VarDeclaration) append,
