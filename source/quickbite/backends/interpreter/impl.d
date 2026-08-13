@@ -3347,6 +3347,18 @@ unsupportedExpression:
             return addressOfExpression(comma.e2, op);
         }
 
+        // DMD lowers a method call on an explicitly constructed struct
+        // temporary to a constructor call whose receiver ends in
+        // `AddrExp(StructLiteralExp)`. Materialize that literal once and keep
+        // its native storage alive for the enclosing full expression so the
+        // constructor and following method observe the same `this` bytes.
+        if (auto literal = e1.isStructLiteralExp) {
+            const value = structLiteralValue(literal);
+            auto temporary = AggregateValue.native(value);
+            retainTemporaryPointerOwner(temporary.storage);
+            return ExpressionResult.pointerValue(temporary.address);
+        }
+
         // Taking the address of a dereference recovers the pointer value;
         // evaluating the dereference first would incorrectly require a
         // separate addressable value for the pointee.

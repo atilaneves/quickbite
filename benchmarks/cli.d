@@ -213,6 +213,7 @@ public int run(string[] args) {
     BenchmarkRow[] rows;
     TestResult[][][string] warmupResults;
     TestResult[][][string] measuredResults;
+    bool executionFailed;
     foreach (name; backendNames)
         foreach (group; groups) {
             auto runner = group.runners[name];
@@ -252,6 +253,7 @@ public int run(string[] args) {
                         );
                     }
                 } catch (Exception e) {
+                    executionFailed = true;
                     stderr.writefln(
                         "skipping %s %s: %s",
                         unit.displayName, name,
@@ -261,13 +263,15 @@ public int run(string[] args) {
             }
         }
 
-    auto checkedResults = skipCheck
-        ? TestResult[][string].init
-        : checkMeasuredResults(
+    TestResult[][string] checkedResults;
+    bool correctnessFailed;
+    if (!skipCheck)
+        checkedResults = checkMeasuredResults(
             backendNames,
             units,
             warmupResults,
             measuredResults,
+            correctnessFailed,
         );
     if (!skipCheck)
         foreach (unit; units)
@@ -277,13 +281,15 @@ public int run(string[] args) {
                     continue;
 
                 const failure = firstFailureMessage(checkedResults[key]);
-                if (failure !is null)
+                if (failure !is null) {
+                    correctnessFailed = true;
                     stderr.writefln(
                         "skipping %s %s: %s",
                         unit.displayName,
                         name,
                         failure.firstLine,
                     );
+                }
             }
     foreach (row; rows) {
         auto unit = benchmarkUnit(units, row.fixture);
@@ -300,7 +306,7 @@ public int run(string[] args) {
         writeln;
     }
 
-    return preparationFailed ? 1 : 0;
+    return preparationFailed || executionFailed || correctnessFailed ? 1 : 0;
 }
 
 BenchmarkUnit benchmarkUnit(
@@ -322,6 +328,7 @@ TestResult[][string] checkMeasuredResults(
     in BenchmarkUnit[] units,
     TestResult[][][string] warmupResults,
     TestResult[][][string] measuredResults,
+    out bool correctnessFailed,
 ) {
     import std.stdio: stderr;
 
@@ -373,8 +380,10 @@ TestResult[][string] checkMeasuredResults(
                 break;
             }
         }
-        if (incomplete)
+        if (incomplete) {
+            correctnessFailed = true;
             continue;
+        }
 
         bool disagreed;
         foreach (name; backendNames[1 .. $]) {
@@ -393,6 +402,7 @@ TestResult[][string] checkMeasuredResults(
                 stderr.writefln("  %s", mismatch);
         }
         if (disagreed) {
+            correctnessFailed = true;
             stderr.writefln("skipping %s: backends disagree", unit.displayName);
             continue;
         }
@@ -432,6 +442,21 @@ public TestResult[][string] checkRunnerResults(
     Runner[string] runners,
     in string[] backendNames,
     BenchmarkUnit[] units,
+) {
+    bool correctnessFailed;
+    return checkRunnerResults(
+        runners,
+        backendNames,
+        units,
+        correctnessFailed,
+    );
+}
+
+public TestResult[][string] checkRunnerResults(
+    Runner[string] runners,
+    in string[] backendNames,
+    BenchmarkUnit[] units,
+    out bool correctnessFailed,
 ) {
     import std.conv: text;
 
@@ -496,6 +521,7 @@ public TestResult[][string] checkRunnerResults(
                     );
                 }
             if (anyErrored) {
+                correctnessFailed = true;
                 stderr.writefln("skipping %s: backend errors", unit.displayName);
                 continue;
             }
@@ -518,6 +544,7 @@ public TestResult[][string] checkRunnerResults(
                 stderr.writefln("  %s", mismatch);
         }
         if (disagreed) {
+            correctnessFailed = true;
             stderr.writefln("skipping %s: backends disagree", unit.displayName);
             continue;
         }

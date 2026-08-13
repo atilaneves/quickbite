@@ -1100,6 +1100,36 @@ static foreach (backend; Matrix!()) {
     }
 }
 
+// A method invoked directly on an explicitly constructed struct temporary
+// must receive that constructed value as `this`. DMD represents the receiver
+// as an address of the `StructLiteralExp` produced by constructor lowering so
+// the call observes the temporary's storage rather than a detached default.
+static foreach (backend; Matrix!()) {
+    @("struct.constructorTemporaryMethodReadsConstructedField." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct Reader {
+                int value;
+
+                this(int seed) {
+                    value = seed + 1;
+                }
+
+                int read() {
+                    return value;
+                }
+            }
+
+            unittest {
+                int seed = 41;
+                assert(Reader(seed).read() == 42);
+            }
+        });
+    }
+}
+
 static foreach (backend; Matrix!()) {
     @("struct.constructorCallReassignedToExistingLocalReadsConstructedField." ~
         backend.stringof)
