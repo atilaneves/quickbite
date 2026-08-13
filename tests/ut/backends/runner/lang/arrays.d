@@ -5616,7 +5616,7 @@ static foreach (backend; Matrix!()) {
 }
 
 // The dynamic-array-element counterpart of
-// `assocArray.structValueOverwriteFromVariable` above:
+// `assocArray.structValueOverwriteFromVariable` in assoc_arrays.d:
 // `tryDynamicArrayElementAssign`'s main branch only materialised its rhs
 // through `compileExpression`, which handles a struct rvalue (a literal or
 // constructor call) but not a struct lvalue (an existing local, reached the

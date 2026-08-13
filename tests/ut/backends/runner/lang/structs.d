@@ -202,8 +202,8 @@ static foreach (backend; Matrix!()) {
 // a constructor (`p.g = ...`, `p` a plain `S*` local) and from inside the
 // constructor via `this` (`this.f = ...`) when the struct itself was
 // heap-allocated with `new S(...)`. Neither literal captures anything, so
-// this exercises only the out-of-band `nativeDelegateSlots` registration
-// itself, not closure-context lifetime. Both writes must be visible
+// this exercises only the delegate-slot bookkeeping for a pointer-typed
+// write target, not closure-context lifetime. Both writes must be visible
 // calling back through the same pointer afterward, matching `SystemLinker`.
 static foreach (backend; Matrix!()) {
     @("struct.delegateFieldWriteThroughPointerIsCallable." ~

@@ -49,9 +49,10 @@ public bool isLegalInterception(
     // `hasNoAvailableSource` is an `is null` check, `isExemptInterception` is
     // a handful of string comparisons against a pretty-printed name, and
     // `bodyContainsAsm` walks the callee's entire statement tree. The common
-    // case -- a body-ful, exempt shim like `emplaceRef` or the AA hooks --
-    // would otherwise pay for a full-body walk just to fall through to the
-    // name check that was going to accept it anyway.
+    // case -- a body-ful, exempt shim like `std.conv.text` or `object.dup`
+    // (for blit-copyable struct arrays) -- would otherwise pay for a
+    // full-body walk just to fall through to the name check that was going
+    // to accept it anyway.
     return
         function_ !is null &&
         (

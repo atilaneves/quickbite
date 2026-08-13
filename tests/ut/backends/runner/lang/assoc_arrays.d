@@ -1670,31 +1670,19 @@ static foreach (backend; Matrix!(
 // `_d_assocarrayliteralTX(keys, values)` hook into an
 // `__arrayliteral_on_stack*` temporary -- a `DeclarationExp` nested INSIDE
 // the AA literal's `.lowering`, not among the pre-lowering keys/values this
-// file's other fixtures exercise. `frame_layout.computeFrameLayout` sizes a
-// function's activation frame by walking its body for every local DMD's
-// own tree walkers observe (`bodyLocals`, `dmd.visitor.foreachvar`), but
-// `dmd.visitor.postorder`'s `PostorderExpressionVisitor` -- the driver
-// behind that walk -- has a `.lowering`-aware override for
-// `CatExp`/`CatAssignExp`/`EqualExp` (each walks `.lowering` INSTEAD of its
-// original operands once semantic sets it) but not for
-// `AssocArrayLiteralExp`: its own override always walks `.keys`/`.values`,
-// never `.lowering`, so the walk over `map`'s own unittest body reserved no
-// frame slot for the temp its AA literal's lowering synthesized -- however
-// deep it lives in the body -- and evaluating it threw "has no native
-// place" (in `<root>`: the top-level `execute` entry point for a directly-
-// run unittest never assigns `currentFunction`, only a nested call's own
-// child interpreter does). Fixed generally, not as an AA-literal special
-// case narrowly scoped to `bodyLocals`: `appendVarsInExpression`
-// (`frame_layout.d`) additionally finds every reachable
-// `AssocArrayLiteralExp` in an expression tree itself and walks any
-// `.lowering` it carries, recursing through a `DeclarationExp`'s own
-// initializer the same way `dmd.visitor.foreachvar`'s `VarWalker` already
-// does (something `PostorderExpressionVisitor`'s generic structural
-// descent never does for `DeclarationExp` at all) -- used by both
-// `bodyLocals` (this fixture's own path) and the sibling module-scope
-// fixture below. `runBackendSourceFixtureTests`'s new `FrontendFlags`
-// overload enables `-preview=dip1000` the same way `dependency_image.d`'s
-// sandboxed fixture already does.
+// file's other fixtures exercise. dmd's own generic expression walkers know
+// to follow `.lowering` instead of the original operands once semantic sets
+// it for some expression kinds (`CatExp`/`CatAssignExp`/`EqualExp`), but not
+// for `AssocArrayLiteralExp`, which always walks `.keys`/`.values` and never
+// `.lowering`. A walk that inventories a function's locals purely from that
+// pre-lowering shape therefore reserved no storage for the temp the AA
+// literal's lowering synthesized -- however deep it lives in the body --
+// and evaluating it threw "has no native place". Fixed generally, not as an
+// AA-literal special case: the locals inventory now additionally finds
+// every reachable `AssocArrayLiteralExp` in an expression tree and follows
+// any `.lowering` it carries, recursing through a `DeclarationExp`'s own
+// initializer the same way dmd's own generic walkers already do elsewhere
+// -- fixing both this fixture and the sibling module-scope fixture below.
 static foreach (backend; Matrix!()) {
     @("assocArray.structKeyLiteralInsideUnittestBindsStackTemp." ~
         backend.stringof)
@@ -1730,18 +1718,18 @@ static foreach (backend; Matrix!()) {
 // `dip1000` or even `cerealed` needed to reach it: any AA insert of such a
 // value type does, distilled below to a bare `double[int]`.
 //
-// `runPointerSliceAssignExpression` (`impl.d`) evaluates that pointer-slice
-// assignment through a local `elementAt` closure choosing between a "block"
-// fill (`copyArrayValue`, for `matrix[] = row;`-shaped array-of-array fills)
-// and indexing the right-hand value as an array (`AggregateValue.elementAt`).
-// Every sibling slice-assignment path
-// (`runVariableSliceAssignExpression`/`runFieldSliceAssignExpression`/
-// `runCastedSliceAssignExpression`) additionally guards that second arm with
-// `AggregateValue.isArray(value)`, falling back to the scalar `value` itself
-// for a fill assignment (`p[i .. j] = 0;`) whose right-hand side was never an
-// array to index into -- `runPointerSliceAssignExpression`'s closure alone
-// lacked that guard, so it always called `AggregateValue.elementAt` on the
-// scalar `0`, which is not a native aggregate at all.
+// A pointer-typed slice-assignment target (`p[i .. j] = ...;`-shaped, where
+// the left-hand side is a pointer rather than a plain array/slice variable
+// or field) has two legitimate right-hand shapes: a whole array/slice value
+// copied in element-by-element (`matrix[] = row;`) and a scalar fill value
+// broadcast across every element (`p[i .. j] = 0;`). Every other
+// slice-assignment target (a plain variable, a field, a cast expression)
+// already guarded against treating a scalar fill value as if it were
+// indexable, falling back to broadcasting the scalar itself whenever the
+// right-hand side was not actually an array. The pointer-typed target's
+// evaluator alone lacked that guard, so a scalar fill value -- like the `0`
+// zero-fill above -- was always indexed as if it were an array, which fails
+// outright for anything that isn't a native aggregate.
 static foreach (backend; Matrix!()) {
     @("assocArray.nonZeroInitValueEntryZeroFillsThroughPointerSlice." ~
         backend.stringof)
@@ -1761,16 +1749,13 @@ static foreach (backend; Matrix!()) {
 }
 
 // The sibling MODULE-scope shape: a dataseg variable's own initializer
-// expression is a bare `Expression`, never part of any `FuncDeclaration`'s
-// body, so `bodyLocals`'s fix above (which walks a function's OWN body)
-// never reserves it a frame either -- lazily materializing it
-// (`materializeDatasegInitializer`) reused whichever frame the triggering
-// read's OWN function happened to have, sized for THAT function's locals,
-// never this initializer's. Fixed by giving a dataseg variable's own
-// initializer expression a dedicated frame around just its own evaluation,
-// sized from the same `appendVarsInExpression`-based walk
-// (`evaluateDatasegInitializerExpression`/`computeExpressionFrameLayout`,
-// impl.d/frame_layout.d). `Ctfe`, `Bytecode` and `LLVMJit` are omitted:
+// expression is never part of any function's body, so the per-function fix
+// above doesn't reserve it a frame either -- evaluating it used to reuse
+// whichever frame the triggering read's OWN function happened to have,
+// sized for THAT function's locals, never this initializer's. Fixed by
+// giving a dataseg variable's own initializer expression a dedicated frame
+// around just its own evaluation, sized by the same locals-inventory walk
+// used above. `Ctfe`, `Bytecode` and `LLVMJit` are omitted:
 // none of the three is regressed by this fix -- `Ctfe` gives its own
 // permanent, unrelated "cannot be read at compile time" refusal for a
 // mutable module variable read from a function call (this file's other
