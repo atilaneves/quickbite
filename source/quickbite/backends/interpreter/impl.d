@@ -4286,7 +4286,8 @@ unsupportedExpression:
                     ) {
                         import quickbite.backends.interpreter.lvalue_place:
                             placeOfLvalue, UnsupportedLvalueShapeException;
-                        import quickbite.backends.interpreter.place: Place;
+                        import quickbite.backends.interpreter.place:
+                            Place, IndexOutOfBoundsException;
                         import quickbite.backends.interpreter.place_value: readValue;
 
                         // `placeOfLvalue` refuses a receiver shape it does
@@ -4359,16 +4360,20 @@ unsupportedExpression:
                             // propagate it unchanged rather than reaching
                             // the generic `Exception` arm below.
                             throw exception;
-                        } catch (Exception exception) {
-                            // Every step composed above (`placeOfLvalue`
-                            // past the shape-refusal arm, `fieldPlace.
-                            // index`/`Place.index`) only ever raises a bare
-                            // host `Exception` for an out-of-range index --
-                            // the receiver's shape is already known-good by
-                            // this point, so this is a real guest bounds
-                            // violation on already-committed side effects
-                            // (`i++`'s increment stands), not something
-                            // safe to retry from scratch.
+                        } catch (IndexOutOfBoundsException exception) {
+                            // `nestedIndexPointer`'s `Place.index` calls
+                            // raise exactly this type for an out-of-range
+                            // index -- the receiver's shape is already
+                            // known-good by this point, so this is a real
+                            // guest bounds violation on already-committed
+                            // side effects (`i++`'s increment stands), not
+                            // something safe to retry from scratch.
+                            // Deliberately narrower than a bare `Exception`
+                            // catch: `placeOfLvalue`'s `evalIndex` callback
+                            // above runs a full `runExpression` of the index
+                            // expression, which can raise an unrelated host
+                            // failure that must not be mislabeled as a
+                            // guest range error.
                             throwRangeError(exception.msg);
                         }
                     }
@@ -4469,7 +4474,8 @@ unsupportedExpression:
                         // fast path above does.
                         import quickbite.backends.interpreter.lvalue_place:
                             placeOfLvalue, UnsupportedLvalueShapeException;
-                        import quickbite.backends.interpreter.place: Place;
+                        import quickbite.backends.interpreter.place:
+                            Place, IndexOutOfBoundsException;
 
                         try {
                             auto fieldPlace = placeOfLvalue(
@@ -4501,14 +4507,21 @@ unsupportedExpression:
                             // propagate it unchanged rather than reaching
                             // the generic `Exception` arm below.
                             throw exception;
-                        } catch (Exception exception) {
-                            // `fieldPlace.index`/`Place.index` above only
-                            // ever raise a bare host `Exception` for an
-                            // out-of-range `outerOffset` -- the receiver's
-                            // shape is already known-good by this point, so
-                            // this is a real guest bounds violation, not
-                            // something the detached-copy fallback below
-                            // should silently paper over.
+                        } catch (IndexOutOfBoundsException exception) {
+                            // `fieldPlace.index` raises exactly this type
+                            // for an out-of-range `outerOffset` -- the
+                            // receiver's shape is already known-good by
+                            // this point, so this is a real guest bounds
+                            // violation, not something the detached-copy
+                            // fallback below should silently paper over.
+                            // Deliberately narrower than a bare `Exception`
+                            // catch: `placeOfLvalue`'s `evalIndex` callback
+                            // above runs a full `runExpression` of the
+                            // index expression, which can raise an
+                            // unrelated host failure (e.g. an "Unsupported
+                            // eval expression" for a receiver shape this
+                            // interpreter cannot yet evaluate) that must
+                            // not be mislabeled as a guest range error.
                             throwRangeError(exception.msg);
                         }
                     }
