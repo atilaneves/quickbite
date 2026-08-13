@@ -187,12 +187,9 @@ Destination passing is not required for the immediate Cerealed repair.
 
 Guest associative arrays are druntime `Impl*` tables built by interpreted
 `core.internal.newaa` code, but two `Impl` fields still hold interpreter-world
-objects — a symbolic `entryTI` and an interpreted `hashFn` delegate — so an AA
-must not cross the native-call seam. The remaining work is proving those
-fields are never read or called by natively-executing druntime code, or
-making them native-true via the native-layout `TypeInfo` work, then replacing
-`externCAssocArrayRejected`'s refusal with a round-trip capability test. See
-[druntime's AA implementation][druntime-newaa].
+objects, so an AA must not cross the native-call seam; the seam work is
+recorded in ffi.md's "Associative arrays" section. See [druntime's AA
+implementation][druntime-newaa].
 
 ### Ownership invariants
 

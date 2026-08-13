@@ -127,6 +127,20 @@ scalar result. Such scratch stays private, is justified at its allocation
 site by the libffi contract, and is copied only at the scalar's native width.
 It must not become a generic byte-buffer seam.
 
+### Associative arrays
+
+Associative arrays are refused at this seam: `prepareNativeInvocation`
+refuses `Taarray` signatures, and `externCAssocArrayRejected` pins that
+refusal as honest rather than silently wrong. The guest-side table is
+already druntime's native layout, but two `Impl` fields still hold
+interpreter-world objects — a symbolic `entryTI` and an interpreted
+`hashFn` delegate. Lifting the refusal needs proof that natively-executing
+druntime code never reads or calls those two fields, or the native-layout
+`TypeInfo` work this plan already owns to make them native-true, then the
+refusal test replaced by a round-trip capability test against a compiled-D
+callee. This is the interpreted-caller-to-natively-compiled-D-callee seam
+(dependency images); C-language callees never see AA types.
+
 ## ABI provenance
 
 `LINK.d` identifies D linkage; it does not identify one D calling convention.
