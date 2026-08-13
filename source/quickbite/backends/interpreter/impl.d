@@ -4601,6 +4601,8 @@ unsupportedExpression:
                 // live value.
                 import quickbite.backends.interpreter.lvalue_place:
                     placeOfLvalue, UnsupportedLvalueShapeException;
+                import quickbite.backends.interpreter.place:
+                    IndexOutOfBoundsException;
 
                 try {
                     auto fieldPlace = placeOfLvalue(
@@ -4623,13 +4625,19 @@ unsupportedExpression:
                     // propagate it unchanged rather than reaching the
                     // generic `Exception` arm below.
                     throw exception;
-                } catch (Exception exception) {
-                    // `fieldPlace.index`/`Place.index` above only ever
-                    // raise a bare host `Exception` for an out-of-range
-                    // `offset` -- the receiver's shape is already
-                    // known-good by this point, so this is a real guest
-                    // bounds violation, not something the detached-copy
-                    // fallback below should silently paper over.
+                } catch (IndexOutOfBoundsException exception) {
+                    // `fieldPlace.index` raises exactly this type for an
+                    // out-of-range `offset` -- the receiver's shape is
+                    // already known-good by this point, so this is a real
+                    // guest bounds violation, not something the
+                    // detached-copy fallback below should silently paper
+                    // over. Deliberately narrower than a bare `Exception`
+                    // catch: `placeOfLvalue`'s `evalIndex` callback above
+                    // runs a full `runExpression` of the index expression,
+                    // which can raise an unrelated host failure (e.g. an
+                    // "Unsupported eval expression" for a receiver shape
+                    // this interpreter cannot yet evaluate) that must not
+                    // be mislabeled as a guest range error.
                     throwRangeError(exception.msg);
                 }
 
