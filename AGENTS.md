@@ -153,6 +153,17 @@ determining its redness, do not pre-emptively add `Omit`.
   backend package, modules can and should import each other, including
   package-private code.
 
+## Runtime semantics
+
+Druntime-first: when druntime already implements a runtime behaviour
+(associative arrays, array append and growth, hashing, exception
+chaining, TypeInfo), a backend executes druntime's real source or real
+hooks instead of carrying its own version. A local reimplementation
+needs a written justification in the owning plan and a stated
+retirement condition. The Interpreter's `enforceInterceptionPolicy` is
+the model: an enumerated exemption list, each entry with a retirement
+condition, enforced by assertion.
+
 
 # Do nots
 

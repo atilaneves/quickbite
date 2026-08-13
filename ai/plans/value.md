@@ -14,8 +14,8 @@ evaluation (decision 7), no result materialization on the unittest path, and
 an FFI boundary that sees only typed addresses.
 
 The precedent survey and primary-source evidence for these decisions live in
-`RESEARCH.md`. This plan is the normative contract when the survey describes
-an alternative or hypothesis rather than a settled choice.
+`ai/research/interpreter.md`. This plan is the normative contract when the
+survey describes an alternative or hypothesis rather than a settled choice.
 
 `ExpressionResult` (a 25-alternative `SumType`) is still the Interpreter's
 universal expression currency: every recursive expression evaluation returns
@@ -743,17 +743,17 @@ The native authority switch is a standing contract, not pending work. The
 remaining value-track work is the destination-passing migration and carrier
 deletion (items 8-10), the IR and Bytecode formatter migration followed by
 shared-`Value` deletion (items 2-3), and the language-surface tasks below.
-Item numbers remain stable for existing cross-references.
-`interpreter-performance.md` may improve measurement in parallel, but
-production Interpreter optimisation begins only after item 10 deletes the
-carrier.
+Item numbers remain stable for existing cross-references. Production
+Interpreter optimisation begins only after item 10 deletes the carrier;
+timings follow `overview.md`'s measurement contract.
 
 ### Item 8 — Destination-passing entry points and the no-result path
 
 Design and land decision 7's four operations over the existing
 `Place`/`place_value.d` seam, including decision 19's temporary-lifetime and
 construction-state rules. Measure fixed frame offsets against segmented
-scratch under `interpreter-performance.md`'s contract before selecting either;
+scratch on the gate corpus (`overview.md`'s measurement contract) before
+selecting either;
 this slice owns the names, signatures, storage choice, and lifetime encoding.
 Convert statement execution to the no-result operation: today every expression
 statement materializes a full carrier result and stores it in walker state
@@ -768,8 +768,8 @@ D-defined assign/move/postblit/destruction semantics per decision 7.
 ### Item 10 — Carrier deletion queue
 
 Convert the remaining expression families onto the destination-passing
-operations, ordered by what the measurement corpus
-(`interpreter-performance.md`) actually hits: calls with caller-provided
+operations, ordered by what the gate corpus actually hits: calls with
+caller-provided
 destinations, indexing, casts, builtins, aggregate reconstruction
 (`aggregate_value.d`), the native-call request/result carrier fields, and
 retirement of the `std.conv.text` interceptor. Slice invariants per
@@ -831,6 +831,16 @@ address it used, the same way the receiver-level
 `precomputedReceiverPointerAddress` precompute does for a bare
 `PtrExp`/`IndexExp` *receiver* -- not yet threaded through for a target
 recovered by peeling.
+
+### Druntime-first backlog (AGENTS.md rule)
+
+- Array append/growth: execute druntime's real append/allocation
+  templates; `native_array.d`'s hand-rolled grow/copy paths retire with
+  the switch.
+- Demand-driven, when a corpus fixture forces the area: exception
+  chaining through `Throwable`'s real code instead of direct
+  `_nextInChainPtr` writes; real `TypeInfo` objects where `TypeName`
+  display tags fall short.
 
 ### Item 2 — Unittest/expression split
 

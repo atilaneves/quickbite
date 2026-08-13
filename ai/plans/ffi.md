@@ -17,7 +17,7 @@ representation into an ABI representation because there is only one
 representation.
 
 The long-term contract is exhaustive; implementation and tuning order is
-driven by the measurement corpus (`interpreter-performance.md`). Each
+driven by the dub gate corpus (`overview.md`'s measurement contract). Each
 unsupported real D/ABI behaviour the corpus surfaces is reduced to a
 `SystemLinker`-oracle language fixture and implemented directly; tuning
 choices (cache eviction, eager versus first-use preparation) are judged by
@@ -25,8 +25,8 @@ incremental edit-to-test-verdict latency on those projects, never by an
 isolated calls-per-second benchmark.
 
 The precedent survey and primary-source evidence for this boundary live in
-`RESEARCH.md`. This plan is the normative contract when the survey describes
-an alternative or hypothesis rather than a settled choice.
+`ai/research/interpreter.md`. This plan is the normative contract when the
+survey describes an alternative or hypothesis rather than a settled choice.
 
 ## Module boundary
 

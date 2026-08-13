@@ -875,3 +875,62 @@ specifications and API documentation remain linked to published versions.
   https://github.com/evcxr/evcxr/tree/7d588b3cad38
 [lldb-expressions]:
   https://lldb.llvm.org/resources/overview.html
+
+## Call-state precedents
+
+Relocated from `ai/plans/interpreter.md`'s execution-architecture section:
+the narrower survey behind the Interpreter's execution-state ownership
+design. The implementations differ in language and product goal, but agree
+on the lifetime split that matters there:
+
+- LuaJIT keeps heap, roots, interned strings, and registries in one
+  `global_State`. A `lua_State` points at that shared state, while calls use
+  compact headers and slots on its stack. Calls do not copy the Lua universe.
+  See [LuaJIT state][luajit-state] and [LuaJIT frames][luajit-frames].
+- JavaScriptCore's low-level interpreter represents a call with a
+  register-backed `CallFrame`: caller, return address, code block, callee,
+  argument count, receiver, arguments, and locals. The JavaScriptCore VM stays
+  shared. See [JavaScriptCore `CallFrame`][jsc-call-frame].
+- rustc's MIR interpreter owns one `InterpCx` with one virtual `Memory`; its
+  machine supplies the stack of `Frame` values. `Memory` owns the allocation
+  map and extra function-pointer map, while calls push and pop frames. Miri
+  extends the same machine with semantic checking rather than snapshotting the
+  memory at calls. See [rustc interpreter context][rustc-eval-context],
+  [rustc interpreter memory][rustc-memory], and [Miri's machine][miri-machine].
+- DMD's CTFE evaluator creates a small `InterState` for a call and uses the
+  shared CTFE stack for values and frames. This is the closest same-language
+  precedent. See [DMD's CTFE evaluator][dmd-interpret].
+- Clang's constant interpreter has explicit interpreter frames and reusable
+  stack storage. It replaced repeated AST-evaluator work with typed bytecode,
+  but its relevant lesson here is independent of bytecode: a call adds a
+  frame to one interpreter state. See [Clang's constant interpreter][clang-ci].
+- Cling is an incremental compiler and JIT, not an AST or bytecode interpreter.
+  Its one persistent `Interpreter` owns an `IncrementalParser` and
+  `IncrementalExecutor`; transactions are incremental source submissions, not
+  function calls. Generated function calls use ordinary native frames. See
+  [Cling's `Interpreter`][cling-interpreter].
+
+LuaJIT and JavaScriptCore are the performance precedents. rustc/Miri and DMD
+are the semantic precedents. Cling is useful only for locating the incremental
+session boundary. None provides precedent for eagerly duplicating growing,
+mutable execution registries at every interpreted D call and merging them
+afterwards.
+
+[luajit-state]:
+  https://github.com/LuaJIT/LuaJIT/blob/v2.1/src/lj_obj.h
+[luajit-frames]:
+  https://github.com/LuaJIT/LuaJIT/blob/v2.1/src/lj_frame.h
+[jsc-call-frame]:
+  https://github.com/WebKit/WebKit/blob/main/Source/JavaScriptCore/interpreter/CallFrame.h
+[rustc-eval-context]:
+  https://github.com/rust-lang/rust/blob/master/compiler/rustc_const_eval/src/interpret/eval_context.rs
+[rustc-memory]:
+  https://github.com/rust-lang/rust/blob/master/compiler/rustc_const_eval/src/interpret/memory.rs
+[miri-machine]:
+  https://github.com/rust-lang/miri/blob/master/src/machine.rs
+[dmd-interpret]:
+  https://github.com/dlang/dmd/blob/master/compiler/src/dmd/dinterpret.d
+[clang-ci]:
+  https://github.com/llvm/llvm-project/tree/main/clang/lib/AST/ByteCode
+[cling-interpreter]:
+  https://github.com/root-project/cling/blob/master/include/cling/Interpreter/Interpreter.h

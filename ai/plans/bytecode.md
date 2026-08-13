@@ -4,7 +4,7 @@ Created from scratch 2026-08-11 after deleting the previous plan. Nothing
 from that plan — nor from value.md, ffi.md, or RESEARCH.md — binds this one;
 the only inherited constraint is the project goal: minimal
 edit-to-unittest-verdict latency. The design survey behind this plan lives
-in ai/plans/bytecode-research.md.
+in ai/research/bytecode.md.
 
 ## North star
 
@@ -56,7 +56,31 @@ Work queue:
 4. The failure stream from items 2–3: one work item per discovered gap,
    handled per the rules above, until the acceptance gate is green.
 
-## Milestone 2 — broad language coverage
+## Milestone 2 — druntime-first convergence
+
+AGENTS.md's druntime-first rule applied to the VM's existing
+reimplementations, after milestone 1 (whose rules forbid restructuring):
+
+- Associative arrays: compile druntime's real `core.internal.newaa`
+  source through the VM's own compiler, like any user code — guest-only
+  key/value types have no host-compiled instantiations to call anyway.
+  The VM-owned linear-scan `AssocArray` table, its `Op.aa*` opcodes, and
+  the `AssocArrayHook` interception table are deleted with the switch.
+- Array append: execute druntime's real append/allocation templates.
+  The hand-rolled grow path (`appendElement`/`resizeArray`) reallocates
+  exact-size, making repeated `~=` quadratic; it retires with the
+  switch.
+- Port the Interpreter's interception-policy invariant: one enumerated
+  hook-exemption list, each entry with a stated retirement condition,
+  enforced by assertion; everything else with a D body and no inline
+  asm executes for real. The current separate `AssocArrayHook` and
+  `isNewArrayRuntimeCall` mechanisms fold into it or retire.
+
+Recorded, demand-driven (take up when a corpus fixture forces the
+area): real `Throwable` objects replacing the synthetic
+`ExceptionObjectLocal` catch shape.
+
+## Milestone 3 — broad language coverage
 
 Work through the remaining documented Bytecode gaps: every
 `Omit!(Bytecode, ...)` in the test matrix is by definition open work. Omits
@@ -65,12 +89,14 @@ this plan and do not bind; each gets fixed or re-justified when reached.
 Re-measure the backlog with
 `grep -rn 'Omit!(Bytecode' tests/ut/backends/runner/`.
 
-## Milestone 3 — performance
+## Milestone 4 — performance
 
 Blocked on milestone 1: profiling needs a real workload, and bench.sh
 timings on the dub corpus are the measure — microbenchmarks explain,
-project latency decides. Candidate techniques are ranked cheapest-first in
-bytecode-research.md's final section; profile before picking any of them.
+project latency decides. Timings follow overview.md's measurement
+contract (GC enabled, ratchet, corpus selection). The canonical backlog
+is the ranked cheapest-first technique list in ai/research/bytecode.md's
+final section; profile before picking any of them.
 
 ## Out of scope
 
