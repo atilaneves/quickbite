@@ -623,18 +623,67 @@ automem is the second driving package. Acceptance:
 ```
 
 Post-parse timing is skipped until the Interpreter agrees with the oracle on
-every automem test. Re-measure with the command above before starting; the open
-classes:
+every automem test; the disagreement skip makes the whole command exit 1.
+Re-measure with the command above before starting. Two gate facts that no
+interpreter work changes: `findPkgDir` sorts cached versions lexicographically,
+so the gate benches automem 0.6.9 even with 0.6.11 cached; and the
+`@ShouldFail` issue-19752 test in `ut.issues` reads a `Vector.range` that
+points into a smashed stack frame, so the oracle fails it while the
+Interpreter passes — the bench runs raw unittest blocks and ignores
+`@ShouldFail`, so agreement there needs a harness/policy decision, not an
+interpreter feature.
 
-```text
-Unsupported interpreter field access
-Unsupported interpreter assignment target
-Unsupported eval expression: cast_ / classReference / loweredAssignExp
-Memory leak in TestAllocator
-Place.index out of range for static array place
-data pointers must carry a native binding address
-plain wrong values
-```
+The open classes, each with its refusal site and the automem shape driving it:
+
+- **Unsupported interpreter field access** — `structFieldIndex` resolves a
+  field only when the receiver's static type is literally a struct and the
+  field is found by identity in `structFields`; automem reads fields through a
+  class emplaced in `RefCounted.Impl._rawMemory` (including `shared`),
+  `mixin Proxy`/`alias this` chains onto class references, and
+  interface-typed handles. Fix direction: the `Place.field` byte-offset
+  route, which needs neither a struct-typed receiver nor identity lookup.
+- **Unsupported interpreter assignment target** — `writeIndexLocation`
+  hand-enumerates its supported base shapes; `Vector!(immutable T)` writes
+  through `(*(cast(MutE[]*) &_elements))[i] = x`, a dereferenced-cast base it
+  lacks. Fix direction: resolve the base to a `Place` and compose
+  `Place.index` instead of rebuilding aggregates with `AggregateValue.with*`.
+- **cast_** — the op is dispatched; the refusals are `pointerCastValue`
+  (operand not carried as `Pointer`) and `delegateCastValue` (live
+  interpreted closure). Driven by `allocatorObject`/`CAllocatorImpl` in the
+  `theAllocator` tests and by `StackFront`/`mmapRegionList` internals.
+- **classReference** — genuinely absent from the walker: automem throws a
+  CTFE-constructed `static immutable boundsException = new BoundsException(…)`,
+  which reaches the walker as `ClassReferenceExp` (a `StructLiteralExp` whose
+  `sd` is a `ClassDeclaration`). Needs materializing a native class body from
+  the wrapped literal and rooting it in the class-identity table, as
+  `structLiteralExpression` does for structs.
+- **loweredAssignExp** — `runLoweredAssignExpression` handles only the
+  `arr.length = n` lowering and ignores the node's `lowering` field; the
+  vector-of-vectors block copy `_elements[] = elements[]` (postblit+dtor
+  element type) lowers to `_d_arrayassign*` and is refused. Fix direction:
+  run `assign.lowering` (already a `CallExp`) or route through the existing
+  slice-assign machinery.
+- **Memory leak in TestAllocator** — symptom, not site (below). Two facts for
+  the hunt: class disposal computes the freed slice via
+  `typeid(ob).initializer.length`, so it sits behind the field-access/TypeInfo
+  wall; and the Interpreter runs no module/static destructors at all, so any
+  teardown-time leak check sees every module-level block outstanding.
+- **Place.index out of range for static array place** — a slice or `&arr[0]`
+  over a static array keeps the `Tsarray`-typed place, so later indexing
+  bounds-checks against the declared element count; driven by
+  `TestAllocator._textBuffer`, a `char[1024]` field of a `static` (TLS)
+  struct. Fix direction: convert the place type to the pointer/slice-header
+  form at slice/address-of time so the correct arm runs.
+- **data pointers must carry a native binding address** — the automem member
+  is a deliberate null dereference: `RefCounted`'s default ctor leaves
+  `Impl*` null and the test expects a guest `AssertError` from the `in`
+  contract. An unbound/null pointer dereference must map to the guest error,
+  not the host-side exception.
+- **plain wrong values** — the `ut.unique` members overwrite a live `Unique`
+  (deref-assign, move-assign, assign-from-rvalue) and require the overwritten
+  object's destructor to run before the move; the Interpreter skips it.
+  Other members: `Vector.opBinary!"~"` building from `chain` of two slices,
+  and `std.conv.text` over the pointer-backed `Range` struct.
 
 Each class takes one subagent and §8's one-standalone-fixture-per-reason rule;
 they are correctness bugs, not crashes, so `SystemLinker` arbitrates every one.
