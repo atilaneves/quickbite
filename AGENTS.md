@@ -35,6 +35,10 @@ it would still be worth reading a year from now by someone who will
 never look at this commit, keep it; otherwise it belongs in the commit
 message.
 
+# Communication guidelines
+
+Use ASD-STE100 - Simplified Technical English in all communication.
+
 # Coding Guidelines
 
 ## Git worktrees
