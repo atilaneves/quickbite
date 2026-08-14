@@ -24,6 +24,18 @@ static assert(is(WithoutCtfe[2] == SystemLinker));
 static assert(is(WithoutCtfe[3] == LLVMJit));
 
 
+// The oracle leaves the matrix only for `Because.unassertable`, when its own
+// behaviour ends the process and no assertion could observe it.
+private alias WithoutFaultingEngines = Matrix!(
+    Omit!(SystemLinker, Because.unassertable, "faults on the read"),
+    Omit!(Bytecode, Because.unassertable, "faults on the read"),
+    Omit!(LLVMJit, Because.unassertable, "faults on the read"),
+);
+static assert(WithoutFaultingEngines.length == 2);
+static assert(is(WithoutFaultingEngines[0] == Ctfe));
+static assert(is(WithoutFaultingEngines[1] == Interpreter));
+
+
 // `Plus!(IR)` adds the in-development `IR` backend to the five
 // `LangBackends`.
 private alias WithIR = Matrix!(Plus!(IR));
@@ -40,9 +52,11 @@ static assert(is(WithIR[5] == IR));
 // confirming the compile error below, then removing it - do not
 // leave uncompilable code in the tree):
 //
-// - `Omit!(SystemLinker, Because.diverges)` fails: "the oracle can
-//   never be omitted from a Matrix; use a hand-written `AliasSeq!`
-//   characterization pin instead".
+// - `Omit!(SystemLinker, Because.diverges, "note")` fails: "the oracle
+//   can only be omitted from a Matrix as `Because.unassertable`, when
+//   its real behaviour ends the process".
+// - `Omit!(SystemLinker, Because.unassertable)` (no note) fails: "a
+//   non-empty `note` is required for this reason".
 // - `Omit!(Ctfe, Because.inexpressible)` (no note) fails: "a non-empty
 //   `note` is required for this reason".
 // - `Omit!(IR, Because.unconfirmed)` fails: "`IR` is not in

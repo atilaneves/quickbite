@@ -649,3 +649,40 @@ static foreach (backend; AliasSeq!(Ctfe)) {
         message.canFind(".answer.value` in ctfe").should == true;
     }
 }
+
+// Copying a whole struct out of a null pointer. Compiled D reads through the
+// pointer and faults, which ends the process, so the engines that reproduce
+// that read are omitted rather than pinned -- an assertion cannot observe a
+// fault. The engines left report the dereference as a failure of that one
+// unittest, each in its own words, and those words are what this pins.
+static foreach (backend; Matrix!(
+    Omit!(SystemLinker, Because.unassertable, "reads through the pointer and faults"),
+    Omit!(Bytecode, Because.unassertable, "reads through the pointer and faults"),
+    Omit!(LLVMJit, Because.unassertable, "reads through the pointer and faults"),
+)) {
+    @("wholeStructCopyThroughNullPointerIsReported." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        const message = collectExceptionMsg!Exception(
+            runBackendSourceFixtureTests!backend(q{
+                struct S {
+                    int x;
+                    int y;
+                }
+
+                unittest {
+                    S* pointer = null;
+                    S copy = *pointer;
+
+                    assert(copy.x == 0);
+                }
+            }));
+
+        static if (is(backend == Ctfe))
+            const expected = "dereference of null pointer `pointer`";
+        else
+            const expected = "data pointers must carry a native binding address";
+
+        message.canFind(expected).should == true;
+    }
+}

@@ -5559,6 +5559,138 @@ static foreach (backend; Matrix!(
     }
 }
 
+// A declaration initialised from a whole-struct dereference gets a copy of the
+// pointee, not a second name for it: D's assignment of a struct without a
+// postblit or copy constructor is a value copy, so a later write through the
+// pointee's own name is invisible in the copy.
+static foreach (backend; Matrix!()) {
+    @("pointer.wholeStructCopyThroughPointerIsIndependentOfPointee." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct S {
+                int x;
+                int y;
+            }
+
+            int fortyTwo() {
+                return 42;
+            }
+
+            unittest {
+                auto original = S(fortyTwo, 7);
+                S* pointer = &original;
+                S copy = *pointer;
+
+                original.x = 99;
+
+                assert(copy.x == 42);
+                assert(copy.y == 7);
+                assert(original.x == 99);
+            }
+        });
+    }
+}
+
+// The same value copy when the pointer is reached through a field rather than
+// named directly: the dereference denotes the pointee whatever expression
+// produced the pointer.
+static foreach (backend; Matrix!()) {
+    @("pointer.wholeStructCopyThroughFieldPointerIsIndependentOfPointee." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct S {
+                int x;
+                int y;
+            }
+
+            struct Holder {
+                S* pointer;
+            }
+
+            int fortyTwo() {
+                return 42;
+            }
+
+            unittest {
+                auto original = S(fortyTwo, 7);
+                auto holder = Holder(&original);
+                S copy = *holder.pointer;
+
+                original.y = 99;
+
+                assert(copy.x == 42);
+                assert(copy.y == 7);
+            }
+        });
+    }
+}
+
+// Indexing a pointer selects an element by the element type's own stride, and
+// the declaration copies that element: writing the array element afterwards
+// leaves the copy alone.
+static foreach (backend; Matrix!()) {
+    @("pointer.wholeStructCopyThroughPointerIndexIsIndependentOfElement." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct S {
+                int x;
+                int y;
+            }
+
+            int fortyTwo() {
+                return 42;
+            }
+
+            unittest {
+                auto items = [S(1, 2), S(fortyTwo, 7)];
+                S* pointer = items.ptr;
+                S copy = pointer[1];
+
+                items[1].x = 99;
+
+                assert(copy.x == 42);
+                assert(copy.y == 7);
+            }
+        });
+    }
+}
+
+// `items.ptr[1]` names the same element as `items[1]` without the array's
+// bounds check, and copies it the same way.
+static foreach (backend; Matrix!()) {
+    @("pointer.wholeStructCopyThroughArrayPointerPropertyIsIndependentOfElement." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct S {
+                int x;
+                int y;
+            }
+
+            int fortyTwo() {
+                return 42;
+            }
+
+            unittest {
+                auto items = [S(1, 2), S(fortyTwo, 7)];
+                S copy = items.ptr[1];
+
+                items[1].y = 99;
+
+                assert(copy.x == 42);
+                assert(copy.y == 7);
+            }
+        });
+    }
+}
+
 // Reinterpret-WRITE (not read) through a same-size pointer cast: writing raw
 // bits into a `float` local via a `uint*` must be visible to a subsequent
 // direct read of the local. SystemLinker is the oracle; LLVMJit and Ctfe are
