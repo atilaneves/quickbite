@@ -2861,8 +2861,14 @@ tupleExpression:
             return runTupleExpression(tuple);
 
 declarationExpression:
-        if (auto declaration = expression.isDeclarationExp)
-            return runDeclarationExpression(declaration);
+        // DMD's own semantic analysis types a `DeclarationExp` `void`:
+        // declaring a variable initialises its storage and yields nothing.
+        // Decision 7's no-result operation is therefore the only operation a
+        // declaration needs, in a discarding position or not.
+        if (auto declaration = expression.isDeclarationExp) {
+            executeDeclaration(declaration);
+            return ExpressionResult.void_;
+        }
 
 callExpression:
         if (auto call = expression.isCallExp)
@@ -10730,122 +10736,78 @@ unsupportedExpression:
         return false;
     }
 
-    // A struct-literal field typed `delegate` may carry a LIVE callable
-    // value (a fresh closure, or an existing delegate local) rather than
-    // `null`. `place_value.writeValue`'s Tdelegate arm only ever accepts
-    // `ExpressionResult.null_` -- by design, an interpreted delegate has no native ABI
-    // function address, so its callable ExpressionResult lives out-of-band in
-    // `nativeDelegateSlots`, keyed by the FIELD's own address, exactly as
-    // the direct field-assignment path (`s.f = &add;`, this module's
-    // `DotVarExp` write arm) and a delegate-typed local's own declaration
-    // (`setLocal`'s `TY.Tdelegate` branch) already register it. A struct
-    // literal has no field address of its own until
-    // `AggregateValue.reconstructStruct` allocates its native storage, so
-    // this substitutes `ExpressionResult.null_` for any live delegate field before
-    // that call -- the same bytes the ordinary default-null case already
-    // writes -- and registers the live value at the field's own address
-    // once that address exists. `writeStoredValue` carries the registration
-    // forward again when this rvalue is copied into durable storage.
+    // Construct a struct literal's value in the caller's own typed storage:
+    // every field expression is evaluated in declaration order, then written
+    // to that field's place within `destination`. Nothing is built in separate
+    // storage and copied in, which is what makes this the operation a
+    // declaration's initializer uses (`constructInto`) as well as the one
+    // behind the rvalue entry point below. The destination must read zero
+    // wherever the literal's own fields do not reach -- its padding, and the
+    // bytes of a union sibling nothing writes -- because that is what the
+    // freshly allocated storage below holds, and D's own struct hashing and
+    // by-value ABI copies observe those bytes.
     //
-    // A field typed pointer-to-function (`int function(int)`) is the same
-    // story with `nativeFunctionPointerSlots` standing in for
-    // `nativeDelegateSlots`: `place_value.writeValue`'s pointer arm only
-    // ever accepts a `Pointer` ExpressionResult or `null`, never the
-    // distinct `FunctionPointer` variant, so a live function-pointer field
-    // gets the same null-then-register treatment here.
+    // A field typed `delegate`, a class-typed field holding a symbolic
+    // `TypeInfo`, and a field typed pointer-to-function can each carry a value
+    // with no native ABI address of its own: an interpreted closure, an
+    // interpreted type's `TypeInfo`, an interpreted function.
+    // `place_value.writeValue` refuses all three by design -- their identity
+    // lives out of band, keyed by the field's own address -- so every field
+    // goes through `writeStoredValue`, which writes the native bytes and
+    // registers that identity together, exactly as the direct field-assignment
+    // path (`s.f = &add;`, this module's `DotVarExp` write arm) already does.
+    private void constructStructLiteral(
+        imported!"dmd.expression".StructLiteralExp literal,
+        imported!"quickbite.backends.interpreter.place".Place destination,
+    ) {
+        import quickbite.backends.interpreter.layout: structFields;
+        import quickbite.backends.interpreter.scratch_array: releaseScratchArray;
+
+        auto structType = destination.type.toBasetype.isTypeStruct;
+        if (structType is null)
+            throw new Exception(
+                "Interpreter struct-literal construction needs a struct place.",
+            );
+
+        // `structFields` forces DMD's own layout, which every field place
+        // below composes from (see this package's layout-authority contract).
+        auto fieldDeclarations = structFields(structType);
+
+        auto fields = new ExpressionResult[](fieldDeclarations.length);
+        scope(exit) releaseScratchArray(fields);
+        foreach (index, field; fieldDeclarations) {
+            const hasElement = literal.elements !is null
+                && index < (*literal.elements).length;
+            auto element = hasElement ? (*literal.elements)[index] : null;
+            // A fresh closure element (`() => 42`) is a bare `FuncExp`, not a
+            // `DelegateExp`; construct the callable before storing it.
+            auto elementLiteral = element is null ? null : element.isFuncExp;
+            fields[index] = element is null
+                ? structLiteralDefaultFieldValue(
+                    literal,
+                    index,
+                    fields[0 .. index],
+                )
+                : structLiteralFieldValue(literal, index, elementLiteral is null
+                    ? runExpression(element)
+                    : runFunctionLiteralDeclaration(elementLiteral));
+        }
+
+        foreach (index, field; fieldDeclarations)
+            writeStoredValue(destination.field(field), fields[index]);
+
+        bindNestedContextFrames(literal.sd, destination);
+    }
+
     private ExpressionResult structLiteralValue(
         imported!"dmd.expression".StructLiteralExp literal,
     ) {
-        import dmd.astenums: TY;
-        import quickbite.backends.interpreter.place: Place;
-        import quickbite.backends.interpreter.scratch_array: releaseScratchArray;
+        import quickbite.backends.interpreter.native_aggregate: NativeAggregate;
+        import quickbite.backends.interpreter.place: placeAt;
 
-        const fieldCount = literal.sd is null ? 0 : literal.sd.fields.length;
-        auto fields = new ExpressionResult[](fieldCount);
-        scope(exit) releaseScratchArray(fields);
-        if (literal.sd !is null)
-            foreach (index; 0 .. literal.sd.fields.length) {
-                const hasElement = literal.elements !is null
-                    && index < (*literal.elements).length;
-                auto element = hasElement ? (*literal.elements)[index] : null;
-                // A fresh closure element (`() => 42`) is a bare `FuncExp`,
-                // not a `DelegateExp`; construct the callable before
-                // registering it in the field's metadata slot.
-                auto elementLiteral = element is null ? null : element.isFuncExp;
-                auto value = element is null
-                    ? structLiteralDefaultFieldValue(
-                        literal,
-                        index,
-                        fields[0 .. index],
-                    )
-                    : structLiteralFieldValue(literal, index, elementLiteral is null
-                        ? runExpression(element)
-                        : runFunctionLiteralDeclaration(elementLiteral));
-                fields[index] = value;
-            }
-
-        ExpressionResult[] nativeFields;
-        scope(exit) releaseScratchArray(nativeFields);
-        foreach (index, value; fields) {
-            auto field = structLiteralField(literal, index);
-            if (field is null)
-                continue;
-            auto pointerType = field.type.toBasetype.isTypePointer;
-            if (
-                field.type.toBasetype.ty == TY.Tdelegate &&
-                value != ExpressionResult.null_ ||
-                field.type.toBasetype.isTypeClass !is null &&
-                value.isTypeName ||
-                pointerType !is null &&
-                pointerType.nextOf.toBasetype.isTypeFunction !is null &&
-                value.isFunctionPointer
-            ) {
-                if (nativeFields is null) {
-                    nativeFields = new ExpressionResult[](fields.length);
-                    nativeFields[] = fields[];
-                }
-                nativeFields[index] = ExpressionResult.null_;
-            }
-        }
-
-        auto result = AggregateValue.reconstructStruct(
-            literal.type,
-            nativeFields is null ? fields : nativeFields,
-        );
-
-        auto native = AggregateValue.native(result);
-        foreach (index, value; fields) {
-            auto field = structLiteralField(literal, index);
-            if (field is null)
-                continue;
-            if (
-                field.type.toBasetype.ty == TY.Tdelegate &&
-                value != ExpressionResult.null_
-            )
-                nativeDelegateSlots[
-                    Place(native.address, native.type).field(field).address
-                ] = value;
-            if (
-                field.type.toBasetype.isTypeClass !is null &&
-                value.isTypeName
-            )
-                nativeTypeInfoSlots[
-                    Place(native.address, native.type).field(field).address
-                ] = value;
-            auto pointerType = field.type.toBasetype.isTypePointer;
-            if (
-                pointerType !is null &&
-                pointerType.nextOf.toBasetype.isTypeFunction !is null &&
-                value.isFunctionPointer
-            )
-                nativeFunctionPointerSlots[
-                    Place(native.address, native.type).field(field).address
-                ] = value;
-        }
-
-        bindNestedContextFrames(literal.sd, result);
-
-        return result;
+        auto storage = NativeAggregate.allocate(literal.type);
+        constructStructLiteral(literal, placeAt(storage.storage, literal.type));
+        return ExpressionResult.nativeAggregateValue(storage);
     }
 
     // A struct declared inside a function gets a hidden context field
@@ -10856,21 +10818,13 @@ unsupportedExpression:
     // `_enclosingFrames`' own order.
     private void bindNestedContextFrames(
         imported!"dmd.dstruct".StructDeclaration declaration,
-        in ExpressionResult value,
+        imported!"quickbite.backends.interpreter.place".Place value,
     ) {
-        import quickbite.backends.interpreter.place: Place;
-
         if (declaration is null || declaration.vthis is null)
             return;
 
-        if (!value.isNativeAggregate)
-            return;
-
-        auto native = AggregateValue.native(value);
-        auto address = Place(native.address, native.type)
-            .field(declaration.vthis)
-            .address;
-        nestedContextFrames[address] = [_activationFrame] ~ _enclosingFrames;
+        nestedContextFrames[value.field(declaration.vthis).address] =
+            [_activationFrame] ~ _enclosingFrames;
     }
 
     // The captured-variable addresses a method of a function-local struct
@@ -12219,17 +12173,23 @@ unsupportedExpression:
         return reconstructStoredArray(type, elements);
     }
 
-    private ExpressionResult runDeclarationExpression(
+    // Decision 7's no-result operation for a declaration: the initializer
+    // constructs the variable's own storage and there is no value left over
+    // to hand back (`runExpression`'s `declarationExpression` arm).
+    private void executeDeclaration(
         imported!"dmd.expression".DeclarationExp declaration,
     ) {
         auto variable = declaration.declaration.isVarDeclaration;
         if (variable is null)
-            return ExpressionResult(false);
+            return;
 
         if (isManifestVariable(variable)) {
+            // A manifest constant has no storage to initialise. Its
+            // initializer is already folded by semantic analysis, so the walk
+            // exists only for a side effect DMD left in it.
             if (auto initializer = variable._init.isExpInitializer)
-                return runExpression(initializer.exp);
-            return defaultValue(variable);
+                executeForEffect(initializer.exp);
+            return;
         }
 
         if (_activationFrame.hasReferenceSlot(variable))
@@ -12237,13 +12197,12 @@ unsupportedExpression:
 
         if (variable._init !is null && variable._init.isVoidInitializer !is null) {
             markUninitializedBinding(variable);
-            return ExpressionResult.void_;
+            return;
         }
 
         if (variable._init is null || variable._init.isExpInitializer is null) {
-            const value = defaultLocalValue(variable);
-            setLocal(variable, value);
-            return value;
+            setLocal(variable, defaultLocalValue(variable));
+            return;
         }
 
         auto initializer = variable._init.isExpInitializer.exp;
@@ -12263,16 +12222,14 @@ unsupportedExpression:
                     blit.e2.isIntegerExp !is null
                 )
             ) {
-                const value = defaultValue(variable);
-                setLocal(variable, value);
-                return value;
+                setLocal(variable, defaultValue(variable));
+                return;
             }
 
             // DMD default-initialises struct locals with `variable = 0`
             if (isStructType(variable.type) && blit.e2.isIntegerExp !is null) {
-                const value = defaultValue(variable);
-                setLocal(variable, value);
-                return value;
+                setLocal(variable, defaultValue(variable));
+                return;
             }
 
             initializer = blit.e2;
@@ -12280,7 +12237,7 @@ unsupportedExpression:
 
         if (initializer.isVoidInitExp !is null) {
             markUninitializedBinding(variable);
-            return ExpressionResult.void_;
+            return;
         }
 
         // `auto copy = original;` for a struct with a postblit lowers to
@@ -12297,11 +12254,9 @@ unsupportedExpression:
                 // body-less native postblit's FFI bridge returns the mutated
                 // receiver, which is the value to keep.
                 const result = runExpression(initializer);
-                if (AggregateValue.isStruct(result)) {
+                if (AggregateValue.isStruct(result))
                     setLocal(variable, result);
-                    return result;
-                }
-                return readBindingValue(variable);
+                return;
             }
 
         // `T[N] dest = src` for an element type with a postblit lowers to a
@@ -12363,7 +12318,7 @@ unsupportedExpression:
                         runMemberFunction(postblit, null, elementReceiver, [], []);
                     }
 
-                    return readBindingValue(variable);
+                    return;
                 }
             }
 
@@ -12375,7 +12330,7 @@ unsupportedExpression:
                 throw new Exception("Reference initializer has no native place.");
             _activationFrame.setReferenceSlot(variable, pointer.pointerAddress);
             clearUninitializedBindingAddress(pointer.pointerAddress);
-            return readBindingValue(variable);
+            return;
         }
 
         import quickbite.frontend.dmd.types: isDynamicArrayType;
@@ -12383,16 +12338,22 @@ unsupportedExpression:
         if (initializer.isNullExp !is null && isDynamicArrayType(variable.type)) {
             import quickbite.backends.interpreter.aggregate_value: AggregateValue;
 
-            auto value = reconstructStoredArray(variable.type, []);
-            setLocal(variable, value);
-            return value;
+            setLocal(variable, reconstructStoredArray(variable.type, []));
+            return;
         }
 
         if (auto slice = initializer.isSliceExp) {
             size_t lower;
-            auto value = runSliceExpression(slice, lower);
-            setLocal(variable, value);
-            return value;
+            setLocal(variable, runSliceExpression(slice, lower));
+            return;
+        }
+
+        // The initializer constructs the variable's own storage, so a family
+        // with a destination arm writes its bytes there directly instead of
+        // building them elsewhere and copying them in.
+        if (constructInto(initializer, variable)) {
+            clearUninitializedBindingAddress(bindingPlace(variable).address);
+            return;
         }
 
         auto literal = initializer.isFuncExp;
@@ -12406,7 +12367,130 @@ unsupportedExpression:
             value = rootedNativeClassValue(initializer, value);
         setLocal(variable, value);
         clearUninitializedBindingAddress(bindingPlace(variable).address);
-        return value;
+    }
+
+    // Decision 7's construction operation: `rvalue` writes its value into
+    // `destination`'s own storage, so no other storage is allocated to hold it
+    // and nothing is copied afterwards. Answers `false` for an expression
+    // family that has no destination arm yet, which leaves the caller's value
+    // path in charge of it (`value.md` item 10's queue).
+    //
+    // Only a caller whose destination is not yet live may ask for this. D
+    // evaluates an assignment's right-hand side before the assignment itself,
+    // so a live lvalue must not receive a partially constructed value: an
+    // alias could observe it (decision 7). A declaration initialises the
+    // variable's own fresh storage, which is exactly the case that qualifies,
+    // and DMD marks it as such with a `ConstructExp`.
+    private bool constructInto(
+        imported!"dmd.expression".Expression rvalue,
+        VarDeclaration destination,
+    ) {
+        if (!hasBindingPlace(destination))
+            return false;
+
+        auto place = bindingPlace(destination);
+
+        if (auto literal = rvalue.isStructLiteralExp) {
+            // The literal's own fields must BE the destination's fields: a
+            // conversion between two struct types is a value operation
+            // (`storageValue`), not a construction, and composing one type's
+            // field offsets onto the other's storage would write the wrong
+            // bytes.
+            auto structType = place.type.toBasetype.isTypeStruct;
+            if (
+                literal.sd !is null &&
+                structType !is null &&
+                structType.sym is literal.sd
+            ) {
+                // This activation may have used this storage for an earlier
+                // value of the same binding, whose bytes are still there;
+                // `constructStructLiteral` requires the zeroes that freshly
+                // allocated storage would have given it.
+                clearPlaceValue(place);
+                constructStructLiteral(literal, place);
+                return true;
+            }
+        }
+
+        // A copy of an aggregate lvalue: the source's own bytes are the value,
+        // so copying them from its place is the whole construction. The value
+        // path instead materialises a second copy of the source, in storage
+        // whose only purpose is to be copied out of again. A struct with a
+        // postblit or a copy constructor never reaches here: DMD lowers its
+        // copy into an explicit call, which the arms above this one handle.
+        if (isAggregateCopySource(rvalue, place.type)) {
+            copyPlaceValue(projectionPlace(rvalue), place);
+            return true;
+        }
+
+        return false;
+    }
+
+    // An lvalue whose complete value is the bytes at its own place, of the
+    // destination's exact type. A class reference is excluded: its value is an
+    // object identity whose owning allocation the value path retains
+    // (`rootedNativeClassValue`). A slice, associative array, or pointer is
+    // excluded for the same reason -- the bytes at the place are a handle into
+    // storage the aggregate result retains as well.
+    //
+    // `hasDirectWriteProjectionPlace`, not the broader `hasProjectionPlace`,
+    // for the same reason its own callers use it: a source reached through a
+    // pointer dereference keeps the value path, whose dereference reports a
+    // pointer carrying no live address (`dereferencePointerValue`) instead of
+    // composing that address and reading it. Reading it would fault, which
+    // ends the process rather than failing one unittest, and no assertion can
+    // observe a fault -- so the reporting engines are the ones a fixture can
+    // pin (`lang/diagnostics.d`'s null-dereference block). The shapes this
+    // excludes fire nowhere in the test corpus or the dub gate, so the value
+    // path keeps them at no measurable cost.
+    private bool isAggregateCopySource(
+        imported!"dmd.expression".Expression rvalue,
+        imported!"dmd.mtype".Type destinationType,
+    ) {
+        if (rvalue.type is null || destinationType is null)
+            return false;
+
+        auto type = destinationType.toBasetype;
+        if (type.isTypeStruct is null && type.isTypeSArray is null)
+            return false;
+
+        return type.equals(rvalue.type.toBasetype) &&
+            hasDirectWriteProjectionPlace(rvalue);
+    }
+
+    // Leave a typed place holding no value at all: zero bytes and no
+    // out-of-band callable or symbolic identity, the same state freshly
+    // allocated storage arrives in.
+    private void clearPlaceValue(
+        imported!"quickbite.backends.interpreter.place".Place place,
+    ) {
+        import quickbite.backends.interpreter.layout: typeByteSize;
+
+        const byteLength = typeByteSize(place.type);
+        clearStoredMetadataRange(place.address, byteLength);
+        clearBytes(place.address, byteLength);
+    }
+
+    // Copy one typed place's complete value into another: the native bytes
+    // plus the out-of-band identity of any callable or symbolic slot inside
+    // them, which is part of the value in that byte range and stays registered
+    // at the source as well (`copyStoredMetadata`'s own value-copy rule).
+    private void copyPlaceValue(
+        imported!"quickbite.backends.interpreter.place".Place source,
+        imported!"quickbite.backends.interpreter.place".Place destination,
+    ) {
+        import quickbite.backends.interpreter.layout: typeByteSize;
+
+        copyStoredMetadata(
+            destination.type,
+            cast(void*) source.address,
+            destination.address,
+        );
+        copyBytes(
+            destination.address,
+            cast(void*) source.address,
+            typeByteSize(destination.type),
+        );
     }
 
 
@@ -13032,6 +13116,15 @@ private string structLiteralName(
     imported!"dmd.expression".StructLiteralExp literal,
 ) @safe {
     return literal.sd is null ? "" : literal.sd.ident.toString.idup;
+}
+
+
+// Clearing raw bytes is not `@safe`; this is the `@trusted` boundary.
+// `byteLength` is always `layout.typeByteSize` of the type at `address`, so
+// the span stays inside the storage that address was composed from -- the
+// same precondition `place.d`'s own address arithmetic states.
+private void clearBytes(void* address, in size_t byteLength) pure nothrow @trusted {
+    (cast(ubyte*) address)[0 .. byteLength] = 0;
 }
 
 

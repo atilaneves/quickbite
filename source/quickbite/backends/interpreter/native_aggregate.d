@@ -22,6 +22,25 @@ public struct NativeAggregate {
     private NativeBlock _storage;
     private NativeBlock _retained;
 
+    // Fresh storage for a whole value of `type`, for a construction that
+    // writes the value into it. The bytes read zero until it does -- not
+    // `type`'s default value -- so only that construction may observe them.
+    // The scan policy is chosen once here, from the whole type, per
+    // `NativeBlock`'s own allocation contract.
+    public static NativeAggregate allocate(Type type) @safe {
+        import quickbite.backends.interpreter.layout: typeByteSize, typeHasPointers;
+
+        return NativeAggregate(
+            type,
+            NativeBlock.allocate(
+                typeByteSize(type),
+                typeHasPointers(type)
+                    ? NativeBlock.Scan.conservative
+                    : NativeBlock.Scan.no,
+            ),
+        );
+    }
+
     public this(Type type, NativeBlock storage) pure nothrow @safe {
         _type = type;
         _storage = storage;

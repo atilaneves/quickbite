@@ -582,6 +582,10 @@ checked fact; do not relearn them.
 - `ExpressionResult.NativeAggregate` owns or borrows DMD-layout bytes for a
   transient aggregate result. Once stored, the destination place is
   authoritative.
+- Constructing a value into storage an activation has already used clears that
+  whole byte span first. Padding and the bytes of an unwritten union sibling
+  are part of the value: D's own struct hashing and by-value ABI copies read
+  them, and freshly allocated storage would have read zero there.
 - `ExpressionResult.Pointer` contains only a host address. Pointer arithmetic
   and subtraction, equality, and relational comparison operate on that
   address; no
@@ -750,10 +754,11 @@ timings follow `overview.md`'s measurement contract.
 
 Decision 7's no-result operation exists and every discarding position uses
 it; place evaluation and assignment already compose over the
-`Place`/`place_value.d` seam. What remains is the construction operation and
-decision 19's addressable temporaries. Measure fixed frame offsets against
-segmented scratch on the gate corpus (`overview.md`'s measurement contract)
-before selecting either; this slice owns the storage choice, the
+`Place`/`place_value.d` seam, and construction exists for a destination that
+already exists — a declaration initialises its binding's own storage. What
+remains is decision 19's addressable temporaries. Measure fixed frame offsets
+against segmented scratch on the gate corpus (`overview.md`'s measurement
+contract) before selecting either; this slice owns the storage choice, the
 construction-state encoding, and the temporary-lifetime rules.
 
 A no-result arm is worth writing only where the discarded value is what a
@@ -763,9 +768,12 @@ construction, not with more arms.
 
 ### Item 9 — Assignment through construction
 
-Convert assignment's right-hand side to construct into destination storage:
-today `x = f()` round-trips through the carrier before the place write.
-D-defined assign/move/postblit/destruction semantics per decision 7.
+A live lvalue's assignment still round-trips its right-hand side through the
+carrier before the place write (`x = f()`). The live target may not itself be
+that right-hand side's destination: D evaluates the right-hand side first, so
+an alias could observe a partially constructed value. This therefore waits on
+item 8's addressable temporaries, then applies D-defined
+assign/move/postblit/destruction semantics per decision 7.
 
 ### Item 10 — Carrier deletion queue
 
@@ -793,6 +801,15 @@ not dereferenced: this is compiled D's contract and the Interpreter's
 native-pointer path matches it. The allocated-block diagnostic is a CTFE-only
 characterization, so the Interpreter belongs in the compiled-behaviour matrix;
 do not restore a boxed-storage bounds diagnostic for this operation.
+
+A whole-aggregate copy whose source is a pointer dereference stays on the value
+path, so a null pointer is reported as one failed unittest rather than faulting.
+Composing that address and reading it would fault like compiled D, but a fault
+ends the whole run and no assertion can observe it, which is what makes the
+reporting engines the pinnable ones (`lang/diagnostics.d`'s null-dereference
+block; the faulting ones are `Because.unassertable`). The shapes this keeps off
+the construction path appear nowhere in the corpus, so it costs nothing
+measurable — do not trade the report for the fault.
 
 Dynamic-array truthiness is the native slice header's pointer, not its length:
 a zero-length interior slice with a non-null pointer is true, while a default

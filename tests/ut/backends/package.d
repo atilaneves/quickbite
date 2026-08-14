@@ -39,29 +39,36 @@ public enum Because {
     diverges,      // pinned in a sibling hand-listed characterization block (note required)
     refusal,       // documented refusal (ai/plans/interpreter.md §8; note = verbatim red)
     unconfirmed,   // never tried: the promotion backlog (note optional)
+    unassertable,  // engine's real behaviour ends the process, e.g. a hardware
+                   // fault, so no in-process assertion can observe it (note
+                   // required). The only reason the oracle may be omitted.
 }
 
 /++
     Removes `B` from a fixture's `Matrix!(...)`, with a reason. `B` must
     be one of `LangBackends` (otherwise it is a typo, since it can never
-    have been in the matrix to begin with) and must not be
-    `SystemLinker` — the oracle can never be omitted from a `Matrix`;
-    hand-written `AliasSeq!` characterization pins are unaffected. A
-    `Because.inexpressible`, `Because.refusal`, or `Because.diverges`
-    omission requires a non-empty `note`.
+    have been in the matrix to begin with). The oracle may be omitted
+    only as `Because.unassertable`: no assertion can observe a behaviour
+    that ends the process, so keeping `SystemLinker` in the block would
+    take the suite down with it. Every other reason for omitting the
+    oracle stays refused — that is how a divergence would be hidden
+    rather than pinned. A `Because.inexpressible`, `Because.refusal`,
+    `Because.diverges`, or `Because.unassertable` omission requires a
+    non-empty `note`.
 +/
 public struct Omit(B, Because why, string note = "") {
     static assert(staticIndexOf!(B, LangBackends) != -1,
         "Omit!(" ~ B.stringof ~ ", ...): `" ~ B.stringof ~ "` is not in " ~
         "`LangBackends` - typo?");
-    static assert(!is(B == SystemLinker),
-        "Omit!(SystemLinker, ...): the oracle can never be omitted from a " ~
-        "Matrix; use a hand-written `AliasSeq!` characterization pin " ~
-        "instead");
+    static assert(!is(B == SystemLinker) || why == Because.unassertable,
+        "Omit!(SystemLinker, ...): the oracle can only be omitted from a " ~
+        "Matrix as `Because.unassertable`, when its real behaviour ends " ~
+        "the process");
     static assert(note.length > 0 || (why != Because.inexpressible
-            && why != Because.refusal && why != Because.diverges),
-        "Omit!(" ~ B.stringof ~ ", Because.inexpressible|refusal|diverges, " ~
-        "...): a non-empty `note` is required for this reason");
+            && why != Because.refusal && why != Because.diverges
+            && why != Because.unassertable),
+        "Omit!(" ~ B.stringof ~ ", Because.inexpressible|refusal|diverges|" ~
+        "unassertable, ...): a non-empty `note` is required for this reason");
 
     public alias Backend = B;
     public enum reason = why;

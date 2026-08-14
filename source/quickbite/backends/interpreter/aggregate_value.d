@@ -32,7 +32,7 @@ public struct AggregateValue {
                 ".",
             ));
 
-        auto aggregate = allocateAggregate(type);
+        auto aggregate = NativeAggregate.allocate(type);
         auto destination = placeAt(aggregate.storage, type);
         foreach (index, field; structFields(structType))
             writeValue(destination.field(field), fields[index]);
@@ -51,7 +51,7 @@ public struct AggregateValue {
 
         auto base = baseTypeOf(type);
         if (base.isTypeSArray !is null) {
-            auto aggregate = allocateAggregate(type);
+            auto aggregate = NativeAggregate.allocate(type);
             auto destination = Place(aggregate.address, type);
             foreach (index, element; elements)
                 writeValue(destination.index(index), element);
@@ -276,7 +276,7 @@ public struct AggregateValue {
         import quickbite.backends.interpreter.native_aggregate: NativeAggregate;
         import quickbite.backends.interpreter.expression_result: ExpressionResult;
 
-        auto aggregate = allocateAggregate(type);
+        auto aggregate = NativeAggregate.allocate(type);
         aggregate.storage.bytes[] = bytesAt(address, aggregate.storage.byteLength)[];
         return ExpressionResult.nativeAggregateValue(retained.address is null
             ? aggregate
@@ -293,7 +293,7 @@ public struct AggregateValue {
     ) @safe {
         import quickbite.backends.interpreter.expression_result: ExpressionResult;
 
-        auto aggregate = allocateAggregate(type);
+        auto aggregate = NativeAggregate.allocate(type);
         if (bytes.length < aggregate.storage.byteLength)
             throw new Exception("AggregateValue.copyFromBytes source is too short.");
         aggregate.storage.bytes[] = bytes[0 .. aggregate.storage.byteLength];
@@ -622,20 +622,6 @@ public struct AggregateValue {
             aggregate.storage.bytes[0 .. NativeArray.sliceHeaderByteLength],
         ).ptr;
     }
-}
-
-
-private NativeAggregate allocateAggregate(imported!"dmd.mtype".Type type) @safe {
-    import quickbite.backends.interpreter.layout: typeByteSize, typeHasPointers;
-    import quickbite.backends.interpreter.native_block: NativeBlock;
-
-    return NativeAggregate(
-        type,
-        NativeBlock.allocate(
-            typeByteSize(type),
-            typeHasPointers(type) ? NativeBlock.Scan.conservative : NativeBlock.Scan.no,
-        ),
-    );
 }
 
 
