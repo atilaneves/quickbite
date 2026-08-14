@@ -775,18 +775,38 @@ an alias could observe a partially constructed value. This therefore waits on
 item 8's addressable temporaries, then applies D-defined
 assign/move/postblit/destruction semantics per decision 7.
 
-### Item 10 — Carrier deletion queue
+### Item 10 — Carrier deletion
 
-Convert the remaining expression families onto the destination-passing
+The carrier's footprint is two unequal halves that retire differently;
+re-measure with `grep -c ExpressionResult
+source/quickbite/backends/interpreter/*.d`.
+
+Aggregate positions convert family by family onto the construction and place
 operations, ordered by what the gate corpus actually hits: calls with
-caller-provided
-destinations, indexing, casts, builtins, aggregate reconstruction
-(`aggregate_value.d`), the native-call request/result carrier fields, and
-retirement of the `std.conv.text` interceptor. Slice invariants per
-decision 17. The queue ends when `expression_result.d` is deleted. Includes
-an inventory of real corpus crossings that need an interpreted callable or
-`TypeInfo` to escape to native code — decision 15's refusal stance holds,
-and no trampoline or proxy is designed, until a real crossing exists.
+caller-provided destinations, indexing, casts, builtins, aggregate
+reconstruction (`aggregate_value.d`), the native-call request/result carrier
+fields, and retirement of the `std.conv.text` interceptor. Slice invariants
+per decision 17.
+
+Scalar positions cannot retire family by family: most of the carrier's arms
+are scalar, and every scalar flows through the walk's one universal return.
+They retire together, in one flip of the recursive walk onto decision 11's
+statically typed host locals — type-specific evaluation helpers selected from
+the statically typed AST. Building those helpers is its own work item, not a
+by-product of any family conversion.
+
+The flip and the family conversions are otherwise independent, but both
+bottom out in one shared bottleneck: the call/return channel
+(`Walker._returnValue`), which is carrier-typed — a scalar helper recursing
+into an interpreted call reads it, and every aggregate-returning call writes
+it. Converting that channel to decision 7's caller-provided destinations is
+the first item-10 step, and it needs item 8's temporaries, because a call in
+an rvalue position (an argument, an operand) has no destination without one.
+
+Deleting `expression_result.d` ends the item. Includes an inventory of real
+corpus crossings that need an interpreted callable or `TypeInfo` to escape to
+native code — decision 15's refusal stance holds, and no trampoline or proxy
+is designed, until a real crossing exists.
 
 ### Item 4 — Workingness track
 
