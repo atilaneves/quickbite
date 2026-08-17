@@ -150,16 +150,16 @@ private bool isExemptInterception(
     if (isStringForeachApplyName(prettyName))
         return true;
 
-    // `core.internal.util.array.enforceRawArraysConformableNogc` has D
-    // source (a real length/no-overlap check); the raw function-pointer
-    // branch of `Walker.runCallExpression` fakes it by always returning
-    // `ExpressionResult(false)` -- worse than the other shims here, since it does not
-    // even reproduce the real function's contract (the real function
-    // returns `void`, not `bool`). Discovered while adding this guard, not
-    // previously in §9.10's inventory. Retire by executing the real body
-    // once static-array element-wise operations are interpretable
-    // end-to-end.
-    if (prettyName == "core.internal.util.array.enforceRawArraysConformableNogc")
+    // The normal and `@nogc` raw-array conformability checks have D source
+    // (a real length/no-overlap check). The raw function-pointer branch of
+    // `Walker.runCallExpression` fakes both by returning `ExpressionResult(false)`.
+    // This does not reproduce the `void` result or contract. Retire by
+    // executing the real bodies once static-array element-wise operations are
+    // interpretable end-to-end.
+    if (
+        prettyName == "core.internal.util.array.enforceRawArraysConformable" ||
+        prettyName == "core.internal.util.array.enforceRawArraysConformableNogc"
+    )
         return true;
 
     // `core.atomic.atomicValueIsProperlyAligned`/`atomicPtrIsProperlyAligned`

@@ -479,10 +479,10 @@ _aApplydc1/_aApplyRwd1                    retire when string/array native
                                            layout covers UTF-mismatch
                                            foreach.
 core.internal.util.array.                 the shim fakes a `bool` return for
-enforceRawArraysConformableNogc           a `void`-returning function.
-                                           Retire by executing the real body
-                                           once static-array element-wise
-                                           ops are interpretable end-to-end.
+enforceRawArraysConformable[No]gc         a `void`-returning function.
+                                           Retire by executing the real bodies
+                                           once static-array element-wise ops
+                                           are interpretable end-to-end.
 core.atomic.atomicValueIsProperlyAligned  plain D bit arithmetic, no asm.
 !(...) / atomicPtrIsProperlyAligned!(...) Retire once interpreter values
                                            carry real addresses everywhere.

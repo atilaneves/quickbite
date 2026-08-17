@@ -4385,6 +4385,34 @@ static foreach (backend; AliasSeq!(Bytecode)) {
     }
 }
 
+// DMD represents a whole-slice assignment of elements with postblit and
+// destructor semantics as a `LoweredAssignExp`. Its `lowering` expression is
+// the language-defined operation, not an optional optimization.
+static foreach (backend; Matrix!()) {
+    @("dynamicArray.nonTrivialWholeSliceAssignmentRunsLowering." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct Element {
+                int value;
+
+                this(this) {}
+                ~this() {}
+            }
+
+            unittest {
+                Element[] source = [Element(3), Element(5)];
+                Element[] target = new Element[source.length];
+                target[] = source[];
+
+                assert(target[0].value == 3);
+                assert(target[1].value == 5);
+            }
+        });
+    }
+}
+
 // A body-less declaration for a process-resident extern(D) callable uses the
 // ABI of the compiler that built the host. Its trailing `ref` parameter makes
 // the two compiler ABIs observably different even though multiplication is

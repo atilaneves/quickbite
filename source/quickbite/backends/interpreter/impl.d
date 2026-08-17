@@ -5666,17 +5666,13 @@ unsupportedExpression:
 
         if (auto function_ = functionPointerExpressionFunction(call.e1)) {
             if (isZeroFormalCall(function_) && arguments.length == 5) {
-                if (
-                    function_.ident !is null &&
-                    function_.ident.toString ==
-                        "enforceRawArraysConformableNogc"
-                ) {
+                if (isRawArraysConformabilityCheck(function_)) {
                     import quickbite.backends.interpreter.interception_guard:
                         enforceInterceptionPolicy;
 
                     enforceInterceptionPolicy(
                         function_,
-                        "enforceRawArraysConformableNogc",
+                        "enforceRawArraysConformable",
                     );
                     return ExpressionResult(false);
                 }
@@ -5739,6 +5735,14 @@ unsupportedExpression:
         }
 
         throw new Exception("Unsupported eval call.");
+    }
+
+    private static bool isRawArraysConformabilityCheck(
+        imported!"dmd.func".FuncDeclaration function_,
+    ) {
+        return function_.ident !is null &&
+            (function_.ident.toString == "enforceRawArraysConformable" ||
+                function_.ident.toString == "enforceRawArraysConformableNogc");
     }
 
     // A constructor used directly as a member receiver owns a full-expression
@@ -10086,8 +10090,12 @@ unsupportedExpression:
         import std.conv: text;
 
         auto arrayLength = assign.e1.isArrayLengthExp;
-        if (arrayLength is null)
+        if (arrayLength is null) {
+            if (assign.lowering !is null)
+                return runExpression(assign.lowering);
+
             throw new Exception(text("Unsupported eval expression: ", assign.op));
+        }
 
         const lengthValue = runExpression(assign.e2);
 
