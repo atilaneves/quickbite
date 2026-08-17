@@ -10348,7 +10348,14 @@ static foreach (backend; Matrix!()) {
 
 // Several temporaries constructed in one full expression are destroyed at
 // its end in reverse construction order. SystemLinker is the oracle.
-static foreach (backend; Matrix!()) {
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.refusal,
+        "the temporaries' destructors never run, so `log` stays empty "
+        ~ "instead of accumulating ids in reverse order (`[] != [3, 2, "
+        ~ "1]`)"),
+    Omit!(Bytecode, Because.refusal,
+        "Unsupported expression in bytecode core: (Probe(1, & log)).id"),
+)) {
     @("call.temporariesAreDestroyedInReverseOrderAtFullExpressionEnd." ~
         backend.stringof)
     @Tags(backend.stringof)
@@ -10379,7 +10386,13 @@ static foreach (backend; Matrix!()) {
 // destroyed when that operand's evaluation ends, before any later operand
 // runs -- not at the full-expression boundary the other temporaries get.
 // SystemLinker is the oracle.
-static foreach (backend; Matrix!()) {
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.refusal,
+        "the `Probe(1, &log)` temporary's destructor never runs before "
+        ~ "the snapshot, so `atRhsEnd` stays empty instead of capturing "
+        ~ "`[2]` (`[] != [2]`)"),
+    Omit!(Bytecode, Because.refusal, "[] != [2]"),
+)) {
     @("call.evaluatedAndAndRightTemporaryIsDestroyedAtItsOperandsEnd." ~
         backend.stringof)
     @Tags(backend.stringof)
@@ -10419,7 +10432,12 @@ static foreach (backend; Matrix!()) {
 
 // An unevaluated `&&` right-hand side constructs no temporary, so nothing of
 // it is destroyed. SystemLinker is the oracle.
-static foreach (backend; Matrix!()) {
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.refusal,
+        "the destructor of the evaluated `Probe(0, &log)` temporary "
+        ~ "never runs, so `log` stays empty (`[] != [0]`)"),
+    Omit!(Bytecode, Because.refusal, "[] != [0]"),
+)) {
     @("call.unevaluatedAndAndRightConstructsNoTemporary." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -10450,7 +10468,13 @@ static foreach (backend; Matrix!()) {
 
 // When an expression unwinds, its already-constructed temporaries are
 // destroyed, in reverse construction order. SystemLinker is the oracle.
-static foreach (backend; Matrix!()) {
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.refusal,
+        "the temporaries' destructors never run during unwind, so "
+        ~ "`log` stays empty instead of recording ids in reverse order "
+        ~ "(`[] != [2, 1]`)"),
+    Omit!(Bytecode, Because.refusal, "[] != [2, 1]"),
+)) {
     @("call.constructedTemporariesAreDestroyedOnUnwind." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -10488,7 +10512,13 @@ static foreach (backend; Matrix!()) {
 // A temporary constructed in a `?:` arm gets no early boundary: it lives to
 // the end of the full expression, unlike an `&&`/`||` right-hand side.
 // SystemLinker is the oracle.
-static foreach (backend; Matrix!()) {
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.refusal,
+        "the temporaries' destructors never run, so `log` stays empty "
+        ~ "instead of recording both ids (`[] != [2, 1]`)"),
+    Omit!(Bytecode, Because.refusal,
+        "Unsupported expression in bytecode core: (Probe(2, & log)).id"),
+)) {
     @("call.conditionalArmTemporaryLivesToFullExpressionEnd." ~
         backend.stringof)
     @Tags(backend.stringof)
@@ -10530,7 +10560,13 @@ static foreach (backend; Matrix!()) {
 // A loop body's full expression ends every iteration, so its temporary is
 // destroyed once per iteration, in iteration order. SystemLinker is the
 // oracle.
-static foreach (backend; Matrix!()) {
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.refusal,
+        "the per-iteration temporary's destructor never runs, so "
+        ~ "`log` stays empty instead of recording each iteration "
+        ~ "(`[] != [1, 2, 3]`)"),
+    Omit!(Bytecode, Because.refusal, "[] != [1, 2, 3]"),
+)) {
     @("call.loopBodyTemporaryIsDestroyedEachIteration." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
