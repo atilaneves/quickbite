@@ -14288,6 +14288,9 @@ static foreach (backend; Matrix!(
 static foreach (backend; Matrix!(
     Omit!(Ctfe, Because.diverges,
         "static variable `m` cannot be read at compile time"),
+    Omit!(Bytecode, Because.refusal,
+        "Unsupported struct value in bytecode core: " ~
+        "m[cast(ulong)outerIndex()][cast(ulong)innerIndex()]"),
 )) {
     @("struct.methodCallThroughDoublyNestedOutOfBoundsIndexedReceiverNeverCallsFirstBracketWhenBothAreOutOfRange." ~
         backend.stringof)
