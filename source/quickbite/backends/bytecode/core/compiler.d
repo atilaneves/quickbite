@@ -9587,10 +9587,6 @@ private struct Compiler {
     // access resolves a module-backed Place and reads or writes through its
     // native address, so an element operation touches only that element's
     // byte range.
-    // Scoped to a scalar element type for now (`int[3]`, not `S[3]`,
-    // `int[3][3]`, `int[3][]`, or a delegate/`Taarray` element): those
-    // shapes decline registration, falling through to the pre-existing
-    // "Unsupported variable in bytecode core" error.
     private ModuleStaticArrayVariable* allocateModuleStaticArrayVariable(
         VarDeclaration declaration,
     ) {
@@ -9600,18 +9596,7 @@ private struct Compiler {
             return null;
         }
 
-        import dmd.astenums: TY;
-
         auto elementType = declaration.type.toBasetype.nextOf;
-        switch (elementType.toBasetype.ty) with (TY) {
-            case Tstruct, Tsarray, Tarray, Taarray, Tdelegate:
-                return null;
-            default:
-                break;
-        }
-        if (isComplexDoubleType(elementType))
-            return null;
-
         if (auto existing = declarationRecordView(declaration).moduleStaticArrayOrNull)
             return existing;
 
@@ -9631,7 +9616,13 @@ private struct Compiler {
             initializerExpr.isNullExp !is null;
 
         ubyte[] literalBytes;
-        if (!hasDefaultInitializer) {
+        if (hasDefaultInitializer) {
+            literalBytes.length = size;
+            if (!writeStaticArrayDefaultInitializerBytes(
+                    declaration.type, literalBytes,
+                ))
+                return null;
+        } else {
             literalBytes = moduleStaticArrayLiteralInitializerBytes(
                 initializerExpr.isArrayLiteralExp, elementType, size,
             );
@@ -9643,9 +9634,84 @@ private struct Compiler {
             allocateModuleBytes(size, staticArrayAlign(declaration.type));
         registerModuleDeclaration(declaration).moduleStaticArray =
             ModuleStaticArrayVariable(offset, size);
-        if (!hasDefaultInitializer)
-            _program.moduleData[offset .. offset + size] = literalBytes[];
+        _program.moduleData[offset .. offset + size] = literalBytes[];
         return declarationRecordView(declaration).moduleStaticArrayOrNull;
+    }
+
+    private bool writeStaticArrayDefaultInitializerBytes(
+        Type type,
+        ubyte[] bytes,
+    ) {
+        import dmd.astenums: TY;
+
+        if (type.toBasetype.ty != TY.Tsarray)
+            return false;
+
+        auto elementType = type.toBasetype.nextOf;
+        const elementSize = typeFacts(elementType).byteWidth;
+        const count = staticArrayLength(type);
+        if (bytes.length != count * elementSize)
+            return false;
+
+        foreach (index; 0 .. count) {
+            auto elementBytes = bytes[
+                index * elementSize .. (index + 1) * elementSize
+            ];
+            switch (elementType.toBasetype.ty) with (TY) {
+                case Tstruct:
+                    if (!writeStructDefaultInitializerBytes(
+                            elementType, elementBytes,
+                        ))
+                        return false;
+                    break;
+                case Tsarray:
+                    if (!writeStaticArrayDefaultInitializerBytes(
+                            elementType, elementBytes,
+                        ))
+                        return false;
+                    break;
+                default:
+                    break;
+            }
+        }
+        return true;
+    }
+
+    private bool writeStructDefaultInitializerBytes(
+        Type type,
+        ubyte[] bytes,
+    ) {
+        import std.bitmanip: nativeToLittleEndian;
+
+        auto declaration = structDeclarationOf(type);
+        if (bytes.length != typeFacts(type).byteWidth)
+            return false;
+
+        foreach (field; declaration.fields) {
+            auto initializer =
+                field._init is null ? null : field._init.isExpInitializer;
+            if (initializer is null)
+                continue;
+
+            // DMD's literal-value accessors mutate their expression nodes.
+            auto value = initializerExpression(initializer.exp);
+            const fieldSize = typeFacts(field.type).byteWidth;
+            auto fieldBytes = bytes[field.offset .. field.offset + fieldSize];
+            if (auto integer = value.isIntegerExp) {
+                const raw = nativeToLittleEndian(cast(ulong) integer.toInteger);
+                fieldBytes[] = raw[0 .. fieldSize];
+                continue;
+            }
+            if (auto real_ = value.isRealExp) {
+                const raw = nativeToLittleEndian(
+                    floatBits(real_, scalarType(field.type)),
+                );
+                fieldBytes[] = raw[0 .. fieldSize];
+                continue;
+            }
+            return false;
+        }
+        return true;
     }
 
     // A module-level delegate variable (`int delegate() dg;`) reserves a
