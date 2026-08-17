@@ -3911,6 +3911,18 @@ unsupportedExpression:
         ExpressionResult receiverAddress;
         ExpressionResult receiver;
         resolveMemberCallReceiver(dot.e1, receiverAddress, receiver);
+
+        // `call` is `dot.e1`'s own constructor whenever this receiver
+        // resolution was reached because a further use needed the
+        // not-yet-constructed receiver's address (see
+        // `popPrematureReceiverConstructorDestructor`): hold its premature
+        // arming until the constructor below actually succeeds.
+        auto deferredReceiverConstructorDestructor =
+            popPrematureReceiverConstructorDestructor(call.f, dot.e1);
+        scope(success)
+            if (deferredReceiverConstructorDestructor !is null)
+                queueTemporaryDestructor(deferredReceiverConstructorDestructor);
+
         if (receiver == ExpressionResult.null_)
             throw new Exception(
                 "function call through null class reference `null`",
@@ -5520,6 +5532,17 @@ unsupportedExpression:
                     : runExpression(dot.e1);
             } else
                 receiver = runExpression(dot.e1);
+
+            // When `call` is itself the constructor about to run against
+            // this receiver, hold its premature arming until that call
+            // actually succeeds below (see
+            // `popPrematureReceiverConstructorDestructor`).
+            auto deferredReceiverConstructorDestructor =
+                popPrematureReceiverConstructorDestructor(call.f, dot.e1);
+            scope(success)
+                if (deferredReceiverConstructorDestructor !is null)
+                    queueTemporaryDestructor(deferredReceiverConstructorDestructor);
+
             queueConstructedReceiverDestructor(dot.e1);
             if (dot.e1.type.toBasetype.isTypeClass !is null)
                 receiver = rootedNativeClassValue(dot.e1, receiver);
@@ -5784,6 +5807,52 @@ unsupportedExpression:
         throw new Exception("Unsupported eval call.");
     }
 
+    // DMD lowers a user-constructor receiver to `((S __t = <placeholder>;) ,
+    // __t).__ctor(args)`, where `<placeholder>` is `__t`'s type's own
+    // default value -- never the constructor's real arguments. Evaluating
+    // that declaration (`executeDeclaration`, reached through
+    // `addressOfExpression`'s `CommaExp` handling or `runExpression`) arms
+    // `__t`'s destructor as soon as the placeholder assignment succeeds,
+    // which is correct once `__t` is a complete value but wrong here: when
+    // `call` is that same `__ctor`, `__t` is still just reserved storage,
+    // and a throwing constructor must leave nothing armed to destroy
+    // (compiled D never runs a receiver's destructor when its constructor
+    // threw). Pop that premature arming so the caller can hold it until
+    // `call` actually succeeds, then requeue it (`scope(success)`) -- every
+    // call site that resolves such a receiver needs this, both the
+    // constructor's own value evaluation (`evalCall`'s `DotVarExp` handling)
+    // and its address evaluation (`memberRefReturningCallAddress`, reached
+    // whenever a further ref-returning or address-taking use needs `__t`'s
+    // storage before the constructor has run).
+    private imported!"dmd.expression".Expression
+    popPrematureReceiverConstructorDestructor(
+        imported!"dmd.func".FuncDeclaration calleeFunction,
+        imported!"dmd.expression".Expression receiverExpression,
+    ) {
+        if (calleeFunction is null || calleeFunction.isCtorDeclaration is null)
+            return null;
+
+        auto comma = receiverExpression.isCommaExp;
+        if (comma is null)
+            return null;
+
+        auto declaration = comma.e1.isDeclarationExp;
+        if (declaration is null)
+            return null;
+
+        auto variable = declaration.declaration.isVarDeclaration;
+        if (
+            variable is null ||
+            variable.edtor is null ||
+            _pendingTemporaryDestructors.length == 0 ||
+            _pendingTemporaryDestructors[$ - 1] !is variable.edtor
+        )
+            return null;
+
+        --_pendingTemporaryDestructors.length;
+        return variable.edtor;
+    }
+
     // A constructor used directly as a member receiver owns a full-expression
     // temporary. DMD records that cleanup on the synthesized declaration's
     // `edtor` rather than emitting a DtorExpStatement, so arm it here to run
@@ -5829,14 +5898,19 @@ unsupportedExpression:
             return null;
 
         // A struct with a user-defined constructor lowers `S(args)` to
-        // `(S __t = __t.this(args), __t)`: the declaration's own
-        // `ConstructExp` initializer already runs the constructor for real,
-        // so `executeDeclaration`'s own arming (see
-        // `shouldArmDeclaredVariableDestructor`) already queued this exact
-        // destructor once construction succeeded. Only a genuinely
-        // uninitialised (`= void`) receiver -- one `executeDeclaration`
-        // skipped arming for -- still needs arming here, after this call
-        // (its real constructor) completes.
+        // `((S __t = <placeholder>;) , __t).__ctor(args)`, and `receiver`
+        // here is that whole `.__ctor(args)` call, already evaluated as a
+        // value -- reaching this point at all means that call returned
+        // rather than threw. `shouldArmDeclaredVariableDestructor` reporting
+        // true for `__t` means `executeDeclaration` armed it the moment its
+        // placeholder assignment ran, before the constructor call above;
+        // `popPrematureReceiverConstructorDestructor` will have popped that
+        // premature arming at the site that made this call and requeued it
+        // once the call succeeded, so declining here avoids arming it twice.
+        // A receiver `executeDeclaration` declined to arm (a genuinely
+        // uninitialised `= void` local, still `variable.edtor`'s original
+        // design case) has nothing to pop or requeue, so it is armed here
+        // instead, now that its constructor has run.
         return shouldArmDeclaredVariableDestructor(variable)
             ? null
             : variable.edtor;
@@ -12260,22 +12334,27 @@ unsupportedExpression:
     // A declared local's destructor is armed here unless: it is a manifest
     // constant (no storage, nothing to destroy); it is left uninitialised by
     // a `= void` initializer (an uninitialised binding holds no value to
-    // destroy -- a `= void` receiver temporary is instead armed by its own
-    // constructor-call path, see `constructedReceiverDestructor`); its
-    // initializer is a zero-filled placeholder blit (`(S __t = 0, __t).this
-    // (args)`, the constructor-call receiver pattern for a struct whose
-    // `.init` DMD chose to materialize immediately rather than truly leaving
-    // it `void`) -- `constructDeclaredVariable`'s own blit arm already
-    // treats this shape as "not yet a real value" and returns early without
-    // running the declared initializer; arming it here would run the
-    // destructor even if the following constructor call throws, and again
-    // when `constructedReceiverDestructor` arms the same variable after that
-    // call succeeds; or DMD itself has already arranged its destruction,
-    // which `needsScopeDtor` -- `edtor && !(storage_class & STC.nodtor)` --
-    // reports as false. DMD sets `STC.nodtor` ("don't add in dtor again",
-    // `statementsem.d`'s scope-statement lowering) on a local whose
-    // destruction it moved into a `DtorExpStatement`; without this guard
-    // that local would be destroyed twice.
+    // destroy); its initializer is a literal zero blit (`variable = 0`, how
+    // DMD default-initialises a provably all-zero struct or static-array
+    // local that is never bound to a later constructor call -- mirrors
+    // `constructDeclaredVariable`'s own static-array/struct zero-blit arm,
+    // which likewise treats this shape as already a complete default value
+    // rather than something to run an initializer for); or DMD itself has
+    // already arranged its destruction, which `needsScopeDtor` -- `edtor &&
+    // !(storage_class & STC.nodtor)` -- reports as false. DMD sets
+    // `STC.nodtor` ("don't add in dtor again", `statementsem.d`'s
+    // scope-statement lowering) on a local whose destruction it moved into a
+    // `DtorExpStatement`; without this guard that local would be destroyed
+    // twice.
+    //
+    // This says nothing about a constructor-call receiver
+    // (`((S __t = <placeholder>;) , __t).__ctor(args)`): that placeholder
+    // declaration reports true here like any other locally-owned value with
+    // a destructor, regardless of whether `<placeholder>` prints as a zero
+    // blit or a field-by-field literal, because at this point `__t`'s own
+    // assignment (not the constructor) has just succeeded. A caller that is
+    // about to invoke that same constructor on `__t` must not trust this
+    // arming yet -- see `popPrematureReceiverConstructorDestructor`.
     private bool shouldArmDeclaredVariableDestructor(VarDeclaration variable) {
         if (isManifestVariable(variable))
             return false;

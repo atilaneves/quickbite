@@ -10509,6 +10509,92 @@ static foreach (backend; Matrix!(
     }
 }
 
+// A constructor used as a member-call receiver that throws never finishes
+// constructing its receiver. The receiver's destructor must therefore not
+// run -- the same as any other object whose constructor threw. `Loud`'s
+// `armed` field defaults to `true`, so the placeholder DMD declares for the
+// receiver (`(Loud __t = Loud(0, true, null);) , __t).__ctor(id, log)`) is
+// not all zero bytes. SystemLinker is the oracle.
+static foreach (backend; Matrix!()) {
+    @("call.throwingConstructorReceiverTemporaryIsNotDestroyed." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct Loud {
+                int id;
+                bool armed = true;
+                int[]* log;
+
+                this(int id, int[]* log) {
+                    this.id = id;
+                    this.log = log;
+                    throw new Exception("boom");
+                }
+
+                ~this() {
+                    if (log !is null)
+                        *log ~= id;
+                }
+
+                int getId() {
+                    return id;
+                }
+            }
+
+            unittest {
+                int[] log;
+                try
+                    cast(void) Loud(1, &log).getId();
+                catch (Exception e) {}
+                assert(log.length == 0);
+            }
+        });
+    }
+}
+
+// The same throwing-constructor-receiver rule as above, but for a struct
+// whose fields all default to zero, so the placeholder DMD declares for the
+// receiver (`(Zero __t = Zero(0);) , __t).__ctor(value)`) is an all-zero
+// value rather than `Loud`'s above. SystemLinker is the oracle.
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.inexpressible,
+        "static variable `destroyed` cannot be read at compile time"),
+)) {
+    @("call.throwingConstructorZeroInitReceiverTemporaryIsNotDestroyed." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct Zero {
+                int value;
+                static bool destroyed;
+
+                this(int value) {
+                    this.value = value;
+                    throw new Exception("boom");
+                }
+
+                ~this() {
+                    destroyed = true;
+                }
+
+                int getValue() {
+                    return value;
+                }
+            }
+
+            unittest {
+                Zero.destroyed = false;
+                try
+                    cast(void) Zero(1).getValue();
+                catch (Exception e) {}
+                assert(!Zero.destroyed);
+            }
+        });
+    }
+}
+
 // A temporary constructed in a `?:` arm gets no early boundary: it lives to
 // the end of the full expression, unlike an `&&`/`||` right-hand side.
 // SystemLinker is the oracle.
