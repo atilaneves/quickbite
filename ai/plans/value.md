@@ -436,21 +436,13 @@ longer imports or aliases it.
     native exception translation remain Interpreter-adapter plumbing.
 
 19. **Addressable expression temporaries have activation-scoped storage.**
-    Item 8 must measure and choose between two unboxed designs:
-    per-activation typed offsets added to the function's frame layout, or
-    segmented aligned scratch allocated along the executed path with lexical
-    marks and cleanup records. The existing frame-layout cache lasts for one
-    Interpreter root execution, not across roots or source edits, so neither
-    candidate receives presumed reuse credit.
-
-    Either design must satisfy D's temporary-lifetime rules: destruction at
-    the full-expression boundary in reverse construction order, the special
-    boundary of an evaluated `&&`/`||` right-hand side, destruction of
-    already-constructed temporaries on unwind, GC visibility while live, and
-    stable addresses under recursion and native callback re-entry. Storage
-    belongs to an activation; an AST node never owns runtime bytes. If the
-    corpus measurement cannot distinguish the candidates, choose the smaller
-    mechanism.
+    Item 8 must choose between per-activation typed frame offsets and segmented
+    aligned scratch with lexical marks and cleanup records; the frame-layout
+    cache lasts one Interpreter root execution, not across roots, so neither
+    candidate gets presumed reuse credit. Either design must satisfy the
+    expression-temporary destruction contract (below), plus GC visibility while
+    live and stable addresses under recursion and callback re-entry; storage
+    belongs to an activation, not an AST node; ties go to the smaller mechanism.
 
 ## Contracts
 
@@ -611,6 +603,17 @@ checked fact; do not relearn them.
 - A native `typeid(T)` argument is the resolved host address of `T.vtinfo`.
   The interpreter's `TypeName` is display metadata and never an ABI operand.
 
+### Expression temporary destruction
+
+Cleanup rides the temporary's `VarDeclaration.edtor`, armed only after
+construction succeeds, mirroring `Dsymbol_toElem`'s `needsScopeDtor()` (`edtor
+&& !(storage_class & STC.nodtor)`); `nodtor` skips arming a local DMD destroys
+via `DtorExpStatement`, and a throwing constructor-receiver temporary arms
+nothing. Destructors run in reverse construction order at each full-expression
+boundary and on unwind; the evaluated `&&`/`||` right-hand side is the only
+expression-internal boundary (`?:` gets none), and the queue is per-walker: a
+call is a full-expression boundary for the callee.
+
 ### Unions
 
 Durable DMD facts:
@@ -752,19 +755,15 @@ timings follow `overview.md`'s measurement contract.
 
 ### Item 8 — Destination-passing construction
 
-Decision 7's no-result operation exists and every discarding position uses
-it; place evaluation and assignment already compose over the
-`Place`/`place_value.d` seam, and construction exists for a destination that
-already exists — a declaration initialises its binding's own storage. What
-remains is decision 19's addressable temporaries. Measure fixed frame offsets
-against segmented scratch on the gate corpus (`overview.md`'s measurement
-contract) before selecting either; this slice owns the storage choice, the
-construction-state encoding, and the temporary-lifetime rules.
-
-A no-result arm is worth writing only where the discarded value is what a
-whole sub-walk was for. Everything else still evaluates through the value
-path, so the carrier's per-expression materialization retires with
-construction, not with more arms.
+Decision 7's no-result operation, place evaluation, and construction into an
+already-existing destination (a declaration initialising its own binding's
+storage) are landed; a no-result arm is worth writing only where the
+discarded value is what a whole sub-walk was for, so the carrier's
+per-expression materialization retires with construction, not with more
+arms. What remains is decision 19's addressable temporaries: measure fixed
+frame offsets against segmented scratch on the gate corpus (`overview.md`'s
+measurement contract); this slice then owns the storage choice and the
+construction-state encoding.
 
 ### Item 9 — Assignment through construction
 
