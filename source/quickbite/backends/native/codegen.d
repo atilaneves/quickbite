@@ -188,10 +188,6 @@ private string[] emitObjectFilesForLinkLocked(
             .filter!(import_ => isUnderDefaultImportPaths(import_))
             .array
         : null;
-    prepareForCodegen(userImports);
-    prepareDependencyImageImportsForTemplateCodegen(dependencyImageImports);
-    prepareDependencyImageImportsForTemplateCodegen(defaultImports);
-
     // The snippet first and the rod last, like dmd compiling several root
     // modules at once: codegen of the snippet can still append late template
     // instances to the rod's members, and the rod must pick them up.
@@ -218,9 +214,15 @@ private string[] emitObjectFilesForLinkLocked(
     // (backend_init, PASS.obj/csym written-marks, deferToObj and enum/TypeInfo
     // gates), and the child gets a disposable copy-on-write image, so every
     // codegen uses the backend exactly the way a fresh dmd process would. The
-    // parent's AST and globals are never mutated, which is what lets cached
-    // (stale) parses be codegen'd repeatedly.
+    // child also completes import semantics, so template instances that it
+    // creates cannot pollute the parent and later fixture links.
     runInFork(() {
+        prepareForCodegen(userImports);
+        prepareDependencyImageImportsForTemplateCodegen(
+            dependencyImageImports,
+        );
+        prepareDependencyImageImportsForTemplateCodegen(defaultImports);
+
         // Instance and TypeInfo emission is this link's decision (see
         // adoptOrphans): adopt everything homed outside the link that this
         // link may define onto the rod, then prune by provenance.
@@ -783,10 +785,9 @@ private string[] defaultImportPaths() {
 }
 
 // Imported modules only get semantic3 (function bodies analyzed) on demand,
-// and codegen silently emits nothing for bodies that never got it. Parent
-// side, under the compiler lock: instances created here must land on the rod
-// before the fork snapshots the process. checkaction=context to match how
-// the snippets themselves are compiled.
+// and codegen silently emits nothing for bodies that never got it. Run this
+// in the disposable codegen child: its template instances must not persist
+// into a later fixture. checkaction=context matches snippet compilation.
 private void prepareForCodegen(imported!"dmd.dmodule".Module[] modules) {
     import dmd.astenums: CHECKACTION;
     import dmd.dsymbolsem: runDeferredSemantic3;
