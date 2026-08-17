@@ -12265,13 +12265,13 @@ unsupportedExpression:
                     blit.e2.isIntegerExp !is null
                 )
             ) {
-                setLocal(variable, defaultValue(variable));
+                setLocal(variable, runDefaultValue(variable.type));
                 return;
             }
 
             // DMD default-initialises struct locals with `variable = 0`
             if (isStructType(variable.type) && blit.e2.isIntegerExp !is null) {
-                setLocal(variable, defaultValue(variable));
+                setLocal(variable, runDefaultValue(variable.type));
                 return;
             }
 
@@ -12564,7 +12564,7 @@ unsupportedExpression:
     }
 
     private ExpressionResult defaultLocalValue(VarDeclaration variable) {
-        return defaultValue(variable);
+        return runDefaultValue(variable.type);
     }
 
     private bool isRefVariable(VarDeclaration variable) const {
