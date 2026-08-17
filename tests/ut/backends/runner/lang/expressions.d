@@ -41,6 +41,38 @@ static foreach (backend; Matrix!()) {
     }
 }
 
+// A ref-returning helper may cast an immutable slice field's header to a
+// mutable slice. An indexed assignment through that returned reference must
+// update the field's backing storage.
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.inexpressible,
+        "reinterpreting cast from `immutable(int[])*` to `int[]*` is not supported in CTFE"),
+)) {
+    @("refReturn.immutableSliceFieldCastWritesIndexedElement." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct Holder {
+                immutable int[] values;
+
+                ref int[] mutableValues() return {
+                    auto pointer = &values;
+                    return *(cast(int[]*) pointer);
+                }
+            }
+
+            unittest {
+                Holder holder = Holder([1, 2, 3]);
+                const int index = 1;
+
+                holder.mutableValues[index] = 42;
+
+                assert(holder.values == [1, 42, 3]);
+            }
+        });
+    }
+}
+
 
 // A struct field slice assignment with an inverted range (`lower > upper`)
 // must throw before the right-hand side is evaluated, the same as the

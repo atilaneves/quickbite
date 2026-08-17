@@ -8880,6 +8880,20 @@ unsupportedExpression:
         // AA's own value-slot storage, so writing through it is the correct
         // (and only) place for this element, matching
         // `runIndexAssignExpression`'s identical pointer-index arm.
+        if (auto call = index.e1.isCallExp) {
+            import dmd.tokens: EXP;
+            import quickbite.backends.interpreter.place: Place;
+
+            const address = refReturningCallAddress(call, EXP.address);
+            if (!address.isPointer)
+                throw new Exception("Ref-returning call has no native address.");
+            writeStoredValue(
+                Place(address.pointerAddress, index.e1.type).index(arrayIndex),
+                storageValue(index.type, value),
+            );
+            return;
+        }
+
         if (isPointerType(index.e1.type)) {
             const pointer = runExpression(index.e1);
             if (pointer.isPointer) {
@@ -9169,6 +9183,22 @@ unsupportedExpression:
         // so their postblit/destructor handling is unchanged.
         if (isDirectProjectionWriteTarget(index))
             return runProjectionAssignExpression(index, rhs);
+
+        if (auto call = index.e1.isCallExp) {
+            import dmd.tokens: EXP;
+            import quickbite.backends.interpreter.place: Place;
+
+            const address = refReturningCallAddress(call, EXP.address);
+            if (!address.isPointer)
+                throw new Exception("Ref-returning call has no native address.");
+            const arrayIndex = cast(size_t) runExpression(index.e2).asLong;
+            const value = runExpression(rhs);
+            writeStoredValue(
+                Place(address.pointerAddress, index.e1.type).index(arrayIndex),
+                storageValue(index.type, value),
+            );
+            return value;
+        }
 
         if (isPointerType(index.e1.type)) {
             const pointer = runExpression(index.e1);
