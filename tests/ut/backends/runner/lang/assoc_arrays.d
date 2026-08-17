@@ -2,7 +2,8 @@ module ut.backends.runner.lang.assoc_arrays;
 
 
 import ut.backends;
-import quickbite.frontend.compiler: FrontendFlags;
+import quickbite.frontend.compiler: FrontendFlags,
+    parseSnippetWithCheckActionContext;
 
 
 /++
@@ -1583,6 +1584,37 @@ static foreach (backend; Matrix!()) {
         backend.stringof)
     @Tags(backend.stringof)
     unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct Pair {
+                string s;
+                int i;
+            }
+
+            unittest {
+                auto p = Pair("foo", 5);
+                auto map = [p: 105];
+                assert(map[p] == 105);
+            }
+        }, [], FrontendFlags(["-preview=dip1000"]));
+    }
+}
+
+// The front end keeps declarations from the first fixture. The second fixture
+// must compile its AA literal from its own semantic AST and stack storage.
+static foreach (backend; Matrix!()) {
+    @("assocArray.structKeyLiteralAfterTypeInfoFixture." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        // This setup only exposes a Bytecode fault.
+        static if (backend.stringof == Bytecode.stringof)
+            parseSnippetWithCheckActionContext(q{
+                class Thing {}
+
+                struct Observation {
+                    TypeInfo type;
+                }
+
+            });
         runBackendSourceFixtureTests!backend(q{
             struct Pair {
                 string s;

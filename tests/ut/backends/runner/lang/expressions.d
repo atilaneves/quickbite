@@ -85,6 +85,8 @@ static foreach (backend; Matrix!(
 static foreach (backend; Matrix!(
     Omit!(Ctfe, Because.inexpressible,
         "Ctfe cannot read Mallocator.instance at compile time"),
+    Omit!(Bytecode, Because.refusal,
+        "SIGSEGV in writeHeapElement: `element` is an invalid pointer (0x2)"),
 )) {
     @("struct.moveIntoEmplacedLargeStruct." ~ backend.stringof)
     @Tags(backend.stringof)
@@ -122,6 +124,8 @@ static foreach (backend; Matrix!(
     Omit!(Ctfe, Because.inexpressible,
         "`static variable 'instance' cannot be read at compile time` "
         ~ "(Mallocator.instance)"),
+    Omit!(Bytecode, Because.unconfirmed,
+        "the bytecode core does not yet support this dynamic-array access"),
 )) {
     @("struct.returnedOwnerPreservesSliceAddress." ~ backend.stringof)
     @Tags(backend.stringof)
@@ -175,6 +179,8 @@ static foreach (backend; Matrix!(
     Omit!(Ctfe, Because.inexpressible,
         "`static variable 'instance' cannot be read at compile time` "
         ~ "(Mallocator.instance)"),
+    Omit!(Bytecode, Because.unconfirmed,
+        "the bytecode core does not yet support this dynamic-array access"),
 )) {
     @("refReturn.sliceHeaderNativeWritebackUpdatesStructField." ~ backend.stringof)
     @Tags(backend.stringof)
@@ -508,6 +514,20 @@ static foreach (backend; Matrix!()) {
 
                 assert(-input == -42);
                 assert(~value == -0x2b);
+            }
+        });
+    }
+}
+
+// Complement retains an unsigned 64-bit operand's unsigned result type.
+static foreach (backend; Matrix!()) {
+    @("int.unsignedLongComplementRetainsUnsignedType." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            unittest {
+                ulong value = 0;
+                assert(~value > 0);
             }
         });
     }
@@ -940,6 +960,29 @@ static foreach (backend; Matrix!()) {
             unittest {
                 TypeInfo observed = typeid(Payload);
                 assert(observed is typeid(Payload));
+            }
+        });
+    }
+}
+
+// A struct TypeInfo reports the D layout size of its represented struct.
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.inexpressible,
+        "static variable `typeid(Payload)` cannot be read at compile time"),
+    Omit!(Interpreter, Because.refusal,
+        "Unsupported interpreter TypeInfo initializer."),
+)) {
+    @("typeid.structTypeReportsLayoutSize." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct Payload {
+                int first;
+                long second;
+            }
+
+            unittest {
+                assert(typeid(Payload).tsize == Payload.sizeof);
             }
         });
     }
