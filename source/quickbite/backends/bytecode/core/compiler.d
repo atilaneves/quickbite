@@ -2687,7 +2687,7 @@ private struct Compiler {
             return compileScalarIntegerCompoundAssign(
                 xorAssign,
                 Op.bitXorInt4,
-                Op.bitXorInt4,
+                Op.bitXorInt8,
                 "Unsupported compound assignment in bytecode core: ",
             );
 
@@ -2775,7 +2775,6 @@ private struct Compiler {
             const result = compileCall(call);
             if (result.isPointer &&
                 functionType !is null && functionType.isRef &&
-                assocArrayHook(function_) == AssocArrayHook.none &&
                 !typeFacts(call.type).isAggregate)
                 return loadThroughPointer(
                     result, compileSizeConstant(0),
@@ -4344,6 +4343,14 @@ private struct Compiler {
                     ScalarType.void_,
                 );
             }
+            // `newaa.Impl` stores this TypeInfo field only for its native ABI.
+            // The druntime implementation never reads it, but compiling the
+            // constructor must still preserve its null pointer initialization.
+            if (isNewaaEntryType(type))
+                return Operand(
+                    compileSizeConstant(0), ScalarType.ulong_, true,
+                    ScalarType.void_,
+                );
             throw new Exception(text(
                 "Unsupported typeid in bytecode core: ",
                 expressionChars(typeid_),
@@ -9067,15 +9074,22 @@ private struct Compiler {
         import std.conv: text;
 
         const source = compileExpression(complement.isComExp.e1);
-        if (source.type != ScalarType.int_)
-            throw new Exception(text(
-                "Unsupported bitwise complement in bytecode core: ",
-                expressionChars(complement),
-            ));
+        if (source.type == ScalarType.int_) {
+            const offset = allocate(ScalarType.int_);
+            _code ~= Instruction(Op.bitNotInt4, offset, source.offset);
+            return Operand(offset, ScalarType.int_);
+        }
 
-        const offset = allocate(ScalarType.int_);
-        _code ~= Instruction(Op.bitNotInt4, offset, source.offset);
-        return Operand(offset, ScalarType.int_);
+        if (source.type == ScalarType.long_ || source.type == ScalarType.ulong_) {
+            const offset = allocate(source.type);
+            _code ~= Instruction(Op.bitNotInt8, offset, source.offset);
+            return Operand(offset, source.type);
+        }
+
+        throw new Exception(text(
+            "Unsupported bitwise complement in bytecode core: ",
+            expressionChars(complement),
+        ));
     }
 
     private Operand emitBinary(
@@ -9141,6 +9155,30 @@ private struct Compiler {
                 destination, ScalarType.ulong_, true,
                 place.pointerElement,
             );
+        }
+
+        // DMD keeps the lvalue cast in a compound operation such as
+        // `cast(ulong)h ^= len`. The operation uses the cast type, then the
+        // store truncates back to `h`'s declared storage width.
+        if (assign.e1.isCastExp !is null) {
+            const operationType = scalarType(assign.e1.type);
+            if (!isEightByteInteger(operationType) || op8 == op4 ||
+                rhs.type != operationType)
+                throw new Exception(text(
+                    unsupportedMessage,
+                    expressionChars(assign),
+                ));
+
+            const lhs = integerOperationOperand(
+                loadPlace(*place), operationType,
+            );
+            const destination = allocate(operationType);
+            _code ~= Instruction(
+                op8, destination, lhs.offset, rhs.offset,
+            );
+            const value = Operand(destination, operationType);
+            storePlace(*place, value);
+            return value;
         }
 
         return compileScalarIntegerCompoundAssign(
@@ -11072,12 +11110,6 @@ private struct Compiler {
         // than compiling the druntime body.
         if (function_ !is null && isArrayOpAddAssign(function_))
             return compileArrayOpAddAssign(call);
-
-        if (function_ !is null) {
-            const hook = assocArrayHook(function_);
-            if (hook != AssocArrayHook.none)
-                return compileAssocArrayHook(call, hook);
-        }
 
         if (function_ !is null && function_.ident !is null &&
             function_.ident.toString == "emplace")
@@ -17247,6 +17279,24 @@ private string typeInfoName(imported!"dmd.mtype".Type type) {
         return classInfoName(classType.sym);
 
     return typeChars(type);
+}
+
+// The `entryTI` field in `core.internal.newaa.Impl` is an ABI compatibility
+// field. Druntime never reads it, so guest `Entry!(K, V)` has no TypeInfo
+// object to materialize while its constructor still executes normally.
+private bool isNewaaEntryType(imported!"dmd.mtype".Type type) {
+    import dmd.astenums: TY;
+    import dmd.mtype: TypeStruct;
+    import std.conv: text;
+
+    if (type is null || type.toBasetype.ty != TY.Tstruct)
+        return false;
+
+    auto struct_ = (cast(TypeStruct) type.toBasetype).sym;
+    auto module_ = struct_ is null ? null : struct_.getModule;
+    return struct_ !is null && struct_.ident !is null &&
+        struct_.ident.toString == "Entry" && module_ !is null &&
+        text(module_.toPrettyChars) == "core.internal.newaa";
 }
 
 private string classInfoName(imported!"dmd.dclass".ClassDeclaration class_) {

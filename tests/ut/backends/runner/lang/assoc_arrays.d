@@ -769,11 +769,6 @@ static foreach (backend; Matrix!()) {
 // than comparing raw bytes, so two keys differing only in the field the
 // custom hash and equality ignore must still collide into the same entry.
 static foreach (backend; Matrix!(
-    Omit!(Bytecode, Because.refusal,
-        "0 is `null` -- the bytecode VM's own map still does structural " ~
-        "key comparison and never dispatches a key's custom " ~
-        "opEquals/toHash; migrating it onto druntime's AA hooks like " ~
-        "Interpreter is tracked in issue #478"),
     Omit!(Ctfe, Because.refusal,
         "0x0 is `null` -- dmd's own CTFE AA evaluator compares struct " ~
         "keys structurally too and never dispatches a custom " ~

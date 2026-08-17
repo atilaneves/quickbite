@@ -1111,11 +1111,30 @@ package(quickbite.backends.bytecode) RunResult run(
                 ++ip;
                 break;
 
+            case bitXorInt8:
+                const ubyte[long.sizeof] xorBits8 = scalarBytes(
+                    scalarValue!long(stack, base + instruction.b) ^
+                    scalarValue!long(stack, base + instruction.c),
+                );
+                stack[base + instruction.a .. base + instruction.a + long.sizeof]
+                    = xorBits8;
+                ++ip;
+                break;
+
             case bitNotInt4:
                 const ubyte[int.sizeof] complement = scalarBytes(
                     ~scalarValue!int(stack, base + instruction.b),
                 );
                 stack[base + instruction.a .. base + instruction.a + int.sizeof]
+                    = complement;
+                ++ip;
+                break;
+
+            case bitNotInt8:
+                const ubyte[long.sizeof] complement = scalarBytes(
+                    ~scalarValue!long(stack, base + instruction.b),
+                );
+                stack[base + instruction.a .. base + instruction.a + long.sizeof]
                     = complement;
                 ++ip;
                 break;
