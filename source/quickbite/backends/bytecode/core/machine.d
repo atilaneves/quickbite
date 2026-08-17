@@ -49,10 +49,6 @@ package(quickbite.backends.bytecode) RunResult run(
     // Blocks whose appendable status entered this run through a native-layout
     // slice descriptor write. Ordinary VM-owned arrays keep copy-on-append.
     size_t[] appendablePointers;
-    // VM-owned `int[int]` maps backing associative-array locals. A local's
-    // 8-byte slot holds a 1-based index into this table (0 meaning a not-yet-
-    // created empty map); the table roots every map's keys and values.
-    AssocArray[] maps;
     Frame[] frames;
     // Active catch handlers, innermost last. A `pushHandler` records the catch
     // body's location (instruction index plus the frame it runs in); a
@@ -1111,12 +1107,31 @@ package(quickbite.backends.bytecode) RunResult run(
                 ++ip;
                 break;
 
+            case bitXorInt8:
+                const ubyte[long.sizeof] xorBits8 = scalarBytes(
+                    scalarValue!long(stack, base + instruction.b) ^
+                    scalarValue!long(stack, base + instruction.c),
+                );
+                stack[base + instruction.a .. base + instruction.a + long.sizeof]
+                    = xorBits8;
+                ++ip;
+                break;
+
             case bitNotInt4:
                 const ubyte[int.sizeof] complement = scalarBytes(
                     ~scalarValue!int(stack, base + instruction.b),
                 );
                 stack[base + instruction.a .. base + instruction.a + int.sizeof]
                     = complement;
+                ++ip;
+                break;
+
+            case bitNotInt8:
+                const ubyte[long.sizeof] complement8 = scalarBytes(
+                    ~scalarValue!long(stack, base + instruction.b),
+                );
+                stack[base + instruction.a .. base + instruction.a + long.sizeof]
+                    = complement8;
                 ++ip;
                 break;
 
@@ -1832,176 +1847,6 @@ package(quickbite.backends.bytecode) RunResult run(
             case haltUnittest:
                 throw new Exception("unittest failure");
 
-            case aaNew:
-                maps ~= AssocArray.init;
-                writeScalar!size_t(stack, base + instruction.a, maps.length);
-                ++ip;
-                break;
-
-            case aaLength: {
-                const handle = scalarValue!size_t(stack, base + instruction.b);
-                const count = handle == 0 ? 0 : maps[handle - 1].count;
-                writeScalar!size_t(stack, base + instruction.a, count);
-                ++ip;
-                break;
-            }
-
-            case aaInsert: {
-                auto handle = scalarValue!size_t(stack, base + instruction.a);
-                if (handle == 0) {
-                    maps ~= AssocArray.init;
-                    handle = maps.length;
-                    writeScalar!size_t(stack, base + instruction.a, handle);
-                }
-                const width = instruction.d;
-                const mode =
-                    assocArrayKeyMode(instruction.e, program.assocArrayKeyLayouts);
-                const keyWidth = mode.keyWidth;
-                maps[handle - 1].insert(
-                    stack[
-                        base + instruction.b .. base + instruction.b + keyWidth
-                    ],
-                    mode.keyIsArray,
-                    keyWidth,
-                    stack[base + instruction.c .. base + instruction.c + width],
-                    mode.layoutFields,
-                );
-                ++ip;
-                break;
-            }
-
-            case aaGetOrInsert: {
-                auto handle = scalarValue!size_t(stack, base + instruction.a);
-                if (handle == 0) {
-                    maps ~= AssocArray.init;
-                    handle = maps.length;
-                    writeScalar!size_t(stack, base + instruction.a, handle);
-                }
-                const width = instruction.d;
-                const mode =
-                    assocArrayKeyMode(instruction.e, program.assocArrayKeyLayouts);
-                const keyWidth = mode.keyWidth;
-                maps[handle - 1].insertDefault(
-                    stack[
-                        base + instruction.b .. base + instruction.b + keyWidth
-                    ],
-                    mode.keyIsArray,
-                    keyWidth,
-                    stack[base + instruction.c .. base + instruction.c + width],
-                    mode.layoutFields,
-                );
-                ++ip;
-                break;
-            }
-
-            case aaGetRvalue, aaIn: {
-                const handle = scalarValue!size_t(stack, base + instruction.b);
-                const width = instruction.d;
-                const mode =
-                    assocArrayKeyMode(instruction.e, program.assocArrayKeyLayouts);
-                const keyWidth = mode.keyWidth;
-                const key = stack[
-                    base + instruction.c .. base + instruction.c + keyWidth
-                ];
-                auto slot = handle == 0
-                    ? null
-                    : maps[handle - 1].find(
-                        key, mode.keyIsArray, keyWidth, width, mode.layoutFields,
-                    );
-                writeScalar!size_t(
-                    stack, base + instruction.a, cast(size_t) slot,
-                );
-                ++ip;
-                break;
-            }
-
-            case aaRemove: {
-                const handle = scalarValue!size_t(stack, base + instruction.b);
-                const width = instruction.d;
-                const mode =
-                    assocArrayKeyMode(instruction.e, program.assocArrayKeyLayouts);
-                const keyWidth = mode.keyWidth;
-                const key = stack[
-                    base + instruction.c .. base + instruction.c + keyWidth
-                ];
-                const removed = handle != 0 && maps[handle - 1].remove(
-                    key, mode.keyIsArray, keyWidth, width, mode.layoutFields,
-                );
-                writeScalar!bool(stack, base + instruction.a, removed);
-                ++ip;
-                break;
-            }
-
-            case aaEqual: {
-                const left = scalarValue!size_t(stack, base + instruction.b);
-                const right = scalarValue!size_t(stack, base + instruction.c);
-                const width = instruction.d;
-                const mode =
-                    assocArrayKeyMode(instruction.e, program.assocArrayKeyLayouts);
-                // Bound to named locals rather than passed as ternary
-                // expressions directly: the ternary-argument shape crashes
-                // this DMD version's code generator once `AssocArray` grew a
-                // third field (`count`) -- reproduced in isolation; unrelated
-                // to any of this function's own logic.
-                const leftMap = left == 0 ? AssocArray.init : maps[left - 1];
-                const rightMap =
-                    right == 0 ? AssocArray.init : maps[right - 1];
-                const equal = assocArrayEqual(
-                    leftMap, rightMap, mode.keyIsArray, mode.keyWidth, width,
-                    mode.layoutFields,
-                );
-                writeScalar!bool(stack, base + instruction.a, equal);
-                ++ip;
-                break;
-            }
-
-            case aaDup: {
-                const handle = scalarValue!size_t(stack, base + instruction.b);
-                maps ~= handle == 0
-                    ? AssocArray.init : copyAssocArray(maps[handle - 1]);
-                writeScalar!size_t(stack, base + instruction.a, maps.length);
-                ++ip;
-                break;
-            }
-
-            case aaKeys, aaValues: {
-                const handle = scalarValue!size_t(stack, base + instruction.b);
-                const outputElementSize =
-                    instruction.c == 0 ? int.sizeof : instruction.c;
-                const length = handle == 0
-                    ? 0
-                    : maps[handle - 1].count;
-                auto block = new ubyte[](length * outputElementSize);
-                if (handle != 0)
-                    // The map's own keys/values are already packed at this
-                    // exact stride (the compiler emits the same static
-                    // key/value type width at every access site for a given
-                    // map), so copy them verbatim rather than re-widening a
-                    // narrower scalar.
-                    block[] = instruction.op == aaKeys
-                        ? maps[handle - 1].keys[]
-                        : maps[handle - 1].values[];
-                heap ~= block;
-                writeSliceDescriptor(
-                    stack, base + instruction.a, block, length,
-                );
-                ++ip;
-                break;
-            }
-
-            case pushHandler:
-                handlers ~= Handler(
-                    functionIndex, base, frames.length, instruction.a,
-                    instruction.b,
-                );
-                ++ip;
-                break;
-
-            case popHandler:
-                handlers.length -= 1;
-                ++ip;
-                break;
-
             case throwString:
                 const selected = selectHandler(
                     handlers,
@@ -2101,6 +1946,19 @@ package(quickbite.backends.bytecode) RunResult run(
                 functionIndex = handler.functionIndex;
                 base = handler.base;
                 ip = clause.handlerIp;
+                break;
+
+            case pushHandler:
+                handlers ~= Handler(
+                    functionIndex, base, frames.length, instruction.a,
+                    instruction.b,
+                );
+                ++ip;
+                break;
+
+            case popHandler:
+                handlers.length -= 1;
+                ++ip;
                 break;
 
             case transcodeUtf: {
@@ -3520,247 +3378,6 @@ private void writeScalar(T)(
         foreach (i; 0 .. T.sizeof)
             stack[offset + i] = cast(ubyte) (raw >> (8 * i));
     }
-}
-
-// How to compare a key block, decoded from an AA opcode's `Instruction.e`
-// operand (`assocArrayKeyMeta`, compiler.d): either the two simple whole-key
-// modes `assocArrayKeyIsArrayFlag` already distinguished (all raw bytes, or
-// one whole {length, ptr} descriptor compared by content), or -- when
-// `assocArrayKeyIsStructLayoutFlag` is set -- a struct key mixing both kinds
-// of field in one block, whose per-field layout lives in
-// `Program.assocArrayKeyLayouts` (too much to fit in the operand itself).
-// `layoutFields` is empty for the two simple modes; when nonempty it takes
-// over from `keyIsArray` entirely (`keysEqual` below).
-private struct AssocArrayKeyMode {
-    bool keyIsArray;
-    size_t keyWidth;
-    const(imported!"quickbite.backends.bytecode.core.program".AssocArrayKeyField)[]
-        layoutFields;
-}
-
-private AssocArrayKeyMode assocArrayKeyMode(
-    in ushort meta,
-    in imported!"quickbite.backends.bytecode.core.program".AssocArrayKeyLayout[]
-        layouts,
-) @safe nothrow pure {
-    import quickbite.backends.bytecode.core.program:
-        assocArrayKeyIsArrayFlag, assocArrayKeyIsStructLayoutFlag;
-
-    if (meta & assocArrayKeyIsStructLayoutFlag) {
-        const layout = layouts[meta & (assocArrayKeyIsStructLayoutFlag - 1)];
-        return AssocArrayKeyMode(false, layout.width, layout.fields);
-    }
-    return AssocArrayKeyMode(
-        (meta & assocArrayKeyIsArrayFlag) != 0,
-        meta & (assocArrayKeyIsArrayFlag - 1),
-        null,
-    );
-}
-
-// A VM-owned `V[K]` map, stored as parallel insertion-ordered keys and
-// values. Insertion order does not match druntime's hash order, but the
-// tests only sum keys/values and compare entry sets, so order is immaterial.
-// `keys` and `values` each pack their entries as fixed-width raw byte blocks,
-// the same way a dynamic array carries its own element size: neither width
-// is stored on `AssocArray` itself, only passed in by the caller (the
-// compiler emits the same static key/value type width at every access site
-// for a given map, so a single map's entries are always consistently
-// strided). `count` tracks the entry count directly rather than deriving it
-// from `keys.length`/`values.length` divided by a width, since `aaLength`
-// reads it back with no width operand at all.
-private struct AssocArray {
-    ubyte[] keys;
-    ubyte[] values;
-    size_t count;
-
-    // The address of the `valueWidth`-byte value block stored for `key`, or
-    // null when absent. Held pointers stay valid until the next insert
-    // reallocates `values`. `layoutFields` is nonempty only for a struct key
-    // mixing content- and raw-compared fields (`assocArrayKeyMode`); empty
-    // for every other key, which compares by `keyIsArray` instead.
-    ubyte* find(
-        in ubyte[] key,
-        in bool keyIsArray,
-        in size_t keyWidth,
-        in size_t valueWidth,
-        in imported!"quickbite.backends.bytecode.core.program".AssocArrayKeyField[]
-            layoutFields = null,
-    ) @trusted nothrow pure {
-        const index = findIndex(key, keyIsArray, keyWidth, layoutFields);
-        return index == size_t.max ? null : &values[index * valueWidth];
-    }
-
-    // `value.length` is the entry width; the same width is passed to every
-    // other access for this map.
-    void insert(
-        in ubyte[] key,
-        in bool keyIsArray,
-        in size_t keyWidth,
-        in const(ubyte)[] value,
-        in imported!"quickbite.backends.bytecode.core.program".AssocArrayKeyField[]
-            layoutFields = null,
-    ) @safe nothrow pure {
-        const index = findIndex(key, keyIsArray, keyWidth, layoutFields);
-        if (index != size_t.max) {
-            values[index * value.length .. (index + 1) * value.length] =
-                value[];
-            return;
-        }
-        keys ~= key;
-        values ~= value;
-        ++count;
-    }
-
-    // Like `insert`, but an already-present key's existing value bytes are
-    // left untouched -- only a newly created entry gets `value`. Backs
-    // `Op.aaGetOrInsert` (`_d_aaGetY`'s find-or-default-insert), where an
-    // existing entry may be read back as an intermediate value for further
-    // indexing (`a[1][2] = 3`'s `a[1]`) before any write actually happens;
-    // `insert`'s unconditional overwrite would clobber it with the caller's
-    // placeholder bytes first.
-    void insertDefault(
-        in ubyte[] key,
-        in bool keyIsArray,
-        in size_t keyWidth,
-        in const(ubyte)[] value,
-        in imported!"quickbite.backends.bytecode.core.program".AssocArrayKeyField[]
-            layoutFields = null,
-    ) @safe nothrow pure {
-        const index = findIndex(key, keyIsArray, keyWidth, layoutFields);
-        if (index != size_t.max)
-            return;
-        keys ~= key;
-        values ~= value;
-        ++count;
-    }
-
-    bool remove(
-        in ubyte[] key,
-        in bool keyIsArray,
-        in size_t keyWidth,
-        in size_t valueWidth,
-        in imported!"quickbite.backends.bytecode.core.program".AssocArrayKeyField[]
-            layoutFields = null,
-    ) @safe nothrow pure {
-        const index = findIndex(key, keyIsArray, keyWidth, layoutFields);
-        if (index == size_t.max)
-            return false;
-        keys = keys[0 .. index * keyWidth] ~ keys[(index + 1) * keyWidth .. $];
-        values = values[0 .. index * valueWidth] ~
-            values[(index + 1) * valueWidth .. $];
-        --count;
-        return true;
-    }
-
-    private size_t findIndex(
-        in ubyte[] key,
-        in bool keyIsArray,
-        in size_t keyWidth,
-        in imported!"quickbite.backends.bytecode.core.program".AssocArrayKeyField[]
-            layoutFields = null,
-    ) @safe nothrow pure const {
-        foreach (index; 0 .. count)
-            if (keysEqual(
-                keys[index * keyWidth .. (index + 1) * keyWidth],
-                key,
-                keyIsArray,
-                layoutFields,
-            ))
-                return index;
-        return size_t.max;
-    }
-}
-
-// True iff two same-length key blocks represent the same associative-array
-// key. A scalar key (bool/int/long/double/...) compares its raw bytes
-// directly -- exactly how a plain `int` key always compared. A `string` key
-// (`keyIsArray`, set only by `assocArrayKeyIsArray` in compiler.d) instead
-// compares the bytes its {length, ptr} descriptor points at: two
-// separately-constructed but content-equal strings have different backing
-// pointers, so a raw descriptor-byte compare would wrongly treat them as
-// distinct keys, silently miscomparing.
-// `layoutFields` (nonempty only for a struct key mixing content- and
-// raw-compared fields, `assocArrayKeyMode`) takes over entirely from
-// `keyIsArray` when present: each field compares by its own rule --
-// `descriptorContentEqual` for a plain `string` field, raw bytes for
-// anything else -- mirroring `compileStructIdentity`'s (compiler.d)
-// field-by-field pattern for `==`.
-private bool keysEqual(
-    in ubyte[] left,
-    in ubyte[] right,
-    in bool keyIsArray,
-    in imported!"quickbite.backends.bytecode.core.program".AssocArrayKeyField[]
-        layoutFields = null,
-) @trusted @nogc nothrow pure {
-    if (layoutFields.length) {
-        foreach (field; layoutFields) {
-            const leftField =
-                left[field.offset .. field.offset + field.width];
-            const rightField =
-                right[field.offset .. field.offset + field.width];
-            if (field.isArray) {
-                if (!descriptorContentEqual(leftField, rightField))
-                    return false;
-            } else if (leftField != rightField) {
-                return false;
-            }
-        }
-        return true;
-    }
-
-    if (!keyIsArray)
-        return left == right;
-
-    return descriptorContentEqual(left, right);
-}
-
-// True iff the {length, ptr} slice descriptors at the start of `left`/
-// `right` point at equal-content byte ranges -- content, not identity: two
-// separately-constructed but content-equal strings/arrays have different
-// backing pointers, so a raw descriptor-byte compare would wrongly treat
-// them as distinct.
-private bool descriptorContentEqual(
-    in ubyte[] left,
-    in ubyte[] right,
-) @trusted @nogc nothrow pure {
-    const leftDescriptor = readSliceDescriptor(left, 0);
-    const rightDescriptor = readSliceDescriptor(right, 0);
-    if (leftDescriptor.length != rightDescriptor.length)
-        return false;
-
-    return (cast(const(ubyte)*) leftDescriptor.pointer)[
-        0 .. leftDescriptor.length
-    ] == (cast(const(ubyte)*) rightDescriptor.pointer)[0 .. leftDescriptor.length];
-}
-
-private AssocArray copyAssocArray(AssocArray source) @safe nothrow pure {
-    return AssocArray(source.keys.dup, source.values.dup, source.count);
-}
-
-// Entry-set equality: equal counts and, for every key in `left`, an equal
-// `valueWidth`-byte value in `right`. Order-independent, matching `V[K]` `==`.
-private bool assocArrayEqual(
-    in AssocArray left,
-    in AssocArray right,
-    in bool keyIsArray,
-    in size_t keyWidth,
-    in size_t valueWidth,
-    in imported!"quickbite.backends.bytecode.core.program".AssocArrayKeyField[]
-        layoutFields = null,
-) @trusted nothrow pure {
-    if (left.count != right.count)
-        return false;
-    foreach (index; 0 .. left.count) {
-        const key = left.keys[index * keyWidth .. (index + 1) * keyWidth];
-        auto slot = (cast() right).find(
-            key, keyIsArray, keyWidth, valueWidth, layoutFields,
-        );
-        const entry =
-            left.values[index * valueWidth .. (index + 1) * valueWidth];
-        if (slot is null || slot[0 .. valueWidth] != entry)
-            return false;
-    }
-    return true;
 }
 
 // Floating values are reinterpreted, not numerically converted: their bytes

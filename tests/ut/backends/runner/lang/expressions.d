@@ -85,9 +85,6 @@ static foreach (backend; Matrix!(
 static foreach (backend; Matrix!(
     Omit!(Ctfe, Because.inexpressible,
         "Ctfe cannot read Mallocator.instance at compile time"),
-    Omit!(Bytecode, Because.refusal,
-        "SIGSEGV in writeHeapElement (machine.d:3234): `element` is an " ~
-        "invalid pointer (0x2)"),
 )) {
     @("struct.moveIntoEmplacedLargeStruct." ~ backend.stringof)
     @Tags(backend.stringof)
@@ -125,8 +122,6 @@ static foreach (backend; Matrix!(
     Omit!(Ctfe, Because.inexpressible,
         "`static variable 'instance' cannot be read at compile time` "
         ~ "(Mallocator.instance)"),
-    Omit!(Bytecode, Because.unconfirmed,
-        "the bytecode core does not yet support this dynamic-array access"),
 )) {
     @("struct.returnedOwnerPreservesSliceAddress." ~ backend.stringof)
     @Tags(backend.stringof)
@@ -180,8 +175,6 @@ static foreach (backend; Matrix!(
     Omit!(Ctfe, Because.inexpressible,
         "`static variable 'instance' cannot be read at compile time` "
         ~ "(Mallocator.instance)"),
-    Omit!(Bytecode, Because.unconfirmed,
-        "the bytecode core does not yet support this dynamic-array access"),
 )) {
     @("refReturn.sliceHeaderNativeWritebackUpdatesStructField." ~ backend.stringof)
     @Tags(backend.stringof)
@@ -934,6 +927,24 @@ static foreach (backend; Matrix!()) {
 /++
     Typeid, virtual dispatch, interfaces, and delegates.
 +/
+// A static struct TypeInfo value has stable identity when copied and compared.
+static foreach (backend; Matrix!()) {
+    @("typeid.structTypeHasStableIdentity." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct Payload {
+                int value;
+            }
+
+            unittest {
+                TypeInfo observed = typeid(Payload);
+                assert(observed is typeid(Payload));
+            }
+        });
+    }
+}
+
 static foreach (backend; Matrix!()) {
     @("typeid.classReferenceUsesDynamicClass." ~ backend.stringof)
     @Tags(backend.stringof)
@@ -13772,9 +13783,6 @@ static foreach (backend; Matrix!(
         "Ctfe runs the unittest body through DMD's own CTFE interpreter, " ~
         "which cannot read the mutable module-scope variable `arr`/`i` at " ~
         "compile time"),
-    Omit!(Bytecode, Because.unconfirmed,
-        "\"Unsupported struct value in bytecode core: arr[cast(ulong)i++]\" " ~
-        "-- independent, unconfirmed gap in the bytecode core"),
 )) {
     @("struct.methodCallThroughIndexedReceiverIntoUninitializedStaticArray." ~
         backend.stringof)
@@ -13806,9 +13814,6 @@ static foreach (backend; Matrix!(
         "Ctfe runs the unittest body through DMD's own CTFE interpreter, " ~
         "which cannot read the mutable module-scope variable `arr`/`i` at " ~
         "compile time"),
-    Omit!(Bytecode, Because.unconfirmed,
-        "\"Unsupported struct value in bytecode core: arr[cast(ulong)i++]\" " ~
-        "-- independent, unconfirmed gap in the bytecode core"),
     Omit!(LLVMJit, Because.unconfirmed,
         "reads back a garbage value (`458753 != 8`) rather than the real " ~
         "default -- an independent, unconfirmed default-static-" ~
@@ -13843,9 +13848,6 @@ static foreach (backend; Matrix!(
         "Ctfe runs the unittest body through DMD's own CTFE interpreter, " ~
         "which cannot read the mutable module-scope variable `m` at " ~
         "compile time"),
-    Omit!(Bytecode, Because.unconfirmed,
-        "\"Unsupported struct value in bytecode core: m[0][0]\" -- " ~
-        "independent, unconfirmed gap in the bytecode core"),
 )) {
     @("struct.methodCallThroughNestedStaticArrayIndexedReceiverMutatesBackingStorage." ~
         backend.stringof)
@@ -14077,9 +14079,6 @@ static foreach (backend; Matrix!(
         "Ctfe runs the unittest body through DMD's own CTFE interpreter, " ~
         "which cannot read the mutable module-scope variable `m`/`i` at " ~
         "compile time"),
-    Omit!(Bytecode, Because.unconfirmed,
-        "\"Unsupported struct value in bytecode core: m[cast(ulong)i++][1]\" " ~
-        "-- independent, unconfirmed gap in the bytecode core"),
 )) {
     @("struct.methodCallThroughDoublyNestedIndexedReceiverEvaluatesIndexOnce." ~
         backend.stringof)
@@ -14105,11 +14104,7 @@ static foreach (backend; Matrix!(
 // In `m[$ - rowIndex()][$ - columnIndex()]`, the inner index selects a row
 // from `m`, so its `$` is `m.length`; the outer index selects from that row,
 // so its `$` is the row's length. The calls make repeat evaluation observable.
-static foreach (backend; Matrix!(
-    Omit!(Bytecode, Because.unconfirmed,
-        "Unsupported struct value in bytecode core: m[$ - rowIndex()][...]" ~
-        " -- independent, unconfirmed gap in the bytecode core"),
-)) {
+static foreach (backend; Matrix!()) {
     @("struct.methodCallThroughDoublyNestedIndexedReceiverDollarBindsAtEachLevelAndEvaluatesIndicesOnce." ~
         backend.stringof)
     @Tags(backend.stringof)
@@ -14151,8 +14146,6 @@ static foreach (backend; Matrix!(
 static foreach (backend; Matrix!(
     Omit!(Ctfe, Because.diverges,
         "static variable `m` cannot be read at compile time"),
-    Omit!(Bytecode, Because.refusal,
-        "Unsupported struct value in bytecode core: m[cast(ulong)i++][1]"),
     Omit!(LLVMJit, Because.diverges,
         "the guest `RangeError` does not reach the catch block (`false != true`)"),
 )) {
@@ -14252,9 +14245,6 @@ static foreach (backend; Matrix!(
 static foreach (backend; Matrix!(
     Omit!(Ctfe, Because.diverges,
         "static variable `m` cannot be read at compile time"),
-    Omit!(Bytecode, Because.refusal,
-        "Unsupported struct value in bytecode core: " ~
-        "m[cast(ulong)outerIndex()][cast(ulong)innerIndex()]"),
 )) {
     @("struct.methodCallThroughDoublyNestedOutOfBoundsIndexedReceiverNeverCallsFirstBracketWhenBothAreOutOfRange." ~
         backend.stringof)
