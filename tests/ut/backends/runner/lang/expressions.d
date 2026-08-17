@@ -10346,6 +10346,219 @@ static foreach (backend; Matrix!()) {
     }
 }
 
+// Several temporaries constructed in one full expression are destroyed at
+// its end in reverse construction order. SystemLinker is the oracle.
+static foreach (backend; Matrix!()) {
+    @("call.temporariesAreDestroyedInReverseOrderAtFullExpressionEnd." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct Probe {
+                int id;
+                int[]* log;
+
+                ~this() {
+                    if (log !is null)
+                        *log ~= id;
+                }
+            }
+
+            unittest {
+                int[] log;
+                const total =
+                    Probe(1, &log).id + Probe(2, &log).id + Probe(3, &log).id;
+                assert(total == 6);
+                assert(log == [3, 2, 1]);
+            }
+        });
+    }
+}
+
+// A temporary constructed in the evaluated right-hand side of `&&` is
+// destroyed when that operand's evaluation ends, before any later operand
+// runs -- not at the full-expression boundary the other temporaries get.
+// SystemLinker is the oracle.
+static foreach (backend; Matrix!()) {
+    @("call.evaluatedAndAndRightTemporaryIsDestroyedAtItsOperandsEnd." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct Probe {
+                int id;
+                int[]* log;
+
+                ~this() {
+                    if (log !is null)
+                        *log ~= id;
+                }
+
+                bool truthy() {
+                    return id != 0;
+                }
+            }
+
+            bool snapshot(ref int[] into, int[]* log) {
+                into = (*log).dup;
+                return true;
+            }
+
+            unittest {
+                int[] log;
+                int[] atRhsEnd;
+                const r = Probe(1, &log).truthy() && Probe(2, &log).truthy()
+                    && snapshot(atRhsEnd, &log);
+                assert(r);
+                assert(atRhsEnd == [2]);
+                assert(log == [2, 1]);
+            }
+        });
+    }
+}
+
+// An unevaluated `&&` right-hand side constructs no temporary, so nothing of
+// it is destroyed. SystemLinker is the oracle.
+static foreach (backend; Matrix!()) {
+    @("call.unevaluatedAndAndRightConstructsNoTemporary." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct Probe {
+                int id;
+                int[]* log;
+
+                ~this() {
+                    if (log !is null)
+                        *log ~= id;
+                }
+
+                bool truthy() {
+                    return id != 0;
+                }
+            }
+
+            unittest {
+                int[] log;
+                const r = Probe(0, &log).truthy() && Probe(2, &log).truthy();
+                assert(!r);
+                assert(log == [0]);
+            }
+        });
+    }
+}
+
+// When an expression unwinds, its already-constructed temporaries are
+// destroyed, in reverse construction order. SystemLinker is the oracle.
+static foreach (backend; Matrix!()) {
+    @("call.constructedTemporariesAreDestroyedOnUnwind." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct Probe {
+                int id;
+                int[]* log;
+
+                ~this() {
+                    if (log !is null)
+                        *log ~= id;
+                }
+
+                bool truthy() {
+                    return id != 0;
+                }
+
+                bool throws() {
+                    throw new Exception("boom");
+                }
+            }
+
+            unittest {
+                int[] log;
+                try
+                    cast(void)(
+                        Probe(1, &log).truthy() && Probe(2, &log).throws());
+                catch (Exception e) {}
+                assert(log == [2, 1]);
+            }
+        });
+    }
+}
+
+// A temporary constructed in a `?:` arm gets no early boundary: it lives to
+// the end of the full expression, unlike an `&&`/`||` right-hand side.
+// SystemLinker is the oracle.
+static foreach (backend; Matrix!()) {
+    @("call.conditionalArmTemporaryLivesToFullExpressionEnd." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct Probe {
+                int id;
+                int[]* log;
+
+                ~this() {
+                    if (log !is null)
+                        *log ~= id;
+                }
+
+                bool truthy() {
+                    return id != 0;
+                }
+            }
+
+            bool snapshot(ref int[] into, int[]* log) {
+                into = (*log).dup;
+                return true;
+            }
+
+            unittest {
+                int[] log;
+                int[] atArmEnd;
+                const v = Probe(1, &log).truthy()
+                    ? (Probe(2, &log).id + (snapshot(atArmEnd, &log) ? 0 : 0))
+                    : -1;
+                assert(v == 2);
+                assert(atArmEnd.length == 0);
+                assert(log == [2, 1]);
+            }
+        });
+    }
+}
+
+// A loop body's full expression ends every iteration, so its temporary is
+// destroyed once per iteration, in iteration order. SystemLinker is the
+// oracle.
+static foreach (backend; Matrix!()) {
+    @("call.loopBodyTemporaryIsDestroyedEachIteration." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct Probe {
+                int id;
+                int[]* log;
+
+                ~this() {
+                    if (log !is null)
+                        *log ~= id;
+                }
+
+                bool truthy() {
+                    return id != 0;
+                }
+            }
+
+            unittest {
+                int[] log;
+                foreach (i; 1 .. 4)
+                    cast(void) Probe(i, &log).truthy();
+                assert(log == [1, 2, 3]);
+            }
+        });
+    }
+}
+
 // Return-scope destruction happens after the ref-return expression has
 // selected its lvalue. Cleanup must not replace that returned address, so an
 // assignment through the call still reaches the selected object.
