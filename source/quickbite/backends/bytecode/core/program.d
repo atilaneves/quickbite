@@ -201,20 +201,6 @@ package(quickbite.backends.bytecode) enum Op: ubyte {
     // descriptor {length, ptr} into the frame: a: descriptor offset, b: element
     // size, c: element count (the length).
     allocArray,
-    // Allocate `elementSize * length` bytes of VM-owned writable heap, filled
-    // with the element type's default-init byte, where `length` is a size_t read
-    // from frame offset c, then write the slice descriptor {length, ptr} into the
-    // frame at offset a. Operand b packs the fill byte in its high 8 bits and the
-    // element size in its low 8 bits (`(fill << 8) | elementSize`); the fill is
-    // 0x00 for most types and 0xFF for `char`. Backs `new T[](runtimeLength)`.
-    allocArrayDynamic,
-    // Allocate a two-dimensional array `new T[][](rows, cols)`: an outer block of
-    // `rows` 16-byte slice descriptors, each pointing at a fresh inner block of
-    // `cols` default-filled `T` elements. a: outer descriptor offset; b: packs
-    // the inner element's default-init fill byte (high 8 bits) and element size
-    // (low 8 bits); c: frame offset of an adjacent {rows, cols} size_t pair. Each
-    // inner block is rooted in `heap`. Backs `new T[][](rows, cols)`.
-    allocArray2D,
     // Allocate `c` bytes of VM-owned writable heap for a single `new S` struct
     // block, copy the initialised block of `c` bytes from frame offset b into it,
     // root it in `heap`, and write the raw `size_t` heap pointer into the 8-byte
@@ -345,22 +331,6 @@ package(quickbite.backends.bytecode) enum Op: ubyte {
     // `int[][]`, 3 for `int[][][]`, ...); operand e is the innermost (leaf)
     // element byte width (not 16).
     sliceEqualNested,
-    // Concatenate the two slice descriptors at frame offsets b and c into a
-    // fresh heap block holding all of b's elements followed by all of c's, then
-    // write the descriptor {len(b) + len(c), newPtr} to frame offset a. The
-    // block is rooted in `heap`. Both operands are copied, so the originals are
-    // untouched (`a ~ b` makes a NEW array). The element size is fixed by the
-    // opcode (1, 4, or 16 bytes), matching the indexLoad/indexStore split.
-    concatArrays1,
-    concatArrays4,
-    concatArrays16, // 16-byte descriptor element: concatenating two arrays
-                     // whose element is itself an array (`int[][]`/
-                     // `int[N][]`), where each row is its own heap-backed
-                     // sub-array addressed by a stored descriptor
-    // Same as `concatArrays1`/etc, for an element width not covered by a
-    // fixed opcode (e.g. a struct element wider than 16 bytes): the byte
-    // width is operand d instead of being implied by the opcode.
-    concatArraysN,
 
     // Duplicate the slice descriptor at frame offset b into a fresh heap block
     // holding an independent copy of all its elements, then write the
@@ -894,50 +864,6 @@ in (op != Op.dupArrayN)
         if (entry.op == op)
             return entry.width;
     assert(0, "Not a fixed-width dupArray opcode.");
-}
-
-// The `concatArrays` family's one op<->width table, the same pattern as
-// `dupArrayOpWidths` above (a single opcode per width, since concatenating
-// two arrays is a single operation). Unlike the other families, only 1, 4,
-// and 16 bytes get a fixed-width opcode (matching indexLoad/indexStore's own
-// omission of 2 and 8 for this family). compiler.d's `concatArraysOp`
-// width->opcode selector and machine.d's element-size Op->width derivation
-// (`concatArraysWidth` below) both walk this same table, so the two
-// directions cannot independently drift out of sync.
-private struct ConcatArraysOpWidth {
-    uint width;
-    Op op;
-}
-
-private immutable ConcatArraysOpWidth[] concatArraysOpWidths = [
-    ConcatArraysOpWidth(1, Op.concatArrays1),
-    ConcatArraysOpWidth(4, Op.concatArrays4),
-    ConcatArraysOpWidth(16, Op.concatArrays16),
-];
-
-// The `concatArrays`-family width->opcode selector: `width` bytes uses the
-// fixed-width opcode for that width if the table above has one, else the `N`
-// variant (which carries the width in its own `d` operand instead).
-package(quickbite.backends.bytecode) Op concatArraysOp(in uint width)
-    @safe @nogc nothrow pure
-{
-    foreach (entry; concatArraysOpWidths)
-        if (entry.width == width)
-            return entry.op;
-    return Op.concatArraysN;
-}
-
-// The reverse direction: the fixed byte width a fixed-width `concatArrays*`
-// opcode operates on. Not valid for `concatArraysN`, whose width is a
-// runtime operand rather than implied by the opcode.
-package(quickbite.backends.bytecode) uint concatArraysWidth(in Op op)
-    @safe @nogc nothrow pure
-in (op != Op.concatArraysN)
-{
-    foreach (entry; concatArraysOpWidths)
-        if (entry.op == op)
-            return entry.width;
-    assert(0, "Not a fixed-width concatArrays opcode.");
 }
 
 // The `sliceCopy` family's one op<->width table, the same pattern as

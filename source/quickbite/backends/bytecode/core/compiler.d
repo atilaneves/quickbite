@@ -34,7 +34,7 @@ private struct Compiler {
         CatchClause, ClassInfo, CompiledFunction,
         Instruction, NativeCall, Op, Program,
         ResultType, ScalarType, StructDisplayField,
-        VirtualFunction, concatArraysOp, dupArrayOp,
+        VirtualFunction, dupArrayOp,
         indexLoadOp, indexStoreOp, isSigned,
         nativeArgumentSlotSize, noCatchObjectField, noExceptionClass,
         noNativeCallIndex,
@@ -277,7 +277,6 @@ private struct Compiler {
         uint sliceElementSize;
         bool sliceElementIsArray;
         bool isStaticSlice;
-        DynamicArrayLocal sliceDescriptor;
         Type sliceBaseType;
 
         this(
@@ -3098,6 +3097,20 @@ private struct Compiler {
             stepOp, destination, lhs.offset, increment.offset,
         );
         storePlace(*place, Operand(destination, operationType));
+
+        // `p++`/`p--` on a pointer local: DMD's own semantic already scales
+        // `post.e2` by the pointee's byte width (`dcast.d`'s `scaleFactor`,
+        // the same rewrite `AddExp`/`AddAssignExp` use for `p + n`/`p += n`),
+        // so `increment` above is already the right byte delta -- but the
+        // pre-increment VALUE this returns (`arr[i++]`'s old `i`, or here
+        // `_d_arraycatnTX`'s `memcpy(resptr++, ...)`) must keep carrying the
+        // pointer tag and element type a plain integer Operand drops,
+        // matching `compileScalarIntegerCompoundAssign`'s identical pointer
+        // branch for `p += n`.
+        if (place.isPointerValue)
+            return Operand(
+                result, place.type, true, place.pointerElement,
+            );
         return Operand(result, place.type);
     }
 
@@ -3557,19 +3570,22 @@ private struct Compiler {
                 return result;
             }
 
+            // The element metadata below is derived from `slice.e1`'s own
+            // TYPE, not from compiling it: `compileSliceInto` below is the
+            // one and only place this Place compiles `slice.e1` (via its
+            // own `dynamicArrayDescriptor` call). A second, separate
+            // `dynamicArrayDescriptor(slice.e1)` call here -- to read the
+            // same type-derived metadata off its returned
+            // `DynamicArrayLocal` -- would compile (and so evaluate)
+            // `slice.e1` a second time, silently double-running any side
+            // effect it carries (e.g. `"...".idup[lo .. hi]`, an
+            // allocating call).
             const pointerSlice = isPointerType(slice.e1.type);
-            auto descriptor = pointerSlice
-                ? DynamicArrayLocal.init
-                : dynamicArrayDescriptor(slice.e1);
             result.sliceElementType = pointerSlice
                 ? dynamicArrayElementType(slice.type)
-                : descriptor.elementType;
-            result.sliceElementIsArray = pointerSlice
-                ? arrayElementIsArray(slice.e1.type)
-                : descriptor.elementIsArray;
+                : dynamicArrayElementType(slice.e1.type);
+            result.sliceElementIsArray = arrayElementIsArray(slice.e1.type);
             result.sliceElementSize = dynamicArrayElementSize(slice.e1.type);
-            if (!pointerSlice)
-                result.sliceDescriptor = descriptor;
             result.offset = allocateBytes(
                 sliceDescriptorSize, size_t.sizeof,
             );
@@ -5620,25 +5636,26 @@ private struct Compiler {
             return true;
         }
 
-        // A postblit-bearing static-array copy is represented by DMD as a
-        // call. Intercept it before resolving ordinary aggregate places:
-        // CallExp places denote their result temporary, whereas this helper
-        // must run the element postblits as part of constructing `offset`.
-        if (compileArrayConstructor(offset, type, source))
-            return true;
-
         // `T[N] dest = src`: a value-type block copy of all N*sizeof(T) bytes
         // from the source static array's inline slot into the destination's.
-        if (auto sourcePlace = placeOrNull(source)) {
-            const sourceValue = loadPlace(*sourcePlace);
-            _code ~= Instruction(
-                Op.copy,
-                offset,
-                sourceValue.offset,
-                cast(ushort) totalSize,
-            );
-            return true;
-        }
+        // Scoped to a genuinely `Tsarray`-typed source: `resolvePlace`'s own
+        // `CallExp` handling also resolves a Place for a call returning an
+        // aggregate `Tarray` (a 16-byte `{length, ptr}` descriptor, e.g.
+        // `_d_arrayctor`'s return value below) -- reading `totalSize`
+        // (this destination's own, much wider, byte count) from that
+        // 16-byte value would copy past it into whatever memory follows.
+        if (source.type !is null &&
+            source.type.toBasetype.ty == TY.Tsarray)
+            if (auto sourcePlace = placeOrNull(source)) {
+                const sourceValue = loadPlace(*sourcePlace);
+                _code ~= Instruction(
+                    Op.copy,
+                    offset,
+                    sourceValue.offset,
+                    cast(ushort) totalSize,
+                );
+                return true;
+            }
 
         if (auto literal = arrayLiteralOf(source)) {
             compileStaticArrayLiteral(offset, type, literal);
@@ -5653,6 +5670,21 @@ private struct Compiler {
                 value.offset,
                 cast(ushort) totalSize,
             );
+            return true;
+        }
+
+        // A postblit- or copy-constructor-bearing static-array copy (`const
+        // S[2] a = b;`) lowers to a call (`core.internal.array.construction.
+        // _d_arrayctor(a[], b[])`) whose own result type is a plain dynamic
+        // array, not this destination's `Tsarray` type -- the only shape
+        // that reaches this deep with a `CallExp` source. `a[]` is a slice
+        // view over `offset`'s own storage (the same real-address view
+        // `dynamicArrayDescriptor` builds for any static-array lvalue), so
+        // compiling the call for its side effect writes the constructed
+        // elements straight through into `offset`; its returned descriptor
+        // is discarded, matching dmd's own codegen, which never uses it.
+        if (auto call = source.isCallExp) {
+            compileExpression(call);
             return true;
         }
 
@@ -5701,54 +5733,6 @@ private struct Compiler {
                 value.offset,
                 cast(ushort) elementSize,
             );
-    }
-
-    // Intercept DMD's `_d_arrayctor(dest[], src[], null)` lowering of a
-    // static-array copy whose element type has a postblit: block-copy the source
-    // into `destination`, then run the element postblit on each copied element
-    // (`this(this)` increments the test's postblit counter once per element).
-    // False if `source` is not a `_d_arrayctor` call.
-    private bool compileArrayConstructor(
-        in ushort destination,
-        Type arrayType,
-        Expression source,
-    ) {
-        auto call = source.isCallExp;
-        if (call is null)
-            return false;
-        auto function_ = callFunction(call);
-        if (function_ is null || function_.ident is null ||
-            function_.ident.toString != "_d_arrayctor")
-            return false;
-        if (call.arguments is null || call.arguments.length < 2)
-            return false;
-
-        auto elementType = arrayType.toBasetype.nextOf;
-        const elementSize = typeFacts(elementType).byteWidth;
-        const count = typeFacts(arrayType).byteWidth / elementSize;
-
-        // The source argument is `cast(T[])sourceArray`; the static-array base
-        // is under the cast.
-        auto sourceArray = (*call.arguments)[1];
-        while (auto cast_ = sourceArray.isCastExp)
-            sourceArray = cast_.e1;
-        auto sourcePlace = placeOrNull(sourceArray);
-        if (sourcePlace is null)
-            return false;
-        const sourceValue = loadPlace(*sourcePlace);
-
-        _code ~= Instruction(
-            Op.copy, destination, sourceValue.offset,
-            cast(ushort) (count * elementSize),
-        );
-
-        auto postblit = structDeclarationOf(elementType).postblit;
-        if (postblit !is null)
-            foreach (i; 0 .. count)
-                runStructMethod(
-                    cast(ushort) (destination + i * elementSize), postblit,
-                );
-        return true;
     }
 
     // `__ArrayDtor(arr[lo .. hi])`: run the element destructor on each element
@@ -5857,9 +5841,7 @@ private struct Compiler {
         // declaration's own storage, immediately followed by running the
         // postblit on it. Block-copy the blit's right-hand side into this
         // declaration's offset (already registered as struct metadata
-        // above), then run the postblit, mirroring
-        // `compileArrayConstructor`'s identical `_d_arrayctor` handling for
-        // a static array of postblit elements.
+        // above), then run the postblit.
         if (auto call = source.isCallExp)
             if (auto dot = call.e1.isDotVarExp) {
                 // The receiver is `__copytmp = t`, which -- since
@@ -7176,11 +7158,21 @@ private struct Compiler {
                 return;
             }
 
-        // `dest = new T[](length)` / `new T[][](rows, cols)`: heap-allocate a
-        // default-filled block of `length` (a runtime size_t) elements; the
-        // multidimensional form also fills each element with a fresh inner array.
+        // `dest = new T[](length)` / `new T[][](rows, cols)`: DMD lowers this
+        // to a call to `_d_newarrayT!T`/`_d_newarraymTX!(...)` (`.lowering`),
+        // which does the real GC allocation and default-init fill; compile
+        // that call and copy its 16-byte slice-descriptor result in.
         if (auto new_ = source.isNewExp) {
-            compileNewArrayInto(destination, elementType, new_, elementIsArray);
+            if (new_.lowering is null)
+                throw new Exception(text(
+                    "Unsupported new array in bytecode core: ",
+                    expressionChars(new_),
+                ));
+            const result = compileExpression(new_.lowering);
+            _code ~= Instruction(
+                Op.copy, destination, result.offset,
+                cast(ushort) sliceDescriptorSize,
+            );
             return;
         }
 
@@ -7198,10 +7190,25 @@ private struct Compiler {
             return;
         }
 
-        // `dest = a ~ b` (concatenation): build a fresh heap block holding both
-        // operands' elements, leaving the originals untouched.
+        // `dest = a ~ b` (concatenation): DMD lowers a chain of `~` to one
+        // n-ary `_d_arraycatnTX!(...)` call (`.lowering`), which does the
+        // real GC allocation and element copy; compile that call and copy
+        // its 16-byte slice-descriptor result in. A fully-literal
+        // concatenation (e.g. two string literals) is constant-folded by
+        // DMD's own `Expression.optimize` before this point, replacing the
+        // `CatExp` node itself with a plain literal, so `.lowering` is
+        // always populated on any `CatExp` actually reaching here.
         if (auto cat = source.isCatExp) {
-            compileCatInto(destination, elementType, cat);
+            if (cat.lowering is null)
+                throw new Exception(text(
+                    "Unsupported concatenation in bytecode core: ",
+                    expressionChars(cat),
+                ));
+            const result = compileExpression(cat.lowering);
+            _code ~= Instruction(
+                Op.copy, destination, result.offset,
+                cast(ushort) sliceDescriptorSize,
+            );
             return;
         }
 
@@ -7339,6 +7346,59 @@ private struct Compiler {
 
         const count = literal.elements is null ? 0 : literal.elements.length;
 
+        // An empty literal (`T[] a = [];`) allocates nothing: DMD's own
+        // GC-usage pass (`nogc.d`'s `NOGCVisitor.visit(ArrayLiteralExp)`)
+        // never calls into `lowerArrayLiteral` for `dim == 0`, leaving
+        // `.lowering` null, so a bare null descriptor is both the only
+        // available value and the correct one.
+        if (count == 0) {
+            _code ~= Instruction(Op.nullSlice, destination);
+            return;
+        }
+
+        const width = elementIsArray
+            ? sliceDescriptorSize : dynamicArrayElementSize(source.type);
+
+        // `.lowering` carries the `_d_arrayliteralTX!T(dim)` allocation
+        // call: the real `GC.malloc` (needing T's TypeInfo), matching every
+        // other allocating array operation this core compiles from its
+        // frontend lowering. It only allocates the backing block -- element
+        // values are stored below, mirroring dmd's own codegen split
+        // (`glue/e2ir.d`'s `visitArrayLiteral`, which fills the elements
+        // itself after calling the same hook). DMD's own GC-usage pass
+        // (`nogc.d`) leaves it null in two known cases, mirrored by falling
+        // back to the same heap-backed block this core already builds for
+        // other inline array shapes with no druntime hook of their own
+        // (e.g. boxing a `Tsarray` row): an `onstack` literal, one its
+        // escape analysis proved never outlives this expression (e.g. used
+        // only as a transient comparison operand), whose own codegen
+        // materialises the elements directly with no GC call either
+        // (`glue/e2ir.d`'s `ExpressionsToStaticArray` branch); and a struct
+        // field's default-value literal (`Inner[] values = [Inner(f())];`),
+        // semantically analysed once at the field declaration itself,
+        // outside any function scope -- `nogc.d`'s `checkGC` bails out
+        // early whenever `sc.func is null`, so this literal never runs
+        // through the pass that would populate `.lowering`, regardless of
+        // which function later constructs a value from it.
+        if (literal.lowering !is null) {
+            const allocation = compileExpression(literal.lowering);
+            _code ~= Instruction(
+                Op.copy, cast(ushort) sliceDescriptorPtrOffset(destination),
+                allocation.offset, cast(ushort) size_t.sizeof,
+            );
+            _code ~= Instruction(
+                Op.loadConstant,
+                cast(ushort) sliceDescriptorLengthOffset(destination),
+                constantIndex(count),
+                cast(ushort) size_t.sizeof,
+            );
+        } else {
+            _code ~= Instruction(
+                Op.allocArray, destination, cast(ushort) width,
+                cast(ushort) count,
+            );
+        }
+
         // An array-of-arrays literal (`[[..], [..]]`, any nesting depth):
         // each element is itself a genuine dynamic array, stored as a
         // 16-byte descriptor. Build each inner array into a fresh
@@ -7351,13 +7411,6 @@ private struct Compiler {
         // this shape -- it falls to the generic full-width-block path
         // below, laid out inline like any other aggregate element.
         if (elementIsArray) {
-            _code ~= Instruction(
-                Op.allocArray,
-                destination,
-                cast(ushort) sliceDescriptorSize,
-                cast(ushort) count,
-            );
-
             const rowElementIsArray = arrayElementIsDynamicArray(
                 source.type.toBasetype.nextOf,
             );
@@ -7374,21 +7427,13 @@ private struct Compiler {
             return;
         }
 
-        const elementSize = dynamicArrayElementSize(source.type);
-        _code ~= Instruction(
-            Op.allocArray,
-            destination,
-            cast(ushort) elementSize,
-            cast(ushort) count,
-        );
-
         foreach (elementIndex; 0 .. count) {
             auto element = (*literal.elements)[elementIndex];
             const value = element.type.toBasetype.ty == TY.Tstruct
                 ? Operand(structOperandOffset(element), ScalarType.void_)
                 : compileExpression(element);
             const index = compileSizeConstant(elementIndex);
-            emitIndexStore(value.offset, destination, index, elementSize);
+            emitIndexStore(value.offset, destination, index, width);
         }
     }
 
@@ -7591,106 +7636,6 @@ private struct Compiler {
         }
     }
 
-    // `dest = new T[](length)`: evaluate the runtime length into a size_t slot
-    // and allocate a default-filled heap block of that many elements, writing
-    // the descriptor to `destination`. The length is `new_.arguments[0]`.
-    private void compileNewArrayInto(
-        in ushort destination,
-        in ScalarType elementType,
-        NewExp new_,
-        in bool elementIsArray = false,
-    ) {
-        import std.conv: text;
-
-        // `new T[][](rows, cols)`: both lengths arrive in `new_.arguments`;
-        // build an outer array of `rows` inner dynamic arrays, each of
-        // `cols` elements. `elementIsArray` (true only for a genuine
-        // `Tarray` inner element -- see `arrayElementIsDynamicArray`) never
-        // holds for a `Tsarray` inner element (`new T[N][](rows)`): that
-        // shape's rows are the real D layout, stored inline, and fall
-        // through to the plain single-block `allocArrayDynamic` below,
-        // `dynamicArrayElementSize` already sizing it by the row's own full
-        // width.
-        if (elementIsArray) {
-            // `new T[][](rows)`: only `rows` is a runtime argument -- each
-            // of the `rows` outer slots simply default-inits to its own
-            // null slice, the same zero-filled 16-byte descriptor a bare
-            // `T[]` local starts with. Fill with `0x00` unconditionally
-            // rather than `packedFill(elementType)`: that call's char/wchar
-            // special case targets a scalar *data* fill, not this level's
-            // slice descriptors.
-            if (new_.arguments !is null && new_.arguments.length == 1) {
-                const length = compileExpression((*new_.arguments)[0]);
-                _code ~= Instruction(
-                    Op.allocArrayDynamic,
-                    destination,
-                    cast(ushort) sliceDescriptorSize,
-                    length.offset,
-                );
-                return;
-            }
-
-            if (new_.arguments is null || new_.arguments.length != 2)
-                throw new Exception(text(
-                    "Unsupported new array in bytecode core: ",
-                    expressionChars(new_),
-                ));
-
-            // Materialise rows and cols into an adjacent size_t pair the opcode
-            // reads from a single offset.
-            const dimensions = allocateBytes(2 * size_t.sizeof, size_t.sizeof);
-            const rows = compileExpression((*new_.arguments)[0]);
-            _code ~= Instruction(
-                Op.copy, dimensions, rows.offset, cast(ushort) size_t.sizeof,
-            );
-            const cols = compileExpression((*new_.arguments)[1]);
-            _code ~= Instruction(
-                Op.copy,
-                cast(ushort) (dimensions + size_t.sizeof),
-                cols.offset,
-                cast(ushort) size_t.sizeof,
-            );
-            _code ~= Instruction(
-                Op.allocArray2D,
-                destination,
-                packedFill(elementType),
-                dimensions,
-            );
-            return;
-        }
-
-        if (new_.arguments is null || new_.arguments.length != 1)
-            throw new Exception(text(
-                "Unsupported new array in bytecode core: ",
-                expressionChars(new_),
-            ));
-
-        const length = compileExpression((*new_.arguments)[0]);
-        _code ~= Instruction(
-            Op.allocArrayDynamic,
-            destination,
-            packedFill(
-                elementType,
-                dynamicArrayElementSize(new_.type),
-            ),
-            length.offset,
-        );
-    }
-
-    // Pack the element type's default-init fill byte (high 8 bits) and element
-    // size (low 8 bits) for `allocArrayDynamic`. `char.init` and `wchar.init`
-    // are all-one bytes; every other element type the core lowers
-    // default-inits to all-zero bytes.
-    private ushort packedFill(
-        in ScalarType elementType,
-        in uint elementSize = 0,
-    ) @safe pure {
-        const fill = elementType == ScalarType.char_ ||
-            elementType == ScalarType.wchar_ ? 0xff : 0x00;
-        return cast(ushort) ((fill << 8) |
-            (elementSize == 0 ? size(elementType) : elementSize));
-    }
-
     // Emit a sub-slice descriptor into frame offset `destination` from a
     // `SliceExp` over a dynamic-array operand. Lower and upper bounds (default
     // `0` and `source.length` for the whole-slice form `arr[]`) are compiled
@@ -7765,48 +7710,6 @@ private struct Compiler {
 
         const byteStride = pointerElementMetadata(slice.e1.type).byteWidth;
         emitPointerSlice(destination, pointer.offset, bounds, byteStride);
-    }
-
-    // `dest = a ~ b` (concatenation): materialise each operand into a slice
-    // descriptor sharing existing backing memory, then emit a concat that
-    // allocates a fresh block holding both in order. An operand of element type
-    // (`x ~ arr` / `arr ~ x`) is wrapped into a one-element descriptor first.
-    private void compileCatInto(
-        in ushort destination,
-        in ScalarType elementType,
-        CatExp cat,
-    ) {
-        const elementSize = dynamicArrayElementSize(cat.type);
-        const left = catOperandDescriptor(elementType, elementSize, cat.e1);
-        const right = catOperandDescriptor(elementType, elementSize, cat.e2);
-        emitConcatArrays(destination, left, right, elementSize);
-    }
-
-    // A 16-byte slice descriptor for one side of a concatenation: an array
-    // operand uses its existing descriptor (materialised if needed); an element
-    // operand (`x ~ arr`) is stored into a fresh one-element heap block.
-    // `elementSize` is the concatenation's own array element width (from
-    // `dynamicArrayElementSize`, not a bare `size(elementType)`, since
-    // `elementType` is only `void_` for a struct/static-array element).
-    private ushort catOperandDescriptor(
-        in ScalarType elementType,
-        in uint elementSize,
-        Expression operand,
-    ) {
-        import dmd.astenums: TY;
-
-        if (operand.type !is null &&
-            operand.type.toBasetype.ty == TY.Tarray)
-            return dynamicArrayDescriptor(operand).offset;
-
-        const offset = allocateBytes(sliceDescriptorSize, size_t.sizeof);
-        _code ~= Instruction(
-            Op.allocArray, offset, cast(ushort) elementSize, 1,
-        );
-        const value = compileExpression(operand);
-        const index = compileSizeConstant(0);
-        emitIndexStore(value.offset, offset, index, elementSize);
-        return offset;
     }
 
     // The array operand of an `arr.dup` / `arr.idup` call, or null if `source`
@@ -11157,18 +11060,11 @@ private struct Compiler {
             if (auto emplaced = compileEmplaceRef(call))
                 return *emplaced;
 
-        if (function_ !is null && function_.ident !is null &&
-            function_.ident.toString == "emplaceInitializer")
-            return Operand.init;
-
         // `_d_arraybounds*` is the bounds-failure helper in DMD's `m[k]`
         // lowering (`slot ? slot : (_d_arraybounds(...), null)`); reaching it
         // means the key was absent, so raise the plain "Range violation".
         if (function_ !is null && isArrayBoundsCall(function_))
             return compileRangeViolation;
-
-        if (function_ !is null && isNewArrayRuntimeCall(function_))
-            return compileNewArrayRuntimeCall(call);
 
         if (function_ !is null)
             if (auto builtin = compileBuiltinCall(call, function_))
@@ -12565,29 +12461,6 @@ private struct Compiler {
         return null;
     }
 
-    private Operand compileNewArrayRuntimeCall(CallExp call) {
-        import std.conv: text;
-
-        if (call.arguments is null || call.arguments.length == 0 ||
-            (!isDynamicArrayArgument(call) && !isStringType(call.type)))
-            throw new Exception(text(
-                "Unsupported new array runtime call in bytecode core: ",
-                expressionChars(call),
-            ));
-
-        const length = compileExpression((*call.arguments)[0]);
-        const elementType = dynamicArrayElementType(call.type);
-        const elementSize = dynamicArrayElementSize(call.type);
-        const offset = allocateBytes(sliceDescriptorSize, size_t.sizeof);
-        _code ~= Instruction(
-            Op.allocArrayDynamic,
-            offset,
-            packedFill(elementType, elementSize),
-            length.offset,
-        );
-        return Operand(offset, ScalarType.void_);
-    }
-
     private Expression immediateLambdaReturn(CallExp call) {
         auto literal = call.e1 is null ? null : call.e1.isFuncExp;
         if (literal is null ||
@@ -13392,21 +13265,8 @@ private struct Compiler {
         );
     }
 
-    // The `concatArrays*` family's emit helper, the same required-`width`
-    // treatment as `emitDupArray` above: one opcode per width, and `width`
-    // cannot be omitted or silently defaulted to zero.
-    private void emitConcatArrays(
-        in ushort destination, in ushort left, in ushort right,
-        in uint width,
-    ) @safe pure {
-        _code ~= Instruction(
-            concatArraysOp(width), destination, left, right,
-            cast(ushort) width,
-        );
-    }
-
     // The `sliceCopy*` family's emit helper, the same required-`width`
-    // treatment as `emitConcatArrays` above: one opcode per width (1/2/4/8/16,
+    // treatment as `emitDupArray` above: one opcode per width (1/2/4/8/16,
     // plus the `N` fallback), and `width` cannot be omitted or silently
     // defaulted to zero.
     private void emitSliceCopy(
@@ -15212,23 +15072,6 @@ private bool isArrayBoundsCall(
 
     return function_.ident !is null &&
         function_.ident.toString.startsWith("_d_arraybounds");
-}
-
-// `_d_newarrayUPureNothrow` is `core.internal.array.construction`'s
-// attribute-stripping wrapper: its body calls `_d_newarrayU` indirectly
-// through a `cast(PureType)&_d_newarrayU!T` function pointer, which
-// `_dup`'s POD path (`core.internal.array.duplication._dup`, the shared
-// implementation behind `.dup`/`.idup`) calls directly. Matching it here
-// alongside `_d_newarrayU` lets the ordinary dynamic-array allocation path
-// recognise the wrapper as an allocation without compiling its body.
-private bool isNewArrayRuntimeCall(
-    imported!"dmd.func".FuncDeclaration function_,
-) {
-    return function_.ident !is null &&
-        (function_.ident.toString == "_d_newarrayU" ||
-            function_.ident.toString == "_d_newarrayUPureNothrow" ||
-            function_.ident.toString == "arrayAllocImpl" ||
-            function_.ident.toString == "uninitializedArray");
 }
 
 // True for the druntime `core.internal.array.operations.arrayOp` template

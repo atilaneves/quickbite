@@ -25,7 +25,7 @@ package(quickbite.backends.bytecode) RunResult run(
     import core.exception: RangeError;
     import quickbite.backends.bytecode.core.program:
         CatchClause, ClassInfo,
-        concatArraysWidth, dupArrayWidth, indexElementWidth, Op, ScalarType,
+        dupArrayWidth, indexElementWidth, Op, ScalarType,
         noCatchObjectField, noExceptionClass, noNativeCallIndex,
         pointerElementWidth, size, sliceCopyWidth, sliceDescriptorLengthOffset,
         sliceDescriptorPtrOffset, sliceDescriptorSize,
@@ -103,53 +103,6 @@ package(quickbite.backends.bytecode) RunResult run(
                 heap ~= block;
                 writeSliceDescriptor(
                     stack, base + instruction.a, block, instruction.c,
-                );
-                ++ip;
-                break;
-
-            case allocArrayDynamic:
-                // The length is a runtime size_t in a frame slot; operand b packs
-                // the default-init fill byte (high 8 bits) and the element size
-                // (low 8 bits). Allocate a fresh block of that many elements,
-                // fill it with the default byte, root it, and write the
-                // descriptor.
-                const dynamicLength =
-                    scalarValue!size_t(stack, base + instruction.c);
-                const dynamicElementSize = instruction.b & 0xff;
-                const dynamicFill = cast(ubyte) (instruction.b >> 8);
-                auto dynamicBlock =
-                    new ubyte[](dynamicElementSize * dynamicLength);
-                dynamicBlock[] = dynamicFill;
-                heap ~= dynamicBlock;
-                writeSliceDescriptor(
-                    stack, base + instruction.a, dynamicBlock, dynamicLength,
-                );
-                ++ip;
-                break;
-
-            case allocArray2D:
-                // {rows, cols} live in an adjacent size_t pair at frame offset c;
-                // operand b packs the inner element's fill byte and size. Build
-                // the outer block of `rows` descriptors, each pointing at a fresh
-                // inner block of `cols` filled elements; root every block.
-                const rows = scalarValue!size_t(stack, base + instruction.c);
-                const cols = scalarValue!size_t(
-                    stack, base + instruction.c + size_t.sizeof,
-                );
-                const innerElementSize = instruction.b & 0xff;
-                const innerFill = cast(ubyte) (instruction.b >> 8);
-                auto outerBlock = new ubyte[](rows * sliceDescriptorSize);
-                heap ~= outerBlock;
-                foreach (row; 0 .. rows) {
-                    auto innerBlock = new ubyte[](innerElementSize * cols);
-                    innerBlock[] = innerFill;
-                    heap ~= innerBlock;
-                    writeSliceDescriptor(
-                        outerBlock, row * sliceDescriptorSize, innerBlock, cols,
-                    );
-                }
-                writeSliceDescriptor(
-                    stack, base + instruction.a, outerBlock, rows,
                 );
                 ++ip;
                 break;
@@ -349,19 +302,6 @@ package(quickbite.backends.bytecode) RunResult run(
                     instruction.d,
                     instruction.e,
                 ) ? 1 : 0;
-                ++ip;
-                break;
-
-            case concatArrays1, concatArrays4, concatArrays16, concatArraysN:
-                heap ~= concatArrays(
-                    stack,
-                    base + instruction.a,
-                    base + instruction.b,
-                    base + instruction.c,
-                    instruction.op == concatArraysN
-                        ? instruction.d
-                        : concatArraysWidth(instruction.op),
-                );
                 ++ip;
                 break;
 
@@ -2369,39 +2309,6 @@ private ubyte[] dupArray(
     block[] = (cast(const(ubyte)*) pointer)[0 .. byteCount];
 
     writeSliceDescriptor(stack, descriptorOffset, block, length);
-    return block;
-}
-
-// Concatenate the slice descriptors at `leftOffset` and `rightOffset` into a
-// fresh heap block of `len(left) + len(right)` elements, copying both operands'
-// elements in order, and write the descriptor {total, newPtr} at
-// `descriptorOffset`. Returns the new block so the caller can root it in `heap`.
-// Both operands are copied, leaving the originals untouched.
-private ubyte[] concatArrays(
-    ref ubyte[] stack,
-    in size_t descriptorOffset,
-    in size_t leftOffset,
-    in size_t rightOffset,
-    in uint elementSize,
-) @trusted {
-    const left = readSliceDescriptor(stack, leftOffset);
-    const right = readSliceDescriptor(stack, rightOffset);
-    const leftLength = left.length;
-    const rightLength = right.length;
-    const leftPointer = left.pointer;
-    const rightPointer = right.pointer;
-    const leftBytes = leftLength * elementSize;
-    const rightBytes = rightLength * elementSize;
-
-    auto block = new ubyte[](leftBytes + rightBytes);
-    block[0 .. leftBytes] =
-        (cast(const(ubyte)*) leftPointer)[0 .. leftBytes];
-    block[leftBytes .. leftBytes + rightBytes] =
-        (cast(const(ubyte)*) rightPointer)[0 .. rightBytes];
-
-    writeSliceDescriptor(
-        stack, descriptorOffset, block, leftLength + rightLength,
-    );
     return block;
 }
 

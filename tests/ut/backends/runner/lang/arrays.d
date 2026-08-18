@@ -6251,12 +6251,10 @@ static foreach (backend; Matrix!(
     }
 }
 
-// A concatenation sibling of the same shape: `catOperandDescriptor` (via
-// `compileCatInto`, for `a ~ b`) also resolved a `Tarray` operand's
-// descriptor via `arrayDescriptorOffset` without passing `elementIsArray`,
-// mis-sizing an array-of-arrays literal operand not already a known local
-// -- confirmed via real `bin/ut` to SIGSEGV. Fixed by threading the
-// concatenation's own `elementIsArray` through `catOperandDescriptor`.
+// A concatenation sibling of the same shape: `a ~ b` where an operand is an
+// array-of-arrays literal not already bound to a local needs each row sized
+// by the concatenation's own row width, not a bare scalar width -- confirmed
+// via real `bin/ut` to SIGSEGV when mis-sized.
 static foreach (backend; Matrix!()) {
     @("dynamicArray.catArrayOfArraysLiteralOperand." ~ backend.stringof)
     @Tags(backend.stringof)
