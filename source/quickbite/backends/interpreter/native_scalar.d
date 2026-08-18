@@ -4,11 +4,10 @@ module quickbite.backends.interpreter.native_scalar;
 private:
 
 
-// A leaf codec between the interpreter's transient scalar
-// `quickbite.backends.interpreter.expression_result.ExpressionResult` and the
-// host's native byte layout for a D scalar type. Frame, module, aggregate, and
-// borrowed places use it for scalar loads and stores, so `*cast(T*) &local`
-// loads the same bytes at the pointee's static type.
+// A typed leaf codec between a D scalar type and its host-native byte layout.
+// Frame, module, aggregate, and borrowed places use it through typed reads and
+// writes, so `*cast(T*) &local` loads the same bytes at the pointee's static
+// type. The carrier adapters below exist only for unit tests.
 //
 // `real`/`TY.Tfloat80` is deliberately excluded from `isNativeScalarType`:
 // an x86 80-bit extended-precision `real` occupies a host- and
@@ -41,9 +40,9 @@ public imported!"dmd.astenums".TY nativeScalarKindOf(
 }
 
 
-// True for the D scalar types this codec's `writeScalar`/`readScalar`
-// handle: `bool`, the `char`/`wchar`/`dchar` family, every integral width,
-// and `float`/`double`. An `enum` whose base type is one of these also
+// True for the D scalar types this codec's typed operations handle: `bool`,
+// the `char`/`wchar`/`dchar` family, every integral width, and
+// `float`/`double`. An `enum` whose base type is one of these also
 // answers `true`, since `nativeScalarKindOf` dispatches on the resolved
 // base type. See this module's header comment for why `real` (`TY.
 // Tfloat80`) is excluded.
@@ -63,13 +62,10 @@ public bool isNativeScalarType(imported!"dmd.mtype".Type type) @safe {
 }
 
 
-// Writes `value`'s bits into `dest` in the host's own native layout for
-// `type`. `dest.length` must equal `layout.typeByteSize(type)`; this is
-// enforced with an unconditional throw rather than only an `in` contract,
-// because contracts are stripped under `-release` and this function's
-// safety (the `memcpy` below never running past `dest`'s bounds) must hold
-// in every build mode -- the same reasoning `native_array.d`'s
-// `readSliceHeaderBytes` gives for its own unconditional length check.
+// Unit-test adapter for the former scalar carrier boundary. Production code
+// uses typed `Place.storeNativeScalar` or `runtime_casts.castValue`.
+// `dest.length` must equal `layout.typeByteSize(type)`.
+deprecated("Use typed native scalar writes or runtime_casts.castValue.")
 public void writeScalar(
     imported!"dmd.mtype".Type type,
     ubyte[] dest,
@@ -110,8 +106,8 @@ public void writeNativeScalar(T)(
 
 
 // @trusted: `memcpy`s a same-sized native value's bits into `dest`.
-// `writeScalar` above has already verified, with an unconditional throw,
-// that `dest.length` equals the exact width `kind` needs before calling
+// The unit-test adapter above has already verified, with an unconditional
+// throw, that `dest.length` equals the exact width `kind` needs before calling
 // here, so every case below writes precisely `dest.length` bytes -- never
 // past its bounds. `memcpy`, not a pointer-typed store: `dest` is an
 // interior view into a `NativeBlock` at an arbitrary byte offset, not
@@ -178,8 +174,9 @@ private void writeScalarBits(
 }
 
 
-// The integer bits behind an integral/`bool`/character `ExpressionResult`, widened to
-// `long`. A character value's bits are its code point (`castTo!long`).
+// The integer bits behind an integral/`bool`/character `ExpressionResult`,
+// widened to `long`. A character value's bits are its code point
+// (`castTo!long`).
 private long scalarLong(in imported!"quickbite.backends.interpreter.expression_result".ExpressionResult value) @safe {
     return value.isCharacter ? value.castTo!long.asLong : value.asLong;
 }
@@ -211,10 +208,10 @@ public T readNativeScalar(T)(
 }
 
 
-// Temporary compatibility API for existing scalar-codec clients. New
-// production code must use `readNativeScalar` or `Place.loadNativeScalar` so
-// the leaf codec stays typed. This wrapper only reconstructs the legacy
-// carrier after the typed read has completed.
+// Unit-test adapter for the former scalar carrier boundary. Production code
+// uses `readNativeScalar` or `Place.loadNativeScalar` with a statically
+// selected host type. This wrapper reconstructs the legacy carrier only after
+// the typed read has completed.
 deprecated("Use readNativeScalar with a statically selected host type.")
 public imported!"quickbite.backends.interpreter.expression_result".ExpressionResult readScalar(
     imported!"dmd.mtype".Type type,

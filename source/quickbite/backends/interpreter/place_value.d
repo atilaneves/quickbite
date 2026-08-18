@@ -20,8 +20,8 @@ private:
 // `real` (`TY.Tfloat80`) is ALSO a composable leaf, but through its OWN
 // codec below (`isRealType`/`readRealBits`/`writeRealBits`), not
 // `native_scalar`'s: `native_scalar` deliberately excludes `real` because
-// `native_call_adapter.d` routes exact-size scalar arms through its
-// `writeScalar`/`readScalar`, and widening that shared codec would change
+// `native_call_adapter.d` routes exact-size scalar arms through its typed
+// read/write operations, and widening that shared codec would change
 // shipping FFI behaviour, out of scope for this place-composition layer
 // (`ai/plans/value.md`'s decision 15 -- host layout IS the spec on THIS
 // host, not a hazard to refuse -- is what makes a place-local codec
@@ -42,8 +42,8 @@ public imported!"quickbite.backends.interpreter.expression_result".ExpressionRes
         return ExpressionResult.null_;
 
     // An enum-typed place must come back tagged (`ExpressionResult.enumValue`), not as
-    // the plain integral `ExpressionResult` `native_scalar.readScalar` returns for it
-    // (it dispatches on the resolved base type, so an enum's own tagging is
+    // the plain integral `ExpressionResult` a typed scalar read returns for it
+    // (the read dispatches on the resolved base type, so an enum's own tagging is
     // invisible to that codec) -- checked before the `isNativeScalarType`
     // arm below, which would otherwise catch every enum type first since an
     // enum's base type is itself a native scalar. `place.loadScalar` reads
@@ -780,7 +780,7 @@ out (result; !result || isPlaceComposable(type))
 // copies the complete typed byte span.
 //
 // A native scalar, a `real`, and a pointer each write exactly their own
-// `typeByteSize` (`native_scalar.writeScalar`, `writeRealBits`,
+// `typeByteSize` (`native_scalar.writeNativeScalar`, `writeRealBits`,
 // `Place.storeReference`). A static array's elements tile its whole extent,
 // D's own rule that a static array's size is exactly its length times its
 // element size, so only the element type is in question. A non-union struct

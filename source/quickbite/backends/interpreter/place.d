@@ -17,10 +17,9 @@ public class IndexOutOfBoundsException: Exception {
 // that address, nothing more. `field`/`index` below compute another
 // `Place` by address arithmetic over DMD's own offsets/strides, read
 // straight from `layout.d` -- never a second, hand-rolled copy of DMD's
-// layout rules. Scalar load/store at a place go through `native_scalar.
-// d`'s codec, the interpreter's single scalar<->bytes authority; an
-// aggregate place has no single scalar value of its own and is addressed
-// by composing `field`/`index` down to scalar leaves instead.
+// layout rules. Typed scalar loads/stores at a place go through
+// `native_scalar.d`; an aggregate place has no single scalar value of its own
+// and is addressed by composing `field`/`index` down to scalar leaves instead.
 public struct Place {
     import dmd.mtype: Type;
     import dmd.declaration: VarDeclaration;
@@ -299,13 +298,11 @@ public struct Place {
         }
     }
 
-    // The inverse of `loadScalar`: writes `value`'s bits into this
-    // place's address at this place's own static type, via `native_scalar.
-    // writeScalar`. Refuses the same way `loadScalar` does for a
-    // non-scalar place.
+    // The inverse of `loadScalar`: casts `value` to this place's static type,
+    // then writes it through the typed native scalar operation. Refuses the
+    // same way `loadScalar` does for a non-scalar place.
     public void storeScalar(in imported!"quickbite.backends.interpreter.expression_result".ExpressionResult value) @safe {
-        import quickbite.backends.interpreter.native_scalar: isNativeScalarType, writeScalar;
-        import quickbite.backends.interpreter.layout: typeByteSize;
+        import quickbite.backends.interpreter.native_scalar: isNativeScalarType;
 
         if (!isNativeScalarType(_type))
             throw new Exception(
@@ -313,7 +310,19 @@ public struct Place {
                 ~ "type is not a native scalar type",
             );
 
-        writeScalar(_type, placeBytes(_address, typeByteSize(_type)), value);
+        storeScalarCast(value);
+    }
+
+    // @trusted: `runtime_casts` is @system because it reads DMD type data.
+    // This bridge passes this Place's already-held address and static type to
+    // it; the cast writes through `storeNativeScalar`, which verifies the
+    // destination width before its bounded memcpy.
+    private void storeScalarCast(
+        in imported!"quickbite.backends.interpreter.expression_result".ExpressionResult value,
+    ) @trusted {
+        import quickbite.backends.interpreter.runtime_casts: castTarget, castValue;
+
+        castValue(value, castTarget(_type), this);
     }
 
     public void storeNativeScalar(T)(in T value) @safe {

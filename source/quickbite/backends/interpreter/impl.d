@@ -5050,8 +5050,9 @@ unsupportedExpression:
     private void writeStructCellScalarFields(ref NativeStruct cell, in ExpressionResult structValue) {
         import quickbite.backends.interpreter.aggregate_value: AggregateValue;
         import quickbite.backends.interpreter.layout: fieldByteOffset;
-        import quickbite.backends.interpreter.native_scalar:
-            isNativeScalarType, writeScalar;
+        import quickbite.backends.interpreter.native_scalar: isNativeScalarType;
+        import quickbite.backends.interpreter.place: Place;
+        import quickbite.backends.interpreter.runtime_casts: castTarget, castValue;
         import quickbite.frontend.dmd.types:
             isDynamicArrayType, isStaticArrayType;
 
@@ -5059,8 +5060,11 @@ unsupportedExpression:
             auto fieldType = cell.fieldDeclaration(index).type;
 
             if (isNativeScalarType(fieldType)) {
-                writeScalar(fieldType, cell.field(index),
-                    AggregateValue.fieldAt(structValue, index));
+                castValue(
+                    AggregateValue.fieldAt(structValue, index),
+                    castTarget(fieldType),
+                    Place(cell.field(index).ptr, fieldType),
+                );
                 continue;
             }
 
@@ -9400,19 +9404,18 @@ unsupportedExpression:
         return backendCastValue(value, target);
     }
 
-    // Delegates to `native_scalar.writeScalar` -- the single scalar<->bytes
-    // authority -- rather than re-deriving a
-    // scalar's byte width and bit pattern here; this module must not grow
-    // its own second set of D layout rules alongside that codec's.
+    // Casts to the scalar's static type and writes through a typed place. This
+    // module does not re-derive scalar width or bit layout.
     private ExpressionResult[] scalarBytes(
         imported!"dmd.mtype".Type type,
         in ExpressionResult value,
     ) {
         import quickbite.backends.interpreter.layout: typeByteSize;
-        import quickbite.backends.interpreter.native_scalar: writeScalar;
+        import quickbite.backends.interpreter.place: Place;
+        import quickbite.backends.interpreter.runtime_casts: castTarget, castValue;
 
         auto raw = new ubyte[](typeByteSize(type));
-        writeScalar(type, raw, value);
+        castValue(value, castTarget(type), Place(raw.ptr, type));
 
         ExpressionResult[] bytes;
         foreach (byte_; raw)
@@ -9621,9 +9624,9 @@ unsupportedExpression:
     ) {
         import dmd.astenums: TY;
         import quickbite.backends.interpreter.layout: structFields;
-        import quickbite.backends.interpreter.native_scalar:
-            isNativeScalarType, writeScalar;
+        import quickbite.backends.interpreter.native_scalar: isNativeScalarType;
         import quickbite.backends.interpreter.place: Place;
+        import quickbite.backends.interpreter.runtime_casts: castTarget, castValue;
         import quickbite.frontend.dmd.types: isStaticArrayType;
 
         auto fields = structFields(unionType);
@@ -9680,7 +9683,8 @@ unsupportedExpression:
         writeStructCellScalarFields(cell, receiver);
 
         if (writtenScalar) {
-            writeScalar(writtenType, cell.field(fieldIndex), value);
+            castValue(value, castTarget(writtenType),
+                Place(cell.field(fieldIndex).ptr, writtenType));
         } else if (writtenStruct) {
             auto writtenCell = cell.structField(fieldIndex);
             writeStructCellScalarFields(writtenCell, value);
@@ -9688,8 +9692,11 @@ unsupportedExpression:
             auto writtenElementType = writtenType.toBasetype.nextOf.toBasetype;
             auto writtenArrayCell = cell.arrayField(fieldIndex);
             foreach (elementIndex; 0 .. AggregateValue.length(value))
-                writeScalar(writtenElementType, writtenArrayCell.element(elementIndex),
-                    AggregateValue.elementAt(value, elementIndex));
+                castValue(
+                    AggregateValue.elementAt(value, elementIndex),
+                    castTarget(writtenElementType),
+                    Place(writtenArrayCell.element(elementIndex).ptr, writtenElementType),
+                );
         }
 
         foreach (siblingIndex, sibling; fields) {
@@ -9998,9 +10005,11 @@ unsupportedExpression:
             return;
         }
 
-        import quickbite.backends.interpreter.native_scalar: writeScalar;
+        import quickbite.backends.interpreter.place: Place;
+        import quickbite.backends.interpreter.runtime_casts: castTarget, castValue;
 
-        writeScalar(cell.elementType, cell.element(index), value);
+        castValue(value, castTarget(cell.elementType),
+            Place(cell.element(index).ptr, cell.elementType));
     }
 
     // Writes `arrayValue`'s scalar leaves into `cell`'s bytes (the
@@ -10018,7 +10027,8 @@ unsupportedExpression:
         in ExpressionResult arrayValue,
     ) {
         import quickbite.backends.interpreter.aggregate_value: AggregateValue;
-        import quickbite.backends.interpreter.native_scalar: writeScalar;
+        import quickbite.backends.interpreter.place: Place;
+        import quickbite.backends.interpreter.runtime_casts: castTarget, castValue;
 
         if (!AggregateValue.isArray(arrayValue))
             return;
@@ -10035,10 +10045,10 @@ unsupportedExpression:
                     AggregateValue.elementAt(arrayValue, index),
                 );
             } else {
-                writeScalar(
-                    cell.elementType,
-                    cell.element(index),
+                castValue(
                     AggregateValue.elementAt(arrayValue, index),
+                    castTarget(cell.elementType),
+                    Place(cell.element(index).ptr, cell.elementType),
                 );
             }
         }
@@ -11146,8 +11156,7 @@ unsupportedExpression:
     ) {
         import std.conv: text;
         import quickbite.backends.interpreter.layout: typeByteSize;
-        import quickbite.backends.interpreter.native_scalar:
-            isNativeScalarType, writeScalar;
+        import quickbite.backends.interpreter.native_scalar: isNativeScalarType;
         import quickbite.frontend.dmd.types: isDynamicArrayType;
 
         auto sourceType = cast_.e1.type.toBasetype;
