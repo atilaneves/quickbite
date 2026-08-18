@@ -34,7 +34,7 @@ private struct Compiler {
         CatchClause, ClassInfo, CompiledFunction,
         Instruction, NativeCall, Op, Program,
         ResultType, ScalarType, StructDisplayField,
-        VirtualFunction, dupArrayOp,
+        VirtualFunction,
         indexLoadOp, indexStoreOp, isSigned,
         nativeArgumentSlotSize, noCatchObjectField, noExceptionClass,
         noNativeCallIndex,
@@ -7079,13 +7079,6 @@ private struct Compiler {
             return;
         }
 
-        // `dest = arr.dup` / `dest = arr.idup`: an independent copy of `arr` in
-        // a fresh heap block, so mutating either side leaves the other intact.
-        if (auto duplicate = tryArrayDuplication(source)) {
-            compileArrayDuplication(destination, elementType, duplicate);
-            return;
-        }
-
         // `dest = src[lo .. hi]` forms a sub-slice sharing the source's
         // backing memory, so writes through `dest` propagate to the original.
         if (auto slice = source.isSliceExp) {
@@ -7614,53 +7607,6 @@ private struct Compiler {
 
         const byteStride = pointerElementMetadata(slice.e1.type).byteWidth;
         emitPointerSlice(destination, pointer.offset, bounds, byteStride);
-    }
-
-    // The array operand of an `arr.dup` / `arr.idup` call, or null if `source`
-    // is not such a call. Both resolve to an `object.dup`/`object.idup`
-    // template CallExp whose callee identifier is `dup`/`idup` and whose single
-    // argument is the (cast-wrapped) source array; the AA `.dup` is a distinct
-    // `object.dup!(...)` instantiation and is not matched here.
-    private Expression tryArrayDuplication(Expression source) {
-        auto call = source.isCallExp;
-        if (call is null ||
-            call.arguments is null ||
-            call.arguments.length != 1)
-            return null;
-
-        auto function_ = callFunction(call);
-        if (function_ is null || function_.ident is null)
-            return null;
-
-        const name = function_.ident.toString;
-        if (name != "dup" && name != "idup")
-            return null;
-
-        auto argument = (*call.arguments)[0];
-        if (!isDynamicArrayArgument(argument))
-            return null;
-
-        return argument;
-    }
-
-    // `dest = arr.dup` / `dest = arr.idup`: materialise the source array's
-    // descriptor and emit an opcode that allocates a fresh heap block, copies
-    // every element into it, and writes the new descriptor to `destination`.
-    private void compileArrayDuplication(
-        in ushort destination,
-        in ScalarType elementType,
-        Expression source,
-    ) {
-        // The dup argument is the source array wrapped in an
-        // implicit-const cast; unwrap it so a known dynamic-array local reuses
-        // its descriptor in place rather than failing the cast.
-        auto array = source;
-        while (auto cast_ = array.isCastExp)
-            array = cast_.e1;
-
-        const sourceDescriptor = dynamicArrayDescriptor(array).offset;
-        const elementSize = dynamicArrayElementSize(array.type);
-        emitDupArray(destination, sourceDescriptor, elementSize);
     }
 
     // Read the length word of a dynamic-array descriptor into a fresh size_t
@@ -12920,19 +12866,8 @@ private struct Compiler {
         );
     }
 
-    // The `dupArray*` family's emit helper, the same required-`width`
-    // treatment as `emitSubSlice` above: one opcode per width, and
-    // `width` cannot be omitted or silently defaulted to zero.
-    private void emitDupArray(
-        in ushort destination, in ushort source, in uint width,
-    ) @safe pure {
-        _code ~= Instruction(
-            dupArrayOp(width), destination, source, cast(ushort) width,
-        );
-    }
-
     // The `sliceCopy*` family's emit helper, the same required-`width`
-    // treatment as `emitDupArray` above: one opcode per width (1/2/4/8/16,
+    // treatment as `emitSubSlice` above: one opcode per width (1/2/4/8/16,
     // plus the `N` fallback), and `width` cannot be omitted or silently
     // defaulted to zero.
     private void emitSliceCopy(

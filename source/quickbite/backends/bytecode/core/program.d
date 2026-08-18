@@ -332,23 +332,6 @@ package(quickbite.backends.bytecode) enum Op: ubyte {
     // element byte width (not 16).
     sliceEqualNested,
 
-    // Duplicate the slice descriptor at frame offset b into a fresh heap block
-    // holding an independent copy of all its elements, then write the
-    // descriptor {length, newPtr} to frame offset a. The block is rooted in
-    // `heap`. Mutating either array leaves the other intact (`arr.dup` /
-    // `arr.idup`). The element size is fixed by the opcode (1, 2, 4, 8, or 16
-    // bytes), matching the indexLoad/indexStore split; 16 bytes is a whole
-    // slice-descriptor element, e.g. a `T[][]` row (`.dup` is shallow, so
-    // copying the outer descriptors as opaque 16-byte blocks is correct).
-    dupArray1,
-    dupArray2, // 2-byte element (wchar): backs `wstring s = wcharArray.idup`
-    dupArray4,
-    dupArray8, // 8-byte element: long/double/pointer arrays
-    dupArray16,
-    // Same as `dupArray1`/etc, for an element width not covered by a fixed
-    // opcode (e.g. a struct element wider than 16 bytes): the byte width is
-    // operand c instead of being implied by the opcode.
-    dupArrayN,
     // Read the element at `[pointer + index * elementSize]` into the 1- or
     // 4-byte slot at frame offset a, where the raw `size_t` pointer value is at
     // frame offset b and the `size_t` index at frame offset c. Backs `*p` (index
@@ -816,52 +799,8 @@ in (op != Op.subSliceN)
     assert(0, "Not a fixed-width subSlice opcode.");
 }
 
-// The `dupArray` family's one op<->width table, the same pattern as
-// `subSliceOpWidths` above (a single opcode per width, since duplicating an
-// array's elements into a fresh heap block is a single operation).
-// compiler.d's `dupArrayOp` width->opcode selector and machine.d's
-// element-size Op->width derivation (`dupArrayWidth` below) both walk this
-// same table, so the two directions cannot independently drift out of sync.
-private struct DupArrayOpWidth {
-    uint width;
-    Op op;
-}
-
-private immutable DupArrayOpWidth[] dupArrayOpWidths = [
-    DupArrayOpWidth(1, Op.dupArray1),
-    DupArrayOpWidth(2, Op.dupArray2),
-    DupArrayOpWidth(4, Op.dupArray4),
-    DupArrayOpWidth(8, Op.dupArray8),
-    DupArrayOpWidth(16, Op.dupArray16),
-];
-
-// The `dupArray`-family width->opcode selector: `width` bytes uses the
-// fixed-width opcode for that width if the table above has one, else the `N`
-// variant (which carries the width in its own `c` operand instead).
-package(quickbite.backends.bytecode) Op dupArrayOp(in uint width)
-    @safe @nogc nothrow pure
-{
-    foreach (entry; dupArrayOpWidths)
-        if (entry.width == width)
-            return entry.op;
-    return Op.dupArrayN;
-}
-
-// The reverse direction: the fixed byte width a fixed-width `dupArray*`
-// opcode operates on. Not valid for `dupArrayN`, whose width is a runtime
-// operand rather than implied by the opcode.
-package(quickbite.backends.bytecode) uint dupArrayWidth(in Op op)
-    @safe @nogc nothrow pure
-in (op != Op.dupArrayN)
-{
-    foreach (entry; dupArrayOpWidths)
-        if (entry.op == op)
-            return entry.width;
-    assert(0, "Not a fixed-width dupArray opcode.");
-}
-
 // The `sliceCopy` family's one op<->width table, the same pattern as
-// `dupArrayOpWidths` above (a single opcode per width). All five fixed
+// `subSliceOpWidths` above (a single opcode per width). All five fixed
 // widths get an opcode, matching indexLoad/indexStore's own 1/2/4/8/16 split
 // (a generic slice copy has to move `T[][]` rows too, not just scalars).
 // compiler.d's `sliceCopyOp` width->opcode selector and machine.d's

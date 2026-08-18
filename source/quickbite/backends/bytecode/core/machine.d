@@ -25,7 +25,7 @@ package(quickbite.backends.bytecode) RunResult run(
     import core.exception: RangeError;
     import quickbite.backends.bytecode.core.program:
         CatchClause, ClassInfo,
-        dupArrayWidth, indexElementWidth, markScanned, Op, ScalarType,
+        indexElementWidth, markScanned, Op, ScalarType,
         noCatchObjectField, noExceptionClass, noNativeCallIndex,
         pointerElementWidth, size, sliceCopyWidth, sliceDescriptorLengthOffset,
         sliceDescriptorPtrOffset, sliceDescriptorSize,
@@ -310,19 +310,6 @@ package(quickbite.backends.bytecode) RunResult run(
                     instruction.d,
                     instruction.e,
                 ) ? 1 : 0;
-                ++ip;
-                break;
-
-            case dupArray1, dupArray2, dupArray4, dupArray8, dupArray16,
-                dupArrayN:
-                heap ~= dupArray(
-                    stack,
-                    base + instruction.a,
-                    base + instruction.b,
-                    instruction.op == dupArrayN
-                        ? instruction.c
-                        : dupArrayWidth(instruction.op),
-                );
                 ++ip;
                 break;
 
@@ -2288,31 +2275,6 @@ private void validateSubSlice(
             "slice [", lo, " .. ", hi,
             "] extends past source array of length ", length,
         ));
-}
-
-// Duplicate the slice descriptor at `sourceOffset` into a fresh heap block
-// holding an independent copy of its elements, and write the descriptor
-// {length, newPtr} at `descriptorOffset`. Returns the new block so the caller
-// can root it in `heap`.
-private ubyte[] dupArray(
-    ref ubyte[] stack,
-    in size_t descriptorOffset,
-    in size_t sourceOffset,
-    in uint elementSize,
-) @trusted {
-    import quickbite.backends.bytecode.core.program: markScanned;
-
-    const source = readSliceDescriptor(stack, sourceOffset);
-    const length = source.length;
-    const pointer = source.pointer;
-    const byteCount = length * elementSize;
-
-    auto block = new ubyte[](byteCount);
-    markScanned(block);
-    block[] = (cast(const(ubyte)*) pointer)[0 .. byteCount];
-
-    writeSliceDescriptor(stack, descriptorOffset, block, length);
-    return block;
 }
 
 // True iff the two slice descriptors hold the same length and identical element
