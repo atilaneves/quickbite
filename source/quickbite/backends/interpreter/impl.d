@@ -10170,6 +10170,24 @@ unsupportedExpression:
             ));
     }
 
+    // A slice destination is live storage, so its RHS must first finish in
+    // separate typed storage. This single construction covers an array-copy
+    // RHS and a scalar or nested-array broadcast; the existing native slice
+    // paths then copy its completed elements into their resolved targets.
+    private ExpressionResult constructSliceAssignmentRhs(
+        imported!"dmd.expression".Expression rhs,
+    ) {
+        import quickbite.backends.interpreter.place: Place;
+
+        assert(rhs !is null && rhs.type !is null);
+        auto temporary = ConstructionDestination(Place(
+            _activationFrame.temporaryAddress(rhs),
+            rhs.type,
+        ));
+        runExpression(rhs, temporary);
+        return readStoredValue(temporary.place);
+    }
+
     private ExpressionResult runSliceAssignExpression(
         imported!"dmd.expression".SliceExp slice,
         imported!"dmd.expression".Expression rhs,
@@ -10234,7 +10252,7 @@ unsupportedExpression:
         );
 
         const block = isBlockSliceAssignment(slice, rhs);
-        const value = runExpressionValue(rhs);
+        const value = constructSliceAssignmentRhs(rhs);
 
         // A fill assignment (`a[] = scalar;`) evaluates `rhs` to a single
         // element-typed value, not an array to index into -- only the copy
@@ -10313,14 +10331,10 @@ unsupportedExpression:
             ? AggregateValue.length(current)
             : cast(size_t) runExpressionValue(slice.upr).asLong;
 
-        if (upper > AggregateValue.length(current))
-            throwRangeError(text(
-                "slice [", lower, " .. ", upper,
-                "] extends past source array of length ", AggregateValue.length(current),
-            ));
+        checkSliceAssignmentBounds(lower, upper, AggregateValue.length(current));
 
         const block = isBlockSliceAssignment(slice, rhs);
-        const value = runExpressionValue(rhs);
+        const value = constructSliceAssignmentRhs(rhs);
         foreach (elementIndex; lower .. upper) {
             const element = block
                 ? copyArrayValue(value, index.type.toBasetype.nextOf)
@@ -10368,7 +10382,7 @@ unsupportedExpression:
             ));
 
         const block = isBlockSliceAssignment(slice, rhs);
-        const value = runExpressionValue(rhs);
+        const value = constructSliceAssignmentRhs(rhs);
 
         // An empty range writes nothing, so the pointer's provenance never
         // matters — a zero-length assignment through a null pointer is a no-op
@@ -10493,7 +10507,7 @@ unsupportedExpression:
         checkSliceAssignmentBounds(lower, upper, AggregateValue.length(current));
 
         const block = isBlockSliceAssignment(slice, rhs);
-        const value = runExpressionValue(rhs);
+        const value = constructSliceAssignmentRhs(rhs);
 
         // A fill assignment (`s.field[] = scalar;` or `s.field[a .. b] =
         // scalar;`) evaluates `rhs` to a single element-typed value, not an
@@ -10614,7 +10628,7 @@ unsupportedExpression:
         checkSliceAssignmentBounds(lower, upper, AggregateValue.length(current));
 
         const block = isBlockSliceAssignment(slice, rhs);
-        const value = runExpressionValue(rhs);
+        const value = constructSliceAssignmentRhs(rhs);
 
         // A fill assignment (`(cast(T[]) view)[] = scalar;`) evaluates `rhs`
         // to a single element-typed value, not an array to index into --
