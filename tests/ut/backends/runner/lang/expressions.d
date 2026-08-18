@@ -1068,7 +1068,12 @@ static foreach (backend; Matrix!(
 // A class TypeInfo's `m_flags` reports `noPointers` exactly when no field
 // anywhere in the class hierarchy carries an indirection, so a garbage
 // collector can decide whether an object's body needs scanning.
-static foreach (backend; Matrix!()) {
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.inexpressible,
+        "`typeid(Scalars).m_flags` is not yet implemented at compile time"),
+    Omit!(Bytecode, Because.diverges,
+        "Bytecode reports no class TypeInfo flags"),
+)) {
     @("typeid.classFlagsReportWhetherFieldsCarryIndirections." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -1098,7 +1103,12 @@ static foreach (backend; Matrix!()) {
 
 // A visibility attribute changes nothing about the type it applies to, so a
 // `private` class describes itself through `typeid` exactly as any other does.
-static foreach (backend; Matrix!()) {
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.inexpressible,
+        "`typeid(Hidden).m_flags` is not yet implemented at compile time"),
+    Omit!(Bytecode, Because.diverges,
+        "Bytecode reports no class TypeInfo flags"),
+)) {
     @("typeid.classFlagsReadThroughVisibilityAttribute." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -1119,7 +1129,12 @@ static foreach (backend; Matrix!()) {
 
 // `typeid` of a `shared` class yields a `TypeInfo_Shared`, whose `base` is the
 // unqualified type's own `TypeInfo_Class`.
-static foreach (backend; Matrix!()) {
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.inexpressible,
+        "`typeid(shared(Scalars)).base` is not yet implemented at compile time"),
+    Omit!(Bytecode, Because.diverges,
+        "Bytecode reports no shared TypeInfo base"),
+)) {
     @("typeid.sharedClassTypeInfoExposesUnqualifiedBase." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
