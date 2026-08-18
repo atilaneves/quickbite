@@ -682,6 +682,10 @@ private struct Walker {
     // activation. Statement execution never writes here: a statement is not
     // a value.
     private ExpressionResult _returnValue;
+    // An interpreted non-void call constructs directly into its caller's
+    // fresh storage. This pointer is valid only while the synchronous child
+    // activation runs; recursive calls use their own activation and pointer.
+    private ConstructionDestination* _returnDestination;
     private bool runningCalledFunction;
     private bool inUnitTest;
     private FuncDeclaration currentFunction;
@@ -880,6 +884,15 @@ private struct Walker {
                     writeLocation(return_.exp, refReturnAssignedValue);
                 else if (addressOfRefReturn)
                     _returnValue = refReturnAddress(return_.exp);
+                else if (_returnDestination !is null) {
+                    if (!constructInto(return_.exp, *_returnDestination)) {
+                        auto value = runExpression(return_.exp);
+                        if (return_.exp.type.toBasetype.isTypeClass !is null)
+                            value = rootedNativeClassValue(return_.exp, value);
+                        writeStoredValue(_returnDestination.place, value);
+                        _returnDestination.markConstructed;
+                    }
+                }
                 else {
                     _returnValue = runExpression(return_.exp);
                     if (return_.exp.type.toBasetype.isTypeClass !is null)
@@ -4061,7 +4074,14 @@ unsupportedExpression:
     private ExpressionResult addressOfCallResultTemporary(
         imported!"dmd.expression".CallExp call,
     ) {
-        return addressOfTemporaryValue(call, runCallExpression(call));
+        import quickbite.backends.interpreter.place: Place;
+
+        auto destination = ConstructionDestination(Place(
+            _activationFrame.temporaryAddress(call),
+            call.type,
+        ));
+        constructInto(call, destination);
+        return ExpressionResult.pointerValue(destination.place.address);
     }
 
     // The address of an evaluated value with no composable native place: one
@@ -5238,6 +5258,32 @@ unsupportedExpression:
     }
 
     private ExpressionResult runCallExpression(imported!"dmd.expression".CallExp call) {
+        import dmd.astenums: TY;
+        import quickbite.backends.interpreter.place: Place;
+
+        if (call.type.toBasetype.ty == TY.Tvoid)
+            return runCallExpression(call, null);
+
+        auto destination = ConstructionDestination(Place(
+            _activationFrame.temporaryAddress(call),
+            call.type,
+        ));
+        const result = runCallExpression(call, &destination);
+        if (!destination.isConstructed) {
+            writeStoredValue(destination.place, result);
+            destination.markConstructed;
+        }
+        return readStoredValue(destination.place);
+    }
+
+    // A construction caller supplies fresh storage. An ordinary rvalue call
+    // gets a typed activation-owned temporary from the wrapper above. Native
+    // and not-yet-migrated families still return a carrier, which the wrapper
+    // writes into that same storage.
+    private ExpressionResult runCallExpression(
+        imported!"dmd.expression".CallExp call,
+        ConstructionDestination* constructionDestination,
+    ) {
         import dmd.expression: Expression;
         import quickbite.backends.interpreter.builtins:
             binaryBuiltinCall,
@@ -5634,6 +5680,7 @@ unsupportedExpression:
                     argumentExpressions,
                     evaluatedArguments,
                     hasReceiverPointerAddress ? &receiverPointerAddress : null,
+                    constructionDestination,
                 );
             }
         }
@@ -5684,6 +5731,8 @@ unsupportedExpression:
                     arguments,
                     argumentExpressions,
                     evaluatedArguments,
+                    null,
+                    constructionDestination,
                 );
 
             return runFunction(
@@ -5692,6 +5741,8 @@ unsupportedExpression:
                 argumentExpressions,
                 false,
                 evaluatedArguments,
+                null,
+                constructionDestination,
             );
         }
 
@@ -5703,6 +5754,8 @@ unsupportedExpression:
                     argumentExpressions,
                     false,
                     evaluatedArguments,
+                    null,
+                    constructionDestination,
                 );
 
         if (auto function_ = functionPointerExpressionFunction(call.e1)) {
@@ -5728,6 +5781,8 @@ unsupportedExpression:
                     arguments,
                     argumentExpressions,
                     evaluatedArguments,
+                    null,
+                    constructionDestination,
                 );
 
             return runFunction(
@@ -5736,6 +5791,8 @@ unsupportedExpression:
                 argumentExpressions,
                 false,
                 evaluatedArguments,
+                null,
+                constructionDestination,
             );
         }
 
@@ -5772,6 +5829,8 @@ unsupportedExpression:
                 argumentExpressions,
                 false,
                 evaluatedArguments,
+                null,
+                constructionDestination,
             );
         }
 
@@ -6645,6 +6704,7 @@ unsupportedExpression:
         in bool captureLocals = false,
         in EvaluatedReferenceArgument[] evaluatedArguments = null,
         in void*[VarDeclaration] closureAddresses = null,
+        ConstructionDestination* constructionDestination = null,
     ) {
         Walker child;
         child.runningCalledFunction = true;
@@ -6652,6 +6712,7 @@ unsupportedExpression:
         auto layout = cachedFrameLayout(function_);
         child._activationFrame = FrameBlock.allocate(layout);
         child._returnValue = ExpressionResult(false);
+        child._returnDestination = constructionDestination;
         forkExecutionStateInto(child);
         scope(exit) child.retireActivationFrameMetadata;
         bindCapturedReferenceSlots(function_, child, closureAddresses);
@@ -6745,6 +6806,7 @@ unsupportedExpression:
         // `p()` in `p().get()`, `i++` in `a[i++].method()`, or the call
         // itself in `get(holder, evaluations).slot`).
         const(ExpressionResult)* precomputedReceiverPointerAddress = null,
+        ConstructionDestination* constructionDestination = null,
     ) {
         const memberReceiver = nativeMemberReceiver(function_, receiver);
 
@@ -6768,6 +6830,7 @@ unsupportedExpression:
         auto layout = cachedFrameLayout(function_);
         child._activationFrame = FrameBlock.allocate(layout);
         child._returnValue = ExpressionResult(false);
+        child._returnDestination = constructionDestination;
         forkExecutionStateInto(child);
         scope(exit) child.retireActivationFrameMetadata;
         bindCapturedReferenceSlots(
@@ -12656,6 +12719,20 @@ unsupportedExpression:
             );
 
         auto place = destination.place;
+
+        if (auto call = rvalue.isCallExp) {
+            import dmd.astenums: TY;
+
+            if (call.type.toBasetype.ty == TY.Tvoid)
+                return false;
+
+            const result = runCallExpression(call, &destination);
+            if (!destination.isConstructed) {
+                writeStoredValue(place, result);
+                destination.markConstructed;
+            }
+            return true;
+        }
 
         if (auto literal = rvalue.isStructLiteralExp) {
             // The literal's own fields must BE the destination's fields: a
