@@ -952,7 +952,7 @@ private struct Walker {
         }
 
         if (auto if_ = statement.isIfStatement) {
-            if (isTruthy(runExpressionValue(if_.condition)))
+            if (conditionTruthy(if_.condition))
                 runStatement(if_.ifbody);
             else
                 runStatement(if_.elsebody);
@@ -2437,7 +2437,7 @@ private struct Walker {
         while (
             !returned &&
             loopControl == LoopControl.none &&
-            (for_.condition is null || isTruthy(runExpressionValue(for_.condition)))
+            (for_.condition is null || conditionTruthy(for_.condition))
         ) {
             runStatement(for_._body);
             if (returned)
@@ -2475,7 +2475,7 @@ private struct Walker {
                     break;
                 clearLoopControl;
             }
-        } while (isTruthy(runExpressionValue(do_.condition)));
+        } while (conditionTruthy(do_.condition));
     }
 
     private void clearLoopControl() {
@@ -2870,7 +2870,7 @@ assertExpression:
             import quickbite.backends.interpreter.messages:
                 assertFailureMessage;
 
-            if (!isTruthy(runExpressionValue(assert_.e1)))
+            if (!conditionTruthy(assert_.e1))
                 throwAssertError(assertFailureMessage(
                     assert_,
                     runningCalledFunction,
@@ -3375,7 +3375,7 @@ unsupportedExpression:
     private ExpressionResult runLogicalAndExpression(
         imported!"dmd.expression".LogicalExp logical,
     ) {
-        const left = isTruthy(runExpressionValue(logical.e1));
+        const left = conditionTruthy(logical.e1);
         if (!left)
             return ExpressionResult(false);
 
@@ -3386,7 +3386,7 @@ unsupportedExpression:
     private ExpressionResult runLogicalOrExpression(
         imported!"dmd.expression".LogicalExp logical,
     ) {
-        const left = isTruthy(runExpressionValue(logical.e1));
+        const left = conditionTruthy(logical.e1);
         if (left)
             return ExpressionResult(true);
 
@@ -5299,7 +5299,7 @@ unsupportedExpression:
     private ExpressionResult runConditionalExpression(
         imported!"dmd.expression".CondExp conditional,
     ) {
-        return isTruthy(runExpressionValue(conditional.econd)) ?
+        return conditionTruthy(conditional.econd) ?
             runExpressionValue(conditional.e1) :
             runExpressionValue(conditional.e2);
     }
@@ -13020,6 +13020,14 @@ unsupportedExpression:
 
         auto place = destination.place;
 
+        if (auto conditional = rvalue.isCondExp) {
+            if (conditionTruthy(conditional.econd))
+                runExpression(conditional.e1, destination);
+            else
+                runExpression(conditional.e2, destination);
+            return true;
+        }
+
         if (constructPointerExpressionInto(rvalue, place)) {
             destination.markConstructed;
             return true;
@@ -13562,11 +13570,11 @@ destinationFallback:
             return true;
         }
         if (auto not = expression.isNotExp) {
-            destination.storeNativeScalar(cast(T) !scalarTruthy(not.e1));
+            destination.storeNativeScalar(cast(T) !conditionTruthy(not.e1));
             return true;
         }
         if (auto logical = expression.isLogicalExp) {
-            const left = scalarTruthy(logical.e1);
+            const left = conditionTruthy(logical.e1);
             if (logical.op == EXP.andAnd && !left) {
                 destination.storeNativeScalar(cast(T) false);
                 return true;
@@ -13577,7 +13585,7 @@ destinationFallback:
             }
             const first = _pendingTemporaryDestructors.length;
             scope(exit) runPendingTemporaryDestructors(first);
-            destination.storeNativeScalar(cast(T) scalarTruthy(logical.e2));
+            destination.storeNativeScalar(cast(T) conditionTruthy(logical.e2));
             return true;
         }
         switch (expression.op) with (EXP) {
@@ -13693,7 +13701,10 @@ destinationFallback:
         return destination.place.loadNativeScalar!T;
     }
 
-    private bool scalarTruthy(imported!"dmd.expression".Expression expression) {
+    // DMD has already fixed the condition's type. Construct it in a typed
+    // activation slot, then inspect that type's native representation. This
+    // keeps branch selection outside the universal expression carrier.
+    private bool conditionTruthy(imported!"dmd.expression".Expression expression) {
         import dmd.astenums: TY;
 
         import quickbite.backends.interpreter.place: Place;
@@ -13716,7 +13727,11 @@ destinationFallback:
             case Tfloat32: return destination.place.loadNativeScalar!float != 0;
             case Tfloat64: return destination.place.loadNativeScalar!double != 0;
             case Tfloat80: return destination.place.loadNativeScalar!real != 0;
-            default: return isTruthy(readStoredValue(destination.place));
+            case Tpointer, Tclass, Taarray:
+                return destination.place.deref.address !is null;
+            case Tarray: return destination.place.sliceDataPointer !is null;
+            default:
+                throw new Exception("Unsupported condition type.");
         }
     }
 
