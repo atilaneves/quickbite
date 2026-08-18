@@ -7002,16 +7002,18 @@ unsupportedExpression:
         child.bindThisReferenceAddress(function_, child.thisValue);
         if (
             function_.constructorStructDeclaration !is null &&
-            constructionDestination !is null
+            constructionDestination !is null &&
+            !isWritableLocation(receiverExpression)
         ) {
             import quickbite.backends.interpreter.place: Place;
 
             // DMD gives a struct constructor a temporary receiver to
             // initialize. The call's caller has fresher typed storage for the
             // completed value, so seed that storage from the receiver and
-            // lend it to `this`. The constructor then writes its final bytes
-            // straight to the caller; it does not return `child.thisValue`
-            // for a later carrier-to-place copy.
+            // lend it to `this`. A writable receiver instead follows the
+            // regular `this` binding below, which preserves DMD's assignment
+            // receiver for a following postblit. This path does not return
+            // `child.thisValue` for a later carrier-to-place copy.
             if (
                 precomputedReceiverPointerAddress !is null &&
                 precomputedReceiverPointerAddress.isPointer &&
