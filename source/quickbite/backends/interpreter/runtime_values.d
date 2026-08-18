@@ -168,99 +168,6 @@ public void realValue(
     }
 }
 
-public imported!"quickbite.backends.interpreter.expression_result".ExpressionResult defaultValue(
-    imported!"dmd.declaration".VarDeclaration variable,
-) {
-    if (variable.type is null)
-        throw new Exception("Unsupported DMD default value.");
-
-    return defaultValue(variable.type);
-}
-
-public imported!"quickbite.backends.interpreter.expression_result".ExpressionResult defaultValue(
-    // not `in`: DMD's `Type.toBasetype` is not const-callable
-    imported!"dmd.mtype".Type variableType,
-) {
-    import dmd.astenums: TY;
-    import quickbite.backends.interpreter.aggregate_value: AggregateValue;
-    import quickbite.backends.interpreter.expression_result: ExpressionResult;
-
-    // `auto` because DMD's static array accessors are not const-callable
-    auto type = variableType.toBasetype;
-    with (TY) final switch (type.ty) {
-        case Tbool:
-            return scalarDefaultValue!Tbool;
-        case Tint8:
-            return scalarDefaultValue!Tint8;
-        case Tuns8:
-            return scalarDefaultValue!Tuns8;
-        case Tint16:
-            return scalarDefaultValue!Tint16;
-        case Tuns16:
-            return scalarDefaultValue!Tuns16;
-        case Tint32:
-            return scalarDefaultValue!Tint32;
-        case Tuns32:
-            return scalarDefaultValue!Tuns32;
-        case Tint64:
-            return scalarDefaultValue!Tint64;
-        case Tuns64:
-            return scalarDefaultValue!Tuns64;
-        case Tfloat32:
-            return scalarDefaultValue!Tfloat32;
-        case Tfloat64:
-            return scalarDefaultValue!Tfloat64;
-        case Tfloat80:
-            return scalarDefaultValue!Tfloat80;
-        case Tchar:
-            return scalarDefaultValue!Tchar;
-        case Twchar:
-            return scalarDefaultValue!Twchar;
-        case Tdchar:
-            return scalarDefaultValue!Tdchar;
-        case Tpointer:
-        case Tclass:
-        case Tnull:
-            return ExpressionResult.null_;
-        case Tdelegate:
-            return ExpressionResult.null_;
-        case Tsarray:
-            return staticArrayDefaultValue(type.isTypeSArray);
-        case Tstruct:
-            return structDefaultValue(type.isTypeStruct);
-        case Tarray:
-            return AggregateValue.reconstructArray(variableType, []);
-        case Taarray:
-            return ExpressionResult.null_;
-        case Tvoid:
-        case Tint128:
-        case Tuns128:
-        case Timaginary32:
-        case Timaginary64:
-        case Timaginary80:
-        case Tcomplex32:
-        case Tcomplex64:
-        case Tcomplex80:
-        case Tfunction:
-        case Tident:
-        case Tinstance:
-        case Ttypeof:
-        case Ttuple:
-        case Tslice:
-        case Treturn:
-        case Terror:
-        case Tvector:
-        case Ttraits:
-        case Tmixin:
-        case Tnoreturn:
-        case Ttag:
-        case Tenum:
-        case Treference:
-        case Tnone:
-            throw new Exception("Unsupported DMD default value.");
-    }
-}
-
 // Construct a type's ordinary `.init` directly in caller-owned native
 // storage. Structs and static arrays recurse through their typed places, so
 // they do not first become an aggregate ExpressionResult. A union has one
@@ -272,8 +179,8 @@ public void defaultValue(
     imported!"quickbite.backends.interpreter.place".Place destination,
 ) {
     import dmd.astenums: TY;
-    import quickbite.backends.interpreter.expression_result: ExpressionResult;
-    import quickbite.backends.interpreter.place_value: writeValue;
+    import quickbite.backends.interpreter.aggregate_value: AggregateValue;
+    import quickbite.backends.interpreter.place_value: clearPlace;
 
     auto type = variableType.toBasetype;
     with (TY) final switch (type.ty) {
@@ -331,7 +238,7 @@ public void defaultValue(
         case Tdelegate:
             // A default is constructed only in fresh storage, so a null
             // callable has no out-of-band callable metadata to preserve.
-            writeValue(destination, ExpressionResult.null_);
+            clearPlace(destination);
             return;
         case Tsarray:
             auto staticArray = type.isTypeSArray;
@@ -350,9 +257,7 @@ public void defaultValue(
             }
             return;
         case Tarray:
-            // Preserve the existing dynamic-array default construction until
-            // its carrier path has its own destination migration.
-            writeValue(destination, defaultValue(variableType));
+            AggregateValue.initializeArray(destination, 0);
             return;
         case Tvoid:
         case Tint128:
@@ -383,40 +288,16 @@ public void defaultValue(
     }
 }
 
-private imported!"quickbite.backends.interpreter.expression_result".ExpressionResult staticArrayDefaultValue(
-    imported!"dmd.mtype".TypeSArray staticArray,
+// Creates an owned native value for an expression path that has no final
+// destination yet. The caller can read it at its typed place, but default
+// construction itself never selects an ExpressionResult arm.
+public imported!"quickbite.backends.interpreter.native_aggregate".NativeAggregate defaultValueOwner(
+    imported!"dmd.mtype".Type type,
 ) {
-    import quickbite.backends.interpreter.expression_result: ExpressionResult;
-    import quickbite.backends.interpreter.native_aggregate: NativeAggregate;
-    import quickbite.backends.interpreter.place: placeAt;
-
-    auto aggregate = NativeAggregate.allocate(staticArray);
-    defaultValue(staticArray, placeAt(aggregate.storage, staticArray));
-    return ExpressionResult.nativeAggregateValue(aggregate);
-}
-
-private imported!"quickbite.backends.interpreter.expression_result".ExpressionResult structDefaultValue(
-    imported!"dmd.mtype".TypeStruct structType,
-) {
-    import quickbite.backends.interpreter.aggregate_value: AggregateValue;
-    import quickbite.backends.interpreter.expression_result: ExpressionResult;
     import quickbite.backends.interpreter.native_aggregate: NativeAggregate;
     import quickbite.backends.interpreter.place: Place;
 
-    if (structType is null || structType.sym is null)
-        throw new Exception("Unsupported DMD default value.");
-
-    auto aggregate = NativeAggregate.allocate(structType);
-    defaultValue(structType, Place(aggregate.address, structType));
-    return ExpressionResult.nativeAggregateValue(aggregate);
-}
-
-private imported!"quickbite.backends.interpreter.expression_result".ExpressionResult scalarDefaultValue(
-    imported!"dmd.astenums".TY type,
-)() {
-    import quickbite.frontend.dmd.types: dmdScalarType;
-    import quickbite.backends.interpreter.expression_result: ExpressionResult;
-
-    alias T = dmdScalarType!type;
-    return ExpressionResult(T.init);
+    auto owner = NativeAggregate.allocate(type);
+    defaultValue(type, Place(owner.address, type));
+    return owner;
 }

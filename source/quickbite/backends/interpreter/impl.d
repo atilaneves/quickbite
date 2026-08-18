@@ -584,7 +584,7 @@ private struct Walker {
     import quickbite.backends.interpreter.native_struct: NativeStruct;
     import quickbite.backends.interpreter.module_table: ModuleTable;
     import quickbite.backends.interpreter.place: Place;
-    import quickbite.backends.interpreter.runtime_values: defaultValue;
+    import quickbite.backends.interpreter.runtime_values: defaultValue, defaultValueOwner;
     import quickbite.backends.interpreter.expression_result: ExpressionResult;
 
     private TemporaryPointerOwners* _temporaryPointerOwners;
@@ -1905,7 +1905,7 @@ private struct Walker {
         if (auto variableExpression = expression.isVarExp) {
             auto variable = variableExpression.var.isVarDeclaration;
             if (variable !is null && isUninitializedBinding(variable)) {
-                setLocal(variable, defaultLocalValue(variable));
+                defaultLocalValue(variable);
                 clearUninitializedBindingAddress(bindingPlace(variable).address);
             }
             return;
@@ -3274,7 +3274,7 @@ variableExpression:
             if (isManifestVariable(variable)) {
                 if (auto initializer = variable._init.isExpInitializer)
                     return runExpressionValue(initializer.exp);
-                return defaultValue(variable);
+                return defaultValueResult(variable.type);
             }
 
             if (
@@ -3293,10 +3293,9 @@ variableExpression:
                 // read is reported. Match that so patterns like Phobos
                 // `trustedVoidInit` evaluate up to any real libc call.
                 if (isStructType(variable.type) || isStaticArrayType(variable.type)) {
-                    const value = defaultValue(variable);
-                    setLocal(variable, value);
+                    defaultLocalValue(variable);
                     clearUninitializedBindingAddress(bindingPlace(variable).address);
-                    return value;
+                    return readBindingValue(variable);
                 }
 
                 throw new Exception(uninitializedVariableMessage(variable, currentFunction));
@@ -3318,7 +3317,7 @@ variableExpression:
             if (variable.isDataseg && variable._init !is null) {
                 resolveNonRootInitializer(variable);
                 if (auto initializer = variable._init.isExpInitializer) {
-                    setLocal(variable, defaultValue(variable));
+                    defaultLocalValue(variable);
                     const value = storageValue(
                         variable.type,
                         evaluateDatasegInitializerExpression(initializer.exp),
@@ -3328,7 +3327,7 @@ variableExpression:
                 }
             }
 
-            return defaultValue(variable);
+            return defaultValueResult(variable.type);
         }
 
 unsupportedExpression:
@@ -5039,7 +5038,7 @@ unsupportedExpression:
 
         auto initializerExp = variable._init.initializerToExpression;
         if (initializerExp !is null) {
-            setLocal(variable, defaultValue(variable));
+            defaultLocalValue(variable);
             setLocal(variable, storageValue(
                 variable.type,
                 evaluateDatasegInitializerExpression(initializerExp),
@@ -5135,7 +5134,7 @@ unsupportedExpression:
         if (hasBindingPlace(variable))
             return readStoredValue(bindingPlace(variable));
 
-        return defaultValue(variable);
+        return defaultValueResult(variable.type);
     }
 
     private ExpressionResult functionPointerValue(FuncDeclaration function_) {
@@ -7062,7 +7061,7 @@ unsupportedExpression:
         ) {
             auto structDecl = function_.constructorStructDeclaration;
             child.thisValue = structDecl !is null
-                ? defaultValue(structDecl.type)
+                ? defaultValueResult(structDecl.type)
                 : memberReceiver;
         } else {
             child.thisValue = memberReceiver;
@@ -8687,12 +8686,12 @@ unsupportedExpression:
             if (blit.e2.isIntegerExp !is null && isStructType(assign.e1.type)) {
                 if (auto var = assign.e1.isVarExp)
                     if (auto variable = var.var.isVarDeclaration) {
-                        const value = defaultValue(variable);
+                        const value = defaultValueResult(variable.type);
                         writeLocation(assign.e1, value);
                         return value;
                     }
                 if (assign.e1.isDotVarExp !is null) {
-                    const value = defaultValue(assign.e1.type);
+                    const value = defaultValueResult(assign.e1.type);
                     writeLocation(assign.e1, value);
                     return value;
                 }
@@ -9343,6 +9342,17 @@ unsupportedExpression:
         import dmd.typesem: defaultInitLiteral;
 
         return runExpressionValue(type.defaultInitLiteral(Loc.initial));
+    }
+
+    // A value-result caller has no final place yet. Build the D default in a
+    // typed native owner, then cross the existing result boundary only when
+    // this older expression path requires it.
+    private ExpressionResult defaultValueResult(imported!"dmd.mtype".Type type) {
+        import quickbite.backends.interpreter.place: Place;
+        import quickbite.backends.interpreter.place_value: readValue;
+
+        auto owner = defaultValueOwner(type);
+        return readValue(Place(owner.address, type));
     }
 
     private ExpressionResult storageValue(
@@ -10290,7 +10300,7 @@ unsupportedExpression:
             // (`t[] = ...`) idiom this local exists for, and is no less
             // defined than compiled D for a genuine partial write to
             // still-uninitialized bytes.
-            setLocal(variable, defaultLocalValue(variable));
+            defaultLocalValue(variable);
             clearUninitializedBindingAddress(bindingPlace(variable).address);
         }
         const current = readBindingValue(variable);
@@ -12669,7 +12679,7 @@ unsupportedExpression:
             throw new Exception(text("Unsupported eval expression: ", new_.op));
 
         auto targetType = new_.type.toBasetype.nextOf;
-        ExpressionResult value = defaultValue(targetType);
+        ExpressionResult value = defaultValueResult(targetType);
         if (new_.arguments !is null) {
             if (new_.arguments.length != 1)
                 throw new Exception(text("Unsupported eval expression: ", new_.op));
@@ -12691,7 +12701,7 @@ unsupportedExpression:
         import std.conv: text;
 
         auto targetType = new_.type.toBasetype.nextOf;
-        ExpressionResult structVal = defaultValue(targetType);
+        ExpressionResult structVal = defaultValueResult(targetType);
 
         if (new_.member !is null) {
             import quickbite.frontend.dmd.functions: hasNoAvailableSource;
@@ -12919,7 +12929,7 @@ unsupportedExpression:
         foreach (_; 0 .. lengths[0])
             elements ~= lengths.length > 1
                 ? newArrayValue(elementType, lengths[1 .. $])
-                : defaultValue(elementType);
+                : defaultValueResult(elementType);
 
         return reconstructStoredArray(type, elements);
     }
@@ -13028,7 +13038,7 @@ unsupportedExpression:
         }
 
         if (variable._init is null || variable._init.isExpInitializer is null) {
-            setLocal(variable, defaultLocalValue(variable));
+            defaultLocalValue(variable);
             return;
         }
 
@@ -14276,8 +14286,8 @@ destinationFallback:
         return evaluated;
     }
 
-    private ExpressionResult defaultLocalValue(VarDeclaration variable) {
-        return runDefaultValue(variable.type);
+    private void defaultLocalValue(VarDeclaration variable) {
+        defaultValue(variable.type, bindingPlace(variable));
     }
 
     private bool isRefVariable(VarDeclaration variable) const {
@@ -14436,12 +14446,22 @@ private imported!"quickbite.backends.interpreter.expression_result".ExpressionRe
     imported!"dmd.func".FuncDeclaration function_,
     in imported!"quickbite.backends.interpreter.expression_result".ExpressionResult receiver,
 ) {
-    import quickbite.backends.interpreter.runtime_values: defaultValue;
-
     auto structDecl = function_.parent is null
         ? null
         : function_.parent.isStructDeclaration;
-    return structDecl !is null ? defaultValue(structDecl.type) : receiver;
+    return structDecl !is null ? defaultValueOwnerResult(structDecl.type) : receiver;
+}
+
+
+private imported!"quickbite.backends.interpreter.expression_result".ExpressionResult defaultValueOwnerResult(
+    imported!"dmd.mtype".Type type,
+) {
+    import quickbite.backends.interpreter.place: Place;
+    import quickbite.backends.interpreter.place_value: readValue;
+    import quickbite.backends.interpreter.runtime_values: defaultValueOwner;
+
+    auto owner = defaultValueOwner(type);
+    return readValue(Place(owner.address, type));
 }
 
 
@@ -14488,8 +14508,10 @@ private void initializeNativeClassBody(
 
     auto body = Place(address, type);
     foreach (field; classFields(classType.sym)) {
-        auto value = defaultValue(field.type);
+        auto destination = body.field(field);
+        defaultValue(field.type, destination);
         if (field._init !is null) {
+            imported!"quickbite.backends.interpreter.expression_result".ExpressionResult value;
             if (auto initializer = field._init.isExpInitializer)
                 value = walker.storageValue(
                     field.type,
@@ -14497,8 +14519,10 @@ private void initializeNativeClassBody(
                 );
             else if (field._init.isArrayInitializer !is null)
                 value = classFieldArrayLiteralDefault(walker, field);
+            else
+                continue;
+            writeValue(destination, value);
         }
-        writeValue(body.field(field), value);
     }
 }
 
