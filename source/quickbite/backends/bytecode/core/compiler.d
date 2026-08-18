@@ -46,7 +46,7 @@ private struct Compiler {
         AddAssignExp, AddrExp, ArrayLengthExp, ArrayLiteralExp,
         AssocArrayLiteralExp, AssertExp,
         AssignExp, BinAssignExp, BinExp, BlitExp, CallExp, CastExp,
-        CatAssignExp,
+        CatAssignExp, CatDcharAssignExp,
         CatElemAssignExp, CatExp,
         CmpExp, CondExp, ConstructExp, DelegateFuncptrExp, DelegatePtrExp,
         DivExp, DotIdExp, DotVarExp, EqualExp, Expression,
@@ -65,6 +65,9 @@ private struct Compiler {
     private size_t[FuncDeclaration] _functionIndices;
     private ushort[imported!"dmd.dclass".ClassDeclaration] _classIndices;
     private size_t[Type] _nativeStructTypeInfos;
+    // `_d_arrayappendcd`/`_d_arrayappendwd`, keyed by mangled symbol name;
+    // see `nativeDcharAppendFunction`.
+    private FuncDeclaration[string] _nativeDcharAppendFunctions;
     private Instruction[] _code;
     private uint _frameOffset;
     // The high-water mark of `_frameOffset` across the current function body.
@@ -2758,12 +2761,15 @@ private struct Compiler {
         // lowering to `_d_arrayappendcTX`/`_d_arrayappendT`; compile that
         // instead of hand-rolled append machinery. `CatDcharAssignExp`
         // (`concatenateDcharAssign`) is a distinct EXP tag excluded by these
-        // checks; it stays un-lowered by design.
+        // checks; see `compileDcharAppend` for why it stays un-lowered.
         if (auto append = expression.isCatElemAssignExp)
             return compileExpression(append.lowering);
 
         if (auto concatenate = expression.isCatAssignExp)
             return compileExpression(concatenate.lowering);
+
+        if (auto dcharAppend = expression.isCatDcharAssignExp)
+            return compileDcharAppend(dcharAppend);
 
         if (auto equal = expression.isEqualExp)
             return compileEqualExpression(equal);
@@ -11275,6 +11281,20 @@ private struct Compiler {
         );
     }
 
+    // A native callee's `ref`/`out` parameter writes through the address the
+    // FFI bridge passes it, which is the native-call argument area's own
+    // staging slot (`native_call.d`'s header comment), not the caller's real
+    // storage: `emitCallArgument` only ever copies the argument's current
+    // VALUE into that slot. Recording the slot alongside the argument's own
+    // `Place` here lets `tryCompileNativeCall` copy the slot's post-call
+    // bytes back into that place once the call returns, the compile-time
+    // equivalent of a VM-compiled `ref` parameter's implicit write-back.
+    private struct NativeRefArgumentWriteback {
+        Place place;
+        ushort slot;
+        Type type;
+    }
+
     // A null return always falls through to the call site's unconditional
     // no-available-source throw, never a different path, so it is safe to
     // emit earlier arguments before a later one turns out unsupported.
@@ -11285,7 +11305,7 @@ private struct Compiler {
         in ushort nativeStructReceiverOffset = noReceiverOffset,
         imported!"dmd.mtype".TypeStruct nativeStructReceiverType = null,
     ) {
-        import dmd.astenums: TY;
+        import dmd.astenums: STC, TY;
 
         const returnTy = function_.type.toBasetype.nextOf.toBasetype.ty;
         if (returnTy != TY.Tbool &&
@@ -11296,26 +11316,52 @@ private struct Compiler {
             returnTy != TY.Tstruct)
             return null;
 
+        auto parameterList =
+            function_.type.toBasetype.isTypeFunction.parameterList;
+
         // `call.arguments` is null, not merely empty, for a no-argument call.
         const argumentCount = call.arguments is null ? 0 : call.arguments.length;
         const argumentArea = allocateNativeArgumentArea(argumentCount);
         auto argumentTypes = new Type[argumentCount];
+        NativeRefArgumentWriteback[] writebacks;
         // The return-type list above is the only compile-time gate on the
         // call as a whole. Individual arguments are not similarly gated: a
         // scalar, a string-literal `const(char)*`, a `&local` out parameter,
-        // and a pointer local passed by value each get their own emission
-        // below, but any other shape (a `double`, a `float`, a small int, a
-        // by-value slice or struct, a delegate, a `ref`/`out` parameter, ...)
-        // falls through to the plain `emitCallArgument` call at the bottom of
-        // the loop rather than bailing here. `quickbite.ffi.ffi` validation
-        // at the actual native-call boundary is the real gate for those
-        // shapes; a shape it rejects surfaces as the no-available-source
-        // diagnostic at run time, not a compile-time decline.
+        // a pointer local passed by value, and a fixed `ref`/`out` scalar or
+        // dynamic-array parameter each get their own emission below, but any
+        // other shape (a `double`, a `float`, a small int, a by-value
+        // struct, a delegate, a `ref`/`out` struct or static array, ...)
+        // falls through to the plain `emitCallArgument` call at the bottom
+        // of the loop rather than bailing here. `quickbite.ffi.ffi`
+        // validation at the actual native-call boundary is the real gate
+        // for those shapes; a shape it rejects surfaces as the
+        // no-available-source diagnostic at run time, not a compile-time
+        // decline.
         foreach (index; 0 .. argumentCount) {
             auto argument = (*call.arguments)[index];
             const slot = cast(ushort)
                 (argumentArea + index * nativeArgumentSlotSize);
             argumentTypes[index] = argument.type.toBasetype;
+
+            if (index < parameterList.length) {
+                auto parameter = parameterList[index];
+                if (parameter !is null &&
+                    (parameter.storageClass & (STC.ref_ | STC.out_)) !=
+                        STC.none) {
+                    const representation =
+                        typeFacts(argument.type).representation;
+                    if (representation == DeclarationRepresentation.scalar ||
+                        representation ==
+                            DeclarationRepresentation.dynamicArray)
+                        if (auto place = placeOrNull(argument)) {
+                            emitCallArgument(slot, false, argument);
+                            writebacks ~= NativeRefArgumentWriteback(
+                                *place, slot, argument.type,
+                            );
+                            continue;
+                        }
+                }
+            }
 
             const argumentTy = argument.type.toBasetype.ty;
             if (argumentTy == TY.Tint32 || argumentTy == TY.Tint64 ||
@@ -11356,8 +11402,6 @@ private struct Compiler {
             // too); take the pointer type from the callee's own parameter
             // instead, and emit a zero pointer value into its slot.
             if (argument.isNullExp !is null) {
-                auto parameterList =
-                    function_.type.toBasetype.isTypeFunction.parameterList;
                 auto parameter = parameterList[index];
                 // A defaulted `const TypeInfo ti = null` parameter (the
                 // common shape of every `core.memory.GC.*` leaf) has a class
@@ -11381,11 +11425,31 @@ private struct Compiler {
             emitCallArgument(slot, false, argument);
         }
 
-        return emitNativeCall(
+        auto result = emitNativeCall(
             function_, argumentTypes, argumentArea,
             noReceiverOffset, null, nativeStructReceiverOffset,
             nativeStructReceiverType,
         );
+        foreach (writeback; writebacks)
+            if (typeFacts(writeback.type).representation ==
+                    DeclarationRepresentation.dynamicArray)
+                storeDynamicArrayPlace(
+                    writeback.place,
+                    DynamicArrayLocal(
+                        writeback.slot,
+                        dynamicArrayElementType(writeback.type),
+                        arrayElementIsArray(writeback.type),
+                    ),
+                );
+            else
+                storePlace(
+                    writeback.place,
+                    Operand(
+                        writeback.slot,
+                        scalarType(writeback.type.toBasetype),
+                    ),
+                );
+        return result;
     }
 
     // A VM class object is not an ABI class object, so ordinary VM method calls
@@ -11560,6 +11624,92 @@ private struct Compiler {
             );
         return new Operand(destination, returnScalar);
     }
+
+    // `s ~= someDchar` (`CatDcharAssignExp`): dmd leaves `.lowering` null
+    // here, because its hooks (`_d_arrayappendcd`/`_d_arrayappendwd`,
+    // druntime's non-importable rt/lifetime.d) have no D declaration
+    // anywhere semantic analysis can see -- this is the one construction
+    // site where the backend, not dmd, names the callee. Declaring the two
+    // hooks as ordinary `extern(C)` D source and parsing it through the
+    // same frontend pipeline every other module goes through
+    // (`quickbite.frontend.compiler.parseSnippet`) yields real,
+    // semantically-resolved `FuncDeclaration`s; compiling a `CallExp`
+    // against one of those (`append.e1`/`append.e2` unchanged -- no
+    // representation conversion, matching the destination's own {length,
+    // ptr} descriptor bit for bit) then runs entirely through the ordinary
+    // body-less-function call path (`compileCall` -> `tryCompileNativeCall`
+    // -> `resolveCallable`/`dlsym`), including that path's `ref`-parameter
+    // write-back.
+    private Operand compileDcharAppend(CatDcharAssignExp append) {
+        import dmd.astenums: TY;
+        import dmd.expression: VarExp;
+
+        const elementTy = append.e1.type.toBasetype.nextOf.toBasetype.ty;
+        auto function_ = nativeDcharAppendFunction(
+            elementTy == TY.Twchar ? "_d_arrayappendwd" : "_d_arrayappendcd",
+        );
+
+        auto arguments = new Expressions();
+        arguments.push(append.e1);
+        arguments.push(append.e2);
+        auto call = new CallExp(
+            append.loc, new VarExp(append.loc, function_, false), arguments,
+        );
+        call.f = function_;
+        call.type = function_.type.toBasetype.nextOf;
+
+        return compileCall(call);
+    }
+
+    // `_d_arrayappendcd`/`_d_arrayappendwd`'s `FuncDeclaration`s, keyed by
+    // mangled symbol name and resolved once by parsing a fixed `extern(C)`
+    // prototype source string through the frontend's normal snippet
+    // pipeline (which already runs full semantic analysis, giving usable,
+    // callable declarations -- `quickbite.frontend.compiler.parseSnippet`
+    // caches by source content, so this is cheap on repeated calls too).
+    private FuncDeclaration nativeDcharAppendFunction(in string symbol) {
+        import quickbite.frontend.compiler: parseSnippet;
+        import std.conv: text;
+
+        if (auto existing = symbol in _nativeDcharAppendFunctions)
+            return *existing;
+
+        auto module_ = parseSnippet(dcharAppendPrototypeSource).module_;
+        collectFunctionDeclarations(module_.members);
+
+        if (auto result = symbol in _nativeDcharAppendFunctions)
+            return *result;
+        throw new Exception(text(
+            "Missing druntime dchar-append hook in bytecode core: ", symbol,
+        ));
+    }
+
+    // `extern(C)` groups sibling declarations under one `LinkDeclaration`
+    // (an `AttribDeclaration`), so the module's own top-level `members`
+    // holds that wrapper, not each `FuncDeclaration` directly; unwrap any
+    // attribute nesting to reach them.
+    private void collectFunctionDeclarations(
+        imported!"dmd.arraytypes".Dsymbols* members,
+    ) {
+        if (members is null)
+            return;
+        foreach (member; *members) {
+            if (auto function_ = member.isFuncDeclaration) {
+                if (function_.ident !is null)
+                    _nativeDcharAppendFunctions[
+                        function_.ident.toString.idup
+                    ] = function_;
+                continue;
+            }
+            if (auto attribute = member.isAttribDeclaration)
+                collectFunctionDeclarations(attribute.decl);
+        }
+    }
+
+    private enum dcharAppendPrototypeSource = `
+        extern(C) void[] _d_arrayappendcd(ref byte[] x, dchar c);
+        extern(C) void[] _d_arrayappendwd(ref byte[] x, dchar c);
+    `;
 
     // `_aApply*(s, dg)`: emit a transcode of the source string `s` into a fresh
     // dchar/char element array, then loop over it, running the inlined body

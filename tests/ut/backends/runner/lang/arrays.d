@@ -4418,9 +4418,6 @@ static foreach (backend; Matrix!()) {
 static foreach (backend; Matrix!(
     Omit!(Ctfe, Because.inexpressible,
         "core.checkedint.mulu has inline assembly that CTFE cannot execute"),
-    Omit!(Bytecode, Because.refusal,
-        "`residentMulu` cannot be interpreted at compile time, because it " ~
-        "has no available source code"),
 )) {
     @("nativeExternD.muluUsesResidentCompilerArgumentOrder." ~
         backend.stringof)
@@ -6553,6 +6550,83 @@ static foreach (backend; AliasSeq!(Bytecode)) {
                 string t = "ab";
 
                 assert(s !is t);
+            }
+        });
+    }
+}
+
+// `s ~= someDchar` (CatDcharAssignExp) has no frontend lowering: dmd leaves
+// the runtime hooks it needs (`_d_arrayappendcd`/`_d_arrayappendwd`) as
+// `extern(C)` symbols with no importable D declaration, so a backend must
+// synthesize the call itself. A plain ASCII code point encodes to a single
+// UTF-8 code unit.
+static foreach (backend; Matrix!()) {
+    @("dynamicArray.dcharAppendAsciiToCharArrayAppendsOneUnit." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            dchar pick(dchar value) {
+                return value;
+            }
+
+            unittest {
+                char[] s;
+                s ~= pick('A');
+
+                assert(s.length == 1);
+                assert(s[0] == 'A');
+            }
+        });
+    }
+}
+
+// A code point above U+007F encodes to more than one UTF-8 code unit; U+03B1
+// (Greek small alpha) is the two-byte case.
+static foreach (backend; Matrix!()) {
+    @("dynamicArray.dcharAppendTwoByteCodePointToCharArray." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            dchar pick(dchar value) {
+                return value;
+            }
+
+            unittest {
+                char[] s;
+                s ~= pick('α');
+
+                assert(s.length == 2);
+                assert(cast(ubyte) s[0] == 0xCE);
+                assert(cast(ubyte) s[1] == 0xB1);
+            }
+        });
+    }
+}
+
+// A code point above the Basic Multilingual Plane (U+FFFF) has no single
+// UTF-16 code unit; appending one to `wchar[]` encodes a surrogate pair.
+static foreach (backend; Matrix!(
+    Omit!(Interpreter, Because.diverges,
+        "appends a single wchar unit instead of the two-unit surrogate pair"),
+)) {
+    @("dynamicArray.dcharAppendNonBmpCodePointToWcharArrayEncodesSurrogatePair." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            dchar pick(dchar value) {
+                return value;
+            }
+
+            unittest {
+                wchar[] s;
+                s ~= pick('\U0001F600');
+
+                assert(s.length == 2);
+                assert(s[0] == 0xD83D);
+                assert(s[1] == 0xDE00);
             }
         });
     }

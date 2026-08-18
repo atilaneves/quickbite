@@ -546,25 +546,24 @@
   delegate element type stays an open bytecode-core gap.
 
 - `tryCompileNativeCall`'s (`compiler.d`) generic argument-compiling loop
-  does not honour a native callee's `ref`/`out` parameter: its fallback
-  branch (`compiler.d:11381`) always calls `emitCallArgument(slot, false,
-  argument)`, which copies the argument's VALUE into a fresh native-call
-  staging slot and never writes that slot's post-call bytes back to the
-  caller's real variable. Confirmed with a minimal repro against the
-  existing `residentMulu` fixture (`arrays.d`,
-  `nativeExternD.muluUsesResidentCompilerArgumentOrder`, itself already
-  Bytecode-omitted, but for an unrelated stale reason -- "no available
-  source code" -- that predates this): pre-set `bool overflow = true;`
-  before a non-overflowing `residentMulu(6, 7, overflow)` call, and
-  `overflow` reads back `true` afterward on Bytecode (should be `false`,
-  confirmed against `SystemLinker`). Any native call reached through the
-  ordinary body-less (`fbody is null`) path with a `ref`/`out` parameter is
-  affected, not just one call site (also confirmed with a `ref byte[]`
-  argument, the shape `_d_arrayappendcd`/`_d_arrayappendwd` need for
-  `CatDcharAssignExp`: appending through it leaves the caller's array
-  descriptor unchanged); a fix belongs in `tryCompileNativeCall`/
-  `emitCallArgument` generically, not at an individual call site. Beware
-  `bin/qb -l`: it starts the REPL after loading, it does not run the
-  loaded file's `unittest` blocks, so a script driving it through `-l`
-  alone proves nothing either way -- confirm through a real `bin/ut`
-  fixture (`runBackendSourceFixtureTests`), as this entry's repro did.
+  did not honour a native callee's `ref`/`out` parameter: its fallback
+  branch always called `emitCallArgument(slot, false, argument)`, which
+  copies the argument's VALUE into a fresh native-call staging slot and
+  never wrote that slot's post-call bytes back to the caller's real
+  variable -- any native call reached through the ordinary body-less
+  (`fbody is null`) path with a `ref`/`out` scalar or dynamic-array
+  parameter was affected, confirmed with `residentMulu`'s `ref bool
+  overflow` and `_d_arrayappendcd`'s `ref byte[] x`. Fixed generically by
+  recording each such argument's own `Place` and staging slot at the
+  argument loop, then copying the slot's post-call bytes into that place
+  once `emitNativeCall` returns (`NativeRefArgumentWriteback`); a `ref`/
+  `out` struct or static-array parameter still falls through unfixed
+  (declined explicitly, not silently wrong). Beware `bin/qb -l`: it starts
+  the REPL after loading, it does not run the loaded file's `unittest`
+  blocks, so a script driving it through `-l` alone proves nothing either
+  way -- confirm through a real `bin/ut` fixture
+  (`runBackendSourceFixtureTests`), as this entry's repro did. Also beware
+  `core.checkedint.mulu`'s `ref bool overflow`: it is `overflow |= o`, an
+  accumulate, not an assign -- pre-seeding it `true` and asserting it
+  becomes `false` on a non-overflowing call is not a valid write-back
+  probe; the flag must start `false`.
