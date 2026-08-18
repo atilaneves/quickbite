@@ -10779,26 +10779,20 @@ private struct Compiler {
             dynamicArrayElementType(equal.e1.type) ==
                 dynamicArrayElementType(equal.e2.type);
         if (bothDynamicArrays) {
-            const elementType = dynamicArrayElementType(equal.e1.type);
-            // `int[][] == int[][]` (any nesting depth, `int[][][]` and
-            // deeper included): each element is itself a heap-allocated
-            // row descriptor, so a flat `sliceEqualOp` below would compare
-            // the rows' `.ptr` values instead of their content -- two
-            // separately-constructed but content-equal rows would compare
-            // unequal. Structural comparison needs the dedicated nested
-            // opcode instead.
-            const nested = arrayElementIsArray(equal.e1.type) &&
-                arrayElementIsArray(equal.e2.type);
+            // A null `lowering` here means DMD decided the element is
+            // byte-comparable (an integral scalar, or any depth of static
+            // array bottoming out in one) and left the comparison to be
+            // codegen'd directly rather than routed through
+            // `object.__equals`: compare lengths, then, when they match, the
+            // full byte range. A genuine array-of-arrays element (each row
+            // its own separately heap-allocated descriptor) is never
+            // byte-comparable this way, so DMD always gives it a real
+            // `__equals` lowering instead -- the case reaching here is
+            // always flat storage, which is exactly what a zero-depth
+            // structural compare reduces to.
             const left = dynamicArrayDescriptor(equal.e1).offset;
             const right = dynamicArrayDescriptor(equal.e2).offset;
-            const offset = nested
-                ? emitNestedArrayEqual(left, right, equal.e1.type)
-                : allocate(ScalarType.bool_);
-            if (!nested)
-                emitSliceEqual(
-                    offset, left, right,
-                    dynamicArrayElementSize(equal.e1.type),
-                );
+            const offset = emitNestedArrayEqual(left, right, equal.e1.type);
             if (equal.op == EXP.notEqual)
                 _code ~= Instruction(Op.notBool, offset, offset);
             return Operand(offset, ScalarType.bool_);
@@ -14679,13 +14673,17 @@ private struct Compiler {
         return dynamicArrayElementSize(current);
     }
 
-    // Emit `Op.sliceEqualNested`, comparing two array-of-arrays descriptors
-    // structurally rather than as raw descriptor bytes: DMD's real
-    // `__equals` lowering recurses into each element, so two separately
-    // heap-allocated but content-equal rows must compare equal, unlike a
-    // byte compare of the outer descriptor (which would compare the rows'
-    // `.ptr` values). Handles any nesting depth (`int[][]`, `int[][][]`,
-    // ...); caller gates this with `arrayElementIsArray`.
+    // Emit `Op.sliceEqualNested`, comparing two dynamic-array descriptors by
+    // structural content rather than as raw descriptor bytes: for an
+    // array-of-arrays element (`int[][]`, any depth), DMD's real `__equals`
+    // lowering recurses into each row, so two separately heap-allocated but
+    // content-equal rows must compare equal, unlike a byte compare of the
+    // outer descriptor (which would compare the rows' `.ptr` values). At
+    // zero nesting depth (a plain scalar element, or any depth of static
+    // array bottoming out in one) this reduces to a length check plus a
+    // flat byte compare of the whole element range, at any element width --
+    // unlike the fixed-width `sliceEqual*` family, there is no width this
+    // rejects.
     private ushort emitNestedArrayEqual(
         in ushort left,
         in ushort right,
