@@ -11088,32 +11088,28 @@ unsupportedExpression:
         return false;
     }
 
-    // Construct a struct literal's value in the caller's own typed storage:
-    // every field expression is evaluated in declaration order, then written
-    // to that field's place within `destination`. Nothing is built in separate
-    // storage and copied in, which is what makes this the operation a
-    // declaration's initializer uses (`constructInto`) as well as the one
-    // behind the rvalue entry point below. The destination must read zero
-    // wherever the literal's own fields do not reach -- its padding, and the
-    // bytes of a union sibling nothing writes -- because that is what the
-    // freshly allocated storage below holds, and D's own struct hashing and
-    // by-value ABI copies observe those bytes.
+    // Construct a struct literal in the caller's own typed storage. Each field
+    // expression constructs directly into its declared field place, in
+    // declaration order. Nested array and struct literals therefore use their
+    // final native-layout storage too. No aggregate is rebuilt between fields.
+    // The destination must read zero wherever the literal's own fields do not
+    // reach -- its padding, and the bytes of a union sibling nothing writes --
+    // because freshly allocated storage gives it those bytes, and D's own
+    // struct hashing and by-value ABI copies observe them.
     //
     // A field typed `delegate`, a class-typed field holding a symbolic
     // `TypeInfo`, and a field typed pointer-to-function can each carry a value
     // with no native ABI address of its own: an interpreted closure, an
     // interpreted type's `TypeInfo`, an interpreted function.
     // `place_value.writeValue` refuses all three by design -- their identity
-    // lives out of band, keyed by the field's own address -- so every field
-    // goes through `writeStoredValue`, which writes the native bytes and
-    // registers that identity together, exactly as the direct field-assignment
-    // path (`s.f = &add;`, this module's `DotVarExp` write arm) already does.
+    // lives out of band, keyed by the field's own address. The fallback path
+    // writes them through `writeStoredValue`, which registers that identity
+    // together with the native bytes, exactly as direct field assignment does.
     private void constructStructLiteral(
         imported!"dmd.expression".StructLiteralExp literal,
         imported!"quickbite.backends.interpreter.place".Place destination,
     ) {
         import quickbite.backends.interpreter.layout: structFields;
-        import quickbite.backends.interpreter.scratch_array: releaseScratchArray;
 
         auto structType = destination.type.toBasetype.isTypeStruct;
         if (structType is null)
@@ -11125,30 +11121,84 @@ unsupportedExpression:
         // below composes from (see this package's layout-authority contract).
         auto fieldDeclarations = structFields(structType);
 
-        auto fields = new ExpressionResult[](fieldDeclarations.length);
-        scope(exit) releaseScratchArray(fields);
         foreach (index, field; fieldDeclarations) {
             const hasElement = literal.elements !is null
                 && index < (*literal.elements).length;
             auto element = hasElement ? (*literal.elements)[index] : null;
-            // A fresh closure element (`() => 42`) is a bare `FuncExp`, not a
-            // `DelegateExp`; construct the callable before storing it.
-            auto elementLiteral = element is null ? null : element.isFuncExp;
-            fields[index] = element is null
-                ? structLiteralDefaultFieldValue(
-                    literal,
-                    index,
-                    fields[0 .. index],
-                )
-                : structLiteralFieldValue(literal, index, elementLiteral is null
-                    ? runExpressionValue(element)
-                    : runFunctionLiteralDeclaration(elementLiteral));
+            auto fieldDestination = ConstructionDestination(destination.field(field));
+            if (element is null) {
+                // A union's default value initializes only its first member.
+                // The other fields are overlapping views of those bytes, not
+                // separately initialized values.
+                if (index != 0 && literal.sd.isUnionDeclaration !is null)
+                    fieldDestination.markConstructed;
+                else
+                    constructDefaultStructLiteralField(field, fieldDestination);
+            } else {
+                constructStructLiteralField(element, fieldDestination);
+            }
         }
 
-        foreach (index, field; fieldDeclarations)
-            writeStoredValue(destination.field(field), fields[index]);
-
         bindNestedContextFrames(literal.sd, destination);
+    }
+
+    // DMD gives the missing literal field its own typed default-init
+    // expression. Construct that expression directly in the field place so a
+    // nested default struct or static array does not first become an aggregate
+    // carrier value.
+    private void constructDefaultStructLiteralField(
+        imported!"dmd.declaration".VarDeclaration field,
+        ref ConstructionDestination destination,
+    ) {
+        import dmd.location: Loc;
+        import dmd.typesem: defaultInitLiteral;
+
+        runExpression(field.type.defaultInitLiteral(Loc.initial), destination);
+    }
+
+    // A scalar expression for a static-array field has D's broadcast
+    // semantics. Construct its first element once, then copy its typed stored
+    // representation into every remaining element. An array expression uses
+    // the ordinary destination path and constructs each element itself.
+    private void constructStructLiteralField(
+        imported!"dmd.expression".Expression expression,
+        ref ConstructionDestination destination,
+    ) {
+        auto staticArray = destination.place.type.toBasetype.isTypeSArray;
+        if (
+            staticArray !is null &&
+            (
+                expression.type is null ||
+                !expression.type.toBasetype.equals(
+                    destination.place.type.toBasetype,
+                )
+            )
+        ) {
+            import quickbite.backends.interpreter.layout: staticArrayLength;
+
+            const length = staticArrayLength(staticArray);
+            if (length != 0) {
+                auto first = ConstructionDestination(destination.place.index(0));
+                constructStructLiteralField(expression, first);
+                foreach (index; 1 .. length)
+                    copyPlaceValue(first.place, destination.place.index(index));
+            }
+            destination.markConstructed;
+            return;
+        }
+
+        // A fresh closure (`() => 42`) is a bare `FuncExp`, not a
+        // `DelegateExp`; construct the callable before storing it.
+        if (auto functionLiteral = expression.isFuncExp) {
+            writeStoredValue(
+                destination.place,
+                runFunctionLiteralDeclaration(functionLiteral),
+            );
+            destination.markConstructed;
+            return;
+        }
+
+        runExpression(expression, destination);
     }
 
     private ExpressionResult structLiteralValue(
