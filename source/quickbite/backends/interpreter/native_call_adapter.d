@@ -369,6 +369,21 @@ public struct NativeOperand {
     public imported!"quickbite.backends.interpreter.native_block".NativeBlock owner;
     public InterpreterInboundTrampolineSession* callbackSession;
     public size_t callbackId;
+    // Delegate result words cross the native boundary as typed metadata. They
+    // are not decoded by the general place-value codec, because that codec
+    // deliberately only recognizes the all-zero null delegate representation.
+    public NativeDelegate delegateMetadata;
+}
+
+// The native ABI representation of a D delegate. This metadata belongs to a
+// typed NativeOperand and crosses only at the native-call boundary.
+public struct NativeDelegate {
+    public const(void)* context;
+    public const(void)* funcptr;
+
+    public bool isNull() const @safe @nogc nothrow pure {
+        return context is null && funcptr is null;
+    }
 }
 
 // The address-only bridge's complete call shape. Preparation owns selecting
@@ -755,14 +770,14 @@ private NativeCallResult readNativeInvocationResult(
 
     NativeCallResult result;
     if (invocation.returnsReceiver) {
-        result.value = NativeOperand(
+        result.value = nativeResultOperand(
             invocation.receiver.type,
             invocation.receiver.address,
         );
         return result;
     }
     if (invocation.returnsRef) {
-        result.value = NativeOperand(
+        result.value = nativeResultOperand(
             invocation.result.type,
             loadMutableReference(invocation.result.address),
             invocation._resultOwner,
@@ -774,7 +789,7 @@ private NativeCallResult readNativeInvocationResult(
             result.value = NativeOperand.init;
             break;
         default:
-            result.value = NativeOperand(
+            result.value = nativeResultOperand(
                 invocation.result.type,
                 invocation.result.address,
                 invocation._resultOwner,
@@ -782,6 +797,35 @@ private NativeCallResult readNativeInvocationResult(
             break;
     }
     return result;
+}
+
+private NativeOperand nativeResultOperand(
+    imported!"dmd.mtype".Type type,
+    void* address,
+    imported!"quickbite.backends.interpreter.native_block".NativeBlock owner =
+        imported!"quickbite.backends.interpreter.native_block".NativeBlock.init,
+) {
+    import dmd.astenums: TY;
+
+    auto result = NativeOperand(type, address, owner);
+    if (address !is null && type !is null && type.toBasetype.ty == TY.Tdelegate)
+        result.delegateMetadata = nativeDelegateMetadata(result);
+    return result;
+}
+
+// Read a D delegate's native ABI words from a typed address. Native delegate
+// result destinations can be caller-provided storage, so later typed reads use
+// this crossing too instead of the general place-value codec.
+public NativeDelegate nativeDelegateMetadata(NativeOperand operand) @trusted {
+    import dmd.astenums: TY;
+
+    assert(operand.type !is null && operand.type.toBasetype.ty == TY.Tdelegate);
+    if (operand.address is null)
+        return NativeDelegate.init;
+    return NativeDelegate(
+        loadReference(operand.address),
+        loadReference(cast(ubyte*) operand.address + (void*).sizeof),
+    );
 }
 
 private void* loadMutableReference(void* address) @trusted {

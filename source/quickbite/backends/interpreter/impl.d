@@ -1353,13 +1353,27 @@ private struct Walker {
         imported!"quickbite.backends.interpreter.place".Place place,
     ) {
         import quickbite.backends.interpreter.aggregate_value: AggregateValue;
+        import quickbite.backends.interpreter.native_call_adapter:
+            NativeOperand, nativeDelegateMetadata;
         import quickbite.backends.interpreter.place_value: readValue;
 
         import dmd.astenums: TY;
 
-        if (place.type.toBasetype.ty == TY.Tdelegate)
-            if (auto delegate_ = place.address in nativeDelegateSlots)
+        if (place.type.toBasetype.ty == TY.Tdelegate) {
+            if (auto delegate_ = place.address in nativeDelegateSlots) {
                 return *delegate_;
+            } else {
+                const delegate_ = nativeDelegateMetadata(
+                    NativeOperand(place.type, place.address),
+                );
+                return delegate_.isNull
+                    ? ExpressionResult.null_
+                    : ExpressionResult.nativeDelegateValue(
+                        delegate_.context,
+                        delegate_.funcptr,
+                    );
+            }
+        }
         auto pointerType = place.type.toBasetype.isTypePointer;
         if (
             pointerType !is null &&
@@ -11910,6 +11924,13 @@ unsupportedExpression:
         if (operand.address is null || operand.type is null ||
             operand.type.toBasetype.ty == TY.Tvoid)
             return ExpressionResult.void_;
+        if (operand.type.toBasetype.ty == TY.Tdelegate)
+            return operand.delegateMetadata.isNull
+                ? ExpressionResult.null_
+                : ExpressionResult.nativeDelegateValue(
+                    operand.delegateMetadata.context,
+                    operand.delegateMetadata.funcptr,
+                );
         return readValue(Place(operand.address, operand.type));
     }
 
