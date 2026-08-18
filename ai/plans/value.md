@@ -736,37 +736,42 @@ All test additions/changes require approval first (AGENTS.md).
 
 ## Remaining work
 
-The native authority switch is a standing contract, not pending work. The
-remaining value-track work is the destination-passing migration and carrier
-deletion (items 8-10), the IR and Bytecode formatter migration followed by
-shared-`Value` deletion (items 2-3), and the language-surface tasks below.
-Item numbers remain stable for existing cross-references. Production
-Interpreter optimisation begins only after item 10 deletes the carrier;
-timings follow `overview.md`'s measurement contract.
+The native authority switch and call/return construction routing are standing
+contracts, not pending work. The remaining value-track work is assignment
+through a separate construction temporary and carrier deletion (items 9-10),
+the IR and Bytecode formatter migration followed by shared-`Value` deletion
+(items 2-3), and the language-surface tasks below. Item numbers remain stable
+for existing cross-references. Production Interpreter optimisation begins only
+after item 10 deletes the carrier; timings follow `overview.md`'s measurement
+contract.
 
 ### Item 8 — Destination-passing construction
 
 Addressable-temporary storage uses typed activation-frame slots only for
-syntactically address-taken call results and
-symbolic `classinfo` projections. A lowering that reaches address-taking
-without that parent expression context obtains a typed, conservatively-scanned,
-activation-owned block lazily. Thus an unexecuted call or field expression
-does not enlarge every activation. The gate-corpus measurement did not justify
-segmented scratch; do not introduce it without a new measurement that does.
+syntactically address-taken call results and symbolic `classinfo` projections.
+A lowering that reaches address-taking without that parent expression context
+obtains a typed, conservatively-scanned, activation-owned block lazily. Thus
+an unexecuted call or field expression does not enlarge every activation. The
+gate-corpus measurement did not justify segmented scratch; do not introduce it
+without a new measurement that does.
 
-The remaining part of this item is the construction-state encoding and routing
-rvalue construction into caller-provided destinations. This storage contract
-must be reused; it is not a reason to recreate per-expression
-temporary blocks or broad AST-keyed frame reservations.
+Construction has explicit absent, fresh, and constructed state. An
+interpreted non-void call receives its caller's fresh typed destination, and a
+return constructs or writes to that destination. A void call has no
+destination. An rvalue call with no final destination uses lazy,
+activation-owned typed temporary storage. Recursive calls use their own
+activation and construction state. Reuse this storage contract; do not create
+per-expression temporary blocks or broad AST-keyed frame reservations.
 
 ### Item 9 — Assignment through construction
 
-A live lvalue's assignment still round-trips its right-hand side through the
-carrier before the place write (`x = f()`). The live target may not itself be
-that right-hand side's destination: D evaluates the right-hand side first, so
-an alias could observe a partially constructed value. This therefore waits on
-item 8's addressable temporaries, then applies D-defined
-assign/move/postblit/destruction semantics per decision 7.
+Assignment evaluates its live place once, then evaluates the right-hand side
+into separate fresh typed temporary storage. Only after that construction is
+complete does it apply D-defined assignment, move, postblit, and destruction
+semantics to the already-evaluated live place. Never directly construct the
+right-hand side into that live place: an alias could otherwise observe a
+partially constructed value. Reuse item 8's construction storage and state;
+this item does not wait on additional call or return routing.
 
 ### Item 10 — Carrier deletion
 
@@ -788,13 +793,14 @@ statically typed host locals — type-specific evaluation helpers selected from
 the statically typed AST. Building those helpers is its own work item, not a
 by-product of any family conversion.
 
-The flip and the family conversions are otherwise independent, but both
-bottom out in one shared bottleneck: the call/return channel
-(`Walker._returnValue`), which is carrier-typed — a scalar helper recursing
-into an interpreted call reads it, and every aggregate-returning call writes
-it. Converting that channel to decision 7's caller-provided destinations is
-the first item-10 step, and it needs item 8's temporaries, because a call in
-an rvalue position (an argument, an operand) has no destination without one.
+The flip and the family conversions are otherwise independent. The
+call/return construction bottleneck is solved: interpreted non-void calls and
+returns use caller-provided typed destinations, and destination-less rvalue
+calls use activation-owned temporary storage. Carrier deletion still requires
+removing the carrier fallback from call and return evaluation, including
+`Walker._returnValue`, and converting all remaining call consumers to the
+construction or place operations. A scalar helper recursing into an
+interpreted call must not restore a universal carrier return path.
 
 Deleting `expression_result.d` ends the item. Includes an inventory of real
 corpus crossings that need an interpreted callable or `TypeInfo` to escape to
