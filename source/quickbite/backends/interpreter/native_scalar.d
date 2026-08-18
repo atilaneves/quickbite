@@ -86,6 +86,28 @@ public void writeScalar(
     writeScalarBits(nativeScalarKindOf(type), dest, value);
 }
 
+// Writes a scalar that is already in the host type selected by the caller.
+// Construction helpers use this path when DMD has already fixed the guest
+// type. It avoids creating an ExpressionResult only to write its bytes out.
+public void writeNativeScalar(T)(
+    imported!"dmd.mtype".Type type,
+    ubyte[] dest,
+    in T value,
+) @trusted {
+    import core.stdc.string: memcpy;
+    import quickbite.backends.interpreter.layout: typeByteSize;
+
+    if (dest.length != typeByteSize(type) || dest.length != T.sizeof)
+        throw new Exception(
+            "quickbite.backends.interpreter.native_scalar.writeNativeScalar: "
+            ~ "destination size does not match the scalar type",
+        );
+
+    // @trusted: memcpy handles the possibly unaligned interior destination;
+    // the checks above prove that it writes exactly the destination width.
+    memcpy(&dest[0], &value, T.sizeof);
+}
+
 
 // @trusted: `memcpy`s a same-sized native value's bits into `dest`.
 // `writeScalar` above has already verified, with an unconditional throw,

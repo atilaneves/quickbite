@@ -49,6 +49,62 @@ public imported!"quickbite.backends.interpreter.expression_result".ExpressionRes
     }
 }
 
+public void integerValue(
+    imported!"dmd.expression".IntegerExp integer,
+    imported!"quickbite.backends.interpreter.place".Place destination,
+) {
+    import dmd.astenums: TY;
+
+    const value = integer.getInteger;
+    auto type = destination.type.toBasetype;
+    switch (type.ty) with (TY) {
+        case Tpointer:
+            destination.storeReference(cast(void*) value);
+            return;
+        case Tbool:
+            destination.storeNativeScalar(value != 0);
+            return;
+        case Tint8:
+            destination.storeNativeScalar(cast(byte) value);
+            return;
+        case Tuns8:
+            destination.storeNativeScalar(cast(ubyte) value);
+            return;
+        case Tchar:
+            destination.storeNativeScalar(cast(char) value);
+            return;
+        case Tint16:
+            destination.storeNativeScalar(cast(short) value);
+            return;
+        case Tuns16:
+            destination.storeNativeScalar(cast(ushort) value);
+            return;
+        case Twchar:
+            destination.storeNativeScalar(cast(wchar) value);
+            return;
+        case Tint32:
+            destination.storeNativeScalar(cast(int) value);
+            return;
+        case Tuns32:
+            destination.storeNativeScalar(cast(uint) value);
+            return;
+        case Tdchar:
+            destination.storeNativeScalar(cast(dchar) value);
+            return;
+        case Tint64:
+            destination.storeNativeScalar(cast(long) value);
+            return;
+        case Tuns64:
+            destination.storeNativeScalar(cast(ulong) value);
+            return;
+        default:
+            throw new Exception(
+                "quickbite.backends.interpreter.runtime_values: "
+                ~ "integer literal needs a scalar destination",
+            );
+    }
+}
+
 public imported!"quickbite.backends.interpreter.expression_result".ExpressionResult castIntegerValue(
     imported!"dmd.expression".IntegerExp integer,
     in imported!"dmd.astenums".TY ty,
@@ -148,6 +204,31 @@ public imported!"quickbite.backends.interpreter.expression_result".ExpressionRes
             return ExpressionResult.imaginaryValue(cast(real) real_.toImaginary);
         default:
             assert(0);
+    }
+}
+
+public void realValue(
+    imported!"dmd.expression".RealExp real_,
+    imported!"quickbite.backends.interpreter.place".Place destination,
+) {
+    import dmd.astenums: TY;
+
+    auto type = destination.type.toBasetype;
+    switch (type.ty) with (TY) {
+        case Tfloat32:
+            destination.storeNativeScalar(cast(float) real_.toReal);
+            return;
+        case Tfloat64:
+            destination.storeNativeScalar(cast(double) real_.toReal);
+            return;
+        case Tfloat80:
+            destination.storeNativeScalar(cast(real) real_.toReal);
+            return;
+        default:
+            throw new Exception(
+                "quickbite.backends.interpreter.runtime_values: "
+                ~ "real literal needs a real scalar destination",
+            );
     }
 }
 

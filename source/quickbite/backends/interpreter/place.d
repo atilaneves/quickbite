@@ -277,6 +277,13 @@ public struct Place {
 
         writeScalar(_type, placeBytes(_address, typeByteSize(_type)), value);
     }
+
+    public void storeNativeScalar(T)(in T value) @safe {
+        import quickbite.backends.interpreter.native_scalar: writeNativeScalar;
+        import quickbite.backends.interpreter.layout: typeByteSize;
+
+        writeNativeScalar(_type, placeBytes(_address, typeByteSize(_type)), value);
+    }
 }
 
 

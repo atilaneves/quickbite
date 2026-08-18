@@ -12837,6 +12837,37 @@ unsupportedExpression:
 
         auto place = destination.place;
 
+        if (auto integer = rvalue.isIntegerExp) {
+            import dmd.astenums: TY;
+            import quickbite.backends.interpreter.native_scalar:
+                isNativeScalarType;
+
+            auto type = place.type.toBasetype;
+            if (!isNativeScalarType(place.type) &&
+                type.ty != TY.Tpointer)
+                goto destinationFallback;
+
+            import quickbite.backends.interpreter.runtime_values: integerValue;
+
+            integerValue(integer, place);
+            destination.markConstructed;
+            return true;
+        }
+
+        if (auto real_ = rvalue.isRealExp) {
+            import quickbite.backends.interpreter.native_scalar:
+                isNativeScalarType;
+
+            if (!isNativeScalarType(place.type))
+                goto destinationFallback;
+
+            import quickbite.backends.interpreter.runtime_values: realValue;
+
+            realValue(real_, place);
+            destination.markConstructed;
+            return true;
+        }
+
         if (auto slice = rvalue.isSliceExp)
             if (constructSliceInto(slice, place)) {
                 destination.markConstructed;
@@ -12898,6 +12929,7 @@ unsupportedExpression:
             return true;
         }
 
+destinationFallback:
         return false;
     }
 
