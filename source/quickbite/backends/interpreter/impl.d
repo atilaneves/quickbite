@@ -5437,23 +5437,36 @@ unsupportedExpression:
 
                 enforceInterceptionPolicy(call.f, "tryInterpreterBuiltin");
 
-                with (InterpreterBuiltin) final switch (builtin) {
+                if (constructionDestination is null) {
+                    // A void call has no result destination. Evaluate each
+                    // argument for its effects, but do not materialize a
+                    // discarded builtin result.
+                    foreach (argument; *call.arguments)
+                        runExpressionValue(argument);
+                } else with (InterpreterBuiltin) final switch (builtin) {
                     case fabs:
                     case isInfinity:
                     case signbit:
                     case sqrt:
-                        return unaryBuiltinCall(
+                        unaryBuiltinCall(
                             builtin,
                             runExpressionValue((*call.arguments)[0]),
+                            constructionDestination.place,
                         );
+                        constructionDestination.markConstructed;
+                        break;
 
                     case pow:
-                        return binaryBuiltinCall(
+                        binaryBuiltinCall(
                             builtin,
                             runExpressionValue((*call.arguments)[0]),
                             runExpressionValue((*call.arguments)[1]),
+                            constructionDestination.place,
                         );
+                        constructionDestination.markConstructed;
+                        break;
                 }
+                return ExpressionResult.void_;
             }
         }
 

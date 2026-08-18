@@ -308,9 +308,10 @@ package size_t interpreterBuiltinArgumentCount(
     }
 }
 
-package imported!"quickbite.backends.interpreter.expression_result".ExpressionResult unaryBuiltinCall(
+package void unaryBuiltinCall(
     in InterpreterBuiltin builtin,
     in imported!"quickbite.backends.interpreter.expression_result".ExpressionResult value,
+    imported!"quickbite.backends.interpreter.place".Place destination,
 ) {
     import std.math: mathFabs = fabs;
     import std.math: mathIsInfinity = isInfinity;
@@ -319,16 +320,20 @@ package imported!"quickbite.backends.interpreter.expression_result".ExpressionRe
 
     with (InterpreterBuiltin) final switch (builtin) {
         case fabs:
-            return value.unaryFloating!mathFabs;
+            storeUnaryFloatingResult!mathFabs(value, destination);
+            return;
 
         case isInfinity:
-            return value.unaryFloating!mathIsInfinity;
+            destination.storeNativeScalar(mathIsInfinity(value.asReal));
+            return;
 
         case signbit:
-            return value.unaryFloating!mathSignbit;
+            destination.storeNativeScalar(mathSignbit(value.asReal));
+            return;
 
         case sqrt:
-            return value.unaryFloating!mathSqrt;
+            storeUnaryFloatingResult!mathSqrt(value, destination);
+            return;
 
         case pow:
             break;
@@ -337,10 +342,11 @@ package imported!"quickbite.backends.interpreter.expression_result".ExpressionRe
     throw new Exception("Unsupported interpreter unary builtin call.");
 }
 
-package imported!"quickbite.backends.interpreter.expression_result".ExpressionResult binaryBuiltinCall(
+package void binaryBuiltinCall(
     in InterpreterBuiltin builtin,
     in imported!"quickbite.backends.interpreter.expression_result".ExpressionResult lhs,
     in imported!"quickbite.backends.interpreter.expression_result".ExpressionResult rhs,
+    imported!"quickbite.backends.interpreter.place".Place destination,
 ) {
     import std.math: mathPow = pow;
 
@@ -352,8 +358,67 @@ package imported!"quickbite.backends.interpreter.expression_result".ExpressionRe
             break;
 
         case pow:
-            return lhs.binaryFloating!mathPow(rhs);
+            storeBinaryFloatingResult!mathPow(lhs, rhs, destination);
+            return;
     }
 
     throw new Exception("Unsupported interpreter binary builtin call.");
+}
+
+// The builtin result goes directly to the caller's statically typed native
+// destination. The legacy carrier remains only on the input side until the
+// scalar recursive walk changes as one unit.
+private void storeUnaryFloatingResult(alias operation, T)(
+    in T value,
+    imported!"quickbite.backends.interpreter.place".Place destination,
+) {
+    import dmd.astenums: TY;
+
+    with (TY) switch (destination.type.toBasetype.ty) {
+        case Tfloat32:
+            destination.storeNativeScalar(operation(cast(float) value.asReal));
+            return;
+
+        case Tfloat64:
+            destination.storeNativeScalar(operation(cast(double) value.asReal));
+            return;
+
+        case Tfloat80:
+            destination.storeNativeScalar(operation(value.asReal));
+            return;
+
+        default:
+            throw new Exception("Unsupported unary floating result type.");
+    }
+}
+
+private void storeBinaryFloatingResult(alias operation, L, R)(
+    in L lhs,
+    in R rhs,
+    imported!"quickbite.backends.interpreter.place".Place destination,
+) {
+    import dmd.astenums: TY;
+
+    with (TY) switch (destination.type.toBasetype.ty) {
+        case Tfloat32:
+            destination.storeNativeScalar(cast(float) operation(
+                cast(float) lhs.asReal,
+                cast(float) rhs.asReal,
+            ));
+            return;
+
+        case Tfloat64:
+            destination.storeNativeScalar(cast(double) operation(
+                cast(double) lhs.asReal,
+                cast(double) rhs.asReal,
+            ));
+            return;
+
+        case Tfloat80:
+            destination.storeNativeScalar(operation(lhs.asReal, rhs.asReal));
+            return;
+
+        default:
+            throw new Exception("Unsupported binary floating result type.");
+    }
 }
