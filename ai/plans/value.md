@@ -746,8 +746,8 @@ timings follow `overview.md`'s measurement contract.
 
 ### Item 8 — Destination-passing construction
 
-Decision 19's addressable-temporary storage is settled: typed activation-frame
-slots are reserved only for syntactically address-taken call results and
+Addressable-temporary storage uses typed activation-frame slots only for
+syntactically address-taken call results and
 symbolic `classinfo` projections. A lowering that reaches address-taking
 without that parent expression context obtains a typed, conservatively-scanned,
 activation-owned block lazily. Thus an unexecuted call or field expression
@@ -755,8 +755,8 @@ does not enlarge every activation. The gate-corpus measurement did not justify
 segmented scratch; do not introduce it without a new measurement that does.
 
 The remaining part of this item is the construction-state encoding and routing
-rvalue construction into caller-provided destinations. The settled storage
-contract must be reused; it is not a reason to recreate per-expression
+rvalue construction into caller-provided destinations. This storage contract
+must be reused; it is not a reason to recreate per-expression
 temporary blocks or broad AST-keyed frame reservations.
 
 ### Item 9 — Assignment through construction
