@@ -329,7 +329,7 @@ package size_t interpreterBuiltinArgumentCount(
 
 package void unaryBuiltinCall(
     in InterpreterBuiltin builtin,
-    in imported!"quickbite.backends.interpreter.expression_result".ExpressionResult value,
+    imported!"quickbite.backends.interpreter.place".Place value,
     imported!"quickbite.backends.interpreter.place".Place destination,
 ) {
     import std.math: mathFabs = fabs;
@@ -343,11 +343,11 @@ package void unaryBuiltinCall(
             return;
 
         case isInfinity:
-            destination.storeNativeScalar(mathIsInfinity(value.asReal));
+            destination.storeNativeScalar(mathIsInfinity(floatingValue(value)));
             return;
 
         case signbit:
-            destination.storeNativeScalar(mathSignbit(value.asReal));
+            destination.storeNativeScalar(mathSignbit(floatingValue(value)));
             return;
 
         case sqrt:
@@ -363,8 +363,8 @@ package void unaryBuiltinCall(
 
 package void binaryBuiltinCall(
     in InterpreterBuiltin builtin,
-    in imported!"quickbite.backends.interpreter.expression_result".ExpressionResult lhs,
-    in imported!"quickbite.backends.interpreter.expression_result".ExpressionResult rhs,
+    imported!"quickbite.backends.interpreter.place".Place lhs,
+    imported!"quickbite.backends.interpreter.place".Place rhs,
     imported!"quickbite.backends.interpreter.place".Place destination,
 ) {
     import std.math: mathPow = pow;
@@ -384,26 +384,25 @@ package void binaryBuiltinCall(
     throw new Exception("Unsupported interpreter binary builtin call.");
 }
 
-// The builtin result goes directly to the caller's statically typed native
-// destination. The legacy carrier remains only on the input side until the
-// scalar recursive walk changes as one unit.
+// Each builtin operand is an expression-specific typed temporary. The result
+// goes directly to the caller's statically typed native destination.
 private void storeUnaryFloatingResult(alias operation, T)(
-    in T value,
+    T value,
     imported!"quickbite.backends.interpreter.place".Place destination,
 ) {
     import dmd.astenums: TY;
 
     with (TY) switch (destination.type.toBasetype.ty) {
         case Tfloat32:
-            destination.storeNativeScalar(operation(cast(float) value.asReal));
+            destination.storeNativeScalar(operation(cast(float) floatingValue(value)));
             return;
 
         case Tfloat64:
-            destination.storeNativeScalar(operation(cast(double) value.asReal));
+            destination.storeNativeScalar(operation(cast(double) floatingValue(value)));
             return;
 
         case Tfloat80:
-            destination.storeNativeScalar(operation(value.asReal));
+            destination.storeNativeScalar(operation(floatingValue(value)));
             return;
 
         default:
@@ -411,9 +410,28 @@ private void storeUnaryFloatingResult(alias operation, T)(
     }
 }
 
+// The Place's DMD type selects the host scalar load. `real` is only the
+// floating builtin's calculation type; it is not a guest-value carrier.
+private real floatingValue(
+    imported!"quickbite.backends.interpreter.place".Place value,
+) {
+    import dmd.astenums: TY;
+
+    with (TY) switch (value.type.toBasetype.ty) {
+        case Tfloat32:
+            return value.loadNativeScalar!float;
+        case Tfloat64:
+            return value.loadNativeScalar!double;
+        case Tfloat80:
+            return value.loadNativeScalar!real;
+        default:
+            throw new Exception("Unsupported builtin floating operand type.");
+    }
+}
+
 private void storeBinaryFloatingResult(alias operation, L, R)(
-    in L lhs,
-    in R rhs,
+    L lhs,
+    R rhs,
     imported!"quickbite.backends.interpreter.place".Place destination,
 ) {
     import dmd.astenums: TY;
@@ -421,20 +439,20 @@ private void storeBinaryFloatingResult(alias operation, L, R)(
     with (TY) switch (destination.type.toBasetype.ty) {
         case Tfloat32:
             destination.storeNativeScalar(cast(float) operation(
-                cast(float) lhs.asReal,
-                cast(float) rhs.asReal,
+                cast(float) floatingValue(lhs),
+                cast(float) floatingValue(rhs),
             ));
             return;
 
         case Tfloat64:
             destination.storeNativeScalar(cast(double) operation(
-                cast(double) lhs.asReal,
-                cast(double) rhs.asReal,
+                cast(double) floatingValue(lhs),
+                cast(double) floatingValue(rhs),
             ));
             return;
 
         case Tfloat80:
-            destination.storeNativeScalar(operation(lhs.asReal, rhs.asReal));
+            destination.storeNativeScalar(operation(floatingValue(lhs), floatingValue(rhs)));
             return;
 
         default:

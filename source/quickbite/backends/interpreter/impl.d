@@ -5456,6 +5456,7 @@ unsupportedExpression:
             unaryBuiltinCall;
         import quickbite.backends.interpreter.frame_layout:
             isReferenceParameter;
+        import quickbite.backends.interpreter.place: Place;
 
         if (call.f !is null) {
             import quickbite.frontend.dmd.functions: ensureFunctionBodySemantic;
@@ -5492,25 +5493,43 @@ unsupportedExpression:
                     // argument for its effects, but do not materialize a
                     // discarded builtin result.
                     foreach (argument; *call.arguments)
-                        runExpressionValue(argument);
+                        executeForEffect(argument);
                 } else with (InterpreterBuiltin) final switch (builtin) {
                     case fabs:
                     case isInfinity:
                     case signbit:
                     case sqrt:
+                        auto argument = (*call.arguments)[0];
+                        auto argumentDestination = ConstructionDestination(Place(
+                            _activationFrame.temporaryAddress(argument),
+                            argument.type,
+                        ));
+                        runExpression(argument, argumentDestination);
                         unaryBuiltinCall(
                             builtin,
-                            runExpressionValue((*call.arguments)[0]),
+                            argumentDestination.place,
                             constructionDestination.place,
                         );
                         constructionDestination.markConstructed;
                         break;
 
                     case pow:
+                        auto lhs = (*call.arguments)[0];
+                        auto lhsDestination = ConstructionDestination(Place(
+                            _activationFrame.temporaryAddress(lhs),
+                            lhs.type,
+                        ));
+                        runExpression(lhs, lhsDestination);
+                        auto rhs = (*call.arguments)[1];
+                        auto rhsDestination = ConstructionDestination(Place(
+                            _activationFrame.temporaryAddress(rhs),
+                            rhs.type,
+                        ));
+                        runExpression(rhs, rhsDestination);
                         binaryBuiltinCall(
                             builtin,
-                            runExpressionValue((*call.arguments)[0]),
-                            runExpressionValue((*call.arguments)[1]),
+                            lhsDestination.place,
+                            rhsDestination.place,
                             constructionDestination.place,
                         );
                         constructionDestination.markConstructed;
