@@ -9029,10 +9029,12 @@ unsupportedExpression:
             ) {
                 writeLocation(
                     dot.e1,
-                    AggregateValue.reconstructNativeArrayWithLength(
-                        dot.e1.type,
-                        cast(size_t) value.asLong,
-                        AggregateValue.nativeArrayAddress(receiver),
+                    ExpressionResult.nativeAggregateValue(
+                        AggregateValue.borrowArrayOwner(
+                            dot.e1.type,
+                            cast(size_t) value.asLong,
+                            AggregateValue.nativeArrayAddress(receiver),
+                        ),
                     ),
                 );
                 return;
@@ -11120,12 +11122,14 @@ unsupportedExpression:
             const value = runExpressionValue(cast_.e1);
             if (AggregateValue.isArray(value) &&
                 AggregateValue.nativeArrayAddress(value) !is null)
-                return AggregateValue.reconstructNativeArrayWithLength(
-                    cast_.to,
-                    AggregateValue.length(value) * typeByteSize(
-                        cast_.e1.type.toBasetype.nextOf,
+                return ExpressionResult.nativeAggregateValue(
+                    AggregateValue.borrowArrayOwner(
+                        cast_.to,
+                        AggregateValue.length(value) * typeByteSize(
+                            cast_.e1.type.toBasetype.nextOf,
+                        ),
+                        AggregateValue.nativeArrayAddress(value),
                     ),
-                    AggregateValue.nativeArrayAddress(value),
                 );
             return value;
         }
@@ -11157,8 +11161,13 @@ unsupportedExpression:
                     AggregateValue;
 
                 const source = runExpressionValue(cast_.e1);
-                return AggregateValue.slice(
-                    source, cast_.to, 0, AggregateValue.length(source),
+                return ExpressionResult.nativeAggregateValue(
+                    AggregateValue.slice(
+                        AggregateValue.native(source),
+                        cast_.to,
+                        0,
+                        AggregateValue.length(source),
+                    ),
                 );
             }
 
@@ -11214,10 +11223,12 @@ unsupportedExpression:
             return false;
 
         const source = runExpressionValue(cast_.e1);
-        result = AggregateValue.reconstructNativeArrayWithLength(
-            cast_.to,
-            AggregateValue.length(source),
-            AggregateValue.nativeArrayAddress(source),
+        result = ExpressionResult.nativeAggregateValue(
+            AggregateValue.borrowArrayOwner(
+                cast_.to,
+                AggregateValue.length(source),
+                AggregateValue.nativeArrayAddress(source),
+            ),
         );
         return true;
     }
@@ -11706,10 +11717,12 @@ unsupportedExpression:
 
             const address = cast(const(ubyte)*) source.pointerAddress + lower *
                 typeByteSize(slice.e1.type.toBasetype.nextOf);
-            return AggregateValue.reconstructNativeArrayWithLength(
-                slice.type,
-                upper - lower,
-                address,
+            return ExpressionResult.nativeAggregateValue(
+                AggregateValue.borrowArrayOwner(
+                    slice.type,
+                    upper - lower,
+                    address,
+                ),
             );
         }
 
@@ -11763,21 +11776,25 @@ unsupportedExpression:
         ) {
             import quickbite.backends.interpreter.layout: typeByteSize;
 
-            return AggregateValue.reconstructNativeArrayWithLength(
-                slice.type,
-                (upper - lower) *
-                    typeByteSize(slice.e1.type.toBasetype.nextOf),
-                nativeAddress,
+            return ExpressionResult.nativeAggregateValue(
+                AggregateValue.borrowArrayOwner(
+                    slice.type,
+                    (upper - lower) *
+                        typeByteSize(slice.e1.type.toBasetype.nextOf),
+                    nativeAddress,
+                ),
             );
         }
         if (
             nativeAddress !is null &&
             slice.e1.type.toBasetype.isTypeSArray !is null
         )
-            return AggregateValue.reconstructNativeArrayWithLength(
-                slice.type,
-                upper - lower,
-                nativeAddress,
+            return ExpressionResult.nativeAggregateValue(
+                AggregateValue.borrowArrayOwner(
+                    slice.type,
+                    upper - lower,
+                    nativeAddress,
+                ),
             );
         if (!source.isNativeAggregate)
             throw new Exception("Array slice needs native aggregate storage.");

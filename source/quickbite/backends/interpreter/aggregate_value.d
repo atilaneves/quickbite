@@ -188,18 +188,10 @@ public struct AggregateValue {
         in imported!"quickbite.backends.interpreter.expression_result".ExpressionResult[] elements,
         const(void)* address,
     ) @safe {
-        return reconstructNativeArrayWithLength(type, elements.length, address);
-    }
-
-    public static imported!"quickbite.backends.interpreter.expression_result".ExpressionResult reconstructNativeArrayWithLength(
-        imported!"dmd.mtype".Type type,
-        in size_t length,
-        const(void)* address,
-    ) @safe {
         import quickbite.backends.interpreter.expression_result: ExpressionResult;
 
         return ExpressionResult.nativeAggregateValue(
-            borrowArrayOwner(type, length, address),
+            borrowArrayOwner(type, elements.length, address),
         );
     }
 
@@ -328,24 +320,6 @@ public struct AggregateValue {
             resultType,
             header,
             aggregate.retained,
-        );
-    }
-
-    // Transitional wrapper for value-path callers. New construction and
-    // slicing paths pass the native owner above, so the carrier is only the
-    // outer expression result.
-    public static imported!"quickbite.backends.interpreter.expression_result".ExpressionResult slice(
-        in imported!"quickbite.backends.interpreter.expression_result".ExpressionResult value,
-        imported!"dmd.mtype".Type resultType,
-        in size_t lower,
-        in size_t upper,
-    ) @safe {
-        import quickbite.backends.interpreter.expression_result: ExpressionResult;
-
-        if (!value.isNativeAggregate)
-            throw new Exception("Native AggregateValue.slice needs a native aggregate.");
-        return ExpressionResult.nativeAggregateValue(
-            slice(native(value), resultType, lower, upper),
         );
     }
 
