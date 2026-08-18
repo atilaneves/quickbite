@@ -178,118 +178,137 @@ package bool isStdConvText(imported!"dmd.func".FuncDeclaration function_) {
         declaration.packages[0].toString == "std";
 }
 
-package imported!"quickbite.backends.interpreter.expression_result".ExpressionResult stdConvTextCall(
-    in imported!"quickbite.backends.interpreter.expression_result".ExpressionResult[] arguments,
-    imported!"dmd.mtype".Type[] argumentTypes,
-    imported!"dmd.mtype".Type resultType,
+package void stdConvTextCall(
+    scope imported!"quickbite.backends.interpreter.place".Place[] arguments,
+    imported!"quickbite.backends.interpreter.place".Place destination,
 ) {
     import quickbite.backends.interpreter.aggregate_value: AggregateValue;
-    import quickbite.backends.interpreter.expression_result: ExpressionResult;
 
     string rendered;
-    foreach (index, ref argument; arguments)
-        rendered ~= stdConvTextArgument(argument, argumentTypes[index]);
+    foreach (argument; arguments)
+        rendered ~= stdConvTextArgument(argument);
 
-    ExpressionResult[] characters;
-    foreach (character; rendered)
-        characters ~= ExpressionResult(character);
-    return AggregateValue.reconstructArray(resultType, characters);
+    AggregateValue.initializeArray(destination, rendered.length);
+    foreach (index, character; rendered)
+        destination.index(index).storeNativeScalar(character);
 }
 
 private string stdConvTextArgument(
-    in imported!"quickbite.backends.interpreter.expression_result".ExpressionResult argument,
-    imported!"dmd.mtype".Type argumentType,
+    imported!"quickbite.backends.interpreter.place".Place argument,
 ) {
-    import quickbite.backends.interpreter.aggregate_value: AggregateValue;
     import quickbite.frontend.dmd.types: isCharacterArrayType;
 
-    // ExpressionResult intentionally carries no display metadata. The original
-    // expression type supplies std.conv.text's scalar and array rendering
-    // rules at this consumer.
-    if (AggregateValue.isArray(argument)) {
-        if (isCharacterArrayType(argumentType)) {
+    // The place's DMD type and native bytes are the display input. In
+    // particular, rendering a slice does not need an aggregate snapshot.
+    auto type = argument.type;
+    if (type.toBasetype.isTypeDArray !is null || type.toBasetype.isTypeSArray !is null) {
+        if (isCharacterArrayType(type)) {
             char[] result;
-            foreach (index; 0 .. AggregateValue.elementCount(argument))
-                result ~= AggregateValue.elementAt(argument, index)
-                    .asUtf8Character;
+            foreach (index; 0 .. argument.arrayLength)
+                result ~= characterText(argument.index(index));
             return result.idup;
         }
-        return nativeArrayText(argument, argumentType);
+        return nativeArrayText(argument);
     }
 
-    return scalarText(argument, argumentType);
+    return scalarText(argument);
 }
 
 
 private string nativeArrayText(
-    in imported!"quickbite.backends.interpreter.expression_result".ExpressionResult value,
-    imported!"dmd.mtype".Type type,
+    imported!"quickbite.backends.interpreter.place".Place value,
 ) {
-    import quickbite.backends.interpreter.aggregate_value: AggregateValue;
-
-    auto elementType = type.toBasetype.nextOf;
     string result = "[";
-    foreach (index; 0 .. AggregateValue.elementCount(value)) {
+    foreach (index; 0 .. value.arrayLength) {
         if (index)
             result ~= ", ";
-        const element = AggregateValue.elementAt(value, index);
-        result ~= AggregateValue.isArray(element)
-            ? nativeArrayText(element, elementType)
-            : scalarText(element, elementType);
+        auto element = value.index(index);
+        auto elementType = element.type.toBasetype;
+        result ~= elementType.isTypeDArray !is null || elementType.isTypeSArray !is null
+            ? nativeArrayText(element)
+            : scalarText(element);
     }
     return result ~ "]";
 }
 
 
 private string scalarText(
-    in imported!"quickbite.backends.interpreter.expression_result".ExpressionResult value,
-    imported!"dmd.mtype".Type type,
+    imported!"quickbite.backends.interpreter.place".Place value,
 ) {
     import dmd.astenums: TY;
-    import quickbite.backends.interpreter.expression_result: ExpressionResult;
     import std.conv: text;
 
-    if (value == ExpressionResult.null_)
+    auto type = value.type;
+    if (type.toBasetype.ty == TY.Tnull)
         return "null";
-    if (value.isEnumScalar)
-        return value.enumName;
-    if (value.isImaginaryScalar)
-        return text(value.imaginaryPart, "i");
-    if (value.isComplexScalar)
-        return text(
-            value.complexRealPart.asReal,
-            "+",
-            value.complexImaginaryPart.asReal,
-            "i",
-        );
-    if (value.isTypeName)
-        return value.asTypeNameString;
-    if (value.isFunctionPointer)
-        return text("<function pointer ", value.functionPointerId, ">");
-    if (value.isPointer)
-        return text(value.pointerAddress);
-    if (value.isNativeDelegate)
-        return text(value.nativeDelegateFuncptr);
-    if (value.isNativeAggregate)
-        return "<native aggregate>";
 
     switch (type.toBasetype.ty) with (TY) {
         case Tbool:
-            return text(value == ExpressionResult(true));
+            return text(value.loadNativeScalar!bool);
         case Tchar, Twchar, Tdchar:
-            return value.asUtf8Character;
+            return characterText(value);
         case Tint8, Tint16, Tint32, Tint64:
-            return text(value.asLong);
+            return signedText(value);
         case Tuns8, Tuns16, Tuns32, Tuns64:
-            return text(value.asUnsignedLong);
+            return unsignedText(value);
         case Tfloat32:
-            return text(cast(float) value.asReal);
+            return text(value.loadNativeScalar!float);
         case Tfloat64:
-            return text(cast(double) value.asReal);
+            return text(value.loadNativeScalar!double);
         case Tfloat80:
-            return text(value.asReal);
+            return text(value.loadNativeScalar!real);
+        case Tpointer, Tclass, Taarray:
+            return value.deref.address is null ? "null" : text(value.deref.address);
         default:
-            throw new Exception("Unsupported std.conv.text argument.");
+            return "<native aggregate>";
+    }
+}
+
+private string characterText(
+    imported!"quickbite.backends.interpreter.place".Place value,
+) {
+    import dmd.astenums: TY;
+    import std.utf: encode;
+
+    with (TY) switch (value.type.toBasetype.ty) {
+        case Tchar:
+            return [value.loadNativeScalar!char].idup;
+        case Twchar:
+            char[4] encoded;
+            const length = encode(encoded, cast(dchar) value.loadNativeScalar!wchar);
+            return encoded[0 .. length].idup;
+        case Tdchar:
+            char[4] encoded;
+            const length = encode(encoded, value.loadNativeScalar!dchar);
+            return encoded[0 .. length].idup;
+        default:
+            throw new Exception("std.conv.text needs a character place.");
+    }
+}
+
+private string signedText(imported!"quickbite.backends.interpreter.place".Place value) {
+    import dmd.astenums: TY;
+    import std.conv: text;
+
+    with (TY) switch (value.type.toBasetype.ty) {
+        case Tint8: return text(value.loadNativeScalar!byte);
+        case Tint16: return text(value.loadNativeScalar!short);
+        case Tint32: return text(value.loadNativeScalar!int);
+        case Tint64: return text(value.loadNativeScalar!long);
+        default: throw new Exception("std.conv.text needs a signed integer place.");
+    }
+}
+
+private string unsignedText(imported!"quickbite.backends.interpreter.place".Place value) {
+    import dmd.astenums: TY;
+    import std.conv: text;
+
+    with (TY) switch (value.type.toBasetype.ty) {
+        case Tuns8: return text(value.loadNativeScalar!ubyte);
+        case Tuns16: return text(value.loadNativeScalar!ushort);
+        case Tuns32: return text(value.loadNativeScalar!uint);
+        case Tuns64: return text(value.loadNativeScalar!ulong);
+        default: throw new Exception("std.conv.text needs an unsigned integer place.");
     }
 }
 

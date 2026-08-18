@@ -5451,6 +5451,7 @@ unsupportedExpression:
             binaryBuiltinCall,
             interpreterBuiltinArgumentCount,
             isStdConvText,
+            stdConvTextCall,
             tryInterpreterBuiltin,
             unaryBuiltinCall;
         import quickbite.backends.interpreter.frame_layout:
@@ -5517,6 +5518,36 @@ unsupportedExpression:
                 }
                 return ExpressionResult.void_;
             }
+        }
+
+        if (call.f !is null && isStdConvText(call.f)) {
+            import quickbite.backends.interpreter.interception_guard:
+                enforceInterceptionPolicy;
+            import quickbite.backends.interpreter.place: Place;
+
+            enforceInterceptionPolicy(call.f, "isStdConvText");
+            if (constructionDestination is null) {
+                // A discarded `text` result has no observable value, but its
+                // arguments still run in source order for their effects.
+                if (call.arguments !is null)
+                    foreach (argument; *call.arguments)
+                        executeForEffect(argument);
+            } else {
+                Place[] argumentPlaces;
+                if (call.arguments !is null) {
+                    foreach (argument; *call.arguments) {
+                        auto argumentDestination = ConstructionDestination(Place(
+                            _activationFrame.temporaryAddress(argument),
+                            argument.type,
+                        ));
+                        runExpression(argument, argumentDestination);
+                        argumentPlaces ~= argumentDestination.place;
+                    }
+                }
+                stdConvTextCall(argumentPlaces, constructionDestination.place);
+                constructionDestination.markConstructed;
+            }
+            return ExpressionResult.void_;
         }
 
         if (call.f !is null && isDruntimeArrayOpAddAssign(call.f)) {
@@ -5614,23 +5645,6 @@ unsupportedExpression:
                     );
                 argumentExpressions[index] = argument;
                 evaluatedArguments[index] = evaluated;
-            }
-        }
-
-        if (call.f !is null) {
-            import quickbite.backends.interpreter.builtins:
-                stdConvTextCall;
-
-            if (isStdConvText(call.f)) {
-                import dmd.mtype: Type;
-                import quickbite.backends.interpreter.interception_guard:
-                    enforceInterceptionPolicy;
-
-                enforceInterceptionPolicy(call.f, "isStdConvText");
-                Type[] argumentTypes;
-                foreach (argumentExpression; argumentExpressions)
-                    argumentTypes ~= argumentExpression.type;
-                return stdConvTextCall(arguments, argumentTypes, call.type);
             }
         }
 
