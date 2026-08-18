@@ -113,10 +113,76 @@ public bool tryCastTarget(
     }
 }
 
-public imported!"quickbite.backends.interpreter.expression_result".ExpressionResult castValue(
+public void castValue(
+    in imported!"quickbite.backends.interpreter.expression_result".ExpressionResult value,
+    in CastTarget target,
+    imported!"quickbite.backends.interpreter.place".Place destination,
+) {
+    final switch (target) with (CastTarget) {
+        case bool_:
+            destination.storeNativeScalar(value.castTo!bool.asLong != 0);
+            return;
+        case byte_:
+            destination.storeNativeScalar(cast(byte) value.castTo!byte.asLong);
+            return;
+        case ubyte_:
+            destination.storeNativeScalar(cast(ubyte) value.castTo!ubyte.asLong);
+            return;
+        case char_:
+            destination.storeNativeScalar(cast(char) value.castTo!char.asLong);
+            return;
+        case short_:
+            destination.storeNativeScalar(cast(short) value.castTo!short.asLong);
+            return;
+        case ushort_:
+            destination.storeNativeScalar(cast(ushort) value.castTo!ushort.asLong);
+            return;
+        case wchar_:
+            destination.storeNativeScalar(cast(wchar) value.castTo!wchar.asLong);
+            return;
+        case int_:
+            destination.storeNativeScalar(cast(int) value.castTo!int.asLong);
+            return;
+        case uint_:
+            destination.storeNativeScalar(cast(uint) value.castTo!uint.asLong);
+            return;
+        case dchar_:
+            destination.storeNativeScalar(cast(dchar) value.castTo!dchar.asLong);
+            return;
+        case long_:
+            destination.storeNativeScalar(value.castTo!long.asLong);
+            return;
+        case ulong_:
+            destination.storeNativeScalar(cast(ulong) value.castTo!ulong.asLong);
+            return;
+        case float_:
+            destination.storeNativeScalar(cast(float) value.castTo!float.asReal);
+            return;
+        case double_:
+            destination.storeNativeScalar(cast(double) value.castTo!double.asReal);
+            return;
+        case real_:
+            destination.storeScalar(value.castTo!real);
+            return;
+        case ifloat_:
+        case idouble_:
+        case ireal_:
+            destination.storeScalar(value.castToImaginary);
+            return;
+        case cfloat_:
+        case cdouble_:
+        case creal_:
+            destination.storeScalar(value.castToComplex);
+            return;
+    }
+}
+
+public imported!"quickbite.backends.interpreter.expression_result".ExpressionResult castValueResult(
     in imported!"quickbite.backends.interpreter.expression_result".ExpressionResult value,
     in CastTarget target,
 ) {
+    import quickbite.backends.interpreter.expression_result: ExpressionResult;
+
     final switch (target) with (CastTarget) {
         case bool_:
             return value.castTo!bool;

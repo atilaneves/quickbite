@@ -7835,7 +7835,7 @@ unsupportedExpression:
     private ExpressionResult runPowExpression(imported!"dmd.expression".PowExp pow) {
         import quickbite.backends.interpreter.runtime_casts:
             backendCastTarget = castTarget,
-            backendCastValue = castValue;
+            backendCastValue = castValueResult;
 
         const base = runExpression(pow.e1);
         auto exponent = runExpression(pow.e2).asLong;
@@ -7860,7 +7860,7 @@ unsupportedExpression:
     ) {
         import quickbite.backends.interpreter.runtime_casts:
             backendCastTarget = castTarget,
-            backendCastValue = castValue;
+            backendCastValue = castValueResult;
 
         return backendCastValue(
             ExpressionResult(~runExpression(complement.e1).asLong),
@@ -7888,7 +7888,7 @@ unsupportedExpression:
     ) {
         import quickbite.backends.interpreter.runtime_casts:
             backendCastTarget = castTarget,
-            backendCastValue = castValue;
+            backendCastValue = castValueResult;
 
         const left = leftValue.asLong;
         const right = rightValue.asLong;
@@ -8974,7 +8974,7 @@ unsupportedExpression:
         in ExpressionResult value,
     ) {
         import quickbite.backends.interpreter.runtime_casts:
-            backendCastValue = castValue,
+            backendCastValue = castValueResult,
             CastTarget,
             tryCastTarget;
         import quickbite.frontend.dmd.types: isCharacterArrayType;
@@ -10602,7 +10602,7 @@ unsupportedExpression:
     private ExpressionResult castValue(imported!"dmd.expression".CastExp cast_) {
         import quickbite.backends.interpreter.runtime_casts:
             backendCastTarget = castTarget,
-            backendCastValue = castValue;
+            backendCastValue = castValueResult;
         import quickbite.frontend.dmd.types: isPointerType;
         import dmd.astenums: TY;
 
@@ -10735,7 +10735,7 @@ unsupportedExpression:
         import quickbite.backends.interpreter.aggregate_value: AggregateValue;
         import quickbite.backends.interpreter.runtime_casts:
             backendCastTarget = castTarget,
-            backendCastValue = castValue;
+            backendCastValue = castValueResult;
 
         const value = runExpression(cast_.e1);
         if (value.isPointer)
@@ -12836,6 +12836,21 @@ unsupportedExpression:
             );
 
         auto place = destination.place;
+
+        if (auto cast_ = rvalue.isCastExp) {
+            import quickbite.backends.interpreter.native_scalar:
+                isNativeScalarType;
+            import quickbite.backends.interpreter.runtime_casts:
+                CastTarget, castTarget, castValue, tryCastTarget;
+
+            CastTarget target;
+            if (isNativeScalarType(place.type) &&
+                tryCastTarget(place.type, target)) {
+                castValue(runExpression(cast_.e1), target, place);
+                destination.markConstructed;
+                return true;
+            }
+        }
 
         if (auto integer = rvalue.isIntegerExp) {
             import dmd.astenums: TY;
