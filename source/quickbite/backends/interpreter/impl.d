@@ -8620,10 +8620,10 @@ unsupportedExpression:
         // into the live place. DMD has already made any required conversion,
         // postblit, or destructor action explicit around this assignment, so
         // this is the ordinary representation-preserving move itself.
+        // A direct `DotVarExp` has already composed its live field place
+        // above. Struct and static-array fields do not enter this path, so
+        // their DMD-lowered postblit and chained-method handling is unchanged.
         if (
-            // A struct field's existing value route preserves the receiver
-            // snapshot and method-call chaining that its DMD lowering needs.
-            target.isDotVarExp is null &&
             target.type !is null &&
             rhs.type !is null &&
             target.type.toBasetype.equals(rhs.type.toBasetype)
