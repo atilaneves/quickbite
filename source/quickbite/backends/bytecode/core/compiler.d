@@ -10934,12 +10934,6 @@ private struct Compiler {
                 return compileStringForeachApply(call, applyMode);
         }
 
-        // `_d_arraybounds*` is the bounds-failure helper in DMD's `m[k]`
-        // lowering (`slot ? slot : (_d_arraybounds(...), null)`); reaching it
-        // means the key was absent, so raise the plain "Range violation".
-        if (function_ !is null && isArrayBoundsCall(function_))
-            return compileRangeViolation;
-
         if (function_ !is null)
             if (auto builtin = compileBuiltinCall(call, function_))
                 return *builtin;
@@ -11205,7 +11199,7 @@ private struct Compiler {
             returnTy != TY.Tuns64 &&
             returnTy != TY.Tfloat64 && returnTy != TY.Tvoid &&
             returnTy != TY.Tpointer && returnTy != TY.Tarray &&
-            returnTy != TY.Tstruct)
+            returnTy != TY.Tstruct && returnTy != TY.Tnoreturn)
             return null;
 
         auto parameterList =
@@ -12376,18 +12370,6 @@ private struct Compiler {
             ));
         _code ~= Instruction(
             Op.copy, slot, address.offset, cast(ushort) size_t.sizeof,
-        );
-    }
-
-    private Operand compileRangeViolation() {
-        const message = compileStringLiteralBytes("Range violation");
-        _code ~= Instruction(
-            Op.throwString, message, noExceptionClass, noCatchObjectField,
-        );
-        const offset =
-            allocateBytes(cast(uint) size_t.sizeof, size_t.sizeof);
-        return Operand(
-            offset, ScalarType.ulong_, true, ScalarType.int_,
         );
     }
 
@@ -14736,17 +14718,6 @@ private imported!"quickbite.backends.bytecode.core.program".Op
         case ">=": return Op.greaterOrEqualUnsigned8;
         default: assert(0, "Unsupported pointer comparison operator.");
     }
-}
-
-// The druntime `_d_arraybounds*` bounds-failure helper, the false branch of
-// DMD's `m[k]` lowering. Matched by name; reaching it means a missing key.
-private bool isArrayBoundsCall(
-    imported!"dmd.func".FuncDeclaration function_,
-) {
-    import std.algorithm: startsWith;
-
-    return function_.ident !is null &&
-        function_.ident.toString.startsWith("_d_arraybounds");
 }
 
 // A `string`/`wstring`/`dstring` (immutable char-element array): the only
