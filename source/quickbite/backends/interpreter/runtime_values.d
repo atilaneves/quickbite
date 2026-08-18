@@ -58,82 +58,6 @@ public void integerValue(
     }
 }
 
-public imported!"quickbite.backends.interpreter.expression_result".ExpressionResult castIntegerValue(
-    imported!"dmd.expression".IntegerExp integer,
-    in imported!"dmd.astenums".TY ty,
-) {
-    import dmd.astenums: TY;
-    import quickbite.backends.interpreter.expression_result: ExpressionResult;
-
-    const value = integer.getInteger;
-
-    switch (ty) with (TY) {
-        case Tbool:
-            return ExpressionResult(value != 0);
-        case Tint8:
-            return ExpressionResult(cast(byte) value);
-        case Tuns8:
-            return ExpressionResult(cast(ubyte) value);
-        case Tchar:
-            return ExpressionResult(cast(char) value);
-        case Tint16:
-            return ExpressionResult(cast(short) value);
-        case Tuns16:
-            return ExpressionResult(cast(ushort) value);
-        case Twchar:
-            return ExpressionResult(cast(wchar) value);
-        case Tint32:
-            return ExpressionResult(cast(int) value);
-        case Tuns32:
-            return ExpressionResult(cast(uint) value);
-        case Tdchar:
-            return ExpressionResult(cast(dchar) value);
-        case Tint64:
-            return ExpressionResult(cast(long) value);
-        case Tuns64:
-            return ExpressionResult(cast(ulong) value);
-        default:
-            assert(0);
-    }
-}
-
-public imported!"quickbite.backends.interpreter.expression_result".ExpressionResult castSignedIntegerValue(
-    in long value,
-    in imported!"dmd.astenums".TY ty,
-) {
-    import dmd.astenums: TY;
-    import quickbite.backends.interpreter.expression_result: ExpressionResult;
-
-    switch (ty) with (TY) {
-        case Tbool:
-            return ExpressionResult(value != 0);
-        case Tint8:
-            return ExpressionResult(cast(byte) value);
-        case Tuns8:
-            return ExpressionResult(cast(ubyte) value);
-        case Tchar:
-            return ExpressionResult(cast(char) value);
-        case Tint16:
-            return ExpressionResult(cast(short) value);
-        case Tuns16:
-            return ExpressionResult(cast(ushort) value);
-        case Twchar:
-            return ExpressionResult(cast(wchar) value);
-        case Tint32:
-            return ExpressionResult(cast(int) value);
-        case Tuns32:
-            return ExpressionResult(cast(uint) value);
-        case Tdchar:
-            return ExpressionResult(cast(dchar) value);
-        case Tint64:
-            return ExpressionResult(cast(long) value);
-        case Tuns64:
-            return ExpressionResult(cast(ulong) value);
-        default:
-            assert(0);
-    }
-}
-
 public void realValue(
     imported!"dmd.expression".RealExp real_,
     imported!"quickbite.backends.interpreter.place".Place destination,
@@ -170,7 +94,7 @@ public void realValue(
 
 // Construct a type's ordinary `.init` directly in caller-owned native
 // storage. Structs and static arrays recurse through their typed places, so
-// they do not first become an aggregate ExpressionResult. A union has one
+// they do not first become a transient aggregate result. A union has one
 // storage region: D initializes its first declared member and leaves every
 // sibling as an overlapping view of those same bytes.
 public void defaultValue(
@@ -290,7 +214,7 @@ public void defaultValue(
 
 // Creates an owned native value for an expression path that has no final
 // destination yet. The caller can read it at its typed place, but default
-// construction itself never selects an ExpressionResult arm.
+// construction itself never selects a result arm.
 public imported!"quickbite.backends.interpreter.native_aggregate".NativeAggregate defaultValueOwner(
     imported!"dmd.mtype".Type type,
 ) {

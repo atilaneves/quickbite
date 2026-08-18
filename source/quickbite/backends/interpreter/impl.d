@@ -11126,9 +11126,15 @@ unsupportedExpression:
 
         if (auto integer = cast_.e1.isIntegerExp)
             if (integer.type !is null && integer.type.ty == TY.Tenum) {
-                import quickbite.backends.interpreter.runtime_values: castIntegerValue;
+                import quickbite.backends.interpreter.place: Place;
+                import quickbite.backends.interpreter.runtime_values: integerValue;
 
-                return castIntegerValue(integer, type.ty);
+                auto destination = Place(
+                    _activationFrame.temporaryAddress(cast_),
+                    cast_.to,
+                );
+                integerValue(integer, destination);
+                return readStoredValue(destination);
             }
 
         return backendCastValue(runExpressionValue(cast_.e1), backendCastTarget(type));
