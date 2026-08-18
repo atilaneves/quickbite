@@ -542,8 +542,11 @@
   downstream in unrelated code (dmd Scope pooling is not safe to drive this
   way mid-compilation, or the freshly-synthesised `TypeInfoDeclaration` is
   not interchangeable with dmd's own runtime-simulated one) -- reverted
-  rather than pursued further; `typeid` of a static/nested array or a
-  delegate element type stays an open bytecode-core gap.
+  rather than pursued further; composite `TypeInfo` for arrays, static
+  arrays, and delegates is now synthesised recursively instead, so the
+  remaining unsupported `typeid` categories are a class/interface reached
+  only as a composite's field, associative arrays, function types,
+  vectors, and tuples.
 
 - `tryCompileNativeCall`'s (`compiler.d`) generic argument-compiling loop
   did not honour a native callee's `ref`/`out` parameter: its fallback
