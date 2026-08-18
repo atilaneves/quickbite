@@ -3828,7 +3828,7 @@ unsupportedExpression:
             } catch (NativeCallException exception) {
                 throwNativeException(exception);
             }
-            return ExpressionResult.pointerValue(nativeResult.referenceAddress);
+            return ExpressionResult.pointerValue(nativeResult.value.address);
         }
 
         Walker child;
@@ -3975,7 +3975,7 @@ unsupportedExpression:
             } catch (NativeCallException exception) {
                 throwNativeException(exception);
             }
-            return ExpressionResult.pointerValue(nativeResult.referenceAddress);
+            return ExpressionResult.pointerValue(nativeResult.value.address);
         }
 
         Walker child;
@@ -5659,7 +5659,7 @@ unsupportedExpression:
                                 ? receiverPointerAddress.pointerAddress
                                 : null,
                         ))
-                            return nativeResult.value;
+                            return nativeCallValue(nativeResult.value);
                     } catch (NativeCallException exception) {
                         throwNativeException(exception);
                     }
@@ -5707,7 +5707,7 @@ unsupportedExpression:
                             false,
                             nativeResult,
                         ))
-                        return nativeResult.value;
+                        return nativeCallValue(nativeResult.value);
                 } catch (NativeCallException exception) {
                     throwNativeException(exception);
                 }
@@ -6177,6 +6177,7 @@ unsupportedExpression:
             nativeArguments.types,
             null,
             nativeArguments.operands,
+            durableInboundSession,
         );
 
         try {
@@ -6188,14 +6189,13 @@ unsupportedExpression:
                 delegateSignature: functionType,
                 delegateAddress: callee.nativeDelegateFuncptr,
                 delegateContext: callee.nativeDelegateContext,
-                arguments: arguments,
                 argumentTypes: nativeArguments.types,
                 argumentOperands: nativeArguments.operands,
                 callbackSession: durableInboundSession,
             );
             NativeCallResult nativeResult;
             if (invokeNative(request, nativeResult))
-                return nativeResult.value;
+                return nativeCallValue(nativeResult.value);
         } catch (NativeCallException exception) {
             throwNativeException(exception);
         }
@@ -8732,7 +8732,7 @@ unsupportedExpression:
                 auto returnType = function_.type.toBasetype.isTypeFunction
                     .next.toBasetype;
                 writeStoredValue(
-                    Place(nativeResult.referenceAddress, returnType),
+                    Place(nativeResult.value.address, returnType),
                     value,
                 );
                 return true;
@@ -8845,7 +8845,7 @@ unsupportedExpression:
                 auto returnType = call.f.type.toBasetype.isTypeFunction
                     .next.toBasetype;
                 writeStoredValue(
-                    Place(nativeResult.referenceAddress, returnType),
+                    Place(nativeResult.value.address, returnType),
                     value,
                 );
                 return true;
@@ -11703,6 +11703,20 @@ unsupportedExpression:
             );
     }
 
+    private ExpressionResult nativeCallValue(
+        imported!"quickbite.backends.interpreter.native_call_adapter".
+            NativeOperand operand,
+    ) {
+        import dmd.astenums: TY;
+        import quickbite.backends.interpreter.place: Place;
+        import quickbite.backends.interpreter.place_value: readValue;
+
+        if (operand.address is null || operand.type is null ||
+            operand.type.toBasetype.ty == TY.Tvoid)
+            return ExpressionResult.void_;
+        return readValue(Place(operand.address, operand.type));
+    }
+
     private bool invokeNativeDeclaration(
         imported!"dmd.func".FuncDeclaration function_,
         ExpressionResult receiver,
@@ -11721,6 +11735,36 @@ unsupportedExpression:
 
         auto nativeArguments = NativeCallArguments(argumentExpressions);
         scope(exit) nativeArguments.release;
+        if (durableInboundSession is null)
+            durableInboundSession = new InterpreterInboundTrampolineSession(
+                _executionState.invokeNativeCallback,
+            );
+        auto receiverOperand = receiverExpression is null
+            ? NativeOperand.init
+            : nativeReceiverOperand(receiverExpression, receiverAddress);
+        if (
+            receiverType !is null && receiverOperand.address is null &&
+            receiver != ExpressionResult.void_
+        ) {
+            import quickbite.backends.interpreter.layout:
+                typeByteSize, typeHasPointers;
+            import quickbite.backends.interpreter.native_block: NativeBlock;
+            import quickbite.backends.interpreter.place: Place;
+            import quickbite.backends.interpreter.place_value: writeValue;
+
+            auto temporary = NativeBlock.allocate(
+                typeByteSize(receiverType),
+                typeHasPointers(receiverType)
+                    ? NativeBlock.Scan.conservative
+                    : NativeBlock.Scan.no,
+            );
+            writeValue(Place(temporary.address, receiverType), receiver);
+            receiverOperand = NativeOperand(
+                receiverType,
+                temporary.address,
+                temporary,
+            );
+        }
         fillNativeCallOperands(
             function_,
             arguments,
@@ -11728,22 +11772,15 @@ unsupportedExpression:
             nativeArguments.types,
             evaluatedArguments,
             nativeArguments.operands,
+            durableInboundSession,
         );
-        if (durableInboundSession is null)
-            durableInboundSession = new InterpreterInboundTrampolineSession(
-                _executionState.invokeNativeCallback,
-            );
         auto request = NativeCallRequest(
             declaration: function_,
             receiverType: receiverType,
-            receiver: receiver,
-            receiverOperand: receiverExpression is null
-                ? NativeOperand.init
-                : nativeReceiverOperand(receiverExpression, receiverAddress),
+            receiverOperand: receiverOperand,
             virtualDispatch: receiverType !is null &&
                 receiverType.toBasetype.isTypeClass !is null,
             returnsReceiver: returnsReceiver,
-            arguments: arguments,
             argumentTypes: nativeArguments.types,
             argumentOperands: nativeArguments.operands,
             callbackSession: durableInboundSession,
@@ -11761,9 +11798,15 @@ unsupportedExpression:
         imported!"dmd.mtype".Type[] argumentTypes,
         in EvaluatedReferenceArgument[] evaluatedArguments,
         imported!"quickbite.backends.interpreter.native_call_adapter".NativeOperand[] operands,
+        imported!"quickbite.backends.interpreter.native_call_adapter".
+            InterpreterInboundTrampolineSession* callbackSession,
     ) {
+        import quickbite.backends.interpreter.layout: typeByteSize, typeHasPointers;
         import quickbite.backends.interpreter.native_block: NativeBlock;
         import quickbite.backends.interpreter.native_call_adapter: NativeOperand;
+        import quickbite.backends.interpreter.place: Place;
+        import quickbite.backends.interpreter.place_value: writeValue;
+        import dmd.astenums: TY;
         import dmd.tokens: EXP;
 
         assert(operands.length == argumentExpressions.length);
@@ -11829,18 +11872,52 @@ unsupportedExpression:
                 expression.type is null ||
                 !expression.type.toBasetype.equals(
                     argumentTypes[index].toBasetype,
-                ) ||
-                !hasStableLocalFieldPlace(expression)
+                )
             )
                 continue;
-            const address = addressOfExpression(expression, EXP.address);
-            if (address.isPointer)
+
+            if (
+                argumentTypes[index].toBasetype.ty == TY.Tdelegate &&
+                arguments[index] != ExpressionResult.null_ &&
+                !arguments[index].isNativeDelegate
+            ) {
                 operands[index] = NativeOperand(
-                    nativeReferenceParameter(function_, index)
-                        ? nativeParameterType(function_, index)
-                        : argumentTypes[index],
-                    address.pointerAddress,
+                    argumentTypes[index],
+                    null,
+                    NativeBlock.init,
+                    callbackSession,
+                    callbackSession.register(arguments[index]),
                 );
+                continue;
+            }
+
+            if (hasStableLocalFieldPlace(expression)) {
+                const address = addressOfExpression(expression, EXP.address);
+                if (address.isPointer)
+                    operands[index] = NativeOperand(
+                        nativeReferenceParameter(function_, index)
+                            ? nativeParameterType(function_, index)
+                            : argumentTypes[index],
+                        address.pointerAddress,
+                    );
+            }
+
+            if (operands[index].address !is null)
+                continue;
+
+            auto temporary = NativeBlock.allocate(
+                typeByteSize(argumentTypes[index]),
+                typeHasPointers(argumentTypes[index])
+                    ? NativeBlock.Scan.conservative
+                    : NativeBlock.Scan.no,
+            );
+            writeValue(Place(temporary.address, argumentTypes[index]),
+                arguments[index]);
+            operands[index] = NativeOperand(
+                argumentTypes[index],
+                temporary.address,
+                temporary,
+            );
         }
     }
 
@@ -12329,7 +12406,10 @@ unsupportedExpression:
                 true,
                 nativeResult,
             ))
-                return allocateNativePointer(targetType, nativeResult.value);
+                return allocateNativePointer(
+                    targetType,
+                    nativeCallValue(nativeResult.value),
+                );
         } catch (NativeCallException exception) {
             throwNativeException(exception);
         }

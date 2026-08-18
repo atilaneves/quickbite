@@ -367,6 +367,8 @@ public struct NativeOperand {
     public imported!"dmd.mtype".Type type;
     public void* address;
     public imported!"quickbite.backends.interpreter.native_block".NativeBlock owner;
+    public InterpreterInboundTrampolineSession* callbackSession;
+    public size_t callbackId;
 }
 
 // The address-only bridge's complete call shape. Preparation owns selecting
@@ -387,6 +389,8 @@ private struct NativeInvocation {
     private imported!"quickbite.ffi.ffi".TypedAddress _singleArgument;
     private imported!"quickbite.backends.interpreter.native_block".NativeBlock[3]
         _inlineRoots;
+    private imported!"quickbite.backends.interpreter.native_block".NativeBlock
+        _resultOwner;
 
     public this(in size_t argumentCount) {
         import core.memory: GC;
@@ -488,20 +492,16 @@ public struct NativeCallRequest {
     public const(void)* delegateAddress;
     public const(void)* delegateContext;
     public imported!"dmd.mtype".Type receiverType;
-    public imported!"quickbite.backends.interpreter.expression_result".ExpressionResult receiver;
     public NativeOperand receiverOperand;
     public bool virtualDispatch;
     public bool returnsReceiver;
-    public const(imported!"quickbite.backends.interpreter.expression_result".
-        ExpressionResult)[] arguments;
     public imported!"dmd.mtype".Type[] argumentTypes;
     public NativeOperand[] argumentOperands;
     public InterpreterInboundTrampolineSession* callbackSession;
 }
 
 public struct NativeCallResult {
-    public imported!"quickbite.backends.interpreter.expression_result".ExpressionResult value;
-    public void* referenceAddress;
+    public NativeOperand value;
 }
 
 public bool invokeNative(
@@ -547,19 +547,17 @@ private bool prepareNativeInvocation(
         return false;
 
     const fixedCount = signature.parameterList.length;
-    if (request.arguments.length != request.argumentTypes.length ||
-        cVariadic && request.arguments.length < fixedCount ||
-        !cVariadic && request.arguments.length != fixedCount)
+    if (request.argumentOperands.length != request.argumentTypes.length ||
+        cVariadic && request.argumentOperands.length < fixedCount ||
+        !cVariadic && request.argumentOperands.length != fixedCount)
         return false;
-    invocation = NativeInvocation(request.arguments.length);
+    invocation = NativeInvocation(request.argumentOperands.length);
 
     invocation.returnsReceiver = request.returnsReceiver;
     if (request.receiverType !is null) {
         if (!prepareNativeOperand(
             request.receiverType,
-            request.receiver,
             request.receiverOperand,
-            null,
             invocation,
             invocation.receiver,
         ))
@@ -597,7 +595,7 @@ private bool prepareNativeInvocation(
     if (invocation.callable.address is null)
         return false;
 
-    foreach (index, argument; request.arguments) {
+    foreach (index, supplied; request.argumentOperands) {
         auto type = index < fixedCount
             ? signature.parameterList[index].type.toBasetype
             : request.argumentTypes[index].toBasetype;
@@ -608,16 +606,11 @@ private bool prepareNativeInvocation(
         const isReference = index < fixedCount &&
             (signature.parameterList[index].storageClass &
                 (STC.ref_ | STC.out_)) != STC.none;
-        auto supplied = index < request.argumentOperands.length
-            ? request.argumentOperands[index]
-            : NativeOperand.init;
         if (isReference && !operandMatches(supplied, type))
             return false;
         if (!prepareNativeOperand(
             type,
-            argument,
             supplied,
-            request.callbackSession,
             invocation,
             invocation.arguments[index],
         ))
@@ -632,6 +625,7 @@ private bool prepareNativeInvocation(
             NativeBlock.Scan.conservative,
         );
         invocation.result = TypedAddress(returnType, owner.address);
+        invocation._resultOwner = owner;
         invocation.retainRoot(owner);
     } else if (returnType.ty == TY.Tvoid || returnType.ty == TY.Tnoreturn) {
         invocation.result = TypedAddress(returnType, null);
@@ -643,6 +637,7 @@ private bool prepareNativeInvocation(
                 : NativeBlock.Scan.no,
         );
         invocation.result = TypedAddress(returnType, owner.address);
+        invocation._resultOwner = owner;
         invocation.retainRoot(owner);
     }
     return invocation.isComplete;
@@ -650,68 +645,33 @@ private bool prepareNativeInvocation(
 
 private bool prepareNativeOperand(
     imported!"dmd.mtype".Type type,
-    in imported!"quickbite.backends.interpreter.expression_result".ExpressionResult value,
     NativeOperand supplied,
-    InterpreterInboundTrampolineSession* callbackSession,
     ref NativeInvocation invocation,
     out imported!"quickbite.ffi.ffi".TypedAddress result,
 ) {
-    import dmd.astenums: TY;
-    import quickbite.backends.interpreter.aggregate_value: AggregateValue;
     import quickbite.backends.interpreter.layout: typeByteSize, typeHasPointers;
     import quickbite.backends.interpreter.native_block: NativeBlock;
-    import quickbite.backends.interpreter.place: Place;
-    import quickbite.backends.interpreter.place_value: valueMatchesPlace, writeValue;
-    import quickbite.backends.interpreter.expression_result: ExpressionResult;
     import quickbite.ffi.ffi: TypedAddress;
 
-    const interpretedDelegate = type.toBasetype.ty == TY.Tdelegate &&
-        value != ExpressionResult.null_ &&
-        !value.isNativeDelegate;
-    if (!interpretedDelegate && operandMatches(supplied, type)) {
+    if (operandMatches(supplied, type)) {
         result = TypedAddress(type, supplied.address);
         if (supplied.owner.address !is null)
             invocation.retainRoot(supplied.owner);
         return true;
     }
-    if (value.isNativeAggregate) {
-        auto aggregate = AggregateValue.native(value);
-        if (sameNativeStorageType(aggregate.type, type)) {
-            result = TypedAddress(type, cast(void*) aggregate.address);
-            return true;
-        }
-    }
-
+    if (supplied.callbackSession is null)
+        return false;
     auto owner = NativeBlock.allocate(
         typeByteSize(type),
-        typeHasPointers(type)
-            ? NativeBlock.Scan.conservative
-            : NativeBlock.Scan.no,
+        typeHasPointers(type) ? NativeBlock.Scan.conservative :
+            NativeBlock.Scan.no,
     );
-    if (type.toBasetype.ty == TY.Tdelegate && value != ExpressionResult.null_) {
-        if (value.isNativeDelegate) {
-            *cast(const(void)**) owner.address = value.nativeDelegateContext;
-            *cast(const(void)**) (cast(ubyte*) owner.address + (void*).sizeof) =
-                value.nativeDelegateFuncptr;
-        } else {
-            if (callbackSession is null)
-                return false;
-            callbackSession.registry.setupDelegateArgument(
-                owner.bytes,
-                type,
-                callbackSession.register(value),
-                invocation.callable.compilerAbi,
-            );
-        }
-    } else if (valueMatchesPlace(type, value) ||
-        type.toBasetype.ty == TY.Tclass &&
-            (value.isPointer || value == ExpressionResult.null_) ||
-        type.toBasetype.ty == TY.Tdelegate && value == ExpressionResult.null_)
-    {
-        writeValue(Place(owner.address, type), value);
-    } else
-        return false;
-
+    supplied.callbackSession.registry.setupDelegateArgument(
+        owner.bytes,
+        type,
+        supplied.callbackId,
+        invocation.callable.compilerAbi,
+    );
     result = TypedAddress(type, owner.address);
     invocation.retainRoot(owner);
     return true;
@@ -786,42 +746,33 @@ private NativeCallResult readNativeInvocationResult(
     ref NativeInvocation invocation,
 ) {
     import dmd.astenums: TY;
-    import quickbite.backends.interpreter.place: Place;
-    import quickbite.backends.interpreter.place_value: readValue;
-    import quickbite.backends.interpreter.expression_result: ExpressionResult;
 
     NativeCallResult result;
     if (invocation.returnsReceiver) {
-        result.value = readValue(Place(
-            invocation.receiver.address,
+        result.value = NativeOperand(
             invocation.receiver.type,
-        ));
+            invocation.receiver.address,
+        );
         return result;
     }
     if (invocation.returnsRef) {
-        result.referenceAddress = loadMutableReference(invocation.result.address);
-        result.value = readValue(Place(
-            result.referenceAddress,
+        result.value = NativeOperand(
             invocation.result.type,
-        ));
+            loadMutableReference(invocation.result.address),
+            invocation._resultOwner,
+        );
         return result;
     }
     switch (invocation.result.type.toBasetype.ty) with (TY) {
         case Tvoid, Tnoreturn:
-            result.value = ExpressionResult.void_;
-            break;
-        case Tdelegate:
-            result.value = ExpressionResult.nativeDelegateValue(
-                loadReference(invocation.result.address),
-                loadReference(cast(ubyte*) invocation.result.address +
-                    (void*).sizeof),
-            );
+            result.value = NativeOperand.init;
             break;
         default:
-            result.value = readValue(Place(
-                invocation.result.address,
+            result.value = NativeOperand(
                 invocation.result.type,
-            ));
+                invocation.result.address,
+                invocation._resultOwner,
+            );
             break;
     }
     return result;
