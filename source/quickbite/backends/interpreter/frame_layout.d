@@ -294,7 +294,11 @@ private void appendVarsInExpression(
 ) @trusted {
     import dmd.declaration: VarDeclaration;
     import dmd.dsymbolsem: toAlias;
-    import dmd.expression: AssocArrayLiteralExp, DeclarationExp, Expression;
+    import dmd.expression:
+        AssocArrayLiteralExp,
+        DeclarationExp,
+        Expression,
+        LoweredAssignExp;
     import dmd.visitor: StoppableVisitor;
     import dmd.visitor.foreachvar: foreachVar;
     import dmd.visitor.postorder: walkPostorder;
@@ -319,6 +323,18 @@ private void appendVarsInExpression(
         }
 
         override void visit(AssocArrayLiteralExp e) {
+            if (e.lowering is null)
+                return;
+            e.lowering.foreachVar(append);
+            walkPostorder(e.lowering, this);
+        }
+
+        // `LoweredAssignExp` keeps the original assignment operands in `e1`
+        // and `e2`, but DMD puts the executable array-copy operation in
+        // `lowering`. Its helper call can declare a synthetic temporary such
+        // as `__assigntmp`; reserve that declaration's storage before the
+        // evaluator executes the lowering.
+        override void visit(LoweredAssignExp e) {
             if (e.lowering is null)
                 return;
             e.lowering.foreachVar(append);
