@@ -736,14 +736,12 @@ All test additions/changes require approval first (AGENTS.md).
 
 ## Remaining work
 
-The native authority switch and call/return construction routing are standing
-contracts, not pending work. The remaining value-track work is assignment
-through a separate construction temporary and carrier deletion (items 9-10),
-the IR and Bytecode formatter migration followed by shared-`Value` deletion
-(items 2-3), and the language-surface tasks below. Item numbers remain stable
-for existing cross-references. Production Interpreter optimisation begins only
-after item 10 deletes the carrier; timings follow `overview.md`'s measurement
-contract.
+The remaining value-track work is assignment through a separate construction
+temporary and carrier deletion (items 9-10), the IR and Bytecode formatter
+migration followed by shared-`Value` deletion (items 2-3), and the
+language-surface tasks below. Item numbers remain stable for existing
+cross-references. Production Interpreter optimisation begins only after item
+10 deletes the carrier; timings follow `overview.md`'s measurement contract.
 
 ### Item 8 — Destination-passing construction
 
@@ -755,14 +753,6 @@ an unexecuted call or field expression does not enlarge every activation. The
 gate-corpus measurement did not justify segmented scratch; do not introduce it
 without a new measurement that does.
 
-Construction has explicit absent, fresh, and constructed state. An
-interpreted non-void call receives its caller's fresh typed destination, and a
-return constructs or writes to that destination. A void call has no
-destination. An rvalue call with no final destination uses lazy,
-activation-owned typed temporary storage. Recursive calls use their own
-activation and construction state. Reuse this storage contract; do not create
-per-expression temporary blocks or broad AST-keyed frame reservations.
-
 ### Item 9 — Assignment through construction
 
 Assignment evaluates its live place once, then evaluates the right-hand side
@@ -770,8 +760,7 @@ into separate fresh typed temporary storage. Only after that construction is
 complete does it apply D-defined assignment, move, postblit, and destruction
 semantics to the already-evaluated live place. Never directly construct the
 right-hand side into that live place: an alias could otherwise observe a
-partially constructed value. Reuse item 8's construction storage and state;
-this item does not wait on additional call or return routing.
+partially constructed value.
 
 ### Item 10 — Carrier deletion
 
@@ -793,14 +782,13 @@ statically typed host locals — type-specific evaluation helpers selected from
 the statically typed AST. Building those helpers is its own work item, not a
 by-product of any family conversion.
 
-The flip and the family conversions are otherwise independent. The
-call/return construction bottleneck is solved: interpreted non-void calls and
-returns use caller-provided typed destinations, and destination-less rvalue
-calls use activation-owned temporary storage. Carrier deletion still requires
-removing the carrier fallback from call and return evaluation, including
-`Walker._returnValue`, and converting all remaining call consumers to the
-construction or place operations. A scalar helper recursing into an
-interpreted call must not restore a universal carrier return path.
+The flip and the family conversions are otherwise independent, but both
+bottom out in one shared bottleneck: the call/return channel
+(`Walker._returnValue`), which is carrier-typed — a scalar helper recursing
+into an interpreted call reads it, and every aggregate-returning call writes
+it. Converting that channel to decision 7's caller-provided destinations is
+the first item-10 step, and it needs item 8's temporaries, because a call in
+an rvalue position (an argument, an operand) has no destination without one.
 
 Deleting `expression_result.d` ends the item. Includes an inventory of real
 corpus crossings that need an interpreted callable or `TypeInfo` to escape to
