@@ -13931,6 +13931,38 @@ destinationFallback:
     }
 
     private T scalarOperand(T)(imported!"dmd.expression".Expression expression) {
+        import dmd.astenums: TY;
+
+        // The enclosing operation's common type can differ from this
+        // operand's static type. First construct and load the operand at its
+        // own DMD type, then let the host cast perform D's conversion.
+        switch (expression.type.toBasetype.ty) with (TY) {
+            case Tbool: return cast(T) scalarOperandAs!bool(expression);
+            case Tint8: return cast(T) scalarOperandAs!byte(expression);
+            case Tuns8: return cast(T) scalarOperandAs!ubyte(expression);
+            case Tchar: return cast(T) scalarOperandAs!char(expression);
+            case Tint16: return cast(T) scalarOperandAs!short(expression);
+            case Tuns16: return cast(T) scalarOperandAs!ushort(expression);
+            case Twchar: return cast(T) scalarOperandAs!wchar(expression);
+            case Tint32: return cast(T) scalarOperandAs!int(expression);
+            case Tuns32: return cast(T) scalarOperandAs!uint(expression);
+            case Tdchar: return cast(T) scalarOperandAs!dchar(expression);
+            case Tint64: return cast(T) scalarOperandAs!long(expression);
+            case Tuns64: return cast(T) scalarOperandAs!ulong(expression);
+            case Tfloat32: return cast(T) scalarOperandAs!float(expression);
+            case Tfloat64: return cast(T) scalarOperandAs!double(expression);
+            case Tfloat80: return cast(T) scalarOperandAs!real(expression);
+            case Timaginary32: return cast(T) scalarOperandAs!ifloat(expression);
+            case Timaginary64: return cast(T) scalarOperandAs!idouble(expression);
+            case Timaginary80: return cast(T) scalarOperandAs!ireal(expression);
+            case Tcomplex32: return cast(T) scalarOperandAs!cfloat(expression);
+            case Tcomplex64: return cast(T) scalarOperandAs!cdouble(expression);
+            case Tcomplex80: return cast(T) scalarOperandAs!creal(expression);
+            default: throw new Exception("Unsupported scalar operand type.");
+        }
+    }
+
+    private T scalarOperandAs(T)(imported!"dmd.expression".Expression expression) {
         import quickbite.backends.interpreter.place: Place;
 
         auto destination = ConstructionDestination(Place(
