@@ -512,7 +512,7 @@ public void writeValue(
                 ~ "native aggregate type mismatch " ~ typeName(source.type)
                 ~ " -> " ~ typeName(type),
             );
-        copyAggregateBytes(place.address, source.address, typeByteSize(type));
+        copyPlace(place, Place(source.address, source.type));
         return;
     }
 
@@ -633,6 +633,42 @@ public void writeValue(
     throw new Exception(
         "quickbite.backends.interpreter.place_value.writeValue: unsupported at place",
     );
+}
+
+
+// Copy a complete native-layout value between typed places. This is a byte
+// copy, so it preserves every scalar width, aggregate padding and overlap,
+// delegate ABI word, class identity, and null representation without routing
+// the value through a carrier. Callers that own address-keyed metadata
+// copy that metadata separately, because it is not stored in these bytes.
+public void copyPlace(
+    imported!"quickbite.backends.interpreter.place".Place destination,
+    imported!"quickbite.backends.interpreter.place".Place source,
+) @safe {
+    import quickbite.backends.interpreter.layout: typeByteSize;
+
+    const classReference = isClassType(source.type) && isClassType(destination.type);
+    if (!sameBaseType(source.type, destination.type) && !classReference)
+        throw new Exception(
+            "quickbite.backends.interpreter.place_value.copyPlace: "
+            ~ "type mismatch " ~ typeName(source.type)
+            ~ " -> " ~ typeName(destination.type),
+        );
+
+    copyPlaceBytes(destination.address, source.address, typeByteSize(destination.type));
+}
+
+
+// Reset the complete native representation of one typed place. All-zero is
+// D's representation for the null references, slices, and delegates this
+// interpreter stores in native layout; it also gives aggregate padding a
+// deterministic state.
+public void clearPlace(
+    imported!"quickbite.backends.interpreter.place".Place place,
+) @safe {
+    import quickbite.backends.interpreter.layout: typeByteSize;
+
+    zeroBytes(place.address, typeByteSize(place.type));
 }
 
 
@@ -936,19 +972,19 @@ private imported!"dmd.mtype".Type baseTypeOf(
 // `@trusted` boundary, mirroring `place.d`'s own `placeBytes`. `length` is
 // always `NativeArray.sliceHeaderByteLength`, so the returned slice spans
 // exactly the header bytes at `address` -- never more.
-// Both addresses come from DMD-sized aggregate storage of the identical
-// static type, checked by `writeValue` before this boundary.  Copying exactly
-// that size is the whole-value assignment operation; recursive field writes
-// would recreate field-by-field aggregate traversal and lose union/padding
-// bits.
-private void copyAggregateBytes(
+// Both addresses come from DMD-sized storage of compatible static types,
+// checked by `copyPlace` before this boundary. Copying exactly that size is
+// the whole-value operation; recursive field writes would recreate aggregate
+// traversal and lose union/padding bits. `memmove` also makes overlapping
+// places well-defined.
+private void copyPlaceBytes(
     void* destination,
     void* source,
     in size_t length,
 ) pure nothrow @trusted {
-    import core.stdc.string: memcpy;
+    import core.stdc.string: memmove;
 
-    memcpy(destination, source, length);
+    memmove(destination, source, length);
 }
 
 

@@ -1304,21 +1304,21 @@ private struct Walker {
         in bool consumeMetadata = false,
     ) {
         import quickbite.backends.interpreter.aggregate_value: AggregateValue;
-        import quickbite.backends.interpreter.place_value: writeValue;
+        import quickbite.backends.interpreter.place_value: clearPlace, writeValue;
 
         import dmd.astenums: TY;
 
         if (place.type.toBasetype.isTypeClass !is null && value.isTypeName) {
             clearStoredMetadata(place.type, place.address);
             nativeTypeInfoSlots[place.address] = value;
-            writeValue(place, ExpressionResult.null_);
+            clearPlace(place);
             return;
         }
 
         if (place.type.toBasetype.ty == TY.Tdelegate && value != ExpressionResult.null_) {
             clearStoredMetadata(place.type, place.address);
             nativeDelegateSlots[place.address] = value;
-            writeValue(place, ExpressionResult.null_);
+            clearPlace(place);
             return;
         }
 
@@ -2108,7 +2108,7 @@ private struct Walker {
     ) {
         import quickbite.backends.interpreter.layout: classFields, fieldName;
         import quickbite.backends.interpreter.place: Place;
-        import quickbite.backends.interpreter.place_value: readValue, writeValue;
+        import quickbite.backends.interpreter.place_value: copyPlace;
 
         auto destination = Place(
             AggregateValue.nativeClassBodyAddress(metadata),
@@ -2119,7 +2119,7 @@ private struct Walker {
             const name = fieldName(field);
             if (name == "msg" || name == "_nextInChainPtr")
                 continue;
-            writeValue(destination.field(field), readValue(source.field(field)));
+            copyPlace(destination.field(field), source.field(field));
         }
     }
 
@@ -14225,10 +14225,10 @@ destinationFallback:
         imported!"quickbite.backends.interpreter.place".Place place,
     ) {
         import quickbite.backends.interpreter.layout: typeByteSize;
+        import quickbite.backends.interpreter.place_value: clearPlace;
 
-        const byteLength = typeByteSize(place.type);
-        clearStoredMetadataRange(place.address, byteLength);
-        clearBytes(place.address, byteLength);
+        clearStoredMetadataRange(place.address, typeByteSize(place.type));
+        clearPlace(place);
     }
 
     // Copy one typed place's complete value into another: the native bytes
@@ -14239,18 +14239,14 @@ destinationFallback:
         imported!"quickbite.backends.interpreter.place".Place source,
         imported!"quickbite.backends.interpreter.place".Place destination,
     ) {
-        import quickbite.backends.interpreter.layout: typeByteSize;
+        import quickbite.backends.interpreter.place_value: copyPlace;
 
         copyStoredMetadata(
             destination.type,
             cast(void*) source.address,
             destination.address,
         );
-        copyBytes(
-            destination.address,
-            cast(void*) source.address,
-            typeByteSize(destination.type),
-        );
+        copyPlace(destination, source);
     }
 
 
