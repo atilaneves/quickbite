@@ -257,80 +257,12 @@ private imported!"quickbite.backends.interpreter.place".Place componentPlace(
 }
 
 
-// `Type.toBasetype` is not @safe; this keeps the class-reference check at the
-// same narrow DMD boundary as `isRealType` above.
-private bool isClassType(imported!"dmd.mtype".Type type) @trusted {
-    return type.toBasetype.isTypeClass !is null;
-}
-
-
 // `Type.toBasetype` is not `@safe`; the null type has one value and its
 // native place is therefore always the all-zero representation.
 private bool isNullType(imported!"dmd.mtype".Type type) @trusted {
     import dmd.astenums: TY;
 
     return type.toBasetype.ty == TY.Tnull;
-}
-
-
-// DMD interns base types, while modifiers and aliases can give two different
-// Type objects for the same guest-layout value. The byte-copy gate cares about
-// that layout identity, not the wrapper object identity.
-private bool sameBaseType(
-    imported!"dmd.mtype".Type lhs,
-    imported!"dmd.mtype".Type rhs,
-) @trusted {
-    import dmd.astenums: TY;
-    import dmd.typesem: mutableOf;
-
-    auto lhsVector = lhs.toBasetype.isTypeVector;
-    auto rhsVector = rhs.toBasetype.isTypeVector;
-    if (lhsVector !is null || rhsVector !is null)
-        return lhsVector !is null && rhsVector !is null &&
-            mutableOf(lhsVector.basetype).equals(mutableOf(rhsVector.basetype));
-
-    // `mutableOf` removes the outer qualifier, but DMD is not required to
-    // intern the resulting wrapper (notably for a const AA field).  Semantic
-    // type equality is the layout identity here; pointer identity rejects a
-    // valid `long[string]` -> `const(long[string])` aggregate copy.
-    // A dynamic-array qualifier can instead live on its element (`inout(int)[]`
-    // versus `int[]`). The header layout is identical, and the element
-    // qualifier does not change the header copied at this boundary.
-    auto lhsArray = lhs.toBasetype.isTypeDArray;
-    auto rhsArray = rhs.toBasetype.isTypeDArray;
-    if (lhsArray !is null && rhsArray !is null) {
-        // The frontend represents an untyped empty/null slice carrier as
-        // `void[]`. Its value is only the ABI header, so copying that empty
-        // header into a concretely typed slice slot is the typed
-        // materialization step, not an element-layout conversion.
-        if (lhsArray.next.toBasetype.ty == TY.Tvoid)
-            return true;
-        // Any dynamic array implicitly converts to `void[]` (compiled D
-        // covariance, e.g. passing a `string` argument to a `void[]`
-        // parameter such as `std.array.overlap`/`doesPointTo`'s scratch
-        // range). The header layout -- {length, ptr} -- is element-type
-        // agnostic, so the same byte copy below is correct either way.
-        if (rhsArray.next.toBasetype.ty == TY.Tvoid)
-            return true;
-        // Compare the element layouts recursively. For a nested dynamic
-        // array, qualifying the inner slice header (`int[]` ->
-        // `const(int[])`) does not qualify its `int` elements and does not
-        // change either header's representation. A one-level `mutableOf`
-        // comparison retains that inner wrapper qualifier and rejects the
-        // ordinary implicit conversion `int[][]` -> `const(int[])[]`.
-        return sameBaseType(lhsArray.next, rhsArray.next);
-    }
-
-    return mutableOf(lhs.toBasetype).equals(mutableOf(rhs.toBasetype));
-}
-
-
-// DMD owns the null-terminated type spelling for the lifetime of the AST;
-// copying it makes the diagnostic independent of that internal buffer.
-private string typeName(imported!"dmd.mtype".Type type) @trusted {
-    import std.string: fromStringz;
-
-    return type.toChars.fromStringz.idup;
 }
 
 
@@ -439,25 +371,7 @@ public void writeValue(
 
     if (value.isNativeAggregate) {
         auto source = AggregateValue.native(value);
-        // DMD uses a pointer-typed slot for a catch variable even though the
-        // caught value is a class reference. Store the referenced object body,
-        // not the address of the native class-reference carrier.
-        if (isClassType(source.type) && type.isTypePointer !is null) {
-            place.storeReference(Place(source.address, source.type).deref.address);
-            return;
-        }
-        // Class assignment stores only the reference slot, so a derived
-        // native class value may initialise a base-class slot just as a D
-        // reference does. Other aggregates still require their exact native
-        // layout type before copying their complete byte span.
-        const classReference = isClassType(source.type) && isClassType(type);
-        if (!sameBaseType(source.type, type) && !classReference)
-            throw new Exception(
-                "quickbite.backends.interpreter.place_value.writeValue: "
-                ~ "native aggregate type mismatch " ~ typeName(source.type)
-                ~ " -> " ~ typeName(type),
-            );
-        copyPlace(place, Place(source.address, source.type));
+        place.copyFromNative(source.type, source.address);
         return;
     }
 
@@ -578,29 +492,6 @@ public void writeValue(
     throw new Exception(
         "quickbite.backends.interpreter.place_value.writeValue: unsupported at place",
     );
-}
-
-
-// Copy a complete native-layout value between typed places. This is a byte
-// copy, so it preserves every scalar width, aggregate padding and overlap,
-// delegate ABI word, class identity, and null representation without routing
-// the value through a carrier. Callers that own address-keyed metadata
-// copy that metadata separately, because it is not stored in these bytes.
-public void copyPlace(
-    imported!"quickbite.backends.interpreter.place".Place destination,
-    imported!"quickbite.backends.interpreter.place".Place source,
-) @safe {
-    import quickbite.backends.interpreter.layout: typeByteSize;
-
-    const classReference = isClassType(source.type) && isClassType(destination.type);
-    if (!sameBaseType(source.type, destination.type) && !classReference)
-        throw new Exception(
-            "quickbite.backends.interpreter.place_value.copyPlace: "
-            ~ "type mismatch " ~ typeName(source.type)
-            ~ " -> " ~ typeName(destination.type),
-        );
-
-    copyPlaceBytes(destination.address, source.address, typeByteSize(destination.type));
 }
 
 
@@ -914,25 +805,6 @@ private imported!"dmd.mtype".Type baseTypeOf(
 
 
 // Reinterpreting a raw address as a byte range is not `@safe`; this is the
-// `@trusted` boundary, mirroring `place.d`'s own `placeBytes`. `length` is
-// always `NativeArray.sliceHeaderByteLength`, so the returned slice spans
-// exactly the header bytes at `address` -- never more.
-// Both addresses come from DMD-sized storage of compatible static types,
-// checked by `copyPlace` before this boundary. Copying exactly that size is
-// the whole-value operation; recursive field writes would recreate aggregate
-// traversal and lose union/padding bits. `memmove` also makes overlapping
-// places well-defined.
-private void copyPlaceBytes(
-    void* destination,
-    void* source,
-    in size_t length,
-) pure nothrow @trusted {
-    import core.stdc.string: memmove;
-
-    memmove(destination, source, length);
-}
-
-
 // `structType`'s own declared name (`StructDeclaration.ident`), verbatim --
 // the same derivation `quickbite.frontend.dmd.values`'s struct default-value
 // builder already uses to name a struct `ExpressionResult` built straight from a

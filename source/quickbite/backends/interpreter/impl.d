@@ -2101,7 +2101,6 @@ private struct Walker {
     ) {
         import quickbite.backends.interpreter.layout: classFields, fieldName;
         import quickbite.backends.interpreter.place: Place;
-        import quickbite.backends.interpreter.place_value: copyPlace;
 
         auto destination = Place(
             AggregateValue.nativeClassBodyAddress(metadata),
@@ -2112,7 +2111,7 @@ private struct Walker {
             const name = fieldName(field);
             if (name == "msg" || name == "_nextInChainPtr")
                 continue;
-            copyPlace(destination.field(field), source.field(field));
+            destination.field(field).copyFrom(source.field(field));
         }
     }
 
@@ -14327,14 +14326,12 @@ destinationFallback:
         imported!"quickbite.backends.interpreter.place".Place source,
         imported!"quickbite.backends.interpreter.place".Place destination,
     ) {
-        import quickbite.backends.interpreter.place_value: copyPlace;
-
         copyStoredMetadata(
             destination.type,
             cast(void*) source.address,
             destination.address,
         );
-        copyPlace(destination, source);
+        destination.copyFrom(source);
     }
 
 

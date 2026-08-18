@@ -242,6 +242,39 @@ public struct Place {
         writeStoredPointer(_address, reference);
     }
 
+    // Copy one complete native-layout value into this typed destination. The
+    // byte copy keeps aggregate padding and overlap intact. A class reference
+    // is a one-word slot, so derived and base class places can copy that slot
+    // despite their distinct static types.
+    public void copyFrom(Place source) @safe {
+        import quickbite.backends.interpreter.layout: typeByteSize;
+
+        const classReference = isClassType(source.type) && isClassType(_type);
+        if (!sameBaseType(source.type, _type) && !classReference)
+            throw new Exception(
+                "quickbite.backends.interpreter.place.Place.copyFrom: "
+                ~ "type mismatch " ~ typeName(source.type)
+                ~ " -> " ~ typeName(_type),
+            );
+
+        copyPlaceBytes(_address, source.address, typeByteSize(_type));
+    }
+
+    // Copy an owned aggregate into this place. A catch variable is a
+    // pointer-typed slot even when its source is a class reference, so it
+    // stores the referenced body rather than the source reference slot.
+    public void copyFromNative(
+        imported!"dmd.mtype".Type sourceType,
+        void* sourceAddress,
+    ) @safe {
+        if (isClassType(sourceType) && _type.isTypePointer !is null) {
+            storeReference(Place(sourceAddress, sourceType).deref.address);
+            return;
+        }
+
+        copyFrom(Place(sourceAddress, sourceType));
+    }
+
     // Reads the scalar at this place's address, at this place's own static
     // type. The compatibility boundary boxes the result only after
     // `native_scalar.readNativeScalar` has read it into the statically
@@ -407,6 +440,66 @@ public Place placeAt(
     imported!"dmd.mtype".Type type,
 ) @safe {
     return Place(block.address, type);
+}
+
+
+// `Type.toBasetype` is not @safe; this keeps the class-reference check at a
+// narrow DMD boundary.
+private bool isClassType(imported!"dmd.mtype".Type type) @trusted {
+    return type.toBasetype.isTypeClass !is null;
+}
+
+
+// DMD interns base types, while modifiers and aliases can give two different
+// Type objects for the same guest-layout value. A native copy needs layout
+// identity, not wrapper object identity.
+private bool sameBaseType(
+    imported!"dmd.mtype".Type lhs,
+    imported!"dmd.mtype".Type rhs,
+) @trusted {
+    import dmd.astenums: TY;
+    import dmd.typesem: mutableOf;
+
+    auto lhsVector = lhs.toBasetype.isTypeVector;
+    auto rhsVector = rhs.toBasetype.isTypeVector;
+    if (lhsVector !is null || rhsVector !is null)
+        return lhsVector !is null && rhsVector !is null &&
+            mutableOf(lhsVector.basetype).equals(mutableOf(rhsVector.basetype));
+
+    auto lhsArray = lhs.toBasetype.isTypeDArray;
+    auto rhsArray = rhs.toBasetype.isTypeDArray;
+    if (lhsArray !is null && rhsArray !is null) {
+        if (lhsArray.next.toBasetype.ty == TY.Tvoid)
+            return true;
+        if (rhsArray.next.toBasetype.ty == TY.Tvoid)
+            return true;
+        return sameBaseType(lhsArray.next, rhsArray.next);
+    }
+
+    return mutableOf(lhs.toBasetype).equals(mutableOf(rhs.toBasetype));
+}
+
+
+// DMD owns the null-terminated type spelling for the lifetime of the AST;
+// copying it makes the diagnostic independent of that internal buffer.
+private string typeName(imported!"dmd.mtype".Type type) @trusted {
+    import std.string: fromStringz;
+
+    return type.toChars.fromStringz.idup;
+}
+
+
+// Both addresses come from DMD-sized storage of compatible static types,
+// checked by `Place.copyFrom` before this boundary. `memmove` preserves
+// overlap, aggregate padding, and union bytes without field traversal.
+private void copyPlaceBytes(
+    void* destination,
+    void* source,
+    in size_t length,
+) pure nothrow @trusted {
+    import core.stdc.string: memmove;
+
+    memmove(destination, source, length);
 }
 
 
