@@ -25,7 +25,7 @@ package(quickbite.backends.bytecode) RunResult run(
     import core.exception: RangeError;
     import quickbite.backends.bytecode.core.program:
         CatchClause, ClassInfo,
-        dupArrayWidth, indexElementWidth, Op, ScalarType,
+        dupArrayWidth, indexElementWidth, markScanned, Op, ScalarType,
         noCatchObjectField, noExceptionClass, noNativeCallIndex,
         pointerElementWidth, size, sliceCopyWidth, sliceDescriptorLengthOffset,
         sliceDescriptorPtrOffset, sliceDescriptorSize,
@@ -37,6 +37,11 @@ package(quickbite.backends.bytecode) RunResult run(
     // intervening calls that grow the stack.
     auto stack = new ubyte[](program.functions[0].frameSize);
     stack.reserve(stackCapacity);
+    // Guest locals and temporaries -- including slice/class/struct pointers
+    // a real druntime allocation hook returned -- live here as raw bytes;
+    // scan them like compiled D scans its own stack frames. Marked after
+    // `reserve`, the last operation that can move `stack` to a fresh block.
+    markScanned(stack);
     // Lazy compilation can add module slots while this machine is running, so
     // access the program-owned segment directly. The compiler reserves its
     // maximum addressable capacity before execution, keeping raw addresses
@@ -100,6 +105,7 @@ package(quickbite.backends.bytecode) RunResult run(
                 // Allocate writable backing memory, root it in `heap`, and
                 // write the descriptor {length, ptr} into the frame slot.
                 auto block = new ubyte[](instruction.b * instruction.c);
+                markScanned(block);
                 heap ~= block;
                 writeSliceDescriptor(
                     stack, base + instruction.a, block, instruction.c,
@@ -112,6 +118,7 @@ package(quickbite.backends.bytecode) RunResult run(
                 // copy the initialised block of `c` bytes from the frame in,
                 // root it, and write the raw heap pointer into the frame slot.
                 auto structBlock = new ubyte[](instruction.c);
+                markScanned(structBlock);
                 structBlock[] = stack[
                     base + instruction.b .. base + instruction.b + instruction.c
                 ];
@@ -122,6 +129,7 @@ package(quickbite.backends.bytecode) RunResult run(
 
             case allocClass:
                 auto classBlock = new ubyte[](instruction.c);
+                markScanned(classBlock);
                 classBlock[0 .. size_t.sizeof] =
                     scalarBytes(cast(size_t) instruction.b)[];
                 heap ~= classBlock;
@@ -2110,13 +2118,15 @@ private ubyte[] exceptionObjectFromString(
     in size_t sourceOffset,
     in imported!"quickbite.backends.bytecode.core.program".ClassInfo[] classes,
 ) @trusted {
-    import quickbite.backends.bytecode.core.program: sliceDescriptorSize;
+    import quickbite.backends.bytecode.core.program:
+        markScanned, sliceDescriptorSize;
 
     const messageOffset = classIndex < classes.length &&
         classes[classIndex].msgOffset != ushort.max
         ? classes[classIndex].msgOffset
         : cast(ushort) size_t.sizeof;
     auto object = new ubyte[](messageOffset + sliceDescriptorSize);
+    markScanned(object);
     object[0 .. size_t.sizeof] = scalarBytes(cast(size_t) classIndex)[];
     object[messageOffset .. messageOffset + sliceDescriptorSize] =
         source[sourceOffset .. sourceOffset + sliceDescriptorSize];
@@ -2290,12 +2300,15 @@ private ubyte[] dupArray(
     in size_t sourceOffset,
     in uint elementSize,
 ) @trusted {
+    import quickbite.backends.bytecode.core.program: markScanned;
+
     const source = readSliceDescriptor(stack, sourceOffset);
     const length = source.length;
     const pointer = source.pointer;
     const byteCount = length * elementSize;
 
     auto block = new ubyte[](byteCount);
+    markScanned(block);
     block[] = (cast(const(ubyte)*) pointer)[0 .. byteCount];
 
     writeSliceDescriptor(stack, descriptorOffset, block, length);

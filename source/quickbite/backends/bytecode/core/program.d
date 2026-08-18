@@ -1099,3 +1099,30 @@ package(quickbite.backends.bytecode) struct Program {
     ushort rangeErrorClass = noExceptionClass;
     CatchClause[] catchClauses;
 }
+
+// `new ubyte[]`'s element type carries no pointers, so druntime marks the
+// block `BlkAttr.NO_SCAN` by default. Guest code can store a raw pointer
+// value in VM-owned storage -- a slice, class, or struct address a real
+// druntime allocation hook returned -- and that byte pattern is invisible to
+// a `NO_SCAN` block's conservative scan. Compiled D gives its own stack
+// frames and heap blocks ordinary scanned storage for exactly this reason;
+// clearing the flag here gives VM-owned storage the same guarantee. `p` may
+// be a freshly allocated block never yet marked `NO_SCAN` (the clear is then
+// a documented no-op) or one reallocated by the array runtime since the last
+// call (`.reserve`/`.length =` can move the block to a fresh `NO_SCAN`
+// allocation), so callers re-mark after any operation that might reallocate.
+// An appendable array's `.ptr` is not necessarily its GC block's base
+// address (`.reserve`'s growth can return a pointer offset from the pool
+// allocation it lives in), and `GC.clrAttr` silently no-ops on any address
+// that is not exactly a block's base, so this resolves the true base via
+// `GC.addrOf` first. `GC.addrOf`/`GC.clrAttr` take an unbounded raw pointer,
+// hence `@trusted`.
+package(quickbite.backends.bytecode) void markScanned(ubyte[] block) @trusted {
+    import core.memory: GC;
+
+    if (block.ptr is null)
+        return;
+    auto base = GC.addrOf(block.ptr);
+    if (base !is null)
+        GC.clrAttr(base, GC.BlkAttr.NO_SCAN);
+}

@@ -516,6 +516,7 @@ private struct Compiler {
     // is instead of assuming the uniform stride a direct native call's own
     // argument area uses.
     private ushort registerFunction(FuncDeclaration function_) {
+        import quickbite.backends.bytecode.core.program: markScanned;
         import quickbite.frontend.dmd.functions: ensureFunctionBodySemantic;
 
         ensureFunctionBodySemantic(function_);
@@ -530,6 +531,11 @@ private struct Compiler {
             // compilation can append module slots. Reserve every representable
             // byte now so such appends cannot relocate raw module addresses.
             _program.moduleData.reserve(ushort.max);
+            // Module-level variables can hold guest pointer values (slice,
+            // class, or struct addresses); scan this segment like compiled D
+            // scans its own data segment's pointer fields. Marked after
+            // `reserve`, the only operation that can move this block.
+            markScanned(_program.moduleData);
         }
 
         const index = _functions.length;
