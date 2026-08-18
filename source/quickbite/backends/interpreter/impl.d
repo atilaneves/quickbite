@@ -1680,6 +1680,21 @@ private struct Walker {
         return true;
     }
 
+    // An indexed storage-owned projection can always select its live element
+    // place before it constructs the RHS. Unlike a whole struct/static-array
+    // assignment, this does not change the surrounding assignment lowering:
+    // DMD has already made any required postblit or destructor work explicit
+    // around this one element assignment.
+    private bool isDirectIndexAssignmentTarget(
+        imported!"dmd.expression".IndexExp index,
+    ) {
+        imported!"dmd.expression".IndexExp[16] indexes;
+        size_t indexCount;
+
+        return hasDirectWriteProjectionPlace(index) &&
+            collectDirectWriteProjectionIndexes(index, indexes, indexCount);
+    }
+
     private bool collectDirectWriteProjectionIndexes(
         imported!"dmd.expression".Expression expression,
         ref imported!"dmd.expression".IndexExp[16] indexes,
@@ -9574,12 +9589,10 @@ unsupportedExpression:
     ) {
         import quickbite.frontend.dmd.types: isPointerType, isStaticArrayType;
 
-        // Compose the selected element
-        // before the RHS, matching the existing index-assignment order, and
-        // write it without materialising/rebuilding the enclosing arrays or
-        // structs. Aggregate element assignments retain the established path
-        // so their postblit/destructor handling is unchanged.
-        if (isDirectProjectionWriteTarget(index))
+        // Compose the selected live element once before the RHS. Its complete
+        // typed temporary then copies into that already-selected place, so
+        // array and struct elements do not rebuild an enclosing carrier.
+        if (isDirectIndexAssignmentTarget(index))
             return runProjectionAssignExpression(index, rhs);
 
         if (auto call = index.e1.isCallExp) {
