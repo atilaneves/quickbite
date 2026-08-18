@@ -8534,6 +8534,19 @@ unsupportedExpression:
         if (auto slice = assign.e1.isSliceExp)
             return runSliceAssignExpression(slice, assign.e2);
 
+        // A plain binding (or a representation-preserving cast of one) is a
+        // live typed place too. Resolve it before constructing the RHS, then
+        // let the projection assignment path construct into fresh temporary
+        // storage and copy the complete value into that already-selected
+        // place. Class bindings retain the existing path: their native slot
+        // is only a body pointer and the value path also carries its owning
+        // aggregate.
+        if (
+            isDirectProjectionWriteTarget(assign.e1) &&
+            assign.e1.type.toBasetype.isTypeClass is null
+        )
+            return runProjectionAssignExpression(assign.e1, assign.e2);
+
         // dmd's semantic3 merges a synthesized `BlitExp(VarExp(param), 0)`
         // into a function's own body for every `out` parameter of a
         // zero-init struct type (the literal's `.type` is retyped to the
@@ -8608,6 +8621,9 @@ unsupportedExpression:
         // postblit, or destructor action explicit around this assignment, so
         // this is the ordinary representation-preserving move itself.
         if (
+            // A struct field's existing value route preserves the receiver
+            // snapshot and method-call chaining that its DMD lowering needs.
+            target.isDotVarExp is null &&
             target.type !is null &&
             rhs.type !is null &&
             target.type.toBasetype.equals(rhs.type.toBasetype)
