@@ -6848,25 +6848,6 @@ unsupportedExpression:
         return child._returnValue;
     }
 
-    private ExpressionResult nativeMemberReceiver(
-        FuncDeclaration function_,
-        in ExpressionResult receiver,
-    ) {
-        import quickbite.backends.interpreter.aggregate_value: AggregateValue;
-
-        if (receiver.isNativeAggregate)
-            return receiver;
-
-        auto vthis = function_.vthis;
-        if (vthis is null || !AggregateValue.isStruct(receiver))
-            return receiver;
-
-        ExpressionResult[] fields;
-        foreach (index; 0 .. AggregateValue.fieldCount(receiver))
-            fields ~= AggregateValue.fieldAt(receiver, index);
-        return AggregateValue.reconstructStruct(vthis.type, fields);
-    }
-
     // DMD keeps a member function's hidden `this` declaration separate from
     // its ordinary argument list. A native receiver nevertheless already
     // has an exact guest address; retain it for `ref this` forwarding after
@@ -6910,7 +6891,7 @@ unsupportedExpression:
         const(ExpressionResult)* precomputedReceiverPointerAddress = null,
         ConstructionDestination* constructionDestination = null,
     ) {
-        const memberReceiver = nativeMemberReceiver(function_, receiver);
+        const memberReceiver = receiver;
 
         if (declarationName(function_) == "next") {
             if (classHasType(memberReceiver, "Throwable")) {

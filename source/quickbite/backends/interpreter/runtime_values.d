@@ -325,6 +325,128 @@ public imported!"quickbite.backends.interpreter.expression_result".ExpressionRes
     }
 }
 
+// Construct a type's ordinary `.init` directly in caller-owned native
+// storage. Structs and static arrays recurse through their typed places, so
+// they do not first become an aggregate ExpressionResult. A union has one
+// storage region: D initializes its first declared member and leaves every
+// sibling as an overlapping view of those same bytes.
+public void defaultValue(
+    // not `in`: DMD's `Type.toBasetype` is not const-callable
+    imported!"dmd.mtype".Type variableType,
+    imported!"quickbite.backends.interpreter.place".Place destination,
+) {
+    import dmd.astenums: TY;
+    import quickbite.backends.interpreter.expression_result: ExpressionResult;
+    import quickbite.backends.interpreter.place_value: writeValue;
+
+    auto type = variableType.toBasetype;
+    with (TY) final switch (type.ty) {
+        case Tbool:
+            destination.storeNativeScalar(bool.init);
+            return;
+        case Tint8:
+            destination.storeNativeScalar(byte.init);
+            return;
+        case Tuns8:
+            destination.storeNativeScalar(ubyte.init);
+            return;
+        case Tint16:
+            destination.storeNativeScalar(short.init);
+            return;
+        case Tuns16:
+            destination.storeNativeScalar(ushort.init);
+            return;
+        case Tint32:
+            destination.storeNativeScalar(int.init);
+            return;
+        case Tuns32:
+            destination.storeNativeScalar(uint.init);
+            return;
+        case Tint64:
+            destination.storeNativeScalar(long.init);
+            return;
+        case Tuns64:
+            destination.storeNativeScalar(ulong.init);
+            return;
+        case Tfloat32:
+            destination.storeNativeScalar(float.init);
+            return;
+        case Tfloat64:
+            destination.storeNativeScalar(double.init);
+            return;
+        case Tfloat80:
+            destination.storeNativeScalar(real.init);
+            return;
+        case Tchar:
+            destination.storeNativeScalar(char.init);
+            return;
+        case Twchar:
+            destination.storeNativeScalar(wchar.init);
+            return;
+        case Tdchar:
+            destination.storeNativeScalar(dchar.init);
+            return;
+        case Tpointer:
+        case Tclass:
+        case Taarray:
+            destination.storeReference(null);
+            return;
+        case Tnull:
+        case Tdelegate:
+            // A default is constructed only in fresh storage, so a null
+            // callable has no out-of-band callable metadata to preserve.
+            writeValue(destination, ExpressionResult.null_);
+            return;
+        case Tsarray:
+            auto staticArray = type.isTypeSArray;
+            foreach (index; 0 .. cast(size_t) staticArray.dim.toInteger)
+                defaultValue(staticArray.nextOf, destination.index(index));
+            return;
+        case Tstruct:
+            auto structType = type.isTypeStruct;
+            if (structType is null || structType.sym is null)
+                throw new Exception("Unsupported DMD default value.");
+
+            foreach (index, field; structType.sym.fields) {
+                if (index != 0 && structType.sym.isUnionDeclaration !is null)
+                    break;
+                defaultValue(field.type, destination.field(field));
+            }
+            return;
+        case Tarray:
+            // Preserve the existing dynamic-array default construction until
+            // its carrier path has its own destination migration.
+            writeValue(destination, defaultValue(variableType));
+            return;
+        case Tvoid:
+        case Tint128:
+        case Tuns128:
+        case Timaginary32:
+        case Timaginary64:
+        case Timaginary80:
+        case Tcomplex32:
+        case Tcomplex64:
+        case Tcomplex80:
+        case Tfunction:
+        case Tident:
+        case Tinstance:
+        case Ttypeof:
+        case Ttuple:
+        case Tslice:
+        case Treturn:
+        case Terror:
+        case Tvector:
+        case Ttraits:
+        case Tmixin:
+        case Tnoreturn:
+        case Ttag:
+        case Tenum:
+        case Treference:
+        case Tnone:
+            throw new Exception("Unsupported DMD default value.");
+    }
+}
+
 private imported!"quickbite.backends.interpreter.expression_result".ExpressionResult staticArrayDefaultValue(
     imported!"dmd.mtype".TypeSArray staticArray,
 ) {
@@ -347,17 +469,15 @@ private imported!"quickbite.backends.interpreter.expression_result".ExpressionRe
 ) {
     import quickbite.backends.interpreter.aggregate_value: AggregateValue;
     import quickbite.backends.interpreter.expression_result: ExpressionResult;
-    import quickbite.backends.interpreter.scratch_array: releaseScratchArray;
+    import quickbite.backends.interpreter.native_aggregate: NativeAggregate;
+    import quickbite.backends.interpreter.place: Place;
 
     if (structType is null || structType.sym is null)
         throw new Exception("Unsupported DMD default value.");
 
-    auto fields = new ExpressionResult[](structType.sym.fields.length);
-    scope(exit) releaseScratchArray(fields);
-    foreach (index, field; structType.sym.fields)
-        fields[index] = defaultValue(field.type);
-
-    return AggregateValue.reconstructStruct(structType, fields);
+    auto aggregate = NativeAggregate.allocate(structType);
+    defaultValue(structType, Place(aggregate.address, structType));
+    return ExpressionResult.nativeAggregateValue(aggregate);
 }
 
 private imported!"quickbite.backends.interpreter.expression_result".ExpressionResult scalarDefaultValue(
