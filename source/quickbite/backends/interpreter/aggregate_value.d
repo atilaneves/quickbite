@@ -114,8 +114,9 @@ public struct AggregateValue {
             : NativeAggregate(type, header, retained);
     }
 
-    // Typed constructors require a Type: aggregate layout never comes from a
-    // display name or an `ExpressionResult`'s variant shape.
+    // Compatibility adapter for the aggregate-value unit test. Production
+    // struct construction writes fields into their final typed places through
+    // `Walker.constructStructLiteral` and never uses this field snapshot.
     public static imported!"quickbite.backends.interpreter.expression_result".ExpressionResult reconstructStruct(
         imported!"dmd.mtype".Type type,
         in imported!"quickbite.backends.interpreter.expression_result".ExpressionResult[] fields,

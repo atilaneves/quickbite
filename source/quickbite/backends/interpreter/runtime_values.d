@@ -450,18 +450,13 @@ public void defaultValue(
 private imported!"quickbite.backends.interpreter.expression_result".ExpressionResult staticArrayDefaultValue(
     imported!"dmd.mtype".TypeSArray staticArray,
 ) {
-    import quickbite.backends.interpreter.aggregate_value: AggregateValue;
     import quickbite.backends.interpreter.expression_result: ExpressionResult;
-    import quickbite.backends.interpreter.scratch_array: releaseScratchArray;
+    import quickbite.backends.interpreter.native_aggregate: NativeAggregate;
+    import quickbite.backends.interpreter.place: placeAt;
 
-    const length = cast(size_t) staticArray.dim.toInteger;
-
-    auto elements = new ExpressionResult[](length);
-    scope(exit) releaseScratchArray(elements);
-    foreach (index; 0 .. length)
-        elements[index] = defaultValue(staticArray.nextOf);
-
-    return AggregateValue.reconstructArray(staticArray, elements);
+    auto aggregate = NativeAggregate.allocate(staticArray);
+    defaultValue(staticArray, placeAt(aggregate.storage, staticArray));
+    return ExpressionResult.nativeAggregateValue(aggregate);
 }
 
 private imported!"quickbite.backends.interpreter.expression_result".ExpressionResult structDefaultValue(
