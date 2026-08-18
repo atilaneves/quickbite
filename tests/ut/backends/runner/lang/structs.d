@@ -27,6 +27,31 @@ static foreach (backend; Matrix!()) {
     }
 }
 
+
+// Each static-array element is initialized as a struct value. Its declared
+// field initializer applies independently to every element.
+static foreach (backend; Matrix!(
+    Omit!(Bytecode, Because.refusal,
+        "Unsupported static array initializer in bytecode core: records"),
+)) {
+    @("struct.staticArrayElementsUseDeclaredFieldDefaults." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct Record {
+                char[4] text = "....";
+            }
+
+            unittest {
+                Record[2] records;
+
+                assert(records[0].text == "....");
+                assert(records[1].text == "....");
+            }
+        });
+    }
+}
+
 static foreach (backend; Matrix!()) {
     @("struct.functionPointerFieldPreservesCallable." ~ backend.stringof)
     @Tags(backend.stringof)

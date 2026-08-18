@@ -5666,17 +5666,13 @@ unsupportedExpression:
 
         if (auto function_ = functionPointerExpressionFunction(call.e1)) {
             if (isZeroFormalCall(function_) && arguments.length == 5) {
-                if (
-                    function_.ident !is null &&
-                    function_.ident.toString ==
-                        "enforceRawArraysConformableNogc"
-                ) {
+                if (isRawArraysConformabilityCheck(function_)) {
                     import quickbite.backends.interpreter.interception_guard:
                         enforceInterceptionPolicy;
 
                     enforceInterceptionPolicy(
                         function_,
-                        "enforceRawArraysConformableNogc",
+                        "enforceRawArraysConformable",
                     );
                     return ExpressionResult(false);
                 }
@@ -5739,6 +5735,14 @@ unsupportedExpression:
         }
 
         throw new Exception("Unsupported eval call.");
+    }
+
+    private static bool isRawArraysConformabilityCheck(
+        imported!"dmd.func".FuncDeclaration function_,
+    ) {
+        return function_.ident !is null &&
+            (function_.ident.toString == "enforceRawArraysConformable" ||
+                function_.ident.toString == "enforceRawArraysConformableNogc");
     }
 
     // A constructor used directly as a member receiver owns a full-expression
@@ -7851,6 +7855,16 @@ unsupportedExpression:
         if (isClassInfoNamePointerMember(dot))
             return runClassInfoNameOwnerExpression(dot.e1, dot.type);
 
+        // `TypeInfo_Const.base`, the field `TypeInfo_Shared` inherits: the
+        // TypeInfo the qualified type's own TypeInfo wraps.
+        if (declarationName(dot.var) == "base")
+            if (auto typeid_ = dot.e1.isTypeidExp)
+                if (auto type = typeidObjectType(typeid_))
+                    return ExpressionResult.typeName(
+                        typeInfoName(unqualifiedTypeInfoType(type)),
+                    );
+
+
         const receiver = runExpression(dot.e1);
         if (receiver == ExpressionResult.null_)
             throw new Exception(text(
@@ -7867,6 +7881,12 @@ unsupportedExpression:
 
         if (receiver.isTypeName && declarationName(dot.var) == "name")
             return characterArrayValue(dot.type, receiver.asTypeNameString);
+
+        // `ClassInfo.m_flags`: the class-level facts a collector consults,
+        // chief among them whether the object body holds any indirection and
+        // so needs scanning.
+        if (receiver.isTypeName && declarationName(dot.var) == "m_flags")
+            return classInfoFlags(receiver.asTypeNameString);
 
         // Native dynamic arrays own their length in typed guest storage.
         // `TypeAArray.dotExp` (typesem.d) always lowers `aa.length` to a
@@ -7946,6 +7966,14 @@ unsupportedExpression:
         }
 
         throw new Exception("Unsupported interpreter field read.");
+    }
+
+    private ExpressionResult classInfoFlags(in string className) {
+        auto class_ = classDeclarationByQualifiedName(className);
+        if (class_ is null)
+            throw new Exception("Unsupported interpreter TypeInfo flags.");
+
+        return ExpressionResult(classFlagsWord(class_));
     }
 
     private ExpressionResult typeInfoClassInitializer(
@@ -8852,6 +8880,20 @@ unsupportedExpression:
         // AA's own value-slot storage, so writing through it is the correct
         // (and only) place for this element, matching
         // `runIndexAssignExpression`'s identical pointer-index arm.
+        if (auto call = index.e1.isCallExp) {
+            import dmd.tokens: EXP;
+            import quickbite.backends.interpreter.place: Place;
+
+            const address = refReturningCallAddress(call, EXP.address);
+            if (!address.isPointer)
+                throw new Exception("Ref-returning call has no native address.");
+            writeStoredValue(
+                Place(address.pointerAddress, index.e1.type).index(arrayIndex),
+                storageValue(index.type, value),
+            );
+            return;
+        }
+
         if (isPointerType(index.e1.type)) {
             const pointer = runExpression(index.e1);
             if (pointer.isPointer) {
@@ -9141,6 +9183,22 @@ unsupportedExpression:
         // so their postblit/destructor handling is unchanged.
         if (isDirectProjectionWriteTarget(index))
             return runProjectionAssignExpression(index, rhs);
+
+        if (auto call = index.e1.isCallExp) {
+            import dmd.tokens: EXP;
+            import quickbite.backends.interpreter.place: Place;
+
+            const address = refReturningCallAddress(call, EXP.address);
+            if (!address.isPointer)
+                throw new Exception("Ref-returning call has no native address.");
+            const arrayIndex = cast(size_t) runExpression(index.e2).asLong;
+            const value = runExpression(rhs);
+            writeStoredValue(
+                Place(address.pointerAddress, index.e1.type).index(arrayIndex),
+                storageValue(index.type, value),
+            );
+            return value;
+        }
 
         if (isPointerType(index.e1.type)) {
             const pointer = runExpression(index.e1);
@@ -10062,8 +10120,12 @@ unsupportedExpression:
         import std.conv: text;
 
         auto arrayLength = assign.e1.isArrayLengthExp;
-        if (arrayLength is null)
+        if (arrayLength is null) {
+            if (assign.lowering !is null)
+                return runExpression(assign.lowering);
+
             throw new Exception(text("Unsupported eval expression: ", assign.op));
+        }
 
         const lengthValue = runExpression(assign.e2);
 
@@ -10531,6 +10593,17 @@ unsupportedExpression:
             }
             return value;
         }
+
+        // `typeid` yields the TypeInfo describing a type, and for a class or
+        // interface that TypeInfo's own dynamic type is `TypeInfo_Class`, so
+        // casting one to `TypeInfo_Class` (or to a base of it) succeeds and
+        // keeps describing the same type.
+        if (
+            value.isTypeName &&
+            isClassTypeInfoClass(classType.sym) &&
+            classDeclarationByQualifiedName(value.asTypeNameString) !is null
+        )
+            return value;
 
         if (!classHasType(value, className(classType.sym)))
             return ExpressionResult.null_;
@@ -12222,13 +12295,13 @@ unsupportedExpression:
                     blit.e2.isIntegerExp !is null
                 )
             ) {
-                setLocal(variable, defaultValue(variable));
+                setLocal(variable, runDefaultValue(variable.type));
                 return;
             }
 
             // DMD default-initialises struct locals with `variable = 0`
             if (isStructType(variable.type) && blit.e2.isIntegerExp !is null) {
-                setLocal(variable, defaultValue(variable));
+                setLocal(variable, runDefaultValue(variable.type));
                 return;
             }
 
@@ -12521,7 +12594,7 @@ unsupportedExpression:
     }
 
     private ExpressionResult defaultLocalValue(VarDeclaration variable) {
-        return defaultValue(variable);
+        return runDefaultValue(variable.type);
     }
 
     private bool isRefVariable(VarDeclaration variable) const {
@@ -12988,16 +13061,40 @@ private imported!"dmd.dclass".ClassDeclaration classDeclarationByNameInScope(
     imported!"dmd.dsymbol".ScopeDsymbol scope_,
     in string name,
 ) {
+    return classDeclarationByNameInMembers(scope_.members, name);
+}
+
+
+private imported!"dmd.dclass".ClassDeclaration classDeclarationByNameInMembers(
+    imported!"dmd.dsymbol".Dsymbols* members,
+    in string name,
+) {
     import dmd.dsymbol: foreachDsymbol;
+    import dmd.dsymbolsem: include;
 
     imported!"dmd.dclass".ClassDeclaration found;
-    foreachDsymbol(scope_.members, (symbol) {
+    foreachDsymbol(members, (symbol) {
         if (auto class_ = symbol.isClassDeclaration) {
             if (className(class_) == name || classInfoName(class_) == name) {
                 found = class_;
                 return 1;
             }
         }
+
+        // A declaration carrying an attribute -- `private class C`, a
+        // `version` or `static if` block -- keeps its members inside that
+        // attribute rather than directly in the enclosing scope, and the
+        // attribute itself is not a scope, so the search descends through it
+        // to reach the class the attribute applies to.
+        if (auto attribute = symbol.isAttribDeclaration)
+            if (
+                auto class_ = classDeclarationByNameInMembers(
+                    attribute.include(null), name,
+                )
+            ) {
+                found = class_;
+                return 1;
+            }
 
         if (auto nested = symbol.isScopeDsymbol)
             if (auto class_ = classDeclarationByNameInScope(nested, name)) {
@@ -13062,6 +13159,17 @@ private string className(imported!"dmd.dclass".ClassDeclaration class_) @safe {
 }
 
 
+// Whether `class_` is `TypeInfo_Class` itself or a base of it -- the classes
+// a `TypeInfo` describing a class or interface can be cast to.
+private bool isClassTypeInfoClass(
+    imported!"dmd.dclass".ClassDeclaration class_,
+) {
+    import std.algorithm: canFind;
+
+    return ["TypeInfo_Class", "TypeInfo", "Object"].canFind(className(class_));
+}
+
+
 private string typeInfoName(imported!"dmd.mtype".Type type) {
     if (type is null)
         return "";
@@ -13071,6 +13179,80 @@ private string typeInfoName(imported!"dmd.mtype".Type type) {
         return classInfoName(classType.sym);
 
     return typeChars(type);
+}
+
+
+// The type whose TypeInfo a qualified type's own TypeInfo carries in `base`.
+// `shared` is stripped on its own, leaving any constness behind; otherwise
+// the type goes all the way down to mutable.
+private imported!"dmd.mtype".Type unqualifiedTypeInfoType(
+    imported!"dmd.mtype".Type type,
+) {
+    import dmd.typesem: mutableOf, unSharedOf;
+
+    if (type is null)
+        return null;
+
+    return type.isShared ? type.unSharedOf : type.mutableOf;
+}
+
+
+// The `ClassInfo.m_flags` word compiled D stores for `class_`.
+private ushort classFlagsWord(imported!"dmd.dclass".ClassDeclaration class_) {
+    import dmd.dclass: ClassFlags;
+    import dmd.dsymbolsem: isAbstract;
+
+    // An interface has no object body of its own, so none of the flags that
+    // describe one (pointers, constructor, destructor) apply to it.
+    if (class_.isInterfaceDeclaration !is null)
+        return cast(ushort) (
+            ClassFlags.hasOffTi |
+            ClassFlags.hasTypeInfo |
+            ClassFlags.hasNameSig |
+            (class_.isCOMinterface ? ClassFlags.isCOMclass : ClassFlags.none)
+        );
+
+    uint flags =
+        ClassFlags.hasOffTi |
+        ClassFlags.hasGetMembers |
+        ClassFlags.hasTypeInfo |
+        ClassFlags.hasNameSig;
+
+    if (class_.isCOMclass)
+        flags |= ClassFlags.isCOMclass;
+    if (class_.isCPPclass)
+        flags |= ClassFlags.isCPPclass;
+    if (class_.ctor !is null)
+        flags |= ClassFlags.hasCtor;
+    if (class_.isAbstract)
+        flags |= ClassFlags.isAbstract;
+
+    foreach (current; classHierarchy(class_))
+        if (current.dtor !is null) {
+            flags |= ClassFlags.hasDtor;
+            break;
+        }
+
+    if (!classFieldsHaveIndirections(class_))
+        flags |= ClassFlags.noPointers;
+
+    return cast(ushort) flags;
+}
+
+
+// Whether any field the class declares, or inherits, needs collector
+// scanning. A class's own header (vtable and monitor) does not count.
+private bool classFieldsHaveIndirections(
+    imported!"dmd.dclass".ClassDeclaration class_,
+) {
+    import quickbite.backends.interpreter.layout: typeHasPointers;
+
+    foreach (current; classHierarchy(class_))
+        foreach (field; current.fields)
+            if (field !is null && field.type !is null && typeHasPointers(field.type))
+                return true;
+
+    return false;
 }
 
 
