@@ -59,6 +59,16 @@ fix, SystemLinker as the behavior oracle):
 
 Items 1-3 are independent of 4-5; 4 gates 5.
 
+Recorded deviation, item 4's territory: a guest function-pointer value is
+currently a `Program.functions` table index, not a native code address —
+the VM emits no machine code for a bytecode-compiled function, so no such
+address exists yet. A native-leaf target (`&f` where `f` has no body, e.g.
+`core.internal.dassert`'s `assumeFakeAttributes` closing over a druntime
+hook) shares the same index space via a table-entry marker rather than a
+real address. This encoding must never cross the FFI boundary; it retires,
+at least for native-leaf targets (which do have real addresses), once
+inbound FFI/native-callback support forces a raw-address representation.
+
 ## Milestone 2 — cerealed green via bench.sh
 
 Acceptance: `bin/bench.sh -b bytecode -b system-linker --dub cerealed`

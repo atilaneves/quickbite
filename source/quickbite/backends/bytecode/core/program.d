@@ -639,10 +639,6 @@ package(quickbite.backends.bytecode) enum Op: ubyte {
     // a: class-object pointer slot, b: diagnostic data offset, c: data length.
     throwIfNullClassReference,
     nativeCall, // a: native-call index, b: argument area, c: destination
-    assertTrue, // a: condition frame offset, b: assert diagnostic index
-    // a: condition frame offset, b: assert diagnostic index (verbatim message)
-    assertTrueVerbatim,
-    assertNonzeroInt4, // a: integer frame offset, b: assert diagnostic index
     halt, // unconditional abort throwing the plain "Assertion failure" message
     // unconditional abort throwing the "unittest failure" message, for a
     // literal-false assert lexically inside a unittest body
@@ -1099,7 +1095,24 @@ package(quickbite.backends.bytecode) struct CompiledFunction {
     uint parameterBytes;
     ResultType returnType;
     bool hasThis;
+    // Set only for a native-leaf function reached through a function-pointer
+    // value (`&f` where `f.fbody is null`, taken e.g. by
+    // `core.internal.dassert`'s `assumeFakeAttributes` closing over a
+    // druntime hook like `GC.inFinalizer`): an index into `Program.nativeCalls`
+    // instead of `noNativeCallIndex`. The guest function-pointer VALUE stays a
+    // plain index into `Program.functions`, uniform with an ordinary
+    // VM-compiled entry -- `code` simply never gets a body, and
+    // `Op.call`/`Op.callIndirect` check this field to route through
+    // `Program.nativeCalls` instead of interpreting `code`.
+    size_t nativeCallIndex = noNativeCallIndex;
 }
+
+// Sentinel `CompiledFunction.nativeCallIndex` for an ordinary VM-compiled
+// function (not a native-leaf reached through a function pointer).
+package(quickbite.backends.bytecode) enum noNativeCallIndex = size_t.max;
+
+// Sentinel `NativeCall` receiver offset for a call with no hidden receiver.
+package(quickbite.backends.bytecode) enum noReceiverOffset = ushort.max;
 
 package(quickbite.backends.bytecode) struct NativeCall {
     imported!"dmd.func".FuncDeclaration function_;
@@ -1112,41 +1125,16 @@ package(quickbite.backends.bytecode) struct NativeCall {
     // block as its hidden `this` argument.
     ushort nativeStructReceiverOffset = noReceiverOffset;
     imported!"dmd.mtype".TypeStruct nativeStructReceiverType;
-}
-
-// Sentinel `NativeCall` receiver offset for a call with no hidden receiver.
-package(quickbite.backends.bytecode) enum noReceiverOffset = ushort.max;
-
-// How to render a failed assertion: read both operands from the frame and
-// format them per their static type around the inverted operator.
-package(quickbite.backends.bytecode) struct AssertDiagnostic {
-    string operator; // the asserted relation, e.g. "=="
-    ushort lhs;
-    ushort rhs;
-    ScalarType operandType;
-    // When set, lhs/rhs are slice-descriptor offsets and operandType is the
-    // element type; the operands render as `[e0, e1, ...]`.
-    bool isArray;
-    bool isString;
-    bool lhsIsNull;
-    bool rhsIsNull;
-    // When `isArray` is set and this is nonzero, each element is itself
-    // another separately heap-allocated `Tarray` descriptor of
-    // `operandType` (array-of-arrays nesting, any depth): 1 for `int[][]`,
-    // 2 for `int[][][]`, and so on -- the operand's own `arrayNestingDepth`
-    // (the outermost level is already unwrapped by `isArray` itself). Zero
-    // means plain `operandType` scalar elements. Appended last (not
-    // inserted between existing fields) so every pre-existing positional
-    // `AssertDiagnostic(...)` construction site keeps its field mapping;
-    // several sites pass isString/lhsIsNull/rhsIsNull positionally and
-    // would silently shift onto the wrong field otherwise.
-    uint elementNestingDepth;
-    // Mixed numeric array equality permits distinct element types. Retain the
-    // RHS type separately so a failed assertion uses that operand's physical
-    // stride and signedness instead of reading both arrays as `operandType`.
-    // Appended to preserve every positional construction above.
-    ScalarType rhsOperandType;
-    bool hasDistinctOperandTypes;
+    // Empty for a direct call (`tryCompileNativeCall`'s own registrations):
+    // each argument then sits at the uniform `index * nativeArgumentSlotSize`
+    // stride `prepareNativeInvocation` assumes. A native-leaf function
+    // reached through a function-pointer value instead carries its callee's
+    // real dense parameter-frame offsets here (`ParameterLayout.offsets`,
+    // the same layout `Op.call`/`Op.callIndirect` already placed the
+    // argument bytes at) -- the argument area an indirect call builds is the
+    // ordinary VM typed-frame parameter layout, not a native argument area,
+    // so its per-argument addresses are computed differently.
+    ushort[] argumentOffsets;
 }
 
 package(quickbite.backends.bytecode) struct VirtualFunction {
@@ -1182,7 +1170,6 @@ package(quickbite.backends.bytecode) struct Program {
     // literal is compiled and appended.
     ubyte[][] literalBlocks;
     ubyte[] moduleData; // mutable VM-owned storage for module-level variables
-    AssertDiagnostic[] assertDiagnostics;
     NativeCall[] nativeCalls;
     ClassInfo[] classes;
     // Roots the host TypeInfo mirrors used by `typeid` on VM class objects.

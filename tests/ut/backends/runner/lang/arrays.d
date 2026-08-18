@@ -956,13 +956,9 @@ static foreach (backend; Matrix!()) {
 }
 
 // The assert-diagnostic rendering sibling of the two tests above: exercises
-// `tryArrayComparisonAssert`'s shared `emitNestedArrayEqual` path (the same
-// helpers backing the plain `==` operator) for the `Tsarray`-row shape.
-static foreach (backend; Matrix!(
-    Omit!(Bytecode, Because.diverges,
-        "assert-diagnostic renderer pending replacement by compiled " ~
-        "_d_assert_fail"),
-)) {
+// the `Tsarray`-row array-equality shape (the same helpers backing the plain
+// `==` operator) as rendered by the compiled `_d_assert_fail` message.
+static foreach (backend; Matrix!()) {
     @("assertDiagnostic.arrayOfStaticArraysSameLengthDifferentContent." ~
         backend.stringof)
     @Tags(backend.stringof)

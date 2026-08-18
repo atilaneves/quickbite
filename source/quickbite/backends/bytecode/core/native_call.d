@@ -102,6 +102,14 @@ private bool prepareNativeInvocation(
 
     const fixedCount = signature.parameterList.length;
     invocation.arguments.length = native.argumentTypes.length;
+    // `argumentOffsets` is empty for an ordinary direct call: each argument
+    // then sits at the uniform `index * nativeArgumentSlotSize` stride
+    // `allocateNativeArgumentArea` laid out. A native-leaf function reached
+    // through a function-pointer value instead carries its callee's own
+    // dense VM parameter-frame offsets (`ParameterLayout.offsets`) -- the
+    // caller built an ordinary typed-frame argument area for the indirect
+    // call, not a native one, so each argument's address is computed
+    // differently.
     foreach (index; 0 .. native.argumentTypes.length) {
         // The declared parameter is the bridge's authority for a fixed
         // argument; only a C variadic tail is typed by the call site, which
@@ -109,11 +117,12 @@ private bool prepareNativeInvocation(
         auto type = index < fixedCount
             ? signature.parameterList[index].type.toBasetype
             : native.argumentTypes[index].toBasetype;
+        const argumentOffset = native.argumentOffsets.length != 0
+            ? argumentArea + native.argumentOffsets[index]
+            : argumentArea + index * nativeArgumentSlotSize;
         invocation.arguments[index] = TypedAddress(
             type,
-            frameAddress(
-                stack, argumentArea + index * nativeArgumentSlotSize,
-            ),
+            frameAddress(stack, argumentOffset),
         );
     }
 

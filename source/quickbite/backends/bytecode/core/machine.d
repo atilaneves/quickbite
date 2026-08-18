@@ -26,7 +26,7 @@ package(quickbite.backends.bytecode) RunResult run(
     import quickbite.backends.bytecode.core.program:
         CatchClause, ClassInfo,
         concatArraysWidth, dupArrayWidth, indexElementWidth, Op, ScalarType,
-        noCatchObjectField, noExceptionClass,
+        noCatchObjectField, noExceptionClass, noNativeCallIndex,
         pointerElementWidth, size, sliceCopyWidth, sliceDescriptorLengthOffset,
         sliceDescriptorPtrOffset, sliceDescriptorSize,
         sliceEqualWidth, subSliceElementWidth;
@@ -1699,12 +1699,50 @@ package(quickbite.backends.bytecode) RunResult run(
                 // A direct `call` carries the callee's function index in
                 // `instruction.a`; an indirect `callIndirect` reads it from
                 // the size_t slot at that frame offset (the function-pointer
-                // or delegate value).
+                // or delegate value). Either way it is a plain index into
+                // `program.functions`, uniform whether the callee turns out
+                // to be VM-compiled or a native leaf.
                 const calleeIndex = instruction.op == call
                     ? instruction.a
                     : cast(ushort) scalarValue!size_t(
                         stack, base + instruction.a,
                     );
+
+                // `registerFunction` records a native-leaf callee's (`&f`
+                // where `f` is body-less, e.g. `core.internal.dassert`'s
+                // `assumeFakeAttributes` taking the address of
+                // `GC.inFinalizer`) matching `program.nativeCalls` entry
+                // here instead of ever giving it VM bytecode: dispatch
+                // through the same `callNative` bridge a direct native call
+                // uses, synchronously, with no VM call frame to push. Its
+                // `argumentOffsets` are this call's own dense typed-frame
+                // argument layout (the same one a VM-targeted call below
+                // would copy verbatim into the callee's frame), not
+                // `Op.nativeCall`'s uniformly strided one.
+                if (program.functions[calleeIndex].nativeCallIndex !=
+                    noNativeCallIndex)
+                {
+                    import quickbite.frontend.dmd.functions:
+                        noAvailableSourceMessage;
+                    import quickbite.backends.bytecode.core.native_call:
+                        callNative;
+
+                    auto native = &program.nativeCalls[
+                        program.functions[calleeIndex].nativeCallIndex
+                    ];
+                    if (!callNative(
+                            *native,
+                            stack,
+                            base,
+                            base + instruction.b,
+                            base + instruction.c,
+                        ))
+                        throw new Exception(
+                            noAvailableSourceMessage(native.function_),
+                        );
+                    ++ip;
+                    break;
+                }
 
                 if (program.functions[calleeIndex].code.length == 0)
                     compileFunction(calleeIndex);
@@ -1748,45 +1786,6 @@ package(quickbite.backends.bytecode) RunResult run(
                     throw new Exception(
                         noAvailableSourceMessage(native.function_),
                     );
-                ++ip;
-                break;
-
-            case assertTrue:
-                if (stack[base + instruction.a] == 0)
-                    throw new Exception(assertMessage(
-                        program.assertDiagnostics[instruction.b],
-                        stack[base .. $],
-                    ));
-
-                ++ip;
-                break;
-
-            case assertTrueVerbatim:
-                if (stack[base + instruction.a] == 0)
-                    throw new Exception(
-                        program.assertDiagnostics[instruction.b].operator,
-                    );
-
-                ++ip;
-                break;
-
-            case assertNonzeroInt4:
-                // The operand width follows its scalar type: a `bool` is a
-                // single frame byte, an `int` four. Reading only `size(type)`
-                // bytes avoids treating a zero `bool` as nonzero because of
-                // adjacent frame bytes.
-                const nonzeroDiagnostic =
-                    program.assertDiagnostics[instruction.b];
-                if (isZeroSlot(
-                        stack,
-                        base + instruction.a,
-                        size(nonzeroDiagnostic.operandType),
-                    ))
-                    throw new Exception(assertMessage(
-                        nonzeroDiagnostic,
-                        stack[base .. $],
-                    ));
-
                 ++ip;
                 break;
 
@@ -2893,170 +2892,6 @@ private uint equalOperandSize(
     }
 }
 
-private string assertMessage(
-    in imported!"quickbite.backends.bytecode.core.program".AssertDiagnostic
-        diagnostic,
-    in ubyte[] frame,
-) @safe {
-    import std.conv: text;
-
-    // A truth assert (`assert(x)`) carries the empty operator and renders the
-    // single operand against the literal `true` it was implicitly compared to.
-    if (diagnostic.operator == "")
-        return text(
-            operandText(frame, diagnostic.lhs, diagnostic.operandType),
-            " != true",
-        );
-
-    // A logical-not assert (`assert(!x)`) carries the "!" operator and renders
-    // the un-negated operand against the `true` it failed to differ from.
-    if (diagnostic.operator == "!")
-        return text(
-            operandText(frame, diagnostic.lhs, diagnostic.operandType),
-            " == true",
-        );
-
-    if (diagnostic.isArray)
-        return text(
-            arrayOperandText(
-                frame, diagnostic.lhs, diagnostic.operandType,
-                diagnostic.elementNestingDepth,
-            ),
-            " ",
-            invertedOperator(diagnostic.operator),
-            " ",
-            arrayOperandText(
-                frame, diagnostic.rhs,
-                diagnostic.hasDistinctOperandTypes
-                    ? diagnostic.rhsOperandType
-                    : diagnostic.operandType,
-                diagnostic.elementNestingDepth,
-            ),
-        );
-
-    if (diagnostic.isString)
-        return text(
-            stringOperandText(frame, diagnostic.lhs),
-            " ",
-            invertedOperator(diagnostic.operator),
-            " ",
-            stringOperandText(frame, diagnostic.rhs),
-        );
-
-    const lhs = diagnostic.lhsIsNull
-        ? "`null`"
-        : operandText(frame, diagnostic.lhs, diagnostic.operandType);
-    const rhs = diagnostic.rhsIsNull
-        ? "`null`"
-        : operandText(frame, diagnostic.rhs, diagnostic.operandType);
-    return text(
-        lhs,
-        " ",
-        invertedOperator(diagnostic.operator),
-        " ",
-        rhs,
-    );
-}
-
-private string stringOperandText(
-    in ubyte[] frame,
-    in size_t offset,
-) @safe {
-    import std.conv: text;
-
-    return text(`"`, stringFromSlice(frame, offset), `"`);
-}
-
-// Render a dynamic-array operand as `[e0, e1, ...]`, reading the slice
-// descriptor at `offset` and formatting each element by its scalar type.
-// When `elementNestingDepth` is nonzero (an array-of-arrays operand), each
-// element is itself a 16-byte slice descriptor, rendered by a recursive
-// call one nesting level shallower, until depth reaches zero and the
-// elements are plain `elementType` scalars -- matching DMD's own
-// `[[e0, e1], ...]` rendering at any nesting depth, not just one level.
-private string arrayOperandText(
-    in ubyte[] frame,
-    in size_t offset,
-    in imported!"quickbite.backends.bytecode.core.program".ScalarType
-        elementType,
-    in uint elementNestingDepth = 0,
-) @trusted {
-    import quickbite.backends.bytecode.core.program: size, sliceDescriptorSize;
-    import std.array: appender;
-    import std.conv: text;
-
-    const elementIsArray = elementNestingDepth > 0;
-    const descriptor = readSliceDescriptor(frame, offset);
-    const pointer = descriptor.pointer;
-    const length = descriptor.length;
-    const elementSize = elementIsArray ? sliceDescriptorSize : size(elementType);
-    const elements = (cast(const(ubyte)*) pointer)[0 .. length * elementSize];
-
-    auto result = appender("[");
-    foreach (index; 0 .. length) {
-        if (index != 0)
-            result ~= ", ";
-        result ~= elementIsArray
-            ? arrayOperandText(
-                elements, index * elementSize, elementType,
-                elementNestingDepth - 1,
-            )
-            : operandText(elements, index * elementSize, elementType);
-    }
-    result ~= "]";
-    return result[];
-}
-
-private string invertedOperator(in string operator) @safe @nogc nothrow pure {
-    switch (operator) {
-        case "==": return "!=";
-        case "!=": return "==";
-        case "<": return ">=";
-        case "<=": return ">";
-        case ">": return "<=";
-        case ">=": return "<";
-        case "is": return "!is";
-        case "!is": return "is";
-        default: assert(0, "Unsupported assert operator.");
-    }
-}
-
-private string operandText(
-    in ubyte[] frame,
-    in size_t offset,
-    in imported!"quickbite.backends.bytecode.core.program".ScalarType type,
-) @safe pure {
-    import quickbite.backends.bytecode.core.program: ScalarType, isSigned, size;
-    import std.conv: text;
-
-    ulong raw;
-    foreach_reverse (value; frame[offset .. offset + size(type)])
-        raw = (raw << 8) | value;
-
-    final switch (type) with (ScalarType) {
-        case bool_:
-            return raw == 0 ? "false" : "true";
-        case char_:
-            return text("'", cast(char) raw, "'");
-        case float_:
-            return text(floatValue!float(frame, offset));
-        case double_:
-            return text(floatValue!double(frame, offset));
-        case real_:
-            return text(floatValue!real(frame, offset));
-        case void_, byte_, ubyte_, short_, ushort_, int_, uint_, long_, ulong_,
-            wchar_, dchar_:
-            break;
-    }
-
-    if (!isSigned(type))
-        return text(raw);
-
-    const shift = 64 - 8 * size(type);
-    const signed = (cast(long) (raw << shift)) >> shift;
-    return text(signed);
-}
-
 private ubyte[T.sizeof] scalarBytes(T)(in T value)
     @safe @nogc nothrow pure
 {
@@ -3074,20 +2909,6 @@ private T objectScalarValue(T)(in ubyte* source) @trusted
     T value;
     (cast(ubyte*) &value)[0 .. T.sizeof] = source[0 .. T.sizeof];
     return value;
-}
-
-// True when every byte of the `width`-byte frame slot at `offset` is zero,
-// i.e. the operand is zero regardless of its scalar width.
-private bool isZeroSlot(
-    in ubyte[] stack,
-    in size_t offset,
-    in size_t width,
-) @safe @nogc nothrow pure {
-    foreach (b; stack[offset .. offset + width])
-        if (b != 0)
-            return false;
-
-    return true;
 }
 
 private T scalarValue(T)(
