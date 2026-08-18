@@ -13020,6 +13020,21 @@ unsupportedExpression:
 
         auto place = destination.place;
 
+        if (constructPointerExpressionInto(rvalue, place)) {
+            destination.markConstructed;
+            return true;
+        }
+
+        if (constructDereferenceInto(rvalue, place)) {
+            destination.markConstructed;
+            return true;
+        }
+
+        if (constructPointerDifferenceInto(rvalue, place)) {
+            destination.markConstructed;
+            return true;
+        }
+
         if (auto cast_ = rvalue.isCastExp) {
             import quickbite.backends.interpreter.native_scalar:
                 isNativeScalarType;
@@ -13287,6 +13302,238 @@ destinationFallback:
             case Tfloat80: return constructScalar!real(expression, destination);
             default: return false;
         }
+    }
+
+    // A data pointer is already the host address that D code observes. Keep
+    // that address in its typed place throughout recursive construction; do
+    // not convert it to a scalar or a carrier on the way.
+    private bool constructPointerExpressionInto(
+        imported!"dmd.expression".Expression expression,
+        imported!"quickbite.backends.interpreter.place".Place destination,
+    ) {
+        import dmd.tokens: EXP;
+        import quickbite.frontend.dmd.types: isPointerType;
+
+        if (
+            expression.type is null ||
+            destination.type.toBasetype.isTypePointer is null ||
+            !destination.type.toBasetype.equals(expression.type.toBasetype)
+        )
+            return false;
+
+        // Function pointers retain their symbolic callable metadata. They
+        // are not data pointers and stay on their existing path.
+        if (destination.type.toBasetype.nextOf.toBasetype.isTypeFunction !is null)
+            return false;
+
+        if (expression.isNullExp !is null) {
+            destination.storeReference(null);
+            return true;
+        }
+
+        if (auto address = expression.isAddrExp) {
+            if (auto pointer = address.e1.isPtrExp) {
+                destination.storeReference(pointerOperandPlace(pointer.e1).deref.address);
+                return true;
+            }
+            if (hasProjectionPlace(address.e1)) {
+                destination.storeReference(projectionPlace(address.e1).address);
+                return true;
+            }
+            return false;
+        }
+
+        if (auto cast_ = expression.isCastExp) {
+            if (isPointerType(cast_.e1.type)) {
+                destination.storeReference(pointerOperandPlace(cast_.e1).deref.address);
+                return true;
+            }
+
+            if (hasArrayProjectionPlace(cast_.e1)) {
+                destination.storeReference(projectionPlace(cast_.e1).sliceDataPointer);
+                return true;
+            }
+            return false;
+        }
+
+        if (hasDirectWriteProjectionPlace(expression)) {
+            destination.storeReference(
+                directWriteProjectionPlace(expression).deref.address,
+            );
+            return true;
+        }
+
+        if (auto index = expression.isIndexExp) {
+            if (!isPointerType(index.e1.type))
+                return false;
+
+            auto source = pointerOperandPlace(index.e1);
+            const indexValue = pointerIndexOperand(index.e2);
+            destination.storeReference(source.index(indexValue).deref.address);
+            return true;
+        }
+
+        if (auto binary = expression.isBinExp) {
+            void* base;
+            long delta;
+            if (expression.op == EXP.add) {
+                if (isPointerType(binary.e1.type)) {
+                    base = pointerOperandPlace(binary.e1).deref.address;
+                    delta = pointerOffsetOperand(binary.e2);
+                } else if (isPointerType(binary.e2.type)) {
+                    base = pointerOperandPlace(binary.e2).deref.address;
+                    delta = pointerOffsetOperand(binary.e1);
+                } else {
+                    return false;
+                }
+                destination.storeReference(offsetPointerAddress(base, delta));
+                return true;
+            }
+            if (expression.op == EXP.min && isPointerType(binary.e1.type)) {
+                base = pointerOperandPlace(binary.e1).deref.address;
+                delta = pointerOffsetOperand(binary.e2);
+                destination.storeReference(offsetPointerAddress(base, -delta));
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    // DMD leaves pointer subtraction as a byte-address difference and emits
+    // the element-size division around it. Compute that difference directly
+    // from host addresses, without an intermediate pointer representation.
+    private bool constructPointerDifferenceInto(
+        imported!"dmd.expression".Expression expression,
+        imported!"quickbite.backends.interpreter.place".Place destination,
+    ) {
+        import dmd.tokens: EXP;
+        import quickbite.frontend.dmd.types: isPointerType;
+
+        auto subtract = expression.isBinExp;
+        if (
+            subtract is null || expression.op != EXP.min ||
+            !isPointerType(subtract.e1.type) || !isPointerType(subtract.e2.type)
+        )
+            return false;
+
+        const left = pointerOperandPlace(subtract.e1).deref.address;
+        const right = pointerOperandPlace(subtract.e2).deref.address;
+        storePointerDifference(destination, pointerAddressDifference(left, right));
+        return true;
+    }
+
+    // A dereference reads the value at the pointed-to native address. The
+    // address itself remains the pointer representation; copying from this
+    // typed place handles scalars, pointers, and aggregates without a value
+    // carrier. Keep a null dereference on the old diagnostic path rather than
+    // faulting while composing a raw host place.
+    private bool constructDereferenceInto(
+        imported!"dmd.expression".Expression expression,
+        imported!"quickbite.backends.interpreter.place".Place destination,
+    ) {
+        import quickbite.frontend.dmd.types: isPointerType;
+
+        auto pointer = expression.isPtrExp;
+        if (
+            pointer is null || !isPointerType(pointer.e1.type) ||
+            expression.type is null ||
+            !destination.type.toBasetype.equals(expression.type.toBasetype)
+        )
+            return false;
+
+        auto source = pointerOperandPlace(pointer.e1).deref;
+        if (source.address is null)
+            return false;
+
+        copyPlaceValue(source, destination);
+        return true;
+    }
+
+    // Construct a pointer operand in its own typed activation storage. The
+    // slot carries both its static pointer type and a collector-visible
+    // reference, while its dereferenced address is the sole data value.
+    private imported!"quickbite.backends.interpreter.place".Place pointerOperandPlace(
+        imported!"dmd.expression".Expression expression,
+    ) {
+        import quickbite.backends.interpreter.place: Place;
+
+        auto destination = ConstructionDestination(Place(
+            _activationFrame.temporaryAddress(expression),
+            expression.type,
+        ));
+        runExpression(expression, destination);
+        return destination.place;
+    }
+
+    private size_t pointerIndexOperand(
+        imported!"dmd.expression".Expression expression,
+    ) {
+        import dmd.astenums: TY;
+
+        switch (expression.type.toBasetype.ty) with (TY) {
+            case Tint8: return cast(size_t) scalarOperand!byte(expression);
+            case Tuns8, Tchar: return scalarOperand!ubyte(expression);
+            case Tint16: return cast(size_t) scalarOperand!short(expression);
+            case Tuns16, Twchar: return scalarOperand!ushort(expression);
+            case Tint32: return cast(size_t) scalarOperand!int(expression);
+            case Tuns32, Tdchar: return scalarOperand!uint(expression);
+            case Tint64: return cast(size_t) scalarOperand!long(expression);
+            case Tuns64: return cast(size_t) scalarOperand!ulong(expression);
+            default: throw new Exception("Pointer index has a non-integral type.");
+        }
+    }
+
+    private long pointerOffsetOperand(
+        imported!"dmd.expression".Expression expression,
+    ) {
+        import dmd.astenums: TY;
+
+        switch (expression.type.toBasetype.ty) with (TY) {
+            case Tint8: return scalarOperand!byte(expression);
+            case Tuns8, Tchar: return scalarOperand!ubyte(expression);
+            case Tint16: return scalarOperand!short(expression);
+            case Tuns16, Twchar: return scalarOperand!ushort(expression);
+            case Tint32: return scalarOperand!int(expression);
+            case Tuns32, Tdchar: return scalarOperand!uint(expression);
+            case Tint64: return scalarOperand!long(expression);
+            case Tuns64: return cast(long) scalarOperand!ulong(expression);
+            default: throw new Exception("Pointer offset has a non-integral type.");
+        }
+    }
+
+    private void storePointerDifference(
+        imported!"quickbite.backends.interpreter.place".Place destination,
+        in long difference,
+    ) {
+        import dmd.astenums: TY;
+
+        switch (destination.type.toBasetype.ty) with (TY) {
+            case Tint8: destination.storeNativeScalar(cast(byte) difference); return;
+            case Tuns8, Tchar: destination.storeNativeScalar(cast(ubyte) difference); return;
+            case Tint16: destination.storeNativeScalar(cast(short) difference); return;
+            case Tuns16, Twchar: destination.storeNativeScalar(cast(ushort) difference); return;
+            case Tint32: destination.storeNativeScalar(cast(int) difference); return;
+            case Tuns32, Tdchar: destination.storeNativeScalar(cast(uint) difference); return;
+            case Tint64: destination.storeNativeScalar(difference); return;
+            case Tuns64: destination.storeNativeScalar(cast(ulong) difference); return;
+            default: throw new Exception("Pointer difference has a non-integral type.");
+        }
+    }
+
+    // @trusted: the guest has already requested raw-pointer arithmetic; this
+    // is the matching byte offset on its real host address.
+    private static void* offsetPointerAddress(void* address, in long delta) @trusted {
+        return cast(void*) (cast(ubyte*) address + delta);
+    }
+
+    // @trusted: both operands are the host addresses stored in real guest
+    // pointer slots; subtraction produces their byte-address difference.
+    private static long pointerAddressDifference(
+        const(void)* left,
+        const(void)* right,
+    ) @trusted {
+        return cast(long) (cast(ubyte*) left - cast(ubyte*) right);
     }
 
     private bool constructScalar(T)(
