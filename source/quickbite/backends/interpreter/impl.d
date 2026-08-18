@@ -188,6 +188,57 @@ private enum LoopControl {
     continue_,
 }
 
+// A caller-provided typed destination for rvalue construction. An absent
+// destination represents a void construction; a fresh destination becomes
+// constructed exactly once. Only a caller that owns fresh storage may provide
+// a destination; assignment must first obtain separate temporary storage.
+private struct ConstructionDestination {
+    private enum State {
+        absent,
+        fresh,
+        constructed,
+    }
+
+    private imported!"quickbite.backends.interpreter.place".Place _place;
+    private State _state;
+
+    public this(imported!"quickbite.backends.interpreter.place".Place place)
+    @safe {
+        _place = place;
+        _state = State.fresh;
+    }
+
+    public bool hasDestination() const pure nothrow @nogc @safe {
+        return _state != State.absent;
+    }
+
+    public bool isFresh() const pure nothrow @nogc @safe {
+        return _state == State.fresh;
+    }
+
+    public bool isConstructed() const pure nothrow @nogc @safe {
+        return _state == State.constructed;
+    }
+
+    public imported!"quickbite.backends.interpreter.place".Place place() @safe {
+        if (!hasDestination)
+            throw new Exception(
+                "quickbite.backends.interpreter.impl.ConstructionDestination."
+                ~ "place: construction has no destination",
+            );
+        return _place;
+    }
+
+    public void markConstructed() @safe {
+        if (!isFresh)
+            throw new Exception(
+                "quickbite.backends.interpreter.impl.ConstructionDestination."
+                ~ "markConstructed: destination is not fresh",
+            );
+        _state = State.constructed;
+    }
+}
+
 // The evaluated indices within one `ref`/`out` call argument.  The ordinary
 // expression walk records them as it evaluates the argument; binding the
 // callee's reference slot later composes its address from those exact results
@@ -631,6 +682,10 @@ private struct Walker {
     // activation. Statement execution never writes here: a statement is not
     // a value.
     private ExpressionResult _returnValue;
+    // An interpreted non-void call constructs directly into its caller's
+    // fresh storage. This pointer is valid only while the synchronous child
+    // activation runs; recursive calls use their own activation and pointer.
+    private ConstructionDestination* _returnDestination;
     private bool runningCalledFunction;
     private bool inUnitTest;
     private FuncDeclaration currentFunction;
@@ -829,6 +884,15 @@ private struct Walker {
                     writeLocation(return_.exp, refReturnAssignedValue);
                 else if (addressOfRefReturn)
                     _returnValue = refReturnAddress(return_.exp);
+                else if (_returnDestination !is null) {
+                    if (!constructInto(return_.exp, *_returnDestination)) {
+                        auto value = runExpression(return_.exp);
+                        if (return_.exp.type.toBasetype.isTypeClass !is null)
+                            value = rootedNativeClassValue(return_.exp, value);
+                        writeStoredValue(_returnDestination.place, value);
+                        _returnDestination.markConstructed;
+                    }
+                }
                 else {
                     _returnValue = runExpression(return_.exp);
                     if (return_.exp.type.toBasetype.isTypeClass !is null)
@@ -3493,16 +3557,19 @@ unsupportedExpression:
         // builds for `&field[0]`.
         if (auto dot = e1.isDotVarExp) {
             import quickbite.frontend.dmd.types: isStaticArrayType;
+            import quickbite.backends.interpreter.class_info_projection:
+                isSymbolicClassInfoProjection;
 
             // `classinfo` resolves symbolically on this backend: no native
             // `TypeInfo_Class` body exists, so composing a field address
             // through it would dereference the receiver's own leading field
             // bytes as a metadata pointer. `x.classinfo.name` reaches here
             // as a `ref` argument because a `TypeInfo` field is an lvalue;
-            // give the evaluated value one ordinary retained temporary,
-            // exactly as a by-value call result bound by reference gets.
+            // write the evaluated value into this activation's typed
+            // temporary, exactly as a by-value call result bound by
+            // reference does.
             if (isSymbolicClassInfoProjection(dot))
-                return addressOfTemporaryValue(dot.type, runExpression(dot));
+                return addressOfTemporaryValue(dot, runExpression(dot));
 
             if (isStaticArrayType(dot.type))
                 return arrayPointer(dot, 0, op);
@@ -3666,79 +3733,6 @@ unsupportedExpression:
             );
 
         return arrayPointer(index, 0, op, true /* selfAddress */);
-    }
-
-    // Whether `dot.var` is DMD's synthetic `.classinfo` property rather than
-    // a real declared field that merely shares the name (`struct S { int
-    // classinfo; }`, or a hypothetical class field). The synthetic property
-    // itself never reaches here as a `DotVarExp`: `TypeClass.dotExp`
-    // (typesem.d) only falls back to `Id.classinfo` handling once a member
-    // search for that name comes up empty, and that fallback lowers
-    // `x.classinfo` straight to a vtbl `PtrExp` (or an `AddrExp` of the
-    // static `TypeInfoClassDeclaration` for `Type.classinfo`) -- never a
-    // `DotVarExp`. So a `DotVarExp` whose member is literally named
-    // "classinfo" can only be a real field; requiring the receiver to be
-    // class-typed *and* the resolved member to not be a real instance field
-    // keeps this predicate inert for genuine field reads (both here and in
-    // `runDotVarExpression`, which shares it) while staying correct if a
-    // synthetic shape like this were ever produced. Reading `e1`/`var` is
-    // not `@safe`; this only follows existing AST links.
-    private static bool isSyntheticClassInfoMember(
-        imported!"dmd.expression".DotVarExp dot,
-    ) @trusted {
-        if (declarationName(dot.var) != "classinfo")
-            return false;
-        if (dot.e1.type is null || dot.e1.type.toBasetype.isTypeClass is null)
-            return false;
-        auto variable = dot.var.isVarDeclaration;
-        return variable is null || !variable.isField;
-    }
-
-    // Whether `dot.var` is `TypeInfo_Class.name` read off the vtable-derived
-    // `.classinfo` pointer (`x.classinfo.name`), identified by the pointer's
-    // static type being exactly `ClassInfo`/`TypeInfo_Class` -- not merely
-    // "some class type". A user field literally named `name`, reached
-    // through an unrelated class-typed pointer dereference (`(*pc).name`),
-    // produces the same `PtrExp` receiver shape but a different static
-    // type, so checking type identity (rather than "is a class") keeps that
-    // case off this symbolic path, both here and in `runDotVarExpression`.
-    private static bool isClassInfoNamePointerMember(
-        imported!"dmd.expression".DotVarExp dot,
-    ) @trusted {
-        import dmd.mtype: Type;
-
-        if (declarationName(dot.var) != "name")
-            return false;
-        auto pointer = dot.e1.isPtrExp;
-        if (pointer is null || pointer.type is null)
-            return false;
-        auto classType = pointer.type.toBasetype.isTypeClass;
-        return classType !is null && classType.sym is Type.typeinfoclass;
-    }
-
-    // Whether `dot`'s field-access spine reads `classinfo` at some level, in
-    // any shape DMD produces for it -- the synthetic member itself
-    // (`x.classinfo`, also as the receiver of `x.classinfo.name`), the
-    // lowered vtable load (`name` off a class-typed dereference), or the
-    // constant-folded static form (`name` off a `TypeInfo` symbol offset).
-    // These are exactly the receivers `runDotVarExpression` answers
-    // symbolically, so no native place exists behind them. Reading `e1` is
-    // not `@safe`; this only follows existing AST links.
-    private static bool isSymbolicClassInfoProjection(
-        imported!"dmd.expression".DotVarExp dot,
-    ) @trusted {
-        for (auto current = dot; current !is null; current = current.e1.isDotVarExp) {
-            if (isSyntheticClassInfoMember(current))
-                return true;
-            if (isClassInfoNamePointerMember(current))
-                return true;
-            if (declarationName(current.var) != "name")
-                continue;
-            if (auto symbol = current.e1.isSymOffExp)
-                if (symbolOffsetTypeInfoType(symbol) !is null)
-                    return true;
-        }
-        return false;
     }
 
     // The address of a ref return's lvalue, evaluated in the returning
@@ -4080,29 +4074,30 @@ unsupportedExpression:
     private ExpressionResult addressOfCallResultTemporary(
         imported!"dmd.expression".CallExp call,
     ) {
-        return addressOfTemporaryValue(call.type, runCallExpression(call));
+        import quickbite.backends.interpreter.place: Place;
+
+        auto destination = ConstructionDestination(Place(
+            _activationFrame.temporaryAddress(call),
+            call.type,
+        ));
+        constructInto(call, destination);
+        return ExpressionResult.pointerValue(destination.place.address);
     }
 
     // The address of an evaluated value with no composable native place: one
-    // ordinary typed temporary, retained for the enclosing expression. A
-    // reference slot that stores this address is conservatively scanned and
-    // stays the durable root beyond that expression, the same lifetime
-    // contract `bindSyntheticReferenceSlot` states for its own temporary.
+    // ordinary typed temporary in this activation's frame. A reference slot
+    // that stores this address is conservatively scanned and stays the durable
+    // root beyond that expression, the same lifetime contract
+    // `bindSyntheticReferenceSlot` states for its own temporary.
     private ExpressionResult addressOfTemporaryValue(
-        imported!"dmd.mtype".Type type,
+        imported!"dmd.expression".Expression expression,
         in ExpressionResult value,
     ) {
-        import quickbite.backends.interpreter.layout:
-            typeByteSize, typeHasPointers;
         import quickbite.backends.interpreter.place: Place;
 
-        const scan = typeHasPointers(type)
-            ? NativeBlock.Scan.conservative
-            : NativeBlock.Scan.no;
-        auto temporary = NativeBlock.allocate(typeByteSize(type), scan);
-        writeStoredValue(Place(temporary.address, type), value);
-        retainTemporaryPointerOwner(temporary);
-        return ExpressionResult.pointerValue(temporary.address);
+        auto temporary = _activationFrame.temporaryAddress(expression);
+        writeStoredValue(Place(temporary, expression.type), value);
+        return ExpressionResult.pointerValue(temporary);
     }
 
     // Forks execution metadata. Binding storage is never copied: each child
@@ -5263,6 +5258,32 @@ unsupportedExpression:
     }
 
     private ExpressionResult runCallExpression(imported!"dmd.expression".CallExp call) {
+        import dmd.astenums: TY;
+        import quickbite.backends.interpreter.place: Place;
+
+        if (call.type.toBasetype.ty == TY.Tvoid)
+            return runCallExpression(call, null);
+
+        auto destination = ConstructionDestination(Place(
+            _activationFrame.temporaryAddress(call),
+            call.type,
+        ));
+        const result = runCallExpression(call, &destination);
+        if (!destination.isConstructed) {
+            writeStoredValue(destination.place, result);
+            destination.markConstructed;
+        }
+        return readStoredValue(destination.place);
+    }
+
+    // A construction caller supplies fresh storage. An ordinary rvalue call
+    // gets a typed activation-owned temporary from the wrapper above. Native
+    // and not-yet-migrated families still return a carrier, which the wrapper
+    // writes into that same storage.
+    private ExpressionResult runCallExpression(
+        imported!"dmd.expression".CallExp call,
+        ConstructionDestination* constructionDestination,
+    ) {
         import dmd.expression: Expression;
         import quickbite.backends.interpreter.builtins:
             binaryBuiltinCall,
@@ -5659,6 +5680,7 @@ unsupportedExpression:
                     argumentExpressions,
                     evaluatedArguments,
                     hasReceiverPointerAddress ? &receiverPointerAddress : null,
+                    constructionDestination,
                 );
             }
         }
@@ -5709,6 +5731,8 @@ unsupportedExpression:
                     arguments,
                     argumentExpressions,
                     evaluatedArguments,
+                    null,
+                    constructionDestination,
                 );
 
             return runFunction(
@@ -5717,6 +5741,8 @@ unsupportedExpression:
                 argumentExpressions,
                 false,
                 evaluatedArguments,
+                null,
+                constructionDestination,
             );
         }
 
@@ -5728,6 +5754,8 @@ unsupportedExpression:
                     argumentExpressions,
                     false,
                     evaluatedArguments,
+                    null,
+                    constructionDestination,
                 );
 
         if (auto function_ = functionPointerExpressionFunction(call.e1)) {
@@ -5753,6 +5781,8 @@ unsupportedExpression:
                     arguments,
                     argumentExpressions,
                     evaluatedArguments,
+                    null,
+                    constructionDestination,
                 );
 
             return runFunction(
@@ -5761,6 +5791,8 @@ unsupportedExpression:
                 argumentExpressions,
                 false,
                 evaluatedArguments,
+                null,
+                constructionDestination,
             );
         }
 
@@ -5797,6 +5829,8 @@ unsupportedExpression:
                 argumentExpressions,
                 false,
                 evaluatedArguments,
+                null,
+                constructionDestination,
             );
         }
 
@@ -6670,6 +6704,7 @@ unsupportedExpression:
         in bool captureLocals = false,
         in EvaluatedReferenceArgument[] evaluatedArguments = null,
         in void*[VarDeclaration] closureAddresses = null,
+        ConstructionDestination* constructionDestination = null,
     ) {
         Walker child;
         child.runningCalledFunction = true;
@@ -6677,6 +6712,7 @@ unsupportedExpression:
         auto layout = cachedFrameLayout(function_);
         child._activationFrame = FrameBlock.allocate(layout);
         child._returnValue = ExpressionResult(false);
+        child._returnDestination = constructionDestination;
         forkExecutionStateInto(child);
         scope(exit) child.retireActivationFrameMetadata;
         bindCapturedReferenceSlots(function_, child, closureAddresses);
@@ -6770,6 +6806,7 @@ unsupportedExpression:
         // `p()` in `p().get()`, `i++` in `a[i++].method()`, or the call
         // itself in `get(holder, evaluations).slot`).
         const(ExpressionResult)* precomputedReceiverPointerAddress = null,
+        ConstructionDestination* constructionDestination = null,
     ) {
         const memberReceiver = nativeMemberReceiver(function_, receiver);
 
@@ -6793,6 +6830,7 @@ unsupportedExpression:
         auto layout = cachedFrameLayout(function_);
         child._activationFrame = FrameBlock.allocate(layout);
         child._returnValue = ExpressionResult(false);
+        child._returnDestination = constructionDestination;
         forkExecutionStateInto(child);
         scope(exit) child.retireActivationFrameMetadata;
         bindCapturedReferenceSlots(
@@ -7891,6 +7929,9 @@ unsupportedExpression:
     }
 
     private ExpressionResult runDotVarExpression(imported!"dmd.expression".DotVarExp dot) {
+        import quickbite.backends.interpreter.class_info_projection:
+            isClassInfoNamePointerMember,
+            isSyntheticClassInfoMember;
         import quickbite.backends.interpreter.messages: receiverName;
         import std.conv: text;
 
@@ -12634,7 +12675,8 @@ unsupportedExpression:
         // The initializer constructs the variable's own storage, so a family
         // with a destination arm writes its bytes there directly instead of
         // building them elsewhere and copying them in.
-        if (constructInto(initializer, variable)) {
+        auto destination = ConstructionDestination(bindingPlace(variable));
+        if (constructInto(initializer, destination)) {
             clearUninitializedBindingAddress(bindingPlace(variable).address);
             return;
         }
@@ -12666,12 +12708,29 @@ unsupportedExpression:
     // and DMD marks it as such with a `ConstructExp`.
     private bool constructInto(
         imported!"dmd.expression".Expression rvalue,
-        VarDeclaration destination,
+        ref ConstructionDestination destination,
     ) {
-        if (!hasBindingPlace(destination))
-            return false;
+        if (!destination.isFresh)
+            throw new Exception(
+                "quickbite.backends.interpreter.impl.Walker.constructInto: "
+                ~ "destination is not fresh",
+            );
 
-        auto place = bindingPlace(destination);
+        auto place = destination.place;
+
+        if (auto call = rvalue.isCallExp) {
+            import dmd.astenums: TY;
+
+            if (call.type.toBasetype.ty == TY.Tvoid)
+                return false;
+
+            const result = runCallExpression(call, &destination);
+            if (!destination.isConstructed) {
+                writeStoredValue(place, result);
+                destination.markConstructed;
+            }
+            return true;
+        }
 
         if (auto literal = rvalue.isStructLiteralExp) {
             // The literal's own fields must BE the destination's fields: a
@@ -12691,6 +12750,7 @@ unsupportedExpression:
                 // allocated storage would have given it.
                 clearPlaceValue(place);
                 constructStructLiteral(literal, place);
+                destination.markConstructed;
                 return true;
             }
         }
@@ -12703,6 +12763,7 @@ unsupportedExpression:
         // copy into an explicit call, which the arms above this one handle.
         if (isAggregateCopySource(rvalue, place.type)) {
             copyPlaceValue(projectionPlace(rvalue), place);
+            destination.markConstructed;
             return true;
         }
 

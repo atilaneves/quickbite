@@ -20,6 +20,8 @@ private:
 // frame, not an address of its own.
 public struct FrameLayout {
     import dmd.declaration: VarDeclaration;
+    import dmd.expression: Expression;
+    import dmd.mtype: Type;
 
     public static struct Slot {
         public enum Kind { owning, reference }
@@ -29,7 +31,17 @@ public struct FrameLayout {
         public Kind kind = Kind.owning;
     }
 
+    // A typed, owning temporary slot. The expression identity is the key
+    // because one syntactic address-taking operation needs one stable slot
+    // per activation; recursive and callback re-entry get a different
+    // activation and therefore a different address.
+    public static struct Temporary {
+        public Slot slot;
+        public Type type;
+    }
+
     private Slot[VarDeclaration] _slots;
+    private Temporary[const(Expression)*] _temporaries;
     private size_t _byteLength;
 
     public bool has(VarDeclaration variable) const pure nothrow @safe {
@@ -50,6 +62,21 @@ public struct FrameLayout {
     public const(Slot[VarDeclaration]) slots() const pure nothrow @safe {
         return _slots;
     }
+
+    // @trusted: the DMD expression object is the stable identity the layout
+    // walker stored; this only converts its class reference to that key.
+    public bool hasTemporary(Expression expression) const pure nothrow @trusted {
+        return (cast(const(Expression)*) expression in _temporaries) !is null;
+    }
+
+    // @trusted: see `hasTemporary`; this only looks up the same identity key.
+    public const(Temporary) temporary(Expression expression) const @trusted {
+        return _temporaries[cast(const(Expression)*) expression];
+    }
+
+    public const(Temporary[const(Expression)*]) temporaries() const pure nothrow @safe {
+        return _temporaries;
+    }
 }
 
 
@@ -61,8 +88,11 @@ public struct FrameLayout {
 // in-sync copies of it.
 private struct FramePacker {
     import dmd.declaration: VarDeclaration;
+    import dmd.expression: Expression;
+    import dmd.mtype: Type;
 
     FrameLayout.Slot[VarDeclaration] slots;
+    FrameLayout.Temporary[const(Expression)*] temporaries;
     size_t cursor;
     size_t maxAlignment = 1;
 
@@ -90,8 +120,28 @@ private struct FramePacker {
         place(variable, typeByteSize(type), typeAlignment(type), FrameLayout.Slot.Kind.owning);
     }
 
+    // @trusted: the expression reference is used only as the stable map key.
+    void placeTemporary(Expression expression, Type type) @trusted {
+        import quickbite.backends.interpreter.layout: typeAlignment, typeByteSize;
+
+        const key = cast(const(Expression)*) expression;
+        if (key in temporaries)
+            return;
+
+        cursor = alignedUp(cursor, typeAlignment(type));
+        auto slot = FrameLayout.Slot(
+            cursor,
+            typeByteSize(type),
+            FrameLayout.Slot.Kind.owning,
+        );
+        temporaries[key] = FrameLayout.Temporary(slot, type);
+        cursor += slot.size;
+        if (typeAlignment(type) > maxAlignment)
+            maxAlignment = typeAlignment(type);
+    }
+
     FrameLayout finish() @safe {
-        return FrameLayout(slots, alignedUp(cursor, maxAlignment));
+        return FrameLayout(slots, temporaries, alignedUp(cursor, maxAlignment));
     }
 }
 
@@ -200,6 +250,9 @@ public FrameLayout computeFrameLayout(
     foreach (variable; bodyLocals(function_.fbody))
         placeLocal(packer, variable);
 
+    foreach (expression; addressableTemporaryExpressions(function_.fbody))
+        placeTemporary(packer, expression);
+
     return packer.finish();
 }
 
@@ -227,7 +280,133 @@ public FrameLayout computeExpressionFrameLayout(
     foreach (variable; expressionLocals(expression))
         placeLocal(packer, variable);
 
+    foreach (temporary; addressableTemporaryExpressions(expression))
+        placeTemporary(packer, temporary);
+
     return packer.finish();
+}
+
+
+// The Interpreter needs a typed temporary only for an address of a by-value
+// call result or of a symbolic class-info projection. The latter has no
+// composable native place, while an ordinary dot expression composes its
+// address from its receiver. The same expression reuses its slot after each
+// full-expression boundary; it is never live twice in one activation.
+private imported!"dmd.expression".Expression[] addressableTemporaryExpressions(
+    imported!"dmd.statement".Statement statement,
+) @trusted {
+    import dmd.declaration: VarDeclaration;
+    import dmd.expression: Expression;
+    import dmd.visitor.foreachvar: foreachExpAndVar;
+
+    Expression[] expressions;
+    void append(Expression expression) {
+        expressions ~= addressableTemporaryExpressions(expression);
+    }
+    void ignoreVariable(VarDeclaration) {
+    }
+
+    statement.foreachExpAndVar(&append, &ignoreVariable);
+    return expressions;
+}
+
+
+private imported!"dmd.expression".Expression[] addressableTemporaryExpressions(
+    imported!"dmd.expression".Expression expression,
+) @safe {
+    return addressableTemporaryExpressionsImpl(expression);
+}
+
+
+private imported!"dmd.expression".Expression[] addressableTemporaryExpressionsImpl(
+    imported!"dmd.expression".Expression expression,
+) @trusted {
+    import dmd.dsymbolsem: toAlias;
+    import dmd.expression: AddrExp, DeclarationExp, DotVarExp, Expression;
+    import quickbite.backends.interpreter.class_info_projection:
+        isSymbolicClassInfoProjection;
+    import dmd.visitor: StoppableVisitor;
+    import dmd.visitor.postorder: walkPostorder;
+
+    Expression[] expressions;
+    bool[const(Expression)*] seen;
+    void append(Expression expression) {
+        if (expression is null || cast(const(Expression)*) expression in seen)
+            return;
+        if (expression.type is null)
+            return;
+        seen[cast(const(Expression)*) expression] = true;
+        expressions ~= expression;
+    }
+
+    extern (C++) final class AddressableTemporaryFinder: StoppableVisitor {
+        alias visit = typeof(super).visit;
+        extern (D) void delegate(Expression) append;
+
+        extern (D) this(scope void delegate(Expression) append) scope @trusted {
+            this.append = append;
+        }
+
+        override void visit(Expression expression) {
+        }
+
+        // The only by-value call-result address path is `AddrExp(CallExp)`.
+        // A call that remains an rvalue needs no durable frame storage, even
+        // when it sits in a branch that this activation never executes.
+        override void visit(AddrExp address) {
+            auto call = address.e1.isCallExp;
+            if (call is null)
+                return;
+
+            auto function_ = call.f;
+            auto type = function_ is null ? null : function_.type.isTypeFunction;
+            if (type !is null && !type.isRef)
+                append(call);
+        }
+
+        override void visit(DotVarExp dot) {
+            if (isSymbolicClassInfoProjection(dot))
+                append(dot);
+        }
+
+        // `walkPostorder` does not descend into a declaration initializer.
+        // A lowered `foreach (ref value; range)` stores its by-value `front`
+        // call in exactly such an initializer, so visit it explicitly.
+        override void visit(DeclarationExp declaration) {
+            auto variable = declaration.declaration.isVarDeclaration;
+            if (variable is null || variable.toAlias !is variable ||
+                variable.isStatic || variable._init is null)
+                return;
+            auto initializer = variable._init.isExpInitializer;
+            if (initializer !is null)
+                walkPostorder(initializer.exp, this);
+        }
+    }
+
+    scope finder = new AddressableTemporaryFinder(&append);
+    walkPostorder(expression, finder);
+    return expressions;
+}
+
+
+private void placeTemporary(
+    ref FramePacker packer,
+    imported!"dmd.expression".Expression expression,
+) @trusted {
+    import quickbite.backends.interpreter.layout: typeAlignment, typeIsSized;
+
+    auto type = expressionType(expression);
+    if (!typeIsSized(type) || typeAlignment(type) == 0)
+        return;
+
+    packer.placeTemporary(expression, type);
+}
+
+
+private imported!"dmd.mtype".Type expressionType(
+    imported!"dmd.expression".Expression expression,
+) @trusted {
+    return expression.type;
 }
 
 
