@@ -8599,6 +8599,29 @@ unsupportedExpression:
         imported!"dmd.expression".Expression rhs,
     ) {
         auto destination = directWriteProjectionPlace(target);
+
+        // An assignment first evaluates its live place, then completes the
+        // RHS in separate fresh storage. Only the complete typed value moves
+        // into the live place. DMD has already made any required conversion,
+        // postblit, or destructor action explicit around this assignment, so
+        // this is the ordinary representation-preserving move itself.
+        if (
+            target.type !is null &&
+            rhs.type !is null &&
+            target.type.toBasetype.equals(rhs.type.toBasetype)
+        ) {
+            import quickbite.backends.interpreter.place: Place;
+
+            auto temporary = ConstructionDestination(Place(
+                _activationFrame.temporaryAddress(rhs),
+                rhs.type,
+            ));
+            runExpression(rhs, temporary);
+            copyPlaceValue(temporary.place, destination);
+            clearProjectionRootUninitialized(target);
+            return readStoredValue(destination);
+        }
+
         // Mutable because function literal construction expects DMD's
         // mutable AST node even though this helper does not modify it.
         auto literal = rhs.isFuncExp;
