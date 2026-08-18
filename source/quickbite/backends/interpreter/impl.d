@@ -3493,16 +3493,19 @@ unsupportedExpression:
         // builds for `&field[0]`.
         if (auto dot = e1.isDotVarExp) {
             import quickbite.frontend.dmd.types: isStaticArrayType;
+            import quickbite.backends.interpreter.class_info_projection:
+                isSymbolicClassInfoProjection;
 
             // `classinfo` resolves symbolically on this backend: no native
             // `TypeInfo_Class` body exists, so composing a field address
             // through it would dereference the receiver's own leading field
             // bytes as a metadata pointer. `x.classinfo.name` reaches here
             // as a `ref` argument because a `TypeInfo` field is an lvalue;
-            // give the evaluated value one ordinary retained temporary,
-            // exactly as a by-value call result bound by reference gets.
+            // write the evaluated value into this activation's typed
+            // temporary, exactly as a by-value call result bound by
+            // reference does.
             if (isSymbolicClassInfoProjection(dot))
-                return addressOfTemporaryValue(dot.type, runExpression(dot));
+                return addressOfTemporaryValue(dot, runExpression(dot));
 
             if (isStaticArrayType(dot.type))
                 return arrayPointer(dot, 0, op);
@@ -3666,79 +3669,6 @@ unsupportedExpression:
             );
 
         return arrayPointer(index, 0, op, true /* selfAddress */);
-    }
-
-    // Whether `dot.var` is DMD's synthetic `.classinfo` property rather than
-    // a real declared field that merely shares the name (`struct S { int
-    // classinfo; }`, or a hypothetical class field). The synthetic property
-    // itself never reaches here as a `DotVarExp`: `TypeClass.dotExp`
-    // (typesem.d) only falls back to `Id.classinfo` handling once a member
-    // search for that name comes up empty, and that fallback lowers
-    // `x.classinfo` straight to a vtbl `PtrExp` (or an `AddrExp` of the
-    // static `TypeInfoClassDeclaration` for `Type.classinfo`) -- never a
-    // `DotVarExp`. So a `DotVarExp` whose member is literally named
-    // "classinfo" can only be a real field; requiring the receiver to be
-    // class-typed *and* the resolved member to not be a real instance field
-    // keeps this predicate inert for genuine field reads (both here and in
-    // `runDotVarExpression`, which shares it) while staying correct if a
-    // synthetic shape like this were ever produced. Reading `e1`/`var` is
-    // not `@safe`; this only follows existing AST links.
-    private static bool isSyntheticClassInfoMember(
-        imported!"dmd.expression".DotVarExp dot,
-    ) @trusted {
-        if (declarationName(dot.var) != "classinfo")
-            return false;
-        if (dot.e1.type is null || dot.e1.type.toBasetype.isTypeClass is null)
-            return false;
-        auto variable = dot.var.isVarDeclaration;
-        return variable is null || !variable.isField;
-    }
-
-    // Whether `dot.var` is `TypeInfo_Class.name` read off the vtable-derived
-    // `.classinfo` pointer (`x.classinfo.name`), identified by the pointer's
-    // static type being exactly `ClassInfo`/`TypeInfo_Class` -- not merely
-    // "some class type". A user field literally named `name`, reached
-    // through an unrelated class-typed pointer dereference (`(*pc).name`),
-    // produces the same `PtrExp` receiver shape but a different static
-    // type, so checking type identity (rather than "is a class") keeps that
-    // case off this symbolic path, both here and in `runDotVarExpression`.
-    private static bool isClassInfoNamePointerMember(
-        imported!"dmd.expression".DotVarExp dot,
-    ) @trusted {
-        import dmd.mtype: Type;
-
-        if (declarationName(dot.var) != "name")
-            return false;
-        auto pointer = dot.e1.isPtrExp;
-        if (pointer is null || pointer.type is null)
-            return false;
-        auto classType = pointer.type.toBasetype.isTypeClass;
-        return classType !is null && classType.sym is Type.typeinfoclass;
-    }
-
-    // Whether `dot`'s field-access spine reads `classinfo` at some level, in
-    // any shape DMD produces for it -- the synthetic member itself
-    // (`x.classinfo`, also as the receiver of `x.classinfo.name`), the
-    // lowered vtable load (`name` off a class-typed dereference), or the
-    // constant-folded static form (`name` off a `TypeInfo` symbol offset).
-    // These are exactly the receivers `runDotVarExpression` answers
-    // symbolically, so no native place exists behind them. Reading `e1` is
-    // not `@safe`; this only follows existing AST links.
-    private static bool isSymbolicClassInfoProjection(
-        imported!"dmd.expression".DotVarExp dot,
-    ) @trusted {
-        for (auto current = dot; current !is null; current = current.e1.isDotVarExp) {
-            if (isSyntheticClassInfoMember(current))
-                return true;
-            if (isClassInfoNamePointerMember(current))
-                return true;
-            if (declarationName(current.var) != "name")
-                continue;
-            if (auto symbol = current.e1.isSymOffExp)
-                if (symbolOffsetTypeInfoType(symbol) !is null)
-                    return true;
-        }
-        return false;
     }
 
     // The address of a ref return's lvalue, evaluated in the returning
@@ -4080,29 +4010,23 @@ unsupportedExpression:
     private ExpressionResult addressOfCallResultTemporary(
         imported!"dmd.expression".CallExp call,
     ) {
-        return addressOfTemporaryValue(call.type, runCallExpression(call));
+        return addressOfTemporaryValue(call, runCallExpression(call));
     }
 
     // The address of an evaluated value with no composable native place: one
-    // ordinary typed temporary, retained for the enclosing expression. A
-    // reference slot that stores this address is conservatively scanned and
-    // stays the durable root beyond that expression, the same lifetime
-    // contract `bindSyntheticReferenceSlot` states for its own temporary.
+    // ordinary typed temporary in this activation's frame. A reference slot
+    // that stores this address is conservatively scanned and stays the durable
+    // root beyond that expression, the same lifetime contract
+    // `bindSyntheticReferenceSlot` states for its own temporary.
     private ExpressionResult addressOfTemporaryValue(
-        imported!"dmd.mtype".Type type,
+        imported!"dmd.expression".Expression expression,
         in ExpressionResult value,
     ) {
-        import quickbite.backends.interpreter.layout:
-            typeByteSize, typeHasPointers;
         import quickbite.backends.interpreter.place: Place;
 
-        const scan = typeHasPointers(type)
-            ? NativeBlock.Scan.conservative
-            : NativeBlock.Scan.no;
-        auto temporary = NativeBlock.allocate(typeByteSize(type), scan);
-        writeStoredValue(Place(temporary.address, type), value);
-        retainTemporaryPointerOwner(temporary);
-        return ExpressionResult.pointerValue(temporary.address);
+        auto temporary = _activationFrame.temporaryAddress(expression);
+        writeStoredValue(Place(temporary, expression.type), value);
+        return ExpressionResult.pointerValue(temporary);
     }
 
     // Forks execution metadata. Binding storage is never copied: each child
@@ -7891,6 +7815,9 @@ unsupportedExpression:
     }
 
     private ExpressionResult runDotVarExpression(imported!"dmd.expression".DotVarExp dot) {
+        import quickbite.backends.interpreter.class_info_projection:
+            isClassInfoNamePointerMember,
+            isSyntheticClassInfoMember;
         import quickbite.backends.interpreter.messages: receiverName;
         import std.conv: text;
 

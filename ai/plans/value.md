@@ -746,11 +746,18 @@ timings follow `overview.md`'s measurement contract.
 
 ### Item 8 — Destination-passing construction
 
-Decision 19's addressable temporaries: implement per-activation typed frame
-offsets first, measure against the gate-corpus baseline (`overview.md`'s
-measurement contract), and fall back to segmented scratch only if that
-measurement justifies it. This slice owns the storage choice and the
-construction-state encoding.
+Addressable-temporary storage uses typed activation-frame slots only for
+syntactically address-taken call results and
+symbolic `classinfo` projections. A lowering that reaches address-taking
+without that parent expression context obtains a typed, conservatively-scanned,
+activation-owned block lazily. Thus an unexecuted call or field expression
+does not enlarge every activation. The gate-corpus measurement did not justify
+segmented scratch; do not introduce it without a new measurement that does.
+
+The remaining part of this item is the construction-state encoding and routing
+rvalue construction into caller-provided destinations. This storage contract
+must be reused; it is not a reason to recreate per-expression
+temporary blocks or broad AST-keyed frame reservations.
 
 ### Item 9 — Assignment through construction
 

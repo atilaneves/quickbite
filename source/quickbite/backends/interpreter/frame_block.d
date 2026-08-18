@@ -13,9 +13,11 @@ public struct FrameBlock {
     import quickbite.backends.interpreter.native_block: NativeBlock;
     import quickbite.backends.interpreter.frame_layout: FrameLayout;
     import dmd.declaration: VarDeclaration;
+    import dmd.expression: Expression;
 
     private NativeBlock _block;
     private FrameLayout _layout;
+    private NativeBlock[const(Expression)*] _dynamicTemporaries;
 
     // Allocates one block of `layout.byteLength` bytes. The scan policy is
     // `NativeBlock.Scan.conservative` if any slotted local's type carries
@@ -49,6 +51,32 @@ public struct FrameBlock {
     public void* slotAddress(VarDeclaration variable) @trusted
     in (_layout.has(variable), "variable has no frame slot") {
         return _block.address + _layout[variable].offset;
+    }
+
+    // The stable storage for one addressable expression temporary in this
+    // activation. Known address-taking forms use their packed frame slot.
+    // A lowering that reaches the same runtime path without preserving that
+    // context in the layout walk allocates a typed block only when executed;
+    // the activation owns that block for the binding's whole lifetime.
+    public void* temporaryAddress(Expression expression) @trusted {
+        import quickbite.backends.interpreter.layout:
+            typeByteSize, typeHasPointers;
+
+        if (_layout.hasTemporary(expression))
+            return _block.address + _layout.temporary(expression).slot.offset;
+
+        const key = cast(const(Expression)*) expression;
+        if (auto existing = key in _dynamicTemporaries)
+            return existing.address;
+
+        const scan = typeHasPointers(expression.type)
+            ? NativeBlock.Scan.conservative
+            : NativeBlock.Scan.no;
+        _dynamicTemporaries[key] = NativeBlock.allocate(
+            typeByteSize(expression.type),
+            scan,
+        );
+        return _dynamicTemporaries[key].address;
     }
 
     // `variable`'s slot offset from this block's own base address, i.e.
@@ -178,9 +206,11 @@ public struct FrameBlock {
 // REFERENCE slot always does -- what it holds IS an address, regardless of
 // the parameter's own declared type -- and an OWNING slot does exactly
 // when its own declared type does (unchanged).
+// @trusted: temporary type handles come from the same live DMD arena as the
+// layout. The const cast only passes that read-only handle to DMD's query.
 private bool frameHasPointers(
     imported!"quickbite.backends.interpreter.frame_layout".FrameLayout layout,
-) @safe {
+) @trusted {
     import quickbite.backends.interpreter.frame_layout: FrameLayout;
     import quickbite.backends.interpreter.layout: typeHasPointers, declaredType;
 
@@ -190,6 +220,10 @@ private bool frameHasPointers(
         if (typeHasPointers(declaredType(variable)))
             return true;
     }
+
+    foreach (key, temporary; layout.temporaries)
+        if (typeHasPointers(cast(imported!"dmd.mtype".Type) temporary.type))
+            return true;
 
     return false;
 }
