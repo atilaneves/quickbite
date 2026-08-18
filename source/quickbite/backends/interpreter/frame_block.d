@@ -17,6 +17,7 @@ public struct FrameBlock {
 
     private NativeBlock _block;
     private FrameLayout _layout;
+    private NativeBlock[const(Expression)*] _dynamicTemporaries;
 
     // Allocates one block of `layout.byteLength` bytes. The scan policy is
     // `NativeBlock.Scan.conservative` if any slotted local's type carries
@@ -53,11 +54,29 @@ public struct FrameBlock {
     }
 
     // The stable storage for one addressable expression temporary in this
-    // activation. Its offset comes from the layout pass, so it is within the
-    // same conservatively-scanned block as the activation's local bindings.
-    public void* temporaryAddress(Expression expression) @trusted
-    in (_layout.hasTemporary(expression), "expression has no frame temporary") {
-        return _block.address + _layout.temporary(expression).slot.offset;
+    // activation. Known address-taking forms use their packed frame slot.
+    // A lowering that reaches the same runtime path without preserving that
+    // context in the layout walk allocates a typed block only when executed;
+    // the activation owns that block for the binding's whole lifetime.
+    public void* temporaryAddress(Expression expression) @trusted {
+        import quickbite.backends.interpreter.layout:
+            typeByteSize, typeHasPointers;
+
+        if (_layout.hasTemporary(expression))
+            return _block.address + _layout.temporary(expression).slot.offset;
+
+        const key = cast(const(Expression)*) expression;
+        if (auto existing = key in _dynamicTemporaries)
+            return existing.address;
+
+        const scan = typeHasPointers(expression.type)
+            ? NativeBlock.Scan.conservative
+            : NativeBlock.Scan.no;
+        _dynamicTemporaries[key] = NativeBlock.allocate(
+            typeByteSize(expression.type),
+            scan,
+        );
+        return _dynamicTemporaries[key].address;
     }
 
     // `variable`'s slot offset from this block's own base address, i.e.

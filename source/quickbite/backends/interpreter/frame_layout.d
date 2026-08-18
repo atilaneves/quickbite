@@ -322,7 +322,7 @@ private imported!"dmd.expression".Expression[] addressableTemporaryExpressionsIm
     imported!"dmd.expression".Expression expression,
 ) @trusted {
     import dmd.dsymbolsem: toAlias;
-    import dmd.expression: CallExp, DeclarationExp, DotVarExp, Expression;
+    import dmd.expression: AddrExp, DeclarationExp, DotVarExp, Expression;
     import quickbite.backends.interpreter.class_info_projection:
         isSymbolicClassInfoProjection;
     import dmd.visitor: StoppableVisitor;
@@ -350,7 +350,14 @@ private imported!"dmd.expression".Expression[] addressableTemporaryExpressionsIm
         override void visit(Expression expression) {
         }
 
-        override void visit(CallExp call) {
+        // The only by-value call-result address path is `AddrExp(CallExp)`.
+        // A call that remains an rvalue needs no durable frame storage, even
+        // when it sits in a branch that this activation never executes.
+        override void visit(AddrExp address) {
+            auto call = address.e1.isCallExp;
+            if (call is null)
+                return;
+
             auto function_ = call.f;
             auto type = function_ is null ? null : function_.type.isTypeFunction;
             if (type !is null && !type.isRef)
