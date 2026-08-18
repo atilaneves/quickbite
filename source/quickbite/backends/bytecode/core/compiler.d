@@ -34,7 +34,7 @@ private struct Compiler {
         AssertDiagnostic, CatchClause, ClassInfo, CompiledFunction,
         Instruction, NativeCall, Op, Program,
         ResultType, ScalarType, StructDisplayField,
-        VirtualFunction, appendElementOp, concatArraysOp, dupArrayOp,
+        VirtualFunction, concatArraysOp, dupArrayOp,
         indexLoadOp, indexStoreOp, isSigned,
         nativeArgumentSlotSize, noCatchObjectField, noExceptionClass,
         noReceiverOffset, pointerLoadOp, pointerSliceOp, pointerStoreOp,
@@ -2754,12 +2754,16 @@ private struct Compiler {
 
         // `arr ~= x` (append element) arrives as a CatElemAssignExp (op
         // `concatenateElemAssign`); whole-array `arr ~= other` arrives as the
-        // distinct CatAssignExp (`concatenateAssign`).
+        // distinct CatAssignExp (`concatenateAssign`). Both carry a frontend
+        // lowering to `_d_arrayappendcTX`/`_d_arrayappendT`; compile that
+        // instead of hand-rolled append machinery. `CatDcharAssignExp`
+        // (`concatenateDcharAssign`) is a distinct EXP tag excluded by these
+        // checks; it stays un-lowered by design.
         if (auto append = expression.isCatElemAssignExp)
-            return compileAppendElement(append);
+            return compileExpression(append.lowering);
 
         if (auto concatenate = expression.isCatAssignExp)
-            return compileConcatenationAssign(concatenate);
+            return compileExpression(concatenate.lowering);
 
         if (auto equal = expression.isEqualExp)
             return compileEqualExpression(equal);
@@ -3988,6 +3992,44 @@ private struct Compiler {
                 "Unsupported dynamic array access in bytecode core: ",
                 expressionChars(expression),
             ));
+
+        // `cast(T2[])x`: `placeOrNull` unwraps a cast transparently and
+        // resolves the INNER expression's own place (e.g. `x` itself an
+        // lvalue, or a pointer slice like `ptr[0 .. n]`), bypassing the
+        // cast, so an element-size-changing reinterpretation (`void[]` from
+        // `int[]`, the shape `gc_shrinkArrayUsed(ptr[0 .. n], ...)`'s
+        // implicit argument conversion takes) needs its own rescale here --
+        // the same one `compileCastExpression`/`compileDynamicArrayInto`
+        // apply when no place is available.
+        if (auto cast_ = expression.isCastExp)
+            if (isDynamicArrayArgument(cast_.e1) ||
+                isStringType(cast_.e1.type)) {
+                const inner = dynamicArrayDescriptor(cast_.e1);
+                const elementIsArray = arrayElementIsArray(expression.type);
+                const elementType = dynamicArrayElementType(expression.type);
+                const targetElementSize = dynamicArrayElementSize(
+                    expression.type, elementIsArray,
+                );
+                const sourceElementSize = dynamicArrayElementSize(
+                    cast_.e1.type, arrayElementIsArray(cast_.e1.type),
+                );
+                if (targetElementSize == sourceElementSize)
+                    return DynamicArrayLocal(
+                        inner.offset, elementType, elementIsArray,
+                    );
+
+                const offset = allocateBytes(
+                    sliceDescriptorSize, size_t.sizeof,
+                );
+                _code ~= Instruction(
+                    Op.copy, offset, inner.offset,
+                    cast(ushort) sliceDescriptorSize,
+                );
+                rescaleReinterpretedSliceLength(
+                    offset, expression.type, cast_.e1.type,
+                );
+                return DynamicArrayLocal(offset, elementType, elementIsArray);
+            }
 
         const kind = expression.type.toBasetype.ty;
         if (kind == TY.Tsarray) {
@@ -6906,7 +6948,7 @@ private struct Compiler {
                     destination, elementType, cast_.e1, elementIsArray,
                 );
                 rescaleReinterpretedSliceLength(
-                    destination, elementType, elementIsArray, cast_.e1.type,
+                    destination, cast_.to, cast_.e1.type,
                 );
                 return;
             }
@@ -7144,31 +7186,26 @@ private struct Compiler {
     // element-size-changing cast rescales the copied descriptor's element
     // count by the byte-size ratio (`newLength = oldLength * oldElementSize /
     // newElementSize`); the pointer word is untouched. A same-size cast (the
-    // common qualifier-only case, e.g. `const(int)[]` to `int[]`) is a no-op
-    // here. `void` is a real one-byte D array element
-    // (`void.sizeof == 1`), not the bytecode core's "no value" scalar tag, so
-    // it is special-cased rather than routed through `size(ScalarType.void_)`.
-    // Scoped to a plain scalar-element destination; an array-of-arrays or
-    // struct-blob destination (`elementIsArray`, or `elementType == void_`
-    // marking a struct/static-array element) keeps the existing pass-through,
-    // unaffected by this rescale.
+    // common qualifier-only case, e.g. `const(int)[]` to `int[]`) is a no-op.
+    // Both sides go through `dynamicArrayElementSize`, the same helper
+    // `compileCastExpression`'s own element-size comparison uses: it already
+    // gives real `void[]` its one-byte stride and an array-of-arrays element
+    // its whole-descriptor stride, so this does not need to re-derive width
+    // from the `ScalarType` tag, which marks a genuine `void` element and a
+    // struct/static-array element the same way.
     private void rescaleReinterpretedSliceLength(
         in ushort destination,
-        in ScalarType destinationElementType,
-        in bool destinationElementIsArray,
+        Type destinationType,
         Type sourceType,
     ) {
-        import dmd.astenums: TY;
-
-        if (destinationElementIsArray ||
-            destinationElementType == ScalarType.void_)
-            return;
-
-        auto sourceElement = sourceType.toBasetype.nextOf.toBasetype;
-        const sourceElementSize = sourceElement.ty == TY.Tvoid
-            ? 1
-            : dynamicArrayElementSize(sourceType);
-        const destinationElementSize = size(destinationElementType);
+        const destinationElementIsArray = arrayElementIsArray(destinationType);
+        const destinationElementSize = dynamicArrayElementSize(
+            destinationType, destinationElementIsArray,
+        );
+        const sourceElementIsArray = arrayElementIsArray(sourceType);
+        const sourceElementSize = dynamicArrayElementSize(
+            sourceType, sourceElementIsArray,
+        );
         if (sourceElementSize == destinationElementSize)
             return;
 
@@ -7796,9 +7833,7 @@ private struct Compiler {
             _code ~= Instruction(
                 Op.copy, offset, source.offset, cast(ushort) sliceDescriptorSize,
             );
-            rescaleReinterpretedSliceLength(
-                offset, elementType, elementIsArray, cast_.e1.type,
-            );
+            rescaleReinterpretedSliceLength(offset, cast_.to, cast_.e1.type);
             return Operand(offset, ScalarType.void_, false, elementType);
         }
 
@@ -9155,9 +9190,17 @@ private struct Compiler {
 
         // `arr.length = n`: resize the array in place, preserving existing
         // elements and zero-filling growth. Detected by the ArrayLengthExp
-        // lvalue (DMD wraps this in a LoweredAssignExp), not a druntime name.
-        if (auto length = assign.e1.isArrayLengthExp)
-            return compileArrayLengthAssign(length, assign.e2);
+        // lvalue (DMD wraps this in a LoweredAssignExp carrying the
+        // `_d_arraysetlengthT` call in `.lowering`), not a druntime name.
+        if (assign.e1.isArrayLengthExp !is null) {
+            auto lowered = assign.isLoweredAssignExp;
+            if (lowered is null || lowered.lowering is null)
+                throw new Exception(text(
+                    "Unsupported array-length assignment in bytecode core: ",
+                    expressionChars(assign),
+                ));
+            return compileExpression(lowered.lowering);
+        }
 
         auto place = placeOrNull(assign.e1);
         if (place is null)
@@ -10128,134 +10171,6 @@ private struct Compiler {
 
         _program.moduleData.length = end;
         return cast(ushort) offset;
-    }
-
-    private Operand compileArrayLengthAssign(
-        ArrayLengthExp length,
-        Expression newLength,
-    ) {
-        import dmd.astenums: TY;
-        import dmd.typesem: defaultInitLiteral;
-
-        auto destination = dynamicArrayMutationPlace(length.e1);
-        const lengthValue = compileExpression(newLength);
-        const descriptor = loadDynamicArrayPlace(*destination, length.e1.type);
-        const lengthSlot = allocate(ScalarType.ulong_);
-        _code ~= Instruction(
-            Op.copy,
-            lengthSlot,
-            lengthValue.offset,
-            cast(ushort) size(lengthValue.type),
-        );
-        auto element = length.e1.type.toBasetype.nextOf;
-        if (element.toBasetype.ty == TY.Tstruct) {
-            const elementSize = typeFacts(element).byteWidth;
-            const initBlock = allocateBytes(
-                elementSize, typeFacts(element).alignment,
-            );
-            zeroFrameBlock(initBlock, elementSize);
-            auto literal = element.toBasetype.isTypeStruct.defaultInitLiteral(
-                length.loc,
-            ).isStructLiteralExp;
-            if (literal is null)
-                throw new Exception("Unsupported struct array default initializer in bytecode core.");
-            compileStructLiteralInto(initBlock, literal);
-            _code ~= Instruction(
-                Op.setArrayLengthFromTemplate,
-                descriptor.offset,
-                initBlock,
-                lengthSlot,
-                cast(ushort) elementSize,
-            );
-            storeDynamicArrayPlace(*destination, descriptor);
-            return Operand(lengthSlot, ScalarType.ulong_);
-        }
-
-        _code ~= Instruction(
-            Op.setArrayLength,
-            descriptor.offset,
-            packedFill(
-                descriptor.elementType,
-                dynamicArrayElementSize(length.e1.type),
-            ),
-            lengthSlot,
-        );
-        storeDynamicArrayPlace(*destination, descriptor);
-        return Operand(lengthSlot, ScalarType.ulong_);
-    }
-
-    private Operand compileAppendElement(CatElemAssignExp append) {
-        auto destination = dynamicArrayMutationPlace(append.e1);
-
-        // `outer ~= row` where `outer`'s element is itself an array
-        // (`int[][]`/`int[N][]`): the appended row needs its own heap-backed
-        // sub-array and 16-byte descriptor, the same shape an array-of-arrays
-        // literal builds for each of its elements (`compileDynamicArrayInto`'s
-        // `elementIsArray` branch), not the flat scalar/struct byte layout --
-        // `outer[i]` always reads a stored element as a descriptor to
-        // dereference.
-        if (arrayElementIsArray(append.e1.type)) {
-            const inner = allocateBytes(sliceDescriptorSize, size_t.sizeof);
-            const elementType = dynamicArrayElementType(append.e1.type);
-            compileDynamicArrayInto(inner, elementType, append.e2);
-            const descriptor = loadDynamicArrayPlace(
-                *destination, append.e1.type,
-            );
-            emitAppendElement(descriptor.offset, inner, sliceDescriptorSize);
-            storeDynamicArrayPlace(*destination, descriptor);
-            return Operand(descriptor.offset, descriptor.elementType);
-        }
-
-        const value = compileExpression(append.e2);
-        const descriptor = loadDynamicArrayPlace(*destination, append.e1.type);
-        const elementSize = dynamicArrayElementSize(append.e1.type);
-        emitAppendElement(descriptor.offset, value.offset, elementSize);
-        storeDynamicArrayPlace(*destination, descriptor);
-        return Operand(descriptor.offset, descriptor.elementType);
-    }
-
-    // `arr ~= other`: concatenate both array descriptors into fresh backing
-    // memory, then overwrite the resolved destination's descriptor.
-    private Operand compileConcatenationAssign(CatAssignExp concatenate) {
-        auto destination = dynamicArrayMutationPlace(concatenate.e1);
-        const elementType = dynamicArrayElementType(concatenate.e1.type);
-        const elementIsArray = arrayElementIsArray(concatenate.e1.type);
-        const right = dynamicArrayDescriptor(concatenate.e2).offset;
-        const descriptor = loadDynamicArrayPlace(
-            *destination, concatenate.e1.type,
-        );
-        const elementSize = dynamicArrayElementSize(
-            concatenate.e1.type, elementIsArray,
-        );
-        emitConcatArrays(
-            descriptor.offset, descriptor.offset, right, elementSize,
-        );
-        storeDynamicArrayPlace(*destination, descriptor);
-        return Operand(descriptor.offset, descriptor.elementType);
-    }
-
-    private Place* dynamicArrayMutationPlace(Expression expression) {
-        import std.conv: text;
-
-        auto place = placeOrNull(expression);
-        if (place is null)
-            throw new Exception(text(
-                "Unsupported dynamic array mutation in bytecode core: ",
-                expressionChars(expression),
-            ));
-        return place;
-    }
-
-    private DynamicArrayLocal loadDynamicArrayPlace(
-        Place place,
-        Type type,
-    ) {
-        const descriptor = loadPlace(place);
-        return DynamicArrayLocal(
-            descriptor.offset,
-            dynamicArrayElementType(type),
-            arrayElementIsArray(type),
-        );
     }
 
     private void storeDynamicArrayPlace(
@@ -11594,14 +11509,22 @@ private struct Compiler {
         const returnScalar = isArrayReturn || isStructReturn
             ? ScalarType.void_
             : scalarType(returnType.toBasetype);
-        const destination = isStructReturn
-            ? allocateBytes(
-                returnFacts.byteWidth,
-                returnFacts.alignment,
-            )
-            : isArrayReturn
-                ? allocateBytes(sliceDescriptorSize, size_t.sizeof)
-                : allocate(returnScalar);
+        // A `ref`-returning native function (e.g. `core.stdc.errno.errno`'s
+        // libc-mangled accessor) yields the callee's own storage address, not
+        // a value; the destination slot is a raw pointer, matching a
+        // VM-compiled `ref`-returning call's own result slot.
+        auto functionType = function_.type.toBasetype.isTypeFunction;
+        const returnsRef = functionType !is null && functionType.isRef;
+        const destination = returnsRef
+            ? allocateBytes(cast(uint) size_t.sizeof, size_t.sizeof)
+            : isStructReturn
+                ? allocateBytes(
+                    returnFacts.byteWidth,
+                    returnFacts.alignment,
+                )
+                : isArrayReturn
+                    ? allocateBytes(sliceDescriptorSize, size_t.sizeof)
+                    : allocate(returnScalar);
         const nativeIndex = _program.nativeCalls.length;
         _program.nativeCalls ~=
             NativeCall(
@@ -11618,6 +11541,14 @@ private struct Compiler {
             argumentArea,
             destination,
         );
+        // A `ref` return's address dereferences through `compileExpression`'s
+        // `CallExp` handling (rvalue read) or wraps directly via
+        // `resolvePlace`'s `pointerPlace` (lvalue use), exactly like a
+        // VM-compiled `ref`-returning call's result.
+        if (returnsRef)
+            return new Operand(
+                destination, ScalarType.ulong_, true, returnScalar,
+            );
         // A native-memory pointer return (e.g. `malloc`'s `void*`): mark the
         // operand as a pointer holding a raw host address, matching every
         // other pointer-valued operand's shape, so callers such as
@@ -13898,19 +13829,8 @@ private struct Compiler {
         );
     }
 
-    // The `appendElement*` family's emit helper, the same required-`width`
-    // treatment as `emitSubSlice` above: one opcode per width, and `width`
-    // cannot be omitted or silently defaulted to zero.
-    private void emitAppendElement(
-        in ushort array, in ushort element, in uint width,
-    ) @safe pure {
-        _code ~= Instruction(
-            appendElementOp(width), array, element, cast(ushort) width,
-        );
-    }
-
     // The `dupArray*` family's emit helper, the same required-`width`
-    // treatment as `emitAppendElement` above: one opcode per width, and
+    // treatment as `emitSubSlice` above: one opcode per width, and
     // `width` cannot be omitted or silently defaulted to zero.
     private void emitDupArray(
         in ushort destination, in ushort source, in uint width,
@@ -14622,13 +14542,12 @@ private struct Compiler {
     // do, stopping as soon as a level's element is not itself a `Tarray` --
     // a `Tsarray` element (e.g. `int[2][]`) still counts as one nested
     // level (matching this function's own one-level gate for that case) but
-    // does not extend the walk further: `compileAppendElement` heap-boxes a
-    // `Tsarray` row behind its own 16-byte slice descriptor just like a
-    // `Tarray` row (this VM's rows are never a raw inline block), so
-    // `Op.sliceEqualNested`'s row-descriptor recursion can unwrap that one
-    // boxed level, but not recurse further into the static array's own
-    // fixed-size interior (see the Tsarray/Tarray decline block in
-    // `tryArrayComparisonAssert`).
+    // does not extend the walk further: a `Tsarray` row is heap-boxed behind
+    // its own 16-byte slice descriptor just like a `Tarray` row (this VM's
+    // rows are never a raw inline block), so `Op.sliceEqualNested`'s
+    // row-descriptor recursion can unwrap that one boxed level, but not
+    // recurse further into the static array's own fixed-size interior (see
+    // the Tsarray/Tarray decline block in `tryArrayComparisonAssert`).
     private uint arrayNestingDepth(Type type) {
         import dmd.astenums: TY;
 

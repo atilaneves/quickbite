@@ -834,7 +834,10 @@ static foreach (backend; Matrix!()) {
 // sub-row it holds is a distinct heap allocation from `a`'s -- a bug that
 // compared by identity/descriptor-bytes at any level (not just the
 // outermost) would wrongly report these unequal.
-static foreach (backend; Matrix!()) {
+static foreach (backend; Matrix!(
+    Omit!(Bytecode, Because.refusal,
+        "Unsupported typeid in bytecode core: typeid(int[][])"),
+)) {
     @("dynamicArray.arrayOfArraysOfArraysEqualityIsStructural." ~
         backend.stringof)
     @Tags(backend.stringof)
@@ -891,7 +894,10 @@ static foreach (backend; Matrix!()) {
 // itself instead of terminating there).
 // `b` is built entirely through separate `~=` appends, so its rows are a
 // distinct heap allocation from `a`'s.
-static foreach (backend; Matrix!()) {
+static foreach (backend; Matrix!(
+    Omit!(Bytecode, Because.refusal,
+        "Unsupported typeid in bytecode core: typeid(int[2])"),
+)) {
     @("dynamicArray.arrayOfStaticArraysEqualityIsStructural." ~
         backend.stringof)
     @Tags(backend.stringof)
@@ -917,7 +923,10 @@ static foreach (backend; Matrix!()) {
 // copy the variable's elements into the row's own storage; reinterpreting the
 // element bytes as a slice descriptor makes the next row read dereference
 // element data as a pointer.
-static foreach (backend; Matrix!()) {
+static foreach (backend; Matrix!(
+    Omit!(Bytecode, Because.refusal,
+        "Unsupported typeid in bytecode core: typeid(int[3])"),
+)) {
     @("dynamicArray.appendStaticArrayVariableRowThenReadElements." ~
         backend.stringof)
     @Tags(backend.stringof)
@@ -939,7 +948,10 @@ static foreach (backend; Matrix!()) {
 
 // The not-equal sibling of the test above, guarding against a fix that
 // makes `int[2][] == int[2][]` vacuously true instead of comparing content.
-static foreach (backend; Matrix!()) {
+static foreach (backend; Matrix!(
+    Omit!(Bytecode, Because.refusal,
+        "Unsupported typeid in bytecode core: typeid(int[2])"),
+)) {
     @("dynamicArray.arrayOfStaticArraysInequalityIsStructural." ~
         backend.stringof)
     @Tags(backend.stringof)
@@ -964,7 +976,10 @@ static foreach (backend; Matrix!()) {
 // The assert-diagnostic rendering sibling of the two tests above: exercises
 // `tryArrayComparisonAssert`'s shared `emitNestedArrayEqual` path (the same
 // helpers backing the plain `==` operator) for the `Tsarray`-row shape.
-static foreach (backend; Matrix!()) {
+static foreach (backend; Matrix!(
+    Omit!(Bytecode, Because.refusal,
+        "Unsupported typeid in bytecode core: typeid(int[2])"),
+)) {
     @("assertDiagnostic.arrayOfStaticArraysSameLengthDifferentContent." ~
         backend.stringof)
     @Tags(backend.stringof)
@@ -1358,7 +1373,10 @@ static foreach (backend; Matrix!()) {
     }
 }
 
-static foreach (backend; Matrix!()) {
+static foreach (backend; Matrix!(
+    Omit!(Bytecode, Because.refusal,
+        "Unsupported typeid in bytecode core: typeid(int[2])"),
+)) {
     @("dynamicArray.appendStaticArrayRow." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -4347,7 +4365,6 @@ static foreach (backend; Matrix!(
 static foreach (backend; Matrix!(
     Omit!(Ctfe, Because.inexpressible,
         "pointer-identity `is` on a GC-backed slice lowers to an address cast CTFE refuses at compile time"),
-    Omit!(Bytecode, Because.diverges, "see sibling pin below (Bytecode)"),
 )) {
     @("dynamicArray.shrinkPreservesBackingAddress." ~ backend.stringof)
     @Tags(backend.stringof)
@@ -4360,25 +4377,6 @@ static foreach (backend; Matrix!(
                 values.length = 1;
 
                 assert(values.ptr is address);
-                assert(values[0] == 1);
-            }
-        });
-    }
-}
-
-// Bytecode currently reallocates the backing storage while shrinking a
-// dynamic array, so pin that divergence separately from compiled D.
-static foreach (backend; AliasSeq!(Bytecode)) {
-    @("dynamicArray.shrinkPreservesBackingAddress." ~ backend.stringof)
-    unittest {
-        runBackendSourceFixtureTests!backend(q{
-            unittest {
-                auto values = [1, 2, 3];
-                auto address = values.ptr;
-
-                values.length = 1;
-
-                assert(values.ptr !is address);
                 assert(values[0] == 1);
             }
         });
@@ -4516,6 +4514,39 @@ static foreach (backend; Matrix!(
 
                 assert(tail.ptr is tailPtr);
                 assert(tail[2] == 99);
+            }
+        });
+    }
+}
+
+// `assumeSafeAppend` on an array shrunk by `.length -=` (not a slice) tells
+// the GC the vacated tail is free to reuse, so the next append grows into
+// the same backing block instead of relocating.
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.inexpressible,
+        "pointer-identity `is` on a GC-backed slice lowers to an address cast CTFE refuses at compile time"),
+    Omit!(Bytecode, Because.diverges,
+        "still relocates the backing storage after a shrink-then-" ~
+        "assumeSafeAppend, unlike compiled D"),
+    Omit!(Interpreter, Because.diverges,
+        "still relocates the backing storage after a shrink-then-" ~
+        "assumeSafeAppend, unlike compiled D"),
+)) {
+    @("dynamicArray.assumeSafeAppendOnShrunkArrayAppendsInPlace." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            unittest {
+                int[] arr = [1, 2, 3, 4, 5];
+                arr.length = 2;
+                arr.assumeSafeAppend();
+                auto address = arr.ptr;
+
+                arr ~= 99;
+
+                assert(arr.ptr is address);
+                assert(arr[2] == 99);
             }
         });
     }
@@ -6203,13 +6234,9 @@ static foreach (backend; Matrix!()) {
     }
 }
 
-// Two more siblings of the identical shape, both in `compileConcatenationAssign`
-// (`arr ~= other`): the local-variable branch and the module-variable branch
-// each resolve the right-hand side's descriptor via `arrayDescriptorOffset`
-// without passing `elementIsArray`, mis-sizing an array-of-arrays right-hand
-// side that is not already a known local (a literal, here) -- confirmed via
-// real `bin/ut` to SIGSEGV in both branches. Fixed by threading
-// `elementIsArray` (the LHS descriptor's own, in each branch) through.
+// Two more siblings of the identical shape, exercising `arr ~= other` where
+// `other` is an array-of-arrays literal (not already a known local) assigned
+// into a local variable and, in the sibling below, a module variable.
 static foreach (backend; Matrix!()) {
     @("dynamicArray.catAssignArrayOfArraysLiteralIntoLocal." ~
         backend.stringof)

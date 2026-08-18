@@ -492,3 +492,79 @@
   value: `object.TypeInfo_Struct.StructFlags` declares `hasPointers = 0x1`
   first, so an unpopulated `m_flags` reads back as `hasPointers` regardless
   of the type's real shape. Assign an explicit value on every branch.
+
+- A `ref`-returning `extern(C)` native call (no D body, e.g. the libc-mangled
+  `core.stdc.errno.errno` accessor) must leave the callee's returned ADDRESS
+  in its destination frame slot, not the dereferenced value. The bytecode
+  core's convention for every `ref`-returning call, native or VM-compiled, is
+  that the destination slot holds a pointer: an rvalue read dereferences it
+  explicitly (`compileExpression`'s `CallExp` handling), an lvalue use wraps
+  it directly (`resolvePlace`'s `pointerPlace`). A native-call bridge that
+  pre-dereferences into a value slot happens to produce the right value for
+  the rvalue case (the explicit deref never runs, since the operand isn't
+  marked as a pointer) while silently corrupting any lvalue use of the same
+  call, writing through whatever value the callee's storage happened to hold
+  rather than its address. Diagnosed via SIGSEGV inside a completely
+  unrelated druntime helper several calls downstream, not at the call site
+  itself.
+
+- `dynamicArrayDescriptor`'s place-backed path (an lvalue array expression)
+  must rescale a wrapping cast's descriptor length the same way its
+  no-place fallback (`compileDynamicArrayInto`) and `compileCastExpression`
+  already do for `cast(T2[])x` where `T2`'s element size differs from `x`'s.
+  `placeOrNull` unwraps a `CastExp` transparently and returns the INNER
+  expression's own place, bypassing the cast entirely, so a `void[]` view of
+  a `T[]` argument (the shape an implicit `T[]` -> `void[]` native-call
+  argument conversion takes, e.g. `gc_shrinkArrayUsed(ptr[0 .. n], ...)`)
+  silently keeps the source's element-count length instead of a byte length.
+  The bug is invisible until something downstream (a real GC `void[]`-used
+  bookkeeping call) trusts the wrong length.
+
+- `rescaleReinterpretedSliceLength` must not gate its rescale on
+  `ScalarType.void_`: that tag marks BOTH a genuine `void` array element
+  (`void.sizeof == 1`, a real one-byte stride needing the same rescale as
+  everything else) and an opaque struct/static-array/nested-array element (no
+  fixed scalar width, handled separately). Deriving element width from
+  `dynamicArrayElementType`'s `ScalarType` conflates the two; deriving it
+  from `dynamicArrayElementSize` (which already special-cases `Tvoid`
+  correctly) does not.
+
+- `Type.vtinfo` populates lazily, the first time dmd's semantic pass
+  processes an actual `typeid` naming that exact type; it is not eagerly
+  populated for every type dmd's runtime library ships a real symbol for.
+  A builtin element type reached only through a synthesised aggregate
+  `TypeInfo`'s own field (never itself the direct operand of a source-level
+  `typeid`) can have a null `vtinfo` even though its real host symbol
+  exists. Forcing population by calling `dmd.typinf.genTypeInfo` directly
+  from a lazily-running backend compiler (outside dmd's normal
+  module-compilation walk) resolved the immediate symbol lookup but
+  corrupted the host process's own GC heap, manifesting as a SIGSEGV far
+  downstream in unrelated code (dmd Scope pooling is not safe to drive this
+  way mid-compilation, or the freshly-synthesised `TypeInfoDeclaration` is
+  not interchangeable with dmd's own runtime-simulated one) -- reverted
+  rather than pursued further; `typeid` of a static/nested array or a
+  delegate element type stays an open bytecode-core gap.
+
+- `tryCompileNativeCall`'s (`compiler.d`) generic argument-compiling loop
+  does not honour a native callee's `ref`/`out` parameter: its fallback
+  branch (`compiler.d:11381`) always calls `emitCallArgument(slot, false,
+  argument)`, which copies the argument's VALUE into a fresh native-call
+  staging slot and never writes that slot's post-call bytes back to the
+  caller's real variable. Confirmed with a minimal repro against the
+  existing `residentMulu` fixture (`arrays.d`,
+  `nativeExternD.muluUsesResidentCompilerArgumentOrder`, itself already
+  Bytecode-omitted, but for an unrelated stale reason -- "no available
+  source code" -- that predates this): pre-set `bool overflow = true;`
+  before a non-overflowing `residentMulu(6, 7, overflow)` call, and
+  `overflow` reads back `true` afterward on Bytecode (should be `false`,
+  confirmed against `SystemLinker`). Any native call reached through the
+  ordinary body-less (`fbody is null`) path with a `ref`/`out` parameter is
+  affected, not just one call site (also confirmed with a `ref byte[]`
+  argument, the shape `_d_arrayappendcd`/`_d_arrayappendwd` need for
+  `CatDcharAssignExp`: appending through it leaves the caller's array
+  descriptor unchanged); a fix belongs in `tryCompileNativeCall`/
+  `emitCallArgument` generically, not at an individual call site. Beware
+  `bin/qb -l`: it starts the REPL after loading, it does not run the
+  loaded file's `unittest` blocks, so a script driving it through `-l`
+  alone proves nothing either way -- confirm through a real `bin/ut`
+  fixture (`runBackendSourceFixtureTests`), as this entry's repro did.

@@ -225,18 +225,6 @@ package(quickbite.backends.bytecode) enum Op: ubyte {
     // index `b` into its first native word, root it in `heap`, and write the raw
     // object pointer into the frame slot at offset `a`.
     allocClass,
-    // Resize the dynamic array whose descriptor is at frame offset a to the
-    // size_t length read from frame offset c (`arr.length = n`). Allocate a fresh
-    // block, copy the `min(oldLength, newLength)` existing elements, fill any
-    // growth with the element's default-init byte, root the block, and overwrite
-    // the descriptor with {newLength, newPtr}. Operand b packs the fill byte
-    // (high 8 bits) and element size (low 8 bits), like allocArrayDynamic.
-    setArrayLength,
-    // Resize the dynamic array whose descriptor is at frame offset a using the
-    // `d`-byte default-init block at frame offset b for each grown element.
-    // The new length is read from frame offset c. Backs `S[].length = n` when
-    // `S.init` is not a uniform byte fill.
-    setArrayLengthFromTemplate,
     // Write a null slice descriptor {length = 0, ptr = 0} to frame offset a.
     nullSlice,
     // Write a native dynamic-array descriptor {c, literalBlocks[b].ptr}
@@ -372,25 +360,6 @@ package(quickbite.backends.bytecode) enum Op: ubyte {
     // `int[][]`, 3 for `int[][][]`, ...); operand e is the innermost (leaf)
     // element byte width (not 16).
     sliceEqualNested,
-    // Append the element at frame offset b to the dynamic-array slice descriptor
-    // at frame offset a: allocate a fresh heap block of (length + 1) elements,
-    // copy the existing elements, write the new element, root the block, and
-    // overwrite the descriptor with {length + 1, newPtr}. Reallocating (rather
-    // than growing in place) matches compiled D, so a slice of an array is not
-    // corrupted by appending to a neighbour. The element size is fixed by the
-    // opcode (1, 2, 4, 8, or 16 bytes), matching the indexLoad/indexStore split.
-    appendElement1,
-    appendElement2, // 2-byte element (wchar): backs `wchar[] ~= w`
-    appendElement4,
-    appendElement8, // 8-byte element: long/double/pointer, or an 8-byte struct
-    appendElement16, // 16-byte descriptor: appending one row to an array
-                      // whose element is itself an array (`int[][]`/
-                      // `int[N][]`), where each row is its own heap-backed
-                      // sub-array addressed by a stored descriptor
-    // Same as `appendElement1`/etc, for an element width not covered by a
-    // fixed opcode (e.g. a struct element wider than 16 bytes): the byte
-    // width is operand c instead of being implied by the opcode.
-    appendElementN,
     // Concatenate the two slice descriptors at frame offsets b and c into a
     // fresh heap block holding all of b's elements followed by all of c's, then
     // write the descriptor {len(b) + len(c), newPtr} to frame offset a. The
@@ -902,58 +871,12 @@ in (op != Op.subSliceN)
     assert(0, "Not a fixed-width subSlice opcode.");
 }
 
-// The `appendElement` family's one op<->width table, the same pattern as
-// `subSliceOpWidths` above (a single opcode per width, since appending one
-// element is a single operation, not a load/store/slice split).
-// compiler.d's `appendElementOp` width->opcode selector and machine.d's
-// element-size Op->width derivation (`appendElementWidth` below) both walk
-// this same table, so the two directions cannot independently drift out of
-// sync.
-private struct AppendElementOpWidth {
-    uint width;
-    Op op;
-}
-
-private immutable AppendElementOpWidth[] appendElementOpWidths = [
-    AppendElementOpWidth(1, Op.appendElement1),
-    AppendElementOpWidth(2, Op.appendElement2),
-    AppendElementOpWidth(4, Op.appendElement4),
-    AppendElementOpWidth(8, Op.appendElement8),
-    AppendElementOpWidth(16, Op.appendElement16),
-];
-
-// The `appendElement`-family width->opcode selector: `width` bytes uses the
-// fixed-width opcode for that width if the table above has one, else the `N`
-// variant (which carries the width in its own `c` operand instead).
-package(quickbite.backends.bytecode) Op appendElementOp(in uint width)
-    @safe @nogc nothrow pure
-{
-    foreach (entry; appendElementOpWidths)
-        if (entry.width == width)
-            return entry.op;
-    return Op.appendElementN;
-}
-
-// The reverse direction: the fixed byte width a fixed-width `appendElement*`
-// opcode operates on. Not valid for `appendElementN`, whose width is a
-// runtime operand rather than implied by the opcode.
-package(quickbite.backends.bytecode) uint appendElementWidth(in Op op)
-    @safe @nogc nothrow pure
-in (op != Op.appendElementN)
-{
-    foreach (entry; appendElementOpWidths)
-        if (entry.op == op)
-            return entry.width;
-    assert(0, "Not a fixed-width appendElement opcode.");
-}
-
 // The `dupArray` family's one op<->width table, the same pattern as
-// `appendElementOpWidths` above (a single opcode per width, since
-// duplicating an array's elements into a fresh heap block is a single
-// operation). compiler.d's `dupArrayOp` width->opcode selector and
-// machine.d's element-size Op->width derivation (`dupArrayWidth` below) both
-// walk this same table, so the two directions cannot independently drift out
-// of sync.
+// `subSliceOpWidths` above (a single opcode per width, since duplicating an
+// array's elements into a fresh heap block is a single operation).
+// compiler.d's `dupArrayOp` width->opcode selector and machine.d's
+// element-size Op->width derivation (`dupArrayWidth` below) both walk this
+// same table, so the two directions cannot independently drift out of sync.
 private struct DupArrayOpWidth {
     uint width;
     Op op;

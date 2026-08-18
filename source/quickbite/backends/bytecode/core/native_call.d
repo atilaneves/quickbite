@@ -23,7 +23,6 @@ private struct NativeInvocation {
     // A ref return yields the referenced address rather than a value; the
     // bridge writes that pointer here and the frame receives what it names.
     public void* reference;
-    public size_t referenceSize;
     public size_t destination;
 
     public bool isComplete() const @safe @nogc nothrow pure {
@@ -67,7 +66,6 @@ private bool prepareNativeInvocation(
 ) {
     import dmd.astenums: TY;
     import dmd.mtype: TypeFunction;
-    import dmd.typesem: size;
     import quickbite.backends.bytecode.core.program: nativeArgumentSlotSize;
     import quickbite.ffi.ffi: TypedAddress, resolveCallable;
 
@@ -122,10 +120,9 @@ private bool prepareNativeInvocation(
     auto returnType = signature.next.toBasetype;
     invocation.destination = destination;
     invocation.returnsRef = signature.isRef;
-    if (invocation.returnsRef) {
-        invocation.referenceSize = cast(size_t) size(returnType);
+    if (invocation.returnsRef)
         invocation.result = TypedAddress(returnType, &invocation.reference);
-    } else if (returnType.ty == TY.Tvoid || returnType.ty == TY.Tnoreturn)
+    else if (returnType.ty == TY.Tvoid || returnType.ty == TY.Tnoreturn)
         invocation.result = TypedAddress(returnType, null);
     else
         invocation.result =
@@ -144,8 +141,14 @@ private bool executeNativeInvocation(ref NativeInvocation invocation) {
     );
 }
 
-// A ref return names storage the callee owns; the frame slot holds the
-// referenced value, so copy exactly the static type's native width.
+// A ref return names storage the callee owns: the frame slot holds the
+// referenced ADDRESS, not its value, mirroring how a VM-compiled callee's own
+// `ref`-returning call leaves an address at its result slot. `compileCall`'s
+// callers dereference through that address for an rvalue read
+// (`compileExpression`'s `CallExp` handling) or wrap it directly as an
+// lvalue (`resolvePlace`'s `pointerPlace`); writing the dereferenced value
+// here instead would satisfy the former by accident while corrupting the
+// latter, since the frame slot must hold a pointer either way.
 private void writeNativeInvocationResult(
     ref NativeInvocation invocation,
     ubyte[] stack,
@@ -156,8 +159,14 @@ private void writeNativeInvocationResult(
         throw new Exception("Native ref return has null address.");
     stack[
         invocation.destination
-        .. invocation.destination + invocation.referenceSize
-    ] = referencedBytes(invocation.reference, invocation.referenceSize);
+        .. invocation.destination + size_t.sizeof
+    ] = pointerBytes(invocation.reference);
+}
+
+// @trusted: reinterprets a pointer value's own bytes, not the memory it
+// addresses.
+private ubyte[size_t.sizeof] pointerBytes(in void* pointer) @trusted {
+    return *cast(const(ubyte[size_t.sizeof])*) &pointer;
 }
 
 // @trusted: the machine reserves the VM stack's capacity up front so growing a
@@ -171,13 +180,4 @@ private void* frameAddress(ubyte[] stack, in size_t offset) @trusted {
 // pointer.
 private const(void)* loadPointer(in void* address) @trusted {
     return *cast(const(void*)*) address;
-}
-
-// @trusted: a native ref return points at storage the callee owns, sized by
-// the signature's return type.
-private const(ubyte)[] referencedBytes(
-    in void* address,
-    in size_t length,
-) @trusted {
-    return (cast(const(ubyte)*) address)[0 .. length];
 }

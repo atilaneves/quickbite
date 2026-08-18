@@ -24,7 +24,7 @@ package(quickbite.backends.bytecode) RunResult run(
 ) {
     import core.exception: RangeError;
     import quickbite.backends.bytecode.core.program:
-        appendElementWidth, CatchClause, ClassInfo,
+        CatchClause, ClassInfo,
         concatArraysWidth, dupArrayWidth, indexElementWidth, Op, ScalarType,
         noCatchObjectField, noExceptionClass,
         pointerElementWidth, size, sliceCopyWidth, sliceDescriptorLengthOffset,
@@ -46,9 +46,6 @@ package(quickbite.backends.bytecode) RunResult run(
     // slices here keeps the memory the slice descriptors point at alive; the
     // descriptors store the raw `block.ptr` as a native pointer.
     ubyte[][] heap;
-    // Blocks whose appendable status entered this run through a native-layout
-    // slice descriptor write. Ordinary VM-owned arrays keep copy-on-append.
-    size_t[] appendablePointers;
     Frame[] frames;
     // Active catch handlers, innermost last. A `pushHandler` records the catch
     // body's location (instruction index plus the frame it runs in); a
@@ -176,28 +173,6 @@ package(quickbite.backends.bytecode) RunResult run(
                     scalarBytes(cast(size_t) instruction.b)[];
                 heap ~= classBlock;
                 writeBlockPointer(stack, base + instruction.a, classBlock);
-                ++ip;
-                break;
-
-            case setArrayLength:
-                heap ~= resizeArray(
-                    stack,
-                    base + instruction.a,
-                    instruction.b & 0xff,
-                    cast(ubyte) (instruction.b >> 8),
-                    scalarValue!size_t(stack, base + instruction.c),
-                );
-                ++ip;
-                break;
-
-            case setArrayLengthFromTemplate:
-                heap ~= resizeArrayWithTemplate(
-                    stack,
-                    base + instruction.a,
-                    base + instruction.b,
-                    instruction.d,
-                    scalarValue!size_t(stack, base + instruction.c),
-                );
                 ++ip;
                 break;
 
@@ -384,22 +359,6 @@ package(quickbite.backends.bytecode) RunResult run(
                     instruction.d,
                     instruction.e,
                 ) ? 1 : 0;
-                ++ip;
-                break;
-
-            case appendElement1, appendElement2, appendElement4, appendElement8,
-                appendElement16, appendElementN:
-                auto appended = appendElement(
-                    stack,
-                    base + instruction.a,
-                    base + instruction.b,
-                    instruction.op == appendElementN
-                        ? instruction.c
-                        : appendElementWidth(instruction.op),
-                    heap,
-                    appendablePointers,
-                );
-                heap ~= appended;
                 ++ip;
                 break;
 
@@ -2454,139 +2413,6 @@ private ubyte[] concatArrays(
     writeSliceDescriptor(
         stack, descriptorOffset, block, leftLength + rightLength,
     );
-    return block;
-}
-
-private extern(C) bool gc_expandArrayUsed(
-    void[] slice,
-    size_t newUsed,
-    bool atomic,
-) pure nothrow;
-
-// Append the element at `elementOffset` to the slice descriptor at
-// `descriptorOffset`. Use druntime's appendable-block bookkeeping first so a
-// prior `reserve` can grow the slice in place; otherwise allocate and copy.
-// `appendablePointers` is keyed by the backing block's base address (from
-// `GC.query`, which resolves an interior pointer to its block), not the
-// descriptor's own pointer, so a later append through an interior slice (e.g.
-// `arr[2 .. $]`) recognises the same block a prior append already proved
-// appendable and grows in place too; `gc_expandArrayUsed` itself (real
-// druntime bookkeeping) still refuses if the slice is not at the block's used
-// boundary. Returns the resulting block so the caller can root it in `heap`.
-private ubyte[] appendElement(
-    ref ubyte[] stack,
-    in size_t descriptorOffset,
-    in size_t elementOffset,
-    in uint elementSize,
-    in ubyte[][] heap,
-    ref size_t[] appendablePointers,
-) @trusted {
-    import core.memory: GC;
-
-    const descriptor = readSliceDescriptor(stack, descriptorOffset);
-    const length = descriptor.length;
-    const pointer = descriptor.pointer;
-    const oldBytes = length * elementSize;
-    const newBytes = (length + 1) * elementSize;
-    const blockInfo = GC.query(cast(void*) pointer);
-    const blockBase = cast(size_t) blockInfo.base;
-    const canGrowInPlace = containsPointer(appendablePointers, blockBase) ||
-        (!heapContainsPointer(heap, pointer) &&
-            (blockInfo.attr & GC.BlkAttr.APPENDABLE) != 0);
-
-    if (pointer != 0 &&
-        canGrowInPlace &&
-        gc_expandArrayUsed(
-            (cast(void*) pointer)[0 .. oldBytes], newBytes, false)) {
-        if (!containsPointer(appendablePointers, blockBase))
-            appendablePointers ~= blockBase;
-        auto block = (cast(ubyte*) pointer)[0 .. newBytes];
-        block[oldBytes .. newBytes] =
-            stack[elementOffset .. elementOffset + elementSize];
-        writeSliceDescriptor(stack, descriptorOffset, block, length + 1);
-        return block;
-    }
-
-    auto block = new ubyte[](newBytes);
-    const source = (cast(const(ubyte)*) pointer)[0 .. oldBytes];
-    block[0 .. oldBytes] = source[];
-    block[oldBytes .. newBytes] =
-        stack[elementOffset .. elementOffset + elementSize];
-
-    writeSliceDescriptor(stack, descriptorOffset, block, length + 1);
-    return block;
-}
-
-private bool heapContainsPointer(in ubyte[][] heap, in size_t pointer)
-    @trusted @nogc nothrow pure
-{
-    foreach (block; heap) {
-        const begin = cast(size_t) block.ptr;
-        if (pointer >= begin && pointer < begin + block.length)
-            return true;
-    }
-    return false;
-}
-
-private bool containsPointer(in size_t[] pointers, in size_t pointer)
-    @safe @nogc nothrow pure
-{
-    foreach (candidate; pointers)
-        if (candidate == pointer)
-            return true;
-    return false;
-}
-
-// Resize the dynamic array at `descriptorOffset` to `newLength` elements
-// (`arr.length = n`). A fresh block is allocated, the `min(oldLength, newLength)`
-// existing elements copied in, and any growth filled with the element's
-// default-init byte; the descriptor is overwritten with {newLength, newPtr}.
-// Returns the new block so the caller can root it in `heap`.
-private ubyte[] resizeArray(
-    ref ubyte[] stack,
-    in size_t descriptorOffset,
-    in uint elementSize,
-    in ubyte fill,
-    in size_t newLength,
-) @trusted {
-    import std.algorithm.comparison: min;
-
-    const descriptor = readSliceDescriptor(stack, descriptorOffset);
-    const oldLength = descriptor.length;
-    const pointer = descriptor.pointer;
-
-    auto block = new ubyte[](newLength * elementSize);
-    block[] = fill;
-    const keptBytes = min(oldLength, newLength) * elementSize;
-    block[0 .. keptBytes] = (cast(const(ubyte)*) pointer)[0 .. keptBytes];
-
-    writeSliceDescriptor(stack, descriptorOffset, block, newLength);
-    return block;
-}
-
-// Resize an array of aggregates whose default initializer is a non-uniform
-// byte block. Existing elements are retained while each newly grown element is
-// copied from the compiler-materialized `T.init` template in the current frame.
-private ubyte[] resizeArrayWithTemplate(
-    ref ubyte[] stack,
-    in size_t descriptorOffset,
-    in size_t templateOffset,
-    in uint elementSize,
-    in size_t newLength,
-) @trusted {
-    import std.algorithm.comparison: min;
-
-    const descriptor = readSliceDescriptor(stack, descriptorOffset);
-    const oldLength = descriptor.length;
-    const pointer = descriptor.pointer;
-    auto block = new ubyte[](newLength * elementSize);
-    const keptBytes = min(oldLength, newLength) * elementSize;
-    block[0 .. keptBytes] = (cast(const(ubyte)*) pointer)[0 .. keptBytes];
-    foreach (index; oldLength .. newLength)
-        block[index * elementSize .. (index + 1) * elementSize] =
-            stack[templateOffset .. templateOffset + elementSize];
-
-    writeSliceDescriptor(stack, descriptorOffset, block, newLength);
     return block;
 }
 

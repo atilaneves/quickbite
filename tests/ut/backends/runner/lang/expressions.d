@@ -4110,7 +4110,10 @@ static foreach (backend; Matrix!()) {
 // freshly one-element array has no spare capacity), which must relocate the
 // FIRST element's out-of-band `nativeDelegateSlots` registration to its new
 // address in the reallocated block, not just the newly appended element's.
-static foreach (backend; Matrix!()) {
+static foreach (backend; Matrix!(
+    Omit!(Bytecode, Because.refusal,
+        "Unsupported typeid in bytecode core: typeid(int delegate())"),
+)) {
     @("delegate.dynamicArrayElementIsAppendableAndCallable." ~
         backend.stringof)
     @Tags(backend.stringof)
