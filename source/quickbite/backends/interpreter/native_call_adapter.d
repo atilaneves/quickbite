@@ -495,6 +495,10 @@ public struct NativeCallRequest {
     public NativeOperand receiverOperand;
     public bool virtualDispatch;
     public bool returnsReceiver;
+    // Non-null means the caller owns typed storage for an ordinary result.
+    // Reference returns and receiver returns still use their existing result
+    // paths because their ABI result is an address, not the value bytes.
+    public void* resultAddress;
     public imported!"dmd.mtype".Type[] argumentTypes;
     public NativeOperand[] argumentOperands;
     public InterpreterInboundTrampolineSession* callbackSession;
@@ -629,6 +633,8 @@ private bool prepareNativeInvocation(
         invocation.retainRoot(owner);
     } else if (returnType.ty == TY.Tvoid || returnType.ty == TY.Tnoreturn) {
         invocation.result = TypedAddress(returnType, null);
+    } else if (request.resultAddress !is null && !request.returnsReceiver) {
+        invocation.result = TypedAddress(returnType, request.resultAddress);
     } else {
         auto owner = NativeBlock.allocate(
             typeByteSize(returnType),

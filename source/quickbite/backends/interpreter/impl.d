@@ -5658,8 +5658,20 @@ unsupportedExpression:
                             hasReceiverPointerAddress
                                 ? receiverPointerAddress.pointerAddress
                                 : null,
-                        ))
+                            constructionDestination is null
+                                ? null
+                                : constructionDestination.place.address,
+                        )) {
+                            if (
+                                constructionDestination !is null &&
+                                nativeResult.value.address ==
+                                    constructionDestination.place.address
+                            ) {
+                                constructionDestination.markConstructed;
+                                return ExpressionResult.void_;
+                            }
                             return nativeCallValue(nativeResult.value);
+                        }
                     } catch (NativeCallException exception) {
                         throwNativeException(exception);
                     }
@@ -5706,8 +5718,22 @@ unsupportedExpression:
                             evaluatedArguments,
                             false,
                             nativeResult,
+                            null,
+                            constructionDestination is null
+                                ? null
+                                : constructionDestination.place.address,
                         ))
+                    {
+                        if (
+                            constructionDestination !is null &&
+                            nativeResult.value.address ==
+                                constructionDestination.place.address
+                        ) {
+                            constructionDestination.markConstructed;
+                            return ExpressionResult.void_;
+                        }
                         return nativeCallValue(nativeResult.value);
+                    }
                 } catch (NativeCallException exception) {
                     throwNativeException(exception);
                 }
@@ -11728,6 +11754,7 @@ unsupportedExpression:
         in bool returnsReceiver,
         out imported!"quickbite.backends.interpreter.native_call_adapter".NativeCallResult result,
         void* receiverAddress = null,
+        void* resultAddress = null,
     ) {
         import quickbite.backends.interpreter.native_call_adapter:
             InterpreterInboundTrampolineSession, NativeCallRequest,
@@ -11781,6 +11808,7 @@ unsupportedExpression:
             virtualDispatch: receiverType !is null &&
                 receiverType.toBasetype.isTypeClass !is null,
             returnsReceiver: returnsReceiver,
+            resultAddress: resultAddress,
             argumentTypes: nativeArguments.types,
             argumentOperands: nativeArguments.operands,
             callbackSession: durableInboundSession,
