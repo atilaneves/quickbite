@@ -736,37 +736,31 @@ All test additions/changes require approval first (AGENTS.md).
 
 ## Remaining work
 
-The native authority switch is a standing contract, not pending work. The
-remaining value-track work is the destination-passing migration and carrier
-deletion (items 8-10), the IR and Bytecode formatter migration followed by
-shared-`Value` deletion (items 2-3), and the language-surface tasks below.
-Item numbers remain stable for existing cross-references. Production
-Interpreter optimisation begins only after item 10 deletes the carrier;
-timings follow `overview.md`'s measurement contract.
+The remaining value-track work is assignment through a separate construction
+temporary and carrier deletion (items 9-10), the IR and Bytecode formatter
+migration followed by shared-`Value` deletion (items 2-3), and the
+language-surface tasks below. Item numbers remain stable for existing
+cross-references. Production Interpreter optimisation begins only after item
+10 deletes the carrier; timings follow `overview.md`'s measurement contract.
 
 ### Item 8 — Destination-passing construction
 
 Addressable-temporary storage uses typed activation-frame slots only for
-syntactically address-taken call results and
-symbolic `classinfo` projections. A lowering that reaches address-taking
-without that parent expression context obtains a typed, conservatively-scanned,
-activation-owned block lazily. Thus an unexecuted call or field expression
-does not enlarge every activation. The gate-corpus measurement did not justify
-segmented scratch; do not introduce it without a new measurement that does.
-
-The remaining part of this item is the construction-state encoding and routing
-rvalue construction into caller-provided destinations. This storage contract
-must be reused; it is not a reason to recreate per-expression
-temporary blocks or broad AST-keyed frame reservations.
+syntactically address-taken call results and symbolic `classinfo` projections.
+A lowering that reaches address-taking without that parent expression context
+obtains a typed, conservatively-scanned, activation-owned block lazily. Thus
+an unexecuted call or field expression does not enlarge every activation. The
+gate-corpus measurement did not justify segmented scratch; do not introduce it
+without a new measurement that does.
 
 ### Item 9 — Assignment through construction
 
-A live lvalue's assignment still round-trips its right-hand side through the
-carrier before the place write (`x = f()`). The live target may not itself be
-that right-hand side's destination: D evaluates the right-hand side first, so
-an alias could observe a partially constructed value. This therefore waits on
-item 8's addressable temporaries, then applies D-defined
-assign/move/postblit/destruction semantics per decision 7.
+Assignment evaluates its live place once, then evaluates the right-hand side
+into separate fresh typed temporary storage. Only after that construction is
+complete does it apply D-defined assignment, move, postblit, and destruction
+semantics to the already-evaluated live place. Never directly construct the
+right-hand side into that live place: an alias could otherwise observe a
+partially constructed value.
 
 ### Item 10 — Carrier deletion
 

@@ -188,6 +188,57 @@ private enum LoopControl {
     continue_,
 }
 
+// A caller-provided typed destination for rvalue construction. An absent
+// destination represents a void construction; a fresh destination becomes
+// constructed exactly once. Only a caller that owns fresh storage may provide
+// a destination; assignment must first obtain separate temporary storage.
+private struct ConstructionDestination {
+    private enum State {
+        absent,
+        fresh,
+        constructed,
+    }
+
+    private imported!"quickbite.backends.interpreter.place".Place _place;
+    private State _state;
+
+    public this(imported!"quickbite.backends.interpreter.place".Place place)
+    @safe {
+        _place = place;
+        _state = State.fresh;
+    }
+
+    public bool hasDestination() const pure nothrow @nogc @safe {
+        return _state != State.absent;
+    }
+
+    public bool isFresh() const pure nothrow @nogc @safe {
+        return _state == State.fresh;
+    }
+
+    public bool isConstructed() const pure nothrow @nogc @safe {
+        return _state == State.constructed;
+    }
+
+    public imported!"quickbite.backends.interpreter.place".Place place() @safe {
+        if (!hasDestination)
+            throw new Exception(
+                "quickbite.backends.interpreter.impl.ConstructionDestination."
+                ~ "place: construction has no destination",
+            );
+        return _place;
+    }
+
+    public void markConstructed() @safe {
+        if (!isFresh)
+            throw new Exception(
+                "quickbite.backends.interpreter.impl.ConstructionDestination."
+                ~ "markConstructed: destination is not fresh",
+            );
+        _state = State.constructed;
+    }
+}
+
 // The evaluated indices within one `ref`/`out` call argument.  The ordinary
 // expression walk records them as it evaluates the argument; binding the
 // callee's reference slot later composes its address from those exact results
@@ -631,6 +682,10 @@ private struct Walker {
     // activation. Statement execution never writes here: a statement is not
     // a value.
     private ExpressionResult _returnValue;
+    // An interpreted non-void call constructs directly into its caller's
+    // fresh storage. This pointer is valid only while the synchronous child
+    // activation runs; recursive calls use their own activation and pointer.
+    private ConstructionDestination* _returnDestination;
     private bool runningCalledFunction;
     private bool inUnitTest;
     private FuncDeclaration currentFunction;
@@ -829,6 +884,15 @@ private struct Walker {
                     writeLocation(return_.exp, refReturnAssignedValue);
                 else if (addressOfRefReturn)
                     _returnValue = refReturnAddress(return_.exp);
+                else if (_returnDestination !is null) {
+                    if (!constructInto(return_.exp, *_returnDestination)) {
+                        auto value = runExpression(return_.exp);
+                        if (return_.exp.type.toBasetype.isTypeClass !is null)
+                            value = rootedNativeClassValue(return_.exp, value);
+                        writeStoredValue(_returnDestination.place, value);
+                        _returnDestination.markConstructed;
+                    }
+                }
                 else {
                     _returnValue = runExpression(return_.exp);
                     if (return_.exp.type.toBasetype.isTypeClass !is null)
@@ -4010,7 +4074,14 @@ unsupportedExpression:
     private ExpressionResult addressOfCallResultTemporary(
         imported!"dmd.expression".CallExp call,
     ) {
-        return addressOfTemporaryValue(call, runCallExpression(call));
+        import quickbite.backends.interpreter.place: Place;
+
+        auto destination = ConstructionDestination(Place(
+            _activationFrame.temporaryAddress(call),
+            call.type,
+        ));
+        constructInto(call, destination);
+        return ExpressionResult.pointerValue(destination.place.address);
     }
 
     // The address of an evaluated value with no composable native place: one
@@ -5187,6 +5258,32 @@ unsupportedExpression:
     }
 
     private ExpressionResult runCallExpression(imported!"dmd.expression".CallExp call) {
+        import dmd.astenums: TY;
+        import quickbite.backends.interpreter.place: Place;
+
+        if (call.type.toBasetype.ty == TY.Tvoid)
+            return runCallExpression(call, null);
+
+        auto destination = ConstructionDestination(Place(
+            _activationFrame.temporaryAddress(call),
+            call.type,
+        ));
+        const result = runCallExpression(call, &destination);
+        if (!destination.isConstructed) {
+            writeStoredValue(destination.place, result);
+            destination.markConstructed;
+        }
+        return readStoredValue(destination.place);
+    }
+
+    // A construction caller supplies fresh storage. An ordinary rvalue call
+    // gets a typed activation-owned temporary from the wrapper above. Native
+    // and not-yet-migrated families still return a carrier, which the wrapper
+    // writes into that same storage.
+    private ExpressionResult runCallExpression(
+        imported!"dmd.expression".CallExp call,
+        ConstructionDestination* constructionDestination,
+    ) {
         import dmd.expression: Expression;
         import quickbite.backends.interpreter.builtins:
             binaryBuiltinCall,
@@ -5583,6 +5680,7 @@ unsupportedExpression:
                     argumentExpressions,
                     evaluatedArguments,
                     hasReceiverPointerAddress ? &receiverPointerAddress : null,
+                    constructionDestination,
                 );
             }
         }
@@ -5633,6 +5731,8 @@ unsupportedExpression:
                     arguments,
                     argumentExpressions,
                     evaluatedArguments,
+                    null,
+                    constructionDestination,
                 );
 
             return runFunction(
@@ -5641,6 +5741,8 @@ unsupportedExpression:
                 argumentExpressions,
                 false,
                 evaluatedArguments,
+                null,
+                constructionDestination,
             );
         }
 
@@ -5652,6 +5754,8 @@ unsupportedExpression:
                     argumentExpressions,
                     false,
                     evaluatedArguments,
+                    null,
+                    constructionDestination,
                 );
 
         if (auto function_ = functionPointerExpressionFunction(call.e1)) {
@@ -5677,6 +5781,8 @@ unsupportedExpression:
                     arguments,
                     argumentExpressions,
                     evaluatedArguments,
+                    null,
+                    constructionDestination,
                 );
 
             return runFunction(
@@ -5685,6 +5791,8 @@ unsupportedExpression:
                 argumentExpressions,
                 false,
                 evaluatedArguments,
+                null,
+                constructionDestination,
             );
         }
 
@@ -5721,6 +5829,8 @@ unsupportedExpression:
                 argumentExpressions,
                 false,
                 evaluatedArguments,
+                null,
+                constructionDestination,
             );
         }
 
@@ -6594,6 +6704,7 @@ unsupportedExpression:
         in bool captureLocals = false,
         in EvaluatedReferenceArgument[] evaluatedArguments = null,
         in void*[VarDeclaration] closureAddresses = null,
+        ConstructionDestination* constructionDestination = null,
     ) {
         Walker child;
         child.runningCalledFunction = true;
@@ -6601,6 +6712,7 @@ unsupportedExpression:
         auto layout = cachedFrameLayout(function_);
         child._activationFrame = FrameBlock.allocate(layout);
         child._returnValue = ExpressionResult(false);
+        child._returnDestination = constructionDestination;
         forkExecutionStateInto(child);
         scope(exit) child.retireActivationFrameMetadata;
         bindCapturedReferenceSlots(function_, child, closureAddresses);
@@ -6694,6 +6806,7 @@ unsupportedExpression:
         // `p()` in `p().get()`, `i++` in `a[i++].method()`, or the call
         // itself in `get(holder, evaluations).slot`).
         const(ExpressionResult)* precomputedReceiverPointerAddress = null,
+        ConstructionDestination* constructionDestination = null,
     ) {
         const memberReceiver = nativeMemberReceiver(function_, receiver);
 
@@ -6717,6 +6830,7 @@ unsupportedExpression:
         auto layout = cachedFrameLayout(function_);
         child._activationFrame = FrameBlock.allocate(layout);
         child._returnValue = ExpressionResult(false);
+        child._returnDestination = constructionDestination;
         forkExecutionStateInto(child);
         scope(exit) child.retireActivationFrameMetadata;
         bindCapturedReferenceSlots(
@@ -12563,7 +12677,8 @@ unsupportedExpression:
         // The initializer constructs the variable's own storage, so a family
         // with a destination arm writes its bytes there directly instead of
         // building them elsewhere and copying them in.
-        if (constructInto(initializer, variable)) {
+        auto destination = ConstructionDestination(bindingPlace(variable));
+        if (constructInto(initializer, destination)) {
             clearUninitializedBindingAddress(bindingPlace(variable).address);
             return;
         }
@@ -12595,12 +12710,29 @@ unsupportedExpression:
     // and DMD marks it as such with a `ConstructExp`.
     private bool constructInto(
         imported!"dmd.expression".Expression rvalue,
-        VarDeclaration destination,
+        ref ConstructionDestination destination,
     ) {
-        if (!hasBindingPlace(destination))
-            return false;
+        if (!destination.isFresh)
+            throw new Exception(
+                "quickbite.backends.interpreter.impl.Walker.constructInto: "
+                ~ "destination is not fresh",
+            );
 
-        auto place = bindingPlace(destination);
+        auto place = destination.place;
+
+        if (auto call = rvalue.isCallExp) {
+            import dmd.astenums: TY;
+
+            if (call.type.toBasetype.ty == TY.Tvoid)
+                return false;
+
+            const result = runCallExpression(call, &destination);
+            if (!destination.isConstructed) {
+                writeStoredValue(place, result);
+                destination.markConstructed;
+            }
+            return true;
+        }
 
         if (auto literal = rvalue.isStructLiteralExp) {
             // The literal's own fields must BE the destination's fields: a
@@ -12620,6 +12752,7 @@ unsupportedExpression:
                 // allocated storage would have given it.
                 clearPlaceValue(place);
                 constructStructLiteral(literal, place);
+                destination.markConstructed;
                 return true;
             }
         }
@@ -12632,6 +12765,7 @@ unsupportedExpression:
         // copy into an explicit call, which the arms above this one handle.
         if (isAggregateCopySource(rvalue, place.type)) {
             copyPlaceValue(projectionPlace(rvalue), place);
+            destination.markConstructed;
             return true;
         }
 
