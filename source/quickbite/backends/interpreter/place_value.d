@@ -97,22 +97,22 @@ public imported!"quickbite.backends.interpreter.expression_result".ExpressionRes
 
     auto structType = nonUnionStructOf(type);
     if (structType !is null)
-        return AggregateValue.copyFromAddress(type, place.address);
+        return readAggregate(place);
 
     auto unionType = unionStructOf(type);
     if (unionType !is null)
-        return AggregateValue.copyFromAddress(type, place.address);
+        return readAggregate(place);
 
     auto arrayType = type.isTypeSArray;
     if (arrayType !is null)
-        return AggregateValue.copyFromAddress(type, place.address);
+        return readAggregate(place);
 
     if (type.isTypeVector !is null)
-        return AggregateValue.copyFromAddress(type, place.address);
+        return readAggregate(place);
 
     auto sliceType = type.isTypeDArray;
     if (sliceType !is null)
-        return AggregateValue.copyFromAddress(type, place.address);
+        return readAggregate(place);
 
     // An associative-array place stores only the one-word `Impl*` handle
     // interpreted druntime's own AA hooks (`core.internal.newaa`) build and
@@ -151,6 +151,21 @@ public imported!"quickbite.backends.interpreter.expression_result".ExpressionRes
 
     throw new Exception(
         "quickbite.backends.interpreter.place_value.readValue: unsupported at place",
+    );
+}
+
+
+// This is the aggregate-to-carrier boundary for generic reads. Aggregate
+// copying itself stays typed: it accepts a place address and returns its
+// native owner, which preserves all copied bytes and any retained owner.
+private imported!"quickbite.backends.interpreter.expression_result".ExpressionResult readAggregate(
+    imported!"quickbite.backends.interpreter.place".Place place,
+) @safe {
+    import quickbite.backends.interpreter.aggregate_value: AggregateValue;
+    import quickbite.backends.interpreter.expression_result: ExpressionResult;
+
+    return ExpressionResult.nativeAggregateValue(
+        AggregateValue.copyFromAddress(place.type, place.address),
     );
 }
 

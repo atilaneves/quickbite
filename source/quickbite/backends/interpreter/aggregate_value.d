@@ -311,39 +311,36 @@ public struct AggregateValue {
     }
 
     // Copies the complete native-layout value at `address` into a freshly
-    // rooted aggregate result.  It is the by-value read operation for struct,
+    // rooted native owner. It is the by-value read operation for struct,
     // static-array, slice-header, class-reference, and AA-handle places.
-    public static imported!"quickbite.backends.interpreter.expression_result".ExpressionResult copyFromAddress(
+    public static NativeAggregate copyFromAddress(
         imported!"dmd.mtype".Type type,
         void* address,
         imported!"quickbite.backends.interpreter.native_block".NativeBlock retained =
             imported!"quickbite.backends.interpreter.native_block".NativeBlock.init,
     ) @safe {
         import quickbite.backends.interpreter.native_aggregate: NativeAggregate;
-        import quickbite.backends.interpreter.expression_result: ExpressionResult;
 
         auto aggregate = NativeAggregate.allocate(type);
         aggregate.storage.bytes[] = bytesAt(address, aggregate.storage.byteLength)[];
-        return ExpressionResult.nativeAggregateValue(retained.address is null
+        return retained.address is null
             ? aggregate
-            : NativeAggregate(type, aggregate.storage, retained));
+            : NativeAggregate(type, aggregate.storage, retained);
     }
 
     // The source is an ABI buffer whose caller has already established as at
     // least this Type's DMD byte size.  Copying it as one span retains union
     // overlap, padding, and slice headers without imposing a field model on
     // the ABI boundary.
-    public static imported!"quickbite.backends.interpreter.expression_result".ExpressionResult copyFromBytes(
+    public static NativeAggregate copyFromBytes(
         imported!"dmd.mtype".Type type,
         in ubyte[] bytes,
     ) @safe {
-        import quickbite.backends.interpreter.expression_result: ExpressionResult;
-
         auto aggregate = NativeAggregate.allocate(type);
         if (bytes.length < aggregate.storage.byteLength)
             throw new Exception("AggregateValue.copyFromBytes source is too short.");
         aggregate.storage.bytes[] = bytes[0 .. aggregate.storage.byteLength];
-        return ExpressionResult.nativeAggregateValue(aggregate);
+        return aggregate;
     }
 
     public static bool isStruct(
