@@ -10520,6 +10520,440 @@ static foreach (backend; Matrix!()) {
     }
 }
 
+// A struct constructed from another struct's temporary destroys the inner,
+// moved-in argument's temporary when the outer constructor returns -- before
+// the outer temporary itself is destroyed at the full-expression end.
+// SystemLinker is the oracle.
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.refusal, "[3] != [3, 13]"),
+    Omit!(Bytecode, Because.refusal, "[3] != [3, 13]"),
+)) {
+    @("call.nestedConstructionTemporariesAreDestroyedInOrder." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct B {
+                int id;
+                int[]* log;
+
+                this(int id, int[]* log) {
+                    this.id = id;
+                    this.log = log;
+                }
+
+                ~this() {
+                    if (log !is null)
+                        *log ~= id;
+                }
+            }
+
+            struct A {
+                int id;
+                int[]* log;
+
+                this(B b) {
+                    this.id = b.id + 10;
+                    this.log = b.log;
+                }
+
+                ~this() {
+                    if (log !is null)
+                        *log ~= id;
+                }
+
+                int getId() {
+                    return id;
+                }
+            }
+
+            unittest {
+                int[] log;
+                const got = A(B(3, &log)).getId();
+                assert(got == 13);
+                assert(log == [3, 13]);
+            }
+        });
+    }
+}
+
+// Several temporaries constructed in one full expression are destroyed at
+// its end in reverse construction order. SystemLinker is the oracle.
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.refusal,
+        "the temporaries' destructors never run, so `log` stays empty "
+        ~ "instead of accumulating ids in reverse order (`[] != [3, 2, "
+        ~ "1]`)"),
+    Omit!(Bytecode, Because.refusal,
+        "Unsupported expression in bytecode core: (Probe(1, & log)).id"),
+)) {
+    @("call.temporariesAreDestroyedInReverseOrderAtFullExpressionEnd." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct Probe {
+                int id;
+                int[]* log;
+
+                ~this() {
+                    if (log !is null)
+                        *log ~= id;
+                }
+            }
+
+            unittest {
+                int[] log;
+                const total =
+                    Probe(1, &log).id + Probe(2, &log).id + Probe(3, &log).id;
+                assert(total == 6);
+                assert(log == [3, 2, 1]);
+            }
+        });
+    }
+}
+
+// A temporary constructed in the evaluated right-hand side of `&&` is
+// destroyed when that operand's evaluation ends, before any later operand
+// runs -- not at the full-expression boundary the other temporaries get.
+// SystemLinker is the oracle.
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.refusal,
+        "the `Probe(1, &log)` temporary's destructor never runs before "
+        ~ "the snapshot, so `atRhsEnd` stays empty instead of capturing "
+        ~ "`[2]` (`[] != [2]`)"),
+    Omit!(Bytecode, Because.refusal, "[] != [2]"),
+)) {
+    @("call.evaluatedAndAndRightTemporaryIsDestroyedAtItsOperandsEnd." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct Probe {
+                int id;
+                int[]* log;
+
+                ~this() {
+                    if (log !is null)
+                        *log ~= id;
+                }
+
+                bool truthy() {
+                    return id != 0;
+                }
+            }
+
+            bool snapshot(ref int[] into, int[]* log) {
+                into = (*log).dup;
+                return true;
+            }
+
+            unittest {
+                int[] log;
+                int[] atRhsEnd;
+                const r = Probe(1, &log).truthy() && Probe(2, &log).truthy()
+                    && snapshot(atRhsEnd, &log);
+                assert(r);
+                assert(atRhsEnd == [2]);
+                assert(log == [2, 1]);
+            }
+        });
+    }
+}
+
+// An unevaluated `&&` right-hand side constructs no temporary, so nothing of
+// it is destroyed. SystemLinker is the oracle.
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.refusal,
+        "the destructor of the evaluated `Probe(0, &log)` temporary "
+        ~ "never runs, so `log` stays empty (`[] != [0]`)"),
+    Omit!(Bytecode, Because.refusal, "[] != [0]"),
+)) {
+    @("call.unevaluatedAndAndRightConstructsNoTemporary." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct Probe {
+                int id;
+                int[]* log;
+
+                ~this() {
+                    if (log !is null)
+                        *log ~= id;
+                }
+
+                bool truthy() {
+                    return id != 0;
+                }
+            }
+
+            unittest {
+                int[] log;
+                const r = Probe(0, &log).truthy() && Probe(2, &log).truthy();
+                assert(!r);
+                assert(log == [0]);
+            }
+        });
+    }
+}
+
+// When an expression unwinds, its already-constructed temporaries are
+// destroyed, in reverse construction order. SystemLinker is the oracle.
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.refusal,
+        "the temporaries' destructors never run during unwind, so "
+        ~ "`log` stays empty instead of recording ids in reverse order "
+        ~ "(`[] != [2, 1]`)"),
+    Omit!(Bytecode, Because.refusal, "[] != [2, 1]"),
+)) {
+    @("call.constructedTemporariesAreDestroyedOnUnwind." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct Probe {
+                int id;
+                int[]* log;
+
+                ~this() {
+                    if (log !is null)
+                        *log ~= id;
+                }
+
+                bool truthy() {
+                    return id != 0;
+                }
+
+                bool throws() {
+                    throw new Exception("boom");
+                }
+            }
+
+            unittest {
+                int[] log;
+                try
+                    cast(void)(
+                        Probe(1, &log).truthy() && Probe(2, &log).throws());
+                catch (Exception e) {}
+                assert(log == [2, 1]);
+            }
+        });
+    }
+}
+
+// A constructor used as a member-call receiver that throws never finishes
+// constructing its receiver. The receiver's destructor must therefore not
+// run -- the same as any other object whose constructor threw. `Loud`'s
+// `armed` field defaults to `true`, so the placeholder DMD declares for the
+// receiver (`(Loud __t = Loud(0, true, null);) , __t).__ctor(id, log)`) is
+// not all zero bytes. SystemLinker is the oracle.
+static foreach (backend; Matrix!()) {
+    @("call.throwingConstructorReceiverTemporaryIsNotDestroyed." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct Loud {
+                int id;
+                bool armed = true;
+                int[]* log;
+
+                this(int id, int[]* log) {
+                    this.id = id;
+                    this.log = log;
+                    throw new Exception("boom");
+                }
+
+                ~this() {
+                    if (log !is null)
+                        *log ~= id;
+                }
+
+                int getId() {
+                    return id;
+                }
+            }
+
+            unittest {
+                int[] log;
+                try
+                    cast(void) Loud(1, &log).getId();
+                catch (Exception e) {}
+                assert(log.length == 0);
+            }
+        });
+    }
+}
+
+// The same throwing-constructor-receiver rule as above, but for a struct
+// whose fields all default to zero, so the placeholder DMD declares for the
+// receiver (`(Zero __t = Zero(0);) , __t).__ctor(value)`) is an all-zero
+// value rather than `Loud`'s above. SystemLinker is the oracle.
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.inexpressible,
+        "static variable `destroyed` cannot be read at compile time"),
+)) {
+    @("call.throwingConstructorZeroInitReceiverTemporaryIsNotDestroyed." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct Zero {
+                int value;
+                static bool destroyed;
+
+                this(int value) {
+                    this.value = value;
+                    throw new Exception("boom");
+                }
+
+                ~this() {
+                    destroyed = true;
+                }
+
+                int getValue() {
+                    return value;
+                }
+            }
+
+            unittest {
+                Zero.destroyed = false;
+                try
+                    cast(void) Zero(1).getValue();
+                catch (Exception e) {}
+                assert(!Zero.destroyed);
+            }
+        });
+    }
+}
+
+// The same throwing-constructor rule as above, but the temporary is consumed
+// by a field read (`P(9, &log).id`) rather than a member call. DMD only
+// finishes constructing the receiver if `__ctor` returns normally, so the
+// destructor must not run when it throws, regardless of how the constructed
+// value is used afterwards. `P`'s `armed` field defaults to `true`, so the
+// placeholder DMD declares for the receiver (`(P __t = P(0, true, null);) ,
+// __t).__ctor(id, log)`) is not all zero bytes. SystemLinker is the oracle.
+static foreach (backend; Matrix!()) {
+    @("call.throwingConstructorFieldReadTemporaryIsNotDestroyed." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct P {
+                int id;
+                bool armed = true;
+                int[]* log;
+
+                this(int id, int[]* log) {
+                    this.id = id;
+                    this.log = log;
+                    throw new Exception("boom");
+                }
+
+                ~this() {
+                    if (log !is null)
+                        *log ~= id;
+                }
+            }
+
+            unittest {
+                int[] log;
+                int got;
+                try
+                    got = P(9, &log).id;
+                catch (Exception e) {}
+                assert(log.length == 0);
+            }
+        });
+    }
+}
+
+// A temporary constructed in a `?:` arm gets no early boundary: it lives to
+// the end of the full expression, unlike an `&&`/`||` right-hand side.
+// SystemLinker is the oracle.
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.refusal,
+        "the temporaries' destructors never run, so `log` stays empty "
+        ~ "instead of recording both ids (`[] != [2, 1]`)"),
+    Omit!(Bytecode, Because.refusal,
+        "Unsupported expression in bytecode core: (Probe(2, & log)).id"),
+)) {
+    @("call.conditionalArmTemporaryLivesToFullExpressionEnd." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct Probe {
+                int id;
+                int[]* log;
+
+                ~this() {
+                    if (log !is null)
+                        *log ~= id;
+                }
+
+                bool truthy() {
+                    return id != 0;
+                }
+            }
+
+            bool snapshot(ref int[] into, int[]* log) {
+                into = (*log).dup;
+                return true;
+            }
+
+            unittest {
+                int[] log;
+                int[] atArmEnd;
+                const v = Probe(1, &log).truthy()
+                    ? (Probe(2, &log).id + (snapshot(atArmEnd, &log) ? 0 : 0))
+                    : -1;
+                assert(v == 2);
+                assert(atArmEnd.length == 0);
+                assert(log == [2, 1]);
+            }
+        });
+    }
+}
+
+// A loop body's full expression ends every iteration, so its temporary is
+// destroyed once per iteration, in iteration order. SystemLinker is the
+// oracle.
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.refusal,
+        "the per-iteration temporary's destructor never runs, so "
+        ~ "`log` stays empty instead of recording each iteration "
+        ~ "(`[] != [1, 2, 3]`)"),
+    Omit!(Bytecode, Because.refusal, "[] != [1, 2, 3]"),
+)) {
+    @("call.loopBodyTemporaryIsDestroyedEachIteration." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct Probe {
+                int id;
+                int[]* log;
+
+                ~this() {
+                    if (log !is null)
+                        *log ~= id;
+                }
+
+                bool truthy() {
+                    return id != 0;
+                }
+            }
+
+            unittest {
+                int[] log;
+                foreach (i; 1 .. 4)
+                    cast(void) Probe(i, &log).truthy();
+                assert(log == [1, 2, 3]);
+            }
+        });
+    }
+}
+
 // Return-scope destruction happens after the ref-return expression has
 // selected its lvalue. Cleanup must not replace that returned address, so an
 // assignment through the call still reaches the selected object.

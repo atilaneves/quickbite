@@ -436,21 +436,15 @@ longer imports or aliases it.
     native exception translation remain Interpreter-adapter plumbing.
 
 19. **Addressable expression temporaries have activation-scoped storage.**
-    Item 8 must measure and choose between two unboxed designs:
-    per-activation typed offsets added to the function's frame layout, or
-    segmented aligned scratch allocated along the executed path with lexical
-    marks and cleanup records. The existing frame-layout cache lasts for one
-    Interpreter root execution, not across roots or source edits, so neither
-    candidate receives presumed reuse credit.
-
-    Either design must satisfy D's temporary-lifetime rules: destruction at
-    the full-expression boundary in reverse construction order, the special
-    boundary of an evaluated `&&`/`||` right-hand side, destruction of
-    already-constructed temporaries on unwind, GC visibility while live, and
-    stable addresses under recursion and native callback re-entry. Storage
-    belongs to an activation; an AST node never owns runtime bytes. If the
-    corpus measurement cannot distinguish the candidates, choose the smaller
-    mechanism.
+    Item 8 implements per-activation typed frame offsets first, extending
+    `FramePacker`/`FrameLayout`; segmented aligned scratch is built only if
+    measuring against the gate-corpus baseline (`overview.md`'s measurement
+    contract) shows a real cost. Either mechanism must satisfy D's
+    temporary-lifetime rules (full-expression-boundary destruction in reverse
+    construction order, the `&&`/`||` right-hand-side boundary, destruction on
+    unwind), GC visibility while live, and stable addresses under
+    recursion/callback re-entry; storage belongs to an activation, not an AST
+    node.
 
 ## Contracts
 
@@ -752,19 +746,11 @@ timings follow `overview.md`'s measurement contract.
 
 ### Item 8 — Destination-passing construction
 
-Decision 7's no-result operation exists and every discarding position uses
-it; place evaluation and assignment already compose over the
-`Place`/`place_value.d` seam, and construction exists for a destination that
-already exists — a declaration initialises its binding's own storage. What
-remains is decision 19's addressable temporaries. Measure fixed frame offsets
-against segmented scratch on the gate corpus (`overview.md`'s measurement
-contract) before selecting either; this slice owns the storage choice, the
-construction-state encoding, and the temporary-lifetime rules.
-
-A no-result arm is worth writing only where the discarded value is what a
-whole sub-walk was for. Everything else still evaluates through the value
-path, so the carrier's per-expression materialization retires with
-construction, not with more arms.
+Decision 19's addressable temporaries: implement per-activation typed frame
+offsets first, measure against the gate-corpus baseline (`overview.md`'s
+measurement contract), and fall back to segmented scratch only if that
+measurement justifies it. This slice owns the storage choice and the
+construction-state encoding.
 
 ### Item 9 — Assignment through construction
 
@@ -811,25 +797,27 @@ is designed, until a real crossing exists.
 ### Item 4 — Workingness track
 
 Keep the Interpreter language surface advancing without regressing the
-Cerealed/dub gate: one language-surface fix plus its oracle-backed fixture per
-small, short-lived PR. Native storage and calls remain the ordinary execution
-path; do not restore marshalling, cell families, alias maps, or name-based
-representation shims. `interpreter.md` §8 triage remains the partition.
+Cerealed/dub gate: one language-surface fix plus its oracle-backed fixture
+per small, short-lived PR, native storage and calls staying the ordinary
+execution path -- no marshalling, cell families, alias maps, or name-based
+shims -- per `interpreter.md` §8 triage.
 
-Pointer-slice formation past an allocation remains unchecked when its result is
-not dereferenced: this is compiled D's contract and the Interpreter's
-native-pointer path matches it. The allocated-block diagnostic is a CTFE-only
-characterization, so the Interpreter belongs in the compiled-behaviour matrix;
-do not restore a boxed-storage bounds diagnostic for this operation.
+A destructor throwing at the outermost full-expression boundary drops the
+remaining armed destructors; compiled D chains it and still runs every one.
 
-A whole-aggregate copy whose source is a pointer dereference stays on the value
-path, so a null pointer is reported as one failed unittest rather than faulting.
-Composing that address and reading it would fault like compiled D, but a fault
-ends the whole run and no assertion can observe it, which is what makes the
-reporting engines the pinnable ones (`lang/diagnostics.d`'s null-dereference
-block; the faulting ones are `Because.unassertable`). The shapes this keeps off
-the construction path appear nowhere in the corpus, so it costs nothing
-measurable — do not trade the report for the fault.
+Pointer-slice formation past an allocation remains unchecked when its result
+is not dereferenced, matching compiled D's contract; the allocated-block
+diagnostic is CTFE-only, so the Interpreter belongs in the
+compiled-behaviour matrix -- do not restore a boxed-storage bounds
+diagnostic for this operation.
+
+A whole-aggregate copy whose source is a pointer dereference stays on the
+value path, so a null pointer is one failed unittest rather than a fault:
+composing and reading that address would fault like compiled D, but a fault
+ends the run before any assertion can observe it (`lang/diagnostics.d`'s
+null-dereference block is pinnable; `Because.unassertable` covers the faulting
+ones). These shapes appear nowhere in the corpus -- do not trade report for
+fault.
 
 Dynamic-array truthiness is the native slice header's pointer, not its length:
 a zero-length interior slice with a non-null pointer is true, while a default
@@ -840,23 +828,23 @@ assignment through that element writes the row's native elements in place;
 rebuilding the enclosing array would reintroduce boxed storage authority.
 
 A doubly-indexed receiver's evaluation-order contract only covers a static-
-array row (`m[outer][inner]` where `m[outer]`'s type is a fixed-size array,
-e.g. `P[2][3]`). A dynamic-array row (e.g. `int[][3] m`) is a distinct,
+array row (`m[outer][inner]` where `m[outer]` is a fixed-size array, e.g.
+`P[2][3]`). A dynamic-array row (e.g. `int[][3] m`) is a distinct,
 unimplemented case, not just the pre-existing fallback order: confirmed
-against `SystemLinker` (`bin/qb` probe, both a struct method-call receiver
-and a plain scalar read), compiled D calls the first bracket's index
-expression *twice* while still calling the second bracket's once, first.
-Neither this fix's fast path nor the old fallback reproduces that.
+against `SystemLinker` (`bin/qb` probe, both a struct method-call receiver and
+a plain scalar read), compiled D calls the first bracket's index expression
+*twice* while still calling the second bracket's once, first. Neither this
+fix's fast path nor the old fallback reproduces that.
 
 The temporary `std.conv.text` character-array path reads the authoritative
-native slice header, including its retained backing address, rather than a
-transient aggregate handle. This is slice execution, not a formatter-specific
-storage shim; retiring the interceptor is item 10 queue work.
+native slice header, including its retained backing address, not a transient
+aggregate handle -- slice execution, not a formatter-specific storage shim.
+Retiring the interceptor is item 10 queue work.
 
 An associative-array `ref` parameter reads the caller's typed handle place,
-just like other native-layout reference values. Autovivifying a null handle
-writes that handle through the referenced binding before inserting, so the
-caller retains both the allocation and later mutations.
+like other native-layout reference values; autovivifying a null handle
+writes it through the referenced binding before inserting, so the caller
+retains both the allocation and later mutations.
 
 A method call chained off an assign/construct/blit whose target is itself a
 side-effecting `PtrExp`/`IndexExp` (`(*next() = value).bump()`) has no

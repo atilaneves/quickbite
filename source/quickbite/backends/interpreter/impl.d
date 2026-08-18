@@ -399,20 +399,19 @@ private struct TemporaryPointerOwners {
     public imported!"quickbite.backends.interpreter.native_block".NativeBlock[]
         blocks;
     public size_t expressionDepth;
-    // A constructed member-call receiver's destructor (see
-    // `constructedReceiverDestructor`), queued here instead of run when the
-    // call returns, so it fires once the enclosing full expression finishes
-    // evaluating, in reverse construction order.
-    public imported!"dmd.expression".Expression[] pendingReceiverDestructors;
 }
 
-// One in-progress full expression: where its temporary owners and its queued
-// receiver destructors begin, and whether it is the outermost one -- the only
-// one whose end is a full-expression boundary.
+// One in-progress full expression: where its shared temporary owners and its
+// own queued destructors begin, and whether it is outermost by either
+// measure. `outermost` is the shared-blocks boundary (see
+// `TemporaryPointerOwners`); `localOutermost` is this walker's own
+// destructor boundary -- a function call is a full-expression boundary for
+// the callee's internals, so it does not chain off the caller's depth.
 private struct FullExpression {
     public size_t firstOwner;
     public size_t firstDestructor;
     public bool outermost;
+    public bool localOutermost;
 }
 
 // Native places for class array-literal `.init` fields, keyed by the address
@@ -539,6 +538,15 @@ private struct Walker {
 
     private TemporaryPointerOwners* _temporaryPointerOwners;
     private InterpreterExecutionState* _executionState;
+
+    // A constructed temporary's armed destructor (see
+    // `queueTemporaryDestructor`), queued here instead of run immediately, so
+    // it fires once the enclosing full expression finishes evaluating, in
+    // reverse construction order. Never shared with a child walker: a callee
+    // runs its own statements and destroys its own temporaries at its own
+    // boundaries, the same as any other full-expression evaluation.
+    private imported!"dmd.expression".Expression[] _pendingTemporaryDestructors;
+    private size_t _fullExpressionDepth;
 
     private @property ref Throwable[const(void)*] nativeThrowableRoots() {
         return _executionState.nativeThrowableRoots;
@@ -1376,15 +1384,20 @@ private struct Walker {
         _temporaryPointerOwners.blocks ~= owner;
     }
 
-    private void queueReceiverDestructor(
+    // DMD records an expression temporary's cleanup on the synthesized
+    // declaration's `edtor` (`Dsymbol_toElem` in `e2ir.d` arms it when
+    // `vd.needsScopeDtor()`) rather than emitting it inline. Mirror that
+    // here: arm the destructor after construction succeeds, and run every
+    // armed destructor at the walker's own full-expression boundaries
+    // (`endFullExpression`), in reverse construction order.
+    private void queueTemporaryDestructor(
         imported!"dmd.expression".Expression destructor,
     ) @safe {
         assert(
-            _temporaryPointerOwners !is null &&
-                _temporaryPointerOwners.expressionDepth != 0,
-            "receiver destructor queued outside its expression scope",
+            _fullExpressionDepth != 0,
+            "temporary destructor queued outside its expression scope",
         );
-        _temporaryPointerOwners.pendingReceiverDestructors ~= destructor;
+        _pendingTemporaryDestructors ~= destructor;
     }
 
     private void storeBinding(VarDeclaration variable, in ExpressionResult value) {
@@ -2421,29 +2434,40 @@ private struct Walker {
 
         auto full = FullExpression(
             _temporaryPointerOwners.blocks.length,
-            _temporaryPointerOwners.pendingReceiverDestructors.length,
+            _pendingTemporaryDestructors.length,
             _temporaryPointerOwners.expressionDepth == 0,
+            _fullExpressionDepth == 0,
         );
         ++_temporaryPointerOwners.expressionDepth;
+        ++_fullExpressionDepth;
         return full;
     }
 
     private void endFullExpression(in FullExpression full) {
         --_temporaryPointerOwners.expressionDepth;
+        --_fullExpressionDepth;
+
+        // Run every destructor armed while evaluating this full expression
+        // now, in reverse construction order, before releasing its temporary
+        // storage below.
+        if (full.localOutermost)
+            runPendingTemporaryDestructors(full.firstDestructor);
+
         if (!full.outermost)
             return;
 
-        // Run every receiver destructor queued while evaluating this full
-        // expression now, in reverse construction order, before releasing
-        // its temporary storage.
-        auto destructors =
-            _temporaryPointerOwners.pendingReceiverDestructors[
-                full.firstDestructor .. $];
-        _temporaryPointerOwners.pendingReceiverDestructors.length =
-            full.firstDestructor;
-        foreach_reverse (destructor; destructors)
-            executeForEffect(destructor);
         _temporaryPointerOwners.blocks.length = full.firstOwner;
+    }
+
+    // Re-entrancy-safe: a destructor's own body can construct and arm
+    // further temporaries, which would clobber a slice taken up front, so
+    // pop from the back instead of iterating a snapshot.
+    private void runPendingTemporaryDestructors(in size_t first) {
+        while (_pendingTemporaryDestructors.length > first) {
+            auto destructor = _pendingTemporaryDestructors[$ - 1];
+            --_pendingTemporaryDestructors.length;
+            executeForEffect(destructor);
+        }
     }
 
     private ExpressionResult runExpressionImpl(
@@ -3178,7 +3202,7 @@ unsupportedExpression:
         if (!left)
             return ExpressionResult(false);
 
-        const right = isTruthy(runExpression(logical.e2));
+        const right = isTruthy(runDestructorBoundedOperand(logical.e2));
         return ExpressionResult(right);
     }
 
@@ -3189,8 +3213,22 @@ unsupportedExpression:
         if (left)
             return ExpressionResult(true);
 
-        const right = isTruthy(runExpression(logical.e2));
+        const right = isTruthy(runDestructorBoundedOperand(logical.e2));
         return ExpressionResult(right);
+    }
+
+    // Mirrors `e2ir.d`'s `visitLogical`: DMD lowers `&&`/`||`'s left operand
+    // with `toElem` but its evaluated right operand with `toElemDtor` -- the
+    // only expression-internal destructor boundary; a `?:` arm gets none.
+    // `scope(exit)` also reproduces the oracle's unwind behaviour: the right
+    // operand's own temporary is destroyed first, then any outer temporaries
+    // as the enclosing full expression unwinds past this call.
+    private ExpressionResult runDestructorBoundedOperand(
+        imported!"dmd.expression".Expression operand,
+    ) {
+        const first = _pendingTemporaryDestructors.length;
+        scope(exit) runPendingTemporaryDestructors(first);
+        return runExpression(operand);
     }
 
     private ExpressionResult runComparisonExpression(
@@ -3873,6 +3911,18 @@ unsupportedExpression:
         ExpressionResult receiverAddress;
         ExpressionResult receiver;
         resolveMemberCallReceiver(dot.e1, receiverAddress, receiver);
+
+        // `call` is `dot.e1`'s own constructor whenever this receiver
+        // resolution was reached because a further use needed the
+        // not-yet-constructed receiver's address (see
+        // `popPrematureReceiverConstructorDestructor`): hold its premature
+        // arming until the constructor below actually succeeds.
+        auto deferredReceiverConstructorDestructor =
+            popPrematureReceiverConstructorDestructor(call.f, dot.e1);
+        scope(success)
+            if (deferredReceiverConstructorDestructor !is null)
+                queueTemporaryDestructor(deferredReceiverConstructorDestructor);
+
         if (receiver == ExpressionResult.null_)
             throw new Exception(
                 "function call through null class reference `null`",
@@ -4076,6 +4126,11 @@ unsupportedExpression:
         // see `moduleTable`'s own field comment.
         child.moduleTable = moduleTable;
         child._temporaryPointerOwners = _temporaryPointerOwners;
+        // `_pendingTemporaryDestructors` and `_fullExpressionDepth` are
+        // deliberately left at the child's own defaults: a function call is
+        // a full-expression boundary for the callee's internals, so a
+        // callee arms and runs its own temporaries' destructors against its
+        // own depth, never the caller's.
         child._executionState = _executionState;
         child.lazyArgumentExpressions = lazyArgumentExpressions;
         child.lazyArgumentFrames = lazyArgumentFrames;
@@ -5477,6 +5532,17 @@ unsupportedExpression:
                     : runExpression(dot.e1);
             } else
                 receiver = runExpression(dot.e1);
+
+            // When `call` is itself the constructor about to run against
+            // this receiver, hold its premature arming until that call
+            // actually succeeds below (see
+            // `popPrematureReceiverConstructorDestructor`).
+            auto deferredReceiverConstructorDestructor =
+                popPrematureReceiverConstructorDestructor(call.f, dot.e1);
+            scope(success)
+                if (deferredReceiverConstructorDestructor !is null)
+                    queueTemporaryDestructor(deferredReceiverConstructorDestructor);
+
             queueConstructedReceiverDestructor(dot.e1);
             if (dot.e1.type.toBasetype.isTypeClass !is null)
                 receiver = rootedNativeClassValue(dot.e1, receiver);
@@ -5737,6 +5803,52 @@ unsupportedExpression:
         throw new Exception("Unsupported eval call.");
     }
 
+    // DMD lowers a user-constructor receiver to `((S __t = <placeholder>;) ,
+    // __t).__ctor(args)`, where `<placeholder>` is `__t`'s type's own
+    // default value -- never the constructor's real arguments. Evaluating
+    // that declaration (`executeDeclaration`, reached through
+    // `addressOfExpression`'s `CommaExp` handling or `runExpression`) arms
+    // `__t`'s destructor as soon as the placeholder assignment succeeds,
+    // which is correct once `__t` is a complete value but wrong here: when
+    // `call` is that same `__ctor`, `__t` is still just reserved storage,
+    // and a throwing constructor must leave nothing armed to destroy
+    // (compiled D never runs a receiver's destructor when its constructor
+    // threw). Pop that premature arming so the caller can hold it until
+    // `call` actually succeeds, then requeue it (`scope(success)`) -- every
+    // call site that resolves such a receiver needs this, both the
+    // constructor's own value evaluation (`evalCall`'s `DotVarExp` handling)
+    // and its address evaluation (`memberRefReturningCallAddress`, reached
+    // whenever a further ref-returning or address-taking use needs `__t`'s
+    // storage before the constructor has run).
+    private imported!"dmd.expression".Expression
+    popPrematureReceiverConstructorDestructor(
+        imported!"dmd.func".FuncDeclaration calleeFunction,
+        imported!"dmd.expression".Expression receiverExpression,
+    ) {
+        if (calleeFunction is null || calleeFunction.isCtorDeclaration is null)
+            return null;
+
+        auto comma = receiverExpression.isCommaExp;
+        if (comma is null)
+            return null;
+
+        auto declaration = comma.e1.isDeclarationExp;
+        if (declaration is null)
+            return null;
+
+        auto variable = declaration.declaration.isVarDeclaration;
+        if (
+            variable is null ||
+            variable.edtor is null ||
+            _pendingTemporaryDestructors.length == 0 ||
+            _pendingTemporaryDestructors[$ - 1] !is variable.edtor
+        )
+            return null;
+
+        --_pendingTemporaryDestructors.length;
+        return variable.edtor;
+    }
+
     private static bool isRawArraysConformabilityCheck(
         imported!"dmd.func".FuncDeclaration function_,
     ) {
@@ -5746,10 +5858,10 @@ unsupportedExpression:
     }
 
     // A constructor used directly as a member receiver owns a full-expression
-    // temporary. DMD records that cleanup on the synthesized declaration
-    // rather than emitting a DtorExpStatement, so queue it here to run at the
-    // end of the enclosing full expression instead of when the member call
-    // returns. Every member-call receiver-resolution site routes through
+    // temporary. DMD records that cleanup on the synthesized declaration's
+    // `edtor` rather than emitting a DtorExpStatement, so arm it here to run
+    // at the end of the enclosing full expression instead of when the member
+    // call returns. Every member-call receiver-resolution site routes through
     // this, so a constructed-temporary receiver is destroyed exactly once
     // regardless of whether the member call is read, assigned through, or
     // has its address taken.
@@ -5758,7 +5870,7 @@ unsupportedExpression:
     ) {
         auto destructor = constructedReceiverDestructor(receiver);
         if (destructor !is null)
-            queueReceiverDestructor(destructor);
+            queueTemporaryDestructor(destructor);
     }
 
     private imported!"dmd.expression".Expression
@@ -5786,7 +5898,26 @@ unsupportedExpression:
             return null;
 
         auto variable = declaration.declaration.isVarDeclaration;
-        return variable is null ? null : variable.edtor;
+        if (variable is null)
+            return null;
+
+        // A struct with a user-defined constructor lowers `S(args)` to
+        // `((S __t = <placeholder>;) , __t).__ctor(args)`, and `receiver`
+        // here is that whole `.__ctor(args)` call, already evaluated as a
+        // value -- reaching this point at all means that call returned
+        // rather than threw. `shouldArmDeclaredVariableDestructor` reporting
+        // true for `__t` means `executeDeclaration` armed it the moment its
+        // placeholder assignment ran, before the constructor call above;
+        // `popPrematureReceiverConstructorDestructor` will have popped that
+        // premature arming at the site that made this call and requeued it
+        // once the call succeeded, so declining here avoids arming it twice.
+        // A receiver `executeDeclaration` declined to arm (a genuinely
+        // uninitialised `= void` local, still `variable.edtor`'s original
+        // design case) has nothing to pop or requeue, so it is armed here
+        // instead, now that its constructor has run.
+        return shouldArmDeclaredVariableDestructor(variable)
+            ? null
+            : variable.edtor;
     }
 
     // A writable aggregate receiver is already stored in its caller-owned
@@ -10184,7 +10315,12 @@ unsupportedExpression:
     ) {
         import quickbite.backends.interpreter.aggregate_value: AggregateValue;
 
-        if (auto dot = assign.e1.isDotVarExp) {
+        // A field or a dereferenced pointer (`*log ~= id`, e.g. a
+        // destructor appending through a captured `int[]*` field) both read
+        // and write through the fully generic `runExpression`/`writeLocation`
+        // pair -- neither needs the ref-array-parameter or bounds-check
+        // handling the `VarExp`/`IndexExp` arms below exist for.
+        if (assign.e1.isDotVarExp !is null || assign.e1.isPtrExp !is null) {
             const appended = AggregateValue.withAppendedArrayElement(
                 runExpression(assign.e1),
                 runExpression(assign.e2),
@@ -12249,7 +12385,83 @@ unsupportedExpression:
     // Decision 7's no-result operation for a declaration: the initializer
     // constructs the variable's own storage and there is no value left over
     // to hand back (`runExpression`'s `declarationExpression` arm).
+    //
+    // Mirrors `Dsymbol_toElem` in DMD's `e2ir.d`: once construction succeeds,
+    // arm the variable's destructor (`vd.edtor`) so it runs at a later
+    // full-expression boundary, the same as any other constructed temporary.
+    // `constructDeclaredVariable` throws on failed construction, so a
+    // throwing constructor never reaches the arming below -- matching the
+    // oracle fact that a throwing constructor's destructor does not run.
     private void executeDeclaration(
+        imported!"dmd.expression".DeclarationExp declaration,
+    ) {
+        constructDeclaredVariable(declaration);
+
+        auto variable = declaration.declaration.isVarDeclaration;
+        if (variable is null || !shouldArmDeclaredVariableDestructor(variable))
+            return;
+
+        queueTemporaryDestructor(variable.edtor);
+    }
+
+    // A declared local's destructor is armed here unless: it is a manifest
+    // constant (no storage, nothing to destroy); it is left uninitialised by
+    // a `= void` initializer (an uninitialised binding holds no value to
+    // destroy); its initializer is a literal zero blit (`variable = 0`, how
+    // DMD default-initialises a provably all-zero struct or static-array
+    // local that is never bound to a later constructor call -- mirrors
+    // `constructDeclaredVariable`'s own static-array/struct zero-blit arm,
+    // which likewise treats this shape as already a complete default value
+    // rather than something to run an initializer for); or DMD itself has
+    // already arranged its destruction, which `needsScopeDtor` -- `edtor &&
+    // !(storage_class & STC.nodtor)` -- reports as false. DMD sets
+    // `STC.nodtor` ("don't add in dtor again", `statementsem.d`'s
+    // scope-statement lowering) on a local whose destruction it moved into a
+    // `DtorExpStatement`; without this guard that local would be destroyed
+    // twice.
+    //
+    // This says nothing about a constructor-call receiver
+    // (`((S __t = <placeholder>;) , __t).__ctor(args)`): whether that
+    // placeholder declaration reports true here depends on how
+    // `<placeholder>` prints. A field-by-field literal placeholder (a struct
+    // with a non-zero default, e.g. `Loud(0, true, null)`) is a `BlitExp`
+    // whose `e2` is not an `IntegerExp`, so it reports true here like any
+    // other locally-owned value with a destructor, because at this point
+    // `__t`'s own assignment (not the constructor) has just succeeded. A
+    // caller that is about to invoke that same constructor on `__t` must not
+    // trust this arming yet -- see `popPrematureReceiverConstructorDestructor`.
+    // An all-zero placeholder (e.g. `Zero(0)`) is instead the `IntegerExp`
+    // zero blit the guard above declines, so it reports false here and
+    // nothing is armed at declaration time; the constructor's own success
+    // arms it afterwards instead, through `constructedReceiverDestructor`'s
+    // own decline check on this same function.
+    private bool shouldArmDeclaredVariableDestructor(VarDeclaration variable) {
+        if (isManifestVariable(variable))
+            return false;
+
+        if (variable._init !is null && variable._init.isVoidInitializer !is null)
+            return false;
+
+        auto initializer = variable._init !is null
+            ? variable._init.isExpInitializer
+            : null;
+        if (initializer !is null) {
+            if (initializer.exp.isVoidInitExp !is null)
+                return false;
+
+            if (auto blit = initializer.exp.isBlitExp)
+                if (blit.e2.isIntegerExp !is null)
+                    return false;
+        }
+
+        return variable.needsScopeDtor;
+    }
+
+    // Decision 7's construction: writes the declaration's initializer into
+    // the variable's own storage. Unchanged behaviour, just named for reuse
+    // by `executeDeclaration`, which arms the variable's destructor after
+    // this returns successfully.
+    private void constructDeclaredVariable(
         imported!"dmd.expression".DeclarationExp declaration,
     ) {
         auto variable = declaration.declaration.isVarDeclaration;
