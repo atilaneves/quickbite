@@ -11280,36 +11280,19 @@ unsupportedExpression:
         throw new Exception(text("Unsupported eval expression: ", cast_.op));
     }
 
-    // An array-literal element typed `delegate` (`[() => 42]`) may carry a
-    // LIVE callable value rather than `null`. `AggregateValue.
-    // reconstructArray`'s `writeValue` call only ever accepts `ExpressionResult.null_`
-    // for a Tdelegate element, so every live entry is substituted with
-    // `ExpressionResult.null_` for the reconstruction and then re-registered in
-    // `nativeDelegateSlots`, keyed by the RESULT array's own element
-    // address -- mirroring `structLiteralValue`'s identical
-    // substitute-then-register handling.
+    // An array literal owns its header and backing storage before it evaluates
+    // an element. Each result then writes into its final typed place in DMD's
+    // source order. `writeStoredValue` records live delegate, function, and
+    // TypeInfo metadata at that exact element address.
     private ExpressionResult arrayValue(
         imported!"dmd.expression".ArrayLiteralExp array,
     ) {
-        import dmd.astenums: TY;
-        import quickbite.backends.interpreter.scratch_array: releaseScratchArray;
-
-        auto elementType = array.type.toBasetype.nextOf;
-        const isDelegateArray = elementType !is null
-            && elementType.toBasetype.ty == TY.Tdelegate;
+        import quickbite.backends.interpreter.aggregate_value: AggregateValue;
+        import quickbite.backends.interpreter.place: Place;
 
         const length = array.elements is null ? 0 : (*array.elements).length;
-        auto values = new ExpressionResult[](length);
-        scope(exit) releaseScratchArray(values);
-        auto liveDelegateIndices = isDelegateArray
-            ? new size_t[](length)
-            : null;
-        scope(exit) releaseScratchArray(liveDelegateIndices);
-        auto liveDelegateValues = isDelegateArray
-            ? new ExpressionResult[](length)
-            : null;
-        scope(exit) releaseScratchArray(liveDelegateValues);
-        size_t liveDelegateCount;
+        auto owner = AggregateValue.allocateArray(array.type, length);
+        auto destination = Place(owner.address, array.type);
         if (array.elements !is null)
             // DMD's sparse form: a null element means the value is in `basis`
             // (see ArrayLiteralExp.getElement).
@@ -11319,22 +11302,9 @@ unsupportedExpression:
                 auto value = literal is null
                     ? runExpressionValue(source)
                     : runFunctionLiteralDeclaration(literal);
-                if (isDelegateArray && value != ExpressionResult.null_) {
-                    liveDelegateIndices[liveDelegateCount] = index;
-                    liveDelegateValues[liveDelegateCount] = value;
-                    ++liveDelegateCount;
-                    value = ExpressionResult.null_;
-                }
-                values[index] = value;
+                writeStoredValue(destination.index(index), value);
             }
-
-        auto result = reconstructStoredArray(array.type, values);
-        foreach (position; 0 .. liveDelegateCount) {
-            const index = liveDelegateIndices[position];
-            nativeDelegateSlots[AggregateValue.elementAddress(result, index)] =
-                liveDelegateValues[position];
-        }
-        return result;
+        return ExpressionResult.nativeAggregateValue(owner);
     }
 
     private ExpressionResult reconstructStoredArray(
@@ -11343,23 +11313,12 @@ unsupportedExpression:
     ) {
         import quickbite.backends.interpreter.aggregate_value: AggregateValue;
         import quickbite.backends.interpreter.place: Place;
-        import quickbite.backends.interpreter.scratch_array: releaseScratchArray;
 
-        if (!canContainStoredMetadata(type))
-            return AggregateValue.reconstructArray(type, elements);
-
-        auto nativeElements = new ExpressionResult[](elements.length);
-        scope(exit) releaseScratchArray(nativeElements);
-        foreach (index, element; elements)
-            nativeElements[index] = element.isTypeName
-                ? ExpressionResult.null_
-                : element;
-
-        auto result = AggregateValue.reconstructArray(type, nativeElements);
-        auto destination = Place(AggregateValue.native(result).address, type);
+        auto owner = AggregateValue.allocateArray(type, elements.length);
+        auto destination = Place(owner.address, type);
         foreach (index, element; elements)
             writeStoredValue(destination.index(index), element);
-        return result;
+        return ExpressionResult.nativeAggregateValue(owner);
     }
 
     private bool canContainStoredMetadata(
@@ -11943,7 +11902,14 @@ unsupportedExpression:
             );
         if (!source.isNativeAggregate)
             throw new Exception("Array slice needs native aggregate storage.");
-        return AggregateValue.slice(source, slice.type, lower, upper);
+        return ExpressionResult.nativeAggregateValue(
+            AggregateValue.slice(
+                AggregateValue.native(source),
+                slice.type,
+                lower,
+                upper,
+            ),
+        );
     }
 
     // Slicing an addressable array reads only its header/length and forms a
@@ -11984,10 +11950,8 @@ unsupportedExpression:
             slice.type.toBasetype.nextOf.toBasetype.ty == TY.Tvoid
             ? (upper - lower) * elementSize
             : upper - lower;
-        return AggregateValue.reconstructNativeArrayWithLength(
-            slice.type,
-            length,
-            data,
+        return ExpressionResult.nativeAggregateValue(
+            AggregateValue.borrowArrayOwner(slice.type, length, data),
         );
     }
 
