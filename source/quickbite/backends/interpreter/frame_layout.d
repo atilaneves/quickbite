@@ -288,11 +288,10 @@ public FrameLayout computeExpressionFrameLayout(
 
 
 // The Interpreter needs a typed temporary only for an address of a by-value
-// call result or of a symbolic class-info projection. Reserve every
-// non-reference call and dot expression: the later address path selects the
-// slot by this expression identity, while the layout pass remains independent
-// from Walker's evaluation policy. The same expression reuses its slot after
-// each full-expression boundary; it is never live twice in one activation.
+// call result or of a symbolic class-info projection. The latter has no
+// composable native place, while an ordinary dot expression composes its
+// address from its receiver. The same expression reuses its slot after each
+// full-expression boundary; it is never live twice in one activation.
 private imported!"dmd.expression".Expression[] addressableTemporaryExpressions(
     imported!"dmd.statement".Statement statement,
 ) @trusted {
@@ -324,6 +323,8 @@ private imported!"dmd.expression".Expression[] addressableTemporaryExpressionsIm
 ) @trusted {
     import dmd.dsymbolsem: toAlias;
     import dmd.expression: CallExp, DeclarationExp, DotVarExp, Expression;
+    import quickbite.backends.interpreter.class_info_projection:
+        isSymbolicClassInfoProjection;
     import dmd.visitor: StoppableVisitor;
     import dmd.visitor.postorder: walkPostorder;
 
@@ -357,7 +358,8 @@ private imported!"dmd.expression".Expression[] addressableTemporaryExpressionsIm
         }
 
         override void visit(DotVarExp dot) {
-            append(dot);
+            if (isSymbolicClassInfoProjection(dot))
+                append(dot);
         }
 
         // `walkPostorder` does not descend into a declaration initializer.
