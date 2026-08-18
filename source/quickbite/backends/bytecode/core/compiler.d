@@ -6139,6 +6139,41 @@ private struct Compiler {
             return compileExpression(expression);
         if (auto address = placeAddressOrNull(expression))
             return *address;
+        // A postblit call whose receiver is itself a first-write
+        // construction (`(this.payload = c).__postblit()`, druntime
+        // `emplaceRef`'s generated `S.this()`) arrives as a
+        // ConstructExp/BlitExp, not a plain lvalue: DMD emits this shape
+        // whenever a struct-typed field or local is initialised and then
+        // immediately postblitted. `placeAddressOrNull` above declines it
+        // (a Construct/BlitExp is not a place), so without this the
+        // fallback below reads only the assigned VALUE (`aggregateValueOffset`
+        // -> `structOperandOffset` -> `initializerExpression` strips the
+        // destination) and hands the caller a disconnected temporary -- a
+        // wrapping postblit call then mutates that temporary instead of the
+        // real field/local. Blit the source into the real destination's
+        // storage and return its address instead, restricted to the lvalue
+        // shapes DMD is known to emit here (matching the identical
+        // whitelist `compileExpression`'s statement-level ConstructExp/
+        // BlitExp dispatch already uses).
+        if (auto construct = expression.isConstructExp)
+            if (construct.e1.isDotVarExp !is null ||
+                construct.e1.isVarExp !is null ||
+                construct.e1.isSliceExp !is null ||
+                construct.e1.isThisExp !is null ||
+                construct.e1.isIndexExp !is null)
+                if (auto destination = placeOrNull(construct.e1)) {
+                    storeExpressionIntoPlace(*destination, construct.e2);
+                    return addressOfPlace(*destination);
+                }
+        if (auto blit = expression.isBlitExp)
+            if (blit.e1.isDotVarExp !is null ||
+                blit.e1.isVarExp !is null ||
+                blit.e1.isSliceExp !is null ||
+                blit.e1.isThisExp !is null)
+                if (auto destination = placeOrNull(blit.e1)) {
+                    storeExpressionIntoPlace(*destination, blit.e2);
+                    return addressOfPlace(*destination);
+                }
         if (expression.type !is null &&
             typeFacts(expression.type).isAggregate) {
             const value = aggregateValueOffset(
@@ -10899,16 +10934,6 @@ private struct Compiler {
                 return compileStringForeachApply(call, applyMode);
         }
 
-        if (function_ !is null && function_.ident !is null &&
-            function_.ident.toString == "emplace")
-            if (auto emplaced = compileEmplace(call))
-                return *emplaced;
-
-        if (function_ !is null && function_.ident !is null &&
-            function_.ident.toString == "emplaceRef")
-            if (auto emplaced = compileEmplaceRef(call))
-                return *emplaced;
-
         // `_d_arraybounds*` is the bounds-failure helper in DMD's `m[k]`
         // lowering (`slot ? slot : (_d_arraybounds(...), null)`); reaching it
         // means the key was absent, so raise the plain "Range violation".
@@ -12159,155 +12184,6 @@ private struct Compiler {
             returnType.scalar == ScalarType.void_)
             return 0;
         return allocateBytes(size(returnType), 8);
-    }
-
-    private Operand* compileEmplace(CallExp call) {
-        if (call.arguments is null || call.arguments.length < 2)
-            return null;
-
-        const destination = compileExpression((*call.arguments)[0]);
-        if (!destination.isPointer)
-            return null;
-
-        const value = compileExpression((*call.arguments)[1]);
-        // `destination.pointerElement` is `void_` for a struct/static-array
-        // pointee (no opcode scalar type at all, matching `storeThroughPointer`
-        // above); its width then comes from the emplaced value's own DMD
-        // type size, never a bare `size(ScalarType.void_)`, which is 0.
-        const elementSize = destination.pointerElement == ScalarType.void_
-            ? typeFacts((*call.arguments)[1].type).byteWidth
-            : size(destination.pointerElement);
-        emitPointerStore(
-            value.offset, destination.offset, compileSizeConstant(0),
-            elementSize,
-        );
-
-        auto result = new Operand;
-        *result = destination;
-        return result;
-    }
-
-    private Operand* compileEmplaceRef(CallExp call) {
-        import dmd.astenums: TY;
-
-        if (call.arguments is null || call.arguments.length == 0)
-            return null;
-
-        auto index = (*call.arguments)[0].isIndexExp;
-        if (index is null || index.e1.type is null ||
-            index.e1.type.toBasetype.ty != TY.Tarray)
-            return null;
-
-        if (call.arguments.length == 1) {
-            const descriptor = dynamicArrayDescriptor(index.e1);
-            if (descriptor.elementType == ScalarType.void_)
-                return null;
-
-            const elementSize = dynamicArrayElementSize(index.e1.type);
-            if (elementSize > ulong.sizeof)
-                return null;
-
-            const value = allocateBytes(elementSize, elementSize);
-            _code ~= Instruction(
-                Op.loadConstant,
-                value,
-                constantIndex(
-                    descriptor.elementType == ScalarType.char_
-                        ? char.init
-                        : descriptor.elementType == ScalarType.wchar_
-                            ? wchar.init
-                            : 0,
-                ),
-                cast(ushort) elementSize,
-            );
-            const indexSlot = compileExpression(index.e2);
-            emitIndexStore(
-                value, descriptor.offset, indexSlot.offset, elementSize,
-            );
-
-            auto result = new Operand;
-            *result = Operand(value, descriptor.elementType);
-            return result;
-        }
-
-        if (index.type !is null &&
-            index.type.toBasetype.isTypeStruct !is null)
-        {
-            const descriptor = dynamicArrayDescriptor(index.e1);
-
-            const elementSize = dynamicArrayElementSize(index.e1.type);
-            if (elementSize > ulong.sizeof)
-                return null;
-
-            if (call.arguments.length == 2) {
-                auto source = structValueOffsetOrNull(
-                    (*call.arguments)[1],
-                );
-                if (source is null)
-                    return null;
-
-                const value = allocateStructBlock(index.type);
-                _code ~= Instruction(
-                    Op.copy,
-                    value,
-                    *source,
-                    cast(ushort) elementSize,
-                );
-                if (auto postblit = structDeclarationOf(index.type).postblit)
-                    runStructMethod(value, postblit);
-
-                const indexSlot = compileExpression(index.e2);
-                emitIndexStore(
-                    value, descriptor.offset, indexSlot.offset, elementSize,
-                );
-
-                auto result = new Operand;
-                *result = Operand(value, ScalarType.void_);
-                return result;
-            }
-
-            auto constructor = structDeclarationOf(index.type).ctor
-                .isFuncDeclaration;
-            if (constructor is null)
-                return null;
-
-            const value = allocateStructBlock(index.type);
-            zeroFrameBlock(value, elementSize);
-            auto arguments = new Expressions(call.arguments.length - 1);
-            foreach (argumentIndex; 0 .. arguments.length)
-                (*arguments)[argumentIndex] =
-                    (*call.arguments)[argumentIndex + 1];
-            runConstructor(
-                value,
-                constructor,
-                arguments,
-            );
-
-            const indexSlot = compileExpression(index.e2);
-            emitIndexStore(
-                value, descriptor.offset, indexSlot.offset, elementSize,
-            );
-
-            auto result = new Operand;
-            *result = Operand(value, ScalarType.void_);
-            return result;
-        }
-
-        // The struct-typed `index.type` shapes are all handled above and
-        // return; whatever reaches here is a scalar (or pointer/classPointer)
-        // element, so `storeExpressionIntoPlace`'s aggregate dispatcher is
-        // the wrong tool -- its `aggregateValueOffset` throws "Unsupported
-        // aggregate assignment" for exactly those representations. A bare
-        // compile-and-store is both correct and sufficient here.
-        if (auto place = placeOrNull(index)) {
-            const value = compileExpression((*call.arguments)[1]);
-            storePlace(*place, value);
-            auto result = new Operand;
-            *result = loadPlace(*place);
-            return result;
-        }
-
-        return null;
     }
 
     private Expression immediateLambdaReturn(CallExp call) {
