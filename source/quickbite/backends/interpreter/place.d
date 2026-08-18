@@ -243,13 +243,16 @@ public struct Place {
         writeStoredPointer(_address, reference);
     }
 
-    // Reads the scalar at this place's address, at this place's own
-    // static type, via `native_scalar.readScalar` -- this primitive never
-    // grows a second scalar<->bytes codec. Only a native scalar type
-    // (`native_scalar.isNativeScalarType`) is legal here; a non-scalar
-    // place refuses rather than guessing at a byte interpretation.
+    // Reads the scalar at this place's address, at this place's own static
+    // type. The compatibility boundary boxes the result only after
+    // `native_scalar.readNativeScalar` has read it into the statically
+    // selected host local. Only a native scalar type is legal here; a
+    // non-scalar place refuses rather than guessing at a byte interpretation.
     public imported!"quickbite.backends.interpreter.expression_result".ExpressionResult loadScalar() @safe {
-        import quickbite.backends.interpreter.native_scalar: isNativeScalarType, readScalar;
+        import dmd.astenums: TY;
+        import quickbite.backends.interpreter.expression_result: ExpressionResult;
+        import quickbite.backends.interpreter.native_scalar:
+            isNativeScalarType, nativeScalarKindOf, readNativeScalar;
         import quickbite.backends.interpreter.layout: typeByteSize;
 
         if (!isNativeScalarType(_type))
@@ -258,7 +261,42 @@ public struct Place {
                 ~ "type is not a native scalar type",
             );
 
-        return readScalar(_type, placeBytes(_address, typeByteSize(_type)));
+        const bytes = placeBytes(_address, typeByteSize(_type));
+        switch (nativeScalarKindOf(_type)) with (TY) {
+            case Tbool:
+                return ExpressionResult(readNativeScalar!bool(_type, bytes));
+            case Tchar:
+                return ExpressionResult(readNativeScalar!char(_type, bytes));
+            case Twchar:
+                return ExpressionResult(readNativeScalar!wchar(_type, bytes));
+            case Tdchar:
+                return ExpressionResult(readNativeScalar!dchar(_type, bytes));
+            case Tint8:
+                return ExpressionResult(readNativeScalar!byte(_type, bytes));
+            case Tuns8:
+                return ExpressionResult(readNativeScalar!ubyte(_type, bytes));
+            case Tint16:
+                return ExpressionResult(readNativeScalar!short(_type, bytes));
+            case Tuns16:
+                return ExpressionResult(readNativeScalar!ushort(_type, bytes));
+            case Tint32:
+                return ExpressionResult(readNativeScalar!int(_type, bytes));
+            case Tuns32:
+                return ExpressionResult(readNativeScalar!uint(_type, bytes));
+            case Tint64:
+                return ExpressionResult(readNativeScalar!long(_type, bytes));
+            case Tuns64:
+                return ExpressionResult(readNativeScalar!ulong(_type, bytes));
+            case Tfloat32:
+                return ExpressionResult(readNativeScalar!float(_type, bytes));
+            case Tfloat64:
+                return ExpressionResult(readNativeScalar!double(_type, bytes));
+            default:
+                throw new Exception(
+                    "quickbite.backends.interpreter.place.Place.loadScalar: "
+                    ~ "unsupported native scalar type",
+                );
+        }
     }
 
     // The inverse of `loadScalar`: writes `value`'s bits into this

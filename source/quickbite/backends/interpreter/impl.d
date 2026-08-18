@@ -7162,8 +7162,7 @@ unsupportedExpression:
 
     private ExpressionResult structValueFromCell(in ExpressionResult current, ref NativeStruct cell) {
         import quickbite.backends.interpreter.aggregate_value: AggregateValue;
-        import quickbite.backends.interpreter.native_scalar:
-            isNativeScalarType, readScalar;
+        import quickbite.backends.interpreter.native_scalar: isNativeScalarType;
         import quickbite.backends.interpreter.place: Place;
         import quickbite.frontend.dmd.types:
             isDynamicArrayType, isStaticArrayType;
@@ -7174,7 +7173,7 @@ unsupportedExpression:
 
             if (isNativeScalarType(fieldType)) {
                 value = AggregateValue.withStructField(value, index,
-                    readScalar(fieldType, cell.field(index)));
+                    Place(cell.field(index).ptr, fieldType).loadScalar);
                 continue;
             }
 
@@ -7201,10 +7200,10 @@ unsupportedExpression:
                             elementCell,
                         );
                     } else
-                        elementValue = readScalar(
+                        elementValue = Place(
+                            arrayCell.element(elementIndex).ptr,
                             elementType,
-                            arrayCell.element(elementIndex),
-                        );
+                        ).loadScalar;
                     fieldValue = AggregateValue.withArrayElement(fieldValue,
                         elementIndex,
                         elementValue,
@@ -9185,21 +9184,20 @@ unsupportedExpression:
         return scalarFromBytes(type, bytes);
     }
 
-    // The inverse of `scalarBytes` above, via `native_scalar.readScalar`.
-    // This also now succeeds for `float`/`double`: routing through the
-    // single scalar<->bytes codec dropped the old name-matched `switch`'s
-    // throw on those two types.
+    // The inverse of `scalarBytes` above. `Place.loadScalar` keeps this
+    // transitional ExpressionResult boundary outside `native_scalar` while
+    // preserving the codec's `float`/`double` behaviour.
     private ExpressionResult scalarFromBytes(
         imported!"dmd.mtype".Type type,
         in ExpressionResult[] bytes,
     ) {
-        import quickbite.backends.interpreter.native_scalar: readScalar;
+        import quickbite.backends.interpreter.place: Place;
 
         auto raw = new ubyte[](bytes.length);
         foreach (index, byte_; bytes)
             raw[index] = cast(ubyte) byte_.asLong;
 
-        return readScalar(type, raw);
+        return Place(raw.ptr, type).loadScalar;
     }
 
     private void writeIndexLocation(
@@ -9372,7 +9370,8 @@ unsupportedExpression:
         import dmd.astenums: TY;
         import quickbite.backends.interpreter.layout: structFields;
         import quickbite.backends.interpreter.native_scalar:
-            isNativeScalarType, readScalar, writeScalar;
+            isNativeScalarType, writeScalar;
+        import quickbite.backends.interpreter.place: Place;
         import quickbite.frontend.dmd.types: isStaticArrayType;
 
         auto fields = structFields(unionType);
@@ -9447,7 +9446,7 @@ unsupportedExpression:
 
             if (isNativeScalarType(sibling.type)) {
                 updated = AggregateValue.withStructField(updated, siblingIndex,
-                    readScalar(sibling.type, cell.field(siblingIndex)));
+                    Place(cell.field(siblingIndex).ptr, sibling.type).loadScalar);
                 continue;
             }
 
@@ -9463,7 +9462,10 @@ unsupportedExpression:
                 auto siblingArrayCell = cell.arrayField(siblingIndex);
                 foreach (elementIndex; 0 .. AggregateValue.length(siblingCurrent))
                     siblingCurrent = AggregateValue.withArrayElement(siblingCurrent, elementIndex,
-                        readScalar(siblingElementType, siblingArrayCell.element(elementIndex)));
+                        Place(
+                            siblingArrayCell.element(elementIndex).ptr,
+                            siblingElementType,
+                        ).loadScalar);
                 updated = AggregateValue.withStructField(updated, siblingIndex, siblingCurrent);
                 continue;
             }
@@ -11404,7 +11406,8 @@ unsupportedExpression:
     ) {
         import quickbite.backends.interpreter.aggregate_value: AggregateValue;
         import quickbite.backends.interpreter.native_scalar:
-            isNativeScalarType, readScalar, writeScalar;
+            isNativeScalarType, writeScalar;
+        import quickbite.backends.interpreter.place: Place;
         if (index == 0 || fieldsSoFar.length == 0 || literal.sd is null)
             return false;
 
@@ -11468,7 +11471,7 @@ unsupportedExpression:
         }
 
         if (siblingScalar) {
-            value = readScalar(field.type, cell.field(index));
+            value = Place(cell.field(index).ptr, field.type).loadScalar;
         } else if (siblingStruct) {
             auto current = defaultValue(field);
             if (!AggregateValue.isStruct(current))

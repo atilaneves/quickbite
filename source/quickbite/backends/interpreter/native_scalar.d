@@ -34,7 +34,7 @@ private:
 // (rather than trusting a caller-supplied basetype) also makes an enum
 // type's integral base type dispatch correctly without a caller having to
 // know to unwrap it first.
-private imported!"dmd.astenums".TY nativeScalarKindOf(
+public imported!"dmd.astenums".TY nativeScalarKindOf(
     imported!"dmd.mtype".Type type,
 ) @trusted {
     return type.toBasetype.ty;
@@ -185,124 +185,73 @@ private long scalarLong(in imported!"quickbite.backends.interpreter.expression_r
 }
 
 
-// The inverse of `writeScalar`: reads `src`'s bytes back as `type`'s own
-// native layout. `src.length` must equal `layout.typeByteSize(type)`,
-// enforced the same unconditional-throw way `writeScalar` enforces
-// `dest.length`, for the same reason.
+// Reads `src`'s bytes into the host scalar type selected by the caller.
+// The caller selects `T` from the DMD expression type; this leaf codec does
+// not reconstruct a transient interpreter value. `src.length` must equal
+// both the DMD layout size and `T.sizeof`, enforced with unconditional throws
+// for the same safety reason as `writeScalar`.
+public T readNativeScalar(T)(
+    imported!"dmd.mtype".Type type,
+    in ubyte[] src,
+) @trusted {
+    import core.stdc.string: memcpy;
+    import quickbite.backends.interpreter.layout: typeByteSize;
+
+    if (src.length != typeByteSize(type) || src.length != T.sizeof)
+        throw new Exception(
+            "quickbite.backends.interpreter.native_scalar.readNativeScalar: "
+            ~ "source size does not match the scalar type",
+        );
+
+    T value;
+    // @trusted: the checks above prove the copy reads exactly the scalar
+    // local's width, and memcpy accepts an unaligned source address.
+    memcpy(&value, src.ptr, T.sizeof);
+    return value;
+}
+
+
+// Temporary compatibility API for existing scalar-codec clients. New
+// production code must use `readNativeScalar` or `Place.loadNativeScalar` so
+// the leaf codec stays typed. This wrapper only reconstructs the legacy
+// carrier after the typed read has completed.
+deprecated("Use readNativeScalar with a statically selected host type.")
 public imported!"quickbite.backends.interpreter.expression_result".ExpressionResult readScalar(
     imported!"dmd.mtype".Type type,
     in ubyte[] src,
 ) @safe {
-    import quickbite.backends.interpreter.layout: typeByteSize;
-
-    if (src.length != typeByteSize(type))
-        throw new Exception(
-            "quickbite.backends.interpreter.native_scalar.readScalar: "
-            ~ "src.length does not match layout.typeByteSize(type)",
-        );
-
-    return readScalarBits(nativeScalarKindOf(type), src);
-}
-
-
-// @trusted: `memcpy`s exactly `src.length` bytes (already verified by
-// `readScalar` above to equal the native width for `kind`) into a
-// same-sized local, then boxes it -- the read-side counterpart of
-// `writeScalarBits`, with the same alignment reasoning for using `memcpy`
-// over a pointer-typed load.
-private imported!"quickbite.backends.interpreter.expression_result".ExpressionResult readScalarBits(
-    imported!"dmd.astenums".TY kind,
-    in ubyte[] src,
-) @trusted {
-    import core.stdc.string: memcpy;
     import dmd.astenums: TY;
     import quickbite.backends.interpreter.expression_result: ExpressionResult;
 
-    switch (kind) with (TY) {
-        case Tbool: {
-            bool bits;
-            memcpy(&bits, src.ptr, bits.sizeof);
-            return ExpressionResult(bits);
-        }
-
-        case Tchar: {
-            char bits;
-            memcpy(&bits, src.ptr, bits.sizeof);
-            return ExpressionResult(bits);
-        }
-
-        case Twchar: {
-            wchar bits;
-            memcpy(&bits, src.ptr, bits.sizeof);
-            return ExpressionResult(bits);
-        }
-
-        case Tdchar: {
-            dchar bits;
-            memcpy(&bits, src.ptr, bits.sizeof);
-            return ExpressionResult(bits);
-        }
-
-        case Tint8: {
-            byte bits;
-            memcpy(&bits, src.ptr, bits.sizeof);
-            return ExpressionResult(bits);
-        }
-
-        case Tuns8: {
-            ubyte bits;
-            memcpy(&bits, src.ptr, bits.sizeof);
-            return ExpressionResult(bits);
-        }
-
-        case Tint16: {
-            short bits;
-            memcpy(&bits, src.ptr, bits.sizeof);
-            return ExpressionResult(bits);
-        }
-
-        case Tuns16: {
-            ushort bits;
-            memcpy(&bits, src.ptr, bits.sizeof);
-            return ExpressionResult(bits);
-        }
-
-        case Tint32: {
-            int bits;
-            memcpy(&bits, src.ptr, bits.sizeof);
-            return ExpressionResult(bits);
-        }
-
-        case Tuns32: {
-            uint bits;
-            memcpy(&bits, src.ptr, bits.sizeof);
-            return ExpressionResult(bits);
-        }
-
-        case Tint64: {
-            long bits;
-            memcpy(&bits, src.ptr, bits.sizeof);
-            return ExpressionResult(bits);
-        }
-
-        case Tuns64: {
-            ulong bits;
-            memcpy(&bits, src.ptr, bits.sizeof);
-            return ExpressionResult(bits);
-        }
-
-        case Tfloat32: {
-            float bits;
-            memcpy(&bits, src.ptr, bits.sizeof);
-            return ExpressionResult(bits);
-        }
-
-        case Tfloat64: {
-            double bits;
-            memcpy(&bits, src.ptr, bits.sizeof);
-            return ExpressionResult(bits);
-        }
-
+    switch (nativeScalarKindOf(type)) with (TY) {
+        case Tbool:
+            return ExpressionResult(readNativeScalar!bool(type, src));
+        case Tchar:
+            return ExpressionResult(readNativeScalar!char(type, src));
+        case Twchar:
+            return ExpressionResult(readNativeScalar!wchar(type, src));
+        case Tdchar:
+            return ExpressionResult(readNativeScalar!dchar(type, src));
+        case Tint8:
+            return ExpressionResult(readNativeScalar!byte(type, src));
+        case Tuns8:
+            return ExpressionResult(readNativeScalar!ubyte(type, src));
+        case Tint16:
+            return ExpressionResult(readNativeScalar!short(type, src));
+        case Tuns16:
+            return ExpressionResult(readNativeScalar!ushort(type, src));
+        case Tint32:
+            return ExpressionResult(readNativeScalar!int(type, src));
+        case Tuns32:
+            return ExpressionResult(readNativeScalar!uint(type, src));
+        case Tint64:
+            return ExpressionResult(readNativeScalar!long(type, src));
+        case Tuns64:
+            return ExpressionResult(readNativeScalar!ulong(type, src));
+        case Tfloat32:
+            return ExpressionResult(readNativeScalar!float(type, src));
+        case Tfloat64:
+            return ExpressionResult(readNativeScalar!double(type, src));
         default:
             throw new Exception(
                 "quickbite.backends.interpreter.native_scalar.readScalar: "
