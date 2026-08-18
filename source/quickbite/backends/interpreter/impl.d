@@ -7120,7 +7120,8 @@ unsupportedExpression:
 
         if (function_.isConstructorFunction) {
             if (constructionDestination !is null) {
-                constructionDestination.markConstructed;
+                if (constructionDestination.isFresh)
+                    constructionDestination.markConstructed;
                 return ExpressionResult.void_;
             }
             return child.thisValue;
