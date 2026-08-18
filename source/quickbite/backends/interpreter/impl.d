@@ -678,9 +678,8 @@ private struct Walker {
     private size_t[const(void)*] _syntheticDollarValues;
     // `= void` is state attached to the authoritative binding address.
     private UninitializedBindings* uninitializedBindingAddresses;
-    // What a `return` statement produced, read by whoever ran this
-    // activation. Statement execution never writes here: a statement is not
-    // a value.
+    // A `ref` return's lvalue address. Ordinary non-void returns construct in
+    // `_returnDestination`; statement execution never creates a value carrier.
     private ExpressionResult _returnValue;
     // An interpreted non-void call constructs directly into its caller's
     // fresh storage. This pointer is valid only while the synchronous child
@@ -783,7 +782,11 @@ private struct Walker {
             }
 
             const savedReturned = returned;
-            const savedResult = _returnValue;
+            // Only a `ref` return transports data through the activation.
+            // An ordinary return has already constructed its caller-owned
+            // destination before control reaches this finally body.
+            const savedRefReturn = addressOfRefReturn ? _returnValue :
+                ExpressionResult.void_;
             const savedLoopControl = loopControl;
             const savedLoopControlLabel = loopControlLabel;
             returned = false;
@@ -818,8 +821,8 @@ private struct Walker {
             }
             if (!returned && loopControl == LoopControl.none) {
                 returned = savedReturned;
-                if (returned)
-                    _returnValue = savedResult;
+                if (returned && addressOfRefReturn)
+                    _returnValue = savedRefReturn;
                 loopControl = savedLoopControl;
                 loopControlLabel = savedLoopControlLabel;
                 if (bodyException !is null)
@@ -885,13 +888,7 @@ private struct Walker {
                 else if (addressOfRefReturn)
                     _returnValue = refReturnAddress(return_.exp);
                 else if (_returnDestination !is null) {
-                    if (!constructInto(return_.exp, *_returnDestination)) {
-                        auto value = runExpressionValue(return_.exp);
-                        if (return_.exp.type.toBasetype.isTypeClass !is null)
-                            value = rootedNativeClassValue(return_.exp, value);
-                        writeStoredValue(_returnDestination.place, value);
-                        _returnDestination.markConstructed;
-                    }
+                    constructReturnValue(return_.exp, *_returnDestination);
                 }
                 else {
                     _returnValue = runExpressionValue(return_.exp);
@@ -2508,6 +2505,42 @@ private struct Walker {
             const value = runExpressionImpl(expression);
             writeStoredValue(destination.place, value);
             destination.markConstructed;
+        }
+    }
+
+    // A normal interpreted return owns its caller-provided destination. A
+    // `finally` body can replace an earlier return, however, so its second
+    // return first constructs a fresh typed temporary and then replaces the
+    // already-complete destination. This keeps the control-flow rule without
+    // reintroducing the expression carrier as the call/return channel.
+    private void constructReturnValue(
+        imported!"dmd.expression".Expression expression,
+        ref ConstructionDestination destination,
+    ) {
+        if (destination.isFresh) {
+            runExpression(expression, destination);
+        } else {
+            import quickbite.backends.interpreter.place: Place;
+
+            auto temporary = ConstructionDestination(Place(
+                _activationFrame.temporaryAddress(expression),
+                expression.type,
+            ));
+            runExpression(expression, temporary);
+            writeStoredValue(destination.place, readStoredValue(temporary.place));
+        }
+
+        // A class place stores only its body pointer. Keep the owning native
+        // aggregate when a class binding is returned, just as an argument or
+        // assignment does. The expression itself still constructed in the
+        // typed return place; this is ownership metadata, not a return value
+        // carrier.
+        if (expression.type.toBasetype.isTypeClass !is null) {
+            auto rooted = rootedNativeClassValue(
+                expression,
+                readStoredValue(destination.place),
+            );
+            writeStoredValue(destination.place, rooted);
         }
     }
 
@@ -6845,6 +6878,8 @@ unsupportedExpression:
             arguments,
             captureLocals,
         );
+        if (constructionDestination !is null)
+            return ExpressionResult.void_;
         return child._returnValue;
     }
 
@@ -6949,6 +6984,40 @@ unsupportedExpression:
         );
         child.bindThisReferenceAddress(function_, child.thisValue);
         if (
+            function_.constructorStructDeclaration !is null &&
+            constructionDestination !is null
+        ) {
+            import quickbite.backends.interpreter.place: Place;
+
+            // DMD gives a struct constructor a temporary receiver to
+            // initialize. The call's caller has fresher typed storage for the
+            // completed value, so seed that storage from the receiver and
+            // lend it to `this`. The constructor then writes its final bytes
+            // straight to the caller; it does not return `child.thisValue`
+            // for a later carrier-to-place copy.
+            if (
+                precomputedReceiverPointerAddress !is null &&
+                precomputedReceiverPointerAddress.isPointer &&
+                receiverExpression !is null
+            ) {
+                copyPlaceValue(
+                    Place(
+                        precomputedReceiverPointerAddress.pointerAddress,
+                        receiverExpression.type,
+                    ),
+                    constructionDestination.place,
+                );
+            } else {
+                writeStoredValue(constructionDestination.place, child.thisValue);
+            }
+            child.thisAddress = constructionDestination.place.address;
+            if (child._activationFrame.hasReferenceSlot(function_.vthis))
+                child._activationFrame.setReferenceSlot(
+                    function_.vthis,
+                    child.thisAddress,
+                );
+            child.thisValue = borrowedAggregateValue(constructionDestination.place);
+        } else if (
             function_.vthis !is null &&
             function_.vthis.type.toBasetype.isTypeStruct !is null &&
             isWritableLocation(receiverExpression)
@@ -7045,9 +7114,16 @@ unsupportedExpression:
             arguments,
         );
 
-        if (function_.isConstructorFunction)
+        if (function_.isConstructorFunction) {
+            if (constructionDestination !is null) {
+                constructionDestination.markConstructed;
+                return ExpressionResult.void_;
+            }
             return child.thisValue;
+        }
 
+        if (constructionDestination !is null)
+            return ExpressionResult.void_;
         return child._returnValue;
     }
 
