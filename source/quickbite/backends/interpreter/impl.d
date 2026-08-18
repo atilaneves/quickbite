@@ -2726,13 +2726,22 @@ nullExpression:
 
 stringExpression:
         if (auto string_ = expression.isStringExp) {
-            import quickbite.backends.interpreter.runtime_string_literals: stringValue;
+            import quickbite.backends.interpreter.place: Place;
+            import quickbite.backends.interpreter.runtime_string_literals:
+                stringValue;
 
             NativeBlock pointerStorage;
-            const value = stringValue(string_, pointerStorage);
+            NativeBlock backingStorage;
+            auto destination = Place(
+                _activationFrame.temporaryAddress(expression),
+                expression.type,
+            );
+            stringValue(string_, destination, pointerStorage, backingStorage);
             if (pointerStorage.address !is null)
                 retainTemporaryPointerOwner(pointerStorage);
-            return value;
+            if (backingStorage.address !is null)
+                retainTemporaryPointerOwner(backingStorage);
+            return readStoredValue(destination);
         }
 
 arrayLiteralExpression:
@@ -12871,6 +12880,12 @@ unsupportedExpression:
             }
         }
 
+        if (auto string_ = rvalue.isStringExp) {
+            constructStringLiteral(string_, place);
+            destination.markConstructed;
+            return true;
+        }
+
         // A copy of an aggregate lvalue: the source's own bytes are the value,
         // so copying them from its place is the whole construction. The value
         // path instead materialises a second copy of the source, in storage
@@ -12884,6 +12899,22 @@ unsupportedExpression:
         }
 
         return false;
+    }
+
+    private void constructStringLiteral(
+        imported!"dmd.expression".StringExp string_,
+        imported!"quickbite.backends.interpreter.place".Place destination,
+    ) {
+        import quickbite.backends.interpreter.runtime_string_literals:
+            stringValue;
+
+        NativeBlock pointerStorage;
+        NativeBlock backingStorage;
+        stringValue(string_, destination, pointerStorage, backingStorage);
+        if (pointerStorage.address !is null)
+            retainTemporaryPointerOwner(pointerStorage);
+        if (backingStorage.address !is null)
+            retainTemporaryPointerOwner(backingStorage);
     }
 
     // A slice initializer is a native header construction.  When its source
