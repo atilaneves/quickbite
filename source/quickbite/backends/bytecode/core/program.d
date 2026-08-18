@@ -953,8 +953,10 @@ package(quickbite.backends.bytecode) uint sliceFillWidth(in Op op)
 
 // The `sliceEqual` family's one op<->width table, the same pattern as
 // `sliceFillOpWidths` above (the same four fixed widths, 1/2/4/8: a 16-byte
-// slice-descriptor element, e.g. a `T[][]` row, is structural rather than
-// flat-byte equality and goes through `Op.sliceEqualNested` instead). Unlike
+// slice-descriptor element, e.g. a `T[][]` row, needs structural equality --
+// recursing into what each descriptor points at, not a byte-for-byte
+// compare of the descriptors themselves -- and goes through
+// `Op.sliceEqualNested` instead). Unlike
 // every other width-suffixed family, there is no `N` variant: every element
 // width the front end can produce a `==` for is one of these four, so
 // `sliceEqualOp` below throws rather than falling back. compiler.d's

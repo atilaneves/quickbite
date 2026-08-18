@@ -4017,8 +4017,8 @@ private struct Compiler {
         // pulled from a mixed static/dynamic array-of-arrays comparison
         // needs a uniform element type) shares this path too: recursing
         // into this function's own `Tsarray` case below already builds a
-        // real view over that static array's inline storage, with no
-        // separate boxed descriptor to reconcile.
+        // real view over that static array's inline storage -- a `Tsarray`
+        // has no slice descriptor of its own to reconcile.
         if (auto cast_ = expression.isCastExp)
             if (isDynamicArrayArgument(cast_.e1) ||
                 isStringType(cast_.e1.type) ||
@@ -4051,8 +4051,8 @@ private struct Compiler {
         const kind = expression.type.toBasetype.ty;
         if (kind == TY.Tsarray) {
             auto place = placeOrNull(expression);
-            // A placeless static-array rvalue (a literal, or any other
-            // placeless temporary) is materialised through the same flat,
+            // An rvalue with no `Place` (a literal, or any other temporary
+            // with no lvalue location) is materialised through the same
             // inline layout a variable's own storage has --
             // `aggregateOperandOffset`, the shared static-array value path
             // an lvalue's rows already share -- so the view built below
@@ -7407,10 +7407,11 @@ private struct Compiler {
         // mirroring `compileDynamicArrayInto`'s own array-of-arrays literal
         // handling. `variable.type` (the hoisted stack temp's own declared
         // type) names the literal's true shape; `elementType`'s
-        // deepest-leaf-scalar convention can't distinguish this from the
-        // flat case on its own. A `Tsarray` element (`int[2][]`) is not
-        // this shape -- it falls to the generic full-width-block path
-        // below, same as any other aggregate element.
+        // deepest-leaf-scalar convention can't distinguish this from a
+        // scalar or inline-`Tsarray` element on its own. A `Tsarray`
+        // element (`int[2][]`) is not this shape -- it falls to the
+        // generic full-width-block path below, same as any other
+        // aggregate element.
         if (arrayElementIsDynamicArray(variable.type)) {
             _code ~= Instruction(
                 Op.allocArray,
@@ -9462,7 +9463,7 @@ private struct Compiler {
                 // instead of stopping after exactly one level -- this is
                 // what generalises this function from one fixed level of
                 // nesting to arbitrary depth. A `Tsarray` row falls through
-                // to the flat branch below instead, its rows stored inline.
+                // to the branch below instead, stored inline.
                 const rowElementIsArray = element !is null &&
                     element.type !is null &&
                     arrayElementIsDynamicArray(element.type);
@@ -10281,8 +10282,8 @@ private struct Compiler {
         // reference-semantics value. A `Tsarray` row (`int[2][]`'s `int[2]`
         // elements) is NOT this shape -- its real D layout stores rows
         // inline, `T[N].sizeof`-strided, in the array's own backing store,
-        // so it takes the same flat broadcast-fill/range-copy path below
-        // every scalar or struct element already takes.
+        // so it takes the same broadcast-fill/range-copy path below every
+        // scalar or struct element already takes.
         const elementIsArray = place.sliceElementIsArray;
         const destination = place.offset;
         const elementSize = place.sliceElementSize;
@@ -10296,9 +10297,9 @@ private struct Compiler {
         // row's backing storage, matching `SystemLinker`. `emitSliceFill`
         // (the same helper the non-array-element branch below uses) does
         // exactly that; a row-range rhs (another `T[][]` sub-slice) is not
-        // handled here and falls through to the flat `sliceCopy16` below,
-        // which already copies each element's 16-byte descriptor by value
-        // -- correct for reference-typed rows.
+        // handled here and falls through to `sliceCopy16` below, which
+        // already copies each element's 16-byte descriptor by value --
+        // correct for reference-typed rows.
         if (elementIsArray && rhs.type !is null &&
             sameType(rhs.type, place.sliceBaseType.toBasetype.nextOf)) {
             const value = compileExpression(rhs);
@@ -10579,10 +10580,11 @@ private struct Compiler {
                 equal.op == EXP.notEqual,
             );
 
-        // The flat (non-nested-row) static-array case: unlike the nested
-        // case above, DMD leaves `equal.lowering` null here (a flat static
-        // array is byte-comparable directly), so this is never shadowed by
-        // it the way the nested case would be.
+        // The non-nested static-array case (`equal.e1`/`equal.e2` both
+        // `Tsarray`, no `Tarray` row involved): unlike the nested case
+        // above, DMD leaves `equal.lowering` null here -- a static array of
+        // byte-comparable elements is compared directly by bytes -- so this
+        // is never shadowed by it the way the nested case would be.
         if (equal.e1.type.toBasetype.ty == TY.Tsarray &&
             equal.e2.type.toBasetype.ty == TY.Tsarray)
         {
@@ -10611,9 +10613,10 @@ private struct Compiler {
             // full byte range. A genuine array-of-arrays element (each row
             // its own separately heap-allocated descriptor) is never
             // byte-comparable this way, so DMD always gives it a real
-            // `__equals` lowering instead -- the case reaching here is
-            // always flat storage, which is exactly what a zero-depth
-            // structural compare reduces to.
+            // `__equals` lowering instead -- the case reaching here always
+            // has its elements stored inline, with no per-row descriptor,
+            // which is exactly what a zero-depth structural compare
+            // reduces to.
             const left = dynamicArrayDescriptor(equal.e1).offset;
             const right = dynamicArrayDescriptor(equal.e2).offset;
             const offset = emitNestedArrayEqual(left, right, equal.e1.type);
@@ -10628,7 +10631,7 @@ private struct Compiler {
         // "common type" promotion an element-by-element `==` would apply.
         // Neither operand is byte-comparable against the other's raw
         // storage (they may differ in element width), so this cannot share
-        // `emitNestedArrayEqual`'s flat-byte-range compare above; a mixed
+        // `emitNestedArrayEqual`'s byte-range compare above; a mixed
         // aggregate element (a struct/array pair with no common scalar
         // type) has no such promotion and stays unsupported.
         const mixedWidthDynamicArrays =
@@ -13494,7 +13497,8 @@ private struct Compiler {
     // (`int[2][]`'s `int[2]` rows) is NOT this shape -- `T[N][]`'s real D
     // layout stores its rows inline, `T[N].sizeof`-strided, with no
     // descriptor of their own, so it needs the same construction and
-    // addressing a struct-element array already gets, not a boxed row.
+    // addressing a struct-element array already gets, not a slice
+    // descriptor of its own.
     private bool arrayElementIsDynamicArray(Type type) {
         import dmd.astenums: TY;
 
@@ -13506,19 +13510,20 @@ private struct Compiler {
         return isStringType(type.toBasetype.nextOf);
     }
 
-    // The number of genuine boxed-descriptor unwrap steps `Op.sliceEqualNested`
-    // needs below its own outer descriptor, for an array-of-arrays type
-    // gated by `arrayElementIsArray` (`T[]` whose element is itself
-    // compound): 1 for `int[][]` (one further `Tarray` row level, each its
-    // own separately heap-allocated 16-byte descriptor), 2 for `int[][][]`,
-    // and so on. Walks the chain of `Tarray` elements one level at a time,
-    // the same way `arrayElementIsArray` and `innermostArrayElementSize` do,
-    // stopping as soon as a level's element is not itself a `Tarray`. A
-    // `Tsarray` element (e.g. `int[2][]`) contributes NO further step: unlike
-    // a `Tarray` row, `T[N][]`'s real D layout stores its rows inline,
+    // The number of nested `Tarray`-row descriptor unwrap steps
+    // `Op.sliceEqualNested` needs below its own outer descriptor, for an
+    // array-of-arrays type gated by `arrayElementIsArray` (`T[]` whose
+    // element is itself compound): 1 for `int[][]` (one further `Tarray`
+    // row level, each its own separately heap-allocated 16-byte
+    // descriptor), 2 for `int[][][]`, and so on. Walks the chain of
+    // `Tarray` elements one level at a time, the same way
+    // `arrayElementIsArray` and `innermostArrayElementSize` do, stopping as
+    // soon as a level's element is not itself a `Tarray`. A `Tsarray`
+    // element (e.g. `int[2][]`) contributes NO further step: unlike a
+    // `Tarray` row, `T[N][]`'s real D layout stores its rows inline,
     // `T[N].sizeof`-strided, with no descriptor of its own, so once the
-    // outer descriptor is unwrapped the rows are already flat bytes ready
-    // for the base-case compare.
+    // outer descriptor is unwrapped the rows are already element bytes,
+    // ready for the base-case compare.
     private uint arrayNestingDepth(Type type) {
         import dmd.astenums: TY;
 
@@ -13537,10 +13542,10 @@ private struct Compiler {
     // The byte width of the innermost row's own elements for an
     // array-of-arrays type gated by `arrayElementIsArray`: 4 for both
     // `int[][]`'s and `int[][][]`'s `int` leaves (a `Tarray` row's own
-    // elements, once every boxed level `arrayNestingDepth` counts is
+    // elements, once every descriptor level `arrayNestingDepth` counts is
     // unwrapped). A chain terminating in a `Tsarray` row (`int[2][]`) has no
     // such unwrapped leaf level to size -- the row itself, inline and
-    // `T[N].sizeof`-wide, is what the base-case flat compare needs, so this
+    // `T[N].sizeof`-wide, is what the base-case byte compare needs, so this
     // returns the row's own full width (8 for `int[2]`) instead of
     // recursing into its element. Walks the same `Tarray` chain as
     // `arrayNestingDepth`.
@@ -13565,9 +13570,9 @@ private struct Compiler {
     // outer descriptor (which would compare the rows' `.ptr` values). At
     // zero nesting depth (a plain scalar element, or any depth of static
     // array bottoming out in one) this reduces to a length check plus a
-    // flat byte compare of the whole element range, at any element width --
-    // unlike the fixed-width `sliceEqual*` family, there is no width this
-    // rejects.
+    // single byte comparison of the whole element range, at any element
+    // width -- unlike the fixed-width `sliceEqual*` family, there is no
+    // width this rejects.
     private ushort emitNestedArrayEqual(
         in ushort left,
         in ushort right,

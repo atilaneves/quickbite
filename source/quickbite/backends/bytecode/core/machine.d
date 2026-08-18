@@ -2453,7 +2453,7 @@ private ulong extendedUnsignedElement(
 }
 
 // True iff two array-of-arrays descriptors are structurally equal, given the
-// number of genuine boxed-descriptor row levels below this outer descriptor
+// number of further `Tarray`-row levels below this outer descriptor
 // (`steps`: 1 for `int[][]`, 2 for `int[][][]`, 0 for `int[2][]` -- see
 // `arrayNestingDepth`): same outer length, and every row (itself a 16-byte
 // `{length, ptr}` slice descriptor, separately heap-allocated on each side,
@@ -2463,7 +2463,7 @@ private ulong extendedUnsignedElement(
 // separately-constructed but content-equal rows have different `.ptr`
 // values, so that would compare identity, not content. `steps == 0` (a
 // `Tarray` of scalars/structs, or a `Tarray` of inline `Tsarray` rows) reduces
-// to a single flat byte compare of `outer.length * innerElementSize` bytes at
+// to a single byte comparison of `outer.length * innerElementSize` bytes at
 // the outer's own pointer -- correct either way, since a `Tsarray` row's
 // real D layout already stores its bytes right there.
 private bool nestedSlicesEqual(
@@ -2487,9 +2487,10 @@ private bool nestedSlicesEqual(
 // pointers, `stepsRemaining` row-descriptor levels above the innermost
 // element bytes. At `stepsRemaining == 0` the pointers already address
 // plain element bytes (a scalar/string row, or a struct/static-array row --
-// whatever `innerElementSize` measures) and this is a flat byte compare:
-// the base case, identical to `nestedSlicesEqual`'s original one-level
-// body. Otherwise each of the `length` elements is itself a 16-byte
+// whatever `innerElementSize` measures) and this is a single byte
+// comparison over `length * innerElementSize` bytes: the base case,
+// identical to `nestedSlicesEqual`'s original one-level body. Otherwise
+// each of the `length` elements is itself a 16-byte
 // `{length, ptr}` row descriptor -- independently lengthed, since arrays
 // can be ragged at every level -- so each row's own length is checked
 // before recursing one level deeper into it.
