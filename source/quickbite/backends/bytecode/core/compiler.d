@@ -31,12 +31,10 @@ package(quickbite.backends.bytecode) Compilation compile(
 private struct Compiler {
 
     import quickbite.backends.bytecode.core.program:
-        AssertDiagnostic, AssocArrayKeyField, AssocArrayKeyLayout,
-        CatchClause, ClassInfo, CompiledFunction,
+        AssertDiagnostic, CatchClause, ClassInfo, CompiledFunction,
         Instruction, NativeCall, Op, Program,
         ResultType, ScalarType, StructDisplayField,
-        VirtualFunction, appendElementOp, assocArrayKeyIsArrayFlag,
-        assocArrayKeyIsStructLayoutFlag, concatArraysOp, dupArrayOp,
+        VirtualFunction, appendElementOp, concatArraysOp, dupArrayOp,
         indexLoadOp, indexStoreOp, isSigned,
         nativeArgumentSlotSize, noCatchObjectField, noExceptionClass,
         noReceiverOffset, pointerLoadOp, pointerSliceOp, pointerStoreOp,
@@ -51,7 +49,7 @@ private struct Compiler {
         CatAssignExp,
         CatElemAssignExp, CatExp,
         CmpExp, CondExp, ConstructExp, DelegateFuncptrExp, DelegatePtrExp,
-        DivExp, DotIdExp, DotVarExp, Expression,
+        DivExp, DotIdExp, DotVarExp, EqualExp, Expression,
         IdentityExp, IndexExp, LogicalExp, MulExp, FuncExp, DelegateExp,
         NegExp, NewExp, NotExp, OrExp, PostExp, PreExp, PtrExp, RealExp,
         SliceExp,
@@ -66,11 +64,7 @@ private struct Compiler {
     private FuncDeclaration[] _functions;
     private size_t[FuncDeclaration] _functionIndices;
     private ushort[imported!"dmd.dclass".ClassDeclaration] _classIndices;
-    // Caches a mixed-field struct AA key type's `Program.assocArrayKeyLayouts`
-    // index (`registerAssocArrayKeyLayout`), keyed by its `StructDeclaration`
-    // so every access site for the same key type shares one layout entry.
-    private ushort[imported!"dmd.dstruct".StructDeclaration]
-        _assocArrayKeyLayoutIndices;
+    private size_t[Type] _nativeStructTypeInfos;
     private Instruction[] _code;
     private uint _frameOffset;
     // The high-water mark of `_frameOffset` across the current function body.
@@ -255,7 +249,6 @@ private struct Compiler {
             module_,
             pointer,
             dynamicIndex,
-            assocIndex,
             slice,
         }
 
@@ -269,8 +262,6 @@ private struct Compiler {
         Type valueType;
         bool heapEscapingDelegate;
         bool declinesCapturingDelegate;
-        ushort keyMeta;
-        Place* container;
         ScalarType sliceElementType;
         uint sliceElementSize;
         bool sliceElementIsArray;
@@ -358,6 +349,7 @@ private struct Compiler {
         _currentReturnsRef = function_.type.isTypeFunction !is null &&
             function_.type.isTypeFunction.isRef;
         const layout = parameterLayout(function_);
+        _program.functions[index].parameterBytes = layout.blockSize;
         _frameOffset = layout.blockSize;
         _peakFrameOffset = layout.blockSize;
 
@@ -408,9 +400,16 @@ private struct Compiler {
                     continue;
                 }
 
-                // Aggregate reference parameters remain pointer places. All
-                // loads, stores, field/index composition, and forwarding use
-                // that one caller-storage address directly.
+                if (parameter.isReference &&
+                    declarationRecord(parameter).facts.representation ==
+                        DeclarationRepresentation.delegate_)
+                {
+                    auto record = registerReferenceDeclaration(parameter);
+                    record.scalar = offset;
+                    record.refPointer = ScalarType.void_;
+                    continue;
+                }
+
                 if (parameter.isReference)
                     continue;
 
@@ -492,12 +491,12 @@ private struct Compiler {
     }
 
     private ushort registerFunction(FuncDeclaration function_) {
-        if (auto existing = function_ in _functionIndices)
-            return cast(ushort) *existing;
-
         import quickbite.frontend.dmd.functions: ensureFunctionBodySemantic;
 
         ensureFunctionBodySemantic(function_);
+
+        if (auto existing = function_ in _functionIndices)
+            return cast(ushort) *existing;
 
         if (_program is null)
         {
@@ -1400,7 +1399,7 @@ private struct Compiler {
 
         const totalSize = typeFacts(source.type).byteWidth;
         const offset =
-            allocateBytes(totalSize, staticArrayAlign(source.type));
+            allocateBytes(totalSize, typeFacts(source.type).alignment);
 
         if (auto literal = arrayLiteralOf(source)) {
             compileStaticArrayLiteral(offset, source.type, literal);
@@ -2415,6 +2414,9 @@ private struct Compiler {
             if (auto declaration = variable.var.isVarDeclaration)
                 if (auto existing = declarationRecordView(declaration).staticArrayOrNull)
                     return Operand(*existing, ScalarType.void_);
+            if (expression.type !is null && typeFacts(expression.type).isAggregate)
+                if (auto place = placeOrNull(expression))
+                    return loadPlaceValue(*place);
             if (expression.type !is null &&
                 (isDynamicArrayArgument(expression) ||
                     isStringType(expression.type)))
@@ -2508,8 +2510,6 @@ private struct Compiler {
         }
 
         if (auto declaration = expression.isDeclarationExp) {
-            import std.algorithm: startsWith;
-
             if (auto variable = declaration.declaration.isVarDeclaration) {
                 compileVariableDeclaration(variable);
                 return Operand.init;
@@ -2520,9 +2520,16 @@ private struct Compiler {
             // code; semantic has already resolved it.
             if (declaration.declaration.isAggregateDeclaration !is null)
                 return Operand.init;
-            if (declaration.declaration.isStorageClassDeclaration !is null &&
-                expressionChars(expression).startsWith("static struct "))
-                return Operand.init;
+            if (auto storage =
+                    declaration.declaration.isStorageClassDeclaration)
+                if (storage.decl !is null && storage.decl.length == 1)
+                    if ((*storage.decl)[0].isTemplateDeclaration !is null ||
+                        (*storage.decl)[0].isAggregateDeclaration !is null)
+                        // Storage classes on template and aggregate
+                        // definitions have no runtime effect. DMD emits the
+                        // template wrapper for helpers instantiated by nested
+                        // array equality.
+                        return Operand.init;
             if (declaration.declaration.isAliasDeclaration !is null)
                 return Operand.init;
             if (declaration.declaration.isTemplateDeclaration !is null)
@@ -2687,7 +2694,7 @@ private struct Compiler {
             return compileScalarIntegerCompoundAssign(
                 xorAssign,
                 Op.bitXorInt4,
-                Op.bitXorInt4,
+                Op.bitXorInt8,
                 "Unsupported compound assignment in bytecode core: ",
             );
 
@@ -2775,7 +2782,6 @@ private struct Compiler {
             const result = compileCall(call);
             if (result.isPointer &&
                 functionType !is null && functionType.isRef &&
-                assocArrayHook(function_) == AssocArrayHook.none &&
                 !typeFacts(call.type).isAggregate)
                 return loadThroughPointer(
                     result, compileSizeConstant(0),
@@ -2888,12 +2894,8 @@ private struct Compiler {
         if (auto literal = expression.isStructLiteralExp)
             return compileStructLiteralOperand(literal);
 
-        if (auto literal = expression.isAssocArrayLiteralExp) {
-            const offset =
-                allocateBytes(cast(uint) size_t.sizeof, size_t.sizeof);
-            compileAssocArrayInto(offset, literal);
-            return Operand(offset, ScalarType.ulong_);
-        }
+        if (auto literal = expression.isAssocArrayLiteralExp)
+            return compileExpression(literal.lowering);
 
         if (auto literal = expression.isFuncExp)
             if (literal.fd !is null) {
@@ -3114,7 +3116,22 @@ private struct Compiler {
             auto record = declarationRecordView(declaration);
             if (facts.isAggregate) {
                 if (declaration.isParameter && declaration.isReference)
-                    if (auto offset = declaration in _capturedOffsets)
+                    if (auto offset = declaration in _capturedOffsets) {
+                        if (_hasNestedContext &&
+                            _capturedOwners[declaration] !is _currentFunction)
+                        {
+                            const pointer = allocateBytes(
+                                cast(uint) size_t.sizeof, size_t.sizeof,
+                            );
+                            _code ~= Instruction(
+                                Op.frameLoad, pointer,
+                                capturedFrameIndex(
+                                    _capturedOwners[declaration], *offset,
+                                ),
+                                cast(ushort) size_t.sizeof,
+                            );
+                            return pointerPlace(pointer, expression.type);
+                        }
                         return new Place(
                             Place.Kind.pointer, expression.type,
                             *offset, compileSizeConstant(0),
@@ -3122,6 +3139,7 @@ private struct Compiler {
                             null,
                             isDelegateValueType(expression.type),
                         );
+                    }
                 if (auto slot = record.scalarOrNull)
                     if (record.refPointerOrNull !is null)
                         return pointerPlace(*slot, expression.type);
@@ -3396,17 +3414,6 @@ private struct Compiler {
             import dmd.astenums: TY;
 
             if (index.e1.type !is null &&
-                index.e1.type.toBasetype.ty == TY.Taarray)
-                if (auto container = placeOrNull(index.e1)) {
-                    const handle = loadPlace(*container);
-                    auto aaType = index.e1.type.toBasetype;
-                    return assocArrayIndexPlace(
-                        container, handle.offset, index.e2, aaType,
-                        index.type,
-                    );
-                }
-
-            if (index.e1.type !is null &&
                 index.e1.type.toBasetype.ty == TY.Tsarray)
                 if (auto base = placeOrNull(index.e1)) {
                     const address = addressOfPlace(*base);
@@ -3577,24 +3584,6 @@ private struct Compiler {
         );
     }
 
-    private Place* assocArrayIndexPlace(
-        Place* container,
-        in ushort handle,
-        Expression key,
-        Type aaType,
-        Type valueType,
-    ) {
-        auto result = new Place(
-            Place.Kind.assocIndex,
-            valueType,
-            handle,
-            assocArrayKeyOffset(key, aaType),
-        );
-        result.keyMeta = assocArrayKeyMeta(aaType);
-        result.container = container;
-        return result;
-    }
-
     private bool isPointerLikePlaceType(Type type) {
         import dmd.astenums: TY;
 
@@ -3627,7 +3616,7 @@ private struct Compiler {
                 if (!aggregate)
                     return loadCapturedLocal(place.declaration, place.offset);
                 const result = aggregate
-                    ? allocateBytes(width, staticArrayAlign(place.valueType))
+                    ? allocateBytes(width, typeFacts(place.valueType).alignment)
                     : allocate(place.type);
                 _code ~= Instruction(
                     Op.frameLoad,
@@ -3640,7 +3629,7 @@ private struct Compiler {
                 return Operand(result, operandType);
             case module_:
                 const result = aggregate
-                    ? allocateBytes(width, staticArrayAlign(place.valueType))
+                    ? allocateBytes(width, typeFacts(place.valueType).alignment)
                     : allocate(place.type);
                 _code ~= Instruction(
                     Op.loadModule, result, place.offset,
@@ -3650,7 +3639,7 @@ private struct Compiler {
             case pointer:
                 if (aggregate) {
                     const result = allocateBytes(
-                        width, staticArrayAlign(place.valueType),
+                        width, typeFacts(place.valueType).alignment,
                     );
                     emitPointerLoad(
                         result, place.offset, place.indexOffset, width,
@@ -3663,25 +3652,10 @@ private struct Compiler {
                 );
             case dynamicIndex:
                 const result = aggregate
-                    ? allocateBytes(width, staticArrayAlign(place.valueType))
+                    ? allocateBytes(width, typeFacts(place.valueType).alignment)
                     : allocate(place.type);
                 emitIndexLoad(
                     result, place.offset, place.indexOffset, width,
-                );
-                return Operand(result, operandType);
-            case assocIndex:
-                const pointer = allocateBytes(
-                    cast(uint) size_t.sizeof, size_t.sizeof,
-                );
-                _code ~= Instruction(
-                    Op.aaGetRvalue, pointer, place.offset, place.indexOffset,
-                    cast(ushort) width, place.keyMeta,
-                );
-                const result = aggregate
-                    ? allocateBytes(width, staticArrayAlign(place.valueType))
-                    : allocate(place.type);
-                emitPointerLoad(
-                    result, pointer, compileSizeConstant(0), width,
                 );
                 return Operand(result, operandType);
             case slice:
@@ -3758,17 +3732,6 @@ private struct Compiler {
                     width,
                 );
                 return;
-            case assocIndex:
-                _code ~= Instruction(
-                    Op.aaInsert, place.offset, place.indexOffset, value.offset,
-                    cast(ushort) width, place.keyMeta,
-                );
-                if (place.container !is null)
-                    storePlace(
-                        *place.container,
-                        Operand(place.offset, ScalarType.ulong_),
-                    );
-                return;
             case slice:
                 emitSliceCopy(
                     place.offset, value.offset, place.sliceElementSize,
@@ -3835,38 +3798,6 @@ private struct Compiler {
                 );
                 return pointerPlaceAddress(
                     pointer, place.indexOffset, width, operandType,
-                );
-            case assocIndex:
-                // `width` is the AA value's raw byte width (e.g. 12 for a
-                // 3-int struct), not a power of two in general -- unlike
-                // every other aggregate allocation site, which aligns via
-                // `staticArrayAlign(valueType)`, an allocator whose rounding
-                // (`& ~(alignment - 1)`) assumes a power-of-two alignment.
-                const placeholder = allocateBytes(
-                    width, aggregate ? staticArrayAlign(place.valueType) : width,
-                );
-                _code ~= Instruction(
-                    Op.aaGetOrInsert,
-                    place.offset,
-                    place.indexOffset,
-                    placeholder,
-                    cast(ushort) width,
-                    place.keyMeta,
-                );
-                if (place.container !is null)
-                    storePlace(
-                        *place.container,
-                        Operand(place.offset, ScalarType.ulong_),
-                    );
-                const pointer = allocateBytes(
-                    cast(uint) size_t.sizeof, size_t.sizeof,
-                );
-                _code ~= Instruction(
-                    Op.aaIn, pointer, place.offset, place.indexOffset,
-                    cast(ushort) width, place.keyMeta,
-                );
-                return Operand(
-                    pointer, ScalarType.ulong_, true, operandType,
                 );
             case slice:
                 return Operand(
@@ -3970,7 +3901,7 @@ private struct Compiler {
             facts.representation != DeclarationRepresentation.vector)
         {
             const result = allocateBytes(
-                facts.byteWidth, staticArrayAlign(type),
+                facts.byteWidth, facts.alignment,
             );
             if (compileStaticArrayValueInto(result, rhs.type, rhs))
                 return result;
@@ -3987,7 +3918,7 @@ private struct Compiler {
                 return structOperandOffset(rhs);
             case staticArray:
                 const result = allocateBytes(
-                    facts.byteWidth, staticArrayAlign(type),
+                    facts.byteWidth, facts.alignment,
                 );
                 if (!compileStaticArrayValueInto(result, type, rhs))
                     throw new Exception(text(
@@ -4366,9 +4297,26 @@ private struct Compiler {
 
         if (type is null)
             return 0;
+        if (type.toBasetype.isTypeStruct !is null)
+            return nativeStructTypeInfo(type);
         if (type.toBasetype.ty == TY.Tint32)
             return cast(size_t) cast(void*) typeid(int);
         return 0;
+    }
+
+    private size_t nativeStructTypeInfo(Type type) {
+        import object: TypeInfo, TypeInfo_Struct;
+
+        if (auto existing = type in _nativeStructTypeInfos)
+            return *existing;
+
+        auto result = new TypeInfo_Struct;
+        result.m_init = new ubyte[typeFacts(type).byteWidth];
+        result.m_align = typeFacts(type).alignment;
+        _program.nativeTypeInfos ~= cast(TypeInfo) result;
+        const address = cast(size_t) cast(void*) result;
+        _nativeStructTypeInfos[type] = address;
+        return address;
     }
 
     private Operand* tryTypeidName(DotVarExp dot) {
@@ -4485,7 +4433,7 @@ private struct Compiler {
                 compileClassPointerDeclaration(variable);
                 return;
             case assocArray:
-                compileAssocArrayDeclaration(variable);
+                compileScalarDeclaration(variable);
                 return;
         }
     }
@@ -4526,7 +4474,14 @@ private struct Compiler {
 
         auto expression = initializerExpression(initializer.exp);
         if (auto address = placeAddressOrNull(expression)) {
-            registerReferenceDeclaration(variable).scalar = address.offset;
+            const offset = allocateBytes(
+                cast(uint) size_t.sizeof, size_t.sizeof,
+            );
+            _code ~= Instruction(
+                Op.copy, offset, address.offset,
+                cast(ushort) size_t.sizeof,
+            );
+            registerReferenceDeclaration(variable).scalar = offset;
             const facts = declarationRecord(variable).facts;
             registerReferenceDeclaration(variable).refPointer =
                 facts.isAggregate
@@ -4832,6 +4787,20 @@ private struct Compiler {
 
         if (auto variable = argument.isVarExp)
             if (auto declaration = variable.var.isVarDeclaration) {
+                if (auto pointer = declarationRecordView(declaration).refPointerOrNull)
+                    if (auto offset = declarationRecordView(declaration).scalarOrNull) {
+                        const destination = allocateBytes(
+                            delegateValueSize,
+                            size_t.sizeof,
+                        );
+                        emitPointerLoad(
+                            destination,
+                            *offset,
+                            compileSizeConstant(0),
+                            delegateValueSize,
+                        );
+                        return destination;
+                    }
                 if (auto existing = declarationRecordView(declaration).delegate_OrNull)
                     return existing.offset;
                 if (auto existing = declarationRecordView(declaration).delegateParameterOrNull)
@@ -5287,7 +5256,9 @@ private struct Compiler {
         import std.conv: text;
 
         const totalSize = typeFacts(variable.type).byteWidth;
-        const offset = allocateBytes(totalSize, staticArrayAlign(variable.type));
+        const offset = allocateBytes(
+            totalSize, typeFacts(variable.type).alignment,
+        );
         // A static array has aggregate declaration metadata: scalar
         // VarExp/assignment paths must not treat its inline block as a scalar
         // slot.
@@ -5419,7 +5390,9 @@ private struct Compiler {
 
         auto arrayType = vectorType.basetype; // DMD Type APIs are mutable.
         const totalSize = typeFacts(arrayType).byteWidth;
-        const offset = allocateBytes(totalSize, staticArrayAlign(arrayType));
+        const offset = allocateBytes(
+            totalSize, typeFacts(arrayType).alignment,
+        );
         registerFrameDeclaration(variable).staticArray = offset;
 
         auto initializer =
@@ -5750,7 +5723,7 @@ private struct Compiler {
 
     private ushort allocateStructBlock(Type type) {
         return allocateBytes(
-            typeFacts(type).byteWidth, staticArrayAlign(type),
+            typeFacts(type).byteWidth, typeFacts(type).alignment,
         );
     }
 
@@ -5800,11 +5773,6 @@ private struct Compiler {
                     fieldOffset, dynamicArrayElementType(fieldType), element,
                     arrayElementIsArray(fieldType),
                 );
-                continue;
-            }
-
-            if (fieldType.toBasetype.ty == TY.Taarray) {
-                compileAssocArrayInto(fieldOffset, element);
                 continue;
             }
 
@@ -6120,7 +6088,7 @@ private struct Compiler {
 
         if (type.toBasetype.ty == TY.Tsarray) {
             const offset = allocateBytes(
-                typeFacts(type).byteWidth, staticArrayAlign(type),
+                typeFacts(type).byteWidth, typeFacts(type).alignment,
             );
             if (compileStaticArrayValueInto(offset, type, expression))
                 return offset;
@@ -6869,101 +6837,6 @@ private struct Compiler {
             offset, elementType, source, elementIsArray);
     }
 
-    // An associative array `int[int]` local holds an 8-byte handle into the
-    // machine's VM-owned map table; handle `0` means "no map" (matching real
-    // D's null AA), the same zero-init a plain scalar local gets from the
-    // frame's own zeroing. Every map-reading/writing opcode already treats
-    // handle `0` as an empty map, and `Op.aaInsert` autovivifies a fresh map
-    // into the handle's own slot on first insert -- exactly like a null
-    // pointer's storage location gaining an address the first time something
-    // is allocated through it, distinct from any other variable that once
-    // held the same null value.
-    private void compileAssocArrayDeclaration(VarDeclaration variable) {
-        const offset = allocateBytes(cast(uint) size_t.sizeof, size_t.sizeof);
-        registerFrameDeclaration(variable).scalar = offset;
-
-        auto initializer =
-            variable._init is null ? null : variable._init.isExpInitializer;
-        if (initializer is null) {
-            // The frame begins zeroed, so a null AA needs no code.
-            return;
-        }
-
-        compileAssocArrayInto(
-            offset, initializerExpression(initializer.exp),
-        );
-    }
-
-    // Build an associative-array handle at frame offset `destination`: a fresh
-    // map populated from a `[k: v, ...]` literal, a copy of another map's own
-    // handle (`.dup` and a bare AA-variable initializer, both reference
-    // copies matching real D's AA aliasing), or a null map.
-    private void compileAssocArrayInto(
-        in ushort destination,
-        Expression source,
-    ) {
-        import std.conv: text;
-
-        // `int[int] m;` (DMD's own default `= null` initializer) or an
-        // explicit `m = null`: a null AA, matching real D. The frame begins
-        // zeroed and handle `0` already reads as an empty map everywhere, so
-        // this needs no code; a later insert autovivifies `m`'s own slot.
-        if (source.isNullExp !is null)
-            return;
-
-        // `int[int] bb = aa;`: copy the source variable's own handle, the
-        // same reference-copy semantics real D gives any AA assignment --
-        // when `aa` is still null (handle `0`), this leaves `bb` equally
-        // null and independently detachable rather than aliasing a shared
-        // table, since each variable's handle then autovivifies its own map
-        // on its own first insert.
-        if (auto variable = source.isVarExp)
-            if (auto declaration = variable.var.isVarDeclaration)
-                if (declarationRecordView(declaration).assocArrayOrNull)
-                    if (auto handleOffset = declarationRecordView(declaration).scalarOrNull) {
-                        _code ~= Instruction(
-                            Op.copy, destination, *handleOffset,
-                            cast(ushort) size_t.sizeof,
-                        );
-                        return;
-                    }
-
-        // `dest = src.dup`: the `object.dup` hook yields a fresh handle; copy it
-        // into the destination slot.
-        if (source.isCallExp !is null) {
-            const handle = compileExpression(source);
-            _code ~= Instruction(
-                Op.copy, destination, handle.offset,
-                cast(ushort) size_t.sizeof,
-            );
-            return;
-        }
-
-        auto literal = source.isAssocArrayLiteralExp;
-        if (literal is null)
-            throw new Exception(text(
-                "Unsupported associative array initializer in bytecode core: ",
-                expressionChars(source),
-            ));
-
-        const width = assocArrayValueWidth(literal.type.toBasetype);
-        const keyMeta = assocArrayKeyMeta(literal.type.toBasetype);
-        _code ~= Instruction(Op.aaNew, destination);
-        foreach (index; 0 .. literal.keys.length) {
-            const keyOffset = assocArrayKeyOffset(
-                (*literal.keys)[index], literal.type.toBasetype,
-            );
-            const value = compileExpression((*literal.values)[index]);
-            _code ~= Instruction(
-                Op.aaInsert, destination, keyOffset, value.offset,
-                cast(ushort) width, keyMeta,
-            );
-        }
-    }
-
-    // Build a dynamic-array slice descriptor at frame offset `destination`. A
-    // `null` literal yields a null slice; an array literal heap-allocates a
-    // block of `count` elements and stores each element into it.
     private void compileDynamicArrayInto(
         in ushort destination,
         in ScalarType elementType,
@@ -7156,7 +7029,7 @@ private struct Compiler {
         // matched, and it is not a known dynamic-array descriptor either, so
         // copy the ordinary {length, ptr} descriptor `compileExpression`
         // already resolves it to.
-        if (isStringType(source.type)) {
+        if (isStringType(source.type) && source.isArrayLiteralExp is null) {
             _code ~= Instruction(
                 Op.copy,
                 destination,
@@ -7337,7 +7210,7 @@ private struct Compiler {
             return true;
         }
 
-        const elementSize = size(elementType);
+        const elementSize = dynamicArrayElementSize(variable.type);
         _code ~= Instruction(
             Op.allocArray,
             destination,
@@ -7346,8 +7219,12 @@ private struct Compiler {
         );
 
         foreach (elementIndex; 0 .. count) {
-            auto value = compileExpression((*literal.elements)[elementIndex]);
-            if (size(value.type) < elementSize)
+            auto element = (*literal.elements)[elementIndex];
+            auto value = element.type.toBasetype.ty == TY.Tstruct
+                ? Operand(structOperandOffset(element), ScalarType.void_)
+                : compileExpression(element);
+            if (value.type != ScalarType.void_ &&
+                size(value.type) < elementSize)
                 value = extend(value, elementType);
             emitIndexStore(
                 value.offset, destination, compileSizeConstant(elementIndex),
@@ -7598,7 +7475,10 @@ private struct Compiler {
         _code ~= Instruction(
             Op.allocArrayDynamic,
             destination,
-            packedFill(elementType),
+            packedFill(
+                elementType,
+                dynamicArrayElementSize(new_.type, elementIsArray),
+            ),
             length.offset,
         );
     }
@@ -8478,6 +8358,10 @@ private struct Compiler {
     private Operand compileXorExpression(BinExp xor) {
         const lhs = compileExpression(xor.e1);
         const rhs = compileExpression(xor.e2);
+        if (isEightByteInteger(lhs.type) &&
+            isEightByteInteger(rhs.type))
+            return emitBinary(Op.bitXorInt8, lhs, rhs, scalarType(xor.type));
+
         return compileInt4BinaryResult(
             xor,
             lhs,
@@ -9067,6 +8951,12 @@ private struct Compiler {
         import std.conv: text;
 
         const source = compileExpression(complement.isComExp.e1);
+        if (isEightByteInteger(source.type)) {
+            const resultType = scalarType(complement.type);
+            const offset = allocate(resultType);
+            _code ~= Instruction(Op.bitNotInt8, offset, source.offset);
+            return Operand(offset, resultType);
+        }
         if (source.type != ScalarType.int_)
             throw new Exception(text(
                 "Unsupported bitwise complement in bytecode core: ",
@@ -9158,8 +9048,10 @@ private struct Compiler {
     ) {
         import std.conv: text;
 
-        const lvalueType = place.type;
-        if (!isCompoundIntegerScalar(lvalueType) ||
+        const storageType = place.type;
+        const operationType = scalarType(assign.e1.type);
+        if (!isCompoundIntegerScalar(storageType) ||
+            !isCompoundIntegerScalar(operationType) ||
             !isCompoundIntegerScalar(rhs.type))
             throw new Exception(text(
                 unsupportedMessage,
@@ -9168,21 +9060,17 @@ private struct Compiler {
 
         const eightByteShift = op8 == Op.shlInt8 ||
             op8 == Op.shrInt8 || op8 == Op.ushrInt8;
-        const lvalueIsEightByte = isEightByteInteger(lvalueType);
-        const validRhs = lvalueIsEightByte
+        const operationIsEightByte = isEightByteInteger(operationType);
+        const validRhs = operationIsEightByte
             ? eightByteShift
                 ? size(rhs.type) <= int.sizeof
-                : rhs.type == lvalueType
+                : size(rhs.type) <= size(operationType)
             : !isEightByteInteger(rhs.type);
-        if (!validRhs || lvalueIsEightByte && op8 == op4)
+        if (!validRhs || operationIsEightByte && op8 == op4)
             throw new Exception(text(
                 unsupportedMessage,
                 expressionChars(assign),
             ));
-
-        const operationType = isEightByteInteger(lvalueType)
-            ? lvalueType
-            : ScalarType.int_;
 
         const lhs = integerOperationOperand(
             loadPlace(place),
@@ -9190,14 +9078,14 @@ private struct Compiler {
         );
         const rhsValue = integerOperationOperand(
             rhs,
-            isEightByteInteger(lvalueType) && eightByteShift
+            operationIsEightByte && eightByteShift
                 ? ScalarType.int_
                 : operationType,
         );
         const destination = allocate(operationType);
-        const operation = isEightByteInteger(operationType)
+        const operation = operationIsEightByte
             ? op8
-            : op4 == Op.shrInt4 && lvalueType == ScalarType.uint_
+            : op4 == Op.shrInt4 && operationType == ScalarType.uint_
                 ? Op.ushrInt4
                 : op4;
         _code ~= Instruction(
@@ -9240,6 +9128,14 @@ private struct Compiler {
                 "Unsupported assignment in bytecode core: ",
                 expressionChars(assign),
             ));
+
+        if (assign.e1.type.toBasetype.isTypeAArray is null &&
+            assign.e1.type.toBasetype.isTypeDArray !is null &&
+            place.kind != Place.Kind.slice) {
+            const descriptor = dynamicArrayDescriptor(assign.e2);
+            storeDynamicArrayPlace(*place, descriptor);
+            return Operand(descriptor.offset, ScalarType.void_);
+        }
 
         if (place.valueType !is null || place.kind == Place.Kind.slice)
             return storeExpressionIntoPlace(*place, assign.e2);
@@ -9338,20 +9234,6 @@ private struct Compiler {
         // the implicit default (null); `moduleScalarInitializerBytes`
         // handles that as well as an explicit `= null` initializer.
         //
-        // A module-level associative array (`int[string] counts;`) is the
-        // same shape: `scalarType` already maps `Taarray` to
-        // `ScalarType.ulong_` (its opaque VM-map handle, an index rather
-        // than a real address -- unlike a pointer or class reference it is
-        // never dereferenced directly, only ever passed to the AA runtime
-        // hooks), so it too falls straight through the generic scalar path
-        // with no AA-specific storage needed here. Only the implicit
-        // default (null) initializer is handled -- a non-null AA literal
-        // initializer (`= ["a": 1]`) falls through to
-        // `moduleScalarInitializerBytes`'s "Unsupported module scalar
-        // initializer" throw, same as any other unhandled constant shape.
-        // `resolveAssocArrayOperand` (the AA hooks' own handle resolver)
-        // reads and, for an insert that autovivifies a still-null handle,
-        // writes back this storage; see its own comment.
         if (auto existing = declarationRecordView(declaration).moduleScalarOrNull)
             return existing;
 
@@ -9721,7 +9603,7 @@ private struct Compiler {
         }
 
         const offset =
-            allocateModuleBytes(size, staticArrayAlign(declaration.type));
+            allocateModuleBytes(size, typeFacts(declaration.type).alignment);
         registerModuleDeclaration(declaration).moduleStruct =
             ModuleStructVariable(offset, size);
         if (!hasDefaultInitializer)
@@ -9738,10 +9620,6 @@ private struct Compiler {
     // access resolves a module-backed Place and reads or writes through its
     // native address, so an element operation touches only that element's
     // byte range.
-    // Scoped to a scalar element type for now (`int[3]`, not `S[3]`,
-    // `int[3][3]`, `int[3][]`, or a delegate/`Taarray` element): those
-    // shapes decline registration, falling through to the pre-existing
-    // "Unsupported variable in bytecode core" error.
     private ModuleStaticArrayVariable* allocateModuleStaticArrayVariable(
         VarDeclaration declaration,
     ) {
@@ -9751,18 +9629,7 @@ private struct Compiler {
             return null;
         }
 
-        import dmd.astenums: TY;
-
         auto elementType = declaration.type.toBasetype.nextOf;
-        switch (elementType.toBasetype.ty) with (TY) {
-            case Tstruct, Tsarray, Tarray, Taarray, Tdelegate:
-                return null;
-            default:
-                break;
-        }
-        if (isComplexDoubleType(elementType))
-            return null;
-
         if (auto existing = declarationRecordView(declaration).moduleStaticArrayOrNull)
             return existing;
 
@@ -9782,7 +9649,13 @@ private struct Compiler {
             initializerExpr.isNullExp !is null;
 
         ubyte[] literalBytes;
-        if (!hasDefaultInitializer) {
+        if (hasDefaultInitializer) {
+            literalBytes.length = size;
+            if (!writeStaticArrayDefaultInitializerBytes(
+                    declaration.type, literalBytes,
+                ))
+                return null;
+        } else {
             literalBytes = moduleStaticArrayLiteralInitializerBytes(
                 initializerExpr.isArrayLiteralExp, elementType, size,
             );
@@ -9791,12 +9664,87 @@ private struct Compiler {
         }
 
         const offset =
-            allocateModuleBytes(size, staticArrayAlign(declaration.type));
+            allocateModuleBytes(size, typeFacts(declaration.type).alignment);
         registerModuleDeclaration(declaration).moduleStaticArray =
             ModuleStaticArrayVariable(offset, size);
-        if (!hasDefaultInitializer)
-            _program.moduleData[offset .. offset + size] = literalBytes[];
+        _program.moduleData[offset .. offset + size] = literalBytes[];
         return declarationRecordView(declaration).moduleStaticArrayOrNull;
+    }
+
+    private bool writeStaticArrayDefaultInitializerBytes(
+        Type type,
+        ubyte[] bytes,
+    ) {
+        import dmd.astenums: TY;
+
+        if (type.toBasetype.ty != TY.Tsarray)
+            return false;
+
+        auto elementType = type.toBasetype.nextOf;
+        const elementSize = typeFacts(elementType).byteWidth;
+        const count = staticArrayLength(type);
+        if (bytes.length != count * elementSize)
+            return false;
+
+        foreach (index; 0 .. count) {
+            auto elementBytes = bytes[
+                index * elementSize .. (index + 1) * elementSize
+            ];
+            switch (elementType.toBasetype.ty) with (TY) {
+                case Tstruct:
+                    if (!writeStructDefaultInitializerBytes(
+                            elementType, elementBytes,
+                        ))
+                        return false;
+                    break;
+                case Tsarray:
+                    if (!writeStaticArrayDefaultInitializerBytes(
+                            elementType, elementBytes,
+                        ))
+                        return false;
+                    break;
+                default:
+                    break;
+            }
+        }
+        return true;
+    }
+
+    private bool writeStructDefaultInitializerBytes(
+        Type type,
+        ubyte[] bytes,
+    ) {
+        import std.bitmanip: nativeToLittleEndian;
+
+        auto declaration = structDeclarationOf(type);
+        if (bytes.length != typeFacts(type).byteWidth)
+            return false;
+
+        foreach (field; declaration.fields) {
+            auto initializer =
+                field._init is null ? null : field._init.isExpInitializer;
+            if (initializer is null)
+                continue;
+
+            // DMD's literal-value accessors mutate their expression nodes.
+            auto value = initializerExpression(initializer.exp);
+            const fieldSize = typeFacts(field.type).byteWidth;
+            auto fieldBytes = bytes[field.offset .. field.offset + fieldSize];
+            if (auto integer = value.isIntegerExp) {
+                const raw = nativeToLittleEndian(cast(ulong) integer.toInteger);
+                fieldBytes[] = raw[0 .. fieldSize];
+                continue;
+            }
+            if (auto real_ = value.isRealExp) {
+                const raw = nativeToLittleEndian(
+                    floatBits(real_, scalarType(field.type)),
+                );
+                fieldBytes[] = raw[0 .. fieldSize];
+                continue;
+            }
+            return false;
+        }
+        return true;
     }
 
     // A module-level delegate variable (`int delegate() dg;`) reserves a
@@ -10165,7 +10113,9 @@ private struct Compiler {
         auto element = length.e1.type.toBasetype.nextOf;
         if (element.toBasetype.ty == TY.Tstruct) {
             const elementSize = typeFacts(element).byteWidth;
-            const initBlock = allocateBytes(elementSize, staticArrayAlign(element));
+            const initBlock = allocateBytes(
+                elementSize, typeFacts(element).alignment,
+            );
             zeroFrameBlock(initBlock, elementSize);
             auto literal = element.toBasetype.isTypeStruct.defaultInitLiteral(
                 length.loc,
@@ -10275,7 +10225,53 @@ private struct Compiler {
         Place place,
         in DynamicArrayLocal descriptor,
     ) {
-        storePlace(place, Operand(descriptor.offset, ScalarType.void_));
+        final switch (place.kind) with (Place.Kind) {
+            case frame:
+                if (place.offset != descriptor.offset)
+                    _code ~= Instruction(
+                        Op.copy,
+                        place.offset,
+                        descriptor.offset,
+                        cast(ushort) sliceDescriptorSize,
+                    );
+                return;
+            case captured:
+                _code ~= Instruction(
+                    Op.frameStore,
+                    descriptor.offset,
+                    capturedFrameIndex(
+                        _capturedOwners[place.declaration], place.offset,
+                    ),
+                    cast(ushort) sliceDescriptorSize,
+                );
+                return;
+            case module_:
+                _code ~= Instruction(
+                    Op.storeModule,
+                    descriptor.offset,
+                    place.offset,
+                    cast(ushort) sliceDescriptorSize,
+                );
+                return;
+            case pointer:
+                emitPointerStore(
+                    descriptor.offset,
+                    place.offset,
+                    place.indexOffset,
+                    sliceDescriptorSize,
+                );
+                return;
+            case dynamicIndex:
+                emitIndexStore(
+                    descriptor.offset,
+                    place.offset,
+                    place.indexOffset,
+                    sliceDescriptorSize,
+                );
+                return;
+            case slice:
+                throw new Exception("A dynamic-array slice is not a value place.");
+        }
     }
 
     // A real-address slice descriptor over a static-array sub-slice
@@ -10720,25 +10716,14 @@ private struct Compiler {
         import dmd.astenums: TY;
         import dmd.tokens: EXP;
 
-        auto equal = cast(BinExp) expression; // DMD AST fields are mutable refs.
+        auto equal = cast(EqualExp) expression;
         assert(equal !is null);
 
-        // `m1 == m2` / `m1 != m2` for associative arrays: compare entry sets via
-        // the VM-owned maps. DMD keeps the EqualExp (with an unused lowering to
-        // `_d_aaEqual`), so match the operand type here.
-        if (equal.e1.type.toBasetype.ty == TY.Taarray) {
-            const width = assocArrayValueWidth(equal.e1.type.toBasetype);
-            const keyMeta = assocArrayKeyMeta(equal.e1.type.toBasetype);
-            const left = resolveAssocArrayOperand(equal.e1).handle.offset;
-            const right = resolveAssocArrayOperand(equal.e2).handle.offset;
-            const offset = allocate(ScalarType.bool_);
-            _code ~= Instruction(
-                Op.aaEqual, offset, left, right, cast(ushort) width, keyMeta,
-            );
-            if (equal.op == EXP.notEqual)
-                _code ~= Instruction(Op.notBool, offset, offset);
-            return Operand(offset, ScalarType.bool_);
-        }
+        if (equal.lowering !is null)
+            return compileExpression(equal.lowering);
+
+        if (equal.e1.type.toBasetype.isTypeAArray !is null)
+            return compileExpression(lowerAssociativeArrayEquality(equal));
 
         if (equal.e1.type.toBasetype.ty == TY.Tstruct &&
             equal.e2.type.toBasetype.ty == TY.Tstruct)
@@ -10818,6 +10803,15 @@ private struct Compiler {
         const offset = allocate(ScalarType.bool_);
         _code ~= Instruction(op, offset, lhs.offset, rhs.offset);
         return Operand(offset, ScalarType.bool_);
+    }
+
+    private Expression lowerAssociativeArrayEquality(EqualExp equal) {
+        import dmd.expressionsem: expressionSemantic;
+
+        return expressionSemantic(
+            new EqualExp(equal.op, equal.loc, equal.e1, equal.e2),
+            _currentFunction._scope,
+        );
     }
 
     // `dg1 == dg2` / `dg1 is dg2` (and the negated forms): a delegate is the
@@ -11073,12 +11067,6 @@ private struct Compiler {
         if (function_ !is null && isArrayOpAddAssign(function_))
             return compileArrayOpAddAssign(call);
 
-        if (function_ !is null) {
-            const hook = assocArrayHook(function_);
-            if (hook != AssocArrayHook.none)
-                return compileAssocArrayHook(call, hook);
-        }
-
         if (function_ !is null && function_.ident !is null &&
             function_.ident.toString == "emplace")
             if (auto emplaced = compileEmplace(call))
@@ -11180,8 +11168,13 @@ private struct Compiler {
         if (auto native = tryCompileNativeTypeInfoCall(call, function_))
             return *native;
 
-        const layout = parameterLayout(function_);
         const isNativeLeaf = function_.fbody is null;
+        // Semantic analysis can materialize a hidden receiver or context. Do
+        // it before deriving the argument layout, because this call site
+        // stores arguments at that layout's offsets.
+        if (!isNativeLeaf)
+            registerFunction(function_);
+        const layout = parameterLayout(function_);
         if (isNativeLeaf && !layout.hasClassThis)
             if (auto native = tryCompileNativeCall(call, function_, layout))
                 return *native;
@@ -11552,6 +11545,7 @@ private struct Compiler {
         // `auto`, not `const`: `pointerElementScalar` below needs a mutable
         // `Type` and DMD's `toBasetype`/`nextOf` are non-const methods.
         auto returnType = function_.type.toBasetype.nextOf;
+        const returnFacts = typeFacts(returnType);
         // A dynamic-array return (e.g. `gc_getArrayUsed`'s `void[]`) has no
         // scalar tag; it is a 16-byte {length, ptr} slice descriptor, the same
         // shape every other array-typed frame slot uses.
@@ -11565,8 +11559,8 @@ private struct Compiler {
             : scalarType(returnType.toBasetype);
         const destination = isStructReturn
             ? allocateBytes(
-                typeFacts(returnType).byteWidth,
-                staticArrayAlign(returnType),
+                returnFacts.byteWidth,
+                returnFacts.alignment,
             )
             : isArrayReturn
                 ? allocateBytes(sliceDescriptorSize, size_t.sizeof)
@@ -12343,11 +12337,14 @@ private struct Compiler {
 
         const length = compileExpression((*call.arguments)[0]);
         const elementType = dynamicArrayElementType(call.type);
+        const elementSize = dynamicArrayElementSize(
+            call.type, arrayElementIsArray(call.type),
+        );
         const offset = allocateBytes(sliceDescriptorSize, size_t.sizeof);
         _code ~= Instruction(
             Op.allocArrayDynamic,
             offset,
-            packedFill(elementType),
+            packedFill(elementType, elementSize),
             length.offset,
         );
         return Operand(offset, ScalarType.void_);
@@ -12524,6 +12521,17 @@ private struct Compiler {
     ) {
         import std.conv: text;
 
+        if (auto dot = argument.isDotVarExp)
+            if (auto name = tryTypeidName(dot)) {
+                const address = addressOperand(
+                    Op.frameAddress, name.offset, ScalarType.void_,
+                );
+                _code ~= Instruction(
+                    Op.copy, slot, address.offset, cast(ushort) size_t.sizeof,
+                );
+                return;
+            }
+
         auto address = placeAddressOrNull(argument);
         if (address is null)
             throw new Exception(text(
@@ -12547,605 +12555,8 @@ private struct Compiler {
         );
     }
 
-    // An associative-array hook call: operate on the VM-owned map referenced by
-    // the AA handle local. Each hook carries the AA as its first argument (a
-    // VarExp, or `&aa`/`*aa` around one), and the key/value as later arguments.
-    private Operand compileAssocArrayHook(
-        CallExp call,
-        in AssocArrayHook hook,
-    ) {
-        import std.conv: text;
-
-        auto operand = resolveAssocArrayOperand((*call.arguments)[0]);
-        const handle = operand.handle.offset;
-
-        with (AssocArrayHook) final switch (hook) {
-            case none:
-                throw new Exception("Unreachable AA hook.");
-
-            case length: {
-                const offset = allocate(ScalarType.ulong_);
-                _code ~= Instruction(Op.aaLength, offset, handle);
-                return Operand(offset, ScalarType.ulong_);
-            }
-
-            case getRvalue: {
-                // `const` fails: `Type` is DMD's mutable AST ref.
-                auto aaType = assocArrayType((*call.arguments)[0]);
-                const valueType = assocArrayValueScalarType(aaType);
-                const width = assocArrayValueWidth(aaType);
-                const keyMeta = assocArrayKeyMeta(aaType);
-                const keyOffset =
-                    assocArrayKeyOffset((*call.arguments)[1], aaType);
-                const offset = allocateBytes(
-                    cast(uint) size_t.sizeof, size_t.sizeof,
-                );
-                _code ~= Instruction(
-                    Op.aaGetRvalue, offset, handle, keyOffset,
-                    cast(ushort) width, keyMeta,
-                );
-                return Operand(offset, ScalarType.ulong_, true, valueType);
-            }
-
-            case getLvalue:
-                auto aaType = assocArrayType((*call.arguments)[0]);
-                return addressOfPlace(*assocArrayIndexPlace(
-                    operand.container,
-                    handle,
-                    (*call.arguments)[1],
-                    aaType,
-                    aaType.nextOf,
-                ));
-
-            case in_: {
-                // `const` fails: `Type` is DMD's mutable AST ref.
-                auto aaType = assocArrayType((*call.arguments)[0]);
-                const valueType = assocArrayValueScalarType(aaType);
-                const width = assocArrayValueWidth(aaType);
-                const keyMeta = assocArrayKeyMeta(aaType);
-                const keyOffset =
-                    assocArrayKeyOffset((*call.arguments)[1], aaType);
-                const offset = allocateBytes(
-                    cast(uint) size_t.sizeof, size_t.sizeof,
-                );
-                _code ~= Instruction(
-                    Op.aaIn, offset, handle, keyOffset, cast(ushort) width,
-                    keyMeta,
-                );
-                return Operand(offset, ScalarType.ulong_, true, valueType);
-            }
-
-            case remove: {
-                auto aaType = assocArrayType((*call.arguments)[0]);
-                const width = assocArrayValueWidth(aaType);
-                const keyMeta = assocArrayKeyMeta(aaType);
-                const keyOffset =
-                    assocArrayKeyOffset((*call.arguments)[1], aaType);
-                const offset = allocate(ScalarType.bool_);
-                _code ~= Instruction(
-                    Op.aaRemove, offset, handle, keyOffset,
-                    cast(ushort) width, keyMeta,
-                );
-                return Operand(offset, ScalarType.bool_);
-            }
-
-            case equal: {
-                auto aaType = assocArrayType((*call.arguments)[0]);
-                const width = assocArrayValueWidth(aaType);
-                const keyMeta = assocArrayKeyMeta(aaType);
-                const right = resolveAssocArrayOperand(
-                    (*call.arguments)[1],
-                ).handle.offset;
-                const offset = allocate(ScalarType.bool_);
-                _code ~= Instruction(
-                    Op.aaEqual, offset, handle, right, cast(ushort) width,
-                    keyMeta,
-                );
-                return Operand(offset, ScalarType.bool_);
-            }
-
-            case dup: {
-                const offset = allocateBytes(
-                    cast(uint) size_t.sizeof, size_t.sizeof,
-                );
-                _code ~= Instruction(Op.aaDup, offset, handle);
-                return Operand(offset, ScalarType.ulong_);
-            }
-
-            case keys: {
-                auto aaType = assocArrayType((*call.arguments)[0]);
-                return compileAssocArraySlice(
-                    Op.aaKeys, handle, assocArrayKeyWidth(aaType),
-                );
-            }
-
-            case values: {
-                auto aaType = assocArrayType((*call.arguments)[0]);
-                return compileAssocArraySlice(
-                    Op.aaValues, handle, assocArrayValueWidth(aaType),
-                );
-            }
-
-            case apply2:
-                return compileAssocArrayApply2(call, handle);
-        }
-    }
-
-    // `m.keys` / `m.values`: a fresh `int[]` slice descriptor holding a copy of
-    // the map's keys / values, rooted on the VM-owned heap.
-    private Operand compileAssocArraySlice(
-        in Op op,
-        in ushort handle,
-        in uint elementSize,
-    ) {
-        const offset = allocateBytes(sliceDescriptorSize, size_t.sizeof);
-        _code ~= Instruction(op, offset, handle, cast(ushort) elementSize);
-        return Operand(offset, ScalarType.int_);
-    }
-
-    // `_d_aaApply2(aa, dg)`: DMD's lowering of `foreach (key, value; aa)`.
-    // Materialise insertion-ordered key/value slices from the VM-owned map and
-    // inline the delegate body once per entry.
-    private Operand compileAssocArrayApply2(
-        CallExp call,
-        in ushort handle,
-    ) {
-        import dmd.astenums: TY;
-        import std.conv: text;
-
-        if (call.arguments is null || call.arguments.length != 2)
-            throw new Exception(text(
-                "Unsupported associative array foreach in bytecode core: ",
-                expressionChars(call),
-            ));
-
-        auto literal = (*call.arguments)[1].isFuncExp;
-        if (literal is null || literal.fd is null ||
-            literal.fd.fbody is null ||
-            literal.fd.parameters is null ||
-            literal.fd.parameters.length != 2)
-            throw new Exception(text(
-                "Unsupported associative array foreach body in bytecode core: ",
-                expressionChars(call),
-            ));
-
-        auto keyParameter = (*literal.fd.parameters)[0];
-        auto valueParameter = (*literal.fd.parameters)[1];
-
-        // `AssocArray.keys` (machine.d) packs each key at its real width --
-        // a scalar's own size, a struct's own whole-block size, or a
-        // `string`'s 16-byte slice descriptor (`assocArrayKeyWidth`, the
-        // same stride the direct lookup/insert opcodes already key off via
-        // `assocArrayKeyMeta`). Reading it back at that same width (rather
-        // than a hardcoded 4-byte `int`) is the general fix;
-        // `assocArrayKeyIsArray`/`assocArrayKeyWidth` still throw explicitly
-        // for a key type direct lookup itself refuses (`wstring`/`dstring`),
-        // so no separate check is needed here.
-        auto aaType = assocArrayType((*call.arguments)[0]);
-        const keyIsArray = assocArrayKeyIsArray(aaType);
-        const keyElementSize = assocArrayKeyWidth(aaType);
-        // Same reasoning on the value side: `assocArrayValueWidth` is the
-        // one place `aaInsert`/`aaGetRvalue`/`Op.aaValues` all size a value
-        // from, so `foreach`'s own per-entry stride must match it exactly
-        // -- a local, ad hoc struct-or-scalar calculation here previously
-        // both threw for a static-array value (`scalarType` rejects
-        // `Tsarray`) and, before `assocArrayValueWidth`'s own Tsarray fix,
-        // would have desynced from the real entry stride even if patched
-        // locally instead.
-        const valueIsAggregate =
-            valueParameter.type.toBasetype.ty == TY.Tstruct ||
-            valueParameter.type.toBasetype.ty == TY.Tsarray;
-        const valueElementSize = assocArrayValueWidth(aaType);
-
-        const keys = compileAssocArraySlice(Op.aaKeys, handle, keyElementSize);
-        const values = compileAssocArraySlice(
-            Op.aaValues, handle, valueElementSize,
-        );
-
-        // A struct key that is itself nothing but a single `string` field
-        // (`assocArrayKeyIsArray`'s struct branch) is *compared* by content
-        // like a bare `string`, but its declared foreach-parameter type is
-        // still `Tstruct` -- checking `keyIsStruct` first here keeps it on
-        // the same inline-frame representation the raw-byte
-        // struct-key foreach case already uses (`dynamicArrayElementType`
-        // below expects an actual `Tarray`, not a struct, so it must never
-        // see this key's type).
-        const keyIsStruct = keyParameter.type.toBasetype.ty == TY.Tstruct;
-        const keySlot = keyIsStruct
-            ? allocateBytes(
-                keyElementSize, staticArrayAlign(keyParameter.type),
-            )
-            : keyIsArray
-                ? allocateBytes(keyElementSize, size_t.sizeof)
-                : allocate(scalarType(keyParameter.type));
-        registerFrameParameter(keyParameter, keySlot);
-
-        const valueSlot = allocateBytes(
-            valueElementSize,
-            valueIsAggregate
-                ? staticArrayAlign(valueParameter.type)
-                : valueElementSize,
-        );
-        registerFrameParameter(valueParameter, valueSlot);
-
-        const index = compileSizeConstant(0);
-        const length = allocate(ScalarType.ulong_);
-        _code ~= Instruction(Op.sliceLength, length, keys.offset);
-
-        const conditionIndex = _code.length;
-        const condition = allocate(ScalarType.bool_);
-        _code ~= Instruction(
-            Op.lessThanUnsigned8, condition, index, length,
-        );
-        const exitJump = emitJumpIfFalse(Operand(condition, ScalarType.bool_));
-
-        emitIndexLoad(keySlot, keys.offset, index, keyElementSize);
-        emitIndexLoad(valueSlot, values.offset, index, valueElementSize);
-
-        size_t[] bodyExits;
-        auto previousExits = _applyBodyExits;
-        _applyBodyExits = &bodyExits;
-        compileNestedStatement(literal.fd.fbody);
-        _applyBodyExits = previousExits;
-
-        const one = compileSizeConstant(1);
-        _code ~= Instruction(Op.addInt8, index, index, one);
-        _code ~= Instruction(Op.jump, cast(ushort) conditionIndex);
-
-        patchJump(exitJump);
-        foreach (patch; bodyExits)
-            patchJump(patch);
-
-        const result = allocate(ScalarType.int_);
-        _code ~= Instruction(
-            Op.loadConstant, result, constantIndex(0),
-            cast(ushort) TypeFacts.fromOpcode(ScalarType.int_).byteWidth,
-        );
-        return Operand(result, ScalarType.int_);
-    }
-
-    // The static `V[K]` type of an associative-array operand (after
-    // unwrapping `&aa`/`*aa`, the same shapes the hook lowering wraps the AA
-    // argument in), for deriving its value type `V`.
-    private Type assocArrayType(Expression expression) {
-        auto inner = expression;
-        if (auto address = inner.isAddrExp)
-            inner = address.e1;
-        if (auto deref = inner.isPtrExp)
-            inner = deref.e1;
-        return inner.type.toBasetype;
-    }
-
-    // The pointee scalar for an associative array's value type, matching
-    // `dynamicArrayElementType`'s convention (`void_` marks an opaque
-    // aggregate block rather than a plain machine scalar). `scalarType`
-    // itself never classifies `Tdelegate`; a delegate AA value slot has real
-    // storage through the same AA entry representation as every other value;
-    // a delegate value is the same opaque 16-byte `{context, funcptr}` pair
-    // `emitDelegateValue` lays out for every other delegate-typed slot.
-    private ScalarType assocArrayValueScalarType(Type aaType) {
-        import dmd.astenums: TY;
-
-        if (aaType.toBasetype.nextOf.toBasetype.ty == TY.Tdelegate)
-            return ScalarType.void_;
-        if (arrayElementIsArray(aaType))
-            return ScalarType.void_;
-        return dynamicArrayElementType(aaType);
-    }
-
-    // The byte width of an associative array's value type, the same way
-    // `dynamicArrayElementSize` sizes a dynamic array's element: a struct or
-    // static-array value is its own block size, a dynamic-array value is its
-    // own 16-byte slice descriptor, any other value is its scalar width.
-    // `AssocArray.values` (`machine.d`) stores entries packed at this stride,
-    // mirroring how a dynamic array carries its own element size.
-    //
-    // A static-array-typed value (`int[3][string]`) is its own inline block
-    // -- confirmed against DMD's real lowering, whose `Impl.valsz` for an
-    // `int[3]` value is 12, the array's own raw byte width, never a boxed
-    // descriptor -- unlike a `Tsarray` *row* nested inside another dynamic
-    // array (`int[2][]`), which this VM always boxes behind its own 16-byte
-    // slice descriptor (`arrayElementIsArray`'s own doc comment: "this VM's
-    // rows are never a raw inline block"). An AA value slot is not a
-    // dynamic-array row, so it must not inherit that boxing: checked before
-    // `arrayElementIsArray`, which does not distinguish the two shapes
-    // (it would otherwise (mis)size a static-array value as a 16-byte
-    // descriptor, desyncing `Op.aaValues`' per-entry stride from every
-    // opcode -- `aaInsert`/`aaGetRvalue`/`aaIn` -- that sizes the same
-    // value at its own raw block width via this same function).
-    private uint assocArrayValueWidth(Type aaType) {
-        import dmd.astenums: TY;
-
-        if (aaType.toBasetype.nextOf.toBasetype.ty == TY.Tdelegate)
-            return delegateValueSize;
-        if (aaType.toBasetype.nextOf.toBasetype.ty == TY.Tsarray)
-            return typeFacts(aaType.toBasetype.nextOf).byteWidth;
-        return dynamicArrayElementSize(aaType, arrayElementIsArray(aaType));
-    }
-
-    // The associative array's own key type (`TypeAArray.index`), the
-    // key-side counterpart to `assocArrayValueWidth`'s value type.
-    private Type assocArrayKeyType(Type aaType) {
-        return aaType.isTypeAArray.index;
-    }
-
-    // True when the associative array's key is compared by the content its
-    // {length, ptr} descriptor points at (`keysEqual`'s `keyIsArray`,
-    // machine.d), rather than by the descriptor's own bytes --
-    // two separately-constructed but content-equal `string`s have different
-    // backing pointers, so a raw descriptor compare would wrongly treat them
-    // as distinct keys. Only a plain `string` (immutable `char[]`) is
-    // supported this way; `wstring`/`dstring` throw rather than silently
-    // miscompare by the wrong element width.
-    //
-    // A struct key that is itself nothing but a single plain-`string`
-    // field (`struct Name { string text; }`) has the exact same {length,
-    // ptr} byte layout as a bare `string` -- there are no interleaved
-    // scalar fields to keep raw, so it is content-compared the same way
-    // (`assocArray.structKeyWithStringMemberComparesStructurally`,
-    // `tests/ut/backends/runner/lang/arrays.d`). A struct with any other
-    // shape (more than one field, or a lone field that is not a plain
-    // `string`) still falls through to the whole-block raw-byte
-    // comparison below -- sound only when no field is itself a
-    // string/dynamic array, `assocArrayKeyNonArrayWidth`'s scope.
-    private bool assocArrayKeyIsArray(Type aaType) {
-        import dmd.astenums: TY;
-        import std.conv: text;
-
-        auto keyType = assocArrayKeyType(aaType);
-        if (isStringType(keyType)) {
-            if (!isCharStringType(keyType))
-                throw new Exception(text(
-                    "Unsupported associative array key type in bytecode core: ",
-                    typeChars(keyType),
-                ));
-            return true;
-        }
-
-        if (keyType.toBasetype.ty == TY.Tstruct) {
-            auto declaration = structDeclarationOf(keyType);
-            if (declaration.fields.length == 1) {
-                auto fieldType = cast(Type) declaration.fields[0].type;
-                if (isCharStringType(fieldType))
-                    return true;
-            }
-        }
-
-        return false;
-    }
-
-    // The field-wise layout for a multi-field struct AA key that has at
-    // least one content-compared field (a plain `string` member) -- covers
-    // both a key mixing string and scalar fields (`struct Name { string
-    // first; int age; }`) and a key with two or more plain `string` fields
-    // and no scalar field at all (`struct FullName { string first; string
-    // last; }`). Neither `assocArrayKeyIsArray` (all content -- only its own
-    // single-field carve-out) nor the default whole-block raw comparison (all
-    // raw) is sound for either shape: a raw compare of an all-`string`-field
-    // struct would wrongly compare each field's backing pointer instead of
-    // its content, exactly like the mixed-field case does for its one string
-    // field. Returns `null` when `keyType` doesn't need this: a lone string
-    // field (`assocArrayKeyIsArray`'s own single-field carve-out) or an
-    // all-scalar struct already have their own simpler, established
-    // treatment that this leaves untouched. Mirrors `compileStructIdentity`'s
-    // field-by-field walk for `==`: a plain `string` field compares by
-    // content, everything else (any type `scalarType` accepts) by its own
-    // raw bytes; a `wstring`/`dstring` field, or any other field `scalarType`
-    // rejects (a nested struct, a non-`string` dynamic/static array), throws
-    // rather than silently miscomparing or silently falling back to a
-    // coarser mode.
-    private AssocArrayKeyField[] structKeyFieldLayoutOrNull(Type keyType) {
-        import std.conv: text;
-
-        auto declaration = structDeclarationOf(keyType);
-        if (declaration.fields.length < 2)
-            return null;
-
-        bool anyArrayField;
-        foreach (field; declaration.fields) {
-            auto fieldType = cast(Type) field.type;
-            if (isStringType(fieldType)) {
-                if (!isCharStringType(fieldType))
-                    throw new Exception(text(
-                        "Unsupported associative array key type in ",
-                        "bytecode core: ", typeChars(keyType),
-                    ));
-                anyArrayField = true;
-            }
-        }
-        // An all-raw struct (no string field at all) needs no field-wise
-        // handling: it is already correctly served by the whole-block raw
-        // comparison below. A struct with at least one string field --
-        // whether mixed with scalar fields or not -- always needs the
-        // field-wise walk, since a raw compare would be unsound for any
-        // string field it has.
-        if (!anyArrayField)
-            return null;
-
-        AssocArrayKeyField[] fields;
-        foreach (field; declaration.fields) {
-            auto fieldType = cast(Type) field.type;
-            const isArray = isStringType(fieldType);
-            const width = isArray
-                ? sliceDescriptorSize : typeFacts(fieldType).byteWidth;
-            fields ~= AssocArrayKeyField(
-                cast(ushort) field.offset, cast(ushort) width, isArray,
-            );
-        }
-        return fields;
-    }
-
-    // Registers (or reuses) `keyType`'s field layout in
-    // `Program.assocArrayKeyLayouts`, returning its index -- one entry per
-    // distinct struct-key shape needing field-wise comparison, shared by
-    // every AA access site for that key type.
-    private ushort registerAssocArrayKeyLayout(
-        Type keyType, AssocArrayKeyField[] fields,
-    ) {
-        auto declaration = structDeclarationOf(keyType);
-        if (auto existing = declaration in _assocArrayKeyLayoutIndices)
-            return *existing;
-        if (_program.assocArrayKeyLayouts.length >=
-            assocArrayKeyIsStructLayoutFlag)
-            throw new Exception(
-                "Too many associative array key layouts in bytecode core",
-            );
-
-        const index = cast(ushort) _program.assocArrayKeyLayouts.length;
-        _assocArrayKeyLayoutIndices[declaration] = index;
-        _program.assocArrayKeyLayouts ~= AssocArrayKeyLayout(
-            fields, cast(ushort) typeFacts(keyType).byteWidth,
-        );
-        return index;
-    }
-
-    // The byte width of a non-array AA key: a struct key is its own whole
-    // block size (mirroring `dynamicArrayElementSize`'s Tstruct branch on the
-    // value side), any other supported key is its scalar width. Only a
-    // struct with no string/dynamic-array member is sound here -- storage is
-    // raw bytes and `keysEqual` compares those bytes directly, which would
-    // wrongly compare backing pointers instead of string content for a
-    // string member (still unsupported, tracked separately).
-    private uint assocArrayKeyNonArrayWidth(Type aaType) {
-        import dmd.astenums: TY;
-        import std.conv: text;
-
-        auto keyType = assocArrayKeyType(aaType);
-        if (keyType.toBasetype.ty == TY.Tstruct) {
-            // A struct `structKeyFieldLayoutOrNull` itself declined --
-            // meaning it found no TOP-LEVEL plain-`string` field to route
-            // through field-wise structural comparison -- may still have an
-            // array-typed field this raw whole-block path cannot soundly
-            // compare: a top-level field that is an array but not a plain
-            // immutable `string` (a mutable `char[]`, a `wstring`/`dstring`,
-            // or a non-string dynamic array like `int[]`), or an array field
-            // nested one or more struct levels deeper (`structKeyFieldLayoutOrNull`
-            // only ever looks at `keyType`'s own immediate fields). Two
-            // separately-built but content-equal arrays have different
-            // backing pointers, so comparing them as part of this raw block
-            // would silently compare identity instead of content -- decline
-            // instead, the same diagnostic `assocArrayKeyIsArray` already
-            // raises for an unsupported array-typed key.
-            if (structKeyFieldLayoutOrNull(keyType) is null &&
-                    structHasArrayFieldRecursive(keyType))
-                throw new Exception(text(
-                    "Unsupported associative array key type in ",
-                    "bytecode core: ", typeChars(keyType),
-                ));
-            return typeFacts(keyType).byteWidth;
-        }
-        return typeFacts(keyType).byteWidth;
-    }
-
-    // `assocArrayKeyNonArrayWidth`'s own recursive field scan: true when
-    // `keyType` (a struct) has any field, at any nesting depth through
-    // further struct fields, whose own type is a dynamic array (`Tarray`,
-    // covering every string variant too).
-    private bool structHasArrayFieldRecursive(Type keyType) {
-        import dmd.astenums: TY;
-
-        auto declaration = structDeclarationOf(keyType);
-        foreach (field; declaration.fields) {
-            auto fieldType = cast(Type) field.type;
-            const ty = fieldType.toBasetype.ty;
-            if (ty == TY.Tarray)
-                return true;
-            if (ty == TY.Tstruct && structHasArrayFieldRecursive(fieldType))
-                return true;
-        }
-        return false;
-    }
-
-    // The byte width `AssocArray.keys` (`machine.d`) packs each key entry
-    // at, mirroring `assocArrayValueWidth`'s value-side stride: a `string`
-    // key is its own 16-byte slice descriptor; any other supported key is
-    // its scalar or struct width.
-    private uint assocArrayKeyWidth(Type aaType) {
-        return assocArrayKeyIsArray(aaType)
-            ? sliceDescriptorSize
-            : assocArrayKeyNonArrayWidth(aaType);
-    }
-
-    // Packs an AA key's width and comparison mode into `Instruction.e`
-    // (`assocArrayKeyIsArrayFlag`/`assocArrayKeyIsStructLayoutFlag`): every AA
-    // opcode that reads or writes a key needs both, and there is no operand
-    // to spare for a second field. A multi-field struct key with at least one
-    // string field (`structKeyFieldLayoutOrNull`) needs a third mode neither
-    // existing flag combination can express (it is neither all-raw nor
-    // all-content when mixed, and even an all-string-field key is a block of
-    // *several* content-compared descriptors, not the one whole descriptor
-    // `assocArrayKeyIsArray` handles), so it is instead tagged with
-    // `assocArrayKeyIsStructLayoutFlag` and carries a
-    // `Program.assocArrayKeyLayouts` index (registered once per struct type,
-    // `registerAssocArrayKeyLayout`) in the same bits the other two modes use
-    // for a byte width -- the layout entry itself already knows the key's
-    // total width, so the operand doesn't need to carry it too.
-    private ushort assocArrayKeyMeta(Type aaType) {
-        import dmd.astenums: TY;
-
-        auto keyType = assocArrayKeyType(aaType);
-        if (keyType.toBasetype.ty == TY.Tstruct)
-            if (auto fields = structKeyFieldLayoutOrNull(keyType)) {
-                const index = registerAssocArrayKeyLayout(keyType, fields);
-                assert(index < assocArrayKeyIsStructLayoutFlag);
-                return cast(ushort) (index | assocArrayKeyIsStructLayoutFlag);
-            }
-
-        const isArray = assocArrayKeyIsArray(aaType);
-        const width = isArray
-            ? sliceDescriptorSize
-            : assocArrayKeyNonArrayWidth(aaType);
-        assert(width < assocArrayKeyIsArrayFlag);
-        return cast(ushort) (width | (isArray ? assocArrayKeyIsArrayFlag : 0));
-    }
-
-    // The frame offset of a compiled AA key's raw bytes, `assocArrayKeyMeta`'s
-    // expression-compiling counterpart: a struct-typed key (a local or a
-    // literal) is not itself a frame-resident scalar the generic
-    // `compileExpression` `VarExp` path recognises, so route it through
-    // `structOperandOffset` instead; any other supported key
-    // (scalar or `string`) already compiles correctly through the generic
-    // path.
-    private ushort assocArrayKeyOffset(Expression keyExpression, Type aaType) {
-        import dmd.astenums: TY;
-
-        if (assocArrayKeyType(aaType).toBasetype.ty == TY.Tstruct)
-            return structOperandOffset(keyExpression);
-        return compileExpression(keyExpression).offset;
-    }
-
-    private struct AssocArrayOperand {
-        Place* container;
-        Operand handle;
-    }
-
-    // Resolve the AA's authoritative storage once. An lvalue hook can then
-    // write an autovivified handle back through this same place; read-only
-    // hooks use only the loaded handle.
-    private AssocArrayOperand resolveAssocArrayOperand(Expression expression) {
-        import std.conv: text;
-
-        auto inner = expression;
-        if (auto address = inner.isAddrExp)
-            inner = address.e1;
-        if (auto deref = inner.isPtrExp)
-            inner = deref.e1;
-
-        if (auto container = placeOrNull(inner))
-            return AssocArrayOperand(
-                container, loadPlaceValue(*container),
-            );
-
-        throw new Exception(text(
-            "Unsupported associative array operand in bytecode core: ",
-            expressionChars(expression),
-        ));
-    }
-
-    // `dest[] = a[] + b[]`: the druntime arrayOp call carries three slice
-    // operands. Materialise each into a slice descriptor (the destination shares
-    // its backing memory so the sums write through), then emit an element-wise
-    // add-assign over the three descriptors.
+    // `dest[] = a[] + b[]`: materialise the three source descriptors and
+    // write the element-wise sum into the destination descriptor.
     private Operand compileArrayOpAddAssign(CallExp call) {
         import std.conv: text;
 
@@ -13626,13 +13037,14 @@ private struct Compiler {
 
         const op = operatorText(operator);
 
-        // A struct comparison (`==`, `!=`, `<`, ... over struct operands): DMD
-        // has already lowered the condition `assert_.e1` to the authoritative
-        // bool (a bitwise `is` for a POD default `==`, an `opEquals`/`opCmp` call
-        // otherwise). Compile that condition directly and assert it; the rendered
-        // operands are dead code on a passing assert.
+        // AA and struct comparisons (`==`, `!=`, `<`, ...): DMD has already
+        // lowered the condition `assert_.e1` to the authoritative bool. Compile
+        // that condition directly and assert it; the rendered operands are dead
+        // code on a passing assert.
         import dmd.astenums: TY;
-        if ((*call.arguments)[1].type.toBasetype.ty == TY.Tstruct ||
+        if ((*call.arguments)[1].type.toBasetype.isTypeAArray !is null ||
+            (*call.arguments)[2].type.toBasetype.isTypeAArray !is null ||
+            (*call.arguments)[1].type.toBasetype.ty == TY.Tstruct ||
             (*call.arguments)[2].type.toBasetype.ty == TY.Tstruct)
             return compileBoolConditionAssert(assert_.e1, op);
 
@@ -13677,13 +13089,6 @@ private struct Compiler {
             default:
                 return false;
         }
-
-        // `assert(m1 == m2)` over associative-array operands compares entry sets
-        // via the VM-owned maps.
-        if (op == "==" || op == "!=")
-            if (tryAssocArrayComparisonAssert(
-                    op, (*call.arguments)[1], (*call.arguments)[2]))
-                return true;
 
         // `assert(a[] == b[])` over dynamic-array operands compares the slices
         // element-wise and renders each operand as `[e0, e1, ...]` on failure.
@@ -14303,49 +13708,6 @@ private struct Compiler {
         return true;
     }
 
-    // `assert(m1 == m2)` / `assert(m1 != m2)` over associative arrays: compare
-    // entry sets via the VM-owned maps. False unless both operands are AA-typed.
-    private bool tryAssocArrayComparisonAssert(
-        in string op,
-        Expression lhs,
-        Expression rhs,
-    ) {
-        import dmd.astenums: TY;
-
-        if (lhs.type.toBasetype.ty != TY.Taarray ||
-            rhs.type.toBasetype.ty != TY.Taarray)
-            return false;
-
-        const width = assocArrayValueWidth(lhs.type.toBasetype);
-        const keyMeta = assocArrayKeyMeta(lhs.type.toBasetype);
-        const left = resolveAssocArrayOperand(lhs).handle.offset;
-        const right = resolveAssocArrayOperand(rhs).handle.offset;
-        const equal = allocateBytes(1, 1);
-        _code ~= Instruction(
-            Op.aaEqual, equal, left, right, cast(ushort) width, keyMeta,
-        );
-
-        // `==` holds when the maps are equal; `!=` holds when negated.
-        ushort condition = equal;
-        if (op == "!=") {
-            condition = allocateBytes(1, 1);
-            _code ~= Instruction(Op.notBool, condition, equal);
-        }
-
-        const diagnostic = _program.assertDiagnostics.length;
-        _program.assertDiagnostics ~=
-            AssertDiagnostic(op, equal, equal, ScalarType.bool_);
-        _code ~= Instruction(
-            Op.assertTrue,
-            condition,
-            cast(ushort) diagnostic,
-        );
-        return true;
-    }
-
-    // `assert(intExpr)` / `assert(boolExpr)`: throw when the operand evaluates
-    // to zero; the failure renders "<value> != true", so the diagnostic carries
-    // only the operand. A `bool` operand renders "false != true".
     private bool compileNonzeroAssert(Expression expression) {
         import std.conv: text;
 
@@ -14794,7 +14156,7 @@ private struct Compiler {
             case struct_:
             case complexDouble:
                 argumentSize = facts.byteWidth;
-                argumentAlign = staticArrayAlign(type);
+                argumentAlign = facts.alignment;
                 break;
             case dynamicArray:
             case delegate_:
@@ -15402,9 +14764,9 @@ private struct Compiler {
         return typeFacts(element);
     }
 
-    // Shared opcode, aggregate, and byte-width classification for a stored
-    // type. `pointerElementMetadata`, dynamic-array element sizing, and heap
-    // field operations previously derived these facts independently, so a
+    // Shared opcode, aggregate, byte-width, and alignment classification for a
+    // stored type. `pointerElementMetadata`, dynamic-array element sizing, and
+    // heap field operations previously derived these facts independently, so a
     // missed case here would otherwise have to be kept in sync by hand across
     // all of them. A static-array, struct, dynamic-array, or delegate
     // element is always an aggregate/opaque region (`void_` opcode type, full
@@ -15426,55 +14788,56 @@ private struct Compiler {
                 true,
             );
         const byteWidth = cast(uint) size(type.toBasetype);
+        const alignment = type.toBasetype.alignsize;
         if (isComplexDoubleType(type))
             return TypeFacts(
-                ScalarType.void_, byteWidth,
+                ScalarType.void_, byteWidth, alignment,
                 DeclarationRepresentation.complexDouble, true,
             );
         switch (type.toBasetype.ty) with (TY) {
             case Tsarray:
                 return TypeFacts(
-                    ScalarType.void_, byteWidth,
+                    ScalarType.void_, byteWidth, alignment,
                     DeclarationRepresentation.staticArray, true,
                 );
             case Tvector:
                 return TypeFacts(
-                    ScalarType.void_, byteWidth,
+                    ScalarType.void_, byteWidth, alignment,
                     DeclarationRepresentation.vector, true,
                 );
             case Tarray:
                 return TypeFacts(
-                    ScalarType.void_, byteWidth,
+                    ScalarType.void_, byteWidth, alignment,
                     DeclarationRepresentation.dynamicArray, true,
                 );
             case Tstruct:
                 return TypeFacts(
-                    ScalarType.void_, byteWidth,
+                    ScalarType.void_, byteWidth, alignment,
                     DeclarationRepresentation.struct_, true,
                 );
             case Tdelegate:
                 return TypeFacts(
-                    ScalarType.void_, byteWidth,
+                    ScalarType.void_, byteWidth, alignment,
                     DeclarationRepresentation.delegate_, true,
                 );
             case Tclass:
                 return TypeFacts(
-                    scalarType(type), byteWidth,
+                    scalarType(type), byteWidth, alignment,
                     DeclarationRepresentation.classPointer, false,
                 );
             case Tpointer:
                 return TypeFacts(
-                    scalarType(type), byteWidth,
+                    scalarType(type), byteWidth, alignment,
                     DeclarationRepresentation.pointer, false,
                 );
             case Taarray:
                 return TypeFacts(
-                    scalarType(type), byteWidth,
+                    scalarType(type), byteWidth, alignment,
                     DeclarationRepresentation.assocArray, false,
                 );
             default:
                 return TypeFacts(
-                    scalarType(type), byteWidth,
+                    scalarType(type), byteWidth, alignment,
                     DeclarationRepresentation.scalar, false,
                 );
         }
@@ -15588,10 +14951,13 @@ private struct TypeFacts {
     private bool isAggregate;
     private uint _byteWidth;
     private bool _hasByteWidth;
+    private uint _alignment;
+    private bool _hasAlignment;
 
     private this(
         in ScalarType opcodeType,
         in uint byteWidth,
+        in uint alignment,
         in DeclarationRepresentation representation,
         in bool isAggregate,
     ) @safe pure {
@@ -15600,6 +14966,8 @@ private struct TypeFacts {
         this.isAggregate = isAggregate;
         _byteWidth = byteWidth;
         _hasByteWidth = true;
+        _alignment = alignment;
+        _hasAlignment = true;
     }
 
     private static TypeFacts withoutByteWidth(
@@ -15625,6 +14993,7 @@ private struct TypeFacts {
         assert(opcodeType != ScalarType.void_);
         return TypeFacts(
             opcodeType, cast(uint) size(opcodeType),
+            cast(uint) size(opcodeType),
             DeclarationRepresentation.scalar, false,
         );
     }
@@ -15633,6 +15002,12 @@ private struct TypeFacts {
         if (!_hasByteWidth)
             throw new Exception("Byte width is unavailable");
         return _byteWidth;
+    }
+
+    private uint alignment() @safe pure const {
+        if (!_hasAlignment)
+            throw new Exception("Alignment is unavailable");
+        return _alignment;
     }
 }
 
@@ -16462,59 +15837,6 @@ private string normalisedPointerOperator(in string operator)
     }
 }
 
-// DMD lowers associative-array operations to druntime template hooks in
-// `core.internal.newaa` and `object`; the core intercepts them at the call site
-// and operates on its VM-owned map table instead of executing the hook bodies.
-private enum AssocArrayHook {
-    none,
-    length,
-    getRvalue,
-    getLvalue,
-    in_,
-    remove,
-    equal,
-    dup,
-    keys,
-    values,
-    apply2,
-}
-
-private AssocArrayHook assocArrayHook(
-    imported!"dmd.func".FuncDeclaration function_,
-) {
-    import std.algorithm: startsWith;
-    import std.conv: text;
-
-    if (function_ is null || function_.parent is null ||
-        function_.parent.isTemplateInstance is null)
-        return AssocArrayHook.none;
-
-    const name = text(function_.toPrettyChars);
-    static immutable hooks = [
-        Hook("core.internal.newaa._d_aaLen!(", AssocArrayHook.length),
-        Hook("core.internal.newaa._d_aaGetRvalueX!(", AssocArrayHook.getRvalue),
-        Hook("core.internal.newaa._d_aaGetY!(", AssocArrayHook.getLvalue),
-        Hook("core.internal.newaa._d_aaIn!(", AssocArrayHook.in_),
-        Hook("core.internal.newaa._d_aaDel!(", AssocArrayHook.remove),
-        Hook("core.internal.newaa._d_aaEqual!(", AssocArrayHook.equal),
-        Hook("object.dup!(", AssocArrayHook.dup),
-        Hook("object.keys!(", AssocArrayHook.keys),
-        Hook("object.values!(", AssocArrayHook.values),
-        Hook("core.internal.newaa._d_aaApply2!(", AssocArrayHook.apply2),
-    ];
-
-    foreach (candidate; hooks)
-        if (name.startsWith(candidate.prefix))
-            return candidate.hook;
-
-    return AssocArrayHook.none;
-}
-
-private struct Hook {
-    string prefix;
-    AssocArrayHook hook;
-}
-
 // The druntime `_d_arraybounds*` bounds-failure helper, the false branch of
 // DMD's `m[k]` lowering. Matched by name; reaching it means a missing key.
 private bool isArrayBoundsCall(
@@ -16996,10 +16318,6 @@ private string enumMemberName(imported!"dmd.denum".EnumMember member)
 @trusted {
     // DMD Identifier.toString only exposes the compiler-owned identifier text.
     return member.ident.toString.idup;
-}
-
-private uint staticArrayAlign(imported!"dmd.mtype".Type type) {
-    return type.toBasetype.alignsize;
 }
 
 private uint staticArrayLength(imported!"dmd.mtype".Type type) {

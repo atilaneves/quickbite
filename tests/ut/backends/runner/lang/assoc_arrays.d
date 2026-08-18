@@ -2,7 +2,8 @@ module ut.backends.runner.lang.assoc_arrays;
 
 
 import ut.backends;
-import quickbite.frontend.compiler: FrontendFlags;
+import quickbite.frontend.compiler: FrontendFlags,
+    parseSnippetWithCheckActionContext;
 
 
 /++
@@ -407,27 +408,9 @@ static foreach (backend; Matrix!()) {
     }
 }
 
-// Finding 3 (Fable pre-PR review): `structKeyFieldLayoutOrNull` only routes
-// a struct AA key through field-wise structural comparison when it finds a
-// TOP-LEVEL plain-`string` field; a struct with an array-typed field but NO
-// top-level `string` field (a lone `int[]` field here -- neither
-// `assocArrayKeyIsArray`'s single-field carve-out, which only recognises a
-// lone plain-`string` field, nor `structKeyFieldLayoutOrNull`, which returns
-// `null` outright for fewer than two fields) used to fall all the way
-// through to `assocArrayKeyNonArrayWidth`'s whole-block RAW-byte comparison
-// with no field validation at all -- silently comparing two content-equal
-// `xs` arrays built from different backing allocations as UNEQUAL (a missed
-// lookup, not a thrown diagnostic), contradicting this very file's own
-// `structKeyRawBytesConstructLookupAndIterate` comment two fixtures up
-// ("Struct-typed key storage itself ... is supported") and this backend's
-// own documented refusal for an array-bearing AA key
-// (`assocArrayKeyIsArray`'s "Unsupported associative array key type"
-// diagnostic, already exercised for a `wstring`/`dstring` key). Now
-// declined the same way instead: `assocArrayKeyNonArrayWidth`'s Tstruct
-// branch recursively checks every field (through nested structs too) for an
-// array type before accepting the raw-byte path.
-static foreach (backend; AliasSeq!(Bytecode)) {
-    @("assocArray.structKeyWithArrayFieldAndNoStringFieldDeclines." ~
+// An array-valued struct key uses element-wise equality, not slice identity.
+static foreach (backend; Matrix!()) {
+    @("assocArray.structKeyWithArrayFieldComparesStructurally." ~
         backend.stringof)
     @Tags(backend.stringof)
     unittest {
@@ -439,41 +422,13 @@ static foreach (backend; AliasSeq!(Bytecode)) {
                 counts[K([1, 2])] = 1;
                 assert(K([1, 2]) in counts);
             }
-        }).shouldThrowWithMessage(
-            "Unsupported associative array key type in bytecode core: K",
-        );
+        });
     }
 }
 
-// Struct AA keys compare dynamic-array members by their elements, not by the
-// identity of their slice backing storage. Struct-typed key storage itself
-// (`assocArrayKeyMeta`/`assocArrayKeyOffset`, raw-byte comparison, no string
-// member) is supported (`structKeyRawBytesConstructLookupAndIterate` above).
-// A struct key that is itself nothing but a single plain-`string` field has
-// the exact same {length, ptr} byte layout as a bare `string` -- no
-// interleaved scalar fields to keep raw -- so `assocArrayKeyIsArray`
-// (compiler.d) now recognises that shape and routes it through the same
-// content, not descriptor-byte, comparison a bare `string` key already gets
-// (`keysEqual`, machine.d, unchanged). This fixture's own `ab()` call
-// happens to return the same backing literal both times, so it would not by
-// itself catch a raw-byte regression; the sibling
-// `structKeyWithStringMemberComparesByContentNotPointer` fixture below
-// constructs the two keys from genuinely different backing storage and is
-// the real regression guard.
-//
-// Getting here also fixed an unrelated compiler bug along the way:
-// `compilePointerDeclaration` used to register a pointer local's frame slot
-// only *after* compiling its initializer, but DMD's `in` lowering for a
-// non-constant-foldable key (`Name(ab())`, needing a hidden key temp to
-// preserve evaluation order) nests a self-referential assignment to that
-// same local inside its own initializer's `CommaExp` -- `(__aakeyN =
-// Name(ab()), variable = _d_aaInX(...))` -- so the generic assignment
-// compiler used to reach a plain `variable = ...` while the local's own
-// declaration was still being compiled, with no slot yet registered for it,
-// refusing with "Unsupported assignment in bytecode core". Registering the
-// slot before compiling the initializer (mirroring the plain-scalar
-// declaration path, which already did this) fixes that ordering bug
-// generally, independent of the string-member comparison fix above.
+// Struct keys with string members compare the string contents, not the
+// identity of their backing storage. The next fixture uses distinct backing
+// storage to verify that rule.
 static foreach (backend; Matrix!()) {
     @("assocArray.structKeyWithStringMemberComparesStructurally." ~
         backend.stringof)
@@ -579,20 +534,9 @@ static foreach (backend; Matrix!()) {
     }
 }
 
-// A struct key mixing a content-compared `string` field with a raw-compared
-// scalar field in the same key (`struct Name { string first; int age; }`):
-// neither `assocArrayKeyIsArray`'s single-string-field carve-out (the
-// sibling fixtures above) nor the default whole-block raw comparison (the
-// `Point`-only fixture further above) is sound for this shape, since the
-// key is neither all-content nor all-raw. `assocArrayKeyMeta` (compiler.d)
-// now recognises this mix and routes it through a `Program`-level
-// `assocArrayKeyLayouts` entry instead (`assocArrayKeyIsStructLayoutFlag`),
-// giving `keysEqual` (machine.d) a field-by-field comparison mirroring
-// `compileStructIdentity`'s pattern for `==`: `first` compares by content
-// (`a()`/`b()` are content-equal `"Alice"`s built from genuinely different
-// backing storage, so a raw-byte compare of the whole block would wrongly
-// miss the lookup), `age` compares by its own raw bytes (so a same-name,
-// different-age key is correctly a distinct entry).
+// A struct key with a string and a scalar field compares the string by
+// content and the scalar by value. Equal strings with different backing
+// storage must still match.
 static foreach (backend; Matrix!()) {
     @("assocArray.structKeyWithMixedFieldsComparesStructurally." ~
         backend.stringof)
@@ -763,17 +707,9 @@ static foreach (backend; Matrix!()) {
     }
 }
 
-// A struct key with custom `opEquals`/`toHash` that only compare/hash the
-// first field: druntime's AA hooks call the key type's own
-// `opEquals`/`toHash` (via `TypeInfo_Struct.xopEquals`/`xtoHash`) rather
-// than comparing raw bytes, so two keys differing only in the field the
-// custom hash and equality ignore must still collide into the same entry.
+// A custom key equality and hash function control key identity. The two
+// values below differ only in a field that both functions ignore.
 static foreach (backend; Matrix!(
-    Omit!(Bytecode, Because.refusal,
-        "0 is `null` -- the bytecode VM's own map still does structural " ~
-        "key comparison and never dispatches a key's custom " ~
-        "opEquals/toHash; migrating it onto druntime's AA hooks like " ~
-        "Interpreter is tracked in issue #478"),
     Omit!(Ctfe, Because.refusal,
         "0x0 is `null` -- dmd's own CTFE AA evaluator compares struct " ~
         "keys structurally too and never dispatches a custom " ~
@@ -876,13 +812,8 @@ static foreach (backend; Matrix!()) {
     }
 }
 
-// `b == a[1]` (nested AA read as the SECOND operand of a plain, non-assert
-// `==`): used to leave a stale write-back pointer set after the
-// comparison's operand codegen (only argument 0 of an AA hook call ever
-// consumed it). The NEXT plain, unrelated AA insert (`m[5] = 6` below)
-// then wrote its own freshly-autovivified handle through that stale
-// pointer, silently aliasing `a[1]`'s storage onto `m` -- corrupting a
-// variable the comparison never touched.
+// Reading a nested AA as the second equality operand does not affect a later,
+// unrelated insert.
 static foreach (backend; Matrix!()) {
     @("assocArray.nestedReadAsSecondEqualityOperandLeavesLaterWritesUnaffected."
         ~ backend.stringof)
@@ -913,15 +844,7 @@ static foreach (backend; Matrix!()) {
     }
 }
 
-// `a[1][5] = 9` on an already-present outer key: reaching the inner map for
-// the nested write reads `a[1]`'s existing value through the same
-// find-or-default-insert hook (`_d_aaGetY`) real D uses for the outer level
-// too. Bytecode's own hook (`Op.aaInsert`) used to unconditionally overwrite
-// the target slot's bytes with a fresh placeholder before the caller ever
-// wrote the real value through it -- correct for a direct `m[k] = v`, but
-// wrong here, where the outer slot's bytes are only ever *read* (to reach
-// the inner map) rather than assigned to, so the placeholder silently
-// replaced the real, already-populated inner map with an empty one.
+// A nested write through an existing outer key preserves its inner AA.
 static foreach (backend; Matrix!()) {
     @("assocArray.nestedWriteIntoExistingOuterKeyPreservesOtherInnerEntries."
         ~ backend.stringof)
@@ -1228,31 +1151,8 @@ static foreach (backend; Matrix!()) {
     }
 }
 
-// A static-array-typed value (`int[3][string]`): construction from a
-// literal, whole-value indexed read, an indexed single-element write
-// through the AA-value-read pointer (`rows["a"][1] = 99`), and `foreach`
-// all in one fixture. Two bugs fixed to get here, both in the same
-// AA-value-pointer machinery `structValueFieldReadWrite` above already
-// established for a struct-typed value: `staticArrayBaseOffset` (and its
-// `indexesStaticArray` gate) had no branch recognising a raw pointer to a
-// static array -- DMD's associative-array rvalue-read lowering
-// (`_d_aaGetRvalueX`) yields exactly that shape -- so both the read and
-// the indexed write threw "Unsupported static array access"/"Unsupported
-// assignment in bytecode core" (Bytecode alone; `SystemLinker` always ran
-// this fine). Separately, `assocArrayValueWidth` (used by every AA opcode,
-// including `Op.aaValues`' per-entry stride) sized a static-array value as
-// a boxed 16-byte slice descriptor via `arrayElementIsArray`'s dynamic-
-// array-*row* treatment, not its own 12-byte raw block (confirmed against
-// DMD's own lowering, whose `Impl.valsz` for an `int[3]` value is 12) --
-// harmless for a single entry (the real bytes still start at the block's
-// front) but desyncing `foreach`'s per-entry read stride from the real one
-// as soon as `compileAssocArrayApply2` needed its own value width (it
-// previously had no `Tsarray` case at all, throwing "Unsupported type in
-// bytecode core: int[3]" via `scalarType`). The indexed write
-// (`runNestedIndexAssignExpression`) composes through the same
-// `_d_aaGetRvalueX`-lowered pointer-dereference receiver
-// `structValueFieldReadWrite` above documents, one level further from the
-// assignment's own target.
+// A static-array AA value supports construction, whole-value reads, indexed
+// writes, and iteration.
 static foreach (backend; Matrix!()) {
     @("assocArray.staticArrayValueConstructsReadsWritesAndIterates." ~
         backend.stringof)
@@ -1629,11 +1529,7 @@ static foreach (backend; Matrix!(
     }
 }
 
-// `foreach (k, v; callbacks)` over a LOCAL delegate-typed AA calls through
-// each stored delegate via the loop variable `v`, not just a direct
-// `callbacks[key]()` index-call -- a materially different read path
-// (`compileAssocArrayApply2`'s per-entry value read) from the one the hang
-// fix and the two lambda-assign fixtures above exercise.
+// Iteration over a delegate-valued AA calls each stored delegate.
 static foreach (backend; Matrix!(
     Omit!(Ctfe, Because.unconfirmed),
     Omit!(LLVMJit, Because.unconfirmed),
@@ -1688,6 +1584,37 @@ static foreach (backend; Matrix!()) {
         backend.stringof)
     @Tags(backend.stringof)
     unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct Pair {
+                string s;
+                int i;
+            }
+
+            unittest {
+                auto p = Pair("foo", 5);
+                auto map = [p: 105];
+                assert(map[p] == 105);
+            }
+        }, [], FrontendFlags(["-preview=dip1000"]));
+    }
+}
+
+// The front end keeps declarations from the first fixture. The second fixture
+// must compile its AA literal from its own semantic AST and stack storage.
+static foreach (backend; Matrix!()) {
+    @("assocArray.structKeyLiteralAfterTypeInfoFixture." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        // This setup only exposes a Bytecode fault.
+        static if (backend.stringof == Bytecode.stringof)
+            parseSnippetWithCheckActionContext(q{
+                class Thing {}
+
+                struct Observation {
+                    TypeInfo type;
+                }
+
+            });
         runBackendSourceFixtureTests!backend(q{
             struct Pair {
                 string s;
