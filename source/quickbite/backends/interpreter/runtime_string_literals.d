@@ -17,7 +17,6 @@ public void stringValue(
 ) {
     import quickbite.backends.interpreter.native_array: NativeArray;
     import quickbite.backends.interpreter.native_block: NativeBlock;
-    import quickbite.backends.interpreter.expression_result: ExpressionResult;
 
     pointerStorage = NativeBlock.init;
     backingStorage = NativeBlock.init;
@@ -69,7 +68,6 @@ private void constructStringArray(T)(
 ) {
     import quickbite.backends.interpreter.native_array: NativeArray;
     import quickbite.backends.interpreter.native_block: NativeBlock;
-    import quickbite.backends.interpreter.expression_result: ExpressionResult;
 
     auto arrayType = type.toBasetype;
     if (auto slice = arrayType.isTypeDArray) {
@@ -77,14 +75,14 @@ private void constructStringArray(T)(
         backing.writeSliceHeader(destination.address);
         backingStorage = backing.block;
         foreach (index, codeUnit; codeUnits)
-            destination.index(index).storeScalar(ExpressionResult(codeUnit));
+            destination.index(index).storeNativeScalar(codeUnit);
         return;
     }
 
     if (arrayType.isTypeSArray !is null) {
         backingStorage = NativeBlock.init;
         foreach (index, codeUnit; codeUnits)
-            destination.index(index).storeScalar(ExpressionResult(codeUnit));
+            destination.index(index).storeNativeScalar(codeUnit);
         return;
     }
 
@@ -101,8 +99,8 @@ pointerStringStorage(
 ) {
     import quickbite.backends.interpreter.native_array: NativeArray;
     import quickbite.backends.interpreter.native_block: NativeBlock;
-    import quickbite.backends.interpreter.native_scalar: writeScalar;
     import quickbite.backends.interpreter.layout: typeByteSize;
+    import quickbite.backends.interpreter.place: Place;
 
     auto elementType = string_.type.toBasetype.nextOf;
     const length = string_.numberOfCodeUnits + 1;
@@ -111,13 +109,34 @@ pointerStringStorage(
         NativeBlock.Scan.no,
     );
     auto elements = NativeArray.borrow(elementType, storage.address, length);
-    foreach (index; 0 .. string_.numberOfCodeUnits)
-        writeScalar(elementType, elements.element(index),
-            imported!"quickbite.backends.interpreter.expression_result".ExpressionResult(
-                string_.getIndex(index),
-            ));
-    writeScalar(elementType, elements.element(length - 1),
-        imported!"quickbite.backends.interpreter.expression_result".ExpressionResult(0));
+    switch (string_.sz) {
+        case wcharCodeUnitWidth:
+            foreach (index; 0 .. string_.numberOfCodeUnits)
+                Place(elements.element(index).ptr, elementType).storeNativeScalar(
+                    cast(wchar) string_.getIndex(index),
+                );
+            Place(elements.element(length - 1).ptr, elementType).storeNativeScalar(
+                wchar.init,
+            );
+            break;
+        case dcharCodeUnitWidth:
+            foreach (index; 0 .. string_.numberOfCodeUnits)
+                Place(elements.element(index).ptr, elementType).storeNativeScalar(
+                    cast(dchar) string_.getIndex(index),
+                );
+            Place(elements.element(length - 1).ptr, elementType).storeNativeScalar(
+                dchar.init,
+            );
+            break;
+        default:
+            foreach (index; 0 .. string_.numberOfCodeUnits)
+                Place(elements.element(index).ptr, elementType).storeNativeScalar(
+                    cast(char) string_.getIndex(index),
+                );
+            Place(elements.element(length - 1).ptr, elementType).storeNativeScalar(
+                char.init,
+            );
+    }
     return storage;
 }
 
