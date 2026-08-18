@@ -189,10 +189,8 @@ private bool bytesAreZero(
 // declines it before this is consulted, because the read side has no enum
 // `ExpressionResult` to give back for a floating one. `@trusted`: `Type.
 // toBasetype` is not `@safe`, mirroring `native_scalar.d`'s identical
-// boundary for the identical call. `public`: `valueMatchesPlace` needs the
-// same check to decide whether a transient `ExpressionResult` reaching a
-// `real`-typed place is numeric before `writeValue`; sharing it prevents the
-// compatibility check and codec from drifting apart.
+// boundary for the identical call. `public`: the typed read and write paths
+// share this check, so the `real` codec cannot drift from its place dispatch.
 public bool isRealType(imported!"dmd.mtype".Type type) @trusted {
     import dmd.astenums: TY;
 
@@ -333,59 +331,6 @@ private string typeName(imported!"dmd.mtype".Type type) @trusted {
     import std.string: fromStringz;
 
     return type.toChars.fromStringz.idup;
-}
-
-
-// Whether a non-aggregate ExpressionResult can be encoded at `type`. Native
-// aggregates use their typed storage directly and are handled before this
-// scalar compatibility gate at execution boundaries.
-public bool valueMatchesPlace(
-    imported!"dmd.mtype".Type type,
-    in imported!"quickbite.backends.interpreter.expression_result".ExpressionResult value,
-) @safe {
-    if (!isPlaceComposable(type))
-        return false;
-
-    import quickbite.backends.interpreter.native_scalar: isNativeScalarType;
-    import quickbite.backends.interpreter.expression_result: ExpressionResult;
-
-    if (isNullType(type))
-        return value == ExpressionResult.null_;
-
-    if (isNativeScalarType(type))
-        return value.isNumericScalar || value.isCharacter;
-
-    // `real` is `isPlaceComposable` but not a native scalar. Its expression
-    // representation is always numeric (never character), matching
-    // `writeValue`'s `writeRealBits` arm.
-    if (isRealType(type))
-        return value.isNumericScalar;
-
-    if (imaginaryComponentType(type) !is null)
-        return value.isImaginaryScalar;
-
-    if (complexComponentType(type) !is null)
-        return value.isComplexScalar;
-
-    if (type.isTypePointer !is null)
-        return value.isPointer || value == ExpressionResult.null_;
-
-    // A scalar destined for a static-array place is a broadcast fill --
-    // ordinary D semantics for `T[N] x = scalar;` (declaration) and its
-    // reassignment form when it reaches this generic scalar path rather than
-    // the dedicated slice-assignment or struct-literal-field broadcasts,
-    // which already accept the identical shape. Recursing into the element
-    // type answers the same question `writeValue`'s own `Tsarray` arm below
-    // relies on before broadcasting.
-    if (auto arrayType = type.isTypeSArray)
-        return valueMatchesPlace(arrayType.next, value);
-
-    // An AA place holds interpreted druntime's own `Impl*` handle -- a
-    // pointer-shaped value or null, exactly like a raw pointer place.
-    if (type.isTypeAArray !is null)
-        return value.isPointer || value == ExpressionResult.null_;
-
-    return false;
 }
 
 

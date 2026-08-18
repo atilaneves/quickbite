@@ -1070,8 +1070,6 @@ private struct Walker {
             return;
         }
 
-        import quickbite.backends.interpreter.place_value: valueMatchesPlace;
-
         if (
             variable.type.toBasetype.isTypeClass !is null &&
             value.isTypeName
@@ -1099,12 +1097,6 @@ private struct Walker {
             writeStoredValue(bindingPlace(variable), value);
             return;
         }
-
-        const canStore = value.isNativeAggregate
-            ? true
-            : valueMatchesPlace(variable.type, value);
-        if (!canStore)
-            throw new Exception("Interpreter binding value is not place-composable.");
 
         writeStoredValue(bindingPlace(variable), value, true);
     }
