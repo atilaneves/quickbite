@@ -10400,6 +10400,63 @@ static foreach (backend; Matrix!()) {
     }
 }
 
+// A struct constructed from another struct's temporary destroys the inner,
+// moved-in argument's temporary when the outer constructor returns -- before
+// the outer temporary itself is destroyed at the full-expression end.
+// SystemLinker is the oracle.
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.refusal, "[3] != [3, 13]"),
+    Omit!(Bytecode, Because.refusal, "[3] != [3, 13]"),
+)) {
+    @("call.nestedConstructionTemporariesAreDestroyedInOrder." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct B {
+                int id;
+                int[]* log;
+
+                this(int id, int[]* log) {
+                    this.id = id;
+                    this.log = log;
+                }
+
+                ~this() {
+                    if (log !is null)
+                        *log ~= id;
+                }
+            }
+
+            struct A {
+                int id;
+                int[]* log;
+
+                this(B b) {
+                    this.id = b.id + 10;
+                    this.log = b.log;
+                }
+
+                ~this() {
+                    if (log !is null)
+                        *log ~= id;
+                }
+
+                int getId() {
+                    return id;
+                }
+            }
+
+            unittest {
+                int[] log;
+                const got = A(B(3, &log)).getId();
+                assert(got == 13);
+                assert(log == [3, 13]);
+            }
+        });
+    }
+}
+
 // Several temporaries constructed in one full expression are destroyed at
 // its end in reverse construction order. SystemLinker is the oracle.
 static foreach (backend; Matrix!(
