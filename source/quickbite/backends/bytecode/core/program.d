@@ -588,7 +588,9 @@ package(quickbite.backends.bytecode) enum Op: ubyte {
     bitAndInt4, // a: destination frame offset, b: lhs, c: rhs
     bitAndInt8, // a: destination frame offset, b: lhs, c: rhs
     bitXorInt4, // a: destination frame offset, b: lhs, c: rhs
+    bitXorInt8, // a: destination frame offset, b: lhs, c: rhs
     bitNotInt4, // a: destination frame offset, b: source
+    bitNotInt8, // a: destination frame offset, b: source
     notBool, // a: destination (one boolean byte), b: source (inner == 0 ? 1 : 0)
     normaliseBool, // a: destination (one boolean byte), b: source (!= 0 ? 1 : 0)
     lessThan4, // a: destination (one boolean byte), b: lhs, c: rhs (signed <)
@@ -691,44 +693,6 @@ package(quickbite.backends.bytecode) enum Op: ubyte {
     // unconditional abort throwing the "unittest failure" message, for a
     // literal-false assert lexically inside a unittest body
     haltUnittest,
-    // Associative-array hooks operating on VM-owned maps. A `T[K]` local's
-    // 8-byte slot holds a `size_t` handle: a 1-based index into the machine's
-    // map table, or 0 for a not-yet-created (empty) map. The current map table
-    // stores int keys and int-sized values; wider `aaValues` elements are
-    // zero-extended when materialised for narrow struct-handle cases.
-    aaNew, // a: handle slot; create a fresh empty map and write its handle
-    aaLength, // a: size_t result, b: handle slot; entry count (0 if handle 0)
-    // a: handle slot, b: key slot, c: value slot; insert/overwrite. Creates the
-    // map on first insert into an empty (handle-0) local, writing the handle back.
-    aaInsert,
-    // a: handle slot, b: key slot, c: default-value slot; find-or-default-insert.
-    // Creates the map on an empty (handle-0) local exactly like `aaInsert`, but
-    // an ALREADY-present key's existing value bytes are left untouched -- only
-    // a newly created entry gets `c`'s bytes. `_d_aaGetY`'s own lowering only
-    // writes the real value through the pointer it returns when it just
-    // created the entry; an existing entry must survive being read back as an
-    // intermediate value for further indexing (`a[1][2] = 3` reads `a[1]`
-    // through this same hook to reach the inner map). Used by the get-lvalue
-    // associative-index place address path; `aaInsert` itself is still correct
-    // for a direct `m[k] = v` and a literal's per-key values, which always
-    // mean to (over)write that exact value.
-    aaGetOrInsert,
-    // a: size_t pointer result, b: handle slot, c: key slot; the address of the
-    // value for the key (into VM-owned memory) or 0 when the key is absent. Both
-    // the `m[k]` rvalue read and `k in m` lower to this: DMD's `m[k]` lowering
-    // wraps it in a null check that raises "Range violation" on a missing key.
-    aaGetRvalue,
-    aaIn,
-    // a: bool result, b: handle slot, c: key slot; remove the key, result true
-    // iff it was present.
-    aaRemove,
-    // a: bool result, b: handle slot, c: handle slot; entry-set equality.
-    aaEqual,
-    aaDup, // a: handle slot result, b: handle slot; an independent copy
-    // a: 16-byte slice-descriptor result, b: handle slot, c: element byte size;
-    // a fresh heap block holding a copy of the map's keys / values.
-    aaKeys,
-    aaValues,
     // a: frame offset of a string-slice descriptor, b: thrown exception-class
     // id (`noExceptionClass` for non-D `Throwable` diagnostics).
     throwString,
@@ -766,56 +730,6 @@ package(quickbite.backends.bytecode) enum TranscodeMode: ushort {
 // mark the source integer as unsigned (zero-extended, not sign-extended). Width
 // is at most 8, so bit 8 is free for the flag.
 package(quickbite.backends.bytecode) enum unsignedConvertFlag = 0x100;
-
-// OR'd into an AA opcode's key-width operand (`Instruction.e`) to mark the key
-// as compared by the content its {length, ptr} descriptor points at (a plain
-// `string` key), rather than by the descriptor's own bytes. The width packed
-// alongside it (`keyMeta & (assocArrayKeyIsArrayFlag - 1)`) is then always
-// `sliceDescriptorSize`; every other supported key packs its own scalar width
-// (at most 8), so bit 15 is free for the flag.
-package(quickbite.backends.bytecode) enum assocArrayKeyIsArrayFlag = 0x8000;
-
-// OR'd into an AA opcode's key-width operand (`Instruction.e`) to mark a
-// struct key that mixes a content-compared field (a plain `string` member)
-// with at least one raw-compared field in the same key (e.g. `struct Name {
-// string first; int age; }`) -- more than the single bit
-// `assocArrayKeyIsArrayFlag` gives can express, since neither "all raw" nor
-// "all content" describes the key as a whole. Mutually exclusive with
-// `assocArrayKeyIsArrayFlag` (never both set); the bits packed alongside this
-// flag are an index into `Program.assocArrayKeyLayouts`, not a byte width --
-// the layout entry itself carries the key's total width
-// (`AssocArrayKeyLayout.width`), since it no longer fits in the remaining 14
-// bits alongside a nontrivial index. 14 bits of index (`0x3FFF`) comfortably
-// exceeds any realistic number of distinct mixed-field key shapes in one
-// program.
-package(quickbite.backends.bytecode) enum assocArrayKeyIsStructLayoutFlag =
-    0x4000;
-
-// One field of a struct AA key that needs field-wise comparison
-// (`assocArrayKeyIsStructLayoutFlag`): `offset`/`width` locate the field's
-// own bytes within the key block (mirroring `field.offset` from DMD's
-// struct layout), and `isArray` selects how `keysEqual` (machine.d) compares
-// them -- content, through the {length, ptr} descriptor at `offset`, for a
-// plain `string` field (`width` is then always `sliceDescriptorSize`), or
-// the field's own raw bytes directly for anything else. Mirrors
-// `compileStructIdentity`'s (compiler.d) field-by-field pattern for `==`,
-// which solves the identical problem at compile time rather than in the VM.
-package(quickbite.backends.bytecode) struct AssocArrayKeyField {
-    ushort offset;
-    ushort width;
-    bool isArray;
-}
-
-// One entry per distinct struct-key shape needing field-wise comparison,
-// referenced by index from the same `Instruction.e` operand slot
-// `assocArrayKeyIsArrayFlag` uses for the simpler (all-raw / all-content)
-// shapes, tagged instead with `assocArrayKeyIsStructLayoutFlag`. `width` is
-// the key block's total byte size (`AssocArray.keys`'s per-entry stride, the
-// same role `assocArrayKeyMeta`'s packed width plays for the simpler shapes).
-package(quickbite.backends.bytecode) struct AssocArrayKeyLayout {
-    AssocArrayKeyField[] fields;
-    ushort width;
-}
 
 // The `indexLoad`/`indexStore` family's one op<->width table: each fixed
 // width the pair supports, alongside the load and store opcode for that
@@ -1267,10 +1181,7 @@ package(quickbite.backends.bytecode) struct Instruction {
     ushort b;
     ushort c;
     ushort d;
-    // AA key metadata (`assocArrayKeyIsArrayFlag`-tagged width) for AA
-    // opcodes, and the innermost row's own element byte width
-    // (`innermostArrayElementSize`) for `Op.sliceEqualNested`; unused by
-    // every other opcode.
+    // The innermost row's own element byte width for `Op.sliceEqualNested`.
     ushort e;
 }
 
@@ -1370,7 +1281,4 @@ package(quickbite.backends.bytecode) struct Program {
     imported!"object".TypeInfo[] nativeTypeInfos;
     ushort rangeErrorClass = noExceptionClass;
     CatchClause[] catchClauses;
-    // Indexed by `assocArrayKeyIsStructLayoutFlag`-tagged `Instruction.e`
-    // operands; see `AssocArrayKeyLayout`.
-    AssocArrayKeyLayout[] assocArrayKeyLayouts;
 }

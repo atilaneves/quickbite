@@ -227,9 +227,11 @@ private string[] emitObjectFilesForLinkLocked(
         auto memberInstances = collectMemberInstances(modules);
         adoptOrphans(rod, linkSet, memberInstances);
         const context = LinkContext(linkSet, memberInstances);
-        // User-import modules are root modules (see prepareForCodegen), so
-        // like the rod they accumulate template instances parameterized on
-        // other compilations' types; prune them all against this link.
+        // Root and user-import modules can both accumulate template instances
+        // parameterized on other fixtures' types; prune them all against this
+        // link.
+        foreach (rootModule; rootModules)
+            pruneForeignMembers(rootModule, context);
         pruneForeignMembers(rod, context);
         foreach (userImport; userImports)
             pruneForeignMembers(userImport, context);

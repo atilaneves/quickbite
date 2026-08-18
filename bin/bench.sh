@@ -48,7 +48,7 @@ fi
 ninja -C "$build_dir" bench >&2
 # SystemLinker finds bench-exec next to the running binary (thisExePath.dirName),
 # so the optimised host lands in bin/ alongside the DMD-built executor.
-cp "$build_dir/bench" bin/bench
+cp -f "$build_dir/bench" bin/bench
 # The run executor must be DMD-built so its druntime/extern(D) ABI matches the
 # DMD-codegen'd .so it loads.
 dub build :bench-exec --compiler=dmd >&2
