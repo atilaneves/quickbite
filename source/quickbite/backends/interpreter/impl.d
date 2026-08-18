@@ -3464,6 +3464,9 @@ unsupportedExpression:
     ) {
         import dmd.tokens: EXP;
 
+        if (hasScalarComparisonOperands(comparison))
+            return ExpressionResult(scalarComparison(comparison));
+
         const leftValue = runExpressionValue(comparison.e1);
         const rightValue = runExpressionValue(comparison.e2);
 
@@ -7789,6 +7792,11 @@ unsupportedExpression:
 
     private ExpressionResult runEqualExpression(imported!"dmd.expression".EqualExp equal) {
         import dmd.tokens: EXP;
+
+        if (hasScalarEqualityOperands(equal)) {
+            const same = scalarEquality(equal);
+            return ExpressionResult(equal.op == EXP.notEqual ? !same : same);
+        }
 
         const left = runExpressionValue(equal.e1);
         const right = runExpressionValue(equal.e2);
@@ -13908,13 +13916,22 @@ destinationFallback:
             destination.storeNativeScalar(cast(T) conditionTruthy(logical.e2));
             return true;
         }
+        if (auto equal = expression.isEqualExp) {
+            if (!hasScalarEqualityOperands(equal))
+                return false;
+            const same = scalarEquality(equal);
+            destination.storeNativeScalar(cast(T) (
+                equal.op == EXP.notEqual ? !same : same
+            ));
+            return true;
+        }
         switch (expression.op) with (EXP) {
             case lessThan:
             case lessOrEqual:
             case greaterThan:
             case greaterOrEqual:
                 auto comparison = cast(imported!"dmd.expression".CmpExp) expression;
-                if (comparison is null)
+                if (comparison is null || !hasScalarComparisonOperands(comparison))
                     return false;
                 destination.storeNativeScalar(cast(T) scalarComparison(comparison));
                 return true;
@@ -14183,6 +14200,86 @@ destinationFallback:
             case Tfloat80: return compareScalars!real(comparison);
             default: return false;
         }
+    }
+
+    private bool hasScalarComparisonOperands(
+        imported!"dmd.expression".CmpExp comparison,
+    ) {
+        import dmd.astenums: TY;
+
+        switch (comparison.e1.type.toBasetype.ty) with (TY) {
+            case Tint8:
+            case Tuns8:
+            case Tchar:
+            case Tint16:
+            case Tuns16:
+            case Twchar:
+            case Tint32:
+            case Tuns32:
+            case Tdchar:
+            case Tint64:
+            case Tuns64:
+            case Tfloat32:
+            case Tfloat64:
+            case Tfloat80:
+                return true;
+            default:
+                return false;
+        }
+    }
+
+    private bool hasScalarEqualityOperands(
+        imported!"dmd.expression".EqualExp equal,
+    ) {
+        import dmd.astenums: TY;
+
+        switch (equal.e1.type.toBasetype.ty) with (TY) {
+            case Tbool:
+            case Tint8:
+            case Tuns8:
+            case Tchar:
+            case Tint16:
+            case Tuns16:
+            case Twchar:
+            case Tint32:
+            case Tuns32:
+            case Tdchar:
+            case Tint64:
+            case Tuns64:
+            case Tfloat32:
+            case Tfloat64:
+            case Tfloat80:
+                return true;
+            default:
+                return false;
+        }
+    }
+
+    private bool scalarEquality(imported!"dmd.expression".EqualExp equal) {
+        import dmd.astenums: TY;
+
+        // DMD stamps the operands with the common comparison type. Construct
+        // each one in its own typed place so this comparison does not use the
+        // migration carrier to recover its scalar representation.
+        switch (equal.e1.type.toBasetype.ty) with (TY) {
+            case Tbool: return equalScalars!bool(equal);
+            case Tint8: return equalScalars!byte(equal);
+            case Tuns8, Tchar: return equalScalars!ubyte(equal);
+            case Tint16: return equalScalars!short(equal);
+            case Tuns16, Twchar: return equalScalars!ushort(equal);
+            case Tint32: return equalScalars!int(equal);
+            case Tuns32, Tdchar: return equalScalars!uint(equal);
+            case Tint64: return equalScalars!long(equal);
+            case Tuns64: return equalScalars!ulong(equal);
+            case Tfloat32: return equalScalars!float(equal);
+            case Tfloat64: return equalScalars!double(equal);
+            case Tfloat80: return equalScalars!real(equal);
+            default: assert(0, "equality expression has a non-scalar operand");
+        }
+    }
+
+    private bool equalScalars(T)(imported!"dmd.expression".EqualExp equal) {
+        return scalarOperand!T(equal.e1) == scalarOperand!T(equal.e2);
     }
 
     private bool compareScalars(T)(imported!"dmd.expression".CmpExp comparison) {
