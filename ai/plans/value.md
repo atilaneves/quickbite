@@ -436,12 +436,15 @@ longer imports or aliases it.
     native exception translation remain Interpreter-adapter plumbing.
 
 19. **Addressable expression temporaries have activation-scoped storage.**
-    Item 8 must choose per-activation typed frame offsets vs segmented aligned
-    scratch; the frame-layout cache lasts one Interpreter root execution, not
-    across roots, so neither gets reuse credit. Both must satisfy the
-    expression-temporary destruction contract (below), GC visibility while
-    live, and stable addresses under recursion/callback re-entry; storage
-    belongs to an activation, not an AST node; ties go to the smaller mechanism.
+    Item 8 implements per-activation typed frame offsets first, extending
+    `FramePacker`/`FrameLayout`; segmented aligned scratch is built only if
+    measuring against the gate-corpus baseline (`overview.md`'s measurement
+    contract) shows a real cost. Either mechanism must satisfy D's
+    temporary-lifetime rules (full-expression-boundary destruction in reverse
+    construction order, the `&&`/`||` right-hand-side boundary, destruction on
+    unwind), GC visibility while live, and stable addresses under
+    recursion/callback re-entry; storage belongs to an activation, not an AST
+    node.
 
 ## Contracts
 
@@ -602,21 +605,6 @@ checked fact; do not relearn them.
 - A native `typeid(T)` argument is the resolved host address of `T.vtinfo`.
   The interpreter's `TypeName` is display metadata and never an ABI operand.
 
-### Expression temporary destruction
-
-- A declared variable's `edtor` arms once its `DeclarationExp` initializer
-  succeeds; `nodtor` marks when DMD destroys it via `DtorExpStatement` instead.
-- A constructor-call receiver's declaration is only a placeholder: DMD lowers
-  it to `((S __t = <placeholder>;) , __t).__ctor(args)`, a shape an already-
-  complete value also produces, so only the call site (which knows its callee
-  is a constructor) can tell them apart. It pops the premature arming and
-  requeues only on constructor success, at both receiver-resolution paths; a
-  throwing constructor arms nothing, matching compiled D.
-- Destructors run in reverse construction order at every full-expression
-  boundary and on unwind; the evaluated right-hand side of `&&`/`||` is the only
-  expression-internal boundary (`?:` gets none).
-- The queue is per-walker: a call is a full-expression boundary for the callee.
-
 ### Unions
 
 Durable DMD facts:
@@ -758,14 +746,11 @@ timings follow `overview.md`'s measurement contract.
 
 ### Item 8 — Destination-passing construction
 
-Decision 7's no-result operation, place evaluation, and construction into an
-already-existing destination (e.g. a declaration initialising its own
-storage) are landed; a no-result arm is worth writing only where a whole
-sub-walk's discarded value was the point, so the carrier's per-expression
-materialization retires with construction, not more arms. Remaining: decision
-19's addressable temporaries -- measure fixed frame offsets against segmented
-scratch on the gate corpus (`overview.md`'s measurement contract); this slice
-then owns the storage choice and construction-state encoding.
+Decision 19's addressable temporaries: implement per-activation typed frame
+offsets first, measure against the gate-corpus baseline (`overview.md`'s
+measurement contract), and fall back to segmented scratch only if that
+measurement justifies it. This slice owns the storage choice and the
+construction-state encoding.
 
 ### Item 9 — Assignment through construction
 
