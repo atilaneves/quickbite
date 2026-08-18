@@ -2919,7 +2919,7 @@ assertExpression:
 
 notExpression:
         if (auto not = expression.isNotExp) {
-            return ExpressionResult(!isTruthy(runExpressionValue(not.e1)));
+            return ExpressionResult(!conditionTruthy(not.e1));
         }
 
 logicalExpression:
@@ -3417,7 +3417,7 @@ unsupportedExpression:
         if (!left)
             return ExpressionResult(false);
 
-        const right = isTruthy(runDestructorBoundedOperand(logical.e2));
+        const right = runDestructorBoundedCondition(logical.e2);
         return ExpressionResult(right);
     }
 
@@ -3428,7 +3428,7 @@ unsupportedExpression:
         if (left)
             return ExpressionResult(true);
 
-        const right = isTruthy(runDestructorBoundedOperand(logical.e2));
+        const right = runDestructorBoundedCondition(logical.e2);
         return ExpressionResult(right);
     }
 
@@ -3438,12 +3438,12 @@ unsupportedExpression:
     // `scope(exit)` also reproduces the oracle's unwind behaviour: the right
     // operand's own temporary is destroyed first, then any outer temporaries
     // as the enclosing full expression unwinds past this call.
-    private ExpressionResult runDestructorBoundedOperand(
+    private bool runDestructorBoundedCondition(
         imported!"dmd.expression".Expression operand,
     ) {
         const first = _pendingTemporaryDestructors.length;
         scope(exit) runPendingTemporaryDestructors(first);
-        return runExpressionValue(operand);
+        return conditionTruthy(operand);
     }
 
     private ExpressionResult runComparisonExpression(
@@ -4433,7 +4433,7 @@ unsupportedExpression:
             }
             if (auto question = array.isCondExp)
                 return arrayPointer(
-                    isTruthy(runExpressionValue(question.econd)) ? question.e1 : question.e2,
+                    conditionTruthy(question.econd) ? question.e1 : question.e2,
                     offset,
                     op,
                     selfAddress,
@@ -6284,7 +6284,7 @@ unsupportedExpression:
         }
 
         if (auto conditional = argument.isCondExp) {
-            auto selected = isTruthy(runExpressionValue(conditional.econd))
+            auto selected = conditionTruthy(conditional.econd)
                 ? conditional.e1
                 : conditional.e2;
             const value = runRefArgumentExpression(
