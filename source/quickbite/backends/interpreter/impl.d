@@ -12800,6 +12800,12 @@ unsupportedExpression:
 
         auto place = destination.place;
 
+        if (auto slice = rvalue.isSliceExp)
+            if (constructSliceInto(slice, place)) {
+                destination.markConstructed;
+                return true;
+            }
+
         if (auto call = rvalue.isCallExp) {
             import dmd.astenums: TY;
 
@@ -12850,6 +12856,55 @@ unsupportedExpression:
         }
 
         return false;
+    }
+
+    // A slice initializer is a native header construction.  When its source
+    // has an authoritative place, write the new header directly into the
+    // caller's destination.  This keeps the slice's backing bytes as the
+    // only storage authority and avoids an aggregate result carrier.
+    private bool constructSliceInto(
+        imported!"dmd.expression".SliceExp slice,
+        imported!"quickbite.backends.interpreter.place".Place destination,
+    ) {
+        if (!hasDirectWriteProjectionPlace(slice.e1))
+            return false;
+
+        import dmd.astenums: TY;
+        import quickbite.backends.interpreter.native_array: NativeArray;
+        import quickbite.backends.interpreter.layout: typeByteSize;
+
+        materializeProjectionRoot(slice.e1);
+        auto source = directWriteProjectionPlace(slice.e1);
+        const sourceLength = source.arrayLength;
+        if (slice.lengthVar !is null)
+            setLocal(slice.lengthVar, ExpressionResult(sourceLength));
+
+        const lower = slice.lwr is null
+            ? 0
+            : cast(size_t) runExpression(slice.lwr).asLong;
+        const upper = slice.upr is null
+            ? sourceLength
+            : cast(size_t) runExpression(slice.upr).asLong;
+        if (lower > upper || upper > sourceLength)
+            throwRangeError("Range violation");
+
+        auto sourceType = source.type.toBasetype;
+        auto data = sourceType.isTypeDArray !is null
+            ? source.sliceDataPointer
+            : source.address;
+        const elementSize = typeByteSize(sourceType.nextOf);
+        data = nativeElementAddress(data, lower, elementSize);
+
+        const length =
+            slice.type.toBasetype.nextOf.toBasetype.ty == TY.Tvoid
+            ? (upper - lower) * elementSize
+            : upper - lower;
+        NativeArray.borrow(
+            slice.type.toBasetype.nextOf,
+            cast(void*) data,
+            length,
+        ).writeSliceHeader(destination.address);
+        return true;
     }
 
     // An lvalue whose complete value is the bytes at its own place, of the
