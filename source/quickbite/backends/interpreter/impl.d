@@ -8546,7 +8546,7 @@ unsupportedExpression:
             if (
                 call.f !is null &&
                 returnsRef(call.f) &&
-                sameAssignmentType(assign.e1, assign.e2)
+                hasTypedTemporaryRhs(assign.e2)
             ) {
                 import dmd.tokens: EXP;
                 import quickbite.backends.interpreter.place: Place;
@@ -8559,7 +8559,7 @@ unsupportedExpression:
             }
 
         if (auto pointer = assign.e1.isPtrExp)
-            if (sameAssignmentType(assign.e1, assign.e2)) {
+            if (hasTypedTemporaryRhs(assign.e2)) {
             import quickbite.backends.interpreter.place: Place;
 
             const address = runExpressionValue(pointer.e1);
@@ -8690,13 +8690,21 @@ unsupportedExpression:
     }
 
     // Item 9: resolve the assignment's live place before its RHS, then build
-    // that RHS in separate fresh typed storage. The typed copy is the only
-    // write to the live place, so aliases cannot observe construction.
+    // that RHS in separate fresh typed storage. The typed copy or conversion
+    // is the only write to the live place, so aliases cannot observe
+    // construction. DMD keeps any postblit, destructor, or move lowering in
+    // `rhs`; this helper only stores that complete result.
     private bool canAssignThroughTypedTemporary(
         imported!"quickbite.backends.interpreter.place".Place destination,
         imported!"dmd.expression".Expression rhs,
     ) {
-        return sameAssignmentType(destination.type, rhs);
+        return destination.type !is null && hasTypedTemporaryRhs(rhs);
+    }
+
+    private bool hasTypedTemporaryRhs(
+        imported!"dmd.expression".Expression rhs,
+    ) {
+        return rhs !is null && rhs.type !is null && rhs.isFuncExp is null;
     }
 
     private bool sameAssignmentType(
@@ -8727,8 +8735,12 @@ unsupportedExpression:
             rhs.type,
         ));
         runExpression(rhs, temporary);
-        copyPlaceValue(temporary.place, destination);
-        return readStoredValue(destination);
+        const value = readStoredValue(temporary.place);
+        if (sameAssignmentType(destination.type, rhs))
+            copyPlaceValue(temporary.place, destination);
+        else
+            writeStoredValue(destination, storageValue(destination.type, value));
+        return value;
     }
 
     private void writeLocation(
