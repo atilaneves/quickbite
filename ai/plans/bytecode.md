@@ -15,7 +15,31 @@ role) compiled lazily per function from DMD's semantically-analysed AST,
 with values in native D memory layout throughout. First make it right, then
 profile, then make it fast.
 
-## Milestone 1 — cerealed green via bench.sh
+## Milestone 1 — druntime-first convergence
+
+AGENTS.md's druntime-first rule applied to the VM's existing
+reimplementations, after milestone 1 (whose rules forbid restructuring):
+
+- Associative arrays: compile druntime's real `core.internal.newaa`
+  source through the VM's own compiler, like any user code — guest-only
+  key/value types have no host-compiled instantiations to call anyway.
+  The VM-owned linear-scan `AssocArray` table, its `Op.aa*` opcodes, and
+  the `AssocArrayHook` interception table are deleted with the switch.
+- Array append: execute druntime's real append/allocation templates.
+  The hand-rolled grow path (`appendElement`/`resizeArray`) reallocates
+  exact-size, making repeated `~=` quadratic; it retires with the
+  switch.
+- Port the Interpreter's interception-policy invariant: one enumerated
+  hook-exemption list, each entry with a stated retirement condition,
+  enforced by assertion; everything else with a D body and no inline
+  asm executes for real. The current separate `AssocArrayHook` and
+  `isNewArrayRuntimeCall` mechanisms fold into it or retire.
+
+Recorded, demand-driven (take up when a corpus fixture forces the
+area): real `Throwable` objects replacing the synthetic
+`ExceptionObjectLocal` catch shape.
+
+## Milestone 2 — cerealed green via bench.sh
 
 Acceptance: `bin/bench.sh -b bytecode -b system-linker --dub cerealed`
 prints a bytecode row agreeing with SystemLinker, the compiled-truth
@@ -55,30 +79,6 @@ Work queue:
    diagnostic this would be surfaces as a raw crash.
 4. The failure stream from items 2–3: one work item per discovered gap,
    handled per the rules above, until the acceptance gate is green.
-
-## Milestone 2 — druntime-first convergence
-
-AGENTS.md's druntime-first rule applied to the VM's existing
-reimplementations, after milestone 1 (whose rules forbid restructuring):
-
-- Associative arrays: compile druntime's real `core.internal.newaa`
-  source through the VM's own compiler, like any user code — guest-only
-  key/value types have no host-compiled instantiations to call anyway.
-  The VM-owned linear-scan `AssocArray` table, its `Op.aa*` opcodes, and
-  the `AssocArrayHook` interception table are deleted with the switch.
-- Array append: execute druntime's real append/allocation templates.
-  The hand-rolled grow path (`appendElement`/`resizeArray`) reallocates
-  exact-size, making repeated `~=` quadratic; it retires with the
-  switch.
-- Port the Interpreter's interception-policy invariant: one enumerated
-  hook-exemption list, each entry with a stated retirement condition,
-  enforced by assertion; everything else with a D body and no inline
-  asm executes for real. The current separate `AssocArrayHook` and
-  `isNewArrayRuntimeCall` mechanisms fold into it or retire.
-
-Recorded, demand-driven (take up when a corpus fixture forces the
-area): real `Throwable` objects replacing the synthetic
-`ExceptionObjectLocal` catch shape.
 
 ## Milestone 3 — broad language coverage
 
