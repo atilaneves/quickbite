@@ -349,12 +349,6 @@ package(quickbite.backends.bytecode) enum Op: ubyte {
     // opcode (e.g. a struct element wider than 16 bytes): the byte width is
     // operand c instead of being implied by the opcode.
     dupArrayN,
-    // Element-wise `dest[] = left[] + right[]` over three slice descriptors at
-    // frame offsets a (dest), b (left), c (right): add each pair of 4-byte
-    // integer elements and write the sum through the destination's backing
-    // memory. All three lengths must match. Backs the druntime arrayOp ["+","="]
-    // lowering.
-    arrayAddAssign4,
     // Read the element at `[pointer + index * elementSize]` into the 1- or
     // 4-byte slot at frame offset a, where the raw `size_t` pointer value is at
     // frame offset b and the `size_t` index at frame offset c. Backs `*p` (index

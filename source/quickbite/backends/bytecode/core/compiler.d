@@ -10969,12 +10969,6 @@ private struct Compiler {
             function_.ident.toString == "__ArrayDtor")
             return compileArrayDtor(call);
 
-        // `dest[] = a[] + b[]` lowers to a druntime arrayOp template call;
-        // intercept it at the call site and emit element-wise semantics rather
-        // than compiling the druntime body.
-        if (function_ !is null && isArrayOpAddAssign(function_))
-            return compileArrayOpAddAssign(call);
-
         if (function_ !is null && function_.ident !is null &&
             function_.ident.toString == "emplace")
             if (auto emplaced = compileEmplace(call))
@@ -12589,56 +12583,6 @@ private struct Compiler {
         return Operand(
             offset, ScalarType.ulong_, true, ScalarType.int_,
         );
-    }
-
-    // `dest[] = a[] + b[]`: materialise the three source descriptors and
-    // write the element-wise sum into the destination descriptor.
-    private Operand compileArrayOpAddAssign(CallExp call) {
-        import std.conv: text;
-
-        if (call.arguments is null || call.arguments.length != 3)
-            throw new Exception(text(
-                "Unsupported array operation in bytecode core: ",
-                expressionChars(call),
-            ));
-
-        auto destination = (*call.arguments)[0].isSliceExp;
-        if (destination is null)
-            throw new Exception(text(
-                "Unsupported array operation in bytecode core: ",
-                expressionChars(call),
-            ));
-
-        const elementType =
-            dynamicArrayDescriptor(destination.e1).elementType;
-        const destinationSlice = arrayOpSlice(elementType, (*call.arguments)[0]);
-        const leftSlice = arrayOpSlice(elementType, (*call.arguments)[1]);
-        const rightSlice = arrayOpSlice(elementType, (*call.arguments)[2]);
-        _code ~= Instruction(
-            Op.arrayAddAssign4, destinationSlice, leftSlice, rightSlice,
-        );
-        return Operand.init;
-    }
-
-    // Materialise one operand of an element-wise array operation into a slice
-    // descriptor sharing its source's backing memory. Only the slice form is
-    // needed (the lowering wraps each operand in a `[]`).
-    private ushort arrayOpSlice(
-        in ScalarType elementType,
-        Expression operand,
-    ) {
-        import std.conv: text;
-
-        auto slice = operand.isSliceExp;
-        if (slice is null)
-            throw new Exception(text(
-                "Unsupported array operation operand in bytecode core: ",
-                expressionChars(operand),
-            ));
-
-        const offset = allocateBytes(sliceDescriptorSize, size_t.sizeof);
-        compileSliceInto(offset, elementType, slice);
-        return offset;
     }
 
     private Operand* compileBuiltinCall(
@@ -14999,42 +14943,6 @@ private bool isArrayBoundsCall(
         function_.ident.toString.startsWith("_d_arraybounds");
 }
 
-// True for the druntime `core.internal.array.operations.arrayOp` template
-// instantiated with `["+", "="]`, the lowering of `dest[] = a[] + b[]`. Matched
-// by pretty name prefix and the template value arguments, like the interpreter.
-private bool isArrayOpAddAssign(
-    imported!"dmd.func".FuncDeclaration function_,
-) {
-    import dmd.dtemplate: isExpression;
-    import std.algorithm: startsWith;
-    import std.conv: text;
-
-    auto instance = function_.parent is null
-        ? null
-        : function_.parent.isTemplateInstance;
-    if (instance is null || instance.tiargs is null)
-        return false;
-
-    if (!text(function_.toPrettyChars)
-            .startsWith("core.internal.array.operations.arrayOp!("))
-        return false;
-
-    string[] operators;
-    foreach (argument; *instance.tiargs) {
-        auto expression = isExpression(argument);
-        if (expression is null)
-            continue;
-
-        auto literal = expression.isStringExp;
-        if (literal is null)
-            return false;
-
-        operators ~= operatorText(literal);
-    }
-
-    return operators == ["+", "="];
-}
-
 // A `string`/`wstring`/`dstring` (immutable char-element array): the only
 // non-scalar result the core lowers today.
 private bool isStringType(imported!"dmd.mtype".Type type) {
@@ -15364,13 +15272,6 @@ private imported!"dmd.mtype".Type returnType(
     imported!"dmd.func".FuncDeclaration function_,
 ) {
     return function_.type.nextOf;
-}
-
-private string operatorText(imported!"dmd.expression".StringExp operator) {
-    string result;
-    foreach (index; 0 .. operator.numberOfCodeUnits)
-        result ~= cast(char) operator.getIndex(index);
-    return result;
 }
 
 private string expressionChars(

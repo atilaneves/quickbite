@@ -3518,6 +3518,60 @@ static foreach (backend; Matrix!()) {
     }
 }
 
+// `a[] + scalar` broadcasts the scalar into an element-wise operand;
+// interpreter.md documents the interpreter's own arrayOp interception as an
+// exemption that retires once static-array element-wise ops interpret
+// end-to-end over native layout, and that hand-rolled path does not yet
+// support a scalar operand. SystemLinker is the oracle.
+static foreach (backend; Matrix!(
+    Omit!(Interpreter, Because.refusal,
+        "AggregateValue.length needs a native aggregate."),
+)) {
+    @("dynamicArray.arrayOperationSupportsOperatorsBeyondAdd." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            int value(int seed) {
+                return seed;
+            }
+
+            unittest {
+                int first = value(2);
+                int second = value(first + 1);
+                int[] a = [first, second];
+                int[] b = [first + 10, second + 20];
+
+                int[] product = [0, 0];
+                product[] = a[] * b[];
+
+                int[] difference = [0, 0];
+                difference[] = b[] - a[];
+
+                int[] broadcastSum = [0, 0];
+                broadcastSum[] = a[] + first;
+
+                int[] compoundArray = [first, second];
+                compoundArray[] += b[];
+
+                int[] compoundScalar = [first, second];
+                compoundScalar[] += first;
+
+                assert(product[0] == first * (first + 10));
+                assert(product[1] == second * (second + 20));
+                assert(difference[0] == 10);
+                assert(difference[1] == 20);
+                assert(broadcastSum[0] == first + first);
+                assert(broadcastSum[1] == second + first);
+                assert(compoundArray[0] == first + (first + 10));
+                assert(compoundArray[1] == second + (second + 20));
+                assert(compoundScalar[0] == first + first);
+                assert(compoundScalar[1] == second + first);
+            }
+        });
+    }
+}
+
 
 /++
     Dynamic array return values.

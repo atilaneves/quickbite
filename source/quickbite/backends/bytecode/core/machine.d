@@ -318,16 +318,6 @@ package(quickbite.backends.bytecode) RunResult run(
                 ++ip;
                 break;
 
-            case arrayAddAssign4:
-                applyArrayAddAssign4(
-                    stack,
-                    base + instruction.a,
-                    base + instruction.b,
-                    base + instruction.c,
-                );
-                ++ip;
-                break;
-
             case pointerLoad1, pointerLoad2, pointerLoad4, pointerLoad8,
                 pointerLoad16, pointerLoadN:
                 const pointerLoadSize = instruction.op == pointerLoadN
@@ -2645,34 +2635,6 @@ private void fillSliceN(
     const source = stack[valueOffset .. valueOffset + elementSize];
     foreach (i; 0 .. descriptor.length)
         destination[i * elementSize .. (i + 1) * elementSize] = source;
-}
-
-// Element-wise `dest[] = left[] + right[]` over 4-byte integer elements,
-// writing each sum through the destination's backing memory. All three lengths
-// must match (`dest[] = a[] + b[]` requires equal lengths).
-private void applyArrayAddAssign4(
-    ref ubyte[] stack,
-    in size_t destinationOffset,
-    in size_t leftOffset,
-    in size_t rightOffset,
-) @trusted {
-    import std.conv: text;
-
-    const destination_ = readSliceDescriptor(stack, destinationOffset);
-    const left_ = readSliceDescriptor(stack, leftOffset);
-    const right_ = readSliceDescriptor(stack, rightOffset);
-    const length = destination_.length;
-    if (left_.length != length || right_.length != length)
-        throw new Exception(text(
-            "Array lengths don't match for array operation: ",
-            length, ", ", left_.length, ", ", right_.length,
-        ));
-
-    auto destination = cast(int*) destination_.pointer;
-    const left = cast(const(int)*) left_.pointer;
-    const right = cast(const(int)*) right_.pointer;
-    foreach (index; 0 .. length)
-        destination[index] = left[index] + right[index];
 }
 
 // Throw druntime's array-bounds message if `index` is not less than
