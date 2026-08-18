@@ -320,9 +320,54 @@ public struct Place {
     private void storeScalarCast(
         in imported!"quickbite.backends.interpreter.expression_result".ExpressionResult value,
     ) @trusted {
-        import quickbite.backends.interpreter.runtime_casts: castTarget, castValue;
+        import dmd.astenums: TY;
 
-        castValue(value, castTarget(_type), this);
+        switch (_type.toBasetype.ty) with (TY) {
+            case Tbool: storeNativeScalar(value.castTo!bool.asLong != 0); return;
+            case Tint8: storeNativeScalar(cast(byte) value.castTo!byte.asLong); return;
+            case Tuns8: storeNativeScalar(cast(ubyte) value.castTo!ubyte.asLong); return;
+            case Tchar: storeNativeScalar(cast(char) value.castTo!char.asLong); return;
+            case Tint16: storeNativeScalar(cast(short) value.castTo!short.asLong); return;
+            case Tuns16: storeNativeScalar(cast(ushort) value.castTo!ushort.asLong); return;
+            case Twchar: storeNativeScalar(cast(wchar) value.castTo!wchar.asLong); return;
+            case Tint32: storeNativeScalar(cast(int) value.castTo!int.asLong); return;
+            case Tuns32: storeNativeScalar(cast(uint) value.castTo!uint.asLong); return;
+            case Tdchar: storeNativeScalar(cast(dchar) value.castTo!dchar.asLong); return;
+            case Tint64: storeNativeScalar(value.castTo!long.asLong); return;
+            case Tuns64: storeNativeScalar(cast(ulong) value.castTo!ulong.asLong); return;
+            case Tfloat32: storeNativeScalar(cast(float) value.castTo!float.asReal); return;
+            case Tfloat64: storeNativeScalar(cast(double) value.castTo!double.asReal); return;
+            case Tfloat80: storeNativeScalar(value.castTo!real.asReal); return;
+            case Timaginary32: storeNativeScalar(cast(ifloat) value.castToImaginary.imaginaryPart); return;
+            case Timaginary64: storeNativeScalar(cast(idouble) value.castToImaginary.imaginaryPart); return;
+            case Timaginary80: storeNativeScalar(cast(ireal) value.castToImaginary.imaginaryPart); return;
+            case Tcomplex32: {
+                const casted = value.castToComplex;
+                storeNativeScalar(
+                    cast(cfloat) casted.complexRealPart.asReal +
+                        cast(float) casted.complexImaginaryPart.asReal * 1.0fi,
+                );
+                return;
+            }
+            case Tcomplex64: {
+                const casted = value.castToComplex;
+                storeNativeScalar(
+                    cast(cdouble) casted.complexRealPart.asReal +
+                        cast(double) casted.complexImaginaryPart.asReal * 1.0i,
+                );
+                return;
+            }
+            case Tcomplex80: {
+                const casted = value.castToComplex;
+                storeNativeScalar(
+                    cast(creal) casted.complexRealPart.asReal +
+                        cast(real) casted.complexImaginaryPart.asReal * 1.0Li,
+                );
+                return;
+            }
+            default:
+                throw new Exception("Unsupported scalar cast destination.");
+        }
     }
 
     public void storeNativeScalar(T)(in T value) @safe {

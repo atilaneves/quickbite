@@ -114,113 +114,107 @@ public bool tryCastTarget(
 }
 
 public void castValue(
-    in imported!"quickbite.backends.interpreter.expression_result".ExpressionResult value,
+    imported!"quickbite.backends.interpreter.place".Place source,
+    in CastTarget target,
+    imported!"quickbite.backends.interpreter.place".Place destination,
+) {
+    import dmd.astenums: TY;
+
+    switch (source.type.toBasetype.ty) with (TY) {
+        case Tbool: return castNativeValue(source.loadNativeScalar!bool, target, destination);
+        case Tint8: return castNativeValue(source.loadNativeScalar!byte, target, destination);
+        case Tuns8: return castNativeValue(source.loadNativeScalar!ubyte, target, destination);
+        case Tchar: return castNativeValue(source.loadNativeScalar!char, target, destination);
+        case Tint16: return castNativeValue(source.loadNativeScalar!short, target, destination);
+        case Tuns16: return castNativeValue(source.loadNativeScalar!ushort, target, destination);
+        case Twchar: return castNativeValue(source.loadNativeScalar!wchar, target, destination);
+        case Tint32: return castNativeValue(source.loadNativeScalar!int, target, destination);
+        case Tuns32: return castNativeValue(source.loadNativeScalar!uint, target, destination);
+        case Tdchar: return castNativeValue(source.loadNativeScalar!dchar, target, destination);
+        case Tint64: return castNativeValue(source.loadNativeScalar!long, target, destination);
+        case Tuns64: return castNativeValue(source.loadNativeScalar!ulong, target, destination);
+        case Tfloat32: return castNativeValue(source.loadNativeScalar!float, target, destination);
+        case Tfloat64: return castNativeValue(source.loadNativeScalar!double, target, destination);
+        case Tfloat80: return castNativeValue(source.loadNativeScalar!real, target, destination);
+        case Timaginary32: return castNativeValue(source.loadNativeScalar!ifloat, target, destination);
+        case Timaginary64: return castNativeValue(source.loadNativeScalar!idouble, target, destination);
+        case Timaginary80: return castNativeValue(source.loadNativeScalar!ireal, target, destination);
+        case Tcomplex32: return castNativeValue(source.loadNativeScalar!cfloat, target, destination);
+        case Tcomplex64: return castNativeValue(source.loadNativeScalar!cdouble, target, destination);
+        case Tcomplex80: return castNativeValue(source.loadNativeScalar!creal, target, destination);
+        default:
+            throw new Exception("Unsupported scalar cast source.");
+    }
+}
+
+private void castNativeValue(T)(
+    in T value,
     in CastTarget target,
     imported!"quickbite.backends.interpreter.place".Place destination,
 ) {
     final switch (target) with (CastTarget) {
         case bool_:
-            destination.storeNativeScalar(value.castTo!bool.asLong != 0);
+            destination.storeNativeScalar(cast(bool) value);
             return;
         case byte_:
-            destination.storeNativeScalar(cast(byte) value.castTo!byte.asLong);
+            destination.storeNativeScalar(cast(byte) value);
             return;
         case ubyte_:
-            destination.storeNativeScalar(cast(ubyte) value.castTo!ubyte.asLong);
+            destination.storeNativeScalar(cast(ubyte) value);
             return;
         case char_:
-            destination.storeNativeScalar(cast(char) value.castTo!char.asLong);
+            destination.storeNativeScalar(cast(char) value);
             return;
         case short_:
-            destination.storeNativeScalar(cast(short) value.castTo!short.asLong);
+            destination.storeNativeScalar(cast(short) value);
             return;
         case ushort_:
-            destination.storeNativeScalar(cast(ushort) value.castTo!ushort.asLong);
+            destination.storeNativeScalar(cast(ushort) value);
             return;
         case wchar_:
-            destination.storeNativeScalar(cast(wchar) value.castTo!wchar.asLong);
+            destination.storeNativeScalar(cast(wchar) value);
             return;
         case int_:
-            destination.storeNativeScalar(cast(int) value.castTo!int.asLong);
+            destination.storeNativeScalar(cast(int) value);
             return;
         case uint_:
-            destination.storeNativeScalar(cast(uint) value.castTo!uint.asLong);
+            destination.storeNativeScalar(cast(uint) value);
             return;
         case dchar_:
-            destination.storeNativeScalar(cast(dchar) value.castTo!dchar.asLong);
+            destination.storeNativeScalar(cast(dchar) value);
             return;
         case long_:
-            destination.storeNativeScalar(value.castTo!long.asLong);
+            destination.storeNativeScalar(cast(long) value);
             return;
         case ulong_:
-            destination.storeNativeScalar(cast(ulong) value.castTo!ulong.asLong);
+            destination.storeNativeScalar(cast(ulong) value);
             return;
         case float_:
-            destination.storeNativeScalar(cast(float) value.castTo!float.asReal);
+            destination.storeNativeScalar(cast(float) value);
             return;
         case double_:
-            destination.storeNativeScalar(cast(double) value.castTo!double.asReal);
+            destination.storeNativeScalar(cast(double) value);
             return;
         case real_:
-            destination.storeScalar(value.castTo!real);
+            destination.storeNativeScalar(cast(real) value);
             return;
         case ifloat_:
+            destination.storeNativeScalar(cast(ifloat) value);
+            return;
         case idouble_:
+            destination.storeNativeScalar(cast(idouble) value);
+            return;
         case ireal_:
-            destination.storeScalar(value.castToImaginary);
+            destination.storeNativeScalar(cast(ireal) value);
             return;
         case cfloat_:
-        case cdouble_:
-        case creal_:
-            destination.storeScalar(value.castToComplex);
+            destination.storeNativeScalar(cast(cfloat) value);
             return;
-    }
-}
-
-public imported!"quickbite.backends.interpreter.expression_result".ExpressionResult castValueResult(
-    in imported!"quickbite.backends.interpreter.expression_result".ExpressionResult value,
-    in CastTarget target,
-) {
-    import quickbite.backends.interpreter.expression_result: ExpressionResult;
-
-    final switch (target) with (CastTarget) {
-        case bool_:
-            return value.castTo!bool;
-        case byte_:
-            return value.castTo!byte;
-        case ubyte_:
-            return value.castTo!ubyte;
-        case char_:
-            return value.castTo!char;
-        case short_:
-            return value.castTo!short;
-        case ushort_:
-            return value.castTo!ushort;
-        case wchar_:
-            return value.castTo!wchar;
-        case int_:
-            return value.castTo!int;
-        case uint_:
-            return value.castTo!uint;
-        case dchar_:
-            return value.castTo!dchar;
-        case long_:
-            return value.castTo!long;
-        case ulong_:
-            return value.castTo!ulong;
-        case float_:
-            return value.castTo!float;
-        case double_:
-            return value.castTo!double;
-        case real_:
-            return value.castTo!real;
-        case ifloat_:
-        case idouble_:
-        case ireal_:
-            return value.castToImaginary;
-        case cfloat_:
         case cdouble_:
+            destination.storeNativeScalar(cast(cdouble) value);
+            return;
         case creal_:
-            return value.castToComplex;
+            destination.storeNativeScalar(cast(creal) value);
+            return;
     }
 }

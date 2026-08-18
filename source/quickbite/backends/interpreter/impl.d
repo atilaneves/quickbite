@@ -5053,7 +5053,6 @@ unsupportedExpression:
         import quickbite.backends.interpreter.layout: fieldByteOffset;
         import quickbite.backends.interpreter.native_scalar: isNativeScalarType;
         import quickbite.backends.interpreter.place: Place;
-        import quickbite.backends.interpreter.runtime_casts: castTarget, castValue;
         import quickbite.frontend.dmd.types:
             isDynamicArrayType, isStaticArrayType;
 
@@ -5061,11 +5060,8 @@ unsupportedExpression:
             auto fieldType = cell.fieldDeclaration(index).type;
 
             if (isNativeScalarType(fieldType)) {
-                castValue(
-                    AggregateValue.fieldAt(structValue, index),
-                    castTarget(fieldType),
-                    Place(cell.field(index).ptr, fieldType),
-                );
+                Place(cell.field(index).ptr, fieldType)
+                    .storeScalar(AggregateValue.fieldAt(structValue, index));
                 continue;
             }
 
@@ -8096,16 +8092,15 @@ unsupportedExpression:
 
     private ExpressionResult runPowExpression(imported!"dmd.expression".PowExp pow) {
         import quickbite.backends.interpreter.runtime_casts:
-            backendCastTarget = castTarget,
-            backendCastValue = castValueResult;
+            backendCastTarget = castTarget;
 
         const base = runExpressionValue(pow.e1);
         auto exponent = runExpressionValue(pow.e2).asLong;
         if (exponent < 0)
             throw new Exception("Unsupported negative integer exponent.");
 
-        ExpressionResult result = backendCastValue(ExpressionResult(1), backendCastTarget(pow.type));
-        ExpressionResult factor = backendCastValue(base, backendCastTarget(pow.type));
+        ExpressionResult result = castScalarResult(ExpressionResult(1), backendCastTarget(pow.type));
+        ExpressionResult factor = castScalarResult(base, backendCastTarget(pow.type));
         while (exponent != 0) {
             if ((exponent & 1) != 0)
                 result = result * factor;
@@ -8114,17 +8109,16 @@ unsupportedExpression:
                 factor = factor * factor;
         }
 
-        return backendCastValue(result, backendCastTarget(pow.type));
+        return castScalarResult(result, backendCastTarget(pow.type));
     }
 
     private ExpressionResult runIntegerComplementExpression(
         imported!"dmd.expression".ComExp complement,
     ) {
         import quickbite.backends.interpreter.runtime_casts:
-            backendCastTarget = castTarget,
-            backendCastValue = castValueResult;
+            backendCastTarget = castTarget;
 
-        return backendCastValue(
+        return castScalarResult(
             ExpressionResult(~runExpressionValue(complement.e1).asLong),
             backendCastTarget(complement.type),
         );
@@ -8149,8 +8143,7 @@ unsupportedExpression:
         in string operator,
     ) {
         import quickbite.backends.interpreter.runtime_casts:
-            backendCastTarget = castTarget,
-            backendCastValue = castValueResult;
+            backendCastTarget = castTarget;
 
         const left = leftValue.asLong;
         const right = rightValue.asLong;
@@ -8165,7 +8158,7 @@ unsupportedExpression:
                 break;
 
             case ">>>":
-                return backendCastValue(
+                return castScalarResult(
                     ExpressionResult(unsignedShiftRight(leftValue, expression.e1.type, right)),
                     backendCastTarget(expression.type),
                 );
@@ -8186,7 +8179,7 @@ unsupportedExpression:
                 assert(0, "unsupported integer binary operator");
         }
 
-        return backendCastValue(ExpressionResult(result), backendCastTarget(expression.type));
+        return castScalarResult(ExpressionResult(result), backendCastTarget(expression.type));
     }
 
     private ulong unsignedShiftRight(
@@ -9398,7 +9391,6 @@ unsupportedExpression:
         in ExpressionResult value,
     ) {
         import quickbite.backends.interpreter.runtime_casts:
-            backendCastValue = castValueResult,
             CastTarget,
             tryCastTarget;
         import quickbite.frontend.dmd.types: isCharacterArrayType;
@@ -9435,7 +9427,7 @@ unsupportedExpression:
         if (!tryCastTarget(type, target))
             return value;
 
-        return backendCastValue(value, target);
+        return castScalarResult(value, target);
     }
 
     // Casts to the scalar's static type and writes through a typed place. This
@@ -9446,10 +9438,9 @@ unsupportedExpression:
     ) {
         import quickbite.backends.interpreter.layout: typeByteSize;
         import quickbite.backends.interpreter.place: Place;
-        import quickbite.backends.interpreter.runtime_casts: castTarget, castValue;
 
         auto raw = new ubyte[](typeByteSize(type));
-        castValue(value, castTarget(type), Place(raw.ptr, type));
+        Place(raw.ptr, type).storeScalar(value);
 
         ExpressionResult[] bytes;
         foreach (byte_; raw)
@@ -9660,7 +9651,6 @@ unsupportedExpression:
         import quickbite.backends.interpreter.layout: structFields;
         import quickbite.backends.interpreter.native_scalar: isNativeScalarType;
         import quickbite.backends.interpreter.place: Place;
-        import quickbite.backends.interpreter.runtime_casts: castTarget, castValue;
         import quickbite.frontend.dmd.types: isStaticArrayType;
 
         auto fields = structFields(unionType);
@@ -9717,8 +9707,7 @@ unsupportedExpression:
         writeStructCellScalarFields(cell, receiver);
 
         if (writtenScalar) {
-            castValue(value, castTarget(writtenType),
-                Place(cell.field(fieldIndex).ptr, writtenType));
+            Place(cell.field(fieldIndex).ptr, writtenType).storeScalar(value);
         } else if (writtenStruct) {
             auto writtenCell = cell.structField(fieldIndex);
             writeStructCellScalarFields(writtenCell, value);
@@ -9726,11 +9715,8 @@ unsupportedExpression:
             auto writtenElementType = writtenType.toBasetype.nextOf.toBasetype;
             auto writtenArrayCell = cell.arrayField(fieldIndex);
             foreach (elementIndex; 0 .. AggregateValue.length(value))
-                castValue(
-                    AggregateValue.elementAt(value, elementIndex),
-                    castTarget(writtenElementType),
-                    Place(writtenArrayCell.element(elementIndex).ptr, writtenElementType),
-                );
+                Place(writtenArrayCell.element(elementIndex).ptr, writtenElementType)
+                    .storeScalar(AggregateValue.elementAt(value, elementIndex));
         }
 
         foreach (siblingIndex, sibling; fields) {
@@ -10040,10 +10026,8 @@ unsupportedExpression:
         }
 
         import quickbite.backends.interpreter.place: Place;
-        import quickbite.backends.interpreter.runtime_casts: castTarget, castValue;
 
-        castValue(value, castTarget(cell.elementType),
-            Place(cell.element(index).ptr, cell.elementType));
+        Place(cell.element(index).ptr, cell.elementType).storeScalar(value);
     }
 
     // Writes `arrayValue`'s scalar leaves into `cell`'s bytes (the
@@ -10062,7 +10046,6 @@ unsupportedExpression:
     ) {
         import quickbite.backends.interpreter.aggregate_value: AggregateValue;
         import quickbite.backends.interpreter.place: Place;
-        import quickbite.backends.interpreter.runtime_casts: castTarget, castValue;
 
         if (!AggregateValue.isArray(arrayValue))
             return;
@@ -10079,11 +10062,8 @@ unsupportedExpression:
                     AggregateValue.elementAt(arrayValue, index),
                 );
             } else {
-                castValue(
-                    AggregateValue.elementAt(arrayValue, index),
-                    castTarget(cell.elementType),
-                    Place(cell.element(index).ptr, cell.elementType),
-                );
+                Place(cell.element(index).ptr, cell.elementType)
+                    .storeScalar(AggregateValue.elementAt(arrayValue, index));
             }
         }
     }
@@ -11079,10 +11059,36 @@ unsupportedExpression:
         return appended;
     }
 
+    private ExpressionResult castScalarResult(
+        in ExpressionResult value,
+        in imported!"quickbite.backends.interpreter.runtime_casts".CastTarget target,
+    ) {
+        import quickbite.backends.interpreter.runtime_casts: CastTarget;
+
+        final switch (target) with (CastTarget) {
+            case bool_: return value.castTo!bool;
+            case byte_: return value.castTo!byte;
+            case ubyte_: return value.castTo!ubyte;
+            case char_: return value.castTo!char;
+            case short_: return value.castTo!short;
+            case ushort_: return value.castTo!ushort;
+            case wchar_: return value.castTo!wchar;
+            case int_: return value.castTo!int;
+            case uint_: return value.castTo!uint;
+            case dchar_: return value.castTo!dchar;
+            case long_: return value.castTo!long;
+            case ulong_: return value.castTo!ulong;
+            case float_: return value.castTo!float;
+            case double_: return value.castTo!double;
+            case real_: return value.castTo!real;
+            case ifloat_, idouble_, ireal_: return value.castToImaginary;
+            case cfloat_, cdouble_, creal_: return value.castToComplex;
+        }
+    }
+
     private ExpressionResult castValue(imported!"dmd.expression".CastExp cast_) {
         import quickbite.backends.interpreter.runtime_casts:
-            backendCastTarget = castTarget,
-            backendCastValue = castValueResult;
+            backendCastTarget = castTarget;
         import quickbite.frontend.dmd.types: isPointerType;
         import dmd.astenums: TY;
 
@@ -11181,7 +11187,7 @@ unsupportedExpression:
                 return readStoredValue(destination);
             }
 
-        return backendCastValue(runExpressionValue(cast_.e1), backendCastTarget(type));
+        return castScalarResult(runExpressionValue(cast_.e1), backendCastTarget(type));
     }
 
     private bool reinterpretScalarArrayCast(
@@ -11219,8 +11225,7 @@ unsupportedExpression:
     private ExpressionResult boolCastValue(imported!"dmd.expression".CastExp cast_) {
         import quickbite.backends.interpreter.aggregate_value: AggregateValue;
         import quickbite.backends.interpreter.runtime_casts:
-            backendCastTarget = castTarget,
-            backendCastValue = castValueResult;
+            backendCastTarget = castTarget;
 
         const value = runExpressionValue(cast_.e1);
         if (value.isPointer)
@@ -11230,7 +11235,7 @@ unsupportedExpression:
         if (value.isNativeAggregate && AggregateValue.isArray(value))
             return ExpressionResult(isTruthy(value));
 
-        return backendCastValue(value, backendCastTarget(cast_.to));
+        return castScalarResult(value, backendCastTarget(cast_.to));
     }
 
     private ExpressionResult delegateCastValue(imported!"dmd.expression".CastExp cast_) {
@@ -13312,15 +13317,19 @@ unsupportedExpression:
         }
 
         if (auto cast_ = rvalue.isCastExp) {
-            import quickbite.backends.interpreter.native_scalar:
-                isNativeScalarType;
+            import quickbite.backends.interpreter.place: Place;
             import quickbite.backends.interpreter.runtime_casts:
                 CastTarget, castTarget, castValue, tryCastTarget;
 
             CastTarget target;
-            if (isNativeScalarType(place.type) &&
-                tryCastTarget(place.type, target)) {
-                castValue(runExpressionValue(cast_.e1), target, place);
+            if (tryCastTarget(place.type, target)) {
+                auto source = Place(
+                    _activationFrame.temporaryAddress(cast_.e1),
+                    cast_.e1.type,
+                );
+                auto sourceDestination = ConstructionDestination(source);
+                runExpression(cast_.e1, sourceDestination);
+                castValue(source, target, place);
                 destination.markConstructed;
                 return true;
             }
