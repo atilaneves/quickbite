@@ -8542,6 +8542,35 @@ unsupportedExpression:
         if (auto index = assign.e1.isIndexExp)
             return runIndexAssignExpression(index, assign.e2);
 
+        if (auto call = assign.e1.isCallExp)
+            if (
+                call.f !is null &&
+                returnsRef(call.f) &&
+                sameAssignmentType(assign.e1, assign.e2)
+            ) {
+                import dmd.tokens: EXP;
+                import quickbite.backends.interpreter.place: Place;
+
+                const address = refReturningCallAddress(call, EXP.address);
+                if (!address.isPointer)
+                    throw new Exception("Ref-returning call has no native address.");
+                auto destination = Place(address.pointerAddress, assign.e1.type);
+                return assignThroughTypedTemporary(destination, assign.e2);
+            }
+
+        if (auto pointer = assign.e1.isPtrExp)
+            if (sameAssignmentType(assign.e1, assign.e2)) {
+            import quickbite.backends.interpreter.place: Place;
+
+            const address = runExpressionValue(pointer.e1);
+            if (address.isPointer) {
+                auto destination = Place(address.pointerAddress, assign.e1.type);
+                const value = assignThroughTypedTemporary(destination, assign.e2);
+                clearUninitializedBindingAddress(address.pointerAddress);
+                return value;
+            }
+        }
+
         if (auto dot = assign.e1.isDotVarExp)
             if (isDirectProjectionWriteTarget(dot))
                 return runProjectionAssignExpression(dot, assign.e2);
@@ -8639,20 +8668,11 @@ unsupportedExpression:
         // above. Struct and static-array fields do not enter this path, so
         // their DMD-lowered postblit and chained-method handling is unchanged.
         if (
-            target.type !is null &&
-            rhs.type !is null &&
-            target.type.toBasetype.equals(rhs.type.toBasetype)
+            canAssignThroughTypedTemporary(destination, rhs)
         ) {
-            import quickbite.backends.interpreter.place: Place;
-
-            auto temporary = ConstructionDestination(Place(
-                _activationFrame.temporaryAddress(rhs),
-                rhs.type,
-            ));
-            runExpression(rhs, temporary);
-            copyPlaceValue(temporary.place, destination);
+            const value = assignThroughTypedTemporary(destination, rhs);
             clearProjectionRootUninitialized(target);
-            return readStoredValue(destination);
+            return value;
         }
 
         // Mutable because function literal construction expects DMD's
@@ -8667,6 +8687,48 @@ unsupportedExpression:
         );
         clearProjectionRootUninitialized(target);
         return value;
+    }
+
+    // Item 9: resolve the assignment's live place before its RHS, then build
+    // that RHS in separate fresh typed storage. The typed copy is the only
+    // write to the live place, so aliases cannot observe construction.
+    private bool canAssignThroughTypedTemporary(
+        imported!"quickbite.backends.interpreter.place".Place destination,
+        imported!"dmd.expression".Expression rhs,
+    ) {
+        return sameAssignmentType(destination.type, rhs);
+    }
+
+    private bool sameAssignmentType(
+        imported!"dmd.mtype".Type targetType,
+        imported!"dmd.expression".Expression rhs,
+    ) {
+        return targetType !is null &&
+            rhs.type !is null &&
+            targetType.toBasetype.equals(rhs.type.toBasetype);
+    }
+
+    private bool sameAssignmentType(
+        imported!"dmd.expression".Expression target,
+        imported!"dmd.expression".Expression rhs,
+    ) {
+        return target !is null && sameAssignmentType(target.type, rhs);
+    }
+
+    private ExpressionResult assignThroughTypedTemporary(
+        imported!"quickbite.backends.interpreter.place".Place destination,
+        imported!"dmd.expression".Expression rhs,
+    ) {
+        import quickbite.backends.interpreter.place: Place;
+
+        assert(canAssignThroughTypedTemporary(destination, rhs));
+        auto temporary = ConstructionDestination(Place(
+            _activationFrame.temporaryAddress(rhs),
+            rhs.type,
+        ));
+        runExpression(rhs, temporary);
+        copyPlaceValue(temporary.place, destination);
+        return readStoredValue(destination);
     }
 
     private void writeLocation(
@@ -9603,11 +9665,12 @@ unsupportedExpression:
             if (!address.isPointer)
                 throw new Exception("Ref-returning call has no native address.");
             const arrayIndex = cast(size_t) runExpressionValue(index.e2).asLong;
+            auto destination = Place(address.pointerAddress, index.e1.type)
+                .index(arrayIndex);
+            if (canAssignThroughTypedTemporary(destination, rhs))
+                return assignThroughTypedTemporary(destination, rhs);
             const value = runExpressionValue(rhs);
-            writeStoredValue(
-                Place(address.pointerAddress, index.e1.type).index(arrayIndex),
-                storageValue(index.type, value),
-            );
+            writeStoredValue(destination, storageValue(index.type, value));
             return value;
         }
 
@@ -9615,6 +9678,23 @@ unsupportedExpression:
             const pointer = runExpressionValue(index.e1);
             const arrayIndex = cast(size_t) runExpressionValue(index.e2).asLong;
             if (pointer.isPointer) {
+                import quickbite.backends.interpreter.layout: typeByteSize;
+                import quickbite.backends.interpreter.place: Place;
+
+                auto elementType = index.e1.type.toBasetype.nextOf.toBasetype;
+                auto destination = Place(
+                    nativeElementAddress(
+                        pointer.pointerAddress,
+                        arrayIndex,
+                        typeByteSize(elementType),
+                    ),
+                    elementType,
+                );
+                if (canAssignThroughTypedTemporary(destination, rhs)) {
+                    const value = assignThroughTypedTemporary(destination, rhs);
+                    clearUninitializedBindingAddress(pointer.pointerAddress);
+                    return value;
+                }
                 auto literal = rhs.isFuncExp;
                 const value = literal is null
                     ? runExpressionValue(rhs)
@@ -9637,11 +9717,15 @@ unsupportedExpression:
                 import quickbite.backends.interpreter.place: Place;
 
                 const arrayIndex = cast(size_t) runExpressionValue(index.e2).asLong;
+                auto destination = Place(pointer.pointerAddress, index.e1.type)
+                    .index(arrayIndex);
+                if (canAssignThroughTypedTemporary(destination, rhs)) {
+                    const value = assignThroughTypedTemporary(destination, rhs);
+                    clearUninitializedBindingAddress(pointer.pointerAddress);
+                    return value;
+                }
                 const value = runExpressionValue(rhs);
-                writeStoredValue(
-                    Place(pointer.pointerAddress, index.e1.type).index(arrayIndex),
-                    value,
-                );
+                writeStoredValue(destination, value);
                 return value;
             }
             throw new Exception("Unsupported interpreter assignment target.");
@@ -9890,11 +9974,15 @@ unsupportedExpression:
                 throw new Exception("Unsupported interpreter assignment target.");
 
             const innerIndex = cast(size_t) runExpressionValue(inner.e2).asLong;
+            auto destination = Place(pointer.pointerAddress, outer.type)
+                .index(innerIndex);
+            if (canAssignThroughTypedTemporary(destination, rhs)) {
+                const value = assignThroughTypedTemporary(destination, rhs);
+                clearUninitializedBindingAddress(pointer.pointerAddress);
+                return value;
+            }
             const value = runExpressionValue(rhs);
-            writeStoredValue(
-                Place(pointer.pointerAddress, outer.type).index(innerIndex),
-                value,
-            );
+            writeStoredValue(destination, value);
             return value;
         }
 
