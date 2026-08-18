@@ -2412,11 +2412,10 @@ private struct Walker {
         imported!"dmd.statement".SwitchStatement switch_,
     ) {
         if (switch_.cases !is null) {
-            const condition = runExpressionValue(switch_.condition);
             foreach (case_; *switch_.cases) {
                 if (case_ is null)
                     continue;
-                if (caseMatches(case_, condition))
+                if (caseMatches(case_, switch_.condition))
                     return case_;
             }
         }
@@ -2426,16 +2425,31 @@ private struct Walker {
 
     private bool caseMatches(
         imported!"dmd.statement".CaseStatement case_,
-        in ExpressionResult condition,
+        imported!"dmd.expression".Expression condition,
     ) {
-        if (case_.exp !is null) {
-            const candidate = runExpressionValue(case_.exp);
-            if (candidate.isIntegerCompatibleScalar &&
-                condition.isIntegerCompatibleScalar)
-                return candidate.asLong == condition.asLong;
-            if (candidate == condition)
-                return true;
+        import dmd.astenums: TY;
+
+        switch (condition.type.toBasetype.ty) with (TY) {
+            case Tbool: return scalarCaseMatches!bool(case_, condition);
+            case Tint8: return scalarCaseMatches!byte(case_, condition);
+            case Tuns8, Tchar: return scalarCaseMatches!ubyte(case_, condition);
+            case Tint16: return scalarCaseMatches!short(case_, condition);
+            case Tuns16, Twchar: return scalarCaseMatches!ushort(case_, condition);
+            case Tint32: return scalarCaseMatches!int(case_, condition);
+            case Tuns32, Tdchar: return scalarCaseMatches!uint(case_, condition);
+            case Tint64: return scalarCaseMatches!long(case_, condition);
+            case Tuns64: return scalarCaseMatches!ulong(case_, condition);
+            default: return false;
         }
+    }
+
+    private bool scalarCaseMatches(T)(
+        imported!"dmd.statement".CaseStatement case_,
+        imported!"dmd.expression".Expression condition,
+    ) {
+        const value = scalarOperandAs!T(condition);
+        if (case_.exp !is null)
+            return value == scalarOperandAs!T(case_.exp);
 
         auto range = case_.statement is null
             ? null
@@ -2443,10 +2457,9 @@ private struct Walker {
         if (range is null)
             return false;
 
-        const value = condition.asLong;
         return
-            value >= runExpressionValue(range.first).asLong &&
-            value <= runExpressionValue(range.last).asLong;
+            value >= scalarOperandAs!T(range.first) &&
+            value <= scalarOperandAs!T(range.last);
     }
 
     private void runForStatement(
