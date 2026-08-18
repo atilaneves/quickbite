@@ -5660,53 +5660,6 @@ private struct Compiler {
             );
     }
 
-    // `__ArrayDtor(arr[lo .. hi])`: run the element destructor on each element
-    // of a static array's inline block (`source` / `copy` going out of scope),
-    // in reverse element order (matching DMD), so each `~this()` runs once.
-    private Operand compileArrayDtor(CallExp call) {
-        import std.conv: text;
-
-        if (call.arguments is null || call.arguments.length != 1)
-            throw new Exception(text(
-                "Unsupported array destructor in bytecode core: ",
-                expressionChars(call),
-            ));
-
-        auto slice = (*call.arguments)[0].isSliceExp;
-        if (slice is null)
-            throw new Exception(text(
-                "Unsupported array destructor in bytecode core: ",
-                expressionChars(call),
-            ));
-
-        auto arrayPlace = placeOrNull(slice.e1);
-        if (arrayPlace is null)
-            throw new Exception(text(
-                "Unsupported array destructor in bytecode core: ",
-                expressionChars(call),
-            ));
-        const arrayAddress = addressOfPlace(*arrayPlace);
-
-        auto arrayType = slice.e1.type;
-        auto elementType = arrayType.toBasetype.nextOf;
-        const elementSize = typeFacts(elementType).byteWidth;
-        const count = typeFacts(arrayType).byteWidth / elementSize;
-
-        auto dtor = structDeclarationOf(elementType).dtor;
-        if (dtor !is null)
-            foreach_reverse (i; 0 .. count)
-                runStructMethodAtAddress(
-                    pointerPlaceAddress(
-                        arrayAddress.offset,
-                        compileSizeConstant(i * elementSize),
-                        1,
-                        ScalarType.void_,
-                    ).offset,
-                    dtor,
-                );
-        return Operand.init;
-    }
-
     // A struct `S` local occupies `Type.size()` inline frame bytes at its
     // DMD-computed alignment, each field at `base + field.offset`. The block is
     // zeroed first (scalar fields default to 0, dynamic-array fields to an empty
@@ -6936,22 +6889,6 @@ private struct Compiler {
     // calls a static-array copy and scope exit insert.
     private void runStructMethod(in ushort base, FuncDeclaration function_) {
         runConstructor(base, function_, null);
-    }
-
-    private void runStructMethodAtAddress(
-        in ushort address,
-        FuncDeclaration function_,
-    ) {
-        const index = registerFunction(function_);
-        const layout = parameterLayout(function_);
-        const argumentArea = allocateBytes(layout.blockSize, 8);
-        _code ~= Instruction(
-            Op.copy,
-            cast(ushort) (argumentArea + layout.thisOffset),
-            address,
-            cast(ushort) size_t.sizeof,
-        );
-        _code ~= Instruction(Op.call, index, argumentArea, cast(ushort) 0);
     }
 
     // Copy a string literal's bytes into a `char[N]` inline slot. DMD requires
@@ -10961,13 +10898,6 @@ private struct Compiler {
             if (stringForeachApplyMode(function_, applyMode))
                 return compileStringForeachApply(call, applyMode);
         }
-
-        // `__ArrayDtor(arr[lo .. hi])` runs the element destructor on each
-        // element of a static array going out of scope; intercept and emit the
-        // per-element `~this()` calls.
-        if (function_ !is null && function_.ident !is null &&
-            function_.ident.toString == "__ArrayDtor")
-            return compileArrayDtor(call);
 
         if (function_ !is null && function_.ident !is null &&
             function_.ident.toString == "emplace")
