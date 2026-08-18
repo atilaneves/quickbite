@@ -3499,10 +3499,11 @@ unsupportedExpression:
             // through it would dereference the receiver's own leading field
             // bytes as a metadata pointer. `x.classinfo.name` reaches here
             // as a `ref` argument because a `TypeInfo` field is an lvalue;
-            // give the evaluated value one ordinary retained temporary,
-            // exactly as a by-value call result bound by reference gets.
+            // write the evaluated value into this activation's typed
+            // temporary, exactly as a by-value call result bound by
+            // reference does.
             if (isSymbolicClassInfoProjection(dot))
-                return addressOfTemporaryValue(dot.type, runExpression(dot));
+                return addressOfTemporaryValue(dot, runExpression(dot));
 
             if (isStaticArrayType(dot.type))
                 return arrayPointer(dot, 0, op);
@@ -4080,29 +4081,23 @@ unsupportedExpression:
     private ExpressionResult addressOfCallResultTemporary(
         imported!"dmd.expression".CallExp call,
     ) {
-        return addressOfTemporaryValue(call.type, runCallExpression(call));
+        return addressOfTemporaryValue(call, runCallExpression(call));
     }
 
     // The address of an evaluated value with no composable native place: one
-    // ordinary typed temporary, retained for the enclosing expression. A
-    // reference slot that stores this address is conservatively scanned and
-    // stays the durable root beyond that expression, the same lifetime
-    // contract `bindSyntheticReferenceSlot` states for its own temporary.
+    // ordinary typed temporary in this activation's frame. A reference slot
+    // that stores this address is conservatively scanned and stays the durable
+    // root beyond that expression, the same lifetime contract
+    // `bindSyntheticReferenceSlot` states for its own temporary.
     private ExpressionResult addressOfTemporaryValue(
-        imported!"dmd.mtype".Type type,
+        imported!"dmd.expression".Expression expression,
         in ExpressionResult value,
     ) {
-        import quickbite.backends.interpreter.layout:
-            typeByteSize, typeHasPointers;
         import quickbite.backends.interpreter.place: Place;
 
-        const scan = typeHasPointers(type)
-            ? NativeBlock.Scan.conservative
-            : NativeBlock.Scan.no;
-        auto temporary = NativeBlock.allocate(typeByteSize(type), scan);
-        writeStoredValue(Place(temporary.address, type), value);
-        retainTemporaryPointerOwner(temporary);
-        return ExpressionResult.pointerValue(temporary.address);
+        auto temporary = _activationFrame.temporaryAddress(expression);
+        writeStoredValue(Place(temporary, expression.type), value);
+        return ExpressionResult.pointerValue(temporary);
     }
 
     // Forks execution metadata. Binding storage is never copied: each child

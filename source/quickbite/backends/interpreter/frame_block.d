@@ -13,6 +13,7 @@ public struct FrameBlock {
     import quickbite.backends.interpreter.native_block: NativeBlock;
     import quickbite.backends.interpreter.frame_layout: FrameLayout;
     import dmd.declaration: VarDeclaration;
+    import dmd.expression: Expression;
 
     private NativeBlock _block;
     private FrameLayout _layout;
@@ -49,6 +50,14 @@ public struct FrameBlock {
     public void* slotAddress(VarDeclaration variable) @trusted
     in (_layout.has(variable), "variable has no frame slot") {
         return _block.address + _layout[variable].offset;
+    }
+
+    // The stable storage for one addressable expression temporary in this
+    // activation. Its offset comes from the layout pass, so it is within the
+    // same conservatively-scanned block as the activation's local bindings.
+    public void* temporaryAddress(Expression expression) @trusted
+    in (_layout.hasTemporary(expression), "expression has no frame temporary") {
+        return _block.address + _layout.temporary(expression).slot.offset;
     }
 
     // `variable`'s slot offset from this block's own base address, i.e.
@@ -178,9 +187,11 @@ public struct FrameBlock {
 // REFERENCE slot always does -- what it holds IS an address, regardless of
 // the parameter's own declared type -- and an OWNING slot does exactly
 // when its own declared type does (unchanged).
+// @trusted: temporary type handles come from the same live DMD arena as the
+// layout. The const cast only passes that read-only handle to DMD's query.
 private bool frameHasPointers(
     imported!"quickbite.backends.interpreter.frame_layout".FrameLayout layout,
-) @safe {
+) @trusted {
     import quickbite.backends.interpreter.frame_layout: FrameLayout;
     import quickbite.backends.interpreter.layout: typeHasPointers, declaredType;
 
@@ -190,6 +201,10 @@ private bool frameHasPointers(
         if (typeHasPointers(declaredType(variable)))
             return true;
     }
+
+    foreach (key, temporary; layout.temporaries)
+        if (typeHasPointers(cast(imported!"dmd.mtype".Type) temporary.type))
+            return true;
 
     return false;
 }
