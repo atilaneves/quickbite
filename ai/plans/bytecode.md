@@ -29,37 +29,41 @@ enumerated exemption list, each entry with a stated retirement condition).
 Work queue (each item = one commit, exposing red fixture written before the
 fix, SystemLinker as the behavior oracle):
 
-1. Consume the frontend lowerings for `~=`, `.length=`, `new T[n]`/multi-dim,
-   `~`, and array literals; delete the hand-rolled append/resize/alloc/concat
-   opcodes and machine.d helpers, `isNewArrayRuntimeCall`, and the
-   `_d_arrayctor` interception. `CatDcharAssignExp` is un-lowered by design
-   and its helpers live in non-importable `rt/lifetime.d`: declare
-   `_d_arrayappendcd`/`_d_arrayappendwd` as `extern(C)` prototypes in D
-   source and the ordinary no-body path makes the FFI call. Test changes
-   follow behavior coverage: delete `Omit`s the switch turns green; new
-   tests only for uncovered documented behavior, never implementation
-   details.
-2. Delete the remaining name-matched diversions with available bodies, one
-   commit per mechanism: `__switch`, `arrayOp!`, `_aApply*`, `__ArrayDtor`,
-   `emplace*`, `_d_arraybounds*`, and the `_d_assert_fail` shape-sniffing
-   (compile the real core.internal.dassert machinery). Body available →
-   compile it; no body → FFI; never a hand-rolled substitute.
-3. Port the interception-policy guard with the enumerated exemption list
-   (DMD BUILTIN intrinsics, the dchar-append glue, TypeInfo materialization,
-   plus anything items 1-2 prove genuinely uncompileable), asserted at
-   function-compilation time.
-4. Real object model: real GC allocation with DMD's field offsets, real
+1. Port the interception-policy guard with the enumerated exemption list. DMD
+   BUILTIN intrinsics (core/builtins.d matching) remain exempt. `_aApply*`
+   string-foreach: the frontend resolves these calls to synthetic bodyless
+   `extern(C)` declarations (dmd's `genCfunc` — no module, `fbody` permanently
+   null) and passes the loop body as a VM delegate, so executing them for real
+   needs a native→VM callback; retirement condition: inbound FFI/native-
+   callback support. The guard must enumerate ALL width/reverse variants in
+   rt/aApply.d and rt/aApplyR.d (~12), not just the four currently matched, and
+   an unmatched variant must raise an honest unsupported diagnostic instead of
+   falling through to FFI with a table-index delegate value.
+2. Real object model: real GC allocation with DMD's field offsets, real
    `__vptr`/`TypeInfo_Class`; the VM-private heap, class table, and parallel
    vtables are deleted. Unlocks class receivers across FFI and makes
-   `CastExp.lowering` (`_d_cast`) compileable — the unchecked-downcast bug
-   gets its exposing fixture first.
-5. Real `Throwable`: throw allocates real class objects, catch matches
-   through the real hierarchy; `ExceptionObjectLocal` and the throw-string
-   fast path die; the VM's handler-stack unwinder stays as mechanism.
+   `CastExp.lowering` (`_d_cast`) compileable — the unchecked-downcast bug gets
+   its exposing fixture first.
+3. Real `Throwable`: throw allocates real class objects, catch matches through
+   the real hierarchy; `ExceptionObjectLocal` and the throw-string fast path
+   die; the VM's handler-stack unwinder stays as mechanism. Two named gates,
+   both retiring with real Throwable objects: binding a caught error object
+   (`catch (RangeError e)`) does not materialize a guest-visible object today
+   (bare `catch (RangeError)` works); and the index/slice bounds failure raise
+   is still VM-synthetic (machine.d's host `ArrayIndexError` throw).
 
-Items 1-3 are independent of 4-5; 4 gates 5.
+Item 1 is independent of 2-3; 2 gates 3. Two more open caveats:
+- `compileDynamicArrayInto`'s cast handling accepts only dynamic-array/string
+  sources; `int[] b = cast(int[]) someStaticArray;` as a declaration
+  initializer takes a cast-unaware path (the equality-side twin of this gate
+  was already fixed).
+- Expression-level `ConstructExp`/`BlitExp` receivers resolve to real storage
+  only in `storageAddressOrValue`; hoisting the same handling into shared
+  `resolvePlace` made
+  `typeid.arrayEqualityUsesStoredReferenceIdentity.Bytecode` flake 1-in-4
+  combined-module runs, un-root-caused.
 
-Recorded deviation, item 4's territory: a guest function-pointer value is
+Recorded deviation, item 2's territory: a guest function-pointer value is
 currently a `Program.functions` table index, not a native code address —
 the VM emits no machine code for a bytecode-compiled function, so no such
 address exists yet. A native-leaf target (`&f` where `f` has no body, e.g.

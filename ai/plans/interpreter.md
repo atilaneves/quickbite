@@ -474,10 +474,11 @@ std.conv.text                             retire per value.md remaining work
 core.internal.array.operations.arrayOp!(  retire when static-array
 ...)                                      element-wise ops interpret
                                            end-to-end over native layout.
-rt.aApply's _aApplycd1/_aApplywd1/        extern(C)-mangled but D-bodied;
-_aApplydc1/_aApplyRwd1                    retire when string/array native
-                                           layout covers UTF-mismatch
-                                           foreach.
+rt.aApply's _aApplycd1/_aApplywd1/        resolved by the frontend to synthetic
+_aApplydc1/_aApplyRwd1                    bodyless extern(C) declarations
+                                           (dmd's genCfunc), not D-bodied;
+                                           retire when string/array native
+                                           layout covers UTF-mismatch foreach.
 core.internal.util.array.                 the shim fakes a `bool` return for
 enforceRawArraysConformable[No]gc         a `void`-returning function.
                                            Retire by executing the real bodies
