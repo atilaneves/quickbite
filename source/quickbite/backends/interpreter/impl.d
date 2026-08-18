@@ -886,7 +886,7 @@ private struct Walker {
                     _returnValue = refReturnAddress(return_.exp);
                 else if (_returnDestination !is null) {
                     if (!constructInto(return_.exp, *_returnDestination)) {
-                        auto value = runExpression(return_.exp);
+                        auto value = runExpressionValue(return_.exp);
                         if (return_.exp.type.toBasetype.isTypeClass !is null)
                             value = rootedNativeClassValue(return_.exp, value);
                         writeStoredValue(_returnDestination.place, value);
@@ -894,7 +894,7 @@ private struct Walker {
                     }
                 }
                 else {
-                    _returnValue = runExpression(return_.exp);
+                    _returnValue = runExpressionValue(return_.exp);
                     if (return_.exp.type.toBasetype.isTypeClass !is null)
                         _returnValue =
                             rootedNativeClassValue(return_.exp, _returnValue);
@@ -955,7 +955,7 @@ private struct Walker {
         }
 
         if (auto if_ = statement.isIfStatement) {
-            if (isTruthy(runExpression(if_.condition)))
+            if (isTruthy(runExpressionValue(if_.condition)))
                 runStatement(if_.ifbody);
             else
                 runStatement(if_.elsebody);
@@ -1689,7 +1689,7 @@ private struct Walker {
                         }
                     if (!alreadyEvaluated)
                         value = cast(size_t) cast(ulong)
-                            runExpression(indexExpression).asLong;
+                            runExpressionValue(indexExpression).asLong;
                     if (
                         pendingBoundsCheck &&
                         pendingIndex !is null &&
@@ -1779,7 +1779,7 @@ private struct Walker {
             }
 
             expressions[i] = index.e2;
-            values[i] = cast(size_t) cast(ulong) runExpression(index.e2).asLong;
+            values[i] = cast(size_t) cast(ulong) runExpressionValue(index.e2).asLong;
             if (
                 staticArray !is null &&
                 values[i] >= staticArrayLength(staticArray)
@@ -1901,7 +1901,7 @@ private struct Walker {
     private void throwInterpretedException(
         imported!"dmd.expression".Expression expression,
     ) {
-        const object = runExpression(expression);
+        const object = runExpressionValue(expression);
         if (dynamicClass(object) is null)
             throw new Exception("Unsupported throw expression.");
         if (hasPendingFinallyBodyException) {
@@ -2306,7 +2306,7 @@ private struct Walker {
                 throw new Exception("Interpreter with receiver has no initializer.");
             setLocal(
                 with_.wthis,
-                storageValue(with_.wthis.type, runExpression(initializer.exp)),
+                storageValue(with_.wthis.type, runExpressionValue(initializer.exp)),
             );
             runStatement(with_._body);
         } else {
@@ -2345,7 +2345,7 @@ private struct Walker {
         imported!"dmd.statement".SwitchStatement switch_,
     ) {
         if (switch_.cases !is null) {
-            const condition = runExpression(switch_.condition);
+            const condition = runExpressionValue(switch_.condition);
             foreach (case_; *switch_.cases) {
                 if (case_ is null)
                     continue;
@@ -2362,7 +2362,7 @@ private struct Walker {
         in ExpressionResult condition,
     ) {
         if (case_.exp !is null) {
-            const candidate = runExpression(case_.exp);
+            const candidate = runExpressionValue(case_.exp);
             if (candidate.isIntegerCompatibleScalar &&
                 condition.isIntegerCompatibleScalar)
                 return candidate.asLong == condition.asLong;
@@ -2378,8 +2378,8 @@ private struct Walker {
 
         const value = condition.asLong;
         return
-            value >= runExpression(range.first).asLong &&
-            value <= runExpression(range.last).asLong;
+            value >= runExpressionValue(range.first).asLong &&
+            value <= runExpressionValue(range.last).asLong;
     }
 
     private void runForStatement(
@@ -2391,7 +2391,7 @@ private struct Walker {
         while (
             !returned &&
             loopControl == LoopControl.none &&
-            (for_.condition is null || isTruthy(runExpression(for_.condition)))
+            (for_.condition is null || isTruthy(runExpressionValue(for_.condition)))
         ) {
             runStatement(for_._body);
             if (returned)
@@ -2429,7 +2429,7 @@ private struct Walker {
                     break;
                 clearLoopControl;
             }
-        } while (isTruthy(runExpression(do_.condition)));
+        } while (isTruthy(runExpressionValue(do_.condition)));
     }
 
     private void clearLoopControl() {
@@ -2437,11 +2437,29 @@ private struct Walker {
         loopControlLabel = null;
     }
 
-    private ExpressionResult runExpression(imported!"dmd.expression".Expression expression) {
+    private ExpressionResult runExpressionValue(imported!"dmd.expression".Expression expression) {
         const full = beginFullExpression;
         scope(exit) endFullExpression(full);
 
         return runExpressionImpl(expression);
+    }
+
+    // Construct an rvalue in caller-owned typed storage. The carrier walk is
+    // still used only for expression families that have no construction arm;
+    // it is not the recursive evaluator's contract. Keep this fallback local
+    // until the remaining aggregate and callback paths are migrated.
+    private void runExpression(
+        imported!"dmd.expression".Expression expression,
+        ref ConstructionDestination destination,
+    ) {
+        const full = beginFullExpression;
+        scope(exit) endFullExpression(full);
+
+        if (!constructInto(expression, destination)) {
+            const value = runExpressionImpl(expression);
+            writeStoredValue(destination.place, value);
+            destination.markConstructed;
+        }
     }
 
     // Run `expression` for its effects alone: D gives a discarded
@@ -2755,7 +2773,7 @@ assocArrayLiteralExpression:
         // on `.lowering`; running that lowered call interprets druntime's own
         // literal construction instead of reconstructing one here.
         if (auto assocArray = expression.isAssocArrayLiteralExp)
-            return runExpression(assocArray.lowering);
+            return runExpressionValue(assocArray.lowering);
 
 structLiteralExpression:
         if (auto struct_ = expression.isStructLiteralExp)
@@ -2766,19 +2784,19 @@ assertExpression:
             import quickbite.backends.interpreter.messages:
                 assertFailureMessage;
 
-            if (!isTruthy(runExpression(assert_.e1)))
+            if (!isTruthy(runExpressionValue(assert_.e1)))
                 throwAssertError(assertFailureMessage(
                     assert_,
                     runningCalledFunction,
                     inUnitTest,
-                    &runExpression,
+                    &runExpressionValue,
                 ));
             return ExpressionResult(true);
         }
 
 notExpression:
         if (auto not = expression.isNotExp) {
-            return ExpressionResult(!isTruthy(runExpression(not.e1)));
+            return ExpressionResult(!isTruthy(runExpressionValue(not.e1)));
         }
 
 logicalExpression:
@@ -2845,7 +2863,7 @@ minExpression:
 
 mulExpression:
         if (auto mul = expression.isMulExp)
-            return runExpression(mul.e1) * runExpression(mul.e2);
+            return runExpressionValue(mul.e1) * runExpressionValue(mul.e2);
 
 divExpression:
         if (auto div = expression.isDivExp)
@@ -2869,7 +2887,7 @@ unsignedRightShiftExpression:
 
 negExpression:
         if (auto neg = expression.isNegExp)
-            return -runExpression(neg.e1);
+            return -runExpressionValue(neg.e1);
 
 complementExpression:
         if (auto complement = expression.isComExp)
@@ -2950,7 +2968,7 @@ bitXorExpression:
 commaExpression:
         if (auto comma = expression.isCommaExp) {
             executeForEffect(comma.e1);
-            return runExpression(comma.e2);
+            return runExpressionValue(comma.e2);
         }
 
 tupleExpression:
@@ -2989,7 +3007,7 @@ arrayLengthExpression:
                     projectionPlace(arrayLength.e1).arrayLength,
                 );
             return ExpressionResult(
-                AggregateValue.length(runExpression(arrayLength.e1)),
+                AggregateValue.length(runExpressionValue(arrayLength.e1)),
             );
         }
 
@@ -3124,7 +3142,7 @@ variableExpression:
 
             if (isManifestVariable(variable)) {
                 if (auto initializer = variable._init.isExpInitializer)
-                    return runExpression(initializer.exp);
+                    return runExpressionValue(initializer.exp);
                 return defaultValue(variable);
             }
 
@@ -3231,7 +3249,7 @@ unsupportedExpression:
         auto result = ExpressionResult.void_;  // mutated below; `const` cannot express the fold
         if (tuple.exps !is null)
             foreach (element; *tuple.exps)
-                result = runExpression(element);
+                result = runExpressionValue(element);
         return result;
     }
 
@@ -3248,7 +3266,7 @@ unsupportedExpression:
         auto type = symbol.dsym is null ? symbol.type : symbol.dsym.type;
 
         if (auto structType = type is null ? null : type.toBasetype.isTypeStruct)
-            return runExpression(structType.defaultInitLiteral(var.loc));
+            return runExpressionValue(structType.defaultInitLiteral(var.loc));
 
         // `__traits(initSymbol, T)` denotes T's initializer image as an
         // untyped span: the bytes `emplace` copies into raw storage before any
@@ -3271,7 +3289,7 @@ unsupportedExpression:
     private ExpressionResult runLogicalAndExpression(
         imported!"dmd.expression".LogicalExp logical,
     ) {
-        const left = isTruthy(runExpression(logical.e1));
+        const left = isTruthy(runExpressionValue(logical.e1));
         if (!left)
             return ExpressionResult(false);
 
@@ -3282,7 +3300,7 @@ unsupportedExpression:
     private ExpressionResult runLogicalOrExpression(
         imported!"dmd.expression".LogicalExp logical,
     ) {
-        const left = isTruthy(runExpression(logical.e1));
+        const left = isTruthy(runExpressionValue(logical.e1));
         if (left)
             return ExpressionResult(true);
 
@@ -3301,7 +3319,7 @@ unsupportedExpression:
     ) {
         const first = _pendingTemporaryDestructors.length;
         scope(exit) runPendingTemporaryDestructors(first);
-        return runExpression(operand);
+        return runExpressionValue(operand);
     }
 
     private ExpressionResult runComparisonExpression(
@@ -3309,8 +3327,8 @@ unsupportedExpression:
     ) {
         import dmd.tokens: EXP;
 
-        const leftValue = runExpression(comparison.e1);
-        const rightValue = runExpression(comparison.e2);
+        const leftValue = runExpressionValue(comparison.e1);
+        const rightValue = runExpressionValue(comparison.e2);
 
         // A default-initialized pointer-typed operand (e.g. a GC pool
         // boundary pointer that has never been assigned) reads as `Null`,
@@ -3361,8 +3379,8 @@ unsupportedExpression:
     private ExpressionResult runAddExpression(imported!"dmd.expression".AddExp add) {
         import quickbite.frontend.dmd.types: isPointerType;
 
-        const left = runExpression(add.e1);
-        const right = runExpression(add.e2);
+        const left = runExpressionValue(add.e1);
+        const right = runExpressionValue(add.e2);
 
         // A default-initialized pointer-typed operand (e.g. druntime's
         // dip1008 Throwable chain-link arithmetic on its own default-null
@@ -3397,8 +3415,8 @@ unsupportedExpression:
     private ExpressionResult runMinExpression(imported!"dmd.expression".MinExp sub) {
         import quickbite.frontend.dmd.types: isPointerType;
 
-        const left = runExpression(sub.e1);
-        const right = runExpression(sub.e2);
+        const left = runExpressionValue(sub.e1);
+        const right = runExpressionValue(sub.e2);
 
         // See `runAddExpression`: a default-null pointer operand reads as
         // `Null`, not a zero-valued `Pointer`.
@@ -3431,15 +3449,15 @@ unsupportedExpression:
     }
 
     private ExpressionResult runDivExpression(DivExp div) {
-        const left = runExpression(div.e1);
-        const right = runExpression(div.e2);
+        const left = runExpressionValue(div.e1);
+        const right = runExpressionValue(div.e2);
         rejectIntMinMinusOneOverflow(left, right, "/");
         return left / right;
     }
 
     private ExpressionResult runModExpression(ModExp mod) {
-        const left = runExpression(mod.e1);
-        const right = runExpression(mod.e2);
+        const left = runExpressionValue(mod.e1);
+        const right = runExpressionValue(mod.e2);
         rejectIntMinMinusOneOverflow(left, right, "%");
         return left % right;
     }
@@ -3559,7 +3577,7 @@ unsupportedExpression:
         // evaluating the dereference first would incorrectly require a
         // separate addressable value for the pointee.
         if (auto pointer = e1.isPtrExp)
-            return runExpression(pointer.e1);
+            return runExpressionValue(pointer.e1);
 
         // `&field` (also `field.ptr`) of a struct's static-array member: a
         // pointer to the field's first element, exactly what arrayPointer
@@ -3578,7 +3596,7 @@ unsupportedExpression:
             // temporary, exactly as a by-value call result bound by
             // reference does.
             if (isSymbolicClassInfoProjection(dot))
-                return addressOfTemporaryValue(dot, runExpression(dot));
+                return addressOfTemporaryValue(dot, runExpressionValue(dot));
 
             if (isStaticArrayType(dot.type))
                 return arrayPointer(dot, 0, op);
@@ -3587,7 +3605,7 @@ unsupportedExpression:
             // In particular, `&a[i++].inner.x` first composes the address of
             // `a[i++].inner`; that evaluates `i++` exactly once, then the
             // outer field offset composes from the resulting native pointer.
-            // Re-running `runExpression(dot)` for a detached aggregate read would
+            // Re-running `runExpressionValue(dot)` for a detached aggregate read would
             // walk the index a second time.
             if (auto innerDot = dot.e1.isDotVarExp)
                 if (auto field = dot.var.isVarDeclaration) {
@@ -3617,7 +3635,7 @@ unsupportedExpression:
                 if (auto field = dot.var.isVarDeclaration) {
                     // `$` inside `index.e2` (a `DollarExp`) is bound to
                     // `index.lengthVar`; the ordinary eager path binds it
-                    // from `runExpression(index.e1)`'s length before
+                    // from `runExpressionValue(index.e1)`'s length before
                     // evaluating the index, but this branch exists
                     // specifically to avoid evaluating `index.e1` a second,
                     // independent way -- `arrayPointer` below already
@@ -3635,9 +3653,9 @@ unsupportedExpression:
                         if (auto receiverVar = index.e1.isVarExp)
                             setLocal(
                                 index.lengthVar,
-                                ExpressionResult(AggregateValue.length(runExpression(receiverVar))),
+                                ExpressionResult(AggregateValue.length(runExpressionValue(receiverVar))),
                             );
-                    const elementIndex = runExpression(index.e2).asLong;
+                    const elementIndex = runExpressionValue(index.e2).asLong;
                     const elementPointer = arrayPointer(index.e1, elementIndex, op);
                     if (elementPointer.isPointer)
                         return elementPointer.pointerOffsetBy(
@@ -3661,7 +3679,7 @@ unsupportedExpression:
             // type; native objects such as a caught Throwable need not have
             // been allocated by the Interpreter or entered in its dynamic-type
             // registry for their inherited field layout to be addressable.
-            auto nativeClassReceiver = runExpression(dot.e1);
+            auto nativeClassReceiver = runExpressionValue(dot.e1);
             if (
                 nativeClassReceiver.isNativeAggregate &&
                 dot.e1.type.toBasetype.isTypeClass !is null
@@ -3718,7 +3736,7 @@ unsupportedExpression:
                     dot,
                     (variable) @safe => addressableBindingBase(variable),
                     (expression) @system => cast(size_t)
-                        runExpression(expression).asLong,
+                        runExpressionValue(expression).asLong,
                 ).address);
             } catch (Exception exception) {
                 throw new Exception(text(
@@ -3754,7 +3772,7 @@ unsupportedExpression:
         // DMD lowers a ref-returning ternary to `return *(cond ? &a : &b())`;
         // the address of that dereference is the pointer expression itself.
         if (auto pointer = expression.isPtrExp)
-            return runExpression(pointer.e1);
+            return runExpressionValue(pointer.e1);
 
         return addressOfExpression(expression, EXP.address);
     }
@@ -3803,7 +3821,7 @@ unsupportedExpression:
                         (*call.f.parameters)[index],
                     )
                     ? runRefArgumentExpression(argument, evaluated, native)
-                    : runExpression(argument);
+                    : runExpressionValue(argument);
                 if (
                     index < call.f.parameters.length &&
                     (*call.f.parameters)[index].type.toBasetype.isTypeClass !is null
@@ -3891,7 +3909,7 @@ unsupportedExpression:
             ? readStoredValue(
                 Place(receiverAddress.pointerAddress, receiverExpression.type),
             )
-            : runExpression(receiverExpression);
+            : runExpressionValue(receiverExpression);
         queueConstructedReceiverDestructor(receiverExpression);
     }
 
@@ -3948,7 +3966,7 @@ unsupportedExpression:
                         (*function_.parameters)[index],
                     )
                     ? runRefArgumentExpression(argument, evaluated)
-                    : runExpression(argument);
+                    : runExpressionValue(argument);
                 if (
                     index < function_.parameters.length &&
                     (*function_.parameters)[index].type.toBasetype.isTypeClass !is null
@@ -4198,7 +4216,7 @@ unsupportedExpression:
     // placeOfLvalue` would walk it, through `DotVarExp`/`PtrExp` receivers --
     // runs through an `IndexExp` anywhere. Pure syntax, no evaluation:
     // `arrayPointer`'s `IndexExp` arm uses this to detect, before evaluating
-    // anything, whether its own unconditional `runExpression(index.e1)`
+    // anything, whether its own unconditional `runExpressionValue(index.e1)`
     // would duplicate a side effect that `placeOfLvalue` is about to
     // evaluate again while resolving the same chain's address (`i++` inside
     // `arr[i++].mid.a[j]`).
@@ -4241,7 +4259,7 @@ unsupportedExpression:
                 index.lengthVar,
                 ExpressionResult(AggregateValue.length(readValue(receiverPlace))),
             );
-        const outerOffset = runExpression(index.e2).asLong;
+        const outerOffset = runExpressionValue(index.e2).asLong;
         const pointer = ExpressionResult.pointerValue(
             receiverPlace.index(cast(size_t) outerOffset).address,
         );
@@ -4258,7 +4276,7 @@ unsupportedExpression:
     // for a real, already-committed out-of-range guest index -- translate it
     // to the guest's own range error rather than letting the host exception
     // type escape. Deliberately narrower than a bare `Exception` catch:
-    // `computeIndex` typically runs a full `runExpression` of an index
+    // `computeIndex` typically runs a full `runExpressionValue` of an index
     // expression along the way, which can raise an unrelated host failure
     // that must not be mislabeled as a guest range error.
     private ExpressionResult mapIndexOutOfBounds(
@@ -4291,7 +4309,7 @@ unsupportedExpression:
             }
             if (auto question = array.isCondExp)
                 return arrayPointer(
-                    isTruthy(runExpression(question.econd)) ? question.e1 : question.e2,
+                    isTruthy(runExpressionValue(question.econd)) ? question.e1 : question.e2,
                     offset,
                     op,
                     selfAddress,
@@ -4302,7 +4320,7 @@ unsupportedExpression:
             // direct address-taking operand.  Evaluate that call once and
             // compose its element address from the returned typed slice.
             if (auto call = array.isCallExp) {
-                const source = runExpression(call);
+                const source = runExpressionValue(call);
                 const arrayValue = source;
                 if (AggregateValue.isArray(arrayValue))
                     return ExpressionResult.pointerValue(
@@ -4335,7 +4353,7 @@ unsupportedExpression:
                                 (variable) @safe =>
                                     addressableBindingBase(variable),
                                 (expression) @system =>
-                                    cast(size_t) runExpression(expression).asLong,
+                                    cast(size_t) runExpressionValue(expression).asLong,
                                 // @trusted: `setLocal` is @system because it is
                                 // part of the interpreter's general storage
                                 // machinery. Here it only binds the `$` length
@@ -4369,7 +4387,7 @@ unsupportedExpression:
                             const rowLength = staticArrayLength(rowArray);
                             if (index.lengthVar !is null)
                                 setLocal(index.lengthVar, ExpressionResult(rowLength));
-                            const elementOffset = runExpression(index.e2).asLong;
+                            const elementOffset = runExpressionValue(index.e2).asLong;
                             if (cast(size_t) elementOffset >= rowLength)
                                 throwRangeError(
                                     "quickbite.backends.interpreter.place.Place.index: "
@@ -4407,7 +4425,7 @@ unsupportedExpression:
                 // chain runs through an `IndexExp` somewhere
                 // (`arr[i++].mid.a[j]`, `s.a[i++].mid.b[j]`, ...) must be
                 // resolved through `lvalue_place.placeOfLvalue` BEFORE this
-                // arm's own unconditional `runExpression(index.e1)` below
+                // arm's own unconditional `runExpressionValue(index.e1)` below
                 // ever runs: that eager evaluation exists to read
                 // `index.e1`'s VALUE (for `$` support and the
                 // native-aggregate fallback further down), but it fully
@@ -4449,7 +4467,7 @@ unsupportedExpression:
                                     nestedField,
                                     (variable) @safe => addressableBindingBase(variable),
                                     (expression) @system =>
-                                        cast(size_t) runExpression(expression).asLong,
+                                        cast(size_t) runExpressionValue(expression).asLong,
                                     // `$` inside a CHAIN `IndexExp`'s own index
                                     // (e.g. `arr[$ - 1]` inside
                                     // `arr[$ - 1].mid.a[j]`) is bound to THAT
@@ -4513,7 +4531,7 @@ unsupportedExpression:
                 // the receiver rooted while its typed element address is
                 // composed, so neither expression is evaluated a second
                 // time.
-                const source = runExpression(index.e1);
+                const source = runExpressionValue(index.e1);
                 // A non-ref dynamic-array call returns the interpreter's
                 // one-element result carrier.  Its target is still the one
                 // evaluated slice value, not an addressable pointer into the
@@ -4524,7 +4542,7 @@ unsupportedExpression:
                     setLocal(index.lengthVar, ExpressionResult(sourceLength));
                 }
 
-                const outerOffset = runExpression(index.e2).asLong;
+                const outerOffset = runExpressionValue(index.e2).asLong;
                 // An indexed binding is an lvalue even when its evaluated
                 // aggregate value retains an initializer handle. Compose
                 // from the binding's current place so a `ref` static-array
@@ -4610,7 +4628,7 @@ unsupportedExpression:
                                     field,
                                     (variable) @safe => addressableBindingBase(variable),
                                     (expression) @system =>
-                                        cast(size_t) runExpression(expression).asLong,
+                                        cast(size_t) runExpressionValue(expression).asLong,
                                 );
                                 const pointer = ExpressionResult.pointerValue(
                                     fieldPlace.index(cast(size_t) outerOffset).address,
@@ -4643,7 +4661,7 @@ unsupportedExpression:
                 // (`m[i][j]`, `m.e1` itself an `IndexExp`) must compose its
                 // receiver's address the same way the `VarExp` case above
                 // does, rather than falling through to `arrayValue` below:
-                // `arrayValue` is `runExpression(index.e1)`'s result, and
+                // `arrayValue` is `runExpressionValue(index.e1)`'s result, and
                 // reading a static-array-typed rvalue copies its bytes
                 // (`place_value.readValue`'s array arm returns
                 // `AggregateValue.copyFromAddress`). Composing the address
@@ -4746,7 +4764,7 @@ unsupportedExpression:
                             dot,
                             (variable) @safe => addressableBindingBase(variable),
                             (expression) @system =>
-                                cast(size_t) runExpression(expression).asLong,
+                                cast(size_t) runExpressionValue(expression).asLong,
                         );
                         return ExpressionResult.pointerValue(
                             fieldPlace.index(cast(size_t) offset).address,
@@ -4765,7 +4783,7 @@ unsupportedExpression:
                     throw exception;
                 }
 
-                const value = runExpression(array);
+                const value = runExpressionValue(array);
                 return ExpressionResult.pointerValue(
                     AggregateValue.elementAddress(value, cast(size_t) offset),
                 );
@@ -4844,7 +4862,7 @@ unsupportedExpression:
         _activationFrame = FrameBlock.allocate(
             computeExpressionFrameLayout(expression),
         );
-        return runExpression(expression);
+        return runExpressionValue(expression);
     }
 
     private void materializeDatasegInitializer(VarDeclaration variable) {
@@ -5023,7 +5041,7 @@ unsupportedExpression:
             if (delegate_.e1 is null)
                 throw new Exception("Unsupported eval expression: delegate_");
 
-            runtime.receiver = runExpression(delegate_.e1);
+            runtime.receiver = runExpressionValue(delegate_.e1);
             runtime.hasReceiver = true;
         }
 
@@ -5131,7 +5149,7 @@ unsupportedExpression:
     private ExpressionResult runPointerExpression(
         imported!"dmd.expression".PtrExp pointer,
     ) {
-        return dereferencePointerValue(pointer, runExpression(pointer.e1));
+        return dereferencePointerValue(pointer, runExpressionValue(pointer.e1));
     }
 
     // The dereference half of `runPointerExpression`, split out so a caller
@@ -5195,9 +5213,9 @@ unsupportedExpression:
     private ExpressionResult runConditionalExpression(
         imported!"dmd.expression".CondExp conditional,
     ) {
-        return isTruthy(runExpression(conditional.econd)) ?
-            runExpression(conditional.e1) :
-            runExpression(conditional.e2);
+        return isTruthy(runExpressionValue(conditional.econd)) ?
+            runExpressionValue(conditional.e1) :
+            runExpressionValue(conditional.e2);
     }
 
     private ExpressionResult runIdentityExpression(
@@ -5205,8 +5223,8 @@ unsupportedExpression:
     ) {
         import dmd.tokens: EXP;
 
-        const left = runExpression(identity.e1);
-        const right = runExpression(identity.e2);
+        const left = runExpressionValue(identity.e1);
+        const right = runExpressionValue(identity.e2);
         // dmd lowers a POD struct's `==` (no user-defined `opEquals`) into an
         // `is` expression (`IdentityExp`), since memberwise equality and
         // bitwise identity coincide for such structs. Route that case through
@@ -5214,7 +5232,7 @@ unsupportedExpression:
         // comparison a direct `==` uses) instead of a raw `ExpressionResult` compare: a
         // struct field written by anything other than an enum-typed literal
         // `IntegerExp` (default-init, a decoded value, ...) keeps a plain
-        // scalar `ExpressionResult` rather than the `EnumValue` variant `runExpression`
+        // scalar `ExpressionResult` rather than the `EnumValue` variant `runExpressionValue`
         // tags a literal `Enum.Member` reference with, so a raw compare of
         // two otherwise-identical structs falsely disagrees whenever one
         // side's enum field took a different path to the same value. Other
@@ -5340,14 +5358,14 @@ unsupportedExpression:
                     case sqrt:
                         return unaryBuiltinCall(
                             builtin,
-                            runExpression((*call.arguments)[0]),
+                            runExpressionValue((*call.arguments)[0]),
                         );
 
                     case pow:
                         return binaryBuiltinCall(
                             builtin,
-                            runExpression((*call.arguments)[0]),
-                            runExpression((*call.arguments)[1]),
+                            runExpressionValue((*call.arguments)[0]),
+                            runExpressionValue((*call.arguments)[1]),
                         );
                 }
             }
@@ -5437,7 +5455,7 @@ unsupportedExpression:
                         isStdConvText(call.f),
                     );
                 else
-                    arguments[index] = runExpression(argument);
+                    arguments[index] = runExpressionValue(argument);
                 if (
                     parameter !is null &&
                     parameter.type.toBasetype.isTypeClass !is null
@@ -5498,7 +5516,7 @@ unsupportedExpression:
                 hasReceiverPointerAddress = true;
                 receiver = borrowedAggregateValue(receiverPlace);
             } else if (auto pointerReceiver = dot.e1.isPtrExp) {
-                receiverPointerAddress = runExpression(pointerReceiver.e1);
+                receiverPointerAddress = runExpressionValue(pointerReceiver.e1);
                 hasReceiverPointerAddress = true;
                 receiver = dereferencePointerValue(
                     pointerReceiver,
@@ -5559,9 +5577,9 @@ unsupportedExpression:
                     ? readValue(
                         Place(receiverPointerAddress.pointerAddress, dot.e1.type),
                     )
-                    : runExpression(dot.e1);
+                    : runExpressionValue(dot.e1);
             } else
-                receiver = runExpression(dot.e1);
+                receiver = runExpressionValue(dot.e1);
 
             // When `call` is itself the constructor about to run against
             // this receiver, hold its premature arming until that call
@@ -5834,7 +5852,7 @@ unsupportedExpression:
         if (auto variable = lazyCallVariable(call))
             return runLazyArgument(variable);
 
-        const callee = runExpression(call.e1);
+        const callee = runExpressionValue(call.e1);
         if (callee.isNativeDelegate)
             return runNativeDelegateCall(
                 callee,
@@ -5876,7 +5894,7 @@ unsupportedExpression:
     // __t).__ctor(args)`, where `<placeholder>` is `__t`'s type's own
     // default value -- never the constructor's real arguments. Evaluating
     // that declaration (`executeDeclaration`, reached through
-    // `addressOfExpression`'s `CommaExp` handling or `runExpression`) arms
+    // `addressOfExpression`'s `CommaExp` handling or `runExpressionValue`) arms
     // `__t`'s destructor as soon as the placeholder assignment succeeds,
     // which is correct once `__t` is a complete value but wrong here: when
     // `call` is that same `__ctor`, `__t` is still just reserved storage,
@@ -6045,7 +6063,7 @@ unsupportedExpression:
         }
 
         if (auto pointer = argument.isPtrExp) {
-            const address = runExpression(pointer.e1);
+            const address = runExpressionValue(pointer.e1);
             if (address.isPointer) {
                 evaluated.address = address.pointerAddress;
                 if (!materializeValue)
@@ -6074,10 +6092,10 @@ unsupportedExpression:
             import quickbite.backends.interpreter.layout: typeByteSize;
 
             if (isPointerType(index.e1.type)) {
-                const pointer_ = runExpression(index.e1);
+                const pointer_ = runExpressionValue(index.e1);
                 if (pointer_.isPointer) {
                     const elementIndex = cast(size_t)
-                        cast(ulong) runExpression(index.e2).asLong;
+                        cast(ulong) runExpressionValue(index.e2).asLong;
                     auto elementType = index.e1.type.toBasetype.nextOf.toBasetype;
                     evaluated.address = nativeElementAddress(
                         pointer_.pointerAddress,
@@ -6096,7 +6114,7 @@ unsupportedExpression:
         }
 
         if (auto conditional = argument.isCondExp) {
-            auto selected = isTruthy(runExpression(conditional.econd))
+            auto selected = isTruthy(runExpressionValue(conditional.econd))
                 ? conditional.e1
                 : conditional.e2;
             const value = runRefArgumentExpression(
@@ -6127,7 +6145,7 @@ unsupportedExpression:
         scope(exit)
             _evaluatedReferenceArgumentIndices = previous;
 
-        return runExpression(argument);
+        return runExpressionValue(argument);
     }
 
     // Run an interpreted delegate that native code called back into through the
@@ -6245,13 +6263,13 @@ unsupportedExpression:
     private ExpressionResult runDelegatePointerExpression(
         imported!"dmd.expression".DelegatePtrExp expression,
     ) {
-        return delegateProperty(runExpression(expression.e1), "ptr");
+        return delegateProperty(runExpressionValue(expression.e1), "ptr");
     }
 
     private ExpressionResult runDelegateFunctionPointerExpression(
         imported!"dmd.expression".DelegateFuncptrExp expression,
     ) {
-        return delegateProperty(runExpression(expression.e1), "funcptr");
+        return delegateProperty(runExpressionValue(expression.e1), "funcptr");
     }
 
     private bool isStringForeachApplyCall(FuncDeclaration function_) const {
@@ -6290,7 +6308,7 @@ unsupportedExpression:
 
         foreach (value; stringForeachApplyElements(
             function_.ident.toString,
-            runExpression((*call.arguments)[0]),
+            runExpressionValue((*call.arguments)[0]),
         )) {
             const result = runFunction(body, [value], [null]);
             if (result != ExpressionResult.void_ && result.asLong != 0)
@@ -6536,8 +6554,8 @@ unsupportedExpression:
         if (target is null)
             throw new Exception("Unsupported eval call.");
 
-        const left = runExpression((*call.arguments)[1]);
-        const right = runExpression((*call.arguments)[2]);
+        const left = runExpressionValue((*call.arguments)[1]);
+        const right = runExpressionValue((*call.arguments)[2]);
         if (AggregateValue.length(left) != AggregateValue.length(right))
             throw new Exception("Unsupported eval call.");
 
@@ -6565,10 +6583,10 @@ unsupportedExpression:
 
         const lower = slice.lwr is null
             ? 0
-            : cast(size_t) runExpression(slice.lwr).asLong;
+            : cast(size_t) runExpressionValue(slice.lwr).asLong;
         const upper = slice.upr is null
             ? AggregateValue.length(current)
-            : cast(size_t) runExpression(slice.upr).asLong;
+            : cast(size_t) runExpressionValue(slice.upr).asLong;
         if (upper - lower != elements.length)
             throw new Exception("Unsupported eval call.");
 
@@ -6596,12 +6614,12 @@ unsupportedExpression:
             throw new Exception("Unsupported eval call.");
 
         auto destinationExpression = (*call.arguments)[0];
-        const destination = runExpression(destinationExpression);
+        const destination = runExpressionValue(destinationExpression);
 
         ExpressionResult operand() {
             if (call.arguments.length < 2)
                 throw new Exception("Unsupported eval call.");
-            return runExpression((*call.arguments)[1]);
+            return runExpressionValue((*call.arguments)[1]);
         }
 
         with (AtomicHook) final switch (hook) {
@@ -6664,7 +6682,7 @@ unsupportedExpression:
         import quickbite.backends.interpreter.native_block: NativeBlock;
 
         requireArgumentCount(call, 1);
-        const source = runExpression((*call.arguments)[0]);
+        const source = runExpressionValue((*call.arguments)[0]);
         if (source == ExpressionResult.null_)
             return source;
 
@@ -7493,7 +7511,7 @@ unsupportedExpression:
         if (auto function_ = functionPointerExpressionFunction(expression))
             return runFunction(function_, [], [], true);
 
-        return runExpression(expression);
+        return runExpressionValue(expression);
     }
 
     private VarDeclaration lazyCallVariable(imported!"dmd.expression".CallExp call) {
@@ -7526,8 +7544,8 @@ unsupportedExpression:
     private ExpressionResult runEqualExpression(imported!"dmd.expression".EqualExp equal) {
         import dmd.tokens: EXP;
 
-        const left = runExpression(equal.e1);
-        const right = runExpression(equal.e2);
+        const left = runExpressionValue(equal.e1);
+        const right = runExpressionValue(equal.e2);
         const same = equalValues(left, right);
         if (equal.op == EXP.notEqual)
             return ExpressionResult(!same);
@@ -7692,7 +7710,7 @@ unsupportedExpression:
 
     // A struct field written by anything other than an enum-typed literal
     // `IntegerExp` (default-init, arithmetic, a cast/pointer write-back, ...)
-    // keeps its plain scalar `ExpressionResult` kind instead of `runExpression`'s
+    // keeps its plain scalar `ExpressionResult` kind instead of `runExpressionValue`'s
     // `ExpressionResult.enumValue` tagging, so a raw `ExpressionResult == ExpressionResult` compare (the
     // `left == right` fallback above) never considers it equal to a
     // same-valued `EnumValue`-tagged field, even though real D's memberwise
@@ -7763,7 +7781,7 @@ unsupportedExpression:
         ) {
             auto destination = directWriteProjectionPlace(assign.e1);
             const left = readStoredValue(destination);
-            const right = runExpression(assign.e2);
+            const right = runExpressionValue(assign.e2);
             const value = compoundAssignedValue(assign, left, right);
             writeStoredValue(
                 destination,
@@ -7773,11 +7791,11 @@ unsupportedExpression:
             return readStoredValue(destination);
         }
 
-        const left = runExpression(assign.e1);
-        const right = runExpression(assign.e2);
+        const left = runExpressionValue(assign.e1);
+        const right = runExpressionValue(assign.e2);
         const value = compoundAssignedValue(assign, left, right);
         writeLocation(assign.e1, value);
-        return runExpression(assign.e1);
+        return runExpressionValue(assign.e1);
     }
 
     private ExpressionResult compoundAssignedValue(
@@ -7837,8 +7855,8 @@ unsupportedExpression:
             backendCastTarget = castTarget,
             backendCastValue = castValueResult;
 
-        const base = runExpression(pow.e1);
-        auto exponent = runExpression(pow.e2).asLong;
+        const base = runExpressionValue(pow.e1);
+        auto exponent = runExpressionValue(pow.e2).asLong;
         if (exponent < 0)
             throw new Exception("Unsupported negative integer exponent.");
 
@@ -7863,7 +7881,7 @@ unsupportedExpression:
             backendCastValue = castValueResult;
 
         return backendCastValue(
-            ExpressionResult(~runExpression(complement.e1).asLong),
+            ExpressionResult(~runExpressionValue(complement.e1).asLong),
             backendCastTarget(complement.type),
         );
     }
@@ -7874,8 +7892,8 @@ unsupportedExpression:
     ) {
         return runIntegerBinaryValue(
             expression,
-            runExpression(expression.e1),
-            runExpression(expression.e2),
+            runExpressionValue(expression.e1),
+            runExpressionValue(expression.e2),
             operator,
         );
     }
@@ -8072,7 +8090,7 @@ unsupportedExpression:
                     );
 
 
-        const receiver = runExpression(dot.e1);
+        const receiver = runExpressionValue(dot.e1);
         if (receiver == ExpressionResult.null_)
             throw new Exception(text(
                 "class `",
@@ -8221,7 +8239,7 @@ unsupportedExpression:
         imported!"dmd.expression".DotVarExp classInfo,
     ) {
         if (classInfo.e1.isTypeExp is null) {
-            const receiver = runExpression(classInfo.e1);
+            const receiver = runExpressionValue(classInfo.e1);
             if (dynamicClass(receiver) !is null)
                 return ExpressionResult.typeName(dynamicClassName(receiver));
         }
@@ -8234,7 +8252,7 @@ unsupportedExpression:
         imported!"dmd.mtype".Type resultType,
     ) {
         auto owner = classInfoNameOwnerExpression(ownerExpression);
-        const receiver = runExpression(owner);
+        const receiver = runExpressionValue(owner);
         if (dynamicClass(receiver) !is null)
             return characterArrayValue(resultType, dynamicClassName(receiver));
 
@@ -8260,7 +8278,7 @@ unsupportedExpression:
     private ExpressionResult runDotIdentifierExpression(
         imported!"dmd.expression".DotIdExp dot,
     ) {
-        const receiver = runExpression(dot.e1);
+        const receiver = runExpressionValue(dot.e1);
         const name = dot.ident is null ? "" : dot.ident.toString;
         if (name == "re")
             return receiver.complexRealPart;
@@ -8304,7 +8322,7 @@ unsupportedExpression:
             return typeidValue(typeid_, typeInfoName(type));
         }
 
-        auto value = runExpression(expression);
+        auto value = runExpressionValue(expression);
         if (isClassExpression(expression))
             value = rootedNativeClassValue(expression, value);
         if (value == ExpressionResult.null_ || (isClassExpression(expression) &&
@@ -8343,7 +8361,7 @@ unsupportedExpression:
         if (staticArray is null)
             throw new Exception("Unsupported interpreter vector expression.");
 
-        const value = runExpression(vector.e1);
+        const value = runExpressionValue(vector.e1);
         const length = staticArrayLength(staticArray);
 
         ExpressionResult[] elements;
@@ -8365,7 +8383,7 @@ unsupportedExpression:
         import quickbite.backends.interpreter.aggregate_value: AggregateValue;
         import quickbite.backends.interpreter.native_aggregate: NativeAggregate;
 
-        const vector = runExpression(vectorArray.e1);
+        const vector = runExpressionValue(vectorArray.e1);
         auto native = AggregateValue.native(vector);
         return ExpressionResult.nativeAggregateValue(NativeAggregate(
             vectorArray.type,
@@ -8396,7 +8414,7 @@ unsupportedExpression:
         // the literal through naively -- but a synthesized out-parameter
         // initializer is a bare top-level assignment, not wrapped in a
         // `DeclarationExp`, so it never reached that check and instead fell
-        // through to `runExpression(assign.e2)` below, which evaluated the
+        // through to `runExpressionValue(assign.e2)` below, which evaluated the
         // `IntegerExp` as a scalar `ExpressionResult(0)` and tried to clobber the
         // parameter's native struct value with a bare int.
         //
@@ -8429,7 +8447,7 @@ unsupportedExpression:
         // `FuncExp`; construct its callable before writing the destination.
         auto literal = assign.e2.isFuncExp;
         auto value = literal is null
-            ? runExpression(assign.e2)
+            ? runExpressionValue(assign.e2)
             : runFunctionLiteralDeclaration(literal);
         if (auto target = assign.e1.isVarExp)
             if (auto variable = target.var.isVarDeclaration)
@@ -8456,7 +8474,7 @@ unsupportedExpression:
         // mutable AST node even though this helper does not modify it.
         auto literal = rhs.isFuncExp;
         const value = literal is null
-            ? runExpression(rhs)
+            ? runExpressionValue(rhs)
             : runFunctionLiteralDeclaration(literal);
         writeStoredValue(
             destination,
@@ -8521,7 +8539,7 @@ unsupportedExpression:
                 return;
             }
 
-            const receiver = runExpression(dot.e1);
+            const receiver = runExpressionValue(dot.e1);
             if (receiver.isNativeAggregate) {
                 import dmd.astenums: TY;
                 import quickbite.backends.interpreter.aggregate_value: AggregateValue;
@@ -8666,7 +8684,7 @@ unsupportedExpression:
 
         // `*ptr = value`: update the pointer variable so its target holds value.
         if (auto ptr = target.isPtrExp) {
-            const pointer = runExpression(ptr.e1);
+            const pointer = runExpressionValue(ptr.e1);
             // A dereferenced native pointer (e.g. a malloc'd struct like
             // std.stdio.File's Impl): write straight into native memory.
             if (pointer.isPointer) {
@@ -8730,7 +8748,7 @@ unsupportedExpression:
                         (*function_.parameters)[index],
                     )
                     ? runRefArgumentExpression(argument, evaluated, false)
-                    : runExpression(argument);
+                    : runExpressionValue(argument);
                 if (
                     index < function_.parameters.length &&
                     (*function_.parameters)[index].type.toBasetype.isTypeClass !is null
@@ -8853,7 +8871,7 @@ unsupportedExpression:
                         (*call.f.parameters)[index],
                     )
                     ? runRefArgumentExpression(argument, evaluated, native)
-                    : runExpression(argument);
+                    : runExpressionValue(argument);
                 argumentExpressions[index] = argument;
                 evaluatedArguments[index] = evaluated;
             }
@@ -8922,7 +8940,7 @@ unsupportedExpression:
         imported!"dmd.expression".ArrayLengthExp target,
         in ExpressionResult value,
     ) {
-        const current = runExpression(target.e1);
+        const current = runExpressionValue(target.e1);
         const newLength = cast(size_t) value.asLong;
         writeLocation(
             target.e1,
@@ -8966,7 +8984,7 @@ unsupportedExpression:
         import dmd.location: Loc;
         import dmd.typesem: defaultInitLiteral;
 
-        return runExpression(type.defaultInitLiteral(Loc.initial));
+        return runExpressionValue(type.defaultInitLiteral(Loc.initial));
     }
 
     private ExpressionResult storageValue(
@@ -9073,7 +9091,7 @@ unsupportedExpression:
     ) {
         import quickbite.frontend.dmd.types: isPointerType;
 
-        const arrayIndex = cast(size_t) runExpression(index.e2).asLong;
+        const arrayIndex = cast(size_t) runExpressionValue(index.e2).asLong;
 
         // DMD's own `modifiableLvalue` semantic reverts an associative-array
         // index used through a further field/method/element access (rather
@@ -9102,7 +9120,7 @@ unsupportedExpression:
         }
 
         if (isPointerType(index.e1.type)) {
-            const pointer = runExpression(index.e1);
+            const pointer = runExpressionValue(index.e1);
             if (pointer.isPointer) {
                 storeNativePointerElement(index.e1.type, pointer, arrayIndex, value);
                 return;
@@ -9117,7 +9135,7 @@ unsupportedExpression:
         // into the pointee's bytes at that address rather than through a
         // binding.
         if (auto derefBase = index.e1.isPtrExp) {
-            const pointer = runExpression(derefBase.e1);
+            const pointer = runExpressionValue(derefBase.e1);
             if (pointer.isPointer) {
                 import quickbite.backends.interpreter.place: Place;
 
@@ -9143,9 +9161,9 @@ unsupportedExpression:
                 throw new Exception("Unsupported interpreter assignment target.");
 
             const fieldIndex = structFieldIndex(dot);
-            const receiver = runExpression(dot.e1);
+            const receiver = runExpressionValue(dot.e1);
             const fieldValue = AggregateValue.fieldAt(receiver, fieldIndex);
-            const outerIndex = cast(size_t) runExpression(outer.e2).asLong;
+            const outerIndex = cast(size_t) runExpressionValue(outer.e2).asLong;
             checkStaticArrayIndexInBounds(fieldValue, outerIndex);
             const outerElement = AggregateValue.elementAt(fieldValue, outerIndex);
             checkStaticArrayIndexInBounds(outerElement, arrayIndex);
@@ -9160,7 +9178,7 @@ unsupportedExpression:
 
         if (auto dot = index.e1.isDotVarExp) {
             if (receiverClassType(dot.e1) !is null) {
-                const receiver = runExpression(dot.e1);
+                const receiver = runExpressionValue(dot.e1);
                 // A class local exposes its object-body pointer. Resolve the
                 // field's `Place` directly through that pointer and write
                 // the updated array back through it.
@@ -9190,7 +9208,7 @@ unsupportedExpression:
             }
 
             const fieldIndex = structFieldIndex(dot);
-            const receiver = runExpression(dot.e1);
+            const receiver = runExpressionValue(dot.e1);
             const updatedArray = AggregateValue.withArrayElement(
                 AggregateValue.fieldAt(receiver, fieldIndex), arrayIndex, value);
             writeLocation(dot.e1, AggregateValue.withStructField(receiver, fieldIndex, updatedArray));
@@ -9398,8 +9416,8 @@ unsupportedExpression:
             const address = refReturningCallAddress(call, EXP.address);
             if (!address.isPointer)
                 throw new Exception("Ref-returning call has no native address.");
-            const arrayIndex = cast(size_t) runExpression(index.e2).asLong;
-            const value = runExpression(rhs);
+            const arrayIndex = cast(size_t) runExpressionValue(index.e2).asLong;
+            const value = runExpressionValue(rhs);
             writeStoredValue(
                 Place(address.pointerAddress, index.e1.type).index(arrayIndex),
                 storageValue(index.type, value),
@@ -9408,12 +9426,12 @@ unsupportedExpression:
         }
 
         if (isPointerType(index.e1.type)) {
-            const pointer = runExpression(index.e1);
-            const arrayIndex = cast(size_t) runExpression(index.e2).asLong;
+            const pointer = runExpressionValue(index.e1);
+            const arrayIndex = cast(size_t) runExpressionValue(index.e2).asLong;
             if (pointer.isPointer) {
                 auto literal = rhs.isFuncExp;
                 const value = literal is null
-                    ? runExpression(rhs)
+                    ? runExpressionValue(rhs)
                     : runFunctionLiteralDeclaration(literal);
                 storeNativePointerElement(index.e1.type, pointer, arrayIndex, value);
                 return value;
@@ -9428,12 +9446,12 @@ unsupportedExpression:
         // variable/field lvalue; `&(*p)` recovers `p`'s own address
         // (`addressOfExpression`'s identical `PtrExp` arm).
         if (auto derefBase = index.e1.isPtrExp) {
-            const pointer = runExpression(derefBase.e1);
+            const pointer = runExpressionValue(derefBase.e1);
             if (pointer.isPointer) {
                 import quickbite.backends.interpreter.place: Place;
 
-                const arrayIndex = cast(size_t) runExpression(index.e2).asLong;
-                const value = runExpression(rhs);
+                const arrayIndex = cast(size_t) runExpressionValue(index.e2).asLong;
+                const value = runExpressionValue(rhs);
                 writeStoredValue(
                     Place(pointer.pointerAddress, index.e1.type).index(arrayIndex),
                     value,
@@ -9457,7 +9475,7 @@ unsupportedExpression:
             // unsupported. Checked via the STATIC receiver type, matching
             // `writeLocation`'s own class-field dispatch.
             if (receiverClassType(dot.e1) !is null) {
-                const receiver = runExpression(dot.e1);
+                const receiver = runExpressionValue(dot.e1);
                 const nativeClassReceiver = receiver.isPointer
                     ? receiver
                     : receiver.isNativeAggregate
@@ -9477,8 +9495,8 @@ unsupportedExpression:
                     const source = readStoredValue(fieldPlace);
                     if (index.lengthVar !is null)
                         setLocal(index.lengthVar, ExpressionResult(AggregateValue.length(source)));
-                    const arrayIndex = cast(size_t) runExpression(index.e2).asLong;
-                    const value = runExpression(rhs);
+                    const arrayIndex = cast(size_t) runExpressionValue(index.e2).asLong;
+                    const value = runExpressionValue(rhs);
                     writeStoredValue(fieldPlace.index(arrayIndex), value);
                     return value;
                 }
@@ -9493,12 +9511,12 @@ unsupportedExpression:
             // holding a stale (or default zero) length, so `h.arr[$ - 1] =
             // v` right after growing `h.arr` underflowed to size_t.max.
             const fieldIndex = structFieldIndex(dot);
-            const receiver = runExpression(dot.e1);
+            const receiver = runExpressionValue(dot.e1);
             const source = AggregateValue.fieldAt(receiver, fieldIndex);
             if (index.lengthVar !is null)
                 setLocal(index.lengthVar, ExpressionResult(AggregateValue.length(source)));
-            const arrayIndex = cast(size_t) runExpression(index.e2).asLong;
-            const value = runExpression(rhs);
+            const arrayIndex = cast(size_t) runExpressionValue(index.e2).asLong;
+            const value = runExpressionValue(rhs);
             const updatedArray = AggregateValue.withArrayElement(source, arrayIndex, value);
             writeLocation(dot.e1, AggregateValue.withStructField(receiver, fieldIndex, updatedArray));
             return value;
@@ -9515,7 +9533,7 @@ unsupportedExpression:
 
         const current = readBindingValue(variable);
 
-        const arrayIndex = cast(size_t) runExpression(index.e2).asLong;
+        const arrayIndex = cast(size_t) runExpressionValue(index.e2).asLong;
         if (isStaticArrayType(index.e1.type))
             checkStaticArrayIndexInBounds(current, arrayIndex);
 
@@ -9523,7 +9541,7 @@ unsupportedExpression:
         // construct its callable before writing the destination.
         auto literal = rhs.isFuncExp;
         const value = literal is null
-            ? runExpression(rhs)
+            ? runExpressionValue(rhs)
             : runFunctionLiteralDeclaration(literal);
 
         // A live delegate element has no native ABI function address --
@@ -9672,12 +9690,12 @@ unsupportedExpression:
         if (isPointerType(outer.e1.type)) {
             import quickbite.backends.interpreter.place: Place;
 
-            const pointer = runExpression(outer.e1);
+            const pointer = runExpressionValue(outer.e1);
             if (!pointer.isPointer)
                 throw new Exception("Unsupported interpreter assignment target.");
 
-            const innerIndex = cast(size_t) runExpression(inner.e2).asLong;
-            const value = runExpression(rhs);
+            const innerIndex = cast(size_t) runExpressionValue(inner.e2).asLong;
+            const value = runExpressionValue(rhs);
             writeStoredValue(
                 Place(pointer.pointerAddress, outer.type).index(innerIndex),
                 value,
@@ -9720,7 +9738,7 @@ unsupportedExpression:
                 import quickbite.backends.interpreter.place: Place;
                 import quickbite.backends.interpreter.place_value: readValue, writeValue;
 
-                const receiver = runExpression(dot.e1);
+                const receiver = runExpressionValue(dot.e1);
                 const nativeClassReceiver = receiver.isPointer
                     ? receiver
                     : receiver.isNativeAggregate
@@ -9732,12 +9750,12 @@ unsupportedExpression:
                 auto fieldPlace = Place(nativeClassReceiver.pointerAddress, dot.e1.type)
                     .field(dot.var.isVarDeclaration);
                 const fieldValue = readValue(fieldPlace);
-                const outerIndex = cast(size_t) runExpression(outer.e2).asLong;
+                const outerIndex = cast(size_t) runExpressionValue(outer.e2).asLong;
                 checkStaticArrayIndexInBounds(fieldValue, outerIndex);
                 const outerElement = AggregateValue.elementAt(fieldValue, outerIndex);
-                const innerIndex = cast(size_t) runExpression(inner.e2).asLong;
+                const innerIndex = cast(size_t) runExpressionValue(inner.e2).asLong;
                 checkStaticArrayIndexInBounds(outerElement, innerIndex);
-                const value = runExpression(rhs);
+                const value = runExpressionValue(rhs);
                 const updatedField = AggregateValue.withArrayElement(
                     fieldValue,
                     outerIndex,
@@ -9748,14 +9766,14 @@ unsupportedExpression:
             }
 
             const fieldIndex = structFieldIndex(dot);
-            const receiver = runExpression(dot.e1);
+            const receiver = runExpressionValue(dot.e1);
             const fieldValue = AggregateValue.fieldAt(receiver, fieldIndex);
-            const outerIndex = cast(size_t) runExpression(outer.e2).asLong;
+            const outerIndex = cast(size_t) runExpressionValue(outer.e2).asLong;
             checkStaticArrayIndexInBounds(fieldValue, outerIndex);
             const outerElement = AggregateValue.elementAt(fieldValue, outerIndex);
-            const innerIndex = cast(size_t) runExpression(inner.e2).asLong;
+            const innerIndex = cast(size_t) runExpressionValue(inner.e2).asLong;
             checkStaticArrayIndexInBounds(outerElement, innerIndex);
-            const value = runExpression(rhs);
+            const value = runExpressionValue(rhs);
             const updatedField = AggregateValue.withArrayElement(
                 fieldValue,
                 outerIndex,
@@ -9775,14 +9793,14 @@ unsupportedExpression:
 
         const current = readBindingValue(variable);
 
-        const outerIndex = cast(size_t) runExpression(outer.e2).asLong;
+        const outerIndex = cast(size_t) runExpressionValue(outer.e2).asLong;
         if (isStaticArrayType(outer.e1.type))
             checkStaticArrayIndexInBounds(current, outerIndex);
         const outerElement = AggregateValue.elementAt(current, outerIndex);
-        const innerIndex = cast(size_t) runExpression(inner.e2).asLong;
+        const innerIndex = cast(size_t) runExpressionValue(inner.e2).asLong;
         if (isStaticArrayType(inner.e1.type))
             checkStaticArrayIndexInBounds(outerElement, innerIndex);
-        const value = runExpression(rhs);
+        const value = runExpressionValue(rhs);
         auto destination = bindingPlace(variable)
             .index(outerIndex)
             .index(innerIndex);
@@ -9867,10 +9885,10 @@ unsupportedExpression:
 
         const lower = slice.lwr is null
             ? 0
-            : cast(size_t) runExpression(slice.lwr).asLong;
+            : cast(size_t) runExpressionValue(slice.lwr).asLong;
         const upper = slice.upr is null
             ? AggregateValue.length(current)
-            : cast(size_t) runExpression(slice.upr).asLong;
+            : cast(size_t) runExpressionValue(slice.upr).asLong;
 
         checkSliceAssignmentBounds(lower, upper, AggregateValue.length(current));
 
@@ -9883,7 +9901,7 @@ unsupportedExpression:
         );
 
         const block = isBlockSliceAssignment(slice, rhs);
-        const value = runExpression(rhs);
+        const value = runExpressionValue(rhs);
 
         // A fill assignment (`a[] = scalar;`) evaluates `rhs` to a single
         // element-typed value, not an array to index into -- only the copy
@@ -9957,10 +9975,10 @@ unsupportedExpression:
         const current = runIndexExpression(index);
         const lower = slice.lwr is null
             ? 0
-            : cast(size_t) runExpression(slice.lwr).asLong;
+            : cast(size_t) runExpressionValue(slice.lwr).asLong;
         const upper = slice.upr is null
             ? AggregateValue.length(current)
-            : cast(size_t) runExpression(slice.upr).asLong;
+            : cast(size_t) runExpressionValue(slice.upr).asLong;
 
         if (upper > AggregateValue.length(current))
             throwRangeError(text(
@@ -9969,7 +9987,7 @@ unsupportedExpression:
             ));
 
         const block = isBlockSliceAssignment(slice, rhs);
-        const value = runExpression(rhs);
+        const value = runExpressionValue(rhs);
         foreach (elementIndex; lower .. upper) {
             const element = block
                 ? copyArrayValue(value, index.type.toBasetype.nextOf)
@@ -9992,15 +10010,15 @@ unsupportedExpression:
         import quickbite.backends.interpreter.aggregate_value: AggregateValue;
         import std.conv: text;
 
-        const pointer = runExpression(slice.e1);
+        const pointer = runExpressionValue(slice.e1);
         if (slice.lwr is null || slice.upr is null)
             throw new Exception(text(
                 "Unsupported interpreter assignment target: slice of ",
                 slice.e1.op,
             ));
 
-        const lower = cast(size_t) runExpression(slice.lwr).asLong;
-        const upper = cast(size_t) runExpression(slice.upr).asLong;
+        const lower = cast(size_t) runExpressionValue(slice.lwr).asLong;
+        const upper = cast(size_t) runExpressionValue(slice.upr).asLong;
 
         // Reject an inverted range before `rhs` is evaluated -- matching
         // compiled D, which raises before any side effect in `rhs` runs --
@@ -10017,7 +10035,7 @@ unsupportedExpression:
             ));
 
         const block = isBlockSliceAssignment(slice, rhs);
-        const value = runExpression(rhs);
+        const value = runExpressionValue(rhs);
 
         // An empty range writes nothing, so the pointer's provenance never
         // matters — a zero-length assignment through a null pointer is a no-op
@@ -10107,10 +10125,10 @@ unsupportedExpression:
 
         const sourceLower = source.lwr is null
             ? 0
-            : cast(size_t) runExpression(source.lwr).asLong;
+            : cast(size_t) runExpressionValue(source.lwr).asLong;
         const sourceUpper = source.upr is null
             ? length
-            : cast(size_t) runExpression(source.upr).asLong;
+            : cast(size_t) runExpressionValue(source.upr).asLong;
 
         if (lower < sourceUpper && sourceLower < upper)
             throw new Exception("Range violation");
@@ -10134,15 +10152,15 @@ unsupportedExpression:
 
         const lower = slice.lwr is null
             ? 0
-            : cast(size_t) runExpression(slice.lwr).asLong;
+            : cast(size_t) runExpressionValue(slice.lwr).asLong;
         const upper = slice.upr is null
             ? AggregateValue.length(current)
-            : cast(size_t) runExpression(slice.upr).asLong;
+            : cast(size_t) runExpressionValue(slice.upr).asLong;
 
         checkSliceAssignmentBounds(lower, upper, AggregateValue.length(current));
 
         const block = isBlockSliceAssignment(slice, rhs);
-        const value = runExpression(rhs);
+        const value = runExpressionValue(rhs);
 
         // A fill assignment (`s.field[] = scalar;` or `s.field[a .. b] =
         // scalar;`) evaluates `rhs` to a single element-typed value, not an
@@ -10205,7 +10223,7 @@ unsupportedExpression:
 
         auto field = dot.var.isVarDeclaration;
         if (field is null || !isStaticArrayType(declaredType(field)))
-            return AggregateValue.fieldAt(runExpression(dot.e1), structFieldIndex(dot));
+            return AggregateValue.fieldAt(runExpressionValue(dot.e1), structFieldIndex(dot));
 
         const receiver = addressOfExpression(dot.e1, EXP.address);
         if (!receiver.isPointer)
@@ -10251,19 +10269,19 @@ unsupportedExpression:
         imported!"dmd.expression".SliceExp slice,
         imported!"dmd.expression".Expression rhs,
     ) {
-        const current = runExpression(slice.e1);
+        const current = runExpressionValue(slice.e1);
 
         const lower = slice.lwr is null
             ? 0
-            : cast(size_t) runExpression(slice.lwr).asLong;
+            : cast(size_t) runExpressionValue(slice.lwr).asLong;
         const upper = slice.upr is null
             ? AggregateValue.length(current)
-            : cast(size_t) runExpression(slice.upr).asLong;
+            : cast(size_t) runExpressionValue(slice.upr).asLong;
 
         checkSliceAssignmentBounds(lower, upper, AggregateValue.length(current));
 
         const block = isBlockSliceAssignment(slice, rhs);
-        const value = runExpression(rhs);
+        const value = runExpressionValue(rhs);
 
         // A fill assignment (`(cast(T[]) view)[] = scalar;`) evaluates `rhs`
         // to a single element-typed value, not an array to index into --
@@ -10329,12 +10347,12 @@ unsupportedExpression:
         auto arrayLength = assign.e1.isArrayLengthExp;
         if (arrayLength is null) {
             if (assign.lowering !is null)
-                return runExpression(assign.lowering);
+                return runExpressionValue(assign.lowering);
 
             throw new Exception(text("Unsupported eval expression: ", assign.op));
         }
 
-        const lengthValue = runExpression(assign.e2);
+        const lengthValue = runExpressionValue(assign.e2);
 
         auto var = arrayLength.e1.isVarExp;
         if (var is null) {
@@ -10375,7 +10393,7 @@ unsupportedExpression:
     ) {
         import quickbite.frontend.dmd.types: isArrayType;
 
-        const value = runExpression(operand);
+        const value = runExpressionValue(operand);
         if (!isArrayType(operand.type))
             return nativeAppendElements(resultType, value);
 
@@ -10393,13 +10411,13 @@ unsupportedExpression:
 
         // A field or a dereferenced pointer (`*log ~= id`, e.g. a
         // destructor appending through a captured `int[]*` field) both read
-        // and write through the fully generic `runExpression`/`writeLocation`
+        // and write through the fully generic `runExpressionValue`/`writeLocation`
         // pair -- neither needs the ref-array-parameter or bounds-check
         // handling the `VarExp`/`IndexExp` arms below exist for.
         if (assign.e1.isDotVarExp !is null || assign.e1.isPtrExp !is null) {
             const appended = AggregateValue.withAppendedArrayElement(
-                runExpression(assign.e1),
-                runExpression(assign.e2),
+                runExpressionValue(assign.e1),
+                runExpressionValue(assign.e2),
             );
             writeLocation(assign.e1, appended);
             return appended;
@@ -10420,7 +10438,7 @@ unsupportedExpression:
 
         auto literal = assign.e2.isFuncExp;
         const value = literal is null
-            ? runExpression(assign.e2)
+            ? runExpressionValue(assign.e2)
             : runFunctionLiteralDeclaration(literal);
         {
             import dmd.astenums: TY;
@@ -10430,7 +10448,7 @@ unsupportedExpression:
             ExpressionResult[] noElements;
             auto appended = current == ExpressionResult.null_
                 ? reconstructStoredArray(variable.type, noElements)
-                : runExpression(assign.e1);
+                : runExpressionValue(assign.e1);
             auto elementType = variable.type.toBasetype.isTypeDArray !is null
                 ? variable.type.toBasetype.isTypeDArray.next
                 : null;
@@ -10591,9 +10609,9 @@ unsupportedExpression:
 
         const current = readBindingValue(variable);
 
-        const arrayIndex = cast(size_t) runExpression(index.e2).asLong;
+        const arrayIndex = cast(size_t) runExpressionValue(index.e2).asLong;
         const appended = AggregateValue.withAppendedArrayElement(
-            AggregateValue.elementAt(current, arrayIndex), runExpression(rhs));
+            AggregateValue.elementAt(current, arrayIndex), runExpressionValue(rhs));
         writeStoredValue(bindingPlace(variable).index(arrayIndex), appended);
         clearUninitializedBindingAddress(bindingPlace(variable).address);
         return appended;
@@ -10608,7 +10626,7 @@ unsupportedExpression:
 
         auto type = cast_.to.toBasetype;
         if (type is null)
-            return runExpression(cast_.e1);
+            return runExpressionValue(cast_.e1);
 
         if (type.ty == TY.Tvoid) {
             executeForEffect(cast_.e1);
@@ -10631,7 +10649,7 @@ unsupportedExpression:
             import quickbite.backends.interpreter.aggregate_value: AggregateValue;
             import quickbite.backends.interpreter.layout: typeByteSize;
 
-            const value = runExpression(cast_.e1);
+            const value = runExpressionValue(cast_.e1);
             if (AggregateValue.isArray(value) &&
                 AggregateValue.nativeArrayAddress(value) !is null)
                 return AggregateValue.reconstructNativeArrayWithLength(
@@ -10670,13 +10688,13 @@ unsupportedExpression:
                 import quickbite.backends.interpreter.aggregate_value:
                     AggregateValue;
 
-                const source = runExpression(cast_.e1);
+                const source = runExpressionValue(cast_.e1);
                 return AggregateValue.slice(
                     source, cast_.to, 0, AggregateValue.length(source),
                 );
             }
 
-            return runExpression(cast_.e1);
+            return runExpressionValue(cast_.e1);
         }
 
         if (type.ty == TY.Tbool)
@@ -10695,7 +10713,7 @@ unsupportedExpression:
                 return castIntegerValue(integer, type.ty);
             }
 
-        return backendCastValue(runExpression(cast_.e1), backendCastTarget(type));
+        return backendCastValue(runExpressionValue(cast_.e1), backendCastTarget(type));
     }
 
     private bool reinterpretScalarArrayCast(
@@ -10722,7 +10740,7 @@ unsupportedExpression:
         )
             return false;
 
-        const source = runExpression(cast_.e1);
+        const source = runExpressionValue(cast_.e1);
         result = AggregateValue.reconstructNativeArrayWithLength(
             cast_.to,
             AggregateValue.length(source),
@@ -10737,7 +10755,7 @@ unsupportedExpression:
             backendCastTarget = castTarget,
             backendCastValue = castValueResult;
 
-        const value = runExpression(cast_.e1);
+        const value = runExpressionValue(cast_.e1);
         if (value.isPointer)
             return ExpressionResult(true);
         if (value == ExpressionResult.null_)
@@ -10751,7 +10769,7 @@ unsupportedExpression:
     private ExpressionResult delegateCastValue(imported!"dmd.expression".CastExp cast_) {
         import std.conv: text;
 
-        const value = runExpression(cast_.e1);
+        const value = runExpressionValue(cast_.e1);
         if (value == ExpressionResult.null_ || value.isFunctionPointer)
             return value;
 
@@ -10761,7 +10779,7 @@ unsupportedExpression:
     private ExpressionResult classCastValue(imported!"dmd.expression".CastExp cast_) {
         import quickbite.frontend.dmd.types: isPointerType;
 
-        auto value = runExpression(cast_.e1);
+        auto value = runExpressionValue(cast_.e1);
         value = rootedNativeClassValue(cast_.e1, value);
         if (value == ExpressionResult.null_)
             return value;
@@ -10832,7 +10850,7 @@ unsupportedExpression:
         if (!typeChars(cast_.to).canFind("Throwable"))
             return false;
 
-        auto value = runExpression(cast_.e1);
+        auto value = runExpressionValue(cast_.e1);
         value = rootedNativeClassValue(cast_.e1, value);
         if (value == ExpressionResult.null_) {
             result = value;
@@ -10883,7 +10901,7 @@ unsupportedExpression:
                             );
                     }
 
-            const value = runExpression(cast_.e1);
+            const value = runExpressionValue(cast_.e1);
             if (value.isNativeAggregate) {
                 import quickbite.backends.interpreter.aggregate_value: AggregateValue;
 
@@ -10906,7 +10924,7 @@ unsupportedExpression:
             return arrayPointer(cast_.e1, 0, cast_.op);
         }
 
-        const value = runExpression(cast_.e1);
+        const value = runExpressionValue(cast_.e1);
         if (value == ExpressionResult.null_)
             return value;
         if (value.isPointer)
@@ -10952,7 +10970,7 @@ unsupportedExpression:
                 auto source = element is null ? array.basis : element;
                 auto literal = source.isFuncExp;
                 auto value = literal is null
-                    ? runExpression(source)
+                    ? runExpressionValue(source)
                     : runFunctionLiteralDeclaration(literal);
                 if (isDelegateArray && value != ExpressionResult.null_) {
                     liveDelegateIndices[liveDelegateCount] = index;
@@ -11074,7 +11092,7 @@ unsupportedExpression:
                     fields[0 .. index],
                 )
                 : structLiteralFieldValue(literal, index, elementLiteral is null
-                    ? runExpression(element)
+                    ? runExpressionValue(element)
                     : runFunctionLiteralDeclaration(elementLiteral));
         }
 
@@ -11406,12 +11424,12 @@ unsupportedExpression:
         )
             return runAddressableSliceExpression(slice, lower);
 
-        const source = runExpression(slice.e1);
+        const source = runExpressionValue(slice.e1);
         if (slice.lengthVar !is null)
             setLocal(slice.lengthVar, ExpressionResult(AggregateValue.length(source)));
         lower = slice.lwr is null
             ? 0
-            : cast(size_t) runExpression(slice.lwr).asLong;
+            : cast(size_t) runExpressionValue(slice.lwr).asLong;
 
         if (source.isPointer) {
             if (slice.upr is null) {
@@ -11421,7 +11439,7 @@ unsupportedExpression:
                 );
             }
 
-            const upper = cast(size_t) runExpression(slice.upr).asLong;
+            const upper = cast(size_t) runExpressionValue(slice.upr).asLong;
             if (lower > upper) {
                 import std.conv: text;
 
@@ -11450,7 +11468,7 @@ unsupportedExpression:
 
         const upper = slice.upr is null
             ? AggregateValue.length(source)
-            : cast(size_t) runExpression(slice.upr).asLong;
+            : cast(size_t) runExpressionValue(slice.upr).asLong;
 
         if (AggregateValue.isArray(source) && (lower > upper || upper > AggregateValue.length(source)))
             throwRangeError("Range violation");
@@ -11539,10 +11557,10 @@ unsupportedExpression:
 
         lower = slice.lwr is null
             ? 0
-            : cast(size_t) runExpression(slice.lwr).asLong;
+            : cast(size_t) runExpressionValue(slice.lwr).asLong;
         const upper = slice.upr is null
             ? sourceLength
-            : cast(size_t) runExpression(slice.upr).asLong;
+            : cast(size_t) runExpressionValue(slice.upr).asLong;
         if (lower > upper || upper > sourceLength)
             throwRangeError("Range violation");
 
@@ -12039,7 +12057,7 @@ unsupportedExpression:
             auto sourcePlace = projectionPlace(index.e1);
             if (isPointerType(index.e1.type)) {
                 arrayIndex = cast(size_t) cast(ulong)
-                    runExpression(index.e2).asLong;
+                    runExpressionValue(index.e2).asLong;
                 if (_evaluatedReferenceArgumentIndices !is null)
                     (*_evaluatedReferenceArgumentIndices)[
                         cast(const(void)*) index.e2
@@ -12051,7 +12069,7 @@ unsupportedExpression:
             if (index.lengthVar !is null)
                 setLocal(index.lengthVar, ExpressionResult(sourceLength));
             arrayIndex = cast(size_t) cast(ulong)
-                runExpression(index.e2).asLong;
+                runExpressionValue(index.e2).asLong;
             if (_evaluatedReferenceArgumentIndices !is null)
                 (*_evaluatedReferenceArgumentIndices)[
                     cast(const(void)*) index.e2
@@ -12077,9 +12095,9 @@ unsupportedExpression:
         // Evaluating e2 first left lengthVar holding a stale (or default
         // zero) length, so `arr[$ - 1]` on a just-grown array underflowed to
         // size_t.max instead of the intended last-element index.
-        const source = runExpression(index.e1);
+        const source = runExpressionValue(index.e1);
         if (isPointerType(index.e1.type)) {
-            arrayIndex = cast(size_t) cast(ulong) runExpression(index.e2).asLong;
+            arrayIndex = cast(size_t) cast(ulong) runExpressionValue(index.e2).asLong;
             if (_evaluatedReferenceArgumentIndices !is null)
                 // Keyed by `index.e2` (the index subexpression), not the
                 // outer `IndexExp` itself: `lvalue_place.placeOfLvalue`'s
@@ -12103,7 +12121,7 @@ unsupportedExpression:
             setLocal(index.lengthVar, ExpressionResult(sourceLength));
 
         // matches CTFE, which formats the index as unsigned
-        arrayIndex = cast(size_t) cast(ulong) runExpression(index.e2).asLong;
+        arrayIndex = cast(size_t) cast(ulong) runExpressionValue(index.e2).asLong;
         if (_evaluatedReferenceArgumentIndices !is null)
             // See the `isPointerType` arm above: keyed by `index.e2`, matching
             // `evaluatedIndex`'s lookup key.
@@ -12271,7 +12289,7 @@ unsupportedExpression:
 
         size_t[] lengths;
         foreach (argument; *new_.arguments)
-            lengths ~= cast(size_t) runExpression(argument).asLong;
+            lengths ~= cast(size_t) runExpressionValue(argument).asLong;
 
         return newArrayValue(new_.type, lengths);
     }
@@ -12290,7 +12308,7 @@ unsupportedExpression:
             if (new_.arguments.length != 1)
                 throw new Exception(text("Unsupported eval expression: ", new_.op));
 
-            value = runExpression((*new_.arguments)[0]);
+            value = runExpressionValue((*new_.arguments)[0]);
         }
 
         return allocateNativePointer(targetType, value);
@@ -12334,7 +12352,7 @@ unsupportedExpression:
             auto arguments = callArguments.values;
             if (new_.arguments !is null)
                 foreach (index, argument; *new_.arguments)
-                    arguments[index] = runExpression(argument);
+                    arguments[index] = runExpressionValue(argument);
 
             Walker child;
             child.runningCalledFunction = true;
@@ -12375,7 +12393,7 @@ unsupportedExpression:
                 structVal = withStoredStructField(structVal,
                     targetType,
                     index,
-                    runExpression(argument),
+                    runExpressionValue(argument),
                 );
             }
         }
@@ -12426,7 +12444,7 @@ unsupportedExpression:
         auto argumentExpressions = callArguments.expressions;
         if (new_.arguments !is null)
             foreach (index, argument; *new_.arguments) {
-                arguments[index] = runExpression(argument);
+                arguments[index] = runExpressionValue(argument);
                 argumentExpressions[index] = argument;
             }
 
@@ -12471,7 +12489,7 @@ unsupportedExpression:
         auto arguments = callArguments.values;
         if (new_.arguments !is null)
             foreach (index, argument; *new_.arguments)
-                arguments[index] = runExpression(argument);
+                arguments[index] = runExpressionValue(argument);
 
         auto object = AggregateValue.allocateClass(allocationType);
         nativeClassOwners[AggregateValue.nativeClassBodyAddress(object)] = object;
@@ -12542,7 +12560,7 @@ unsupportedExpression:
 
     // Decision 7's no-result operation for a declaration: the initializer
     // constructs the variable's own storage and there is no value left over
-    // to hand back (`runExpression`'s `declarationExpression` arm).
+    // to hand back (`runExpressionValue`'s `declarationExpression` arm).
     //
     // Mirrors `Dsymbol_toElem` in DMD's `e2ir.d`: once construction succeeds,
     // arm the variable's destructor (`vd.edtor`) so it runs at a later
@@ -12696,7 +12714,7 @@ unsupportedExpression:
                 // incidental result must not overwrite the variable); a
                 // body-less native postblit's FFI bridge returns the mutated
                 // receiver, which is the value to keep.
-                const result = runExpression(initializer);
+                const result = runExpressionValue(initializer);
                 if (AggregateValue.isStruct(result))
                     setLocal(variable, result);
                 return;
@@ -12743,7 +12761,7 @@ unsupportedExpression:
                     while (auto sourceCast = sourceArray.isCastExp)
                         sourceArray = sourceCast.e1;
 
-                    const source = runExpression(sourceArray);
+                    const source = runExpressionValue(sourceArray);
                     setLocal(variable, source);
 
                     const count =
@@ -12805,7 +12823,7 @@ unsupportedExpression:
             variable.type,
             literal !is null
                 ? runFunctionLiteralDeclaration(literal)
-                : runExpression(initializer),
+                : runExpressionValue(initializer),
         );
         if (variable.type.toBasetype.isTypeClass !is null)
             value = rootedNativeClassValue(initializer, value);
@@ -12851,7 +12869,7 @@ unsupportedExpression:
             CastTarget target;
             if (isNativeScalarType(place.type) &&
                 tryCastTarget(place.type, target)) {
-                castValue(runExpression(cast_.e1), target, place);
+                castValue(runExpressionValue(cast_.e1), target, place);
                 destination.markConstructed;
                 return true;
             }
@@ -13047,7 +13065,7 @@ destinationFallback:
         // Calls and other non-place scalar leaves still belong to the
         // surrounding value path until their own destination arm is
         // migrated. The recursive operator part above remains typed.
-        return runExpression(expression).asLong;
+        return runExpressionValue(expression).asLong;
     }
 
     private real scalarRealOperator(
@@ -13076,7 +13094,7 @@ destinationFallback:
         if (auto neg = expression.isNegExp)
             return -scalarRealOperator(neg.e1);
 
-        return runExpression(expression).asReal;
+        return runExpressionValue(expression).asReal;
     }
 
     private long loadIntegerScalar(
@@ -13179,10 +13197,10 @@ destinationFallback:
 
         const lower = slice.lwr is null
             ? 0
-            : cast(size_t) runExpression(slice.lwr).asLong;
+            : cast(size_t) runExpressionValue(slice.lwr).asLong;
         const upper = slice.upr is null
             ? sourceLength
-            : cast(size_t) runExpression(slice.upr).asLong;
+            : cast(size_t) runExpressionValue(slice.upr).asLong;
         if (lower > upper || upper > sourceLength)
             throwRangeError("Range violation");
 
@@ -13335,7 +13353,7 @@ destinationFallback:
 
             // Reuse the ordinary VarExp read path so post-increment observes
             // the binding's authoritative native storage.
-            const oldValue = runExpression(post.e1);
+            const oldValue = runExpressionValue(post.e1);
             if (oldValue.isPointer) {
                 writeLocation(post.e1, oldValue.pointerOffsetBy(delta.asLong));
                 return oldValue;
@@ -13356,7 +13374,7 @@ destinationFallback:
                 return oldValue;
             }
 
-            const oldValue = runExpression(post.e1);
+            const oldValue = runExpressionValue(post.e1);
             writeLocation(post.e1, oldValue + delta);
             return oldValue;
         }
@@ -13373,13 +13391,13 @@ destinationFallback:
                 return oldValue;
             }
 
-            const oldValue = runExpression(post.e1);
+            const oldValue = runExpressionValue(post.e1);
             writeLocation(post.e1, oldValue + delta);
             return oldValue;
         }
 
         if (auto pointer = post.e1.isPtrExp) {
-            const target = runExpression(pointer.e1);
+            const target = runExpressionValue(pointer.e1);
             const oldValue = readPointerTarget(pointer.e1, target);
             writePointerTarget(pointer.e1, target, oldValue + delta);
             return oldValue;
@@ -13516,7 +13534,7 @@ private void initializeNativeClassBody(
             if (auto initializer = field._init.isExpInitializer)
                 value = walker.storageValue(
                     field.type,
-                    walker.runExpression(initializer.exp),
+                    walker.runExpressionValue(initializer.exp),
                 );
             else if (field._init.isArrayInitializer !is null)
                 value = classFieldArrayLiteralDefault(walker, field);
@@ -13555,7 +13573,7 @@ classFieldArrayLiteralDefault(
 
     const value = walker.storageValue(
         field.type,
-        walker.runExpression(field._init.initializerToExpression),
+        walker.runExpressionValue(field._init.initializerToExpression),
     );
     auto block = NativeBlock.allocate(
         typeByteSize(field.type),
