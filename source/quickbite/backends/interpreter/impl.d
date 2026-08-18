@@ -3411,7 +3411,9 @@ unsupportedExpression:
         if (initializerImage && classType !is null && classType.sym !is null) {
             auto object = AggregateValue.allocateClass(type);
             initializeNativeClassBody(this, type, object);
-            return AggregateValue.classBodyByteSlice(object, symbol.type);
+            return ExpressionResult.nativeAggregateValue(
+                AggregateValue.classBodyByteSlice(object, symbol.type),
+            );
         }
 
         assert(0, "SymbolDeclaration VarExp was not an aggregate initializer");
@@ -8450,7 +8452,9 @@ unsupportedExpression:
 
         auto object = AggregateValue.allocateClass(class_.type);
         initializeNativeClassBody(this, class_.type, object);
-        return AggregateValue.classBodyByteSlice(object, resultType);
+        return ExpressionResult.nativeAggregateValue(
+            AggregateValue.classBodyByteSlice(object, resultType),
+        );
     }
 
     private NativeArray classSliceField(
@@ -9422,7 +9426,12 @@ unsupportedExpression:
                     source.isTypeSArray !is null
                 )
             )
-                return AggregateValue.nativeAggregateByteSlice(value, type);
+                return ExpressionResult.nativeAggregateValue(
+                    AggregateValue.nativeAggregateByteSlice(
+                        AggregateValue.native(value),
+                        type,
+                    ),
+                );
         }
 
         CastTarget target;

@@ -198,16 +198,14 @@ public struct AggregateValue {
     // An untyped view of an aggregate's own storage: the slice denotes the
     // same bytes rather than a copy, so writes through it are visible in the
     // source, and the source block is retained to keep the view valid.
-    public static imported!"quickbite.backends.interpreter.expression_result".ExpressionResult nativeAggregateByteSlice(
-        in imported!"quickbite.backends.interpreter.expression_result".ExpressionResult value,
+    public static NativeAggregate nativeAggregateByteSlice(
+        NativeAggregate source,
         imported!"dmd.mtype".Type type,
     ) @safe {
         import quickbite.backends.interpreter.layout: typeByteSize;
         import quickbite.backends.interpreter.native_array: NativeArray;
         import quickbite.backends.interpreter.native_block: NativeBlock;
-        import quickbite.backends.interpreter.expression_result: ExpressionResult;
 
-        auto source = native(value);
         auto slice = baseTypeOf(type).isTypeDArray;
         if (slice is null)
             throw new Exception(
@@ -223,24 +221,23 @@ public struct AggregateValue {
             source.address,
             typeByteSize(source.type),
         ).writeSliceHeader(header, 0);
-        return ExpressionResult.nativeAggregateValue(NativeAggregate(
+        return NativeAggregate(
             type,
             header,
             source.storage,
-        ));
+        );
     }
 
     // A class instance's initializer bytes are the object body itself viewed
     // as an untyped span. The result borrows the body rather than copying it
     // and retains that block, so the view stays valid for as long as it is
     // reachable.
-    public static imported!"quickbite.backends.interpreter.expression_result".ExpressionResult classBodyByteSlice(
+    public static NativeAggregate classBodyByteSlice(
         NativeAggregate source,
         imported!"dmd.mtype".Type type,
     ) @safe {
         import quickbite.backends.interpreter.native_array: NativeArray;
         import quickbite.backends.interpreter.native_block: NativeBlock;
-        import quickbite.backends.interpreter.expression_result: ExpressionResult;
 
         auto slice = baseTypeOf(type).isTypeDArray;
         if (slice is null || baseTypeOf(source.type).isTypeClass is null)
@@ -257,11 +254,11 @@ public struct AggregateValue {
             source.retained.address,
             source.retained.byteLength,
         ).writeSliceHeader(header, 0);
-        return ExpressionResult.nativeAggregateValue(NativeAggregate(
+        return NativeAggregate(
             type,
             header,
             source.retained,
-        ));
+        );
     }
 
     public static NativeAggregate slice(
