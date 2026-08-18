@@ -2064,8 +2064,9 @@ private struct Walker {
         if (class_ is null)
             throw new Exception("Cannot resolve native exception class.");
 
-        auto metadata = AggregateValue.allocateClass(class_.type);
-        initializeNativeClassBody(this, class_.type, metadata);
+        auto metadataOwner = AggregateValue.allocateClass(class_.type);
+        initializeNativeClassBody(this, class_.type, metadataOwner);
+        auto metadata = ExpressionResult.nativeAggregateValue(metadataOwner);
         if (nativeObjectPointer !is null)
             hydrateNativeExceptionMetadata(
                 metadata,
@@ -12511,7 +12512,8 @@ unsupportedExpression:
             auto type = new_.newtype is null ? new_.type : new_.newtype;
             auto object = AggregateValue.allocateClass(type);
             auto body = AggregateValue.nativeClassBodyAddress(object);
-            nativeClassOwners[body] = object;
+            const objectValue = ExpressionResult.nativeAggregateValue(object);
+            nativeClassOwners[body] = objectValue;
             initializeNativeClassBody(this, type, object);
             destination.storeReference(body);
             if (new_.member is null)
@@ -12527,7 +12529,7 @@ unsupportedExpression:
 
             if (isThrowableConstructor(new_.member)) {
                 nativeClassOwners[body] = applyThrowableConstructor(
-                    object,
+                    objectValue,
                     arguments.values,
                 );
                 return true;
@@ -12883,13 +12885,14 @@ unsupportedExpression:
                 arguments[index] = runExpressionValue(argument);
 
         auto object = AggregateValue.allocateClass(allocationType);
-        nativeClassOwners[AggregateValue.nativeClassBodyAddress(object)] = object;
+        const objectValue = ExpressionResult.nativeAggregateValue(object);
+        nativeClassOwners[AggregateValue.nativeClassBodyAddress(object)] = objectValue;
         initializeNativeClassBody(this, allocationType, object);
         if (new_.member is null)
-            return object;
+            return objectValue;
 
         if (isThrowableConstructor(new_.member))
-            return applyThrowableConstructor(object, arguments);
+            return applyThrowableConstructor(objectValue, arguments);
 
         // A non-root-module constructor (e.g. a private phobos class) may
         // still be a raw parse tree; resolve its body before walking it.
@@ -12919,7 +12922,7 @@ unsupportedExpression:
             throw exception;
         }
         mergeNewClassExpressionState(child);
-        return object;
+        return objectValue;
     }
 
     private void mergeNewClassExpressionState(ref Walker child) {
@@ -14497,7 +14500,7 @@ private bool isVoidSliceType(imported!"dmd.mtype".Type type) {
 private void initializeNativeClassBody(
     ref Walker walker,
     imported!"dmd.mtype".Type type,
-    in imported!"quickbite.backends.interpreter.expression_result".ExpressionResult object,
+    imported!"quickbite.backends.interpreter.native_aggregate".NativeAggregate object,
 ) {
     import quickbite.backends.interpreter.aggregate_value: AggregateValue;
     import quickbite.backends.interpreter.layout: classFields;

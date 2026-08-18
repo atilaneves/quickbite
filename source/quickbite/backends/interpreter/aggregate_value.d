@@ -159,13 +159,14 @@ public struct AggregateValue {
         return ExpressionResult.nativeAggregateValue(aggregate);
     }
 
-    public static imported!"quickbite.backends.interpreter.expression_result".ExpressionResult allocateClass(
+    // Allocate the reference slot and body as one native owner. The caller
+    // keeps it native while it initializes the body and records its identity.
+    public static NativeAggregate allocateClass(
         imported!"dmd.mtype".Type type,
     ) @safe {
         import quickbite.backends.interpreter.layout: classInstanceByteSize;
         import quickbite.backends.interpreter.native_block: NativeBlock;
         import quickbite.backends.interpreter.place: Place;
-        import quickbite.backends.interpreter.expression_result: ExpressionResult;
 
         auto classType = baseTypeOf(type).isTypeClass;
         if (classType is null || classType.sym is null)
@@ -179,7 +180,7 @@ public struct AggregateValue {
             NativeBlock.Scan.conservative,
         );
         Place(reference.address, type).storeReference(body.address);
-        return ExpressionResult.nativeAggregateValue(NativeAggregate(type, reference, body));
+        return NativeAggregate(type, reference, body);
     }
 
     public static imported!"quickbite.backends.interpreter.expression_result".ExpressionResult reconstructNativeArray(
@@ -242,14 +243,13 @@ public struct AggregateValue {
     // and retains that block, so the view stays valid for as long as it is
     // reachable.
     public static imported!"quickbite.backends.interpreter.expression_result".ExpressionResult classBodyByteSlice(
-        in imported!"quickbite.backends.interpreter.expression_result".ExpressionResult value,
+        NativeAggregate source,
         imported!"dmd.mtype".Type type,
     ) @safe {
         import quickbite.backends.interpreter.native_array: NativeArray;
         import quickbite.backends.interpreter.native_block: NativeBlock;
         import quickbite.backends.interpreter.expression_result: ExpressionResult;
 
-        auto source = native(value);
         auto slice = baseTypeOf(type).isTypeDArray;
         if (slice is null || baseTypeOf(source.type).isTypeClass is null)
             throw new Exception(
@@ -522,17 +522,20 @@ public struct AggregateValue {
         return Place(aggregate.address, aggregate.type).index(index).address;
     }
 
-    public static void* nativeClassBodyAddress(
-        in imported!"quickbite.backends.interpreter.expression_result".ExpressionResult value,
-    ) @safe {
+    public static void* nativeClassBodyAddress(NativeAggregate aggregate) @safe {
         import quickbite.backends.interpreter.place: Place;
 
-        if (!value.isNativeAggregate)
-            throw new Exception("AggregateValue.nativeClassBodyAddress needs a native aggregate.");
-        auto aggregate = native(value);
         if (baseTypeOf(aggregate.type).isTypeClass is null)
             throw new Exception("AggregateValue.nativeClassBodyAddress needs a class aggregate.");
         return Place(aggregate.address, aggregate.type).deref.address;
+    }
+
+    public static void* nativeClassBodyAddress(
+        in imported!"quickbite.backends.interpreter.expression_result".ExpressionResult value,
+    ) @safe {
+        if (!value.isNativeAggregate)
+            throw new Exception("AggregateValue.nativeClassBodyAddress needs a native aggregate.");
+        return nativeClassBodyAddress(native(value));
     }
 
     public static bool hasClassFieldNamed(
