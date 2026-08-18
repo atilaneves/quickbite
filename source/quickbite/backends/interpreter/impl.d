@@ -12966,6 +12966,18 @@ unsupportedExpression:
                 return true;
             }
 
+        if (auto arrayLength = rvalue.isArrayLengthExp)
+            if (constructArrayLengthInto(arrayLength, place)) {
+                destination.markConstructed;
+                return true;
+            }
+
+        if (auto index = rvalue.isIndexExp)
+            if (constructIndexInto(index, place)) {
+                destination.markConstructed;
+                return true;
+            }
+
         if (auto call = rvalue.isCallExp) {
             import dmd.astenums: TY;
 
@@ -13023,6 +13035,77 @@ unsupportedExpression:
 
 destinationFallback:
         return false;
+    }
+
+    // An addressable array receiver already owns its header or fixed extent.
+    // Read that length directly into the caller's typed scalar destination.
+    // Other receiver shapes still need the value path because they first
+    // produce an aggregate value before its length can be observed.
+    private bool constructArrayLengthInto(
+        imported!"dmd.expression".ArrayLengthExp arrayLength,
+        imported!"quickbite.backends.interpreter.place".Place destination,
+    ) {
+        import quickbite.backends.interpreter.native_scalar: isNativeScalarType;
+
+        if (
+            arrayLength.type is null ||
+            !destination.type.toBasetype.equals(arrayLength.type.toBasetype) ||
+            !isNativeScalarType(destination.type) ||
+            !hasArrayProjectionPlace(arrayLength.e1)
+        )
+            return false;
+
+        const length = projectionPlace(arrayLength.e1).arrayLength;
+        storeIntegerOperator(destination, cast(long) length);
+        return true;
+    }
+
+    // An addressable index composes the receiver place once, evaluates its
+    // index once, and copies the selected typed bytes into fresh caller-owned
+    // storage. The static result type must retain the element representation:
+    // a cast mismatch follows the established value fallback instead.
+    private bool constructIndexInto(
+        imported!"dmd.expression".IndexExp index,
+        imported!"quickbite.backends.interpreter.place".Place destination,
+    ) {
+        import quickbite.frontend.dmd.types: isPointerType;
+
+        if (
+            index.type is null ||
+            !destination.type.toBasetype.equals(index.type.toBasetype) ||
+            !(isPointerType(index.e1.type)
+                ? hasProjectionPlace(index.e1)
+                : hasArrayProjectionPlace(index.e1))
+        )
+            return false;
+
+        // `auto`: `Place.index` and `Place.arrayLength` are mutable-qualified.
+        auto source = projectionPlace(index.e1);
+        const pointer = isPointerType(index.e1.type);
+        const length = pointer ? 0 : source.arrayLength;
+        if (!pointer && index.lengthVar !is null)
+            setLocal(index.lengthVar, ExpressionResult(length));
+
+        const arrayIndex = cast(size_t) cast(ulong)
+            runExpressionValue(index.e2).asLong;
+        if (_evaluatedReferenceArgumentIndices !is null)
+            (*_evaluatedReferenceArgumentIndices)[cast(const(void)*) index.e2] =
+                arrayIndex;
+
+        if (!pointer && arrayIndex >= length) {
+            import quickbite.backends.interpreter.messages:
+                indexOutOfBoundsMessage;
+
+            throwRangeError(indexOutOfBoundsMessage(
+                arrayIndex,
+                length,
+                isSliceValue(index.e1),
+                runningCalledFunction,
+            ));
+        }
+
+        copyPlaceValue(source.index(arrayIndex), destination);
+        return true;
     }
 
     // Arithmetic expressions are selected by their already-semantic D type.
