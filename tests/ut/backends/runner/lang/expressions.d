@@ -10649,6 +10649,48 @@ static foreach (backend; Matrix!(
     }
 }
 
+// The same throwing-constructor rule as above, but the temporary is consumed
+// by a field read (`P(9, &log).id`) rather than a member call. DMD only
+// finishes constructing the receiver if `__ctor` returns normally, so the
+// destructor must not run when it throws, regardless of how the constructed
+// value is used afterwards. `P`'s `armed` field defaults to `true`, so the
+// placeholder DMD declares for the receiver (`(P __t = P(0, true, null);) ,
+// __t).__ctor(id, log)`) is not all zero bytes. SystemLinker is the oracle.
+static foreach (backend; Matrix!()) {
+    @("call.throwingConstructorFieldReadTemporaryIsNotDestroyed." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct P {
+                int id;
+                bool armed = true;
+                int[]* log;
+
+                this(int id, int[]* log) {
+                    this.id = id;
+                    this.log = log;
+                    throw new Exception("boom");
+                }
+
+                ~this() {
+                    if (log !is null)
+                        *log ~= id;
+                }
+            }
+
+            unittest {
+                int[] log;
+                int got;
+                try
+                    got = P(9, &log).id;
+                catch (Exception e) {}
+                assert(log.length == 0);
+            }
+        });
+    }
+}
+
 // A temporary constructed in a `?:` arm gets no early boundary: it lives to
 // the end of the full expression, unlike an `&&`/`||` right-hand side.
 // SystemLinker is the oracle.

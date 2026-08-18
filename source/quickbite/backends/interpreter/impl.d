@@ -12348,13 +12348,20 @@ unsupportedExpression:
     // twice.
     //
     // This says nothing about a constructor-call receiver
-    // (`((S __t = <placeholder>;) , __t).__ctor(args)`): that placeholder
-    // declaration reports true here like any other locally-owned value with
-    // a destructor, regardless of whether `<placeholder>` prints as a zero
-    // blit or a field-by-field literal, because at this point `__t`'s own
-    // assignment (not the constructor) has just succeeded. A caller that is
-    // about to invoke that same constructor on `__t` must not trust this
-    // arming yet -- see `popPrematureReceiverConstructorDestructor`.
+    // (`((S __t = <placeholder>;) , __t).__ctor(args)`): whether that
+    // placeholder declaration reports true here depends on how
+    // `<placeholder>` prints. A field-by-field literal placeholder (a struct
+    // with a non-zero default, e.g. `Loud(0, true, null)`) is a `BlitExp`
+    // whose `e2` is not an `IntegerExp`, so it reports true here like any
+    // other locally-owned value with a destructor, because at this point
+    // `__t`'s own assignment (not the constructor) has just succeeded. A
+    // caller that is about to invoke that same constructor on `__t` must not
+    // trust this arming yet -- see `popPrematureReceiverConstructorDestructor`.
+    // An all-zero placeholder (e.g. `Zero(0)`) is instead the `IntegerExp`
+    // zero blit the guard above declines, so it reports false here and
+    // nothing is armed at declaration time; the constructor's own success
+    // arms it afterwards instead, through `constructedReceiverDestructor`'s
+    // own decline check on this same function.
     private bool shouldArmDeclaredVariableDestructor(VarDeclaration variable) {
         if (isManifestVariable(variable))
             return false;
