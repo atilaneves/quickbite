@@ -188,6 +188,57 @@ private enum LoopControl {
     continue_,
 }
 
+// A caller-provided typed destination for rvalue construction. An absent
+// destination represents a void construction; a fresh destination becomes
+// constructed exactly once. Only a caller that owns fresh storage may provide
+// a destination; assignment must first obtain separate temporary storage.
+private struct ConstructionDestination {
+    private enum State {
+        absent,
+        fresh,
+        constructed,
+    }
+
+    private imported!"quickbite.backends.interpreter.place".Place _place;
+    private State _state;
+
+    public this(imported!"quickbite.backends.interpreter.place".Place place)
+    @safe {
+        _place = place;
+        _state = State.fresh;
+    }
+
+    public bool hasDestination() const pure nothrow @nogc @safe {
+        return _state != State.absent;
+    }
+
+    public bool isFresh() const pure nothrow @nogc @safe {
+        return _state == State.fresh;
+    }
+
+    public bool isConstructed() const pure nothrow @nogc @safe {
+        return _state == State.constructed;
+    }
+
+    public imported!"quickbite.backends.interpreter.place".Place place() @safe {
+        if (!hasDestination)
+            throw new Exception(
+                "quickbite.backends.interpreter.impl.ConstructionDestination."
+                ~ "place: construction has no destination",
+            );
+        return _place;
+    }
+
+    public void markConstructed() @safe {
+        if (!isFresh)
+            throw new Exception(
+                "quickbite.backends.interpreter.impl.ConstructionDestination."
+                ~ "markConstructed: destination is not fresh",
+            );
+        _state = State.constructed;
+    }
+}
+
 // The evaluated indices within one `ref`/`out` call argument.  The ordinary
 // expression walk records them as it evaluates the argument; binding the
 // callee's reference slot later composes its address from those exact results
@@ -12563,7 +12614,8 @@ unsupportedExpression:
         // The initializer constructs the variable's own storage, so a family
         // with a destination arm writes its bytes there directly instead of
         // building them elsewhere and copying them in.
-        if (constructInto(initializer, variable)) {
+        auto destination = ConstructionDestination(bindingPlace(variable));
+        if (constructInto(initializer, destination)) {
             clearUninitializedBindingAddress(bindingPlace(variable).address);
             return;
         }
@@ -12595,12 +12647,15 @@ unsupportedExpression:
     // and DMD marks it as such with a `ConstructExp`.
     private bool constructInto(
         imported!"dmd.expression".Expression rvalue,
-        VarDeclaration destination,
+        ref ConstructionDestination destination,
     ) {
-        if (!hasBindingPlace(destination))
-            return false;
+        if (!destination.isFresh)
+            throw new Exception(
+                "quickbite.backends.interpreter.impl.Walker.constructInto: "
+                ~ "destination is not fresh",
+            );
 
-        auto place = bindingPlace(destination);
+        auto place = destination.place;
 
         if (auto literal = rvalue.isStructLiteralExp) {
             // The literal's own fields must BE the destination's fields: a
@@ -12620,6 +12675,7 @@ unsupportedExpression:
                 // allocated storage would have given it.
                 clearPlaceValue(place);
                 constructStructLiteral(literal, place);
+                destination.markConstructed;
                 return true;
             }
         }
@@ -12632,6 +12688,7 @@ unsupportedExpression:
         // copy into an explicit call, which the arms above this one handle.
         if (isAggregateCopySource(rvalue, place.type)) {
             copyPlaceValue(projectionPlace(rvalue), place);
+            destination.markConstructed;
             return true;
         }
 
