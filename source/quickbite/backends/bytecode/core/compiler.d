@@ -4292,27 +4292,64 @@ private struct Compiler {
         return Operand(offset, ScalarType.ulong_, true, ScalarType.void_);
     }
 
+    // Any type dmd can produce a TypeInfo for (builtins, and any aggregate
+    // druntime or Phobos already instantiated) has that TypeInfo's real
+    // object linked into the running host process at the same address
+    // compiled D would read through `typeid`; resolve its symbol there
+    // first. A guest-only aggregate's TypeInfo is a backend-emitted
+    // artefact that exists in no loaded image, so its symbol simply fails
+    // to resolve -- that failure is itself the signal to synthesise one.
     private size_t nativeTypeInfoAddress(Type type) {
-        import dmd.astenums: TY;
+        import quickbite.ffi.ffi: resolveDataSymbol;
 
         if (type is null)
             return 0;
+        if (auto declaration = type.vtinfo)
+            if (auto address = resolveDataSymbol(declaration))
+                return cast(size_t) address;
         if (type.toBasetype.isTypeStruct !is null)
             return nativeStructTypeInfo(type);
-        if (type.toBasetype.ty == TY.Tint32)
-            return cast(size_t) cast(void*) typeid(int);
         return 0;
     }
 
+    // Emit a TypeInfo_Struct for a struct with no host-linked symbol, the
+    // way any D backend's codegen would: the struct's real default-value
+    // bytes (via dmd's own `defaultInitLiteral`, the same source
+    // `compileStructDeclaration` uses for a bare `S s;`), its dmd-computed
+    // size and alignment, its mangled type name, and whether the GC needs
+    // to scan it. Method pointers (`xtoHash`, `xopEquals`, `xopCmp`,
+    // `xtoString`, `xdtor`, `xpostblit`) stay null; nothing in the
+    // bytecode core calls them yet.
     private size_t nativeStructTypeInfo(Type type) {
         import object: TypeInfo, TypeInfo_Struct;
+        import dmd.common.outbuffer: OutBuffer;
+        import dmd.mangle: mangleToBuffer;
+        import dmd.typesem: defaultInitLiteral, hasPointers;
 
         if (auto existing = type in _nativeStructTypeInfos)
             return *existing;
 
+        auto structType = type.toBasetype.isTypeStruct;
+
         auto result = new TypeInfo_Struct;
         result.m_init = new ubyte[typeFacts(type).byteWidth];
         result.m_align = typeFacts(type).alignment;
+        // `StructFlags.hasPointers` is the first (and so default-`.init`)
+        // enum member: an unset field would misreport `hasPointers` for
+        // types dmd knows carry no indirections, so both arms must assign.
+        result.m_flags = hasPointers(type.toBasetype)
+            ? TypeInfo_Struct.StructFlags.hasPointers
+            : cast(TypeInfo_Struct.StructFlags) 0;
+
+        OutBuffer nameBuffer;
+        mangleToBuffer(type.toBasetype, nameBuffer);
+        result.mangledName = nameBuffer[].idup;
+
+        auto literal = structType
+            .defaultInitLiteral(structType.sym.loc)
+            .isStructLiteralExp;
+        writeStructLiteralFieldBytes(literal, cast(ubyte[]) result.m_init);
+
         _program.nativeTypeInfos ~= cast(TypeInfo) result;
         const address = cast(size_t) cast(void*) result;
         _nativeStructTypeInfos[type] = address;

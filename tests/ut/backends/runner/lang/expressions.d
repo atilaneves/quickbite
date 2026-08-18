@@ -1020,6 +1020,56 @@ static foreach (backend; Matrix!(
     }
 }
 
+// `typeid` reports the same layout size as `.sizeof` for a spread of
+// scalar type categories, and repeated evaluation of the same type yields
+// the same TypeInfo object.
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.inexpressible,
+        "static variable `typeid(long)` cannot be read at compile time"),
+    Omit!(Interpreter, Because.refusal, "0 != 8"),
+)) {
+    @("typeid.scalarTypeReportsLayoutSizeAndIdentity." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            unittest {
+                assert(typeid(long).tsize == long.sizeof);
+                assert(typeid(double).tsize == double.sizeof);
+                assert(typeid(bool).tsize == bool.sizeof);
+                assert(typeid(char).tsize == char.sizeof);
+
+                assert(typeid(long) is typeid(long));
+                assert(typeid(double) is typeid(double));
+            }
+        });
+    }
+}
+
+// A guest-only struct's TypeInfo initializer carries the struct's actual
+// default field bytes, not a zero-filled span merely the right length.
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.inexpressible,
+        "static variable `typeid(Payload)` cannot be read at compile time"),
+    Omit!(Interpreter, Because.refusal,
+        "Unsupported interpreter TypeInfo initializer."),
+)) {
+    @("typeid.structInitializerCarriesFieldDefaults." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct Payload {
+                int value = 7;
+            }
+
+            unittest {
+                auto bytes = cast(ubyte[]) typeid(Payload).initializer;
+                assert(bytes.length == Payload.sizeof);
+                assert(bytes[0] == 7);
+            }
+        });
+    }
+}
+
 static foreach (backend; Matrix!()) {
     @("typeid.classReferenceUsesDynamicClass." ~ backend.stringof)
     @Tags(backend.stringof)

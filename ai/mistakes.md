@@ -484,3 +484,11 @@
 - When splitting execution from `displayEvalResult`, preserve its terminal
   `Throwable` boundary. D runtime assertion and bounds failures are `Error`s,
   not `Exception`s, and must still become backend diagnostics.
+
+- An unset field of enum type defaults to that enum's *first* member, not to
+  `0`, unless a member is explicitly given the value `0`. Conditionally
+  assigning a flags field only in the `true` case (leaving it at `.init`
+  otherwise) is wrong whenever the flag enum's first member isn't the zero
+  value: `object.TypeInfo_Struct.StructFlags` declares `hasPointers = 0x1`
+  first, so an unpopulated `m_flags` reads back as `hasPointers` regardless
+  of the type's real shape. Assign an explicit value on every branch.
