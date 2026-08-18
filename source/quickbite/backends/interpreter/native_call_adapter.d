@@ -34,12 +34,22 @@ private NativeCallException nativeCallExceptionFrom(Throwable throwable) {
     return result;
 }
 
+// Identifies the interpreted delegate that an inbound native trampoline calls.
+// The identity belongs to the root execution's delegate registry.
+public struct InterpretedDelegate {
+    public size_t functionPointerId;
+}
+
 // Runs an interpreted delegate that native code called back into. The Walker
 // supplies it so callback plumbing can re-enter the interpreter without this
-// module importing the Walker.
-public alias DelegateInvoker = imported!"quickbite.backends.interpreter.expression_result".ExpressionResult delegate(
-    in imported!"quickbite.backends.interpreter.expression_result".ExpressionResult callee,
-    in imported!"quickbite.backends.interpreter.expression_result".ExpressionResult[] arguments,
+// module importing the Walker. Argument and result bytes stay in their typed
+// native places; the callback adapter does not carry evaluated values.
+public alias DelegateInvoker = void delegate(
+    in InterpretedDelegate callback,
+    imported!"dmd.mtype".Type returnType,
+    imported!"dmd.mtype".Type[] parameterTypes,
+    void*[] argumentBuffers,
+    ubyte[] resultBuffer,
 );
 
 private alias InboundCallbackInvoker = void delegate(
@@ -264,11 +274,9 @@ private size_t alignedOffset(
 
 // Session-owned callback roots and callback-id invoker for durable FFI
 // trampolines. The registry owns libffi closure memory; this session owns
-// interpreter callback results and remains valid for the Walker session.
+// interpreted callback metadata and remains valid for the Walker session.
 public struct InterpreterInboundTrampolineSession {
-    import quickbite.backends.interpreter.expression_result: ExpressionResult;
-
-    private ExpressionResult[] _callbacks;
+    private InterpretedDelegate[] _callbacks;
     private DelegateInvoker _invokeDelegate;
     private InboundTrampolineRegistry* _registry;
 
@@ -281,7 +289,7 @@ public struct InterpreterInboundTrampolineSession {
         return _registry;
     }
 
-    public size_t register(in ExpressionResult callback) {
+    public size_t register(in InterpretedDelegate callback) {
         _callbacks ~= callback;
         return _callbacks.length - 1;
     }
@@ -304,39 +312,21 @@ public struct InterpreterInboundTrampolineSession {
         void*[] argumentBuffers,
         ubyte[] resultBuffer,
     ) {
-        import dmd.astenums: TY;
-        import quickbite.backends.interpreter.layout: typeByteSize;
-        import quickbite.backends.interpreter.place: Place;
-        import quickbite.backends.interpreter.place_value: readValue, writeValue;
-
         assert(callbackId < _callbacks.length, "unknown durable callback id");
-        ExpressionResult[1] inlineCallbackArgument;
-        auto callbackArguments = parameterTypes.length == 0
-            ? null
-            : parameterTypes.length == 1
-                ? inlineCallbackArgument[]
-                : new ExpressionResult[](parameterTypes.length);
-        foreach (index, parameterType; parameterTypes)
-            callbackArguments[index] = readValue(Place(
-                argumentBuffers[index],
-                parameterType,
-            ));
-        const callbackResult = _invokeDelegate(
-            _callbacks[callbackId], callbackArguments,
+        _invokeDelegate(
+            _callbacks[callbackId],
+            returnType,
+            parameterTypes,
+            argumentBuffers,
+            resultBuffer,
         );
-        if (returnType.ty == TY.Tvoid)
-            return;
-
-        resultBuffer[] = 0;
-        writeValue(Place(resultBuffer.ptr, returnType), callbackResult);
-        extendInboundIntegerResult(resultBuffer, returnType);
     }
 }
 
 // libffi reserves an ffi_arg-sized callback result cell for narrow integers.
 // The typed write above fills the D value's own bytes; this extends only the
 // ABI scratch tail, preserving the typed result place as the value authority.
-private void extendInboundIntegerResult(
+public void extendInboundIntegerResult(
     ubyte[] resultBuffer,
     imported!"dmd.mtype".Type returnType,
 ) {

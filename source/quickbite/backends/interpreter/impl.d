@@ -6293,16 +6293,47 @@ unsupportedExpression:
     }
 
     // Run an interpreted delegate that native code called back into through the
-    // FFI reverse bridge. The callback supplies only values (no source argument
-    // expressions), so synthesise null placeholders, as the static-initialiser
-    // delegate path does.
-    private ExpressionResult invokeNativeCallback(
-        in ExpressionResult callee,
-        in ExpressionResult[] arguments,
+    // FFI reverse bridge. The adapter supplies typed places rather than value
+    // carriers. This temporary evaluator boundary materializes them only to
+    // call the existing recursive walker, then constructs into the supplied
+    // native result place.
+    private void invokeNativeCallback(
+        in imported!"quickbite.backends.interpreter.native_call_adapter".
+            InterpretedDelegate callback,
+        imported!"dmd.mtype".Type returnType,
+        imported!"dmd.mtype".Type[] parameterTypes,
+        void*[] argumentBuffers,
+        ubyte[] resultBuffer,
     ) {
         import dmd.expression: Expression;
+        import dmd.astenums: TY;
+        import quickbite.backends.interpreter.native_call_adapter:
+            extendInboundIntegerResult;
+        import quickbite.backends.interpreter.place: Place;
+        import quickbite.backends.interpreter.place_value: readValue, writeValue;
 
-        return runDelegateCall(callee, arguments, new Expression[](arguments.length));
+        ExpressionResult[1] inlineCallbackArgument;
+        auto arguments = parameterTypes.length == 0
+            ? null
+            : parameterTypes.length == 1
+                ? inlineCallbackArgument[]
+                : new ExpressionResult[](parameterTypes.length);
+        foreach (index, parameterType; parameterTypes)
+            arguments[index] = readValue(Place(
+                argumentBuffers[index],
+                parameterType,
+            ));
+        const result = runDelegateCall(
+            ExpressionResult.functionPointerValue(callback.functionPointerId),
+            arguments,
+            new Expression[](arguments.length),
+        );
+        if (returnType.ty == TY.Tvoid)
+            return;
+
+        resultBuffer[] = 0;
+        writeValue(Place(resultBuffer.ptr, returnType), result);
+        extendInboundIntegerResult(resultBuffer, returnType);
     }
 
     private ExpressionResult runDelegateCall(
@@ -12022,7 +12053,8 @@ unsupportedExpression:
     ) {
         import quickbite.backends.interpreter.layout: typeByteSize, typeHasPointers;
         import quickbite.backends.interpreter.native_block: NativeBlock;
-        import quickbite.backends.interpreter.native_call_adapter: NativeOperand;
+        import quickbite.backends.interpreter.native_call_adapter:
+            InterpretedDelegate, NativeOperand;
         import quickbite.backends.interpreter.place: Place;
         import quickbite.backends.interpreter.place_value: writeValue;
         import dmd.astenums: TY;
@@ -12105,7 +12137,9 @@ unsupportedExpression:
                     null,
                     NativeBlock.init,
                     callbackSession,
-                    callbackSession.register(arguments[index]),
+                    callbackSession.register(InterpretedDelegate(
+                        arguments[index].functionPointerId,
+                    )),
                 );
                 continue;
             }
