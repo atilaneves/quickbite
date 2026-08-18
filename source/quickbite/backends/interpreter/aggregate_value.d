@@ -38,6 +38,24 @@ public struct AggregateValue {
             .writeSliceHeader(destination.address);
     }
 
+    // Write a slice view into caller-owned header storage. The data address
+    // remains the source array's address, so this does not rebuild elements or
+    // detach aliases from the source cell.
+    public static void initializeBorrowedArray(
+        imported!"quickbite.backends.interpreter.place".Place destination,
+        in size_t length,
+        void* address,
+    ) @safe {
+        auto dynamicArray = baseTypeOf(destination.type).isTypeDArray;
+        if (dynamicArray is null)
+            throw new Exception(
+                "AggregateValue.initializeBorrowedArray needs a slice place.",
+            );
+
+        borrowArray(dynamicArray.next, address, length)
+            .writeSliceHeader(destination.address);
+    }
+
     // Typed constructors require a Type: aggregate layout never comes from a
     // display name or an `ExpressionResult`'s variant shape.
     public static imported!"quickbite.backends.interpreter.expression_result".ExpressionResult reconstructStruct(

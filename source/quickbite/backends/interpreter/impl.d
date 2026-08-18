@@ -7164,6 +7164,7 @@ unsupportedExpression:
         import quickbite.backends.interpreter.aggregate_value: AggregateValue;
         import quickbite.backends.interpreter.native_scalar:
             isNativeScalarType, readScalar;
+        import quickbite.backends.interpreter.place: Place;
         import quickbite.frontend.dmd.types:
             isDynamicArrayType, isStaticArrayType;
 
@@ -7227,9 +7228,14 @@ unsupportedExpression:
                     continue;
 
                 auto arrayCell = cell.sliceField(index);
-                value = AggregateValue.withStructField(value,
-                    index,
-                    arrayValueFromCell(fieldType, arrayCell),
+                copyArrayCellTo(
+                    fieldType,
+                    arrayCell,
+                    Place(
+                        AggregateValue.native(value).address,
+                        AggregateValue.native(value).type,
+                    )
+                        .field(cell.fieldDeclaration(index)),
                 );
                 continue;
             }
@@ -9764,19 +9770,28 @@ unsupportedExpression:
         }
     }
 
-    private ExpressionResult arrayValueFromCell(
+    // A native cell already owns the aggregate bytes. Copy static-array bytes
+    // directly to their typed place, or write a dynamic-array header that
+    // aliases the cell's backing storage. Neither path rebuilds an aggregate
+    // ExpressionResult solely to write it into another aggregate.
+    private void copyArrayCellTo(
         imported!"dmd.mtype".Type type,
         ref NativeArray cell,
+        imported!"quickbite.backends.interpreter.place".Place destination,
     ) {
         import quickbite.backends.interpreter.aggregate_value: AggregateValue;
+        import quickbite.backends.interpreter.place: Place;
 
-        if (type.toBasetype.isTypeDArray !is null)
-            return AggregateValue.reconstructNativeArrayWithLength(
-                type,
+        if (type.toBasetype.isTypeDArray !is null) {
+            AggregateValue.initializeBorrowedArray(
+                destination,
                 cell.length,
                 cell.block.address,
             );
-        return AggregateValue.copyFromAddress(type, cell.block.address);
+            return;
+        }
+
+        copyPlaceValue(Place(cell.block.address, type), destination);
     }
 
     private ExpressionResult runNestedIndexAssignExpression(
@@ -11479,7 +11494,17 @@ unsupportedExpression:
             }
         } else {
             auto siblingCell = cell.arrayField(index);
-            value = arrayValueFromCell(field.type, siblingCell);
+            value = defaultValue(field);
+            if (!AggregateValue.isArray(value))
+                return false;
+            copyArrayCellTo(
+                field.type,
+                siblingCell,
+                Place(
+                    AggregateValue.native(value).address,
+                    AggregateValue.native(value).type,
+                ),
+            );
         }
         return true;
     }
