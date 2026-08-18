@@ -12837,6 +12837,11 @@ unsupportedExpression:
 
         auto place = destination.place;
 
+        if (constructScalarOperatorInto(rvalue, place)) {
+            destination.markConstructed;
+            return true;
+        }
+
         if (auto cast_ = rvalue.isCastExp) {
             import quickbite.backends.interpreter.native_scalar:
                 isNativeScalarType;
@@ -12946,6 +12951,193 @@ unsupportedExpression:
 
 destinationFallback:
         return false;
+    }
+
+    // Arithmetic expressions are selected by their already-semantic D type.
+    // Keep their intermediates in ordinary host locals and write the final
+    // scalar directly to the caller's fresh place. This path must stay
+    // separate from ExpressionResult: adding another scalar wrapper would
+    // recreate the carrier that this conversion removes.
+    private bool constructScalarOperatorInto(
+        imported!"dmd.expression".Expression expression,
+        imported!"quickbite.backends.interpreter.place".Place destination,
+    ) {
+        import dmd.astenums: TY;
+        import dmd.tokens: EXP;
+        import quickbite.backends.interpreter.native_scalar: isNativeScalarType;
+
+        if (!isNativeScalarType(destination.type))
+            return false;
+
+        switch (expression.op) with (EXP) {
+            case add:
+            case min:
+            case mul:
+            case div:
+            case mod:
+            case negate:
+            case leftShift:
+            case rightShift:
+            case unsignedRightShift:
+            case tilde:
+            case or:
+            case and:
+            case xor:
+                break;
+
+            default:
+                return false;
+        }
+
+        const type = destination.type.toBasetype.ty;
+        switch (type) with (TY) {
+            case Tfloat32:
+                destination.storeNativeScalar(
+                    cast(float) scalarRealOperator(expression),
+                );
+                return true;
+            case Tfloat64:
+                destination.storeNativeScalar(
+                    cast(double) scalarRealOperator(expression),
+                );
+                return true;
+            case Tfloat80:
+                destination.storeNativeScalar(scalarRealOperator(expression));
+                return true;
+            default:
+                storeIntegerOperator(destination, scalarIntegerOperator(expression));
+                return true;
+        }
+    }
+
+    private long scalarIntegerOperator(
+        imported!"dmd.expression".Expression expression,
+    ) {
+        import dmd.tokens: EXP;
+
+        if (auto integer = expression.isIntegerExp)
+            return cast(long) integer.getInteger;
+        if (hasProjectionPlace(expression))
+            return loadIntegerScalar(projectionPlace(expression));
+
+        if (auto binary = expression.isBinExp) {
+            const left = scalarIntegerOperator(binary.e1);
+            const right = scalarIntegerOperator(binary.e2);
+            switch (expression.op) with (EXP) {
+                case add: return left + right;
+                case min: return left - right;
+                case mul: return left * right;
+                case div: return left / right;
+                case mod: return left % right;
+                case leftShift: return left << right;
+                case rightShift: return left >> right;
+                case unsignedRightShift:
+                    return cast(long) (cast(ulong) left >> right);
+                case or: return left | right;
+                case and: return left & right;
+                case xor: return left ^ right;
+                default: break;
+            }
+        }
+        if (auto neg = expression.isNegExp)
+            return -scalarIntegerOperator(neg.e1);
+        if (auto complement = expression.isComExp)
+            return ~scalarIntegerOperator(complement.e1);
+
+        // Calls and other non-place scalar leaves still belong to the
+        // surrounding value path until their own destination arm is
+        // migrated. The recursive operator part above remains typed.
+        return runExpression(expression).asLong;
+    }
+
+    private real scalarRealOperator(
+        imported!"dmd.expression".Expression expression,
+    ) {
+        import dmd.tokens: EXP;
+
+        if (auto real_ = expression.isRealExp)
+            return real_.toReal;
+        if (auto integer = expression.isIntegerExp)
+            return cast(real) integer.getInteger;
+        if (hasProjectionPlace(expression))
+            return loadRealScalar(projectionPlace(expression));
+
+        if (auto binary = expression.isBinExp) {
+            const left = scalarRealOperator(binary.e1);
+            const right = scalarRealOperator(binary.e2);
+            switch (expression.op) with (EXP) {
+                case add: return left + right;
+                case min: return left - right;
+                case mul: return left * right;
+                case div: return left / right;
+                default: break;
+            }
+        }
+        if (auto neg = expression.isNegExp)
+            return -scalarRealOperator(neg.e1);
+
+        return runExpression(expression).asReal;
+    }
+
+    private long loadIntegerScalar(
+        imported!"quickbite.backends.interpreter.place".Place place,
+    ) {
+        import dmd.astenums: TY;
+
+        switch (place.type.toBasetype.ty) with (TY) {
+            case Tbool: return place.loadNativeScalar!bool ? 1 : 0;
+            case Tint8: return place.loadNativeScalar!byte;
+            case Tuns8: return place.loadNativeScalar!ubyte;
+            case Tchar: return place.loadNativeScalar!char;
+            case Tint16: return place.loadNativeScalar!short;
+            case Tuns16: return place.loadNativeScalar!ushort;
+            case Twchar: return place.loadNativeScalar!wchar;
+            case Tint32: return place.loadNativeScalar!int;
+            case Tuns32: return place.loadNativeScalar!uint;
+            case Tdchar: return place.loadNativeScalar!dchar;
+            case Tint64: return place.loadNativeScalar!long;
+            case Tuns64: return cast(long) place.loadNativeScalar!ulong;
+            default: break;
+        }
+        throw new Exception("Typed integer place expected.");
+    }
+
+    private real loadRealScalar(
+        imported!"quickbite.backends.interpreter.place".Place place,
+    ) {
+        import dmd.astenums: TY;
+
+        switch (place.type.toBasetype.ty) with (TY) {
+            case Tfloat32: return place.loadNativeScalar!float;
+            case Tfloat64: return place.loadNativeScalar!double;
+            case Tfloat80: return place.loadNativeScalar!real;
+            default: break;
+        }
+        throw new Exception("Typed real place expected.");
+    }
+
+    private void storeIntegerOperator(
+        imported!"quickbite.backends.interpreter.place".Place destination,
+        in long value,
+    ) {
+        import dmd.astenums: TY;
+
+        switch (destination.type.toBasetype.ty) with (TY) {
+            case Tbool: destination.storeNativeScalar(value != 0); return;
+            case Tint8: destination.storeNativeScalar(cast(byte) value); return;
+            case Tuns8: destination.storeNativeScalar(cast(ubyte) value); return;
+            case Tchar: destination.storeNativeScalar(cast(char) value); return;
+            case Tint16: destination.storeNativeScalar(cast(short) value); return;
+            case Tuns16: destination.storeNativeScalar(cast(ushort) value); return;
+            case Twchar: destination.storeNativeScalar(cast(wchar) value); return;
+            case Tint32: destination.storeNativeScalar(cast(int) value); return;
+            case Tuns32: destination.storeNativeScalar(cast(uint) value); return;
+            case Tdchar: destination.storeNativeScalar(cast(dchar) value); return;
+            case Tint64: destination.storeNativeScalar(value); return;
+            case Tuns64: destination.storeNativeScalar(cast(ulong) value); return;
+            default: break;
+        }
+        throw new Exception("Typed integer destination expected.");
     }
 
     private void constructStringLiteral(

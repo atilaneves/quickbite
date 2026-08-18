@@ -284,6 +284,26 @@ public struct Place {
 
         writeNativeScalar(_type, placeBytes(_address, typeByteSize(_type)), value);
     }
+
+    // Read a scalar into the caller's statically selected host type. This is
+    // intentionally a typed operation: it is not a replacement value
+    // carrier. The caller selects T from the DMD expression type.
+    public T loadNativeScalar(T)() @trusted {
+        import core.stdc.string: memcpy;
+        import quickbite.backends.interpreter.layout: typeByteSize;
+
+        if (typeByteSize(_type) != T.sizeof)
+            throw new Exception(
+                "quickbite.backends.interpreter.place.Place.loadNativeScalar: "
+                ~ "destination size does not match the scalar type",
+            );
+
+        T value;
+        // @trusted: the checked byte size proves that this copy writes only
+        // the scalar local, and memcpy handles an unaligned place address.
+        memcpy(&value, _address, T.sizeof);
+        return value;
+    }
 }
 
 
