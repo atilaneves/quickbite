@@ -8559,6 +8559,13 @@ unsupportedExpression:
             }
 
         if (auto pointer = assign.e1.isPtrExp)
+            if (
+                isRewrittenAssociativeArrayAssignment(pointer) &&
+                hasTypedTemporaryRhs(assign.e2)
+            )
+                return runRewrittenAssociativeArrayAssignment(pointer, assign.e2);
+
+        if (auto pointer = assign.e1.isPtrExp)
             if (hasTypedTemporaryRhs(assign.e2)) {
             import quickbite.backends.interpreter.place: Place;
 
@@ -8650,6 +8657,37 @@ unsupportedExpression:
             if (auto variable = var.var.isVarDeclaration) {
             }
 
+        return value;
+    }
+
+    // DMD lowers a modifiable `aa[key]` to `*(_d_aaGetY(...))`.  Evaluating
+    // that call first lets interpreted druntime autovivify the live handle
+    // and select its entry before construction starts in separate storage.
+    private bool isRewrittenAssociativeArrayAssignment(
+        imported!"dmd.expression".PtrExp pointer,
+    ) {
+        auto call = pointer.e1.isCallExp;
+        return call !is null &&
+            call.f !is null &&
+            call.f.ident !is null &&
+            call.f.ident.toString == "_d_aaGetY";
+    }
+
+    private ExpressionResult runRewrittenAssociativeArrayAssignment(
+        imported!"dmd.expression".PtrExp pointer,
+        imported!"dmd.expression".Expression rhs,
+    ) {
+        import quickbite.backends.interpreter.place: Place;
+
+        const address = runExpressionValue(pointer.e1);
+        if (!address.isPointer)
+            throw new Exception("Associative-array entry has no native address.");
+
+        const value = assignThroughTypedTemporary(
+            Place(address.pointerAddress, pointer.type),
+            rhs,
+        );
+        clearUninitializedBindingAddress(address.pointerAddress);
         return value;
     }
 
