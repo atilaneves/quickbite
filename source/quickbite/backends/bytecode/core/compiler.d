@@ -2000,14 +2000,14 @@ private struct Compiler {
     private void compileSwitchStatement(
         imported!"dmd.statement".SwitchStatement switch_,
     ) {
-        // DMD lowers a `string` switch to `object.__switch!(C, caseStrings...)`,
-        // whose call returns the matched case's table index (or -1), and rewrites
-        // its cases to those integer indices. Lower the selector ourselves to a
-        // string-equality chain producing that index, then the integer dispatch
-        // below handles the rest unchanged.
-        const selector = stringSwitchSelector(switch_.condition) !is null
-            ? compileStringSwitchSelector(switch_.condition.isCallExp)
-            : compileExpression(switch_.condition);
+        // DMD lowers a `string` switch to a call of
+        // `object.__switch!(C, caseStrings...)`, whose real D body (binary
+        // search over the case strings) returns the matched case's table
+        // index (or -1), and rewrites its cases to those integer indices.
+        // Compiling that call like any other expression call gives the same
+        // integer result compiled code gets from dmd's glue, so the dispatch
+        // below needs no separate handling for a string condition.
+        const selector = compileExpression(switch_.condition);
 
         // Jump over the body to the dispatch chain at the end.
         const entryJump = emitJump;
@@ -2066,81 +2066,6 @@ private struct Compiler {
             patchJump(index);
         _loopStack.length -= 1;
         _switchStack.length -= 1;
-    }
-
-    // The `object.__switch!(C, caseStrings...)` template instance behind a
-    // lowered string-switch condition, or null if the condition is not one.
-    // Its expression arguments are the case strings, indexed positionally.
-    private imported!"dmd.dtemplate".TemplateInstance stringSwitchSelector(
-        Expression condition,
-    ) {
-        import dmd.id: Id;
-
-        auto call = condition.isCallExp;
-        if (call is null)
-            return null;
-        auto variable = call.e1.isVarExp;
-        if (variable is null)
-            return null;
-        auto function_ = variable.var.isFuncDeclaration;
-        if (function_ is null)
-            return null;
-        auto instance = function_.parent.isTemplateInstance;
-        if (instance is null || instance.name !is Id.__switch)
-            return null;
-        return instance;
-    }
-
-    // Lower `object.__switch!(C, "s0", "s1", ...)(selector)` to a string-equality
-    // chain producing the matched case's table index (or -1) in an `int` slot:
-    // the integer dispatch then matches it against the cases' integer indices.
-    // The case strings are the template instance's expression arguments (the
-    // leading argument is the element type); their position is the index DMD
-    // assigned each rewritten `CaseStatement.exp`, so positional matching is
-    // exact regardless of the table's ordering.
-    private Operand compileStringSwitchSelector(
-        imported!"dmd.expression".CallExp call,
-    ) {
-        import dmd.dtemplate: isExpression;
-
-        auto instance = stringSwitchSelector(call);
-        auto selectorExpression = (*call.arguments)[0];
-        const compareWidth = dynamicArrayElementSize(selectorExpression.type);
-
-        const result = allocate(ScalarType.int_);
-        _code ~= Instruction(
-            Op.loadConstant, result, constantIndex(cast(ulong) -1), 4,
-        );
-
-        // The runtime switch value: an ordinary real descriptor, identical to
-        // every other string source, compares against each case string's own
-        // real descriptor via the generic `sliceEqualOp`.
-        const selector = dynamicArrayDescriptor(selectorExpression);
-
-        size_t[] matchedJumps;
-        int index = 0;
-        foreach (argument; *instance.tiargs) {
-            auto caseString =
-                isExpression(argument) is null ? null
-                : isExpression(argument).isStringExp;
-            if (caseString is null) // the leading element-type argument.
-                continue;
-
-            const matches = allocate(ScalarType.bool_);
-            const literalOffset = compileStringLiteralPointer(caseString);
-            emitSliceEqual(matches, selector.offset, literalOffset, compareWidth);
-            const skip = emitJumpIfFalse(Operand(matches, ScalarType.bool_));
-            _code ~= Instruction(
-                Op.loadConstant, result, constantIndex(cast(ulong) index), 4,
-            );
-            matchedJumps ~= emitJump;
-            patchJump(skip);
-            ++index;
-        }
-        foreach (jump; matchedJumps)
-            patchJump(jump);
-
-        return Operand(result, ScalarType.int_);
     }
 
     // A `case value:` label: record its body's instruction index for the
