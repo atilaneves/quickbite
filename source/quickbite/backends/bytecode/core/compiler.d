@@ -4071,10 +4071,17 @@ private struct Compiler {
         // `int[]`, the shape `gc_shrinkArrayUsed(ptr[0 .. n], ...)`'s
         // implicit argument conversion takes) needs its own rescale here --
         // the same one `compileCastExpression`/`compileDynamicArrayInto`
-        // apply when no place is available.
+        // apply when no place is available. `cast_.e1` a `Tsarray` (`x[]`'s
+        // desugaring, or `object.__equals`'s own `cast(T[])row` when a row
+        // pulled from a mixed static/dynamic array-of-arrays comparison
+        // needs a uniform element type) shares this path too: recursing
+        // into this function's own `Tsarray` case below already builds a
+        // real view over that static array's inline storage, with no
+        // separate boxed descriptor to reconcile.
         if (auto cast_ = expression.isCastExp)
             if (isDynamicArrayArgument(cast_.e1) ||
-                isStringType(cast_.e1.type)) {
+                isStringType(cast_.e1.type) ||
+                cast_.e1.type.toBasetype.ty == TY.Tsarray) {
                 const inner = dynamicArrayDescriptor(cast_.e1);
                 const elementIsArray = arrayElementIsArray(expression.type);
                 const elementType = dynamicArrayElementType(expression.type);
@@ -4103,21 +4110,20 @@ private struct Compiler {
         const kind = expression.type.toBasetype.ty;
         if (kind == TY.Tsarray) {
             auto place = placeOrNull(expression);
-            if (place is null) {
-                const elementType = dynamicArrayElementType(expression.type);
-                const elementIsArray = arrayElementIsArray(expression.type);
-                const offset = allocateBytes(
-                    sliceDescriptorSize, size_t.sizeof,
-                );
-                compileDynamicArrayInto(
-                    offset, elementType, expression,
-                    arrayElementIsDynamicArray(expression.type),
-                );
-                return DynamicArrayLocal(
-                    offset, elementType, elementIsArray,
-                );
-            }
-            const address = addressOfPlace(*place);
+            // A placeless static-array rvalue (a literal, or any other
+            // placeless temporary) is materialised through the same flat,
+            // inline layout a variable's own storage has --
+            // `aggregateOperandOffset`, the shared static-array value path
+            // an lvalue's rows already share -- so the view built below
+            // sees identical bytes either way, with no separate per-row
+            // heap descriptors.
+            const address = place is null
+                ? *addressOperand(
+                    Op.frameAddress,
+                    aggregateOperandOffset(expression.type, expression),
+                    ScalarType.void_,
+                )
+                : addressOfPlace(*place);
             const offset = allocateBytes(
                 sliceDescriptorSize, size_t.sizeof,
             );
@@ -10742,200 +10748,6 @@ private struct Compiler {
 
         auto equal = cast(EqualExp) expression;
         assert(equal !is null);
-
-        // One side a static array whose own element is itself an array
-        // (`int[2][2]`), the other a genuine `Tarray` of arrays -- DMD
-        // types an array-literal RHS this way once it starts nesting rows,
-        // hoisting it into a stack temp under `checkaction=context` and
-        // slicing it to a `Tarray` for the comparison; a real `T[][]` local
-        // arrives the same way. The two sides' rows are not the same byte
-        // shape (the static side's rows sit inline, the `Tarray` side's are
-        // each independently heap-allocated slice descriptors), so neither
-        // this function's own flat compare below nor `bothDynamicArrays`'s
-        // works; compare row by row instead, mirroring DMD's own recursive
-        // `__equals` lowering: the outer lengths must match, then every row
-        // compares content-equal, with the static side's row read as a view
-        // sharing its own storage (no copy) and the other side's row
-        // fetched from its own descriptor. Checked before `equal.lowering`
-        // for the same reason the nested static-static case below is: DMD's
-        // own `__equals` lowering hits the identical representation
-        // mismatch one level further in.
-        {
-            auto nestedStatic = equal.e1;
-            auto other = equal.e2;
-            const lhsIsNested = equal.e1.type.toBasetype.ty == TY.Tsarray &&
-                arrayElementIsArray(equal.e1.type);
-            bool rhsIsNested;
-            if (!lhsIsNested) {
-                rhsIsNested = equal.e2.type.toBasetype.ty == TY.Tsarray &&
-                    arrayElementIsArray(equal.e2.type);
-                if (rhsIsNested) {
-                    nestedStatic = equal.e2;
-                    other = equal.e1;
-                }
-            }
-            const otherIsPlainArray = other.type.toBasetype.ty == TY.Tarray;
-            if ((lhsIsNested || rhsIsNested) && otherIsPlainArray) {
-                auto rowType = nestedStatic.type.toBasetype.nextOf;
-                if (rowType.toBasetype.ty == TY.Tsarray) {
-                    auto nestedPlace = placeOrNull(nestedStatic);
-                    if (nestedPlace !is null) {
-                        const nestedAddress = addressOfPlace(*nestedPlace);
-
-                        auto rowElementType = rowType.toBasetype.nextOf;
-                        const rowElementScalar = scalarType(rowElementType);
-                        const rowByteSize = typeFacts(rowType).byteWidth;
-                        const rowLength = cast(uint)
-                            (rowByteSize / size(rowElementScalar));
-                        const rowCount =
-                            typeFacts(nestedStatic.type).byteWidth /
-                                rowByteSize;
-
-                        const otherDescriptor =
-                            dynamicArrayDescriptor(other).offset;
-                        const otherLength = allocate(ScalarType.ulong_);
-                        _code ~= Instruction(
-                            Op.sliceLength, otherLength, otherDescriptor,
-                        );
-
-                        const lengthsEqual = allocateBytes(1, 1);
-                        _code ~= Instruction(
-                            comparisonEqualOp(ScalarType.ulong_),
-                            lengthsEqual,
-                            compileSizeConstant(rowCount),
-                            otherLength,
-                        );
-
-                        size_t[] toFalse = [emitJumpIfFalse(
-                            Operand(lengthsEqual, ScalarType.bool_),
-                        )];
-
-                        foreach (rowIndex; 0 .. rowCount) {
-                            const view = allocateBytes(
-                                sliceDescriptorSize, size_t.sizeof,
-                            );
-                            const rowAddress = pointerPlaceAddress(
-                                nestedAddress.offset,
-                                compileSizeConstant(rowIndex * rowByteSize),
-                                1,
-                                ScalarType.void_,
-                            );
-                            _code ~= Instruction(
-                                Op.copy,
-                                cast(ushort) sliceDescriptorPtrOffset(view),
-                                rowAddress.offset,
-                                cast(ushort) size_t.sizeof,
-                            );
-                            _code ~= Instruction(
-                                Op.loadConstant,
-                                cast(ushort)
-                                    sliceDescriptorLengthOffset(view),
-                                constantIndex(rowLength),
-                                cast(ushort) size_t.sizeof,
-                            );
-
-                            const indexSlot = compileSizeConstant(rowIndex);
-                            const otherRow = allocateBytes(
-                                sliceDescriptorSize, size_t.sizeof,
-                            );
-                            emitIndexLoad(
-                                otherRow, otherDescriptor, indexSlot,
-                                sliceDescriptorSize,
-                            );
-
-                            const rowEqual = allocateBytes(1, 1);
-                            emitSliceEqual(
-                                rowEqual, view, otherRow,
-                                size(rowElementScalar),
-                            );
-                            toFalse ~= emitJumpIfFalse(
-                                Operand(rowEqual, ScalarType.bool_),
-                            );
-                        }
-
-                        const result = allocateBytes(1, 1);
-                        _code ~= Instruction(
-                            Op.loadConstant, result, constantIndex(1), 1,
-                        );
-                        const doneJump = emitJump;
-                        foreach (patch; toFalse)
-                            patchJump(patch);
-                        _code ~= Instruction(
-                            Op.loadConstant, result, constantIndex(0), 1,
-                        );
-                        patchJump(doneJump);
-
-                        ushort condition = result;
-                        if (equal.op == EXP.notEqual) {
-                            condition = allocateBytes(1, 1);
-                            _code ~= Instruction(
-                                Op.notBool, condition, result,
-                            );
-                        }
-                        return Operand(condition, ScalarType.bool_);
-                    }
-                }
-            }
-        }
-
-        // Two static arrays (`int[3] == int[3]`, including a literal RHS
-        // DMD's `checkaction=context` lowering hoists into its own stack
-        // temp): flatten each side into a dynamic-array view over its own
-        // inline storage and memcmp the bytes, the static-array counterpart
-        // of `bothDynamicArrays`'s flat compare below. A row-typed element
-        // (`int[2][2]`) needs its own materialised block first
-        // (`aggregateOperandOffset`, the same static-array-value path an
-        // lvalue's rows already share): `dynamicArrayDescriptor`'s no-place
-        // fallback would otherwise give a literal RHS's rows independently
-        // heap-allocated slice descriptors instead of the flat nested-inline
-        // layout the LHS's real storage has, comparing unrelated byte shapes.
-        // Checked before `equal.lowering`: DMD's own `object.__equals`
-        // lowering for a nested static array slices both operands to call
-        // it, and that slicing hits the identical representation mismatch
-        // (a real static array's row sliced in place vs. a materialised
-        // literal's row boxed on the heap) one level further in, inside
-        // `__equals`'s own compiled body instead of here.
-        if (equal.e1.type.toBasetype.ty == TY.Tsarray &&
-            equal.e2.type.toBasetype.ty == TY.Tsarray &&
-            arrayElementIsArray(equal.e1.type))
-        {
-            const lhsBlock = aggregateOperandOffset(equal.e1.type, equal.e1);
-            const rhsBlock = aggregateOperandOffset(equal.e2.type, equal.e2);
-            const lhsAddress =
-                addressOperand(Op.frameAddress, lhsBlock, ScalarType.void_);
-            const rhsAddress =
-                addressOperand(Op.frameAddress, rhsBlock, ScalarType.void_);
-            const lhsDescriptor =
-                allocateBytes(sliceDescriptorSize, size_t.sizeof);
-            const rhsDescriptor =
-                allocateBytes(sliceDescriptorSize, size_t.sizeof);
-            _code ~= Instruction(
-                Op.copy, cast(ushort) sliceDescriptorPtrOffset(lhsDescriptor),
-                lhsAddress.offset, cast(ushort) size_t.sizeof,
-            );
-            _code ~= Instruction(
-                Op.copy, cast(ushort) sliceDescriptorPtrOffset(rhsDescriptor),
-                rhsAddress.offset, cast(ushort) size_t.sizeof,
-            );
-            const rowSize = dynamicArrayElementSize(equal.e1.type);
-            const rowCount = typeFacts(equal.e1.type).byteWidth / rowSize;
-            _code ~= Instruction(
-                Op.loadConstant,
-                cast(ushort) sliceDescriptorLengthOffset(lhsDescriptor),
-                constantIndex(rowCount), cast(ushort) size_t.sizeof,
-            );
-            _code ~= Instruction(
-                Op.loadConstant,
-                cast(ushort) sliceDescriptorLengthOffset(rhsDescriptor),
-                constantIndex(rowCount), cast(ushort) size_t.sizeof,
-            );
-
-            const rowsEqual = allocateBytes(1, 1);
-            emitSliceEqual(rowsEqual, lhsDescriptor, rhsDescriptor, rowSize);
-            if (equal.op == EXP.notEqual)
-                _code ~= Instruction(Op.notBool, rowsEqual, rowsEqual);
-            return Operand(rowsEqual, ScalarType.bool_);
-        }
 
         if (equal.lowering !is null)
             return compileExpression(equal.lowering);
