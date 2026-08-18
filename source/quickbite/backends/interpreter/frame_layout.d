@@ -296,6 +296,7 @@ public FrameLayout computeExpressionFrameLayout(
 private imported!"dmd.expression".Expression[] addressableTemporaryExpressions(
     imported!"dmd.statement".Statement statement,
 ) @trusted {
+    import dmd.declaration: VarDeclaration;
     import dmd.expression: Expression;
     import dmd.visitor.foreachvar: foreachExpAndVar;
 
@@ -303,8 +304,10 @@ private imported!"dmd.expression".Expression[] addressableTemporaryExpressions(
     void append(Expression expression) {
         expressions ~= addressableTemporaryExpressions(expression);
     }
+    void ignoreVariable(VarDeclaration) {
+    }
 
-    statement.foreachExpAndVar(&append, null);
+    statement.foreachExpAndVar(&append, &ignoreVariable);
     return expressions;
 }
 
@@ -381,11 +384,13 @@ private void placeTemporary(
     ref FramePacker packer,
     imported!"dmd.expression".Expression expression,
 ) @trusted {
-    import quickbite.backends.interpreter.layout: typeIsSized;
+    import quickbite.backends.interpreter.layout: typeAlignment, typeIsSized;
 
     auto type = expressionType(expression);
-    if (typeIsSized(type))
-        packer.placeTemporary(expression, type);
+    if (!typeIsSized(type) || typeAlignment(type) == 0)
+        return;
+
+    packer.placeTemporary(expression, type);
 }
 
 
