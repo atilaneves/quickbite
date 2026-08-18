@@ -1594,6 +1594,55 @@ private struct Walker {
         return variable !is null && hasBindingPlace(variable);
     }
 
+    // `placeOfLvalue` composes the storage representation of a projection.
+    // A cast has no storage of its own, so it must preserve that
+    // representation before a direct array operation can use the resulting
+    // place. Otherwise, for example, a pointer place could be treated as an
+    // array header. The value path applies the cast before it observes array
+    // semantics.
+    private bool hasArrayProjectionPlace(
+        imported!"dmd.expression".Expression expression,
+    ) {
+        if (!hasProjectionPlace(expression))
+            return false;
+
+        auto type = expression.type.toBasetype;
+        if (type.isTypeSArray is null && type.isTypeDArray is null)
+            return false;
+
+        return hasRepresentationPreservingProjectionPlace(expression);
+    }
+
+    private bool hasRepresentationPreservingProjectionPlace(
+        imported!"dmd.expression".Expression expression,
+    ) {
+        if (auto cast_ = expression.isCastExp) {
+            if (
+                cast_.e1.type is null ||
+                !expression.type.toBasetype.equals(cast_.e1.type.toBasetype)
+            )
+                return false;
+            return hasRepresentationPreservingProjectionPlace(cast_.e1);
+        }
+
+        if (auto index = expression.isIndexExp) {
+            if (index.e1.isSymOffExp !is null)
+                return true;
+            return hasRepresentationPreservingProjectionPlace(index.e1);
+        }
+
+        if (auto dot = expression.isDotVarExp)
+            return hasRepresentationPreservingProjectionPlace(dot.e1);
+
+        if (auto pointer = expression.isPtrExp) {
+            if (pointer.e1.isSymOffExp !is null)
+                return true;
+            return hasRepresentationPreservingProjectionPlace(pointer.e1);
+        }
+
+        return expression.isVarExp !is null;
+    }
+
     // Only storage-owned/ref-forwarded struct/array trees take the direct
     // write path. Pointer
     // dereferences retain the old path and its null/provenance diagnostics.
@@ -3002,7 +3051,7 @@ arrayLengthExpression:
             // An addressable receiver already
             // has authoritative typed storage. Read only its header/fixed
             // length instead of allocating a by-value receiver snapshot.
-            if (hasProjectionPlace(arrayLength.e1))
+            if (hasArrayProjectionPlace(arrayLength.e1))
                 return ExpressionResult(
                     projectionPlace(arrayLength.e1).arrayLength,
                 );
@@ -11420,7 +11469,8 @@ unsupportedExpression:
         if (
             (baseType.isTypeSArray !is null ||
                 baseType.isTypeDArray !is null) &&
-            hasDirectWriteProjectionPlace(slice.e1)
+            hasDirectWriteProjectionPlace(slice.e1) &&
+            hasArrayProjectionPlace(slice.e1)
         )
             return runAddressableSliceExpression(slice, lower);
 
@@ -12052,7 +12102,11 @@ unsupportedExpression:
         // receiver once and load only the selected element. The returned
         // `ExpressionResult` remains a by-value result; call and other rvalue
         // receivers retain the original materialisation path below.
-        if (hasProjectionPlace(index.e1)) {
+        if (
+            isPointerType(index.e1.type)
+                ? hasProjectionPlace(index.e1)
+                : hasArrayProjectionPlace(index.e1)
+        ) {
             // `auto`: `Place.index`/`arrayLength` are mutable-qualified.
             auto sourcePlace = projectionPlace(index.e1);
             if (isPointerType(index.e1.type)) {
@@ -13182,7 +13236,10 @@ destinationFallback:
         imported!"dmd.expression".SliceExp slice,
         imported!"quickbite.backends.interpreter.place".Place destination,
     ) {
-        if (!hasDirectWriteProjectionPlace(slice.e1))
+        if (
+            !hasDirectWriteProjectionPlace(slice.e1) ||
+            !hasArrayProjectionPlace(slice.e1)
+        )
             return false;
 
         import dmd.astenums: TY;
