@@ -567,3 +567,26 @@
   accumulate, not an assign -- pre-seeding it `true` and asserting it
   becomes `false` on a non-overflowing call is not a valid write-back
   probe; the flag must start `false`.
+
+- Flipping a VM array representation from boxed-per-row descriptors to the
+  real inline D layout (bytecode core's `Tsarray`-row fix, `int[N][]`
+  storing rows `T[N].sizeof`-strided instead of behind a 16-byte
+  `{length, ptr}` descriptor) is not done once construction and indexing
+  compile and the target tests pass: a full `@Bytecode` sweep, not just the
+  target tests, is what surfaces the other emit sites still keyed on the
+  boxed assumption -- concretely `new T[N][](rows)` (`compileNewArrayInto`),
+  slice-assignment broadcast-fill/range-copy (`storeDynamicSlice`), and
+  module-level literal constant-folding (`moduleDynamicArrayLiteralInitializerBytes`)
+  each had their own separate boxed-row special case. `storeDynamicSlice`'s
+  turned out to be pure deletion once rows are flat: the same
+  `emitSliceFill`/`emitSliceCopy` helpers scalars and structs already use
+  handle arbitrary element width via their `N`-suffixed opcode variants
+  (`Op.sliceFillN`/`Op.sliceCopyN`), so `emitRowBroadcastFill`/
+  `emitRowRangeCopy`/`emitInlineRowRangeCopy` and `Op.rowRangeCopy` were
+  dead weight, not a shape needing its own generic replacement. Also:
+  `dynamicArrayElementSize`'s `elementIsArray` parameter (returning a
+  hardcoded `sliceDescriptorSize` for a boxed row) was entirely redundant
+  with its own `typeFacts(element).byteWidth` fallback -- a `Tarray`
+  element's `byteWidth` already equals `sliceDescriptorSize` by
+  definition, so the special case never needed to exist even before the
+  `Tsarray` fix.

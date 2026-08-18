@@ -3468,15 +3468,12 @@ private struct Compiler {
                 _activeDollarLength = sliceLengthSlot(descriptorMetadata);
                 const indexValue = compileExpression(index.e2);
                 _activeDollarLength = savedDollarLength;
-                if (facts.isAggregate &&
-                    descriptorMetadata.elementIsArray &&
-                    index.type.toBasetype.ty == TY.Tsarray)
-                    return pointerPlace(
-                        innerArrayRowPointer(
-                            descriptorMetadata, indexValue.offset,
-                        ),
-                        index.type,
-                    );
+                // A `Tsarray` element (`int[2][]`'s `int[2]` rows) is the
+                // real D layout: stored inline, `T[N].sizeof`-strided, in
+                // the array's own backing store, so its address is the
+                // same base-plus-scaled-index computation `dynamicIndexPlace`
+                // already gives any other full-width aggregate element (a
+                // struct, say) -- no separate row descriptor to dereference.
                 return dynamicIndexPlace(
                     descriptorMetadata, indexValue.offset, index.type,
                 );
@@ -3507,9 +3504,7 @@ private struct Compiler {
             result.sliceElementIsArray = pointerSlice
                 ? arrayElementIsArray(slice.e1.type)
                 : descriptor.elementIsArray;
-            result.sliceElementSize = dynamicArrayElementSize(
-                slice.e1.type, result.sliceElementIsArray,
-            );
+            result.sliceElementSize = dynamicArrayElementSize(slice.e1.type);
             if (!pointerSlice)
                 result.sliceDescriptor = descriptor;
             result.offset = allocateBytes(
@@ -3953,7 +3948,7 @@ private struct Compiler {
                 );
                 compileDynamicArrayInto(
                     result, dynamicArrayElementType(type), rhs,
-                    arrayElementIsArray(type),
+                    arrayElementIsDynamicArray(type),
                 );
                 return result;
             case delegate_:
@@ -4020,12 +4015,10 @@ private struct Compiler {
                 const inner = dynamicArrayDescriptor(cast_.e1);
                 const elementIsArray = arrayElementIsArray(expression.type);
                 const elementType = dynamicArrayElementType(expression.type);
-                const targetElementSize = dynamicArrayElementSize(
-                    expression.type, elementIsArray,
-                );
-                const sourceElementSize = dynamicArrayElementSize(
-                    cast_.e1.type, arrayElementIsArray(cast_.e1.type),
-                );
+                const targetElementSize =
+                    dynamicArrayElementSize(expression.type);
+                const sourceElementSize =
+                    dynamicArrayElementSize(cast_.e1.type);
                 if (targetElementSize == sourceElementSize)
                     return DynamicArrayLocal(
                         inner.offset, elementType, elementIsArray,
@@ -4054,7 +4047,8 @@ private struct Compiler {
                     sliceDescriptorSize, size_t.sizeof,
                 );
                 compileDynamicArrayInto(
-                    offset, elementType, expression, elementIsArray,
+                    offset, elementType, expression,
+                    arrayElementIsDynamicArray(expression.type),
                 );
                 return DynamicArrayLocal(
                     offset, elementType, elementIsArray,
@@ -4108,7 +4102,8 @@ private struct Compiler {
 
         const offset = allocateBytes(sliceDescriptorSize, size_t.sizeof);
         compileDynamicArrayInto(
-            offset, elementType, expression, elementIsArray,
+            offset, elementType, expression,
+            arrayElementIsDynamicArray(expression.type),
         );
         return DynamicArrayLocal(offset, elementType, elementIsArray);
     }
@@ -6012,7 +6007,7 @@ private struct Compiler {
             if (fieldType.toBasetype.ty == TY.Tarray) {
                 compileDynamicArrayInto(
                     fieldOffset, dynamicArrayElementType(fieldType), element,
-                    arrayElementIsArray(fieldType),
+                    arrayElementIsDynamicArray(fieldType),
                 );
                 continue;
             }
@@ -6799,11 +6794,11 @@ private struct Compiler {
             return existing;
 
         const elementType = dynamicArrayElementType(field.type);
-        const elementIsArray = arrayElementIsArray(field.type);
 
         size_t count;
         auto literalBytes = moduleDynamicArrayLiteralInitializerBytes(
-            normalized, elementType, elementIsArray, field.type, count,
+            normalized, elementType, arrayElementIsDynamicArray(field.type),
+            field.type, count,
         );
         if (literalBytes is null && count == 0)
             return null;
@@ -6862,7 +6857,7 @@ private struct Compiler {
                 destination,
                 dynamicArrayElementType(field.type),
                 valueExpression,
-                arrayElementIsArray(field.type),
+                arrayElementIsDynamicArray(field.type),
             );
             emitPointerStore(
                 destination, fieldPointer, compileSizeConstant(0),
@@ -6902,7 +6897,7 @@ private struct Compiler {
                     fieldOffset,
                     dynamicArrayElementType(field.type),
                     (*arguments)[index],
-                    arrayElementIsArray(field.type),
+                    arrayElementIsDynamicArray(field.type),
                 );
                 continue;
             }
@@ -7044,6 +7039,7 @@ private struct Compiler {
 
         const elementType = dynamicArrayElementType(variable.type);
         const elementIsArray = arrayElementIsArray(variable.type);
+        const elementIsDynamicArray = arrayElementIsDynamicArray(variable.type);
         const offset = allocateBytes(sliceDescriptorSize, size_t.sizeof);
         registerFrameDeclaration(variable).dynamicArray =
             DynamicArrayLocal(offset, elementType, elementIsArray);
@@ -7075,9 +7071,17 @@ private struct Compiler {
                     .dynamicArray.staticArrayOffset = address.offset;
             }
         compileDynamicArrayInto(
-            offset, elementType, source, elementIsArray);
+            offset, elementType, source, elementIsDynamicArray);
     }
 
+    // `elementIsArray`: true only when each element of the array being built
+    // is itself a genuine dynamic array (`int[][]`'s `int[]` rows), needing
+    // its own separately heap-allocated 16-byte descriptor
+    // (`arrayElementIsDynamicArray`). A `Tsarray` element (`int[2][]`'s
+    // `int[2]` rows) is the real D layout instead: stored inline,
+    // `T[N].sizeof`-strided, so it takes the same generic full-width-block
+    // path below every other aggregate element (a struct, say) already
+    // takes.
     private void compileDynamicArrayInto(
         in ushort destination,
         in ScalarType elementType,
@@ -7139,9 +7143,7 @@ private struct Compiler {
         // `dest = arr.dup` / `dest = arr.idup`: an independent copy of `arr` in
         // a fresh heap block, so mutating either side leaves the other intact.
         if (auto duplicate = tryArrayDuplication(source)) {
-            compileArrayDuplication(
-                destination, elementType, duplicate, elementIsArray,
-            );
+            compileArrayDuplication(destination, elementType, duplicate);
             return;
         }
 
@@ -7230,8 +7232,7 @@ private struct Compiler {
             source.type.toBasetype.ty == TY.Tsarray)
             if (auto place = placeOrNull(source)) {
                 const dim = staticArrayLength(source.type);
-                const elementSize =
-                    dynamicArrayElementSize(source.type, elementIsArray);
+                const elementSize = dynamicArrayElementSize(source.type);
                 _code ~= Instruction(
                     Op.allocArray,
                     destination,
@@ -7295,13 +7296,16 @@ private struct Compiler {
         const count = literal.elements is null ? 0 : literal.elements.length;
 
         // An array-of-arrays literal (`[[..], [..]]`, any nesting depth):
-        // each element is itself an array, stored as a 16-byte descriptor.
-        // Build each inner array into a fresh descriptor slot and store it
-        // into the outer block. A row is itself an array-of-arrays (depth 3
-        // and beyond, e.g. `int[][][]`'s `int[][]` rows) when *its own*
-        // element is an array too -- checked fresh per recursive call
-        // rather than reusing the caller's `elementIsArray`, since that
-        // flag describes this level's rows, not the row's own elements.
+        // each element is itself a genuine dynamic array, stored as a
+        // 16-byte descriptor. Build each inner array into a fresh
+        // descriptor slot and store it into the outer block. A row is
+        // itself an array-of-arrays (depth 3 and beyond, e.g. `int[][][]`'s
+        // `int[][]` rows) when *its own* element is a dynamic array too --
+        // checked fresh per recursive call rather than reusing the caller's
+        // `elementIsArray`, since that flag describes this level's rows,
+        // not the row's own elements. A `Tsarray` row (`int[2][]`) is not
+        // this shape -- it falls to the generic full-width-block path
+        // below, laid out inline like any other aggregate element.
         if (elementIsArray) {
             _code ~= Instruction(
                 Op.allocArray,
@@ -7310,8 +7314,9 @@ private struct Compiler {
                 cast(ushort) count,
             );
 
-            const rowElementIsArray =
-                arrayElementIsArray(source.type.toBasetype.nextOf);
+            const rowElementIsArray = arrayElementIsDynamicArray(
+                source.type.toBasetype.nextOf,
+            );
             foreach (elementIndex; 0 .. count) {
                 const inner =
                     allocateBytes(sliceDescriptorSize, size_t.sizeof);
@@ -7325,8 +7330,7 @@ private struct Compiler {
             return;
         }
 
-        const elementSize =
-            dynamicArrayElementSize(source.type, elementIsArray);
+        const elementSize = dynamicArrayElementSize(source.type);
         _code ~= Instruction(
             Op.allocArray,
             destination,
@@ -7360,14 +7364,8 @@ private struct Compiler {
         Type destinationType,
         Type sourceType,
     ) {
-        const destinationElementIsArray = arrayElementIsArray(destinationType);
-        const destinationElementSize = dynamicArrayElementSize(
-            destinationType, destinationElementIsArray,
-        );
-        const sourceElementIsArray = arrayElementIsArray(sourceType);
-        const sourceElementSize = dynamicArrayElementSize(
-            sourceType, sourceElementIsArray,
-        );
+        const destinationElementSize = dynamicArrayElementSize(destinationType);
+        const sourceElementSize = dynamicArrayElementSize(sourceType);
         if (sourceElementSize == destinationElementSize)
             return;
 
@@ -7419,12 +7417,15 @@ private struct Compiler {
         const count = literal.elements is null ? 0 : literal.elements.length;
 
         // A nested array-of-arrays literal (`[[1, 2], [3, 4]]`): each element
-        // is itself an array, stored as a 16-byte descriptor, mirroring
-        // `compileDynamicArrayInto`'s own array-of-arrays literal handling.
-        // `variable.type` (the hoisted stack temp's own declared type) names
-        // the literal's true shape; `elementType`'s deepest-leaf-scalar
-        // convention can't distinguish this from the flat case on its own.
-        if (arrayElementIsArray(variable.type)) {
+        // is itself a genuine dynamic array, stored as a 16-byte descriptor,
+        // mirroring `compileDynamicArrayInto`'s own array-of-arrays literal
+        // handling. `variable.type` (the hoisted stack temp's own declared
+        // type) names the literal's true shape; `elementType`'s
+        // deepest-leaf-scalar convention can't distinguish this from the
+        // flat case on its own. A `Tsarray` element (`int[2][]`) is not
+        // this shape -- it falls to the generic full-width-block path
+        // below, same as any other aggregate element.
+        if (arrayElementIsDynamicArray(variable.type)) {
             _code ~= Instruction(
                 Op.allocArray,
                 destination,
@@ -7610,58 +7611,26 @@ private struct Compiler {
         NewExp new_,
         in bool elementIsArray = false,
     ) {
-        import dmd.astenums: TY;
         import std.conv: text;
 
-        // `new T[][](rows, cols)`: both lengths arrive in `new_.arguments`; build
-        // an outer array of `rows` inner arrays, each of `cols` elements.
-        // `new T[N][](rows)`: only `rows` is a runtime argument -- the inner
-        // length `N` is a compile-time static-array bound baked into the
-        // element's own type (`new_.type`'s `Tsarray` element), not a second
-        // `NewExp` argument, so it is loaded as a constant instead of compiled
-        // from a second argument expression that does not exist.
+        // `new T[][](rows, cols)`: both lengths arrive in `new_.arguments`;
+        // build an outer array of `rows` inner dynamic arrays, each of
+        // `cols` elements. `elementIsArray` (true only for a genuine
+        // `Tarray` inner element -- see `arrayElementIsDynamicArray`) never
+        // holds for a `Tsarray` inner element (`new T[N][](rows)`): that
+        // shape's rows are the real D layout, stored inline, and fall
+        // through to the plain single-block `allocArrayDynamic` below,
+        // `dynamicArrayElementSize` already sizing it by the row's own full
+        // width.
         if (elementIsArray) {
-            auto innerElement = new_.type.toBasetype.nextOf;
-            const innerIsStatic =
-                innerElement.toBasetype.ty == TY.Tsarray;
-
-            if (innerIsStatic && new_.arguments !is null &&
-                new_.arguments.length == 1) {
-                const dimensions =
-                    allocateBytes(2 * size_t.sizeof, size_t.sizeof);
-                const rows = compileExpression((*new_.arguments)[0]);
-                _code ~= Instruction(
-                    Op.copy,
-                    dimensions,
-                    rows.offset,
-                    cast(ushort) size_t.sizeof,
-                );
-                _code ~= Instruction(
-                    Op.loadConstant,
-                    cast(ushort) (dimensions + size_t.sizeof),
-                    constantIndex(staticArrayLength(innerElement)),
-                    cast(ushort) size_t.sizeof,
-                );
-                _code ~= Instruction(
-                    Op.allocArray2D,
-                    destination,
-                    packedFill(elementType),
-                    dimensions,
-                );
-                return;
-            }
-
-            // `new T[][](rows)`: the inner element is itself a dynamic array
-            // (not a `Tsarray` row), so there is no compile-time row width to
-            // bake in and no second runtime argument either -- each of the
-            // `rows` outer slots simply default-inits to its own null slice,
-            // the same zero-filled 16-byte descriptor a bare `T[]` local
-            // starts with. Fill with `0x00` unconditionally rather than
-            // `packedFill(elementType)`: that call's char/wchar special case
-            // targets a scalar *data* fill, not this level's slice
-            // descriptors.
-            if (!innerIsStatic && new_.arguments !is null &&
-                new_.arguments.length == 1) {
+            // `new T[][](rows)`: only `rows` is a runtime argument -- each
+            // of the `rows` outer slots simply default-inits to its own
+            // null slice, the same zero-filled 16-byte descriptor a bare
+            // `T[]` local starts with. Fill with `0x00` unconditionally
+            // rather than `packedFill(elementType)`: that call's char/wchar
+            // special case targets a scalar *data* fill, not this level's
+            // slice descriptors.
+            if (new_.arguments !is null && new_.arguments.length == 1) {
                 const length = compileExpression((*new_.arguments)[0]);
                 _code ~= Instruction(
                     Op.allocArrayDynamic,
@@ -7713,7 +7682,7 @@ private struct Compiler {
             destination,
             packedFill(
                 elementType,
-                dynamicArrayElementSize(new_.type, elementIsArray),
+                dynamicArrayElementSize(new_.type),
             ),
             length.offset,
         );
@@ -7779,10 +7748,7 @@ private struct Compiler {
             cast(ushort) size_t.sizeof,
         );
 
-        const elementSize = dynamicArrayElementSize(
-            slice.e1.type,
-            descriptor.elementIsArray,
-        );
+        const elementSize = dynamicArrayElementSize(slice.e1.type);
         emitSubSlice(destination, descriptor.offset, bounds, elementSize);
     }
 
@@ -7821,14 +7787,9 @@ private struct Compiler {
         in ScalarType elementType,
         CatExp cat,
     ) {
-        const elementIsArray = arrayElementIsArray(cat.type);
-        const elementSize = dynamicArrayElementSize(cat.type, elementIsArray);
-        const left = catOperandDescriptor(
-            elementType, elementSize, elementIsArray, cat.e1,
-        );
-        const right = catOperandDescriptor(
-            elementType, elementSize, elementIsArray, cat.e2,
-        );
+        const elementSize = dynamicArrayElementSize(cat.type);
+        const left = catOperandDescriptor(elementType, elementSize, cat.e1);
+        const right = catOperandDescriptor(elementType, elementSize, cat.e2);
         emitConcatArrays(destination, left, right, elementSize);
     }
 
@@ -7841,7 +7802,6 @@ private struct Compiler {
     private ushort catOperandDescriptor(
         in ScalarType elementType,
         in uint elementSize,
-        in bool elementIsArray,
         Expression operand,
     ) {
         import dmd.astenums: TY;
@@ -7894,7 +7854,6 @@ private struct Compiler {
         in ushort destination,
         in ScalarType elementType,
         Expression source,
-        in bool elementIsArray = false,
     ) {
         // The dup argument is the source array wrapped in an
         // implicit-const cast; unwrap it so a known dynamic-array local reuses
@@ -7904,10 +7863,7 @@ private struct Compiler {
             array = cast_.e1;
 
         const sourceDescriptor = dynamicArrayDescriptor(array).offset;
-        const elementSize = dynamicArrayElementSize(
-            array.type,
-            elementIsArray,
-        );
+        const elementSize = dynamicArrayElementSize(array.type);
         emitDupArray(destination, sourceDescriptor, elementSize);
     }
 
@@ -7977,17 +7933,9 @@ private struct Compiler {
                     expressionChars(cast_),
                 ));
 
-            const elementIsArray = arrayElementIsArray(cast_.to);
             const elementType = dynamicArrayElementType(cast_.to);
-            const targetElementSize = dynamicArrayElementSize(
-                cast_.to,
-                elementIsArray,
-            );
-            const sourceElementIsArray = arrayElementIsArray(cast_.e1.type);
-            const sourceElementSize = dynamicArrayElementSize(
-                cast_.e1.type,
-                sourceElementIsArray,
-            );
+            const targetElementSize = dynamicArrayElementSize(cast_.to);
+            const sourceElementSize = dynamicArrayElementSize(cast_.e1.type);
             if (targetElementSize == sourceElementSize)
                 return source;
 
@@ -8142,35 +8090,11 @@ private struct Compiler {
     // type. `&arr[0]` produces the same address, so the two compare `is`-equal.
     private Operand compileArrayPointer(CastExp cast_) {
         const descriptor = dynamicArrayDescriptor(cast_.e1);
-        const elementByteWidth = dynamicArrayElementSize(
-            cast_.e1.type,
-            descriptor.elementIsArray,
-        );
+        const elementByteWidth = dynamicArrayElementSize(cast_.e1.type);
         return pointerToElement(
             descriptor.offset, descriptor.elementType, compileSizeConstant(0),
             elementByteWidth,
         );
-    }
-
-    // The runtime address of `outer[i]`'s separately heap-allocated inner row:
-    // read the row's
-    // own 16-byte slice descriptor out of `outer`'s backing store and take its
-    // `.ptr` field. Shared with row assignment so writing a whole new row's
-    // worth of values lands in the same heap block a pointer taken earlier
-    // still addresses, instead of a fresh, differently addressed block.
-    private ushort innerArrayRowPointer(
-        in DynamicArrayLocal descriptor,
-        in ushort indexSlot,
-    ) {
-        const inner = allocateBytes(sliceDescriptorSize, size_t.sizeof);
-        emitIndexLoad(inner, descriptor.offset, indexSlot, sliceDescriptorSize);
-        const pointer =
-            allocateBytes(cast(uint) size_t.sizeof, size_t.sizeof);
-        _code ~= Instruction(
-            Op.copy, pointer, cast(ushort) sliceDescriptorPtrOffset(inner),
-            cast(ushort) size_t.sizeof,
-        );
-        return pointer;
     }
 
     private Operand staticArrayElementPointer(
@@ -9575,7 +9499,8 @@ private struct Compiler {
         ubyte[] literalBytes;
         if (!hasDefaultInitializer) {
             literalBytes = moduleDynamicArrayLiteralInitializerBytes(
-                initializerExpr, elementType, elementIsArray,
+                initializerExpr, elementType,
+                arrayElementIsDynamicArray(declaration.type),
                 declaration.type, literalCount,
             );
             if (literalBytes is null && literalCount == 0)
@@ -9681,6 +9606,48 @@ private struct Compiler {
             return null;
         }
 
+        // A `Tsarray` row (`int[3][]`'s `int[3]` elements): the real D
+        // layout stores each row inline, `T[N].sizeof`-strided, not behind
+        // its own heap-allocated descriptor -- fold each row's own literal
+        // bytes (`moduleStaticArrayLiteralInitializerBytes`, the same
+        // constant-folder a plain module-level `int[3] x = [1, 2, 3];`
+        // already uses) directly into this level's `bytes` at
+        // `elementIndex * rowByteSize`, no `literalBlocks` entry or
+        // descriptor involved.
+        if (!elementIsArray && arrayType !is null) {
+            auto rowType = arrayType.toBasetype.nextOf;
+            if (rowType !is null && rowType.toBasetype.ty == TY.Tsarray) {
+                auto outer = initializerExpr.isArrayLiteralExp;
+                if (outer is null || outer.elements is null ||
+                    outer.elements.length == 0)
+                {
+                    return null;
+                }
+
+                const rowByteSize = typeFacts(rowType).byteWidth;
+                auto rowScalarType = rowType.toBasetype.nextOf;
+                count = outer.elements.length;
+                ubyte[] bytes;
+                bytes.length = count * rowByteSize;
+                foreach (elementIndex; 0 .. count) {
+                    auto element = (*outer.elements)[elementIndex];
+                    auto rowLiteral =
+                        element is null ? null : element.isArrayLiteralExp;
+                    auto rowBytes = moduleStaticArrayLiteralInitializerBytes(
+                        rowLiteral, rowScalarType, cast(ushort) rowByteSize,
+                    );
+                    if (rowBytes is null) {
+                        count = 0;
+                        return null;
+                    }
+
+                    const rowOffset = elementIndex * rowByteSize;
+                    bytes[rowOffset .. rowOffset + rowByteSize] = rowBytes[];
+                }
+                return bytes;
+            }
+        }
+
         if (elementIsArray) {
             auto outer = initializerExpr.isArrayLiteralExp;
             if (outer is null || outer.elements is null ||
@@ -9696,14 +9663,16 @@ private struct Compiler {
                 auto element = (*outer.elements)[elementIndex];
                 // Re-derive from the row's own type, rather than always
                 // recursing with `false`, so a row that is itself another
-                // `elementIsArray` shape (e.g. `int[][][]`'s middle-level
-                // row, itself an `int[][]` whose own elements are `int[]`)
-                // keeps recursing through the array branch instead of
-                // stopping after exactly one level -- this is what
-                // generalises this function from one fixed level of nesting
-                // to arbitrary depth.
+                // genuine-dynamic-array shape (e.g. `int[][][]`'s
+                // middle-level row, itself an `int[][]` whose own elements
+                // are `int[]`) keeps recursing through the array branch
+                // instead of stopping after exactly one level -- this is
+                // what generalises this function from one fixed level of
+                // nesting to arbitrary depth. A `Tsarray` row falls through
+                // to the flat branch below instead, its rows stored inline.
                 const rowElementIsArray = element !is null &&
-                    element.type !is null && arrayElementIsArray(element.type);
+                    element.type !is null &&
+                    arrayElementIsDynamicArray(element.type);
                 size_t rowCount;
                 auto rowBytes = moduleDynamicArrayLiteralInitializerBytes(
                     element, elementType, rowElementIsArray,
@@ -10512,97 +10481,39 @@ private struct Compiler {
         Place place,
         Expression rhs,
     ) {
-        auto descriptor = &place.sliceDescriptor;
         const elementType = place.sliceElementType;
+        // True only for a genuine `Tarray` row (`int[][]`'s `int[]`
+        // elements, `arrayElementIsDynamicArray`): each such row is its own
+        // separately heap-allocated 16-byte `{length, ptr}` descriptor, a
+        // reference-semantics value. A `Tsarray` row (`int[2][]`'s `int[2]`
+        // elements) is NOT this shape -- its real D layout stores rows
+        // inline, `T[N].sizeof`-strided, in the array's own backing store,
+        // so it takes the same flat broadcast-fill/range-copy path below
+        // every scalar or struct element already takes.
         const elementIsArray = place.sliceElementIsArray;
         const destination = place.offset;
         const elementSize = place.sliceElementSize;
 
-        // `elementIsArray` means each destination element is its own
-        // separately heap-allocated row descriptor (the `T[N][]`
-        // representation), not `elementSize` (=`sliceDescriptorSize`) raw
-        // bytes shared by every row. A `T[N]` row's already-allocated block
-        // (from the array's construction) is written through its own
-        // pointer, one row at a time (`emitRowBroadcastFill`), the same
-        // addressing the single-index aggregate place's
-        // `innerArrayRowPointer` writeback uses -- only when the rhs is
-        // itself shaped like one row (`sameType` against the row's own
-        // `Type`, not the whole sliced range).
-        //
-        // `descriptor.isStaticArrayView` (a genuine multidimensional static
-        // array, e.g. `int[3][3]`, viewed through a throwaway heap copy)
-        // shares `elementIsArray` with the true `T[N][]` shape but its rows
-        // are contiguous inline bytes, not separate heap blocks -- excluded
-        // here, or `emitRowBroadcastFill` would dereference row bytes as if
-        // they were a row pointer.
-        import dmd.astenums: TY;
+        // `T[][]` (`Tarray`-row): a `T[]` row is itself just a 16-byte
+        // `{length, ptr}` descriptor, the same reference-semantics value
+        // every other broadcast-fill element is. There is no separately
+        // heap-allocated row block to write through -- broadcasting the
+        // rhs row means writing its own descriptor bytes into every
+        // destination slot, aliasing every destination row to the rhs
+        // row's backing storage, matching `SystemLinker`. `emitSliceFill`
+        // (the same helper the non-array-element branch below uses) does
+        // exactly that; a row-range rhs (another `T[][]` sub-slice) is not
+        // handled here and falls through to the flat `sliceCopy16` below,
+        // which already copies each element's 16-byte descriptor by value
+        // -- correct for reference-typed rows.
+        if (elementIsArray && rhs.type !is null &&
+            sameType(rhs.type, place.sliceBaseType.toBasetype.nextOf)) {
+            const value = compileExpression(rhs);
+            emitSliceFill(destination, value.offset, elementSize);
 
-        if (elementIsArray && descriptor !is null &&
-            !descriptor.isStaticArrayView) {
-            auto rowType = place.sliceBaseType.toBasetype.nextOf;
-            if (rowType.toBasetype.ty == TY.Tsarray) {
-                const rowByteSize = typeFacts(rowType).byteWidth;
-
-                if (rhs.type !is null && sameType(rhs.type, rowType)) {
-                    const value = compileExpression(rhs);
-                    emitRowBroadcastFill(
-                        destination, value.offset, rowByteSize,
-                    );
-
-                    return Operand.init;
-                }
-
-                // A rhs shaped like a matching range of rows (a sub-slice,
-                // another `T[N][]`), not a single broadcast row: write
-                // through each destination row's own block instead of
-                // `sliceCopy16`'s flat by-value descriptor copy below,
-                // which would alias every destination row to the source's
-                // block (see `Op.rowRangeCopy`'s doc comment).
-                //
-                // A rhs range sourced from a static-array view (`s[0 .. 2]`
-                // where `s` is itself a multidimensional static array, e.g.
-                // `int[3][3]`) is contiguous inline row bytes rather than row
-                // descriptors. Lower it to the typed row-copy loop below.
-                if (auto rhsSlice = rhs.isSliceExp)
-                    if (rhsSlice.e1.type.toBasetype.ty == TY.Tsarray) {
-                            const rangeSource = compileSourceSlice(
-                                elementType, rhs,
-                            );
-                            emitInlineRowRangeCopy(
-                                destination, rangeSource, rowByteSize,
-                            );
-
-                            return Operand.init;
-                    }
-
-                const rangeSource = compileSourceSlice(elementType, rhs);
-                emitRowRangeCopy(destination, rangeSource, rowByteSize);
-
-                return Operand.init;
-            }
-
-            // `T[][]` (`Tarray`-row): unlike a `T[N]` row, a `T[]` row is
-            // itself just a 16-byte `{length, ptr}` descriptor, the same
-            // reference-semantics value every other broadcast-fill element
-            // is. There is no separately heap-allocated row block to write
-            // through -- broadcasting the rhs row means writing its own
-            // descriptor bytes into every destination slot, aliasing every
-            // destination row to the rhs row's backing storage, matching
-            // `SystemLinker`. `emitSliceFill` (the same helper the
-            // non-array-element branch below uses) does exactly that; a
-            // row-range rhs (another `T[][]` sub-slice) is not handled here
-            // and falls through to the flat `sliceCopy16` below, which
-            // already copies each element's 16-byte descriptor by value --
-            // correct for reference-typed rows, unlike the `T[N][]` case
-            // above.
-            if (rowType.toBasetype.ty == TY.Tarray &&
-                rhs.type !is null && sameType(rhs.type, rowType)) {
-                const value = compileExpression(rhs);
-                emitSliceFill(destination, value.offset, elementSize);
-
-                return Operand.init;
-            }
-        } else if (!elementIsArray && isBroadcastFillSource(rhs)) {
+            return Operand.init;
+        }
+        if (!elementIsArray && isBroadcastFillSource(rhs)) {
             const value = compileExpression(rhs);
             emitSliceFill(destination, value.offset, elementSize);
 
@@ -12611,9 +12522,7 @@ private struct Compiler {
 
         const length = compileExpression((*call.arguments)[0]);
         const elementType = dynamicArrayElementType(call.type);
-        const elementSize = dynamicArrayElementSize(
-            call.type, arrayElementIsArray(call.type),
-        );
+        const elementSize = dynamicArrayElementSize(call.type);
         const offset = allocateBytes(sliceDescriptorSize, size_t.sizeof);
         _code ~= Instruction(
             Op.allocArrayDynamic,
@@ -13808,7 +13717,7 @@ private struct Compiler {
         _program.assertDiagnostics ~=
             AssertDiagnostic(
                 op, lhsOffset, rhsOffset, elementType, true,
-                elementNestingDepth: nested ? arrayNestingDepth(lhs.type) - 1 : 0,
+                elementNestingDepth: nested ? arrayNestingDepth(lhs.type) : 0,
                 rhsOperandType: rhsElementType,
                 hasDistinctOperandTypes: lhsElementType != rhsElementType,
             );
@@ -14181,142 +14090,6 @@ private struct Compiler {
         _code ~= Instruction(
             sliceFillOp(width), destination, value, cast(ushort) width,
         );
-    }
-
-    // Broadcast one already-compiled row value (`value`, `rowByteSize`
-    // bytes) into every element of a `[lo .. hi)` range of a `T[N][]`
-    // destination (`destination`, a slice descriptor over that range). Each
-    // destination slot is its own 16-byte `{length, ptr}` row descriptor
-    // pointing at a separately heap-allocated block (`Op.allocArray2D`), so
-    // this writes through each row's existing `.ptr` in a runtime loop --
-    // `emitSliceFill`'s flat byte-fill would instead overwrite the row
-    // descriptors themselves, aliasing every destination row to whatever
-    // bytes `value` happens to hold rather than writing into each row's own
-    // storage.
-    private void emitRowBroadcastFill(
-        in ushort destination,
-        in ushort value,
-        in uint rowByteSize,
-    ) {
-        const index = compileSizeConstant(0);
-        const length = allocate(ScalarType.ulong_);
-        _code ~= Instruction(Op.sliceLength, length, destination);
-
-        const conditionIndex = _code.length;
-        const condition = allocate(ScalarType.bool_);
-        _code ~= Instruction(Op.lessThanUnsigned8, condition, index, length);
-        const exitJump = emitJumpIfFalse(Operand(condition, ScalarType.bool_));
-
-        const rowDescriptor =
-            allocateBytes(sliceDescriptorSize, size_t.sizeof);
-        emitIndexLoad(rowDescriptor, destination, index, sliceDescriptorSize);
-        const rowPointer =
-            allocateBytes(cast(uint) size_t.sizeof, size_t.sizeof);
-        _code ~= Instruction(
-            Op.copy, rowPointer,
-            cast(ushort) sliceDescriptorPtrOffset(rowDescriptor),
-            cast(ushort) size_t.sizeof,
-        );
-        emitPointerStore(value, rowPointer, compileSizeConstant(0), rowByteSize);
-
-        const one = compileSizeConstant(1);
-        _code ~= Instruction(Op.addInt8, index, index, one);
-        _code ~= Instruction(Op.jump, cast(ushort) conditionIndex);
-
-        patchJump(exitJump);
-    }
-
-    // Copy a range of rows (`arr[lo .. hi] = otherRows[];`) into a `T[N][]`
-    // destination, where `source` is itself a matching range of rows (not a
-    // single broadcast row -- see `emitRowBroadcastFill`). `Op.rowRangeCopy`
-    // writes each source row's content into the matching destination row's
-    // own existing heap-allocated block instead of `sliceCopy16`'s flat
-    // by-value descriptor copy, which would alias every destination row to
-    // the source's block (see `Op.rowRangeCopy`'s doc comment).
-    private void emitRowRangeCopy(
-        in ushort destination,
-        in ushort source,
-        in uint rowByteSize,
-    ) @safe pure {
-        _code ~= Instruction(
-            Op.rowRangeCopy, destination, source, cast(ushort) rowByteSize,
-        );
-    }
-
-    // Copy contiguous inline source rows into each separately allocated
-    // `T[N][]` destination row. The mismatch path delegates to `sliceCopy1`
-    // solely for its standard length diagnostic; it throws before reading the
-    // synthetic descriptors' null pointers.
-    private void emitInlineRowRangeCopy(
-        in ushort destination,
-        in ushort source,
-        in uint rowByteSize,
-    ) {
-        const destinationLength = allocate(ScalarType.ulong_);
-        _code ~= Instruction(Op.sliceLength, destinationLength, destination);
-        const sourceLength = allocate(ScalarType.ulong_);
-        _code ~= Instruction(Op.sliceLength, sourceLength, source);
-        const lengthsMatch = allocate(ScalarType.bool_);
-        _code ~= Instruction(
-            Op.equal8, lengthsMatch, destinationLength, sourceLength,
-        );
-        const lengthsMatchJump = emitJumpIfTrue(
-            Operand(lengthsMatch, ScalarType.bool_),
-        );
-
-        const mismatchDestination =
-            allocateBytes(sliceDescriptorSize, size_t.sizeof);
-        _code ~= Instruction(
-            Op.copy,
-            cast(ushort) sliceDescriptorLengthOffset(mismatchDestination),
-            destinationLength,
-            cast(ushort) size_t.sizeof,
-        );
-        const mismatchSource =
-            allocateBytes(sliceDescriptorSize, size_t.sizeof);
-        _code ~= Instruction(
-            Op.copy,
-            cast(ushort) sliceDescriptorLengthOffset(mismatchSource),
-            sourceLength,
-            cast(ushort) size_t.sizeof,
-        );
-        emitSliceCopy(mismatchDestination, mismatchSource, 1);
-        patchJump(lengthsMatchJump);
-
-        const sourcePointer =
-            allocateBytes(cast(uint) size_t.sizeof, size_t.sizeof);
-        _code ~= Instruction(
-            Op.copy, sourcePointer,
-            cast(ushort) sliceDescriptorPtrOffset(source),
-            cast(ushort) size_t.sizeof,
-        );
-        const index = compileSizeConstant(0);
-        const conditionIndex = _code.length;
-        const condition = allocate(ScalarType.bool_);
-        _code ~= Instruction(
-            Op.lessThanUnsigned8, condition, index, destinationLength,
-        );
-        const exitJump = emitJumpIfFalse(Operand(condition, ScalarType.bool_));
-
-        const rowDescriptor =
-            allocateBytes(sliceDescriptorSize, size_t.sizeof);
-        emitIndexLoad(rowDescriptor, destination, index, sliceDescriptorSize);
-        const destinationPointer =
-            allocateBytes(cast(uint) size_t.sizeof, size_t.sizeof);
-        _code ~= Instruction(
-            Op.copy,
-            destinationPointer,
-            cast(ushort) sliceDescriptorPtrOffset(rowDescriptor),
-            cast(ushort) size_t.sizeof,
-        );
-        const sourceRow = allocateBytes(rowByteSize, 1);
-        emitPointerLoad(sourceRow, sourcePointer, index, rowByteSize);
-        emitPointerStore(sourceRow, destinationPointer, compileSizeConstant(0), rowByteSize);
-
-        const one = compileSizeConstant(1);
-        _code ~= Instruction(Op.addInt8, index, index, one);
-        _code ~= Instruction(Op.jump, cast(ushort) conditionIndex);
-        patchJump(exitJump);
     }
 
     // The `sliceEqual*` family's emit helper. Unlike every other
@@ -14802,24 +14575,22 @@ private struct Compiler {
         const elementType = dynamicArrayElementType(array.type);
         const offset = allocateBytes(sliceDescriptorSize, size_t.sizeof);
         compileDynamicArrayInto(
-            offset, elementType, array, arrayElementIsArray(array.type),
+            offset, elementType, array,
+            arrayElementIsDynamicArray(array.type),
         );
         return Operand(offset, ScalarType.void_, false, elementType);
     }
 
-    // The aggregate-vs-scalar classification is `typeFacts`': a
-    // struct, static array, or delegate element is a full-width byte blob
-    // (`byteWidth`), everything else is a plain scalar. `Tvoid` stays a
-    // hand-checked special case: D defines `void[]` with a one-byte element
-    // stride even though `void` is not a loadable scalar value.
-    private uint dynamicArrayElementSize(
-        Type type,
-        in bool elementIsArray = false,
-    ) {
+    // The aggregate-vs-scalar classification is `typeFacts`': a struct,
+    // static array, or delegate element is a full-width byte blob
+    // (`byteWidth`), everything else is a plain scalar. A `Tarray` element
+    // (`int[][]`'s rows) is itself sized this same way: its `byteWidth` is
+    // the 16-byte `{length, ptr}` slice descriptor, the real layout every
+    // row of a genuine dynamic array of dynamic arrays holds. `Tvoid` stays
+    // a hand-checked special case: D defines `void[]` with a one-byte
+    // element stride even though `void` is not a loadable scalar value.
+    private uint dynamicArrayElementSize(Type type) {
         import dmd.astenums: TY;
-
-        if (elementIsArray)
-            return sliceDescriptorSize;
 
         auto element = type.toBasetype.nextOf;
         if (element.toBasetype.ty == TY.Tvoid)
@@ -14828,7 +14599,10 @@ private struct Compiler {
     }
 
     // True when an array's element is itself an array (`int[][]` or
-    // `string[2]`): each element is a slice descriptor rather than a scalar.
+    // `string[2]`): the row is compound rather than a plain scalar. Used
+    // where the two compound shapes (a genuine `Tarray` row and a `Tsarray`
+    // row) still need the same treatment, e.g. structural equality, which
+    // must recurse into either shape instead of comparing raw bytes.
     private bool arrayElementIsArray(Type type) {
         import dmd.astenums: TY;
 
@@ -14836,61 +14610,71 @@ private struct Compiler {
         return element.ty == TY.Tarray || element.ty == TY.Tsarray;
     }
 
+    // True only when an array's element is itself a genuine dynamic array
+    // (`int[][]`'s `int[]` rows): each row is a separately heap-allocated
+    // 16-byte `{length, ptr}` slice descriptor. A `Tsarray` element
+    // (`int[2][]`'s `int[2]` rows) is NOT this shape -- `T[N][]`'s real D
+    // layout stores its rows inline, `T[N].sizeof`-strided, with no
+    // descriptor of their own, so it needs the same construction and
+    // addressing a struct-element array already gets, not a boxed row.
+    private bool arrayElementIsDynamicArray(Type type) {
+        import dmd.astenums: TY;
+
+        auto element = type.toBasetype.nextOf.toBasetype;
+        return element.ty == TY.Tarray;
+    }
+
     private bool arrayElementIsString(Type type) {
         return isStringType(type.toBasetype.nextOf);
     }
 
-    // The nesting depth of an array-of-arrays type gated by
-    // `arrayElementIsArray` (`T[]` whose element is itself an array): 2 for
-    // `int[][]` (one row level below the outer array), 3 for `int[][][]`,
+    // The number of genuine boxed-descriptor unwrap steps `Op.sliceEqualNested`
+    // needs below its own outer descriptor, for an array-of-arrays type
+    // gated by `arrayElementIsArray` (`T[]` whose element is itself
+    // compound): 1 for `int[][]` (one further `Tarray` row level, each its
+    // own separately heap-allocated 16-byte descriptor), 2 for `int[][][]`,
     // and so on. Walks the chain of `Tarray` elements one level at a time,
-    // the same way `arrayElementIsArray` and `innermostArrayElementSize`
-    // do, stopping as soon as a level's element is not itself a `Tarray` --
-    // a `Tsarray` element (e.g. `int[2][]`) still counts as one nested
-    // level (matching this function's own one-level gate for that case) but
-    // does not extend the walk further: a `Tsarray` row is heap-boxed behind
-    // its own 16-byte slice descriptor just like a `Tarray` row (this VM's
-    // rows are never a raw inline block), so `Op.sliceEqualNested`'s
-    // row-descriptor recursion can unwrap that one boxed level, but not
-    // recurse further into the static array's own fixed-size interior (see
-    // the Tsarray/Tarray decline block in `tryArrayComparisonAssert`).
+    // the same way `arrayElementIsArray` and `innermostArrayElementSize` do,
+    // stopping as soon as a level's element is not itself a `Tarray`. A
+    // `Tsarray` element (e.g. `int[2][]`) contributes NO further step: unlike
+    // a `Tarray` row, `T[N][]`'s real D layout stores its rows inline,
+    // `T[N].sizeof`-strided, with no descriptor of its own, so once the
+    // outer descriptor is unwrapped the rows are already flat bytes ready
+    // for the base-case compare.
     private uint arrayNestingDepth(Type type) {
         import dmd.astenums: TY;
 
-        uint depth = 1;
+        uint steps;
         auto current = type.toBasetype;
         while (arrayElementIsArray(current)) {
-            ++depth;
             auto nextBase = current.nextOf.toBasetype;
             if (nextBase.ty != TY.Tarray)
                 break;
+            ++steps;
             current = nextBase;
         }
-        return depth;
+        return steps;
     }
 
-    // The byte width of the innermost (leaf) row's own elements for an
-    // array-of-arrays type gated by `arrayElementIsArray`, e.g. 4 for both
-    // `int[][]`'s and `int[][][]`'s `int` leaves, and also 4 for `int[2][]`'s
-    // `int` leaves (a `Tsarray` row is heap-boxed behind its own 16-byte
-    // slice descriptor just like a `Tarray` row -- see `arrayNestingDepth`
-    // -- so once that one boxed level is unwrapped, its own elements, not
-    // the row's full byte size, are what a flat byte-compare needs). Walks
-    // the same `Tarray` chain
-    // as `arrayNestingDepth`, always advancing `current` to the row it just
-    // looked at (even the terminating one, whether that row is another
-    // `Tarray` level or the leaf `Tsarray`), then reuses
-    // `dynamicArrayElementSize`'s existing scalar/struct/static-array sizing
-    // for that row's own elements.
+    // The byte width of the innermost row's own elements for an
+    // array-of-arrays type gated by `arrayElementIsArray`: 4 for both
+    // `int[][]`'s and `int[][][]`'s `int` leaves (a `Tarray` row's own
+    // elements, once every boxed level `arrayNestingDepth` counts is
+    // unwrapped). A chain terminating in a `Tsarray` row (`int[2][]`) has no
+    // such unwrapped leaf level to size -- the row itself, inline and
+    // `T[N].sizeof`-wide, is what the base-case flat compare needs, so this
+    // returns the row's own full width (8 for `int[2]`) instead of
+    // recursing into its element. Walks the same `Tarray` chain as
+    // `arrayNestingDepth`.
     private uint innermostArrayElementSize(Type type) {
         import dmd.astenums: TY;
 
         auto current = type.toBasetype;
         while (arrayElementIsArray(current)) {
             auto nextBase = current.nextOf.toBasetype;
-            current = nextBase;
             if (nextBase.ty != TY.Tarray)
-                break;
+                return typeFacts(nextBase).byteWidth;
+            current = nextBase;
         }
         return dynamicArrayElementSize(current);
     }

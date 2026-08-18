@@ -308,21 +308,6 @@ package(quickbite.backends.bytecode) enum Op: ubyte {
     // opcode: the byte width is operand c instead of being implied by the
     // opcode.
     sliceCopyN,
-    // Copy a range of `T[N][]` rows: the source slice descriptor at frame
-    // offset b into the destination slice descriptor at frame offset a,
-    // where both descriptors' elements are 16-byte `{length, ptr}` row
-    // descriptors pointing at separately heap-allocated `T[N]` blocks (this
-    // VM's `T[N][]` row representation), not `sliceCopy16`'s flat
-    // by-value descriptor copy. `sliceCopy16` is correct for a `T[][]` row
-    // (a real dynamic-array value, copied by descriptor), but wrong here:
-    // copying the row descriptors themselves would alias every destination
-    // row to the source's backing block, leaking the destination's own
-    // block and corrupting its pointer chain instead of writing content
-    // into each row's own storage. Writes through each destination row's
-    // existing pointer with the matching source row's content, `c` bytes
-    // per row. The two lengths must match, matching `sliceCopy`'s check and
-    // message.
-    rowRangeCopy,
     // Fill every element of the destination slice descriptor at frame offset
     // a with the scalar value at frame offset b. The element size is fixed by
     // the opcode (1, 2, 4, or 8 bytes).
@@ -1145,16 +1130,16 @@ package(quickbite.backends.bytecode) struct AssertDiagnostic {
     bool isString;
     bool lhsIsNull;
     bool rhsIsNull;
-    // When `isArray` is set and this is nonzero, each element is itself an
-    // array of `operandType` (array-of-arrays nesting, any depth): 1 for
-    // `int[][]`, 2 for `int[][][]`, and so on -- one less than the operand's
-    // own `arrayNestingDepth`, since the outermost level is already
-    // unwrapped by `isArray` itself. Zero means plain `operandType` scalar
-    // elements. Appended last (not inserted between existing fields) so
-    // every pre-existing positional `AssertDiagnostic(...)` construction
-    // site keeps its field mapping; several sites pass isString/lhsIsNull/
-    // rhsIsNull positionally and would silently shift onto the wrong field
-    // otherwise.
+    // When `isArray` is set and this is nonzero, each element is itself
+    // another separately heap-allocated `Tarray` descriptor of
+    // `operandType` (array-of-arrays nesting, any depth): 1 for `int[][]`,
+    // 2 for `int[][][]`, and so on -- the operand's own `arrayNestingDepth`
+    // (the outermost level is already unwrapped by `isArray` itself). Zero
+    // means plain `operandType` scalar elements. Appended last (not
+    // inserted between existing fields) so every pre-existing positional
+    // `AssertDiagnostic(...)` construction site keeps its field mapping;
+    // several sites pass isString/lhsIsNull/rhsIsNull positionally and
+    // would silently shift onto the wrong field otherwise.
     uint elementNestingDepth;
     // Mixed numeric array equality permits distinct element types. Retain the
     // RHS type separately so a failed assertion uses that operand's physical

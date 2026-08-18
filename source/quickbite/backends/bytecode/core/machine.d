@@ -292,16 +292,6 @@ package(quickbite.backends.bytecode) RunResult run(
                 ++ip;
                 break;
 
-            case rowRangeCopy:
-                copyRowRange(
-                    stack,
-                    base + instruction.a,
-                    base + instruction.b,
-                    instruction.c,
-                );
-                ++ip;
-                break;
-
             case sliceFill1:
                 fillSlice1(stack, base + instruction.a, base + instruction.b);
                 ++ip;
@@ -2566,21 +2556,25 @@ private ulong extendedUnsignedElement(
     return cast(ulong) signedElement(value, type);
 }
 
-// True iff two array-of-arrays descriptors are structurally equal, at any
-// nesting `depth` (2 for `int[][]`, 3 for `int[][][]`, ...): same outer
-// length, and every row (itself a 16-byte `{length, ptr}` slice descriptor,
-// separately heap-allocated on each side) recursively equal one level
-// deeper, down to the innermost row's element bytes (`innerElementSize`
-// each). Unlike `slicesEqual`, this never compares a row's raw descriptor
-// bytes -- two separately-constructed but content-equal rows have different
-// `.ptr` values, so that would compare identity, not content. `depth == 2`
-// (the original, one-level-only shape) reduces to a single row iteration
-// with an immediate byte compare, unchanged from before.
+// True iff two array-of-arrays descriptors are structurally equal, given the
+// number of genuine boxed-descriptor row levels below this outer descriptor
+// (`steps`: 1 for `int[][]`, 2 for `int[][][]`, 0 for `int[2][]` -- see
+// `arrayNestingDepth`): same outer length, and every row (itself a 16-byte
+// `{length, ptr}` slice descriptor, separately heap-allocated on each side,
+// for each of `steps` further levels) recursively equal one level deeper,
+// down to the innermost element bytes (`innerElementSize` each). Unlike
+// `slicesEqual`, this never compares a row's raw descriptor bytes -- two
+// separately-constructed but content-equal rows have different `.ptr`
+// values, so that would compare identity, not content. `steps == 0` (a
+// `Tarray` of scalars/structs, or a `Tarray` of inline `Tsarray` rows) reduces
+// to a single flat byte compare of `outer.length * innerElementSize` bytes at
+// the outer's own pointer -- correct either way, since a `Tsarray` row's
+// real D layout already stores its bytes right there.
 private bool nestedSlicesEqual(
     in ubyte[] stack,
     in size_t leftOffset,
     in size_t rightOffset,
-    in uint depth,
+    in uint steps,
     in uint innerElementSize,
 ) @trusted {
     const left = readSliceDescriptor(stack, leftOffset);
@@ -2589,7 +2583,7 @@ private bool nestedSlicesEqual(
         return false;
 
     return nestedRowsEqual(
-        left.pointer, right.pointer, left.length, depth - 1, innerElementSize,
+        left.pointer, right.pointer, left.length, steps, innerElementSize,
     );
 }
 
@@ -2674,63 +2668,6 @@ private void copySlice(
     auto destination = (cast(ubyte*) destinationPointer)[0 .. byteCount];
     const source = (cast(const(ubyte)*) sourcePointer)[0 .. byteCount];
     destination[] = source[];
-}
-
-// Copy a range of `T[N][]` rows: write each source row's `rowByteSize`
-// bytes of content into the matching destination row's own existing
-// heap-allocated block, one row at a time. The destination and source
-// "elements" here are 16-byte `{length, ptr}` row descriptors pointing at
-// separately heap-allocated `T[N]` blocks (this VM's `T[N][]` row
-// representation, not compiled D's contiguous layout -- see "Live hazards
-// and divergences" in ai/plans/bytecode.md), so `copySlice`'s flat by-value
-// descriptor copy would alias every destination row to the source's block
-// instead of writing into each row's own storage. The lengths must match,
-// matching `copySlice`'s check and message.
-private void copyRowRange(
-    ref ubyte[] stack,
-    in size_t destinationOffset,
-    in size_t sourceOffset,
-    in uint rowByteSize,
-) @trusted {
-    import std.conv: text;
-    import quickbite.backends.bytecode.core.program: sliceDescriptorSize;
-
-    const destination_ = readSliceDescriptor(stack, destinationOffset);
-    const source_ = readSliceDescriptor(stack, sourceOffset);
-    const destinationPointer = destination_.pointer;
-    const destinationLength = destination_.length;
-    const sourcePointer = source_.pointer;
-    const sourceLength = source_.length;
-
-    if (destinationLength != sourceLength)
-        throw new Exception(text(
-            "Array lengths don't match for copy: ",
-            sourceLength, " != ", destinationLength,
-        ));
-
-    // The row *blocks* pointed at by each 16-byte slot never overlap (each
-    // is its own separate heap allocation), but the two ranges of row
-    // *slots* -- 16 bytes apiece, contiguous in the same outer backing
-    // array -- can, exactly as compiled D's contiguous `T[N][]` rows would
-    // (`arr[0 .. 2] = arr[1 .. 3]`): matches `copySlice`'s overlap check
-    // and "Range violation" message on that outer slot memory.
-    const outerByteCount = destinationLength * sliceDescriptorSize;
-    if (sourcePointer < destinationPointer + outerByteCount &&
-        destinationPointer < sourcePointer + outerByteCount)
-        throw new Exception("Range violation");
-
-    foreach (i; 0 .. destinationLength) {
-        const destRowPointer = readSliceDescriptor(
-            destinationPointer + i * sliceDescriptorSize,
-        ).pointer;
-        const sourceRowPointer = readSliceDescriptor(
-            sourcePointer + i * sliceDescriptorSize,
-        ).pointer;
-        auto destRow = (cast(ubyte*) destRowPointer)[0 .. rowByteSize];
-        const sourceRow =
-            (cast(const(ubyte)*) sourceRowPointer)[0 .. rowByteSize];
-        destRow[] = sourceRow[];
-    }
 }
 
 // The compiler supplies a valid native slice descriptor and a 1-byte scalar

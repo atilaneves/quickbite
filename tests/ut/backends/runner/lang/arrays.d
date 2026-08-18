@@ -882,23 +882,12 @@ static foreach (backend; Matrix!()) {
 
 // Same structural-equality requirement as `arrayOfArraysEqualityIsStructural`
 // above, but the row itself is a static array (`int[2][]`, a dynamic array
-// whose element is `Tsarray`, not `Tarray`): this VM heap-boxes such a row
-// behind its own 16-byte slice descriptor the same way it boxes an `int[]`
-// row, but the leaf-element sizing still needs to terminate the walk at
-// the `Tsarray` and size its own elements, not the `Tsarray`'s full byte
-// size -- a fix generalizing only the `Tarray`-row walk could still get
-// this wrong (e.g. by trying to size or recurse into the `Tsarray` row
-// itself instead of terminating there).
+// whose element is `Tsarray`, not `Tarray`): real D stores such a row
+// inline, `T[N].sizeof`-strided, in the array's own backing store, unlike
+// an `int[]` row's separate 16-byte descriptor.
 // `b` is built entirely through separate `~=` appends, so its rows are a
 // distinct heap allocation from `a`'s.
-static foreach (backend; Matrix!(
-    Omit!(Bytecode, Because.unassertable,
-        "SIGSEGV: `int[2][]` grown by `~=` gets druntime's real flat " ~
-        "backing store (each row stored inline), but " ~
-        "`innerArrayRowPointer` still reads a grown row's slot as a " ~
-        "heap-boxed 16-byte slice descriptor and dereferences its `.ptr` " ~
-        "field, corrupting memory through the resulting garbage address"),
-)) {
+static foreach (backend; Matrix!()) {
     @("dynamicArray.arrayOfStaticArraysEqualityIsStructural." ~
         backend.stringof)
     @Tags(backend.stringof)
@@ -921,17 +910,8 @@ static foreach (backend; Matrix!(
 }
 
 // A `T[N][]` row appended from a static-array VARIABLE (not a literal) must
-// copy the variable's elements into the row's own storage; reinterpreting the
-// element bytes as a slice descriptor makes the next row read dereference
-// element data as a pointer.
-static foreach (backend; Matrix!(
-    Omit!(Bytecode, Because.unassertable,
-        "SIGSEGV: `int[3][]` grown by `~=` gets druntime's real flat " ~
-        "backing store (each row stored inline), but " ~
-        "`innerArrayRowPointer` still reads a grown row's slot as a " ~
-        "heap-boxed 16-byte slice descriptor and dereferences its `.ptr` " ~
-        "field, corrupting memory through the resulting garbage address"),
-)) {
+// copy the variable's elements into the row's own inline storage.
+static foreach (backend; Matrix!()) {
     @("dynamicArray.appendStaticArrayVariableRowThenReadElements." ~
         backend.stringof)
     @Tags(backend.stringof)
@@ -953,14 +933,7 @@ static foreach (backend; Matrix!(
 
 // The not-equal sibling of the test above, guarding against a fix that
 // makes `int[2][] == int[2][]` vacuously true instead of comparing content.
-static foreach (backend; Matrix!(
-    Omit!(Bytecode, Because.unassertable,
-        "SIGSEGV: `int[2][]` grown by `~=` gets druntime's real flat " ~
-        "backing store (each row stored inline), but " ~
-        "`innerArrayRowPointer` still reads a grown row's slot as a " ~
-        "heap-boxed 16-byte slice descriptor and dereferences its `.ptr` " ~
-        "field, corrupting memory through the resulting garbage address"),
-)) {
+static foreach (backend; Matrix!()) {
     @("dynamicArray.arrayOfStaticArraysInequalityIsStructural." ~
         backend.stringof)
     @Tags(backend.stringof)
@@ -986,12 +959,9 @@ static foreach (backend; Matrix!(
 // `tryArrayComparisonAssert`'s shared `emitNestedArrayEqual` path (the same
 // helpers backing the plain `==` operator) for the `Tsarray`-row shape.
 static foreach (backend; Matrix!(
-    Omit!(Bytecode, Because.unassertable,
-        "SIGSEGV: `int[2][]` grown by `~=` gets druntime's real flat " ~
-        "backing store (each row stored inline), but " ~
-        "`innerArrayRowPointer` still reads a grown row's slot as a " ~
-        "heap-boxed 16-byte slice descriptor and dereferences its `.ptr` " ~
-        "field, corrupting memory through the resulting garbage address"),
+    Omit!(Bytecode, Because.diverges,
+        "assert-diagnostic renderer pending replacement by compiled " ~
+        "_d_assert_fail"),
 )) {
     @("assertDiagnostic.arrayOfStaticArraysSameLengthDifferentContent." ~
         backend.stringof)
@@ -1386,14 +1356,7 @@ static foreach (backend; Matrix!()) {
     }
 }
 
-static foreach (backend; Matrix!(
-    Omit!(Bytecode, Because.unassertable,
-        "SIGSEGV: `int[2][]` grown by `~=` gets druntime's real flat " ~
-        "backing store (each row stored inline), but " ~
-        "`innerArrayRowPointer` still reads a grown row's slot as a " ~
-        "heap-boxed 16-byte slice descriptor and dereferences its `.ptr` " ~
-        "field, corrupting memory through the resulting garbage address"),
-)) {
+static foreach (backend; Matrix!()) {
     @("dynamicArray.appendStaticArrayRow." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
