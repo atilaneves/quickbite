@@ -2658,7 +2658,6 @@ private struct Walker {
     ) {
         import dmd.astenums: TY;
         import dmd.tokens: EXP;
-        import quickbite.backends.interpreter.runtime_values: integerValue, realValue;
 
         // DMD's `isX` helpers each test this same
         // discriminator. Jump straight to the one existing handler selected
@@ -2821,12 +2820,29 @@ integerExpression:
                     expressionChars(integer),
                     cast(long) integer.getInteger,
                 );
-            return integerValue(integer);
+            import quickbite.backends.interpreter.place: Place;
+            import quickbite.backends.interpreter.runtime_values: integerValue;
+
+            auto destination = Place(
+                _activationFrame.temporaryAddress(expression),
+                expression.type,
+            );
+            integerValue(integer, destination);
+            return readStoredValue(destination);
         }
 
 realExpression:
-        if (auto real_ = expression.isRealExp)
-            return realValue(real_);
+        if (auto real_ = expression.isRealExp) {
+            import quickbite.backends.interpreter.place: Place;
+            import quickbite.backends.interpreter.runtime_values: realValue;
+
+            auto destination = Place(
+                _activationFrame.temporaryAddress(expression),
+                expression.type,
+            );
+            realValue(real_, destination);
+            return readStoredValue(destination);
+        }
 
 nullExpression:
         if (auto null_ = expression.isNullExp) {
@@ -13444,6 +13460,12 @@ destinationFallback:
             case Tfloat32: return constructScalar!float(expression, destination);
             case Tfloat64: return constructScalar!double(expression, destination);
             case Tfloat80: return constructScalar!real(expression, destination);
+            case Timaginary32: return constructScalar!ifloat(expression, destination);
+            case Timaginary64: return constructScalar!idouble(expression, destination);
+            case Timaginary80: return constructScalar!ireal(expression, destination);
+            case Tcomplex32: return constructComplex!cfloat(expression, destination);
+            case Tcomplex64: return constructComplex!cdouble(expression, destination);
+            case Tcomplex80: return constructComplex!creal(expression, destination);
             default: return false;
         }
     }
@@ -13692,7 +13714,14 @@ destinationFallback:
             return true;
         }
         if (auto real_ = expression.isRealExp) {
-            destination.storeNativeScalar(cast(T) real_.toReal);
+            static if (is(T == ifloat))
+                destination.storeNativeScalar(cast(float) real_.toImaginary);
+            else static if (is(T == idouble))
+                destination.storeNativeScalar(cast(double) real_.toImaginary);
+            else static if (is(T == ireal))
+                destination.storeNativeScalar(cast(real) real_.toImaginary);
+            else
+                destination.storeNativeScalar(cast(T) real_.toReal);
             return true;
         }
         if (auto cast_ = expression.isCastExp)
@@ -13786,6 +13815,81 @@ destinationFallback:
         }
 
         return false;
+    }
+
+    // A complex expression can combine a complex left operand with an
+    // imaginary right operand. Construct each operand at its DMD-selected
+    // type before converting it to the complex host local; an imaginary
+    // place is narrower than its complex destination.
+    private bool constructComplex(T)(
+        imported!"dmd.expression".Expression expression,
+        imported!"quickbite.backends.interpreter.place".Place destination,
+    ) {
+        import dmd.tokens: EXP;
+
+        if (auto cast_ = expression.isCastExp)
+            return constructComplexCast!T(cast_, destination);
+
+        if (hasDirectWriteProjectionPlace(expression)) {
+            destination.storeNativeScalar(
+                directWriteProjectionPlace(expression).loadNativeScalar!T,
+            );
+            return true;
+        }
+
+        if (auto binary = expression.isBinExp) {
+            const left = complexOperand!T(binary.e1);
+            const right = complexOperand!T(binary.e2);
+            switch (expression.op) with (EXP) {
+                case add: destination.storeNativeScalar(left + right); return true;
+                case min: destination.storeNativeScalar(left - right); return true;
+                case mul: destination.storeNativeScalar(left * right); return true;
+                case div: destination.storeNativeScalar(left / right); return true;
+                default: return false;
+            }
+        }
+
+        return false;
+    }
+
+    private bool constructComplexCast(T)(
+        imported!"dmd.expression".CastExp cast_,
+        imported!"quickbite.backends.interpreter.place".Place destination,
+    ) {
+        if (cast_.e1 is null)
+            return false;
+
+        destination.storeNativeScalar(complexOperand!T(cast_.e1));
+        return true;
+    }
+
+    private T complexOperand(T)(imported!"dmd.expression".Expression expression) {
+        import dmd.astenums: TY;
+
+        switch (expression.type.toBasetype.ty) with (TY) {
+            case Tbool: return cast(T) scalarOperand!bool(expression);
+            case Tint8: return cast(T) scalarOperand!byte(expression);
+            case Tuns8: return cast(T) scalarOperand!ubyte(expression);
+            case Tchar: return cast(T) scalarOperand!char(expression);
+            case Tint16: return cast(T) scalarOperand!short(expression);
+            case Tuns16: return cast(T) scalarOperand!ushort(expression);
+            case Twchar: return cast(T) scalarOperand!wchar(expression);
+            case Tint32: return cast(T) scalarOperand!int(expression);
+            case Tuns32: return cast(T) scalarOperand!uint(expression);
+            case Tdchar: return cast(T) scalarOperand!dchar(expression);
+            case Tint64: return cast(T) scalarOperand!long(expression);
+            case Tuns64: return cast(T) scalarOperand!ulong(expression);
+            case Tfloat32: return cast(T) scalarOperand!float(expression);
+            case Tfloat64: return cast(T) scalarOperand!double(expression);
+            case Tfloat80: return cast(T) scalarOperand!real(expression);
+            case Timaginary32: return cast(T) scalarOperand!ifloat(expression);
+            case Timaginary64: return cast(T) scalarOperand!idouble(expression);
+            case Timaginary80: return cast(T) scalarOperand!ireal(expression);
+            case Tcomplex32: return cast(T) scalarOperand!cfloat(expression);
+            case Tcomplex64: return cast(T) scalarOperand!cdouble(expression);
+            case Tcomplex80: return cast(T) scalarOperand!creal(expression);
+            default: throw new Exception("Unsupported complex operand type.");
+        }
     }
 
     private bool constructScalarCast(T)(

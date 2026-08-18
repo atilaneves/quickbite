@@ -2,53 +2,6 @@ module quickbite.backends.interpreter.runtime_values;
 
 private:
 
-public imported!"quickbite.backends.interpreter.expression_result".ExpressionResult integerValue(
-    imported!"dmd.expression".IntegerExp integer,
-) {
-    import dmd.astenums: TY;
-    import quickbite.backends.interpreter.expression_result: ExpressionResult;
-
-    const value = integer.getInteger;
-    const type = integer.type is null ? null : integer.type.toBasetype;
-    if (type is null)
-        return ExpressionResult(cast(long) value);
-
-    switch (type.ty) with (TY) {
-        // A pointer-typed integer constant (e.g. a `cast(T*) size_t.max`
-        // sentinel like Phobos' TempCStringBuffer.useStack): a native pointer
-        // holding the address, so comparisons against it behave like
-        // compiled D.
-        case Tpointer:
-            return ExpressionResult.pointerValue(cast(void*) value);
-        case Tbool:
-            return ExpressionResult(value != 0);
-        case Tint8:
-            return ExpressionResult(cast(byte) value);
-        case Tuns8:
-            return ExpressionResult(cast(ubyte) value);
-        case Tchar:
-            return ExpressionResult(cast(char) value);
-        case Tint16:
-            return ExpressionResult(cast(short) value);
-        case Tuns16:
-            return ExpressionResult(cast(ushort) value);
-        case Twchar:
-            return ExpressionResult(cast(wchar) value);
-        case Tint32:
-            return ExpressionResult(cast(int) value);
-        case Tuns32:
-            return ExpressionResult(cast(uint) value);
-        case Tdchar:
-            return ExpressionResult(cast(dchar) value);
-        case Tint64:
-            return ExpressionResult(cast(long) value);
-        case Tuns64:
-            return ExpressionResult(cast(ulong) value);
-        default:
-            assert(0);
-    }
-}
-
 public void integerValue(
     imported!"dmd.expression".IntegerExp integer,
     imported!"quickbite.backends.interpreter.place".Place destination,
@@ -181,32 +134,6 @@ public imported!"quickbite.backends.interpreter.expression_result".ExpressionRes
     }
 }
 
-public imported!"quickbite.backends.interpreter.expression_result".ExpressionResult realValue(
-    imported!"dmd.expression".RealExp real_,
-) {
-    import dmd.astenums: TY;
-    import quickbite.backends.interpreter.expression_result: ExpressionResult;
-
-    const type = real_.type is null ? null : real_.type.toBasetype;
-    if (type is null)
-        return ExpressionResult(cast(real) real_.toReal);
-
-    switch (type.ty) with (TY) {
-        case Tfloat32:
-            return ExpressionResult(cast(float) real_.toReal);
-        case Tfloat64:
-            return ExpressionResult(cast(double) real_.toReal);
-        case Tfloat80:
-            return ExpressionResult(cast(real) real_.toReal);
-        case Timaginary32:
-        case Timaginary64:
-        case Timaginary80:
-            return ExpressionResult.imaginaryValue(cast(real) real_.toImaginary);
-        default:
-            assert(0);
-    }
-}
-
 public void realValue(
     imported!"dmd.expression".RealExp real_,
     imported!"quickbite.backends.interpreter.place".Place destination,
@@ -224,10 +151,19 @@ public void realValue(
         case Tfloat80:
             destination.storeNativeScalar(cast(real) real_.toReal);
             return;
+        case Timaginary32:
+            destination.storeNativeScalar(cast(float) real_.toImaginary);
+            return;
+        case Timaginary64:
+            destination.storeNativeScalar(cast(double) real_.toImaginary);
+            return;
+        case Timaginary80:
+            destination.storeNativeScalar(cast(real) real_.toImaginary);
+            return;
         default:
             throw new Exception(
                 "quickbite.backends.interpreter.runtime_values: "
-                ~ "real literal needs a real scalar destination",
+                ~ "real literal needs a real or imaginary destination",
             );
     }
 }
