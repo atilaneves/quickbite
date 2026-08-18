@@ -12424,6 +12424,170 @@ unsupportedExpression:
         return null;
     }
 
+    // `new` first establishes its typed allocation, then writes only its
+    // pointer, reference, or slice header into the caller's fresh place.
+    // The old value path remains for native constructors, whose FFI result is
+    // not address-only yet.
+    private bool constructNewExpression(
+        imported!"dmd.expression".NewExp new_,
+        imported!"quickbite.backends.interpreter.place".Place destination,
+    ) {
+        import dmd.astenums: TY;
+        import dmd.location: Loc;
+        import dmd.typesem: defaultInitLiteral;
+        import quickbite.backends.interpreter.aggregate_value: AggregateValue;
+        import quickbite.backends.interpreter.layout: typeByteSize, typeHasPointers;
+        import quickbite.backends.interpreter.place: Place;
+        import quickbite.frontend.dmd.types:
+            isDynamicArrayType, isPointerType, isStructType;
+        import std.conv: text;
+
+        if (new_.placement !is null || new_.thisexp !is null)
+            throw new Exception(text("Unsupported eval expression: ", new_.op));
+
+        if (new_.type.toBasetype.ty == TY.Tclass) {
+            auto type = new_.newtype is null ? new_.type : new_.newtype;
+            auto object = AggregateValue.allocateClass(type);
+            auto body = AggregateValue.nativeClassBodyAddress(object);
+            nativeClassOwners[body] = object;
+            initializeNativeClassBody(this, type, object);
+            destination.storeReference(body);
+            if (new_.member is null)
+                return true;
+
+            auto arguments = CallArguments(
+                new_.arguments is null ? 0 : new_.arguments.length,
+            );
+            scope(exit) arguments.release;
+            if (new_.arguments !is null)
+                foreach (index, argument; *new_.arguments)
+                    arguments.values[index] = runExpressionValue(argument);
+
+            if (isThrowableConstructor(new_.member)) {
+                nativeClassOwners[body] = applyThrowableConstructor(
+                    object,
+                    arguments.values,
+                );
+                return true;
+            }
+
+            import dmd.funcsem: functionSemantic3;
+            if (!functionSemantic3(new_.member))
+                throw new Exception(text("Unsupported eval expression: ", new_.op));
+
+            Walker child;
+            child.runningCalledFunction = true;
+            child.currentFunction = new_.member;
+            child._activationFrame = FrameBlock.allocate(cachedFrameLayout(new_.member));
+            child.thisValue = borrowedAggregateValue(Place(body, type));
+            child.hasThis = true;
+            forkExecutionStateInto(child);
+            scope(exit) child.retireActivationFrameMetadata;
+            child.bindFunctionParameters(new_.member, arguments.values);
+            try {
+                child.runStatement(new_.member.fbody);
+            } catch (InterpretedException exception) {
+                mergeNewClassExpressionState(child);
+                throw exception;
+            }
+            mergeNewClassExpressionState(child);
+            return true;
+        }
+
+        if (isPointerType(new_.type)) {
+            auto type = new_.type.toBasetype.nextOf;
+            auto block = NativeBlock.allocate(
+                typeByteSize(type),
+                typeHasPointers(type)
+                    ? NativeBlock.Scan.conservative
+                    : NativeBlock.Scan.no,
+            );
+            auto allocated = ConstructionDestination(Place(block.address, type));
+            if (new_.member !is null) {
+                import quickbite.frontend.dmd.functions: hasNoAvailableSource;
+
+                if (hasNoAvailableSource(new_.member))
+                    return false;
+
+                import dmd.funcsem: functionSemantic3;
+                if (!functionSemantic3(new_.member))
+                    throw new Exception(text("Unsupported eval expression: ", new_.op));
+
+                runExpression(type.defaultInitLiteral(Loc.initial), allocated);
+                auto arguments = CallArguments(
+                    new_.arguments is null ? 0 : new_.arguments.length,
+                );
+                scope(exit) arguments.release;
+                if (new_.arguments !is null)
+                    foreach (index, argument; *new_.arguments)
+                        arguments.values[index] = runExpressionValue(argument);
+
+                Walker child;
+                child.runningCalledFunction = true;
+                child.currentFunction = new_.member;
+                child._activationFrame = FrameBlock.allocate(cachedFrameLayout(new_.member));
+                child.thisValue = borrowedAggregateValue(allocated.place);
+                child.hasThis = true;
+                forkExecutionStateInto(child);
+                scope(exit) child.retireActivationFrameMetadata;
+                child.bindThisReferenceAddress(new_.member, child.thisValue);
+                child.bindFunctionParameters(new_.member, arguments.values);
+                child.runStatement(new_.member.fbody);
+            } else if (new_.arguments is null) {
+                runExpression(type.defaultInitLiteral(Loc.initial), allocated);
+            } else if (isStructType(type)) {
+                import quickbite.backends.interpreter.layout: structFields;
+
+                runExpression(type.defaultInitLiteral(Loc.initial), allocated);
+                auto fields = structFields(type.toBasetype.isTypeStruct);
+                foreach (index, argument; *new_.arguments) {
+                    if (index >= fields.length)
+                        throw new Exception(text("Unsupported eval expression: ", new_.op));
+                    auto field = ConstructionDestination(allocated.place.field(fields[index]));
+                    runExpression(argument, field);
+                }
+            } else {
+                if (new_.arguments.length != 1)
+                    throw new Exception(text("Unsupported eval expression: ", new_.op));
+                runExpression((*new_.arguments)[0], allocated);
+            }
+            destination.storeReference(block.address);
+            retainTemporaryPointerOwner(block);
+            return true;
+        }
+
+        if (!isDynamicArrayType(new_.type) || new_.member !is null ||
+            new_.arguments is null || new_.arguments.length == 0)
+            return false;
+
+        size_t[] lengths;
+        foreach (argument; *new_.arguments)
+            lengths ~= scalarOperand!size_t(argument);
+        constructNewArray(destination, lengths);
+        return true;
+    }
+
+    private void constructNewArray(
+        imported!"quickbite.backends.interpreter.place".Place destination,
+        in size_t[] lengths,
+    ) {
+        import dmd.location: Loc;
+        import dmd.typesem: defaultInitLiteral;
+        import quickbite.backends.interpreter.aggregate_value: AggregateValue;
+        import quickbite.frontend.dmd.types: arrayElementType;
+
+        assert(lengths.length != 0);
+        AggregateValue.initializeArray(destination, lengths[0]);
+        auto elementType = arrayElementType(destination.type);
+        foreach (index; 0 .. lengths[0]) {
+            auto element = ConstructionDestination(destination.index(index));
+            if (lengths.length > 1)
+                constructNewArray(element.place, lengths[1 .. $]);
+            else
+                runExpression(elementType.defaultInitLiteral(Loc.initial), element);
+        }
+    }
+
     private ExpressionResult runNewExpression(imported!"dmd.expression".NewExp new_) {
         import dmd.astenums: TY;
         import quickbite.frontend.dmd.types: isDynamicArrayType, isPointerType, isStructType;
@@ -13027,6 +13191,12 @@ unsupportedExpression:
                 runExpression(conditional.e2, destination);
             return true;
         }
+
+        if (auto new_ = rvalue.isNewExp)
+            if (constructNewExpression(new_, place)) {
+                destination.markConstructed;
+                return true;
+            }
 
         if (constructPointerExpressionInto(rvalue, place)) {
             destination.markConstructed;
