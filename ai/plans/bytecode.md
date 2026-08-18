@@ -32,11 +32,13 @@ fix, SystemLinker as the behavior oracle):
 1. Consume the frontend lowerings for `~=`, `.length=`, `new T[n]`/multi-dim,
    `~`, and array literals; delete the hand-rolled append/resize/alloc/concat
    opcodes and machine.d helpers, `isNewArrayRuntimeCall`, and the
-   `_d_arrayctor` interception. The only glue: `CatDcharAssignExp` is
-   un-lowered by design, so a small shared helper (usable by Interpreter too)
-   synthesizes the extern(C) `_d_arrayappendcd`/`_d_arrayappendwd` call,
-   which takes the FFI path. Oracle fixtures: `.capacity`, in-place growth vs
-   copy-on-append for interior slices, `assumeSafeAppend`, amortized growth.
+   `_d_arrayctor` interception. `CatDcharAssignExp` is un-lowered by design
+   and its helpers live in non-importable `rt/lifetime.d`: declare
+   `_d_arrayappendcd`/`_d_arrayappendwd` as `extern(C)` prototypes in D
+   source and the ordinary no-body path makes the FFI call. Test changes
+   follow behavior coverage: delete `Omit`s the switch turns green; new
+   tests only for uncovered documented behavior, never implementation
+   details.
 2. Delete the remaining name-matched diversions with available bodies, one
    commit per mechanism: `__switch`, `arrayOp!`, `_aApply*`, `__ArrayDtor`,
    `emplace*`, `_d_arraybounds*`, and the `_d_assert_fail` shape-sniffing

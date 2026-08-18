@@ -512,7 +512,8 @@ bare-identifier fallback with no          table inherits the same
   `LoweredAssignExp` fallback) and instead hand-rolls append/growth/concat
   in `native_array.d`, outside the §8 interception guard's enumeration. Open
   work: execute those lowerings for real and retire the hand-rolled path,
-  sharing the `CatDcharAssignExp` FFI glue with Bytecode.
+  reusing the same `extern(C)` `rt/lifetime.d` declarations Bytecode uses
+  for `CatDcharAssignExp`.
 - `writeBackSliceElements` (impl.d, the array-op `+=` lowering's splice
   copy) rebuilds a pointer-typed slice base as a detached local copy — a
   latent silent-lost-write class. Needs its own exposing fixture before a
