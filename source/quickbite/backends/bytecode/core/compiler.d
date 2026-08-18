@@ -65,6 +65,13 @@ private struct Compiler {
     private size_t[FuncDeclaration] _functionIndices;
     private ushort[imported!"dmd.dclass".ClassDeclaration] _classIndices;
     private size_t[Type] _nativeStructTypeInfos;
+    // `TypeInfo_StaticArray`/`TypeInfo_Array`/`TypeInfo_Delegate` instances
+    // this backend emitted for a composite type dmd has no host-linked
+    // symbol for; see `nativeStaticArrayTypeInfo`/`nativeArrayTypeInfo`/
+    // `nativeDelegateTypeInfo`. A single map suffices because a `Type` is
+    // a static array, dynamic array, or delegate exclusively, never more
+    // than one.
+    private size_t[Type] _nativeCompositeTypeInfos;
     // `_d_arrayappendcd`/`_d_arrayappendwd`, keyed by mangled symbol name;
     // see `nativeDcharAppendFunction`.
     private FuncDeclaration[string] _nativeDcharAppendFunctions;
@@ -4344,9 +4351,27 @@ private struct Compiler {
     // druntime or Phobos already instantiated) has that TypeInfo's real
     // object linked into the running host process at the same address
     // compiled D would read through `typeid`; resolve its symbol there
-    // first. A guest-only aggregate's TypeInfo is a backend-emitted
-    // artefact that exists in no loaded image, so its symbol simply fails
-    // to resolve -- that failure is itself the signal to synthesise one.
+    // first. A guest-only type's TypeInfo is a backend-emitted artefact
+    // that exists in no loaded image, so its symbol simply fails to
+    // resolve -- that failure is itself the signal to synthesise one.
+    //
+    // `Type.vtinfo` only populates once dmd's own semantic pass processes
+    // an actual source-level `typeid` naming that exact type. A basic
+    // scalar element reached only through a composite's own field --
+    // never itself a direct `typeid` operand -- can reach here with a
+    // null `vtinfo` even though its real host symbol exists (dmd's own
+    // codegen fills this gap in a later backend pass, `glue/todt.d`'s
+    // `TypeInfo_toObjFile`, that this frontend-only project never runs).
+    // Forcing `vtinfo` population by calling dmd's `genTypeInfo` directly
+    // from here corrupts the host process's own GC heap (dmd `Scope`
+    // pooling is not safe to drive mid-compilation this way), so resolve
+    // a basic type's host TypeInfo the same way `hostBasicTypeInfoAddress`
+    // does instead: a real `typeid` expression in this module's own host
+    // D code, which links against the identical druntime the guest
+    // program does, reaching the same singleton without touching dmd's
+    // declaration machinery at all. A composite element (nested array,
+    // struct, delegate) recurses back into this same two-source
+    // resolution through its own dedicated synthesiser below.
     private size_t nativeTypeInfoAddress(Type type) {
         import quickbite.ffi.ffi: resolveDataSymbol;
 
@@ -4355,9 +4380,140 @@ private struct Compiler {
         if (auto declaration = type.vtinfo)
             if (auto address = resolveDataSymbol(declaration))
                 return cast(size_t) address;
-        if (type.toBasetype.isTypeStruct !is null)
+        if (auto address = hostBasicTypeInfoAddress(type))
+            return address;
+        auto basetype = type.toBasetype;
+        if (basetype.isTypeStruct !is null)
             return nativeStructTypeInfo(type);
+        if (basetype.isTypeSArray !is null)
+            return nativeStaticArrayTypeInfo(type);
+        if (basetype.isTypeDArray !is null)
+            return nativeArrayTypeInfo(type);
+        if (basetype.isTypeDelegate !is null)
+            return nativeDelegateTypeInfo(type);
         return 0;
+    }
+
+    // The real host druntime TypeInfo instance for a basic scalar type
+    // (`bool`, the integrals, the character types, the floating-point
+    // types): dmd's own `builtinTypeInfo` (`typinf.d`) recognises these as
+    // needing no per-type codegen for the same reason -- the host
+    // druntime library always carries a real symbol for them, regardless
+    // of whether dmd's frontend ever created a `TypeInfoDeclaration` for
+    // this particular `Type` object. A host-side `typeid` expression on
+    // the matching built-in D type reaches that exact singleton.
+    private size_t hostBasicTypeInfoAddress(Type type) {
+        import dmd.astenums: TY;
+        import object: TypeInfo;
+
+        TypeInfo result;
+        switch (type.toBasetype.ty) with (TY) {
+            case Tbool: result = typeid(bool); break;
+            case Tint8: result = typeid(byte); break;
+            case Tuns8: result = typeid(ubyte); break;
+            case Tint16: result = typeid(short); break;
+            case Tuns16: result = typeid(ushort); break;
+            case Tint32: result = typeid(int); break;
+            case Tuns32: result = typeid(uint); break;
+            case Tint64: result = typeid(long); break;
+            case Tuns64: result = typeid(ulong); break;
+            case Tchar: result = typeid(char); break;
+            case Twchar: result = typeid(wchar); break;
+            case Tdchar: result = typeid(dchar); break;
+            case Tfloat32: result = typeid(float); break;
+            case Tfloat64: result = typeid(double); break;
+            case Tfloat80: result = typeid(real); break;
+            default: return 0;
+        }
+        return cast(size_t) cast(void*) result;
+    }
+
+    // The element/return type's own TypeInfo address, resolved through the
+    // same two-source rule (`nativeTypeInfoAddress`) recursively, for a
+    // composite TypeInfo field that must hold one (`TypeInfo_StaticArray`/
+    // `TypeInfo_Array.value`, `TypeInfo_Delegate.next`). Neither the
+    // element type nor the composite one is necessarily the direct operand
+    // of a source-level `typeid`, so the diagnostic is built from the
+    // element type itself rather than from an enclosing `TypeidExp`.
+    private size_t elementTypeInfoAddress(Type elementType) {
+        import std.conv: text;
+
+        const address = nativeTypeInfoAddress(elementType);
+        if (address == 0)
+            throw new Exception(text(
+                "Unsupported typeid in bytecode core: typeid(",
+                typeChars(elementType),
+                ")",
+            ));
+        return address;
+    }
+
+    // Emit a TypeInfo_Array for a `T[]` element type with no host-linked
+    // symbol, the way any D backend's codegen would: `value` is the
+    // element type's own TypeInfo, matching dmd's
+    // glue/todt.d `visit(TypeInfoArrayDeclaration)`.
+    private size_t nativeArrayTypeInfo(Type type) {
+        import object: TypeInfo, TypeInfo_Array;
+
+        if (auto existing = type in _nativeCompositeTypeInfos)
+            return *existing;
+
+        const elementAddress =
+            elementTypeInfoAddress(type.toBasetype.isTypeDArray.next);
+        auto result = new TypeInfo_Array;
+        result.value = cast(TypeInfo) cast(void*) elementAddress;
+
+        _program.nativeTypeInfos ~= cast(TypeInfo) result;
+        const address = cast(size_t) cast(void*) result;
+        _nativeCompositeTypeInfos[type] = address;
+        return address;
+    }
+
+    // Emit a TypeInfo_StaticArray for a `T[N]` element type with no
+    // host-linked symbol, the way any D backend's codegen would: `value`
+    // is the element type's own TypeInfo and `len` is `N`, matching dmd's
+    // glue/todt.d `visit(TypeInfoStaticArrayDeclaration)`.
+    private size_t nativeStaticArrayTypeInfo(Type type) {
+        import object: TypeInfo, TypeInfo_StaticArray;
+
+        if (auto existing = type in _nativeCompositeTypeInfos)
+            return *existing;
+
+        const elementAddress =
+            elementTypeInfoAddress(type.toBasetype.isTypeSArray.next);
+        auto result = new TypeInfo_StaticArray;
+        result.value = cast(TypeInfo) cast(void*) elementAddress;
+        result.len = staticArrayLength(type);
+
+        _program.nativeTypeInfos ~= cast(TypeInfo) result;
+        const address = cast(size_t) cast(void*) result;
+        _nativeCompositeTypeInfos[type] = address;
+        return address;
+    }
+
+    // Emit a TypeInfo_Delegate for a delegate type with no host-linked
+    // symbol, the way any D backend's codegen would: `next` is the
+    // delegate's return type TypeInfo and `deco` is the delegate type's
+    // own mangled name, matching dmd's
+    // glue/todt.d `visit(TypeInfoDelegateDeclaration)`.
+    private size_t nativeDelegateTypeInfo(Type type) {
+        import object: TypeInfo, TypeInfo_Delegate;
+        import std.string: fromStringz;
+
+        if (auto existing = type in _nativeCompositeTypeInfos)
+            return *existing;
+
+        auto delegateType = type.toBasetype.isTypeDelegate;
+        const returnAddress =
+            elementTypeInfoAddress(delegateType.next.nextOf);
+        auto result = new TypeInfo_Delegate;
+        result.next = cast(TypeInfo) cast(void*) returnAddress;
+        result.deco = delegateType.deco.fromStringz.idup;
+
+        _program.nativeTypeInfos ~= cast(TypeInfo) result;
+        const address = cast(size_t) cast(void*) result;
+        _nativeCompositeTypeInfos[type] = address;
+        return address;
     }
 
     // Emit a TypeInfo_Struct for a struct with no host-linked symbol, the

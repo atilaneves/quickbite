@@ -834,10 +834,7 @@ static foreach (backend; Matrix!()) {
 // sub-row it holds is a distinct heap allocation from `a`'s -- a bug that
 // compared by identity/descriptor-bytes at any level (not just the
 // outermost) would wrongly report these unequal.
-static foreach (backend; Matrix!(
-    Omit!(Bytecode, Because.refusal,
-        "Unsupported typeid in bytecode core: typeid(int[][])"),
-)) {
+static foreach (backend; Matrix!()) {
     @("dynamicArray.arrayOfArraysOfArraysEqualityIsStructural." ~
         backend.stringof)
     @Tags(backend.stringof)
@@ -895,8 +892,12 @@ static foreach (backend; Matrix!()) {
 // `b` is built entirely through separate `~=` appends, so its rows are a
 // distinct heap allocation from `a`'s.
 static foreach (backend; Matrix!(
-    Omit!(Bytecode, Because.refusal,
-        "Unsupported typeid in bytecode core: typeid(int[2])"),
+    Omit!(Bytecode, Because.unassertable,
+        "SIGSEGV: `int[2][]` grown by `~=` gets druntime's real flat " ~
+        "backing store (each row stored inline), but " ~
+        "`innerArrayRowPointer` still reads a grown row's slot as a " ~
+        "heap-boxed 16-byte slice descriptor and dereferences its `.ptr` " ~
+        "field, corrupting memory through the resulting garbage address"),
 )) {
     @("dynamicArray.arrayOfStaticArraysEqualityIsStructural." ~
         backend.stringof)
@@ -924,8 +925,12 @@ static foreach (backend; Matrix!(
 // element bytes as a slice descriptor makes the next row read dereference
 // element data as a pointer.
 static foreach (backend; Matrix!(
-    Omit!(Bytecode, Because.refusal,
-        "Unsupported typeid in bytecode core: typeid(int[3])"),
+    Omit!(Bytecode, Because.unassertable,
+        "SIGSEGV: `int[3][]` grown by `~=` gets druntime's real flat " ~
+        "backing store (each row stored inline), but " ~
+        "`innerArrayRowPointer` still reads a grown row's slot as a " ~
+        "heap-boxed 16-byte slice descriptor and dereferences its `.ptr` " ~
+        "field, corrupting memory through the resulting garbage address"),
 )) {
     @("dynamicArray.appendStaticArrayVariableRowThenReadElements." ~
         backend.stringof)
@@ -949,8 +954,12 @@ static foreach (backend; Matrix!(
 // The not-equal sibling of the test above, guarding against a fix that
 // makes `int[2][] == int[2][]` vacuously true instead of comparing content.
 static foreach (backend; Matrix!(
-    Omit!(Bytecode, Because.refusal,
-        "Unsupported typeid in bytecode core: typeid(int[2])"),
+    Omit!(Bytecode, Because.unassertable,
+        "SIGSEGV: `int[2][]` grown by `~=` gets druntime's real flat " ~
+        "backing store (each row stored inline), but " ~
+        "`innerArrayRowPointer` still reads a grown row's slot as a " ~
+        "heap-boxed 16-byte slice descriptor and dereferences its `.ptr` " ~
+        "field, corrupting memory through the resulting garbage address"),
 )) {
     @("dynamicArray.arrayOfStaticArraysInequalityIsStructural." ~
         backend.stringof)
@@ -977,8 +986,12 @@ static foreach (backend; Matrix!(
 // `tryArrayComparisonAssert`'s shared `emitNestedArrayEqual` path (the same
 // helpers backing the plain `==` operator) for the `Tsarray`-row shape.
 static foreach (backend; Matrix!(
-    Omit!(Bytecode, Because.refusal,
-        "Unsupported typeid in bytecode core: typeid(int[2])"),
+    Omit!(Bytecode, Because.unassertable,
+        "SIGSEGV: `int[2][]` grown by `~=` gets druntime's real flat " ~
+        "backing store (each row stored inline), but " ~
+        "`innerArrayRowPointer` still reads a grown row's slot as a " ~
+        "heap-boxed 16-byte slice descriptor and dereferences its `.ptr` " ~
+        "field, corrupting memory through the resulting garbage address"),
 )) {
     @("assertDiagnostic.arrayOfStaticArraysSameLengthDifferentContent." ~
         backend.stringof)
@@ -1374,8 +1387,12 @@ static foreach (backend; Matrix!()) {
 }
 
 static foreach (backend; Matrix!(
-    Omit!(Bytecode, Because.refusal,
-        "Unsupported typeid in bytecode core: typeid(int[2])"),
+    Omit!(Bytecode, Because.unassertable,
+        "SIGSEGV: `int[2][]` grown by `~=` gets druntime's real flat " ~
+        "backing store (each row stored inline), but " ~
+        "`innerArrayRowPointer` still reads a grown row's slot as a " ~
+        "heap-boxed 16-byte slice descriptor and dereferences its `.ptr` " ~
+        "field, corrupting memory through the resulting garbage address"),
 )) {
     @("dynamicArray.appendStaticArrayRow." ~ backend.stringof)
     @Tags(backend.stringof)
