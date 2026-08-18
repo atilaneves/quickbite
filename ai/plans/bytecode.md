@@ -17,27 +17,45 @@ profile, then make it fast.
 
 ## Milestone 1 — druntime-first convergence
 
-AGENTS.md's druntime-first rule applied to the VM's existing
-reimplementations, after milestone 1 (whose rules forbid restructuring):
+Principle: every operation either compiles to bytecode from its D body or
+crosses to native via FFI because no body exists (extern without source,
+inline asm, DMD BUILTIN intrinsics). Where the frontend populates
+`Expression.lowering`, the backend compiles that lowering — agreement with
+dmd/LDC/GDC by construction. Name-based diversion of code with an available
+body is forbidden, enforced by porting the Interpreter's
+interception-policy guard (assertion at function-compilation time, an
+enumerated exemption list, each entry with a stated retirement condition).
 
-- Associative arrays: compile druntime's real `core.internal.newaa`
-  source through the VM's own compiler, like any user code — guest-only
-  key/value types have no host-compiled instantiations to call anyway.
-  The VM-owned linear-scan `AssocArray` table, its `Op.aa*` opcodes, and
-  the `AssocArrayHook` interception table are deleted with the switch.
-- Array append: execute druntime's real append/allocation templates.
-  The hand-rolled grow path (`appendElement`/`resizeArray`) reallocates
-  exact-size, making repeated `~=` quadratic; it retires with the
-  switch.
-- Port the Interpreter's interception-policy invariant: one enumerated
-  hook-exemption list, each entry with a stated retirement condition,
-  enforced by assertion; everything else with a D body and no inline
-  asm executes for real. The current separate `AssocArrayHook` and
-  `isNewArrayRuntimeCall` mechanisms fold into it or retire.
+Work queue (each item = one commit, exposing red fixture written before the
+fix, SystemLinker as the behavior oracle):
 
-Recorded, demand-driven (take up when a corpus fixture forces the
-area): real `Throwable` objects replacing the synthetic
-`ExceptionObjectLocal` catch shape.
+1. Consume the frontend lowerings for `~=`, `.length=`, `new T[n]`/multi-dim,
+   `~`, and array literals; delete the hand-rolled append/resize/alloc/concat
+   opcodes and machine.d helpers, `isNewArrayRuntimeCall`, and the
+   `_d_arrayctor` interception. The only glue: `CatDcharAssignExp` is
+   un-lowered by design, so a small shared helper (usable by Interpreter too)
+   synthesizes the extern(C) `_d_arrayappendcd`/`_d_arrayappendwd` call,
+   which takes the FFI path. Oracle fixtures: `.capacity`, in-place growth vs
+   copy-on-append for interior slices, `assumeSafeAppend`, amortized growth.
+2. Delete the remaining name-matched diversions with available bodies, one
+   commit per mechanism: `__switch`, `arrayOp!`, `_aApply*`, `__ArrayDtor`,
+   `emplace*`, `_d_arraybounds*`, and the `_d_assert_fail` shape-sniffing
+   (compile the real core.internal.dassert machinery). Body available →
+   compile it; no body → FFI; never a hand-rolled substitute.
+3. Port the interception-policy guard with the enumerated exemption list
+   (DMD BUILTIN intrinsics, the dchar-append glue, TypeInfo materialization,
+   plus anything items 1-2 prove genuinely uncompileable), asserted at
+   function-compilation time.
+4. Real object model: real GC allocation with DMD's field offsets, real
+   `__vptr`/`TypeInfo_Class`; the VM-private heap, class table, and parallel
+   vtables are deleted. Unlocks class receivers across FFI and makes
+   `CastExp.lowering` (`_d_cast`) compileable — the unchecked-downcast bug
+   gets its exposing fixture first.
+5. Real `Throwable`: throw allocates real class objects, catch matches
+   through the real hierarchy; `ExceptionObjectLocal` and the throw-string
+   fast path die; the VM's handler-stack unwinder stays as mechanism.
+
+Items 1-3 are independent of 4-5; 4 gates 5.
 
 ## Milestone 2 — cerealed green via bench.sh
 

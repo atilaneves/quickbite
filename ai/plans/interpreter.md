@@ -506,6 +506,13 @@ bare-identifier fallback with no          table inherits the same
 
 ## 9. Open work queue
 
+- The frontend already populates `Expression.lowering` with real druntime
+  calls for `~=`/`~`/`new T[n]`, but the interpreter ignores it for those
+  three (it reads `.lowering` only for AA literals and the non-`.length=`
+  `LoweredAssignExp` fallback) and instead hand-rolls append/growth/concat
+  in `native_array.d`, outside the §8 interception guard's enumeration. Open
+  work: execute those lowerings for real and retire the hand-rolled path,
+  sharing the `CatDcharAssignExp` FFI glue with Bytecode.
 - `writeBackSliceElements` (impl.d, the array-op `+=` lowering's splice
   copy) rebuilds a pointer-typed slice base as a detached local copy — a
   latent silent-lost-write class. Needs its own exposing fixture before a
