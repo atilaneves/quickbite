@@ -2502,6 +2502,10 @@ private struct Walker {
         scope(exit) endFullExpression(full);
 
         if (!constructInto(expression, destination)) {
+            if (constructScalarExpressionInto(expression, destination.place)) {
+                destination.markConstructed;
+                return;
+            }
             const value = runExpressionImpl(expression);
             writeStoredValue(destination.place, value);
             destination.markConstructed;
@@ -13016,11 +13020,6 @@ unsupportedExpression:
 
         auto place = destination.place;
 
-        if (constructScalarOperatorInto(rvalue, place)) {
-            destination.markConstructed;
-            return true;
-        }
-
         if (auto cast_ = rvalue.isCastExp) {
             import quickbite.backends.interpreter.native_scalar:
                 isNativeScalarType;
@@ -13204,7 +13203,7 @@ destinationFallback:
             return false;
 
         const length = projectionPlace(arrayLength.e1).arrayLength;
-        storeIntegerOperator(destination, cast(long) length);
+        storeLength(destination, length);
         return true;
     }
 
@@ -13256,191 +13255,278 @@ destinationFallback:
         return true;
     }
 
-    // Arithmetic expressions are selected by their already-semantic D type.
-    // Keep their intermediates in ordinary host locals and write the final
-    // scalar directly to the caller's fresh place. This path must stay
-    // separate from ExpressionResult: adding another scalar wrapper would
-    // recreate the carrier that this conversion removes.
-    private bool constructScalarOperatorInto(
+    // This is the scalar half of decision 11. DMD has already selected an
+    // exact static type for every expression, so this dispatcher selects a
+    // corresponding host local. It is deliberately not a tagged value type:
+    // a recursive operand is constructed in its typed activation temporary,
+    // loaded into T, and consumed before the next operand is evaluated.
+    private bool constructScalarExpressionInto(
         imported!"dmd.expression".Expression expression,
         imported!"quickbite.backends.interpreter.place".Place destination,
     ) {
         import dmd.astenums: TY;
-        import dmd.tokens: EXP;
-        import quickbite.backends.interpreter.native_scalar: isNativeScalarType;
-
-        if (!isNativeScalarType(destination.type))
+        if (expression.type is null || destination.type is null ||
+            !destination.type.toBasetype.equals(expression.type.toBasetype))
             return false;
 
-        switch (expression.op) with (EXP) {
-            case add:
-            case min:
-            case mul:
-            case div:
-            case mod:
-            case negate:
-            case leftShift:
-            case rightShift:
-            case unsignedRightShift:
-            case tilde:
-            case or:
-            case and:
-            case xor:
-                break;
-
-            default:
-                return false;
-        }
-
-        const type = destination.type.toBasetype.ty;
-        switch (type) with (TY) {
-            case Tfloat32:
-                destination.storeNativeScalar(
-                    cast(float) scalarRealOperator(expression),
-                );
-                return true;
-            case Tfloat64:
-                destination.storeNativeScalar(
-                    cast(double) scalarRealOperator(expression),
-                );
-                return true;
-            case Tfloat80:
-                destination.storeNativeScalar(scalarRealOperator(expression));
-                return true;
-            default:
-                storeIntegerOperator(destination, scalarIntegerOperator(expression));
-                return true;
+        switch (destination.type.toBasetype.ty) with (TY) {
+            case Tbool: return constructScalar!bool(expression, destination);
+            case Tint8: return constructScalar!byte(expression, destination);
+            case Tuns8: return constructScalar!ubyte(expression, destination);
+            case Tchar: return constructScalar!char(expression, destination);
+            case Tint16: return constructScalar!short(expression, destination);
+            case Tuns16: return constructScalar!ushort(expression, destination);
+            case Twchar: return constructScalar!wchar(expression, destination);
+            case Tint32: return constructScalar!int(expression, destination);
+            case Tuns32: return constructScalar!uint(expression, destination);
+            case Tdchar: return constructScalar!dchar(expression, destination);
+            case Tint64: return constructScalar!long(expression, destination);
+            case Tuns64: return constructScalar!ulong(expression, destination);
+            case Tfloat32: return constructScalar!float(expression, destination);
+            case Tfloat64: return constructScalar!double(expression, destination);
+            case Tfloat80: return constructScalar!real(expression, destination);
+            default: return false;
         }
     }
 
-    private long scalarIntegerOperator(
+    private bool constructScalar(T)(
         imported!"dmd.expression".Expression expression,
-    ) {
-        import dmd.tokens: EXP;
-
-        if (auto integer = expression.isIntegerExp)
-            return cast(long) integer.getInteger;
-        if (hasProjectionPlace(expression))
-            return loadIntegerScalar(projectionPlace(expression));
-
-        if (auto binary = expression.isBinExp) {
-            const left = scalarIntegerOperator(binary.e1);
-            const right = scalarIntegerOperator(binary.e2);
-            switch (expression.op) with (EXP) {
-                case add: return left + right;
-                case min: return left - right;
-                case mul: return left * right;
-                case div: return left / right;
-                case mod: return left % right;
-                case leftShift: return left << right;
-                case rightShift: return left >> right;
-                case unsignedRightShift:
-                    return cast(long) (cast(ulong) left >> right);
-                case or: return left | right;
-                case and: return left & right;
-                case xor: return left ^ right;
-                default: break;
-            }
-        }
-        if (auto neg = expression.isNegExp)
-            return -scalarIntegerOperator(neg.e1);
-        if (auto complement = expression.isComExp)
-            return ~scalarIntegerOperator(complement.e1);
-
-        // Calls and other non-place scalar leaves still belong to the
-        // surrounding value path until their own destination arm is
-        // migrated. The recursive operator part above remains typed.
-        return runExpressionValue(expression).asLong;
-    }
-
-    private real scalarRealOperator(
-        imported!"dmd.expression".Expression expression,
-    ) {
-        import dmd.tokens: EXP;
-
-        if (auto real_ = expression.isRealExp)
-            return real_.toReal;
-        if (auto integer = expression.isIntegerExp)
-            return cast(real) integer.getInteger;
-        if (hasProjectionPlace(expression))
-            return loadRealScalar(projectionPlace(expression));
-
-        if (auto binary = expression.isBinExp) {
-            const left = scalarRealOperator(binary.e1);
-            const right = scalarRealOperator(binary.e2);
-            switch (expression.op) with (EXP) {
-                case add: return left + right;
-                case min: return left - right;
-                case mul: return left * right;
-                case div: return left / right;
-                default: break;
-            }
-        }
-        if (auto neg = expression.isNegExp)
-            return -scalarRealOperator(neg.e1);
-
-        return runExpressionValue(expression).asReal;
-    }
-
-    private long loadIntegerScalar(
-        imported!"quickbite.backends.interpreter.place".Place place,
-    ) {
-        import dmd.astenums: TY;
-
-        switch (place.type.toBasetype.ty) with (TY) {
-            case Tbool: return place.loadNativeScalar!bool ? 1 : 0;
-            case Tint8: return place.loadNativeScalar!byte;
-            case Tuns8: return place.loadNativeScalar!ubyte;
-            case Tchar: return place.loadNativeScalar!char;
-            case Tint16: return place.loadNativeScalar!short;
-            case Tuns16: return place.loadNativeScalar!ushort;
-            case Twchar: return place.loadNativeScalar!wchar;
-            case Tint32: return place.loadNativeScalar!int;
-            case Tuns32: return place.loadNativeScalar!uint;
-            case Tdchar: return place.loadNativeScalar!dchar;
-            case Tint64: return place.loadNativeScalar!long;
-            case Tuns64: return cast(long) place.loadNativeScalar!ulong;
-            default: break;
-        }
-        throw new Exception("Typed integer place expected.");
-    }
-
-    private real loadRealScalar(
-        imported!"quickbite.backends.interpreter.place".Place place,
-    ) {
-        import dmd.astenums: TY;
-
-        switch (place.type.toBasetype.ty) with (TY) {
-            case Tfloat32: return place.loadNativeScalar!float;
-            case Tfloat64: return place.loadNativeScalar!double;
-            case Tfloat80: return place.loadNativeScalar!real;
-            default: break;
-        }
-        throw new Exception("Typed real place expected.");
-    }
-
-    private void storeIntegerOperator(
         imported!"quickbite.backends.interpreter.place".Place destination,
-        in long value,
+    ) {
+        import dmd.tokens: EXP;
+        import std.traits: isFloatingPoint, isIntegral;
+
+        if (auto integer = expression.isIntegerExp) {
+            destination.storeNativeScalar(cast(T) integer.getInteger);
+            return true;
+        }
+        if (auto real_ = expression.isRealExp) {
+            destination.storeNativeScalar(cast(T) real_.toReal);
+            return true;
+        }
+        if (auto cast_ = expression.isCastExp)
+            return constructScalarCast!T(cast_, destination);
+        if (hasDirectWriteProjectionPlace(expression)) {
+            // The projection's semantic type is the expression's exact type,
+            // so this is an exact-width load into the selected host local.
+            destination.storeNativeScalar(
+                directWriteProjectionPlace(expression).loadNativeScalar!T,
+            );
+            return true;
+        }
+        if (auto not = expression.isNotExp) {
+            destination.storeNativeScalar(cast(T) !scalarTruthy(not.e1));
+            return true;
+        }
+        if (auto logical = expression.isLogicalExp) {
+            const left = scalarTruthy(logical.e1);
+            if (logical.op == EXP.andAnd && !left) {
+                destination.storeNativeScalar(cast(T) false);
+                return true;
+            }
+            if (logical.op == EXP.orOr && left) {
+                destination.storeNativeScalar(cast(T) true);
+                return true;
+            }
+            const first = _pendingTemporaryDestructors.length;
+            scope(exit) runPendingTemporaryDestructors(first);
+            destination.storeNativeScalar(cast(T) scalarTruthy(logical.e2));
+            return true;
+        }
+        switch (expression.op) with (EXP) {
+            case lessThan:
+            case lessOrEqual:
+            case greaterThan:
+            case greaterOrEqual:
+                auto comparison = cast(imported!"dmd.expression".CmpExp) expression;
+                if (comparison is null)
+                    return false;
+                destination.storeNativeScalar(cast(T) scalarComparison(comparison));
+                return true;
+            default:
+                break;
+        }
+
+        static if (isIntegral!T && !is(T == bool)) {
+            if (auto neg = expression.isNegExp) {
+                destination.storeNativeScalar(-scalarOperand!T(neg.e1));
+                return true;
+            }
+            if (auto complement = expression.isComExp) {
+                destination.storeNativeScalar(~scalarOperand!T(complement.e1));
+                return true;
+            }
+            if (auto binary = expression.isBinExp) {
+                const left = scalarOperand!T(binary.e1);
+                const right = scalarOperand!T(binary.e2);
+                switch (expression.op) with (EXP) {
+                    case add: destination.storeNativeScalar(left + right); return true;
+                    case min: destination.storeNativeScalar(left - right); return true;
+                    case mul: destination.storeNativeScalar(left * right); return true;
+                    case div: destination.storeNativeScalar(left / right); return true;
+                    case mod: destination.storeNativeScalar(left % right); return true;
+                    case leftShift: destination.storeNativeScalar(left << right); return true;
+                    case rightShift: destination.storeNativeScalar(left >> right); return true;
+                    case unsignedRightShift:
+                        destination.storeNativeScalar(cast(T) (cast(ulong) left >> right));
+                        return true;
+                    case or: destination.storeNativeScalar(left | right); return true;
+                    case and: destination.storeNativeScalar(left & right); return true;
+                    case xor: destination.storeNativeScalar(left ^ right); return true;
+                    default: return false;
+                }
+            }
+        } else static if (isFloatingPoint!T) {
+            if (auto neg = expression.isNegExp) {
+                destination.storeNativeScalar(-scalarOperand!T(neg.e1));
+                return true;
+            }
+            if (auto binary = expression.isBinExp) {
+                const left = scalarOperand!T(binary.e1);
+                const right = scalarOperand!T(binary.e2);
+                switch (expression.op) with (EXP) {
+                    case add: destination.storeNativeScalar(left + right); return true;
+                    case min: destination.storeNativeScalar(left - right); return true;
+                    case mul: destination.storeNativeScalar(left * right); return true;
+                    case div: destination.storeNativeScalar(left / right); return true;
+                    default: return false;
+                }
+            }
+        }
+
+        return false;
+    }
+
+    private bool constructScalarCast(T)(
+        imported!"dmd.expression".CastExp cast_,
+        imported!"quickbite.backends.interpreter.place".Place destination,
+    ) {
+        import dmd.astenums: TY;
+
+        if (cast_.e1 is null || cast_.e1.type is null)
+            return false;
+
+        switch (cast_.e1.type.toBasetype.ty) with (TY) {
+            case Tbool: return convertScalarCast!(T, bool)(cast_.e1, destination);
+            case Tint8: return convertScalarCast!(T, byte)(cast_.e1, destination);
+            case Tuns8: return convertScalarCast!(T, ubyte)(cast_.e1, destination);
+            case Tchar: return convertScalarCast!(T, char)(cast_.e1, destination);
+            case Tint16: return convertScalarCast!(T, short)(cast_.e1, destination);
+            case Tuns16: return convertScalarCast!(T, ushort)(cast_.e1, destination);
+            case Twchar: return convertScalarCast!(T, wchar)(cast_.e1, destination);
+            case Tint32: return convertScalarCast!(T, int)(cast_.e1, destination);
+            case Tuns32: return convertScalarCast!(T, uint)(cast_.e1, destination);
+            case Tdchar: return convertScalarCast!(T, dchar)(cast_.e1, destination);
+            case Tint64: return convertScalarCast!(T, long)(cast_.e1, destination);
+            case Tuns64: return convertScalarCast!(T, ulong)(cast_.e1, destination);
+            case Tfloat32: return convertScalarCast!(T, float)(cast_.e1, destination);
+            case Tfloat64: return convertScalarCast!(T, double)(cast_.e1, destination);
+            case Tfloat80: return convertScalarCast!(T, real)(cast_.e1, destination);
+            default: return false;
+        }
+    }
+
+    private bool convertScalarCast(T, S)(
+        imported!"dmd.expression".Expression source,
+        imported!"quickbite.backends.interpreter.place".Place destination,
+    ) {
+        const value = scalarOperand!S(source);
+        destination.storeNativeScalar(cast(T) value);
+        return true;
+    }
+
+    private T scalarOperand(T)(imported!"dmd.expression".Expression expression) {
+        import quickbite.backends.interpreter.place: Place;
+
+        auto destination = ConstructionDestination(Place(
+            _activationFrame.temporaryAddress(expression),
+            expression.type,
+        ));
+        runExpression(expression, destination);
+        return destination.place.loadNativeScalar!T;
+    }
+
+    private bool scalarTruthy(imported!"dmd.expression".Expression expression) {
+        import dmd.astenums: TY;
+
+        import quickbite.backends.interpreter.place: Place;
+
+        auto destination = ConstructionDestination(Place(
+            _activationFrame.temporaryAddress(expression),
+            expression.type,
+        ));
+        runExpression(expression, destination);
+        switch (expression.type.toBasetype.ty) with (TY) {
+            case Tbool: return destination.place.loadNativeScalar!bool;
+            case Tint8: return destination.place.loadNativeScalar!byte != 0;
+            case Tuns8, Tchar: return destination.place.loadNativeScalar!ubyte != 0;
+            case Tint16: return destination.place.loadNativeScalar!short != 0;
+            case Tuns16, Twchar: return destination.place.loadNativeScalar!ushort != 0;
+            case Tint32: return destination.place.loadNativeScalar!int != 0;
+            case Tuns32, Tdchar: return destination.place.loadNativeScalar!uint != 0;
+            case Tint64: return destination.place.loadNativeScalar!long != 0;
+            case Tuns64: return destination.place.loadNativeScalar!ulong != 0;
+            case Tfloat32: return destination.place.loadNativeScalar!float != 0;
+            case Tfloat64: return destination.place.loadNativeScalar!double != 0;
+            case Tfloat80: return destination.place.loadNativeScalar!real != 0;
+            default: return isTruthy(readStoredValue(destination.place));
+        }
+    }
+
+    private bool scalarComparison(imported!"dmd.expression".CmpExp comparison) {
+        import dmd.astenums: TY;
+        import dmd.tokens: EXP;
+
+        // Comparison operands share DMD's common arithmetic type. Dispatching
+        // on that stamped type preserves unsigned 64-bit values and narrow
+        // signed overflow rather than widening them through a carrier.
+        switch (comparison.e1.type.toBasetype.ty) with (TY) {
+            case Tint8: return compareScalars!byte(comparison);
+            case Tuns8, Tchar: return compareScalars!ubyte(comparison);
+            case Tint16: return compareScalars!short(comparison);
+            case Tuns16, Twchar: return compareScalars!ushort(comparison);
+            case Tint32: return compareScalars!int(comparison);
+            case Tuns32, Tdchar: return compareScalars!uint(comparison);
+            case Tint64: return compareScalars!long(comparison);
+            case Tuns64: return compareScalars!ulong(comparison);
+            case Tfloat32: return compareScalars!float(comparison);
+            case Tfloat64: return compareScalars!double(comparison);
+            case Tfloat80: return compareScalars!real(comparison);
+            default: return false;
+        }
+    }
+
+    private bool compareScalars(T)(imported!"dmd.expression".CmpExp comparison) {
+        import dmd.tokens: EXP;
+
+        const left = scalarOperand!T(comparison.e1);
+        const right = scalarOperand!T(comparison.e2);
+        switch (comparison.op) with (EXP) {
+            case lessThan: return left < right;
+            case lessOrEqual: return left <= right;
+            case greaterThan: return left > right;
+            case greaterOrEqual: return left >= right;
+            default: assert(0, "comparison expression has a non-comparison op");
+        }
+    }
+
+    private void storeLength(
+        imported!"quickbite.backends.interpreter.place".Place destination,
+        in size_t length,
     ) {
         import dmd.astenums: TY;
 
         switch (destination.type.toBasetype.ty) with (TY) {
-            case Tbool: destination.storeNativeScalar(value != 0); return;
-            case Tint8: destination.storeNativeScalar(cast(byte) value); return;
-            case Tuns8: destination.storeNativeScalar(cast(ubyte) value); return;
-            case Tchar: destination.storeNativeScalar(cast(char) value); return;
-            case Tint16: destination.storeNativeScalar(cast(short) value); return;
-            case Tuns16: destination.storeNativeScalar(cast(ushort) value); return;
-            case Twchar: destination.storeNativeScalar(cast(wchar) value); return;
-            case Tint32: destination.storeNativeScalar(cast(int) value); return;
-            case Tuns32: destination.storeNativeScalar(cast(uint) value); return;
-            case Tdchar: destination.storeNativeScalar(cast(dchar) value); return;
-            case Tint64: destination.storeNativeScalar(value); return;
-            case Tuns64: destination.storeNativeScalar(cast(ulong) value); return;
-            default: break;
+            case Tint8: destination.storeNativeScalar(cast(byte) length); return;
+            case Tuns8, Tchar: destination.storeNativeScalar(cast(ubyte) length); return;
+            case Tint16: destination.storeNativeScalar(cast(short) length); return;
+            case Tuns16, Twchar: destination.storeNativeScalar(cast(ushort) length); return;
+            case Tint32: destination.storeNativeScalar(cast(int) length); return;
+            case Tuns32, Tdchar: destination.storeNativeScalar(cast(uint) length); return;
+            case Tint64: destination.storeNativeScalar(cast(long) length); return;
+            case Tuns64: destination.storeNativeScalar(cast(ulong) length); return;
+            default: throw new Exception("Array length has a non-integral type.");
         }
-        throw new Exception("Typed integer destination expected.");
     }
 
     private void constructStringLiteral(
