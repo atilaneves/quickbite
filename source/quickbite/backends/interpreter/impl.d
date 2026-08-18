@@ -13015,6 +13015,17 @@ unsupportedExpression:
             }
         }
 
+        if (auto literal = rvalue.isArrayLiteralExp) {
+            if (
+                literal.type !is null &&
+                place.type.toBasetype.equals(literal.type.toBasetype)
+            ) {
+                constructArrayLiteral(literal, place);
+                destination.markConstructed;
+                return true;
+            }
+        }
+
         if (auto string_ = rvalue.isStringExp) {
             constructStringLiteral(string_, place);
             destination.markConstructed;
@@ -13035,6 +13046,36 @@ unsupportedExpression:
 
 destinationFallback:
         return false;
+    }
+
+    // Array literals construct the header and elements in the caller's typed
+    // storage. Each element keeps DMD's source order, including sparse
+    // literals whose null entry repeats `basis`. A child without a direct
+    // construction arm still uses the established value fallback locally.
+    private void constructArrayLiteral(
+        imported!"dmd.expression".ArrayLiteralExp literal,
+        imported!"quickbite.backends.interpreter.place".Place destination,
+    ) {
+        import quickbite.backends.interpreter.aggregate_value: AggregateValue;
+
+        const length = literal.elements is null ? 0 : (*literal.elements).length;
+        AggregateValue.initializeArray(destination, length);
+        if (literal.elements is null)
+            return;
+
+        foreach (index, element; *literal.elements) {
+            auto source = element is null ? literal.basis : element;
+            auto elementDestination = ConstructionDestination(destination.index(index));
+            if (auto functionLiteral = source.isFuncExp) {
+                writeStoredValue(
+                    elementDestination.place,
+                    runFunctionLiteralDeclaration(functionLiteral),
+                );
+                elementDestination.markConstructed;
+            } else {
+                runExpression(source, elementDestination);
+            }
+        }
     }
 
     // An addressable array receiver already owns its header or fixed extent.

@@ -10,6 +10,34 @@ private alias NativeAggregate = imported!"quickbite.backends.interpreter.native_
 // surface keeps their typed construction and access separate from scalar
 // ExpressionResult operations.
 public struct AggregateValue {
+    // Start an array construction in storage that the caller already owns.
+    // Static-array elements are inline in that storage. A dynamic array needs
+    // only its newly allocated backing block and header; the caller then
+    // constructs each element through the header's typed indexed places.
+    public static void initializeArray(
+        imported!"quickbite.backends.interpreter.place".Place destination,
+        in size_t length,
+    ) @safe {
+        import quickbite.backends.interpreter.layout: staticArrayLength;
+        import quickbite.backends.interpreter.native_array: NativeArray;
+
+        auto type = baseTypeOf(destination.type);
+        if (auto staticArray = type.isTypeSArray) {
+            if (length != staticArrayLength(staticArray))
+                throw new Exception(
+                    "AggregateValue.initializeArray static-array length mismatch.",
+                );
+            return;
+        }
+
+        auto dynamicArray = type.isTypeDArray;
+        if (dynamicArray is null)
+            throw new Exception("AggregateValue.initializeArray needs an array place.");
+
+        NativeArray.allocate(dynamicArray.next, length)
+            .writeSliceHeader(destination.address);
+    }
+
     // Typed constructors require a Type: aggregate layout never comes from a
     // display name or an `ExpressionResult`'s variant shape.
     public static imported!"quickbite.backends.interpreter.expression_result".ExpressionResult reconstructStruct(
