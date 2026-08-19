@@ -15416,3 +15416,125 @@ static foreach (backend; Matrix!()) {
         });
     }
 }
+
+// D's pointer post-increment/decrement moves the pointer by one element of
+// its pointee type, the same scaling `p + n`/`p - n` pointer arithmetic
+// already applies -- not by one byte. SystemLinker is the oracle.
+static foreach (backend; Matrix!()) {
+    @("pointer.postIncrementAdvancesByElement." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            int probe(int value) {
+                return value;
+            }
+
+            unittest {
+                int first = probe(10);
+                int[] arr = [first, first + 1, first + 2, first + 3];
+                auto p = arr.ptr;
+                auto a = *p;
+                p++;
+                auto b = *p;
+                assert(a == 10);
+                assert(b == 11);
+            }
+        });
+    }
+
+    @("pointer.postDecrementAdvancesByElement." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            int probe(int value) {
+                return value;
+            }
+
+            unittest {
+                int first = probe(10);
+                int[] arr = [first, first + 1, first + 2, first + 3];
+                auto p = &arr[3];
+                auto a = *p;
+                p--;
+                auto b = *p;
+                assert(a == 13);
+                assert(b == 12);
+            }
+        });
+    }
+
+    // A struct field's `DotVarExp` post-increment arm.
+    @("pointer.structFieldPostIncrementAdvancesByElement." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct Holder {
+                int* p;
+            }
+
+            int probe(int value) {
+                return value;
+            }
+
+            unittest {
+                int first = probe(10);
+                int[] arr = [first, first + 1, first + 2, first + 3];
+                auto holder = Holder(arr.ptr);
+                auto a = *holder.p;
+                holder.p++;
+                auto b = *holder.p;
+                assert(a == 10);
+                assert(b == 11);
+            }
+        });
+    }
+
+    // An array element's `IndexExp` post-increment arm, where the array's
+    // own elements are pointers.
+    @("pointer.arrayElementPostIncrementAdvancesByElement." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            int probe(int value) {
+                return value;
+            }
+
+            unittest {
+                int first = probe(10);
+                int[] arr = [first, first + 1, first + 2, first + 3];
+                int*[1] arr2 = [arr.ptr];
+                auto a = *arr2[0];
+                arr2[0]++;
+                auto b = *arr2[0];
+                assert(a == 10);
+                assert(b == 11);
+            }
+        });
+    }
+
+    // `(*pp)++` through a pointer to a pointer post-increments the
+    // pointee -- itself a pointer -- so it too moves by one element of its
+    // own pointee type.
+    @("pointer.dereferencedPointerToPointerPostIncrementAdvancesByElement." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            int probe(int value) {
+                return value;
+            }
+
+            unittest {
+                int first = probe(10);
+                int[] arr = [first, first + 1, first + 2, first + 3];
+                auto p = arr.ptr;
+                auto pp = &p;
+                auto a = **pp;
+                (*pp)++;
+                auto b = **pp;
+                assert(a == 10);
+                assert(b == 11);
+            }
+        });
+    }
+}

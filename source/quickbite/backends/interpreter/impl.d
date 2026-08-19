@@ -14687,11 +14687,7 @@ destinationFallback:
             // Reuse the ordinary VarExp read path so post-increment observes
             // the binding's authoritative native storage.
             const oldValue = runExpressionValue(post.e1);
-            if (oldValue.isPointer) {
-                writeLocation(post.e1, oldValue.pointerOffsetBy(delta.asLong));
-                return oldValue;
-            }
-            writeLocation(post.e1, oldValue + delta);
+            writeLocation(post.e1, incrementedValue(oldValue, post.e1.type, delta));
             return oldValue;
         }
 
@@ -14701,14 +14697,17 @@ destinationFallback:
                 const oldValue = readStoredValue(destination);
                 writeStoredValue(
                     destination,
-                    storageValue(post.e1.type, oldValue + delta),
+                    storageValue(
+                        post.e1.type,
+                        incrementedValue(oldValue, post.e1.type, delta),
+                    ),
                 );
                 clearProjectionRootUninitialized(post.e1);
                 return oldValue;
             }
 
             const oldValue = runExpressionValue(post.e1);
-            writeLocation(post.e1, oldValue + delta);
+            writeLocation(post.e1, incrementedValue(oldValue, post.e1.type, delta));
             return oldValue;
         }
 
@@ -14718,14 +14717,17 @@ destinationFallback:
                 const oldValue = readStoredValue(destination);
                 writeStoredValue(
                     destination,
-                    storageValue(post.e1.type, oldValue + delta),
+                    storageValue(
+                        post.e1.type,
+                        incrementedValue(oldValue, post.e1.type, delta),
+                    ),
                 );
                 clearProjectionRootUninitialized(post.e1);
                 return oldValue;
             }
 
             const oldValue = runExpressionValue(post.e1);
-            writeLocation(post.e1, oldValue + delta);
+            writeLocation(post.e1, incrementedValue(oldValue, post.e1.type, delta));
             return oldValue;
         }
 
@@ -14746,11 +14748,27 @@ destinationFallback:
                 post.e1.type.toBasetype,
             );
             const oldValue = readStoredValue(target);
-            writeStoredValue(target, oldValue + delta);
+            writeStoredValue(target, incrementedValue(oldValue, target.type, delta));
             return oldValue;
         }
 
         throw new Exception("Unsupported eval post expression target.");
+    }
+
+    // A post-inc/dec target's next value. A pointer-typed target moves by
+    // whole elements: DMD's own `scaleFactor` folds that same scaling into
+    // the frontend AST for `p++`/`p--` on a real pointer (multiplying the
+    // unit delta by the pointee's size), so `pointerOffsetBy` -- which adds
+    // its argument as a raw byte count -- needs the same multiplication here.
+    // Anything else is plain scalar arithmetic.
+    private ExpressionResult incrementedValue(
+        in ExpressionResult oldValue,
+        imported!"dmd.mtype".Type type,
+        in ExpressionResult delta,
+    ) {
+        return oldValue.isPointer
+            ? oldValue.pointerOffsetBy(delta.asLong * pointerElementSize(type))
+            : oldValue + delta;
     }
 
     private ExpressionResult runAddAssignExpression(
