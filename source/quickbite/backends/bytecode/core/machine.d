@@ -39,8 +39,9 @@ package(quickbite.backends.bytecode) RunResult run(
     stack.reserve(stackCapacity);
     // Guest locals and temporaries -- including slice/class/struct pointers
     // a real druntime allocation hook returned -- live here as raw bytes;
-    // scan them like compiled D scans its own stack frames. Marked after
-    // `reserve`, the last operation that can move `stack` to a fresh block.
+    // scan them like compiled D scans its own stack frames. A callee-frame
+    // growth past the reserved capacity can still move `stack` to a fresh
+    // `NO_SCAN` block, so the growth site re-marks it too.
     markScanned(stack);
     // Lazy compilation can add module slots while this machine is running, so
     // access the program-owned segment directly. The compiler reserves its
@@ -1675,8 +1676,15 @@ package(quickbite.backends.bytecode) RunResult run(
                 const calleeBase =
                     base + program.functions[functionIndex].frameSize;
                 const callee = program.functions[calleeIndex];
-                if (stack.length < calleeBase + callee.frameSize)
+                if (stack.length < calleeBase + callee.frameSize) {
+                    // Growth past the reserved capacity can relocate `stack`
+                    // to a fresh `NO_SCAN` block; re-mark it scanned so the
+                    // GC keeps seeing guest pointers stored in its frames.
+                    const stackPtrBeforeGrowth = stack.ptr;
                     stack.length = calleeBase + callee.frameSize;
+                    if (stack.ptr !is stackPtrBeforeGrowth)
+                        markScanned(stack);
+                }
 
                 stack[calleeBase .. calleeBase + callee.parameterBytes] =
                     stack[
