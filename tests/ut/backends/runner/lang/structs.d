@@ -1516,6 +1516,48 @@ static foreach (backend; Matrix!()) {
     }
 }
 
+// The destructor writes through a pointer to the enclosing scope's sink
+// array (`*sink ~= index`); CTFE refuses that pointer dereference at compile
+// time, so `Ctfe` is omitted (omit-don't-pin, `ai/mistakes.md`) rather than
+// pinned to a divergent characterization.
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.inexpressible,
+        "cannot interpret `*this.sink ~= this.index` at compile time"),
+)) {
+    @("struct.staticArrayScopeExitDestroysInReverseElementOrder." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct Element {
+                int index;
+                int[]* sink;
+
+                ~this() {
+                    *sink ~= index;
+                }
+            }
+
+            unittest {
+                int[] sink;
+                int seed = 7;
+
+                {
+                    Element[3] items;
+                    items[0].index = seed;
+                    items[0].sink = &sink;
+                    items[1].index = seed + 1;
+                    items[1].sink = &sink;
+                    items[2].index = seed + 2;
+                    items[2].sink = &sink;
+                }
+
+                assert(sink == [9, 8, 7]);
+            }
+        });
+    }
+}
+
 // `s = t;` for a whole struct local: `S` has a postblit but no user-defined
 // `opAssign`, so DMD synthesizes one and lowers the call argument through a
 // `__copytmp` temporary whose own postblit runs once on the copy, matching

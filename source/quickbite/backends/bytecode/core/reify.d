@@ -340,9 +340,12 @@ private ulong scalarKey(
 // Resolves a native descriptor pointer to its backing bytes: a VM-owned heap
 // block, a literal-initialised `string`'s own stable `literalBlocks` entry
 // (built by `Op.loadStringLiteral`/`Op.loadDataPointer` from
-// `literalBlocks[index].ptr`), or a view into the legacy `data` segment.
-// Addresses never escape a process, so this classification only ever runs at
-// the reification boundary, never mid-compile.
+// `literalBlocks[index].ptr`), a view into the legacy `data` segment, or —
+// once a real druntime array hook (e.g. `object.idup`) has actually run and
+// allocated via `GC.malloc` rather than a VM-tracked opcode — a real GC
+// block (see `gcBlock`). Addresses never escape a process, so this
+// classification only ever runs at the reification boundary, never
+// mid-compile.
 private const(ubyte)[] resolveBlock(
     in size_t pointer,
     in ubyte[][] heap,
@@ -353,7 +356,29 @@ private const(ubyte)[] resolveBlock(
         return block;
     if (auto literal = rangeBlock(pointer, literalBlocks))
         return literal;
-    return dataBlock(pointer, data);
+    if (auto block = dataBlock(pointer, data))
+        return block;
+    return gcBlock(pointer);
+}
+
+// Whether a pointer falls inside a real GC allocation, and where that
+// allocation's containing block begins and ends, is knowledge only the real
+// GC has; the VM keeps no bookkeeping of its own for memory a druntime hook
+// allocated by calling `GC.malloc` directly (e.g. `object.idup`'s `_dup`),
+// so ask the GC rather than growing the VM's tracked-block arrays to
+// duplicate its ownership records. `GC.addrOf`/`GC.sizeOf`'s `void*`
+// overloads are declared `pure`; the only unsafe operations here are
+// reinterpreting `pointer` as a pointer to query the GC and reinterpreting
+// the returned block as `ubyte`s, both bounds-checked by the GC's own
+// allocation table before any byte of the block is read.
+private const(ubyte)[] gcBlock(in size_t pointer) @trusted pure {
+    import core.memory: GC;
+
+    auto base = GC.addrOf(cast(void*) pointer);
+    if (base is null)
+        return null;
+    const size = GC.sizeOf(base);
+    return (cast(const(ubyte)*) base)[0 .. size][pointer - cast(size_t) base .. $];
 }
 
 // Recovering `data`'s own base address to bounds-check `pointer` against it

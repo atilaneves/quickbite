@@ -24,9 +24,9 @@ package(quickbite.backends.bytecode) RunResult run(
 ) {
     import core.exception: RangeError;
     import quickbite.backends.bytecode.core.program:
-        appendElementWidth, CatchClause, ClassInfo,
-        concatArraysWidth, dupArrayWidth, indexElementWidth, Op, ScalarType,
-        noCatchObjectField, noExceptionClass,
+        CatchClause, ClassInfo,
+        indexElementWidth, markScanned, Op, ScalarType,
+        noCatchObjectField, noExceptionClass, noNativeCallIndex,
         pointerElementWidth, size, sliceCopyWidth, sliceDescriptorLengthOffset,
         sliceDescriptorPtrOffset, sliceDescriptorSize,
         sliceEqualWidth, subSliceElementWidth;
@@ -37,6 +37,12 @@ package(quickbite.backends.bytecode) RunResult run(
     // intervening calls that grow the stack.
     auto stack = new ubyte[](program.functions[0].frameSize);
     stack.reserve(stackCapacity);
+    // Guest locals and temporaries -- including slice/class/struct pointers
+    // a real druntime allocation hook returned -- live here as raw bytes;
+    // scan them like compiled D scans its own stack frames. A callee-frame
+    // growth past the reserved capacity can still move `stack` to a fresh
+    // `NO_SCAN` block, so the growth site re-marks it too.
+    markScanned(stack);
     // Lazy compilation can add module slots while this machine is running, so
     // access the program-owned segment directly. The compiler reserves its
     // maximum addressable capacity before execution, keeping raw addresses
@@ -46,9 +52,6 @@ package(quickbite.backends.bytecode) RunResult run(
     // slices here keeps the memory the slice descriptors point at alive; the
     // descriptors store the raw `block.ptr` as a native pointer.
     ubyte[][] heap;
-    // Blocks whose appendable status entered this run through a native-layout
-    // slice descriptor write. Ordinary VM-owned arrays keep copy-on-append.
-    size_t[] appendablePointers;
     Frame[] frames;
     // Active catch handlers, innermost last. A `pushHandler` records the catch
     // body's location (instruction index plus the frame it runs in); a
@@ -103,56 +106,10 @@ package(quickbite.backends.bytecode) RunResult run(
                 // Allocate writable backing memory, root it in `heap`, and
                 // write the descriptor {length, ptr} into the frame slot.
                 auto block = new ubyte[](instruction.b * instruction.c);
+                markScanned(block);
                 heap ~= block;
                 writeSliceDescriptor(
                     stack, base + instruction.a, block, instruction.c,
-                );
-                ++ip;
-                break;
-
-            case allocArrayDynamic:
-                // The length is a runtime size_t in a frame slot; operand b packs
-                // the default-init fill byte (high 8 bits) and the element size
-                // (low 8 bits). Allocate a fresh block of that many elements,
-                // fill it with the default byte, root it, and write the
-                // descriptor.
-                const dynamicLength =
-                    scalarValue!size_t(stack, base + instruction.c);
-                const dynamicElementSize = instruction.b & 0xff;
-                const dynamicFill = cast(ubyte) (instruction.b >> 8);
-                auto dynamicBlock =
-                    new ubyte[](dynamicElementSize * dynamicLength);
-                dynamicBlock[] = dynamicFill;
-                heap ~= dynamicBlock;
-                writeSliceDescriptor(
-                    stack, base + instruction.a, dynamicBlock, dynamicLength,
-                );
-                ++ip;
-                break;
-
-            case allocArray2D:
-                // {rows, cols} live in an adjacent size_t pair at frame offset c;
-                // operand b packs the inner element's fill byte and size. Build
-                // the outer block of `rows` descriptors, each pointing at a fresh
-                // inner block of `cols` filled elements; root every block.
-                const rows = scalarValue!size_t(stack, base + instruction.c);
-                const cols = scalarValue!size_t(
-                    stack, base + instruction.c + size_t.sizeof,
-                );
-                const innerElementSize = instruction.b & 0xff;
-                const innerFill = cast(ubyte) (instruction.b >> 8);
-                auto outerBlock = new ubyte[](rows * sliceDescriptorSize);
-                heap ~= outerBlock;
-                foreach (row; 0 .. rows) {
-                    auto innerBlock = new ubyte[](innerElementSize * cols);
-                    innerBlock[] = innerFill;
-                    heap ~= innerBlock;
-                    writeSliceDescriptor(
-                        outerBlock, row * sliceDescriptorSize, innerBlock, cols,
-                    );
-                }
-                writeSliceDescriptor(
-                    stack, base + instruction.a, outerBlock, rows,
                 );
                 ++ip;
                 break;
@@ -162,6 +119,7 @@ package(quickbite.backends.bytecode) RunResult run(
                 // copy the initialised block of `c` bytes from the frame in,
                 // root it, and write the raw heap pointer into the frame slot.
                 auto structBlock = new ubyte[](instruction.c);
+                markScanned(structBlock);
                 structBlock[] = stack[
                     base + instruction.b .. base + instruction.b + instruction.c
                 ];
@@ -172,32 +130,11 @@ package(quickbite.backends.bytecode) RunResult run(
 
             case allocClass:
                 auto classBlock = new ubyte[](instruction.c);
+                markScanned(classBlock);
                 classBlock[0 .. size_t.sizeof] =
                     scalarBytes(cast(size_t) instruction.b)[];
                 heap ~= classBlock;
                 writeBlockPointer(stack, base + instruction.a, classBlock);
-                ++ip;
-                break;
-
-            case setArrayLength:
-                heap ~= resizeArray(
-                    stack,
-                    base + instruction.a,
-                    instruction.b & 0xff,
-                    cast(ubyte) (instruction.b >> 8),
-                    scalarValue!size_t(stack, base + instruction.c),
-                );
-                ++ip;
-                break;
-
-            case setArrayLengthFromTemplate:
-                heap ~= resizeArrayWithTemplate(
-                    stack,
-                    base + instruction.a,
-                    base + instruction.b,
-                    instruction.d,
-                    scalarValue!size_t(stack, base + instruction.c),
-                );
                 ++ip;
                 break;
 
@@ -317,16 +254,6 @@ package(quickbite.backends.bytecode) RunResult run(
                 ++ip;
                 break;
 
-            case rowRangeCopy:
-                copyRowRange(
-                    stack,
-                    base + instruction.a,
-                    base + instruction.b,
-                    instruction.c,
-                );
-                ++ip;
-                break;
-
             case sliceFill1:
                 fillSlice1(stack, base + instruction.a, base + instruction.b);
                 ++ip;
@@ -384,58 +311,6 @@ package(quickbite.backends.bytecode) RunResult run(
                     instruction.d,
                     instruction.e,
                 ) ? 1 : 0;
-                ++ip;
-                break;
-
-            case appendElement1, appendElement2, appendElement4, appendElement8,
-                appendElement16, appendElementN:
-                auto appended = appendElement(
-                    stack,
-                    base + instruction.a,
-                    base + instruction.b,
-                    instruction.op == appendElementN
-                        ? instruction.c
-                        : appendElementWidth(instruction.op),
-                    heap,
-                    appendablePointers,
-                );
-                heap ~= appended;
-                ++ip;
-                break;
-
-            case concatArrays1, concatArrays4, concatArrays16, concatArraysN:
-                heap ~= concatArrays(
-                    stack,
-                    base + instruction.a,
-                    base + instruction.b,
-                    base + instruction.c,
-                    instruction.op == concatArraysN
-                        ? instruction.d
-                        : concatArraysWidth(instruction.op),
-                );
-                ++ip;
-                break;
-
-            case dupArray1, dupArray2, dupArray4, dupArray8, dupArray16,
-                dupArrayN:
-                heap ~= dupArray(
-                    stack,
-                    base + instruction.a,
-                    base + instruction.b,
-                    instruction.op == dupArrayN
-                        ? instruction.c
-                        : dupArrayWidth(instruction.op),
-                );
-                ++ip;
-                break;
-
-            case arrayAddAssign4:
-                applyArrayAddAssign4(
-                    stack,
-                    base + instruction.a,
-                    base + instruction.b,
-                    base + instruction.c,
-                );
                 ++ip;
                 break;
 
@@ -1750,12 +1625,52 @@ package(quickbite.backends.bytecode) RunResult run(
                 // A direct `call` carries the callee's function index in
                 // `instruction.a`; an indirect `callIndirect` reads it from
                 // the size_t slot at that frame offset (the function-pointer
-                // or delegate value).
+                // or delegate value). Either way it is a plain index into
+                // `program.functions`, uniform whether the callee turns out
+                // to be VM-compiled or a native leaf.
                 const calleeIndex = instruction.op == call
                     ? instruction.a
                     : cast(ushort) scalarValue!size_t(
                         stack, base + instruction.a,
                     );
+
+                // `registerFunction` records a native-leaf callee's (`&f`
+                // where `f` is body-less, e.g. `core.internal.dassert`'s
+                // `assumeFakeAttributes` taking the address of
+                // `GC.inFinalizer`) matching `program.nativeCalls` entry
+                // here instead of ever giving it VM bytecode: dispatch
+                // through the same `callNative` bridge a direct native call
+                // uses, synchronously, with no VM call frame to push. Its
+                // `argumentOffsets` are this call's own dense typed-frame
+                // argument layout (the same one a VM-targeted call below
+                // would copy verbatim into the callee's frame), not
+                // `Op.nativeCall`'s own per-argument staging layout -- both
+                // are `NativeCall.argumentOffsets` entries, just built by
+                // different compile-time paths.
+                if (program.functions[calleeIndex].nativeCallIndex !=
+                    noNativeCallIndex)
+                {
+                    import quickbite.frontend.dmd.functions:
+                        noAvailableSourceMessage;
+                    import quickbite.backends.bytecode.core.native_call:
+                        callNative;
+
+                    auto native = &program.nativeCalls[
+                        program.functions[calleeIndex].nativeCallIndex
+                    ];
+                    if (!callNative(
+                            *native,
+                            stack,
+                            base,
+                            base + instruction.b,
+                            base + instruction.c,
+                        ))
+                        throw new Exception(
+                            noAvailableSourceMessage(native.function_),
+                        );
+                    ++ip;
+                    break;
+                }
 
                 if (program.functions[calleeIndex].code.length == 0)
                     compileFunction(calleeIndex);
@@ -1763,8 +1678,15 @@ package(quickbite.backends.bytecode) RunResult run(
                 const calleeBase =
                     base + program.functions[functionIndex].frameSize;
                 const callee = program.functions[calleeIndex];
-                if (stack.length < calleeBase + callee.frameSize)
+                if (stack.length < calleeBase + callee.frameSize) {
+                    // Growth past the reserved capacity can relocate `stack`
+                    // to a fresh `NO_SCAN` block; re-mark it scanned so the
+                    // GC keeps seeing guest pointers stored in its frames.
+                    const stackPtrBeforeGrowth = stack.ptr;
                     stack.length = calleeBase + callee.frameSize;
+                    if (stack.ptr !is stackPtrBeforeGrowth)
+                        markScanned(stack);
+                }
 
                 stack[calleeBase .. calleeBase + callee.parameterBytes] =
                     stack[
@@ -1799,45 +1721,6 @@ package(quickbite.backends.bytecode) RunResult run(
                     throw new Exception(
                         noAvailableSourceMessage(native.function_),
                     );
-                ++ip;
-                break;
-
-            case assertTrue:
-                if (stack[base + instruction.a] == 0)
-                    throw new Exception(assertMessage(
-                        program.assertDiagnostics[instruction.b],
-                        stack[base .. $],
-                    ));
-
-                ++ip;
-                break;
-
-            case assertTrueVerbatim:
-                if (stack[base + instruction.a] == 0)
-                    throw new Exception(
-                        program.assertDiagnostics[instruction.b].operator,
-                    );
-
-                ++ip;
-                break;
-
-            case assertNonzeroInt4:
-                // The operand width follows its scalar type: a `bool` is a
-                // single frame byte, an `int` four. Reading only `size(type)`
-                // bytes avoids treating a zero `bool` as nonzero because of
-                // adjacent frame bytes.
-                const nonzeroDiagnostic =
-                    program.assertDiagnostics[instruction.b];
-                if (isZeroSlot(
-                        stack,
-                        base + instruction.a,
-                        size(nonzeroDiagnostic.operandType),
-                    ))
-                    throw new Exception(assertMessage(
-                        nonzeroDiagnostic,
-                        stack[base .. $],
-                    ));
-
                 ++ip;
                 break;
 
@@ -2232,13 +2115,15 @@ private ubyte[] exceptionObjectFromString(
     in size_t sourceOffset,
     in imported!"quickbite.backends.bytecode.core.program".ClassInfo[] classes,
 ) @trusted {
-    import quickbite.backends.bytecode.core.program: sliceDescriptorSize;
+    import quickbite.backends.bytecode.core.program:
+        markScanned, sliceDescriptorSize;
 
     const messageOffset = classIndex < classes.length &&
         classes[classIndex].msgOffset != ushort.max
         ? classes[classIndex].msgOffset
         : cast(ushort) size_t.sizeof;
     auto object = new ubyte[](messageOffset + sliceDescriptorSize);
+    markScanned(object);
     object[0 .. size_t.sizeof] = scalarBytes(cast(size_t) classIndex)[];
     object[messageOffset .. messageOffset + sliceDescriptorSize] =
         source[sourceOffset .. sourceOffset + sliceDescriptorSize];
@@ -2402,194 +2287,6 @@ private void validateSubSlice(
         ));
 }
 
-// Duplicate the slice descriptor at `sourceOffset` into a fresh heap block
-// holding an independent copy of its elements, and write the descriptor
-// {length, newPtr} at `descriptorOffset`. Returns the new block so the caller
-// can root it in `heap`.
-private ubyte[] dupArray(
-    ref ubyte[] stack,
-    in size_t descriptorOffset,
-    in size_t sourceOffset,
-    in uint elementSize,
-) @trusted {
-    const source = readSliceDescriptor(stack, sourceOffset);
-    const length = source.length;
-    const pointer = source.pointer;
-    const byteCount = length * elementSize;
-
-    auto block = new ubyte[](byteCount);
-    block[] = (cast(const(ubyte)*) pointer)[0 .. byteCount];
-
-    writeSliceDescriptor(stack, descriptorOffset, block, length);
-    return block;
-}
-
-// Concatenate the slice descriptors at `leftOffset` and `rightOffset` into a
-// fresh heap block of `len(left) + len(right)` elements, copying both operands'
-// elements in order, and write the descriptor {total, newPtr} at
-// `descriptorOffset`. Returns the new block so the caller can root it in `heap`.
-// Both operands are copied, leaving the originals untouched.
-private ubyte[] concatArrays(
-    ref ubyte[] stack,
-    in size_t descriptorOffset,
-    in size_t leftOffset,
-    in size_t rightOffset,
-    in uint elementSize,
-) @trusted {
-    const left = readSliceDescriptor(stack, leftOffset);
-    const right = readSliceDescriptor(stack, rightOffset);
-    const leftLength = left.length;
-    const rightLength = right.length;
-    const leftPointer = left.pointer;
-    const rightPointer = right.pointer;
-    const leftBytes = leftLength * elementSize;
-    const rightBytes = rightLength * elementSize;
-
-    auto block = new ubyte[](leftBytes + rightBytes);
-    block[0 .. leftBytes] =
-        (cast(const(ubyte)*) leftPointer)[0 .. leftBytes];
-    block[leftBytes .. leftBytes + rightBytes] =
-        (cast(const(ubyte)*) rightPointer)[0 .. rightBytes];
-
-    writeSliceDescriptor(
-        stack, descriptorOffset, block, leftLength + rightLength,
-    );
-    return block;
-}
-
-private extern(C) bool gc_expandArrayUsed(
-    void[] slice,
-    size_t newUsed,
-    bool atomic,
-) pure nothrow;
-
-// Append the element at `elementOffset` to the slice descriptor at
-// `descriptorOffset`. Use druntime's appendable-block bookkeeping first so a
-// prior `reserve` can grow the slice in place; otherwise allocate and copy.
-// `appendablePointers` is keyed by the backing block's base address (from
-// `GC.query`, which resolves an interior pointer to its block), not the
-// descriptor's own pointer, so a later append through an interior slice (e.g.
-// `arr[2 .. $]`) recognises the same block a prior append already proved
-// appendable and grows in place too; `gc_expandArrayUsed` itself (real
-// druntime bookkeeping) still refuses if the slice is not at the block's used
-// boundary. Returns the resulting block so the caller can root it in `heap`.
-private ubyte[] appendElement(
-    ref ubyte[] stack,
-    in size_t descriptorOffset,
-    in size_t elementOffset,
-    in uint elementSize,
-    in ubyte[][] heap,
-    ref size_t[] appendablePointers,
-) @trusted {
-    import core.memory: GC;
-
-    const descriptor = readSliceDescriptor(stack, descriptorOffset);
-    const length = descriptor.length;
-    const pointer = descriptor.pointer;
-    const oldBytes = length * elementSize;
-    const newBytes = (length + 1) * elementSize;
-    const blockInfo = GC.query(cast(void*) pointer);
-    const blockBase = cast(size_t) blockInfo.base;
-    const canGrowInPlace = containsPointer(appendablePointers, blockBase) ||
-        (!heapContainsPointer(heap, pointer) &&
-            (blockInfo.attr & GC.BlkAttr.APPENDABLE) != 0);
-
-    if (pointer != 0 &&
-        canGrowInPlace &&
-        gc_expandArrayUsed(
-            (cast(void*) pointer)[0 .. oldBytes], newBytes, false)) {
-        if (!containsPointer(appendablePointers, blockBase))
-            appendablePointers ~= blockBase;
-        auto block = (cast(ubyte*) pointer)[0 .. newBytes];
-        block[oldBytes .. newBytes] =
-            stack[elementOffset .. elementOffset + elementSize];
-        writeSliceDescriptor(stack, descriptorOffset, block, length + 1);
-        return block;
-    }
-
-    auto block = new ubyte[](newBytes);
-    const source = (cast(const(ubyte)*) pointer)[0 .. oldBytes];
-    block[0 .. oldBytes] = source[];
-    block[oldBytes .. newBytes] =
-        stack[elementOffset .. elementOffset + elementSize];
-
-    writeSliceDescriptor(stack, descriptorOffset, block, length + 1);
-    return block;
-}
-
-private bool heapContainsPointer(in ubyte[][] heap, in size_t pointer)
-    @trusted @nogc nothrow pure
-{
-    foreach (block; heap) {
-        const begin = cast(size_t) block.ptr;
-        if (pointer >= begin && pointer < begin + block.length)
-            return true;
-    }
-    return false;
-}
-
-private bool containsPointer(in size_t[] pointers, in size_t pointer)
-    @safe @nogc nothrow pure
-{
-    foreach (candidate; pointers)
-        if (candidate == pointer)
-            return true;
-    return false;
-}
-
-// Resize the dynamic array at `descriptorOffset` to `newLength` elements
-// (`arr.length = n`). A fresh block is allocated, the `min(oldLength, newLength)`
-// existing elements copied in, and any growth filled with the element's
-// default-init byte; the descriptor is overwritten with {newLength, newPtr}.
-// Returns the new block so the caller can root it in `heap`.
-private ubyte[] resizeArray(
-    ref ubyte[] stack,
-    in size_t descriptorOffset,
-    in uint elementSize,
-    in ubyte fill,
-    in size_t newLength,
-) @trusted {
-    import std.algorithm.comparison: min;
-
-    const descriptor = readSliceDescriptor(stack, descriptorOffset);
-    const oldLength = descriptor.length;
-    const pointer = descriptor.pointer;
-
-    auto block = new ubyte[](newLength * elementSize);
-    block[] = fill;
-    const keptBytes = min(oldLength, newLength) * elementSize;
-    block[0 .. keptBytes] = (cast(const(ubyte)*) pointer)[0 .. keptBytes];
-
-    writeSliceDescriptor(stack, descriptorOffset, block, newLength);
-    return block;
-}
-
-// Resize an array of aggregates whose default initializer is a non-uniform
-// byte block. Existing elements are retained while each newly grown element is
-// copied from the compiler-materialized `T.init` template in the current frame.
-private ubyte[] resizeArrayWithTemplate(
-    ref ubyte[] stack,
-    in size_t descriptorOffset,
-    in size_t templateOffset,
-    in uint elementSize,
-    in size_t newLength,
-) @trusted {
-    import std.algorithm.comparison: min;
-
-    const descriptor = readSliceDescriptor(stack, descriptorOffset);
-    const oldLength = descriptor.length;
-    const pointer = descriptor.pointer;
-    auto block = new ubyte[](newLength * elementSize);
-    const keptBytes = min(oldLength, newLength) * elementSize;
-    block[0 .. keptBytes] = (cast(const(ubyte)*) pointer)[0 .. keptBytes];
-    foreach (index; oldLength .. newLength)
-        block[index * elementSize .. (index + 1) * elementSize] =
-            stack[templateOffset .. templateOffset + elementSize];
-
-    writeSliceDescriptor(stack, descriptorOffset, block, newLength);
-    return block;
-}
-
 // True iff the two slice descriptors hold the same length and identical element
 // bytes.
 private bool slicesEqual(
@@ -2740,21 +2437,25 @@ private ulong extendedUnsignedElement(
     return cast(ulong) signedElement(value, type);
 }
 
-// True iff two array-of-arrays descriptors are structurally equal, at any
-// nesting `depth` (2 for `int[][]`, 3 for `int[][][]`, ...): same outer
-// length, and every row (itself a 16-byte `{length, ptr}` slice descriptor,
-// separately heap-allocated on each side) recursively equal one level
-// deeper, down to the innermost row's element bytes (`innerElementSize`
-// each). Unlike `slicesEqual`, this never compares a row's raw descriptor
-// bytes -- two separately-constructed but content-equal rows have different
-// `.ptr` values, so that would compare identity, not content. `depth == 2`
-// (the original, one-level-only shape) reduces to a single row iteration
-// with an immediate byte compare, unchanged from before.
+// True iff two array-of-arrays descriptors are structurally equal, given the
+// number of further `Tarray`-row levels below this outer descriptor
+// (`steps`: 1 for `int[][]`, 2 for `int[][][]`, 0 for `int[2][]` -- see
+// `arrayNestingDepth`): same outer length, and every row (itself a 16-byte
+// `{length, ptr}` slice descriptor, separately heap-allocated on each side,
+// for each of `steps` further levels) recursively equal one level deeper,
+// down to the innermost element bytes (`innerElementSize` each). Unlike
+// `slicesEqual`, this never compares a row's raw descriptor bytes -- two
+// separately-constructed but content-equal rows have different `.ptr`
+// values, so that would compare identity, not content. `steps == 0` (a
+// `Tarray` of scalars/structs, or a `Tarray` of inline `Tsarray` rows) reduces
+// to a single byte comparison of `outer.length * innerElementSize` bytes at
+// the outer's own pointer -- correct either way, since a `Tsarray` row's
+// real D layout already stores its bytes right there.
 private bool nestedSlicesEqual(
     in ubyte[] stack,
     in size_t leftOffset,
     in size_t rightOffset,
-    in uint depth,
+    in uint steps,
     in uint innerElementSize,
 ) @trusted {
     const left = readSliceDescriptor(stack, leftOffset);
@@ -2763,7 +2464,7 @@ private bool nestedSlicesEqual(
         return false;
 
     return nestedRowsEqual(
-        left.pointer, right.pointer, left.length, depth - 1, innerElementSize,
+        left.pointer, right.pointer, left.length, steps, innerElementSize,
     );
 }
 
@@ -2771,9 +2472,10 @@ private bool nestedSlicesEqual(
 // pointers, `stepsRemaining` row-descriptor levels above the innermost
 // element bytes. At `stepsRemaining == 0` the pointers already address
 // plain element bytes (a scalar/string row, or a struct/static-array row --
-// whatever `innerElementSize` measures) and this is a flat byte compare:
-// the base case, identical to `nestedSlicesEqual`'s original one-level
-// body. Otherwise each of the `length` elements is itself a 16-byte
+// whatever `innerElementSize` measures) and this is a single byte
+// comparison over `length * innerElementSize` bytes: the base case,
+// identical to `nestedSlicesEqual`'s original one-level body. Otherwise
+// each of the `length` elements is itself a 16-byte
 // `{length, ptr}` row descriptor -- independently lengthed, since arrays
 // can be ragged at every level -- so each row's own length is checked
 // before recursing one level deeper into it.
@@ -2850,63 +2552,6 @@ private void copySlice(
     destination[] = source[];
 }
 
-// Copy a range of `T[N][]` rows: write each source row's `rowByteSize`
-// bytes of content into the matching destination row's own existing
-// heap-allocated block, one row at a time. The destination and source
-// "elements" here are 16-byte `{length, ptr}` row descriptors pointing at
-// separately heap-allocated `T[N]` blocks (this VM's `T[N][]` row
-// representation, not compiled D's contiguous layout -- see "Live hazards
-// and divergences" in ai/plans/bytecode.md), so `copySlice`'s flat by-value
-// descriptor copy would alias every destination row to the source's block
-// instead of writing into each row's own storage. The lengths must match,
-// matching `copySlice`'s check and message.
-private void copyRowRange(
-    ref ubyte[] stack,
-    in size_t destinationOffset,
-    in size_t sourceOffset,
-    in uint rowByteSize,
-) @trusted {
-    import std.conv: text;
-    import quickbite.backends.bytecode.core.program: sliceDescriptorSize;
-
-    const destination_ = readSliceDescriptor(stack, destinationOffset);
-    const source_ = readSliceDescriptor(stack, sourceOffset);
-    const destinationPointer = destination_.pointer;
-    const destinationLength = destination_.length;
-    const sourcePointer = source_.pointer;
-    const sourceLength = source_.length;
-
-    if (destinationLength != sourceLength)
-        throw new Exception(text(
-            "Array lengths don't match for copy: ",
-            sourceLength, " != ", destinationLength,
-        ));
-
-    // The row *blocks* pointed at by each 16-byte slot never overlap (each
-    // is its own separate heap allocation), but the two ranges of row
-    // *slots* -- 16 bytes apiece, contiguous in the same outer backing
-    // array -- can, exactly as compiled D's contiguous `T[N][]` rows would
-    // (`arr[0 .. 2] = arr[1 .. 3]`): matches `copySlice`'s overlap check
-    // and "Range violation" message on that outer slot memory.
-    const outerByteCount = destinationLength * sliceDescriptorSize;
-    if (sourcePointer < destinationPointer + outerByteCount &&
-        destinationPointer < sourcePointer + outerByteCount)
-        throw new Exception("Range violation");
-
-    foreach (i; 0 .. destinationLength) {
-        const destRowPointer = readSliceDescriptor(
-            destinationPointer + i * sliceDescriptorSize,
-        ).pointer;
-        const sourceRowPointer = readSliceDescriptor(
-            sourcePointer + i * sliceDescriptorSize,
-        ).pointer;
-        auto destRow = (cast(ubyte*) destRowPointer)[0 .. rowByteSize];
-        const sourceRow =
-            (cast(const(ubyte)*) sourceRowPointer)[0 .. rowByteSize];
-        destRow[] = sourceRow[];
-    }
-}
-
 // The compiler supplies a valid native slice descriptor and a 1-byte scalar
 // slot; the trusted boundary only forms the corresponding typed host slice.
 private void fillSlice1(
@@ -2976,34 +2621,6 @@ private void fillSliceN(
     const source = stack[valueOffset .. valueOffset + elementSize];
     foreach (i; 0 .. descriptor.length)
         destination[i * elementSize .. (i + 1) * elementSize] = source;
-}
-
-// Element-wise `dest[] = left[] + right[]` over 4-byte integer elements,
-// writing each sum through the destination's backing memory. All three lengths
-// must match (`dest[] = a[] + b[]` requires equal lengths).
-private void applyArrayAddAssign4(
-    ref ubyte[] stack,
-    in size_t destinationOffset,
-    in size_t leftOffset,
-    in size_t rightOffset,
-) @trusted {
-    import std.conv: text;
-
-    const destination_ = readSliceDescriptor(stack, destinationOffset);
-    const left_ = readSliceDescriptor(stack, leftOffset);
-    const right_ = readSliceDescriptor(stack, rightOffset);
-    const length = destination_.length;
-    if (left_.length != length || right_.length != length)
-        throw new Exception(text(
-            "Array lengths don't match for array operation: ",
-            length, ", ", left_.length, ", ", right_.length,
-        ));
-
-    auto destination = cast(int*) destination_.pointer;
-    const left = cast(const(int)*) left_.pointer;
-    const right = cast(const(int)*) right_.pointer;
-    foreach (index; 0 .. length)
-        destination[index] = left[index] + right[index];
 }
 
 // Throw druntime's array-bounds message if `index` is not less than
@@ -3130,170 +2747,6 @@ private uint equalOperandSize(
     }
 }
 
-private string assertMessage(
-    in imported!"quickbite.backends.bytecode.core.program".AssertDiagnostic
-        diagnostic,
-    in ubyte[] frame,
-) @safe {
-    import std.conv: text;
-
-    // A truth assert (`assert(x)`) carries the empty operator and renders the
-    // single operand against the literal `true` it was implicitly compared to.
-    if (diagnostic.operator == "")
-        return text(
-            operandText(frame, diagnostic.lhs, diagnostic.operandType),
-            " != true",
-        );
-
-    // A logical-not assert (`assert(!x)`) carries the "!" operator and renders
-    // the un-negated operand against the `true` it failed to differ from.
-    if (diagnostic.operator == "!")
-        return text(
-            operandText(frame, diagnostic.lhs, diagnostic.operandType),
-            " == true",
-        );
-
-    if (diagnostic.isArray)
-        return text(
-            arrayOperandText(
-                frame, diagnostic.lhs, diagnostic.operandType,
-                diagnostic.elementNestingDepth,
-            ),
-            " ",
-            invertedOperator(diagnostic.operator),
-            " ",
-            arrayOperandText(
-                frame, diagnostic.rhs,
-                diagnostic.hasDistinctOperandTypes
-                    ? diagnostic.rhsOperandType
-                    : diagnostic.operandType,
-                diagnostic.elementNestingDepth,
-            ),
-        );
-
-    if (diagnostic.isString)
-        return text(
-            stringOperandText(frame, diagnostic.lhs),
-            " ",
-            invertedOperator(diagnostic.operator),
-            " ",
-            stringOperandText(frame, diagnostic.rhs),
-        );
-
-    const lhs = diagnostic.lhsIsNull
-        ? "`null`"
-        : operandText(frame, diagnostic.lhs, diagnostic.operandType);
-    const rhs = diagnostic.rhsIsNull
-        ? "`null`"
-        : operandText(frame, diagnostic.rhs, diagnostic.operandType);
-    return text(
-        lhs,
-        " ",
-        invertedOperator(diagnostic.operator),
-        " ",
-        rhs,
-    );
-}
-
-private string stringOperandText(
-    in ubyte[] frame,
-    in size_t offset,
-) @safe {
-    import std.conv: text;
-
-    return text(`"`, stringFromSlice(frame, offset), `"`);
-}
-
-// Render a dynamic-array operand as `[e0, e1, ...]`, reading the slice
-// descriptor at `offset` and formatting each element by its scalar type.
-// When `elementNestingDepth` is nonzero (an array-of-arrays operand), each
-// element is itself a 16-byte slice descriptor, rendered by a recursive
-// call one nesting level shallower, until depth reaches zero and the
-// elements are plain `elementType` scalars -- matching DMD's own
-// `[[e0, e1], ...]` rendering at any nesting depth, not just one level.
-private string arrayOperandText(
-    in ubyte[] frame,
-    in size_t offset,
-    in imported!"quickbite.backends.bytecode.core.program".ScalarType
-        elementType,
-    in uint elementNestingDepth = 0,
-) @trusted {
-    import quickbite.backends.bytecode.core.program: size, sliceDescriptorSize;
-    import std.array: appender;
-    import std.conv: text;
-
-    const elementIsArray = elementNestingDepth > 0;
-    const descriptor = readSliceDescriptor(frame, offset);
-    const pointer = descriptor.pointer;
-    const length = descriptor.length;
-    const elementSize = elementIsArray ? sliceDescriptorSize : size(elementType);
-    const elements = (cast(const(ubyte)*) pointer)[0 .. length * elementSize];
-
-    auto result = appender("[");
-    foreach (index; 0 .. length) {
-        if (index != 0)
-            result ~= ", ";
-        result ~= elementIsArray
-            ? arrayOperandText(
-                elements, index * elementSize, elementType,
-                elementNestingDepth - 1,
-            )
-            : operandText(elements, index * elementSize, elementType);
-    }
-    result ~= "]";
-    return result[];
-}
-
-private string invertedOperator(in string operator) @safe @nogc nothrow pure {
-    switch (operator) {
-        case "==": return "!=";
-        case "!=": return "==";
-        case "<": return ">=";
-        case "<=": return ">";
-        case ">": return "<=";
-        case ">=": return "<";
-        case "is": return "!is";
-        case "!is": return "is";
-        default: assert(0, "Unsupported assert operator.");
-    }
-}
-
-private string operandText(
-    in ubyte[] frame,
-    in size_t offset,
-    in imported!"quickbite.backends.bytecode.core.program".ScalarType type,
-) @safe pure {
-    import quickbite.backends.bytecode.core.program: ScalarType, isSigned, size;
-    import std.conv: text;
-
-    ulong raw;
-    foreach_reverse (value; frame[offset .. offset + size(type)])
-        raw = (raw << 8) | value;
-
-    final switch (type) with (ScalarType) {
-        case bool_:
-            return raw == 0 ? "false" : "true";
-        case char_:
-            return text("'", cast(char) raw, "'");
-        case float_:
-            return text(floatValue!float(frame, offset));
-        case double_:
-            return text(floatValue!double(frame, offset));
-        case real_:
-            return text(floatValue!real(frame, offset));
-        case void_, byte_, ubyte_, short_, ushort_, int_, uint_, long_, ulong_,
-            wchar_, dchar_:
-            break;
-    }
-
-    if (!isSigned(type))
-        return text(raw);
-
-    const shift = 64 - 8 * size(type);
-    const signed = (cast(long) (raw << shift)) >> shift;
-    return text(signed);
-}
-
 private ubyte[T.sizeof] scalarBytes(T)(in T value)
     @safe @nogc nothrow pure
 {
@@ -3311,20 +2764,6 @@ private T objectScalarValue(T)(in ubyte* source) @trusted
     T value;
     (cast(ubyte*) &value)[0 .. T.sizeof] = source[0 .. T.sizeof];
     return value;
-}
-
-// True when every byte of the `width`-byte frame slot at `offset` is zero,
-// i.e. the operand is zero regardless of its scalar width.
-private bool isZeroSlot(
-    in ubyte[] stack,
-    in size_t offset,
-    in size_t width,
-) @safe @nogc nothrow pure {
-    foreach (b; stack[offset .. offset + width])
-        if (b != 0)
-            return false;
-
-    return true;
 }
 
 private T scalarValue(T)(

@@ -474,10 +474,11 @@ std.conv.text                             retire per value.md remaining work
 core.internal.array.operations.arrayOp!(  retire when static-array
 ...)                                      element-wise ops interpret
                                            end-to-end over native layout.
-rt.aApply's _aApplycd1/_aApplywd1/        extern(C)-mangled but D-bodied;
-_aApplydc1/_aApplyRwd1                    retire when string/array native
-                                           layout covers UTF-mismatch
-                                           foreach.
+rt.aApply's _aApplycd1/_aApplywd1/        resolved by the frontend to synthetic
+_aApplydc1/_aApplyRwd1                    bodyless extern(C) declarations
+                                           (dmd's genCfunc), not D-bodied;
+                                           retire when string/array native
+                                           layout covers UTF-mismatch foreach.
 core.internal.util.array.                 the shim fakes a `bool` return for
 enforceRawArraysConformable[No]gc         a `void`-returning function.
                                            Retire by executing the real bodies
@@ -506,6 +507,14 @@ bare-identifier fallback with no          table inherits the same
 
 ## 9. Open work queue
 
+- The frontend already populates `Expression.lowering` with real druntime
+  calls for `~=`/`~`/`new T[n]`, but the interpreter ignores it for those
+  three (it reads `.lowering` only for AA literals and the non-`.length=`
+  `LoweredAssignExp` fallback) and instead hand-rolls append/growth/concat
+  in `native_array.d`, outside the §8 interception guard's enumeration. Open
+  work: execute those lowerings for real and retire the hand-rolled path,
+  reusing the same `extern(C)` `rt/lifetime.d` declarations Bytecode uses
+  for `CatDcharAssignExp`.
 - `writeBackSliceElements` (impl.d, the array-op `+=` lowering's splice
   copy) rebuilds a pointer-typed slice base as a detached local copy — a
   latent silent-lost-write class. Needs its own exposing fixture before a

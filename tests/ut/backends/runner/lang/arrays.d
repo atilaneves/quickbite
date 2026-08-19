@@ -882,13 +882,9 @@ static foreach (backend; Matrix!()) {
 
 // Same structural-equality requirement as `arrayOfArraysEqualityIsStructural`
 // above, but the row itself is a static array (`int[2][]`, a dynamic array
-// whose element is `Tsarray`, not `Tarray`): this VM heap-boxes such a row
-// behind its own 16-byte slice descriptor the same way it boxes an `int[]`
-// row, but the leaf-element sizing still needs to terminate the walk at
-// the `Tsarray` and size its own elements, not the `Tsarray`'s full byte
-// size -- a fix generalizing only the `Tarray`-row walk could still get
-// this wrong (e.g. by trying to size or recurse into the `Tsarray` row
-// itself instead of terminating there).
+// whose element is `Tsarray`, not `Tarray`): real D stores such a row
+// inline, `T[N].sizeof`-strided, in the array's own backing store, unlike
+// an `int[]` row's separate 16-byte descriptor.
 // `b` is built entirely through separate `~=` appends, so its rows are a
 // distinct heap allocation from `a`'s.
 static foreach (backend; Matrix!()) {
@@ -914,9 +910,7 @@ static foreach (backend; Matrix!()) {
 }
 
 // A `T[N][]` row appended from a static-array VARIABLE (not a literal) must
-// copy the variable's elements into the row's own storage; reinterpreting the
-// element bytes as a slice descriptor makes the next row read dereference
-// element data as a pointer.
+// copy the variable's elements into the row's own inline storage.
 static foreach (backend; Matrix!()) {
     @("dynamicArray.appendStaticArrayVariableRowThenReadElements." ~
         backend.stringof)
@@ -962,8 +956,8 @@ static foreach (backend; Matrix!()) {
 }
 
 // The assert-diagnostic rendering sibling of the two tests above: exercises
-// `tryArrayComparisonAssert`'s shared `emitNestedArrayEqual` path (the same
-// helpers backing the plain `==` operator) for the `Tsarray`-row shape.
+// the `Tsarray`-row array-equality shape (the same helpers backing the plain
+// `==` operator) as rendered by the compiled `_d_assert_fail` message.
 static foreach (backend; Matrix!()) {
     @("assertDiagnostic.arrayOfStaticArraysSameLengthDifferentContent." ~
         backend.stringof)
@@ -1248,23 +1242,12 @@ static foreach (backend; Matrix!()) {
     }
 }
 
-// `int[3] row = arr[0];` where `arr` is `int[3][]` (a dynamic array of
-// heap-boxed static-array rows, `elementIsArray`'s representation: each row
-// is its own heap block addressed through a 16-byte slice descriptor).
-// `tryDynamicArrayIndex` materialises `arr[0]` as that row's own 16-byte
-// descriptor (pointer + length), needed as-is for further chained indexing
-// (`arr[0][j]`); `compileStaticArrayValueInto`'s generic `Tsarray`-typed-
-// source fallback used to block-copy those raw descriptor bytes straight
-// into `row`'s inline frame slot instead of the row's actual content -- a
-// silent wrong-answer bug (confirmed: read `947234800` instead of `1`), not
-// a diagnostic. Fixed by detecting this exact shape first and dereferencing
-// through the row's own heap pointer (the same `indexLoad` mechanism
-// `loadDynamicArrayElement` itself uses to read one element out of a
-// descriptor) rather than copying the descriptor's raw bytes. This shape is
-// not module-specific: a local `T[N][]` hits the identical
-// `tryDynamicArrayIndex` code path and was equally wrong before this fix,
-// simply unexercised by any prior fixture (see the local counterpart
-// below).
+// `int[3] row = arr[0];` where `arr` is `int[3][]`: D copies the *values*
+// of the indexed row into `row`, so `row[i]` must equal `arr[0][i]` and not
+// some other value derived from where or how the row is stored. This pins
+// static-array-typed assignment through one level of dynamic-array
+// indexing, at module (dataseg) scope, checking two different row indices
+// so a wrong per-row offset would be caught.
 static foreach (backend; Matrix!(
     Omit!(Ctfe, Because.inexpressible,
         "CTFE cannot read dataseg (__gshared/static) storage"),
@@ -1316,28 +1299,15 @@ static foreach (backend; Matrix!()) {
     }
 }
 
-// Finding 4 (Fable pre-PR review), the sibling shape
-// `localStaticArrayOfArraysRowValueRead` right above does NOT cover: `m` here
-// is a genuinely INLINE nested static array (`long[2][3]`, no dynamic-array
-// level at all -- unlike `arr: int[3][]` above, whose ROWS are heap-boxed
-// behind their own 16-byte slice descriptors, this VM's representation for
-// `T[N][]`). `compileStaticArrayValueInto`'s `IndexExp` branch (added by the
-// same fix that made the sibling shape above work) used to gate only on
-// `tryDynamicArrayIndex` resolving `m[0]` at all, not on `m` itself actually
-// being a dynamic array of boxed rows -- and `tryDynamicArrayIndex` DOES
-// resolve it, through `dynamicArrayDescriptorOrNull`'s separate, ungated
-// `staticArrayOffsetOf` branch (matches any `Tsarray` local at all), which
-// built a slice-descriptor VIEW over `m`'s raw inline bytes and wrongly
-// tagged it `elementIsArray` (`m`'s own element type, `long[2]`, is itself
-// an array type) -- as if each row were its own heap-boxed descriptor to
-// dereference, when the bytes are actually `m`'s own raw, un-boxed `long[2]`
-// values. `emitIndexLoad` then dereferenced those raw bytes as a bogus
-// pointer: SystemLinker gives the correct row, Bytecode dumped core. Now
-// fixed by additionally gating that branch on `index.e1.type` (`m`'s own
-// type) actually being a genuine `Tarray`, so this inline shape instead
-// falls through to the generic block-copy path below it -- which already
-// correctly compiles a plain `IndexExp` read of a nested static-array
-// element -- rather than ever reaching the boxed-row fast path at all.
+// `long[2] row = m[0];` where `m` is `long[2][3]`, a genuinely inline
+// nested static array with no dynamic-array level at all -- unlike
+// `arr: int[3][]` above, `m`'s rows are not separately stored values, they
+// are inline bytes within `m` itself. D still copies row `m[0]`'s *values*
+// into `row`, exactly as for the dynamic-array-of-rows case above, even
+// though the two shapes are laid out differently in memory. This pins that
+// distinction: indexing one level into an inline static array of static
+// arrays must produce a correct value copy of the row, not data derived
+// from treating it like the other shape.
 static foreach (backend; Matrix!()) {
     @("dynamicArray.inlineNestedStaticArrayRowValueReadIsNotBoxedRow." ~
         backend.stringof)
@@ -3273,6 +3243,42 @@ static foreach (backend; Matrix!()) {
     }
 }
 
+// `int[3][2] == int[3][2]`: two full static-array rows, 12 bytes each --
+// wider than the fixed 1/2/4/8-byte element widths a plain byte compare
+// handles directly. DMD leaves `equal.lowering` null for this shape (a
+// static array of byte-comparable elements needs no `__equals` lowering),
+// so the bytecode core must compare the raw row bytes itself at this width
+// too.
+static foreach (backend; Matrix!()) {
+    @("staticArray.nestedStaticArrayEqualityComparesAnyRowWidth." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            int seed(int value) {
+                return value;
+            }
+
+            unittest {
+                int[3][2] a;
+                a[0] = [seed(1), seed(2), seed(3)];
+                a[1] = [seed(4), seed(5), seed(6)];
+
+                int[3][2] b;
+                b[0] = [seed(1), seed(2), seed(3)];
+                b[1] = [seed(4), seed(5), seed(6)];
+
+                assert(a == b);
+                assert(!(a != b));
+
+                b[1][2] = seed(99);
+                assert(a != b);
+                assert(!(a == b));
+            }
+        });
+    }
+}
+
 // A runtime index past a static array's compile-time-known dimension is
 // bounds checked exactly like a dynamic array's runtime index: compiled
 // code raises druntime's `ArrayIndexError` text. `Ctfe`'s own bounds check
@@ -3519,6 +3525,59 @@ static foreach (backend; Matrix!()) {
                 assert(sums.length == 2);
                 assert(sums[0] == 50);
                 assert(sums[1] == 62);
+            }
+        });
+    }
+}
+
+// The Interpreter does not yet support a scalar operand in element-wise
+// array operations (`a[] + scalar` and its compound-assign form); see
+// interpreter.md §8 for the retirement condition. SystemLinker is the
+// oracle.
+static foreach (backend; Matrix!(
+    Omit!(Interpreter, Because.refusal,
+        "AggregateValue.length needs a native aggregate."),
+)) {
+    @("dynamicArray.arrayOperationSupportsOperatorsBeyondAdd." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            int value(int seed) {
+                return seed;
+            }
+
+            unittest {
+                int first = value(2);
+                int second = value(first + 1);
+                int[] a = [first, second];
+                int[] b = [first + 10, second + 20];
+
+                int[] product = [0, 0];
+                product[] = a[] * b[];
+
+                int[] difference = [0, 0];
+                difference[] = b[] - a[];
+
+                int[] broadcastSum = [0, 0];
+                broadcastSum[] = a[] + first;
+
+                int[] compoundArray = [first, second];
+                compoundArray[] += b[];
+
+                int[] compoundScalar = [first, second];
+                compoundScalar[] += first;
+
+                assert(product[0] == first * (first + 10));
+                assert(product[1] == second * (second + 20));
+                assert(difference[0] == 10);
+                assert(difference[1] == 20);
+                assert(broadcastSum[0] == first + first);
+                assert(broadcastSum[1] == second + first);
+                assert(compoundArray[0] == first + (first + 10));
+                assert(compoundArray[1] == second + (second + 20));
+                assert(compoundScalar[0] == first + first);
+                assert(compoundScalar[1] == second + first);
             }
         });
     }
@@ -4347,7 +4406,6 @@ static foreach (backend; Matrix!(
 static foreach (backend; Matrix!(
     Omit!(Ctfe, Because.inexpressible,
         "pointer-identity `is` on a GC-backed slice lowers to an address cast CTFE refuses at compile time"),
-    Omit!(Bytecode, Because.diverges, "see sibling pin below (Bytecode)"),
 )) {
     @("dynamicArray.shrinkPreservesBackingAddress." ~ backend.stringof)
     @Tags(backend.stringof)
@@ -4360,25 +4418,6 @@ static foreach (backend; Matrix!(
                 values.length = 1;
 
                 assert(values.ptr is address);
-                assert(values[0] == 1);
-            }
-        });
-    }
-}
-
-// Bytecode currently reallocates the backing storage while shrinking a
-// dynamic array, so pin that divergence separately from compiled D.
-static foreach (backend; AliasSeq!(Bytecode)) {
-    @("dynamicArray.shrinkPreservesBackingAddress." ~ backend.stringof)
-    unittest {
-        runBackendSourceFixtureTests!backend(q{
-            unittest {
-                auto values = [1, 2, 3];
-                auto address = values.ptr;
-
-                values.length = 1;
-
-                assert(values.ptr !is address);
                 assert(values[0] == 1);
             }
         });
@@ -4420,9 +4459,6 @@ static foreach (backend; Matrix!()) {
 static foreach (backend; Matrix!(
     Omit!(Ctfe, Because.inexpressible,
         "core.checkedint.mulu has inline assembly that CTFE cannot execute"),
-    Omit!(Bytecode, Because.refusal,
-        "`residentMulu` cannot be interpreted at compile time, because it " ~
-        "has no available source code"),
 )) {
     @("nativeExternD.muluUsesResidentCompilerArgumentOrder." ~
         backend.stringof)
@@ -4516,6 +4552,39 @@ static foreach (backend; Matrix!(
 
                 assert(tail.ptr is tailPtr);
                 assert(tail[2] == 99);
+            }
+        });
+    }
+}
+
+// `assumeSafeAppend` on an array shrunk by `.length -=` (not a slice) tells
+// the GC the vacated tail is free to reuse, so the next append grows into
+// the same backing block instead of relocating.
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.inexpressible,
+        "pointer-identity `is` on a GC-backed slice lowers to an address cast CTFE refuses at compile time"),
+    Omit!(Bytecode, Because.diverges,
+        "still relocates the backing storage after a shrink-then-" ~
+        "assumeSafeAppend, unlike compiled D"),
+    Omit!(Interpreter, Because.diverges,
+        "still relocates the backing storage after a shrink-then-" ~
+        "assumeSafeAppend, unlike compiled D"),
+)) {
+    @("dynamicArray.assumeSafeAppendOnShrunkArrayAppendsInPlace." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            unittest {
+                int[] arr = [1, 2, 3, 4, 5];
+                arr.length = 2;
+                arr.assumeSafeAppend();
+                auto address = arr.ptr;
+
+                arr ~= 99;
+
+                assert(arr.ptr is address);
+                assert(arr[2] == 99);
             }
         });
     }
@@ -6203,13 +6272,9 @@ static foreach (backend; Matrix!()) {
     }
 }
 
-// Two more siblings of the identical shape, both in `compileConcatenationAssign`
-// (`arr ~= other`): the local-variable branch and the module-variable branch
-// each resolve the right-hand side's descriptor via `arrayDescriptorOffset`
-// without passing `elementIsArray`, mis-sizing an array-of-arrays right-hand
-// side that is not already a known local (a literal, here) -- confirmed via
-// real `bin/ut` to SIGSEGV in both branches. Fixed by threading
-// `elementIsArray` (the LHS descriptor's own, in each branch) through.
+// Two more siblings of the identical shape, exercising `arr ~= other` where
+// `other` is an array-of-arrays literal (not already a known local) assigned
+// into a local variable and, in the sibling below, a module variable.
 static foreach (backend; Matrix!()) {
     @("dynamicArray.catAssignArrayOfArraysLiteralIntoLocal." ~
         backend.stringof)
@@ -6251,12 +6316,10 @@ static foreach (backend; Matrix!(
     }
 }
 
-// A concatenation sibling of the same shape: `catOperandDescriptor` (via
-// `compileCatInto`, for `a ~ b`) also resolved a `Tarray` operand's
-// descriptor via `arrayDescriptorOffset` without passing `elementIsArray`,
-// mis-sizing an array-of-arrays literal operand not already a known local
-// -- confirmed via real `bin/ut` to SIGSEGV. Fixed by threading the
-// concatenation's own `elementIsArray` through `catOperandDescriptor`.
+// A concatenation sibling of the same shape: `a ~ b` where an operand is an
+// array-of-arrays literal not already bound to a local needs each row sized
+// by the concatenation's own row width, not a bare scalar width -- confirmed
+// via real `bin/ut` to SIGSEGV when mis-sized.
 static foreach (backend; Matrix!()) {
     @("dynamicArray.catArrayOfArraysLiteralOperand." ~ backend.stringof)
     @Tags(backend.stringof)
@@ -6526,6 +6589,83 @@ static foreach (backend; AliasSeq!(Bytecode)) {
                 string t = "ab";
 
                 assert(s !is t);
+            }
+        });
+    }
+}
+
+// `s ~= someDchar` (CatDcharAssignExp) has no frontend lowering: dmd leaves
+// the runtime hooks it needs (`_d_arrayappendcd`/`_d_arrayappendwd`) as
+// `extern(C)` symbols with no importable D declaration, so a backend must
+// synthesize the call itself. A plain ASCII code point encodes to a single
+// UTF-8 code unit.
+static foreach (backend; Matrix!()) {
+    @("dynamicArray.dcharAppendAsciiToCharArrayAppendsOneUnit." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            dchar pick(dchar value) {
+                return value;
+            }
+
+            unittest {
+                char[] s;
+                s ~= pick('A');
+
+                assert(s.length == 1);
+                assert(s[0] == 'A');
+            }
+        });
+    }
+}
+
+// A code point above U+007F encodes to more than one UTF-8 code unit; U+03B1
+// (Greek small alpha) is the two-byte case.
+static foreach (backend; Matrix!()) {
+    @("dynamicArray.dcharAppendTwoByteCodePointToCharArray." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            dchar pick(dchar value) {
+                return value;
+            }
+
+            unittest {
+                char[] s;
+                s ~= pick('α');
+
+                assert(s.length == 2);
+                assert(cast(ubyte) s[0] == 0xCE);
+                assert(cast(ubyte) s[1] == 0xB1);
+            }
+        });
+    }
+}
+
+// A code point above the Basic Multilingual Plane (U+FFFF) has no single
+// UTF-16 code unit; appending one to `wchar[]` encodes a surrogate pair.
+static foreach (backend; Matrix!(
+    Omit!(Interpreter, Because.diverges,
+        "appends a single wchar unit instead of the two-unit surrogate pair"),
+)) {
+    @("dynamicArray.dcharAppendNonBmpCodePointToWcharArrayEncodesSurrogatePair." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            dchar pick(dchar value) {
+                return value;
+            }
+
+            unittest {
+                wchar[] s;
+                s ~= pick('\U0001F600');
+
+                assert(s.length == 2);
+                assert(s[0] == 0xD83D);
+                assert(s[1] == 0xDE00);
             }
         });
     }

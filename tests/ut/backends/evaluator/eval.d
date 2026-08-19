@@ -237,6 +237,14 @@ unittest {
 
 // A sub-slice of a heap-backed string points into the middle of a heap block;
 // reification resolves it by containing range, not by exact base address.
+// `.idup`, reached here nested inside a `SliceExp` rather than as a bare
+// declaration initializer, compiles through its own real druntime property
+// getter (`object.idup` -> `core.internal.array.duplication._dup`) instead
+// of this core's hand-rolled `dupArray` opcode, so its backing block comes
+// from a real `GC.malloc` call, not a VM-tracked `Op.allocArray`/`Op.dupArray`
+// allocation; `reify.d`'s `resolveBlock` asks the real GC for such a block's
+// containing range once its own tracked `heap`/`literalBlocks`/`data` ranges
+// miss.
 @("heapStringSubSliceReifies.Bytecode")
 @Tags("Bytecode")
 unittest {

@@ -484,3 +484,133 @@
 - When splitting execution from `displayEvalResult`, preserve its terminal
   `Throwable` boundary. D runtime assertion and bounds failures are `Error`s,
   not `Exception`s, and must still become backend diagnostics.
+
+- An unset field of enum type defaults to that enum's *first* member, not to
+  `0`, unless a member is explicitly given the value `0`. Conditionally
+  assigning a flags field only in the `true` case (leaving it at `.init`
+  otherwise) is wrong whenever the flag enum's first member isn't the zero
+  value: `object.TypeInfo_Struct.StructFlags` declares `hasPointers = 0x1`
+  first, so an unpopulated `m_flags` reads back as `hasPointers` regardless
+  of the type's real shape. Assign an explicit value on every branch.
+
+- A `ref`-returning `extern(C)` native call (no D body, e.g. the libc-mangled
+  `core.stdc.errno.errno` accessor) must leave the callee's returned ADDRESS
+  in its destination frame slot, not the dereferenced value. The bytecode
+  core's convention for every `ref`-returning call, native or VM-compiled, is
+  that the destination slot holds a pointer: an rvalue read dereferences it
+  explicitly (`compileExpression`'s `CallExp` handling), an lvalue use wraps
+  it directly (`resolvePlace`'s `pointerPlace`). A native-call bridge that
+  pre-dereferences into a value slot happens to produce the right value for
+  the rvalue case (the explicit deref never runs, since the operand isn't
+  marked as a pointer) while silently corrupting any lvalue use of the same
+  call, writing through whatever value the callee's storage happened to hold
+  rather than its address. Diagnosed via SIGSEGV inside a completely
+  unrelated druntime helper several calls downstream, not at the call site
+  itself.
+
+- `dynamicArrayDescriptor`'s place-backed path (an lvalue array expression)
+  must rescale a wrapping cast's descriptor length the same way its
+  no-place fallback (`compileDynamicArrayInto`) and `compileCastExpression`
+  already do for `cast(T2[])x` where `T2`'s element size differs from `x`'s.
+  `placeOrNull` unwraps a `CastExp` transparently and returns the INNER
+  expression's own place, bypassing the cast entirely, so a `void[]` view of
+  a `T[]` argument (the shape an implicit `T[]` -> `void[]` native-call
+  argument conversion takes, e.g. `gc_shrinkArrayUsed(ptr[0 .. n], ...)`)
+  silently keeps the source's element-count length instead of a byte length.
+  The bug is invisible until something downstream (a real GC `void[]`-used
+  bookkeeping call) trusts the wrong length.
+
+- `rescaleReinterpretedSliceLength` must not gate its rescale on
+  `ScalarType.void_`: that tag marks BOTH a genuine `void` array element
+  (`void.sizeof == 1`, a real one-byte stride needing the same rescale as
+  everything else) and an opaque struct/static-array/nested-array element (no
+  fixed scalar width, handled separately). Deriving element width from
+  `dynamicArrayElementType`'s `ScalarType` conflates the two; deriving it
+  from `dynamicArrayElementSize` (which already special-cases `Tvoid`
+  correctly) does not.
+
+- `Type.vtinfo` populates lazily, the first time dmd's semantic pass
+  processes an actual `typeid` naming that exact type; it is not eagerly
+  populated for every type dmd's runtime library ships a real symbol for.
+  A builtin element type reached only through a synthesised aggregate
+  `TypeInfo`'s own field (never itself the direct operand of a source-level
+  `typeid`) can have a null `vtinfo` even though its real host symbol
+  exists. Forcing population by calling `dmd.typinf.genTypeInfo` directly
+  from a lazily-running backend compiler (outside dmd's normal
+  module-compilation walk) resolved the immediate symbol lookup but
+  corrupted the host process's own GC heap, manifesting as a SIGSEGV far
+  downstream in unrelated code (dmd Scope pooling is not safe to drive this
+  way mid-compilation, or the freshly-synthesised `TypeInfoDeclaration` is
+  not interchangeable with dmd's own runtime-simulated one) -- reverted
+  rather than pursued further; composite `TypeInfo` for arrays, static
+  arrays, and delegates is now synthesised recursively instead, so the
+  remaining unsupported `typeid` categories are a class/interface reached
+  only as a composite's field, associative arrays, function types,
+  vectors, and tuples.
+
+- `tryCompileNativeCall`'s (`compiler.d`) generic argument-compiling loop
+  did not honour a native callee's `ref`/`out` parameter: its fallback
+  branch always called `emitCallArgument(slot, false, argument)`, which
+  copies the argument's VALUE into a fresh native-call staging slot and
+  never wrote that slot's post-call bytes back to the caller's real
+  variable -- any native call reached through the ordinary body-less
+  (`fbody is null`) path with a `ref`/`out` scalar or dynamic-array
+  parameter was affected, confirmed with `residentMulu`'s `ref bool
+  overflow` and `_d_arrayappendcd`'s `ref byte[] x`. Fixed generically by
+  recording each such argument's own `Place` and staging slot at the
+  argument loop, then copying the slot's post-call bytes into that place
+  once `emitNativeCall` returns (`NativeRefArgumentWriteback`); a `ref`/
+  `out` struct or static-array parameter gets the same write-back through
+  `storePlace`'s existing aggregate `Op.copy` branch, which already derives
+  its width from `place.valueType` rather than from the stored operand, so
+  widening the argument-loop gate to `struct_`/`staticArray` was enough --
+  no new copy machinery was needed. Beware `bin/qb -l`: it starts
+  the REPL after loading, it does not run the loaded file's `unittest`
+  blocks, so a script driving it through `-l` alone proves nothing either
+  way -- confirm through a real `bin/ut` fixture
+  (`runBackendSourceFixtureTests`), as this entry's repro did. Also beware
+  `core.checkedint.mulu`'s `ref bool overflow`: it is `overflow |= o`, an
+  accumulate, not an assign -- pre-seeding it `true` and asserting it
+  becomes `false` on a non-overflowing call is not a valid write-back
+  probe; the flag must start `false`.
+
+- Flipping a VM array representation from boxed-per-row descriptors to the
+  real inline D layout (bytecode core's `Tsarray`-row fix, `int[N][]`
+  storing rows `T[N].sizeof`-strided instead of behind a 16-byte
+  `{length, ptr}` descriptor) is not done once construction and indexing
+  compile and the target tests pass: a full `@Bytecode` sweep, not just the
+  target tests, is what surfaces the other emit sites still keyed on the
+  boxed assumption -- concretely `new T[N][](rows)` (`compileNewArrayInto`),
+  slice-assignment broadcast-fill/range-copy (`storeDynamicSlice`), and
+  module-level literal constant-folding (`moduleDynamicArrayLiteralInitializerBytes`)
+  each had their own separate boxed-row special case. `storeDynamicSlice`'s
+  turned out to be pure deletion once rows are flat: the same
+  `emitSliceFill`/`emitSliceCopy` helpers scalars and structs already use
+  handle arbitrary element width via their `N`-suffixed opcode variants
+  (`Op.sliceFillN`/`Op.sliceCopyN`), so `emitRowBroadcastFill`/
+  `emitRowRangeCopy`/`emitInlineRowRangeCopy` and `Op.rowRangeCopy` were
+  dead weight, not a shape needing its own generic replacement. Also:
+  `dynamicArrayElementSize`'s `elementIsArray` parameter (returning a
+  hardcoded `sliceDescriptorSize` for a boxed row) was entirely redundant
+  with its own `typeFacts(element).byteWidth` fallback -- a `Tarray`
+  element's `byteWidth` already equals `sliceDescriptorSize` by
+  definition, so the special case never needed to exist even before the
+  `Tsarray` fix.
+
+- A native leaf reached through a function pointer (`&f` where `f.fbody is
+  null`, called via `Op.callIndirect`) builds its argument area as an
+  ordinary VM parameter frame (`ParameterLayout`), not a direct native
+  call's own uniform-stride staging area. `ParameterLayout` stores a
+  `ref`/`out`/`auto ref` argument's slot as the referenced variable's
+  ADDRESS, not its value -- unlike a direct native call's staging slot,
+  which `tryCompileNativeCall` always fills with the argument's copied-in
+  VALUE regardless of reference-ness. `native_call.d`'s
+  `prepareNativeInvocation` read every indirect argument's address the
+  same way as a direct one (the slot's own location), so a `ref`
+  parameter's callee received the address of the frame slot holding the
+  pointer, not the pointee -- one indirection short of the guest variable,
+  silently leaving the caller's storage unwritten rather than crashing.
+  Fixed by recording each indirect native target's `ParameterLayout
+  .isReference` alongside its offsets (`NativeCall.argumentIsReference`,
+  `program.d`) and following the slot's own pointer value for a marked
+  argument instead of treating the slot as the storage.

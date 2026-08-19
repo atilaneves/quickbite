@@ -23,7 +23,6 @@ private struct NativeInvocation {
     // A ref return yields the referenced address rather than a value; the
     // bridge writes that pointer here and the frame receives what it names.
     public void* reference;
-    public size_t referenceSize;
     public size_t destination;
 
     public bool isComplete() const @safe @nogc nothrow pure {
@@ -67,8 +66,6 @@ private bool prepareNativeInvocation(
 ) {
     import dmd.astenums: TY;
     import dmd.mtype: TypeFunction;
-    import dmd.typesem: size;
-    import quickbite.backends.bytecode.core.program: nativeArgumentSlotSize;
     import quickbite.ffi.ffi: TypedAddress, resolveCallable;
 
     if (native.function_ is null)
@@ -104,6 +101,14 @@ private bool prepareNativeInvocation(
 
     const fixedCount = signature.parameterList.length;
     invocation.arguments.length = native.argumentTypes.length;
+    // `argumentOffsets` locates every argument, direct call or indirect: a
+    // direct call's own per-argument staging layout
+    // (`nativeArgumentOffsets`, `compiler.d`), or, for a native-leaf
+    // function reached through a function-pointer value, its callee's own
+    // dense VM parameter-frame offsets (`ParameterLayout.offsets`) -- the
+    // caller built an ordinary typed-frame argument area for the indirect
+    // call, not a native one, but the offsets stored here already account
+    // for that.
     foreach (index; 0 .. native.argumentTypes.length) {
         // The declared parameter is the bridge's authority for a fixed
         // argument; only a C variadic tail is typed by the call site, which
@@ -111,21 +116,33 @@ private bool prepareNativeInvocation(
         auto type = index < fixedCount
             ? signature.parameterList[index].type.toBasetype
             : native.argumentTypes[index].toBasetype;
+        auto slotAddress =
+            frameAddress(stack, argumentArea + native.argumentOffsets[index]);
+        // An indirect call's argument area is the ordinary VM parameter
+        // frame, where a `ref`/`out`/`auto ref` slot holds the referenced
+        // variable's ADDRESS rather than its value (`NativeCall
+        // .argumentIsReference`'s own comment, `program.d`). Follow that
+        // address instead of handing the bridge the slot's own location, or
+        // the callee receives a pointer to the frame slot rather than to the
+        // guest variable it names -- one indirection too many. A direct
+        // call leaves `argumentIsReference` empty (it always stages a
+        // `ref`/`out` argument's VALUE, never an address), so this is
+        // always false for one.
+        const isReferenceArgument =
+            index < native.argumentIsReference.length &&
+            native.argumentIsReference[index];
         invocation.arguments[index] = TypedAddress(
             type,
-            frameAddress(
-                stack, argumentArea + index * nativeArgumentSlotSize,
-            ),
+            isReferenceArgument ? referencedAddress(slotAddress) : slotAddress,
         );
     }
 
     auto returnType = signature.next.toBasetype;
     invocation.destination = destination;
     invocation.returnsRef = signature.isRef;
-    if (invocation.returnsRef) {
-        invocation.referenceSize = cast(size_t) size(returnType);
+    if (invocation.returnsRef)
         invocation.result = TypedAddress(returnType, &invocation.reference);
-    } else if (returnType.ty == TY.Tvoid || returnType.ty == TY.Tnoreturn)
+    else if (returnType.ty == TY.Tvoid || returnType.ty == TY.Tnoreturn)
         invocation.result = TypedAddress(returnType, null);
     else
         invocation.result =
@@ -144,8 +161,14 @@ private bool executeNativeInvocation(ref NativeInvocation invocation) {
     );
 }
 
-// A ref return names storage the callee owns; the frame slot holds the
-// referenced value, so copy exactly the static type's native width.
+// A ref return names storage the callee owns: the frame slot holds the
+// referenced ADDRESS, not its value, mirroring how a VM-compiled callee's own
+// `ref`-returning call leaves an address at its result slot. `compileCall`'s
+// callers dereference through that address for an rvalue read
+// (`compileExpression`'s `CallExp` handling) or wrap it directly as an
+// lvalue (`resolvePlace`'s `pointerPlace`); writing the dereferenced value
+// here instead would satisfy the former by accident while corrupting the
+// latter, since the frame slot must hold a pointer either way.
 private void writeNativeInvocationResult(
     ref NativeInvocation invocation,
     ubyte[] stack,
@@ -156,8 +179,14 @@ private void writeNativeInvocationResult(
         throw new Exception("Native ref return has null address.");
     stack[
         invocation.destination
-        .. invocation.destination + invocation.referenceSize
-    ] = referencedBytes(invocation.reference, invocation.referenceSize);
+        .. invocation.destination + size_t.sizeof
+    ] = pointerBytes(invocation.reference);
+}
+
+// @trusted: reinterprets a pointer value's own bytes, not the memory it
+// addresses.
+private ubyte[size_t.sizeof] pointerBytes(in void* pointer) @trusted {
+    return *cast(const(ubyte[size_t.sizeof])*) &pointer;
 }
 
 // @trusted: the machine reserves the VM stack's capacity up front so growing a
@@ -173,11 +202,9 @@ private const(void)* loadPointer(in void* address) @trusted {
     return *cast(const(void*)*) address;
 }
 
-// @trusted: a native ref return points at storage the callee owns, sized by
-// the signature's return type.
-private const(ubyte)[] referencedBytes(
-    in void* address,
-    in size_t length,
-) @trusted {
-    return (cast(const(ubyte)*) address)[0 .. length];
+// @trusted: the slot holds the address of the caller's own variable, laid
+// out by the same VM parameter-frame convention every VM-compiled `ref`
+// argument already uses.
+private void* referencedAddress(void* address) @trusted {
+    return *cast(void**) address;
 }

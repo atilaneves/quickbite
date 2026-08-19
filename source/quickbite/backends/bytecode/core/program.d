@@ -140,13 +140,15 @@ package(quickbite.backends.bytecode) size_t sliceDescriptorLengthOffset(
     return base;
 }
 
-// A native (libc) call's argument area is N contiguous slots of this
-// stride, one per argument, laid out at
-// `argumentArea + index * nativeArgumentSlotSize` regardless of each
-// argument's own width, so `native_call.d` can locate argument `index`
-// without knowing the widths of the arguments before it. The stride
-// accommodates the widest bridge value, currently a two-word dynamic-array
-// descriptor.
+// The minimum width of one direct native-call argument's own staging slot:
+// wide enough for the widest ordinary (non-aggregate) bridge value, a
+// two-word dynamic-array descriptor. A direct call's compile-time layout
+// reserves each argument at least this many bytes, and more when the
+// argument's own byte width exceeds it (a struct or static array), so no
+// argument's bytes can overflow into a neighbour's slot.
+// `NativeCall.argumentOffsets` carries the resulting per-argument offsets;
+// nothing derives an argument's address from its index and this stride
+// alone.
 package(quickbite.backends.bytecode) enum nativeArgumentSlotSize =
     sliceDescriptorSize;
 
@@ -201,20 +203,6 @@ package(quickbite.backends.bytecode) enum Op: ubyte {
     // descriptor {length, ptr} into the frame: a: descriptor offset, b: element
     // size, c: element count (the length).
     allocArray,
-    // Allocate `elementSize * length` bytes of VM-owned writable heap, filled
-    // with the element type's default-init byte, where `length` is a size_t read
-    // from frame offset c, then write the slice descriptor {length, ptr} into the
-    // frame at offset a. Operand b packs the fill byte in its high 8 bits and the
-    // element size in its low 8 bits (`(fill << 8) | elementSize`); the fill is
-    // 0x00 for most types and 0xFF for `char`. Backs `new T[](runtimeLength)`.
-    allocArrayDynamic,
-    // Allocate a two-dimensional array `new T[][](rows, cols)`: an outer block of
-    // `rows` 16-byte slice descriptors, each pointing at a fresh inner block of
-    // `cols` default-filled `T` elements. a: outer descriptor offset; b: packs
-    // the inner element's default-init fill byte (high 8 bits) and element size
-    // (low 8 bits); c: frame offset of an adjacent {rows, cols} size_t pair. Each
-    // inner block is rooted in `heap`. Backs `new T[][](rows, cols)`.
-    allocArray2D,
     // Allocate `c` bytes of VM-owned writable heap for a single `new S` struct
     // block, copy the initialised block of `c` bytes from frame offset b into it,
     // root it in `heap`, and write the raw `size_t` heap pointer into the 8-byte
@@ -225,18 +213,6 @@ package(quickbite.backends.bytecode) enum Op: ubyte {
     // index `b` into its first native word, root it in `heap`, and write the raw
     // object pointer into the frame slot at offset `a`.
     allocClass,
-    // Resize the dynamic array whose descriptor is at frame offset a to the
-    // size_t length read from frame offset c (`arr.length = n`). Allocate a fresh
-    // block, copy the `min(oldLength, newLength)` existing elements, fill any
-    // growth with the element's default-init byte, root the block, and overwrite
-    // the descriptor with {newLength, newPtr}. Operand b packs the fill byte
-    // (high 8 bits) and element size (low 8 bits), like allocArrayDynamic.
-    setArrayLength,
-    // Resize the dynamic array whose descriptor is at frame offset a using the
-    // `d`-byte default-init block at frame offset b for each grown element.
-    // The new length is read from frame offset c. Backs `S[].length = n` when
-    // `S.init` is not a uniform byte fill.
-    setArrayLengthFromTemplate,
     // Write a null slice descriptor {length = 0, ptr = 0} to frame offset a.
     nullSlice,
     // Write a native dynamic-array descriptor {c, literalBlocks[b].ptr}
@@ -320,21 +296,6 @@ package(quickbite.backends.bytecode) enum Op: ubyte {
     // opcode: the byte width is operand c instead of being implied by the
     // opcode.
     sliceCopyN,
-    // Copy a range of `T[N][]` rows: the source slice descriptor at frame
-    // offset b into the destination slice descriptor at frame offset a,
-    // where both descriptors' elements are 16-byte `{length, ptr}` row
-    // descriptors pointing at separately heap-allocated `T[N]` blocks (this
-    // VM's `T[N][]` row representation), not `sliceCopy16`'s flat
-    // by-value descriptor copy. `sliceCopy16` is correct for a `T[][]` row
-    // (a real dynamic-array value, copied by descriptor), but wrong here:
-    // copying the row descriptors themselves would alias every destination
-    // row to the source's backing block, leaking the destination's own
-    // block and corrupting its pointer chain instead of writing content
-    // into each row's own storage. Writes through each destination row's
-    // existing pointer with the matching source row's content, `c` bytes
-    // per row. The two lengths must match, matching `sliceCopy`'s check and
-    // message.
-    rowRangeCopy,
     // Fill every element of the destination slice descriptor at frame offset
     // a with the scalar value at frame offset b. The element size is fixed by
     // the opcode (1, 2, 4, or 8 bytes).
@@ -372,65 +333,7 @@ package(quickbite.backends.bytecode) enum Op: ubyte {
     // `int[][]`, 3 for `int[][][]`, ...); operand e is the innermost (leaf)
     // element byte width (not 16).
     sliceEqualNested,
-    // Append the element at frame offset b to the dynamic-array slice descriptor
-    // at frame offset a: allocate a fresh heap block of (length + 1) elements,
-    // copy the existing elements, write the new element, root the block, and
-    // overwrite the descriptor with {length + 1, newPtr}. Reallocating (rather
-    // than growing in place) matches compiled D, so a slice of an array is not
-    // corrupted by appending to a neighbour. The element size is fixed by the
-    // opcode (1, 2, 4, 8, or 16 bytes), matching the indexLoad/indexStore split.
-    appendElement1,
-    appendElement2, // 2-byte element (wchar): backs `wchar[] ~= w`
-    appendElement4,
-    appendElement8, // 8-byte element: long/double/pointer, or an 8-byte struct
-    appendElement16, // 16-byte descriptor: appending one row to an array
-                      // whose element is itself an array (`int[][]`/
-                      // `int[N][]`), where each row is its own heap-backed
-                      // sub-array addressed by a stored descriptor
-    // Same as `appendElement1`/etc, for an element width not covered by a
-    // fixed opcode (e.g. a struct element wider than 16 bytes): the byte
-    // width is operand c instead of being implied by the opcode.
-    appendElementN,
-    // Concatenate the two slice descriptors at frame offsets b and c into a
-    // fresh heap block holding all of b's elements followed by all of c's, then
-    // write the descriptor {len(b) + len(c), newPtr} to frame offset a. The
-    // block is rooted in `heap`. Both operands are copied, so the originals are
-    // untouched (`a ~ b` makes a NEW array). The element size is fixed by the
-    // opcode (1, 4, or 16 bytes), matching the indexLoad/indexStore split.
-    concatArrays1,
-    concatArrays4,
-    concatArrays16, // 16-byte descriptor element: concatenating two arrays
-                     // whose element is itself an array (`int[][]`/
-                     // `int[N][]`), where each row is its own heap-backed
-                     // sub-array addressed by a stored descriptor
-    // Same as `concatArrays1`/etc, for an element width not covered by a
-    // fixed opcode (e.g. a struct element wider than 16 bytes): the byte
-    // width is operand d instead of being implied by the opcode.
-    concatArraysN,
 
-    // Duplicate the slice descriptor at frame offset b into a fresh heap block
-    // holding an independent copy of all its elements, then write the
-    // descriptor {length, newPtr} to frame offset a. The block is rooted in
-    // `heap`. Mutating either array leaves the other intact (`arr.dup` /
-    // `arr.idup`). The element size is fixed by the opcode (1, 2, 4, 8, or 16
-    // bytes), matching the indexLoad/indexStore split; 16 bytes is a whole
-    // slice-descriptor element, e.g. a `T[][]` row (`.dup` is shallow, so
-    // copying the outer descriptors as opaque 16-byte blocks is correct).
-    dupArray1,
-    dupArray2, // 2-byte element (wchar): backs `wstring s = wcharArray.idup`
-    dupArray4,
-    dupArray8, // 8-byte element: long/double/pointer arrays
-    dupArray16,
-    // Same as `dupArray1`/etc, for an element width not covered by a fixed
-    // opcode (e.g. a struct element wider than 16 bytes): the byte width is
-    // operand c instead of being implied by the opcode.
-    dupArrayN,
-    // Element-wise `dest[] = left[] + right[]` over three slice descriptors at
-    // frame offsets a (dest), b (left), c (right): add each pair of 4-byte
-    // integer elements and write the sum through the destination's backing
-    // memory. All three lengths must match. Backs the druntime arrayOp ["+","="]
-    // lowering.
-    arrayAddAssign4,
     // Read the element at `[pointer + index * elementSize]` into the 1- or
     // 4-byte slot at frame offset a, where the raw `size_t` pointer value is at
     // frame offset b and the `size_t` index at frame offset c. Backs `*p` (index
@@ -685,10 +588,6 @@ package(quickbite.backends.bytecode) enum Op: ubyte {
     // a: class-object pointer slot, b: diagnostic data offset, c: data length.
     throwIfNullClassReference,
     nativeCall, // a: native-call index, b: argument area, c: destination
-    assertTrue, // a: condition frame offset, b: assert diagnostic index
-    // a: condition frame offset, b: assert diagnostic index (verbatim message)
-    assertTrueVerbatim,
-    assertNonzeroInt4, // a: integer frame offset, b: assert diagnostic index
     halt, // unconditional abort throwing the plain "Assertion failure" message
     // unconditional abort throwing the "unittest failure" message, for a
     // literal-false assert lexically inside a unittest body
@@ -902,142 +801,8 @@ in (op != Op.subSliceN)
     assert(0, "Not a fixed-width subSlice opcode.");
 }
 
-// The `appendElement` family's one op<->width table, the same pattern as
-// `subSliceOpWidths` above (a single opcode per width, since appending one
-// element is a single operation, not a load/store/slice split).
-// compiler.d's `appendElementOp` width->opcode selector and machine.d's
-// element-size Op->width derivation (`appendElementWidth` below) both walk
-// this same table, so the two directions cannot independently drift out of
-// sync.
-private struct AppendElementOpWidth {
-    uint width;
-    Op op;
-}
-
-private immutable AppendElementOpWidth[] appendElementOpWidths = [
-    AppendElementOpWidth(1, Op.appendElement1),
-    AppendElementOpWidth(2, Op.appendElement2),
-    AppendElementOpWidth(4, Op.appendElement4),
-    AppendElementOpWidth(8, Op.appendElement8),
-    AppendElementOpWidth(16, Op.appendElement16),
-];
-
-// The `appendElement`-family width->opcode selector: `width` bytes uses the
-// fixed-width opcode for that width if the table above has one, else the `N`
-// variant (which carries the width in its own `c` operand instead).
-package(quickbite.backends.bytecode) Op appendElementOp(in uint width)
-    @safe @nogc nothrow pure
-{
-    foreach (entry; appendElementOpWidths)
-        if (entry.width == width)
-            return entry.op;
-    return Op.appendElementN;
-}
-
-// The reverse direction: the fixed byte width a fixed-width `appendElement*`
-// opcode operates on. Not valid for `appendElementN`, whose width is a
-// runtime operand rather than implied by the opcode.
-package(quickbite.backends.bytecode) uint appendElementWidth(in Op op)
-    @safe @nogc nothrow pure
-in (op != Op.appendElementN)
-{
-    foreach (entry; appendElementOpWidths)
-        if (entry.op == op)
-            return entry.width;
-    assert(0, "Not a fixed-width appendElement opcode.");
-}
-
-// The `dupArray` family's one op<->width table, the same pattern as
-// `appendElementOpWidths` above (a single opcode per width, since
-// duplicating an array's elements into a fresh heap block is a single
-// operation). compiler.d's `dupArrayOp` width->opcode selector and
-// machine.d's element-size Op->width derivation (`dupArrayWidth` below) both
-// walk this same table, so the two directions cannot independently drift out
-// of sync.
-private struct DupArrayOpWidth {
-    uint width;
-    Op op;
-}
-
-private immutable DupArrayOpWidth[] dupArrayOpWidths = [
-    DupArrayOpWidth(1, Op.dupArray1),
-    DupArrayOpWidth(2, Op.dupArray2),
-    DupArrayOpWidth(4, Op.dupArray4),
-    DupArrayOpWidth(8, Op.dupArray8),
-    DupArrayOpWidth(16, Op.dupArray16),
-];
-
-// The `dupArray`-family width->opcode selector: `width` bytes uses the
-// fixed-width opcode for that width if the table above has one, else the `N`
-// variant (which carries the width in its own `c` operand instead).
-package(quickbite.backends.bytecode) Op dupArrayOp(in uint width)
-    @safe @nogc nothrow pure
-{
-    foreach (entry; dupArrayOpWidths)
-        if (entry.width == width)
-            return entry.op;
-    return Op.dupArrayN;
-}
-
-// The reverse direction: the fixed byte width a fixed-width `dupArray*`
-// opcode operates on. Not valid for `dupArrayN`, whose width is a runtime
-// operand rather than implied by the opcode.
-package(quickbite.backends.bytecode) uint dupArrayWidth(in Op op)
-    @safe @nogc nothrow pure
-in (op != Op.dupArrayN)
-{
-    foreach (entry; dupArrayOpWidths)
-        if (entry.op == op)
-            return entry.width;
-    assert(0, "Not a fixed-width dupArray opcode.");
-}
-
-// The `concatArrays` family's one op<->width table, the same pattern as
-// `dupArrayOpWidths` above (a single opcode per width, since concatenating
-// two arrays is a single operation). Unlike the other families, only 1, 4,
-// and 16 bytes get a fixed-width opcode (matching indexLoad/indexStore's own
-// omission of 2 and 8 for this family). compiler.d's `concatArraysOp`
-// width->opcode selector and machine.d's element-size Op->width derivation
-// (`concatArraysWidth` below) both walk this same table, so the two
-// directions cannot independently drift out of sync.
-private struct ConcatArraysOpWidth {
-    uint width;
-    Op op;
-}
-
-private immutable ConcatArraysOpWidth[] concatArraysOpWidths = [
-    ConcatArraysOpWidth(1, Op.concatArrays1),
-    ConcatArraysOpWidth(4, Op.concatArrays4),
-    ConcatArraysOpWidth(16, Op.concatArrays16),
-];
-
-// The `concatArrays`-family width->opcode selector: `width` bytes uses the
-// fixed-width opcode for that width if the table above has one, else the `N`
-// variant (which carries the width in its own `d` operand instead).
-package(quickbite.backends.bytecode) Op concatArraysOp(in uint width)
-    @safe @nogc nothrow pure
-{
-    foreach (entry; concatArraysOpWidths)
-        if (entry.width == width)
-            return entry.op;
-    return Op.concatArraysN;
-}
-
-// The reverse direction: the fixed byte width a fixed-width `concatArrays*`
-// opcode operates on. Not valid for `concatArraysN`, whose width is a
-// runtime operand rather than implied by the opcode.
-package(quickbite.backends.bytecode) uint concatArraysWidth(in Op op)
-    @safe @nogc nothrow pure
-in (op != Op.concatArraysN)
-{
-    foreach (entry; concatArraysOpWidths)
-        if (entry.op == op)
-            return entry.width;
-    assert(0, "Not a fixed-width concatArrays opcode.");
-}
-
 // The `sliceCopy` family's one op<->width table, the same pattern as
-// `dupArrayOpWidths` above (a single opcode per width). All five fixed
+// `subSliceOpWidths` above (a single opcode per width). All five fixed
 // widths get an opcode, matching indexLoad/indexStore's own 1/2/4/8/16 split
 // (a generic slice copy has to move `T[][]` rows too, not just scalars).
 // compiler.d's `sliceCopyOp` width->opcode selector and machine.d's
@@ -1129,8 +894,10 @@ package(quickbite.backends.bytecode) uint sliceFillWidth(in Op op)
 
 // The `sliceEqual` family's one op<->width table, the same pattern as
 // `sliceFillOpWidths` above (the same four fixed widths, 1/2/4/8: a 16-byte
-// slice-descriptor element, e.g. a `T[][]` row, is structural rather than
-// flat-byte equality and goes through `Op.sliceEqualNested` instead). Unlike
+// slice-descriptor element, e.g. a `T[][]` row, needs structural equality --
+// recursing into what each descriptor points at, not a byte-for-byte
+// compare of the descriptors themselves -- and goes through
+// `Op.sliceEqualNested` instead). Unlike
 // every other width-suffixed family, there is no `N` variant: every element
 // width the front end can produce a `==` for is one of these four, so
 // `sliceEqualOp` below throws rather than falling back. compiler.d's
@@ -1191,7 +958,24 @@ package(quickbite.backends.bytecode) struct CompiledFunction {
     uint parameterBytes;
     ResultType returnType;
     bool hasThis;
+    // Set only for a native-leaf function reached through a function-pointer
+    // value (`&f` where `f.fbody is null`, taken e.g. by
+    // `core.internal.dassert`'s `assumeFakeAttributes` closing over a
+    // druntime hook like `GC.inFinalizer`): an index into `Program.nativeCalls`
+    // instead of `noNativeCallIndex`. The guest function-pointer VALUE stays a
+    // plain index into `Program.functions`, uniform with an ordinary
+    // VM-compiled entry -- `code` simply never gets a body, and
+    // `Op.call`/`Op.callIndirect` check this field to route through
+    // `Program.nativeCalls` instead of interpreting `code`.
+    size_t nativeCallIndex = noNativeCallIndex;
 }
+
+// Sentinel `CompiledFunction.nativeCallIndex` for an ordinary VM-compiled
+// function (not a native-leaf reached through a function pointer).
+package(quickbite.backends.bytecode) enum noNativeCallIndex = size_t.max;
+
+// Sentinel `NativeCall` receiver offset for a call with no hidden receiver.
+package(quickbite.backends.bytecode) enum noReceiverOffset = ushort.max;
 
 package(quickbite.backends.bytecode) struct NativeCall {
     imported!"dmd.func".FuncDeclaration function_;
@@ -1204,41 +988,32 @@ package(quickbite.backends.bytecode) struct NativeCall {
     // block as its hidden `this` argument.
     ushort nativeStructReceiverOffset = noReceiverOffset;
     imported!"dmd.mtype".TypeStruct nativeStructReceiverType;
-}
-
-// Sentinel `NativeCall` receiver offset for a call with no hidden receiver.
-package(quickbite.backends.bytecode) enum noReceiverOffset = ushort.max;
-
-// How to render a failed assertion: read both operands from the frame and
-// format them per their static type around the inverted operator.
-package(quickbite.backends.bytecode) struct AssertDiagnostic {
-    string operator; // the asserted relation, e.g. "=="
-    ushort lhs;
-    ushort rhs;
-    ScalarType operandType;
-    // When set, lhs/rhs are slice-descriptor offsets and operandType is the
-    // element type; the operands render as `[e0, e1, ...]`.
-    bool isArray;
-    bool isString;
-    bool lhsIsNull;
-    bool rhsIsNull;
-    // When `isArray` is set and this is nonzero, each element is itself an
-    // array of `operandType` (array-of-arrays nesting, any depth): 1 for
-    // `int[][]`, 2 for `int[][][]`, and so on -- one less than the operand's
-    // own `arrayNestingDepth`, since the outermost level is already
-    // unwrapped by `isArray` itself. Zero means plain `operandType` scalar
-    // elements. Appended last (not inserted between existing fields) so
-    // every pre-existing positional `AssertDiagnostic(...)` construction
-    // site keeps its field mapping; several sites pass isString/lhsIsNull/
-    // rhsIsNull positionally and would silently shift onto the wrong field
-    // otherwise.
-    uint elementNestingDepth;
-    // Mixed numeric array equality permits distinct element types. Retain the
-    // RHS type separately so a failed assertion uses that operand's physical
-    // stride and signedness instead of reading both arrays as `operandType`.
-    // Appended to preserve every positional construction above.
-    ScalarType rhsOperandType;
-    bool hasDistinctOperandTypes;
+    // Every argument's own byte offset within the call's argument area,
+    // relative to the area's base -- always populated, direct call or
+    // indirect. A direct call (`tryCompileNativeCall`'s own registrations)
+    // packs each argument's own staging slot back to back, sized to at
+    // least `nativeArgumentSlotSize` and wider when the argument's own byte
+    // width needs it, so a struct or static array wider than one slot
+    // cannot overflow into its neighbour. A native-leaf function reached
+    // through a function-pointer value instead carries its callee's real
+    // dense parameter-frame offsets here (`ParameterLayout.offsets`, the
+    // same layout `Op.call`/`Op.callIndirect` already placed the argument
+    // bytes at) -- the argument area an indirect call builds is the
+    // ordinary VM typed-frame parameter layout, not a native argument area,
+    // so these offsets come from a different source even though
+    // `prepareNativeInvocation` reads both the same way.
+    ushort[] argumentOffsets;
+    // Parallel to `argumentOffsets`, empty for a direct call: a direct call
+    // always stages a `ref`/`out` argument's current VALUE into its own
+    // slot (`tryCompileNativeCall`'s write-back copies the slot's post-call
+    // bytes back out afterward), so `prepareNativeInvocation` never needs
+    // to follow an address for one. Marks which INDIRECT argument slots are
+    // `ref`/`out`/`auto ref` per `ParameterLayout.isReference`: that layout
+    // stores such a slot as the referenced variable's ADDRESS, not its
+    // value, unlike every other parameter slot, so `prepareNativeInvocation`
+    // must follow the address rather than treat the slot itself as the
+    // argument's storage.
+    bool[] argumentIsReference;
 }
 
 package(quickbite.backends.bytecode) struct VirtualFunction {
@@ -1274,11 +1049,37 @@ package(quickbite.backends.bytecode) struct Program {
     // literal is compiled and appended.
     ubyte[][] literalBlocks;
     ubyte[] moduleData; // mutable VM-owned storage for module-level variables
-    AssertDiagnostic[] assertDiagnostics;
     NativeCall[] nativeCalls;
     ClassInfo[] classes;
     // Roots the host TypeInfo mirrors used by `typeid` on VM class objects.
     imported!"object".TypeInfo[] nativeTypeInfos;
     ushort rangeErrorClass = noExceptionClass;
     CatchClause[] catchClauses;
+}
+
+// `new ubyte[]`'s element type carries no pointers, so druntime marks the
+// block `BlkAttr.NO_SCAN` by default. Guest code can store a raw pointer
+// value in VM-owned storage -- a slice, class, or struct address a real
+// druntime allocation hook returned -- and that byte pattern is invisible to
+// a `NO_SCAN` block's conservative scan. Compiled D gives its own stack
+// frames and heap blocks ordinary scanned storage for exactly this reason;
+// clearing the flag here gives VM-owned storage the same guarantee. `p` may
+// be a freshly allocated block never yet marked `NO_SCAN` (the clear is then
+// a documented no-op) or one reallocated by the array runtime since the last
+// call (`.reserve`/`.length =` can move the block to a fresh `NO_SCAN`
+// allocation), so callers re-mark after any operation that might reallocate.
+// An appendable array's `.ptr` is not necessarily its GC block's base
+// address (`.reserve`'s growth can return a pointer offset from the pool
+// allocation it lives in), and `GC.clrAttr` silently no-ops on any address
+// that is not exactly a block's base, so this resolves the true base via
+// `GC.addrOf` first. `GC.addrOf`/`GC.clrAttr` take an unbounded raw pointer,
+// hence `@trusted`.
+package(quickbite.backends.bytecode) void markScanned(ubyte[] block) @trusted {
+    import core.memory: GC;
+
+    if (block.ptr is null)
+        return;
+    auto base = GC.addrOf(block.ptr);
+    if (base !is null)
+        GC.clrAttr(base, GC.BlkAttr.NO_SCAN);
 }
