@@ -678,9 +678,15 @@ private struct Walker {
     private size_t[const(void)*] _syntheticDollarValues;
     // `= void` is state attached to the authoritative binding address.
     private UninitializedBindings* uninitializedBindingAddresses;
-    // A `ref` return's lvalue address. Ordinary non-void returns construct in
-    // `_returnDestination`; statement execution never creates a value carrier.
+    // A non-`ref` return's value, when no `_returnDestination` construction
+    // place was supplied. A `ref` return's lvalue lives in `_refReturnPlace`
+    // instead; statement execution never routes a `ref` return through this
+    // carrier.
     private ExpressionResult _returnValue;
+    // A `ref` return's lvalue: an existing binding's address and type,
+    // named directly (`addressOfRefReturn` mode). Empty (`Place.init`)
+    // outside that mode.
+    private Place _refReturnPlace;
     // An interpreted non-void call constructs directly into its caller's
     // fresh storage. This pointer is valid only while the synchronous child
     // activation runs; recursive calls use their own activation and pointer.
@@ -785,8 +791,10 @@ private struct Walker {
             // Only a `ref` return transports data through the activation.
             // An ordinary return has already constructed its caller-owned
             // destination before control reaches this finally body.
-            const savedRefReturn = addressOfRefReturn ? _returnValue :
-                ExpressionResult.void_;
+            // `const` cannot round-trip a `Place` (it holds a `Type` class
+            // reference) back into the mutable `_refReturnPlace` below.
+            auto savedRefReturn = addressOfRefReturn ? _refReturnPlace :
+                Place.init;
             const savedLoopControl = loopControl;
             const savedLoopControlLabel = loopControlLabel;
             returned = false;
@@ -822,7 +830,7 @@ private struct Walker {
             if (!returned && loopControl == LoopControl.none) {
                 returned = savedReturned;
                 if (returned && addressOfRefReturn)
-                    _returnValue = savedRefReturn;
+                    _refReturnPlace = savedRefReturn;
                 loopControl = savedLoopControl;
                 loopControlLabel = savedLoopControlLabel;
                 if (bodyException !is null)
@@ -3912,9 +3920,13 @@ unsupportedExpression:
         return arrayPointer(index, 0, op, true /* selfAddress */);
     }
 
-    // The address of a ref return's lvalue, evaluated in the returning
-    // function's own frame (`addressOfRefReturn` mode).
-    private ExpressionResult refReturnAddress(
+    // A ref return's lvalue, evaluated in the returning function's own
+    // frame (`addressOfRefReturn` mode). Both branches still resolve
+    // through `runExpressionValue`/`addressOfExpression`, genuinely
+    // carrier-typed producers; this is the one boundary that lifts their
+    // pointer into the typed place the rest of the ref-return channel
+    // carries.
+    private Place refReturnPlace(
         imported!"dmd.expression".Expression expression,
     ) {
         import dmd.tokens: EXP;
@@ -3922,23 +3934,29 @@ unsupportedExpression:
         // DMD lowers a ref-returning ternary to `return *(cond ? &a : &b())`;
         // the address of that dereference is the pointer expression itself.
         if (auto pointer = expression.isPtrExp)
-            return runExpressionValue(pointer.e1);
+            return Place(
+                runExpressionValue(pointer.e1).pointerAddress,
+                expression.type,
+            );
 
-        return addressOfExpression(expression, EXP.address);
+        return Place(
+            addressOfExpression(expression, EXP.address).pointerAddress,
+            expression.type,
+        );
     }
 
     // The one place a `return` statement's result leaves the function body.
-    // `addressOfRefReturn` mode wants the returned lvalue's address, not its
-    // value, so that always uses the carrier. A caller-provided destination
-    // takes the expression's value directly, constructing it in place rather
-    // than routing it through `_returnValue`. Otherwise the expression is
+    // `addressOfRefReturn` mode wants the returned lvalue itself, named as a
+    // place, not its value. A caller-provided destination takes the
+    // expression's value directly, constructing it in place rather than
+    // routing it through `_returnValue`. Otherwise the expression is
     // evaluated into the carrier and, for a class return, rooted against its
     // own storage (`rootedNativeClassValue`) so the caller sees the same
     // owning allocation the callee constructed rather than a bare body
     // pointer a later collection could reclaim.
     private void setReturnValue(imported!"dmd.expression".Expression expression) {
         if (addressOfRefReturn) {
-            _returnValue = refReturnAddress(expression);
+            _refReturnPlace = refReturnPlace(expression);
             return;
         }
 
@@ -4418,7 +4436,7 @@ unsupportedExpression:
         imported!"dmd.expression".Expression[] argumentExpressions,
         ref Walker child,
     ) {
-        return child.callResult;
+        return ExpressionResult.pointerValue(child._refReturnPlace.address);
     }
 
     // `selfAddress` distinguishes two shapes that both recurse into the
