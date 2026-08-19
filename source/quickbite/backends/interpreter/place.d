@@ -476,6 +476,19 @@ private bool sameBaseType(
         return sameBaseType(lhsArray.next, rhsArray.next);
     }
 
+    // A druntime AA hook signature templated on `inout` sees the
+    // interpreted value's key and value types through that qualifier,
+    // diverging from the guest-declared unqualified types even though the
+    // layout is identical; compare key and value structurally, as the
+    // TypeDArray arm above does for its element type. Unlike a dynamic
+    // array, an AA literal cannot elide its key/value types to `void`, so
+    // there is no wildcard case to mirror here.
+    auto lhsAArray = lhs.toBasetype.isTypeAArray;
+    auto rhsAArray = rhs.toBasetype.isTypeAArray;
+    if (lhsAArray !is null && rhsAArray !is null)
+        return sameBaseType(lhsAArray.index, rhsAArray.index) &&
+            sameBaseType(lhsAArray.next, rhsAArray.next);
+
     return mutableOf(lhs.toBasetype).equals(mutableOf(rhs.toBasetype));
 }
 
