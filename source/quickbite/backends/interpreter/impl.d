@@ -10267,14 +10267,14 @@ unsupportedExpression:
         // aggregate. Resolve the field's `Place` through that address, the same
         // `nativeClassReceiver`/`fieldPlace` composition
         // `runIndexAssignExpression`'s singly-indexed `DotVarExp`/class arm
-        // already uses, and write the whole updated field back through that
+        // already uses, then write only the selected element through that
         // same `Place` -- a class body's storage is its own host address, so
         // there is no separate receiver lvalue to rebind the way a struct's
         // local binding needs.
         if (auto dot = outer.e1.isDotVarExp) {
             if (receiverClassType(dot.e1) !is null) {
                 import quickbite.backends.interpreter.place: Place;
-                import quickbite.backends.interpreter.place_value: readValue, writeValue;
+                import quickbite.backends.interpreter.place_value: readValue;
 
                 const receiver = runExpressionValue(dot.e1);
                 const nativeClassReceiver = receiver.isPointer
@@ -10293,13 +10293,16 @@ unsupportedExpression:
                 const outerElement = AggregateValue.elementAt(fieldValue, outerIndex);
                 const innerIndex = scalarOperand!size_t(inner.e2);
                 checkStaticArrayIndexInBounds(outerElement, innerIndex);
+                // Both bounds checks already passed against the field's own
+                // current shape, so the composed element place is in range;
+                // the class field's own storage is directly addressable, so
+                // the selected element can be written in isolation instead
+                // of rebuilding and rewriting the whole nested array.
+                auto destination = fieldPlace.index(outerIndex).index(innerIndex);
+                if (canAssignThroughTypedTemporary(destination, rhs))
+                    return assignThroughTypedTemporary(destination, rhs);
                 const value = runExpressionValue(rhs);
-                const updatedField = AggregateValue.withArrayElement(
-                    fieldValue,
-                    outerIndex,
-                    AggregateValue.withArrayElement(outerElement, innerIndex, value),
-                );
-                writeValue(fieldPlace, updatedField);
+                writeStoredValue(destination, value);
                 return value;
             }
 
@@ -10338,10 +10341,15 @@ unsupportedExpression:
         const innerIndex = scalarOperand!size_t(inner.e2);
         if (isStaticArrayType(inner.e1.type))
             checkStaticArrayIndexInBounds(outerElement, innerIndex);
-        const value = runExpressionValue(rhs);
         auto destination = bindingPlace(variable)
             .index(outerIndex)
             .index(innerIndex);
+        if (canAssignThroughTypedTemporary(destination, rhs)) {
+            const value = assignThroughTypedTemporary(destination, rhs);
+            clearUninitializedBindingAddress(bindingPlace(variable).address);
+            return value;
+        }
+        const value = runExpressionValue(rhs);
         writeStoredValue(destination, storageValue(inner.type, value));
         clearUninitializedBindingAddress(bindingPlace(variable).address);
         return value;
