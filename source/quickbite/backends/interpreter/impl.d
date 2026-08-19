@@ -2392,7 +2392,7 @@ private struct Walker {
                 throw new Exception("Interpreter with receiver has no initializer.");
             setLocal(
                 with_.wthis,
-                storageValue(with_.wthis.type, runExpressionValue(initializer.exp)),
+                storageValue(with_.wthis.type, constructedExpressionValue(initializer.exp)),
             );
             runStatement(with_._body);
         } else {
@@ -3181,7 +3181,7 @@ arrayLengthExpression:
                     projectionPlace(arrayLength.e1).arrayLength,
                 );
             return ExpressionResult(
-                AggregateValue.length(AggregateValue.native(runExpressionValue(arrayLength.e1))),
+                AggregateValue.length(AggregateValue.native(constructedExpressionValue(arrayLength.e1))),
             );
         }
 
@@ -3426,7 +3426,7 @@ unsupportedExpression:
         auto result = ExpressionResult.void_;  // mutated below; `const` cannot express the fold
         if (tuple.exps !is null)
             foreach (element; *tuple.exps)
-                result = runExpressionValue(element);
+                result = constructedExpressionValue(element);
         return result;
     }
 
@@ -3443,7 +3443,7 @@ unsupportedExpression:
         auto type = symbol.dsym is null ? symbol.type : symbol.dsym.type;
 
         if (auto structType = type is null ? null : type.toBasetype.isTypeStruct)
-            return runExpressionValue(structType.defaultInitLiteral(var.loc));
+            return constructedExpressionValue(structType.defaultInitLiteral(var.loc));
 
         // `__traits(initSymbol, T)` denotes T's initializer image as an
         // untyped span: the bytes `emplace` copies into raw storage before any
@@ -5052,7 +5052,7 @@ unsupportedExpression:
         _activationFrame = FrameBlock.allocate(
             computeExpressionFrameLayout(expression),
         );
-        return runExpressionValue(expression);
+        return constructedExpressionValue(expression);
     }
 
     private void materializeDatasegInitializer(VarDeclaration variable) {
@@ -7919,7 +7919,7 @@ unsupportedExpression:
             return ExpressionResult.void_;
         }
 
-        return runExpressionValue(expression);
+        return constructedExpressionValue(expression);
     }
 
     private VarDeclaration lazyCallVariable(imported!"dmd.expression".CallExp call) {
@@ -9605,7 +9605,7 @@ unsupportedExpression:
         import dmd.location: Loc;
         import dmd.typesem: defaultInitLiteral;
 
-        return runExpressionValue(type.defaultInitLiteral(Loc.initial));
+        return constructedExpressionValue(type.defaultInitLiteral(Loc.initial));
     }
 
     // A value-result caller has no final place yet. Build the D default in a
@@ -11199,7 +11199,7 @@ unsupportedExpression:
     ) {
         import quickbite.frontend.dmd.types: isArrayType;
 
-        const value = runExpressionValue(operand);
+        const value = constructedExpressionValue(operand);
         if (!isArrayType(operand.type))
             return nativeAppendElements(resultType, value);
 
@@ -13683,7 +13683,7 @@ unsupportedExpression:
                     while (auto sourceCast = sourceArray.isCastExp)
                         sourceArray = sourceCast.e1;
 
-                    const source = runExpressionValue(sourceArray);
+                    const source = constructedExpressionValue(sourceArray);
                     setLocal(variable, source);
 
                     const count =
@@ -15331,7 +15331,7 @@ private void initializeNativeClassBody(
             if (auto initializer = field._init.isExpInitializer)
                 value = walker.storageValue(
                     field.type,
-                    walker.runExpressionValue(initializer.exp),
+                    walker.constructedExpressionValue(initializer.exp),
                 );
             else if (field._init.isArrayInitializer !is null)
                 value = classFieldArrayLiteralDefault(walker, field);
@@ -15372,7 +15372,7 @@ classFieldArrayLiteralDefault(
 
     const value = walker.storageValue(
         field.type,
-        walker.runExpressionValue(field._init.initializerToExpression),
+        walker.constructedExpressionValue(field._init.initializerToExpression),
     );
     auto block = NativeBlock.allocate(
         typeByteSize(field.type),
