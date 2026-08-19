@@ -885,16 +885,11 @@ private struct Walker {
             if (return_.exp !is null) {
                 if (assignToRefReturn)
                     writeLocation(return_.exp, refReturnAssignedValue);
-                else if (addressOfRefReturn)
-                    _returnValue = refReturnAddress(return_.exp);
                 else if (_returnDestination !is null) {
                     constructReturnValue(return_.exp, *_returnDestination);
                 }
                 else {
-                    _returnValue = runExpressionValue(return_.exp);
-                    if (return_.exp.type.toBasetype.isTypeClass !is null)
-                        _returnValue =
-                            rootedNativeClassValue(return_.exp, _returnValue);
+                    setReturnValue(return_.exp);
                 }
             }
             returned = true;
@@ -3936,6 +3931,37 @@ unsupportedExpression:
         return addressOfExpression(expression, EXP.address);
     }
 
+    // The one place a `return` statement's result enters `_returnValue`.
+    // `addressOfRefReturn` mode wants the returned lvalue's address, not its
+    // value. Otherwise the expression is evaluated and, for a class return,
+    // rooted against its own storage (`rootedNativeClassValue`) so the
+    // caller sees the same owning allocation the callee constructed rather
+    // than a bare body pointer a later collection could reclaim.
+    private void setReturnValue(imported!"dmd.expression".Expression expression) {
+        if (addressOfRefReturn) {
+            _returnValue = refReturnAddress(expression);
+            return;
+        }
+
+        _returnValue = runExpressionValue(expression);
+        if (expression.type.toBasetype.isTypeClass !is null)
+            _returnValue = rootedNativeClassValue(expression, _returnValue);
+    }
+
+    // A fresh child activation's return channel starts empty: no return
+    // statement has run yet, so there is no value for a caller reading
+    // `callResult` before the child's body executes (e.g. a `void` function,
+    // or an exception unwinding out of the body) to see.
+    private void seedReturnChannel() {
+        _returnValue = ExpressionResult(false);
+    }
+
+    // The value a completed call left in its own return channel, read once
+    // the child's function body has finished running.
+    private ExpressionResult callResult() const {
+        return _returnValue;
+    }
+
     private ExpressionResult refReturningCallAddress(
         imported!"dmd.expression".CallExp call,
         in imported!"dmd.tokens".EXP op,
@@ -4023,7 +4049,7 @@ unsupportedExpression:
         auto layout = cachedFrameLayout(call.f);
         child._activationFrame = FrameBlock.allocate(layout);
         child.addressOfRefReturn = true;
-        child._returnValue = ExpressionResult(false);
+        child.seedReturnChannel;
         forkExecutionStateInto(child);
         scope(exit) child.retireActivationFrameMetadata;
         bindCapturedReferenceSlots(call.f, child);
@@ -4170,7 +4196,7 @@ unsupportedExpression:
         auto layout = cachedFrameLayout(function_);
         child._activationFrame = FrameBlock.allocate(layout);
         child.addressOfRefReturn = true;
-        child._returnValue = ExpressionResult(false);
+        child.seedReturnChannel;
         forkExecutionStateInto(child);
         scope(exit) child.retireActivationFrameMetadata;
         bindCapturedReferenceSlots(function_, child);
@@ -4385,7 +4411,7 @@ unsupportedExpression:
         imported!"dmd.expression".Expression[] argumentExpressions,
         ref Walker child,
     ) {
-        return child._returnValue;
+        return child.callResult;
     }
 
     // `selfAddress` distinguishes two shapes that both recurse into the
@@ -7040,7 +7066,7 @@ unsupportedExpression:
         child.currentFunction = function_;
         auto layout = cachedFrameLayout(function_);
         child._activationFrame = FrameBlock.allocate(layout);
-        child._returnValue = ExpressionResult(false);
+        child.seedReturnChannel;
         child._returnDestination = constructionDestination;
         forkExecutionStateInto(child);
         scope(exit) child.retireActivationFrameMetadata;
@@ -7074,7 +7100,7 @@ unsupportedExpression:
         );
         if (constructionDestination !is null)
             return ExpressionResult.void_;
-        return child._returnValue;
+        return child.callResult;
     }
 
     // DMD keeps a member function's hidden `this` declaration separate from
@@ -7139,7 +7165,7 @@ unsupportedExpression:
         child.currentFunction = function_;
         auto layout = cachedFrameLayout(function_);
         child._activationFrame = FrameBlock.allocate(layout);
-        child._returnValue = ExpressionResult(false);
+        child.seedReturnChannel;
         child._returnDestination = constructionDestination;
         forkExecutionStateInto(child);
         scope(exit) child.retireActivationFrameMetadata;
@@ -7326,7 +7352,7 @@ unsupportedExpression:
 
         if (constructionDestination !is null)
             return ExpressionResult.void_;
-        return child._returnValue;
+        return child.callResult;
     }
 
     private void mergeFunctionState(
@@ -9242,7 +9268,7 @@ unsupportedExpression:
         child._activationFrame = FrameBlock.allocate(layout);
         child.assignToRefReturn = true;
         child.refReturnAssignedValue = value;
-        child._returnValue = ExpressionResult(false);
+        child.seedReturnChannel;
         forkExecutionStateInto(child);
         scope(exit) child.retireActivationFrameMetadata;
         bindCapturedReferenceSlots(function_, child);
@@ -9358,7 +9384,7 @@ unsupportedExpression:
         child._activationFrame = FrameBlock.allocate(layout);
         child.assignToRefReturn = true;
         child.refReturnAssignedValue = value;
-        child._returnValue = ExpressionResult(false);
+        child.seedReturnChannel;
         forkExecutionStateInto(child);
         scope(exit) child.retireActivationFrameMetadata;
         bindCapturedReferenceSlots(call.f, child);
@@ -12881,7 +12907,7 @@ unsupportedExpression:
             child.currentFunction = new_.member;
             auto layout = cachedFrameLayout(new_.member);
             child._activationFrame = FrameBlock.allocate(layout);
-            child._returnValue = ExpressionResult(false);
+            child.seedReturnChannel;
             child.bindStructReceiver(Place(
                 AggregateValue.native(structVal).address,
                 AggregateValue.native(structVal).type,
@@ -13039,7 +13065,7 @@ unsupportedExpression:
         child.currentFunction = new_.member;
         auto layout = cachedFrameLayout(new_.member);
         child._activationFrame = FrameBlock.allocate(layout);
-        child._returnValue = ExpressionResult(false);
+        child.seedReturnChannel;
         forkExecutionStateInto(child);
         scope(exit) child.retireActivationFrameMetadata;
         child.bindClassReceiver(AggregateValue.nativeClassBodyAddress(object), allocationType);
