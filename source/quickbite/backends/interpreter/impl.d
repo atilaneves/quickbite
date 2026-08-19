@@ -11162,7 +11162,10 @@ unsupportedExpression:
 
         auto type = cast_.to.toBasetype;
         if (type is null)
-            return runExpressionValue(cast_.e1);
+            // No cast target type is known: read `cast_.e1` back through
+            // its own typed place instead of the carrier, preserving the
+            // pass-through value and single evaluation.
+            return constructedExpressionValue(cast_.e1);
 
         if (type.ty == TY.Tvoid) {
             executeForEffect(cast_.e1);
@@ -11262,7 +11265,14 @@ unsupportedExpression:
                 return readStoredValue(destination);
             }
 
-        return castScalarResult(runExpressionValue(cast_.e1), backendCastTarget(type));
+        // The remaining cast targets are plain scalar kinds `castScalarResult`
+        // already switches on. Read `cast_.e1` back through its own typed
+        // place rather than the carrier's own evaluation path -- same single
+        // evaluation, with the read itself routed through typed machinery.
+        return castScalarResult(
+            constructedExpressionValue(cast_.e1),
+            backendCastTarget(type),
+        );
     }
 
     private bool reinterpretScalarArrayCast(
@@ -11318,7 +11328,11 @@ unsupportedExpression:
     private ExpressionResult delegateCastValue(imported!"dmd.expression".CastExp cast_) {
         import std.conv: text;
 
-        const value = runExpressionValue(cast_.e1);
+        // Read `cast_.e1` back through its own typed place -- delegates and
+        // function pointers round-trip through `writeStoredValue`'s side
+        // tables there -- rather than the carrier's own evaluation path.
+        // Same single evaluation as before.
+        const value = constructedExpressionValue(cast_.e1);
         if (value == ExpressionResult.null_ || value.isFunctionPointer)
             return value;
 
@@ -11417,7 +11431,7 @@ unsupportedExpression:
 
     // DMD semantic lowers `array.ptr` to `cast(T*) array`
     private ExpressionResult pointerCastValue(imported!"dmd.expression".CastExp cast_) {
-        import quickbite.frontend.dmd.types: isArrayType;
+        import quickbite.frontend.dmd.types: isArrayType, isPointerType;
         import std.conv: text;
 
         if (isArrayType(cast_.e1.type)) {
@@ -11471,6 +11485,20 @@ unsupportedExpression:
                 }
             }
             return arrayPointer(cast_.e1, 0, cast_.op);
+        }
+
+        // A pointer-typed, non-array source (e.g. `cast(void*)
+        // somePointer`): construct `cast_.e1` in its own typed place and
+        // read its pointee address directly, the same route the
+        // post-increment `*p` handler uses for a dereferenced pointer
+        // operand. `address is null` mirrors the array branch above,
+        // reporting a null pointer as `ExpressionResult.null_` rather than
+        // a pointer value wrapping a null address.
+        if (isPointerType(cast_.e1.type)) {
+            const address = pointerOperandPlace(cast_.e1).deref.address;
+            return address is null
+                ? ExpressionResult.null_
+                : ExpressionResult.pointerValue(cast(void*) address);
         }
 
         const value = runExpressionValue(cast_.e1);
