@@ -1807,6 +1807,7 @@ private struct Walker {
 
     private Place directWriteProjectionPlace(
         imported!"dmd.expression".Expression target,
+        in bool writeBounds = true,
     ) {
         import quickbite.backends.interpreter.layout: staticArrayLength;
         import quickbite.backends.interpreter.messages: indexOutOfBoundsMessage;
@@ -1820,7 +1821,7 @@ private struct Walker {
         );
         assert(collected);
         if (count < 2)
-            return projectionPlace(target, true);
+            return projectionPlace(target, writeBounds);
 
         // A dynamic-array `$` needs the selected base's runtime length before
         // its expression can run. The ordinary composer supplies that while
@@ -13913,8 +13914,14 @@ destinationFallback:
         if (hasDirectWriteProjectionPlace(expression)) {
             // The projection's semantic type is the expression's exact type,
             // so this is an exact-width load into the selected host local.
+            // This is a read, not an assignment target: an out-of-bounds
+            // index here must raise the same call-depth-sensitive wording
+            // `runIndexExpression` raises for the same read outside a
+            // projection place, not the write path's unconditional
+            // compiled-style wording.
             destination.storeNativeScalar(
-                directWriteProjectionPlace(expression).loadNativeScalar!T,
+                directWriteProjectionPlace(expression, /* writeBounds */ false)
+                    .loadNativeScalar!T,
             );
             return true;
         }
