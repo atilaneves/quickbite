@@ -7126,7 +7126,7 @@ unsupportedExpression:
         );
         child.bindThisReferenceAddress(function_, child.thisValue);
         if (
-            function_.constructorStructDeclaration !is null &&
+            function_.isConstructorFunction &&
             constructionDestination !is null &&
             !isWritableLocation(receiverExpression)
         ) {
@@ -7139,6 +7139,14 @@ unsupportedExpression:
             // regular `this` binding below, which preserves DMD's assignment
             // receiver for a following postblit. This path does not return
             // `child.thisValue` for a later carrier-to-place copy.
+            //
+            // `constructorStructDeclaration !is null` alone is too broad: it
+            // is non-null for any struct member function (DMD's `isThis`
+            // just names the enclosing aggregate), not only a constructor.
+            // An ordinary member call with a non-writable receiver (e.g.
+            // `wrap().call()`, receiver `wrap()`) would otherwise also take
+            // this branch and overwrite the call's own return-value
+            // destination with the receiver instead of the callee's result.
             if (
                 precomputedReceiverPointerAddress !is null &&
                 precomputedReceiverPointerAddress.isPointer &&
