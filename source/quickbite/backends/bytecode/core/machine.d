@@ -1304,6 +1304,26 @@ package(quickbite.backends.bytecode) RunResult run(
                 ++ip;
                 break;
 
+            case mulFloat:
+                const ubyte[float.sizeof] product = floatBytes(
+                    floatValue!float(stack, base + instruction.b) *
+                    floatValue!float(stack, base + instruction.c),
+                );
+                stack[base + instruction.a
+                    .. base + instruction.a + float.sizeof] = product;
+                ++ip;
+                break;
+
+            case mulDouble:
+                const ubyte[double.sizeof] product = floatBytes(
+                    floatValue!double(stack, base + instruction.b) *
+                    floatValue!double(stack, base + instruction.c),
+                );
+                stack[base + instruction.a
+                    .. base + instruction.a + double.sizeof] = product;
+                ++ip;
+                break;
+
             case divDouble:
                 const ubyte[double.sizeof] quotient = floatBytes(
                     floatValue!double(stack, base + instruction.b) /
