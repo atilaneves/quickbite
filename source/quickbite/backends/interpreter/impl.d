@@ -1754,8 +1754,7 @@ private struct Walker {
                             break;
                         }
                     if (!alreadyEvaluated)
-                        value = cast(size_t) cast(ulong)
-                            runExpressionValue(indexExpression).asLong;
+                        value = scalarOperand!size_t(indexExpression);
                     if (
                         pendingBoundsCheck &&
                         pendingIndex !is null &&
@@ -1846,7 +1845,7 @@ private struct Walker {
             }
 
             expressions[i] = index.e2;
-            values[i] = cast(size_t) cast(ulong) runExpressionValue(index.e2).asLong;
+            values[i] = scalarOperand!size_t(index.e2);
             if (
                 staticArray !is null &&
                 values[i] >= staticArrayLength(staticArray)
@@ -3813,7 +3812,7 @@ unsupportedExpression:
                                 index.lengthVar,
                                 ExpressionResult(AggregateValue.length(runExpressionValue(receiverVar))),
                             );
-                    const elementIndex = runExpressionValue(index.e2).asLong;
+                    const elementIndex = scalarOperand!long(index.e2);
                     const elementPointer = arrayPointer(index.e1, elementIndex, op);
                     if (elementPointer.isPointer)
                         return elementPointer.pointerOffsetBy(
@@ -3893,8 +3892,7 @@ unsupportedExpression:
                 return ExpressionResult.pointerValue(placeOfLvalue(
                     dot,
                     (variable) @safe => addressableBindingBase(variable),
-                    (expression) @system => cast(size_t)
-                        runExpressionValue(expression).asLong,
+                    (expression) @system => scalarOperand!size_t(expression),
                 ).address);
             } catch (Exception exception) {
                 throw new Exception(text(
@@ -4509,9 +4507,9 @@ unsupportedExpression:
                 index.lengthVar,
                 ExpressionResult(AggregateValue.length(readValue(receiverPlace))),
             );
-        const outerOffset = runExpressionValue(index.e2).asLong;
+        const outerOffset = scalarOperand!size_t(index.e2);
         const pointer = ExpressionResult.pointerValue(
-            receiverPlace.index(cast(size_t) outerOffset).address,
+            receiverPlace.index(outerOffset).address,
         );
         if (selfAddress)
             return pointer;
@@ -4603,7 +4601,7 @@ unsupportedExpression:
                                 (variable) @safe =>
                                     addressableBindingBase(variable),
                                 (expression) @system =>
-                                    cast(size_t) runExpressionValue(expression).asLong,
+                                    scalarOperand!size_t(expression),
                                 // @trusted: `setLocal` is @system because it is
                                 // part of the interpreter's general storage
                                 // machinery. Here it only binds the `$` length
@@ -4637,8 +4635,8 @@ unsupportedExpression:
                             const rowLength = staticArrayLength(rowArray);
                             if (index.lengthVar !is null)
                                 setLocal(index.lengthVar, ExpressionResult(rowLength));
-                            const elementOffset = runExpressionValue(index.e2).asLong;
-                            if (cast(size_t) elementOffset >= rowLength)
+                            const elementOffset = scalarOperand!size_t(index.e2);
+                            if (elementOffset >= rowLength)
                                 throwRangeError(
                                     "quickbite.backends.interpreter.place.Place.index: "
                                     ~ "index out of range for static array place",
@@ -4647,7 +4645,7 @@ unsupportedExpression:
                             return mapIndexOutOfBounds(delegate ExpressionResult() {
                                 const pointer = ExpressionResult.pointerValue(
                                     resolveInnerPlace()
-                                        .index(cast(size_t) elementOffset)
+                                        .index(elementOffset)
                                         .address,
                                 );
                                 if (selfAddress)
@@ -4717,7 +4715,7 @@ unsupportedExpression:
                                     nestedField,
                                     (variable) @safe => addressableBindingBase(variable),
                                     (expression) @system =>
-                                        cast(size_t) runExpressionValue(expression).asLong,
+                                        scalarOperand!size_t(expression),
                                     // `$` inside a CHAIN `IndexExp`'s own index
                                     // (e.g. `arr[$ - 1]` inside
                                     // `arr[$ - 1].mid.a[j]`) is bound to THAT
@@ -4792,7 +4790,7 @@ unsupportedExpression:
                     setLocal(index.lengthVar, ExpressionResult(sourceLength));
                 }
 
-                const outerOffset = runExpressionValue(index.e2).asLong;
+                const outerOffset = scalarOperand!long(index.e2);
                 // An indexed binding is an lvalue even when its evaluated
                 // aggregate value retains an initializer handle. Compose
                 // from the binding's current place so a `ref` static-array
@@ -4878,7 +4876,7 @@ unsupportedExpression:
                                     field,
                                     (variable) @safe => addressableBindingBase(variable),
                                     (expression) @system =>
-                                        cast(size_t) runExpressionValue(expression).asLong,
+                                        scalarOperand!size_t(expression),
                                 );
                                 const pointer = ExpressionResult.pointerValue(
                                     fieldPlace.index(cast(size_t) outerOffset).address,
@@ -5014,7 +5012,7 @@ unsupportedExpression:
                             dot,
                             (variable) @safe => addressableBindingBase(variable),
                             (expression) @system =>
-                                cast(size_t) runExpressionValue(expression).asLong,
+                                scalarOperand!size_t(expression),
                         );
                         return ExpressionResult.pointerValue(
                             fieldPlace.index(cast(size_t) offset).address,
@@ -6391,8 +6389,7 @@ unsupportedExpression:
             if (isPointerType(index.e1.type)) {
                 const pointer_ = runExpressionValue(index.e1);
                 if (pointer_.isPointer) {
-                    const elementIndex = cast(size_t)
-                        cast(ulong) runExpressionValue(index.e2).asLong;
+                    const elementIndex = scalarOperand!size_t(index.e2);
                     auto elementType = index.e1.type.toBasetype.nextOf.toBasetype;
                     evaluated.address = nativeElementAddress(
                         pointer_.pointerAddress,
@@ -6915,10 +6912,10 @@ unsupportedExpression:
 
         const lower = slice.lwr is null
             ? 0
-            : cast(size_t) runExpressionValue(slice.lwr).asLong;
+            : scalarOperand!size_t(slice.lwr);
         const upper = slice.upr is null
             ? AggregateValue.length(current)
-            : cast(size_t) runExpressionValue(slice.upr).asLong;
+            : scalarOperand!size_t(slice.upr);
         if (upper - lower != elements.length)
             throw new Exception("Unsupported eval call.");
 
@@ -9618,7 +9615,7 @@ unsupportedExpression:
     ) {
         import quickbite.frontend.dmd.types: isPointerType;
 
-        const arrayIndex = cast(size_t) runExpressionValue(index.e2).asLong;
+        const arrayIndex = scalarOperand!size_t(index.e2);
 
         // DMD's own `modifiableLvalue` semantic reverts an associative-array
         // index used through a further field/method/element access (rather
@@ -9690,7 +9687,7 @@ unsupportedExpression:
             const fieldIndex = structFieldIndex(dot);
             const receiver = runExpressionValue(dot.e1);
             const fieldValue = AggregateValue.fieldAt(receiver, fieldIndex);
-            const outerIndex = cast(size_t) runExpressionValue(outer.e2).asLong;
+            const outerIndex = scalarOperand!size_t(outer.e2);
             checkStaticArrayIndexInBounds(fieldValue, outerIndex);
             const outerElement = AggregateValue.elementAt(fieldValue, outerIndex);
             checkStaticArrayIndexInBounds(outerElement, arrayIndex);
@@ -9944,7 +9941,7 @@ unsupportedExpression:
             const address = refReturningCallAddress(call, EXP.address);
             if (!address.isPointer)
                 throw new Exception("Ref-returning call has no native address.");
-            const arrayIndex = cast(size_t) runExpressionValue(index.e2).asLong;
+            const arrayIndex = scalarOperand!size_t(index.e2);
             auto destination = Place(address.pointerAddress, index.e1.type)
                 .index(arrayIndex);
             if (canAssignThroughTypedTemporary(destination, rhs))
@@ -9956,7 +9953,7 @@ unsupportedExpression:
 
         if (isPointerType(index.e1.type)) {
             const pointer = runExpressionValue(index.e1);
-            const arrayIndex = cast(size_t) runExpressionValue(index.e2).asLong;
+            const arrayIndex = scalarOperand!size_t(index.e2);
             if (pointer.isPointer) {
                 import quickbite.backends.interpreter.layout: typeByteSize;
                 import quickbite.backends.interpreter.place: Place;
@@ -9996,7 +9993,7 @@ unsupportedExpression:
             if (pointer.isPointer) {
                 import quickbite.backends.interpreter.place: Place;
 
-                const arrayIndex = cast(size_t) runExpressionValue(index.e2).asLong;
+                const arrayIndex = scalarOperand!size_t(index.e2);
                 auto destination = Place(pointer.pointerAddress, index.e1.type)
                     .index(arrayIndex);
                 if (canAssignThroughTypedTemporary(destination, rhs)) {
@@ -10045,7 +10042,7 @@ unsupportedExpression:
                     const source = readStoredValue(fieldPlace);
                     if (index.lengthVar !is null)
                         setLocal(index.lengthVar, ExpressionResult(AggregateValue.length(source)));
-                    const arrayIndex = cast(size_t) runExpressionValue(index.e2).asLong;
+                    const arrayIndex = scalarOperand!size_t(index.e2);
                     const value = runExpressionValue(rhs);
                     writeStoredValue(fieldPlace.index(arrayIndex), value);
                     return value;
@@ -10065,7 +10062,7 @@ unsupportedExpression:
             const source = AggregateValue.fieldAt(receiver, fieldIndex);
             if (index.lengthVar !is null)
                 setLocal(index.lengthVar, ExpressionResult(AggregateValue.length(source)));
-            const arrayIndex = cast(size_t) runExpressionValue(index.e2).asLong;
+            const arrayIndex = scalarOperand!size_t(index.e2);
             const value = runExpressionValue(rhs);
             const updatedArray = AggregateValue.withArrayElement(source, arrayIndex, value);
             writeLocation(dot.e1, AggregateValue.withStructField(receiver, fieldIndex, updatedArray));
@@ -10083,7 +10080,7 @@ unsupportedExpression:
 
         const current = readBindingValue(variable);
 
-        const arrayIndex = cast(size_t) runExpressionValue(index.e2).asLong;
+        const arrayIndex = scalarOperand!size_t(index.e2);
         if (isStaticArrayType(index.e1.type))
             checkStaticArrayIndexInBounds(current, arrayIndex);
 
@@ -10250,7 +10247,7 @@ unsupportedExpression:
             if (!pointer.isPointer)
                 throw new Exception("Unsupported interpreter assignment target.");
 
-            const innerIndex = cast(size_t) runExpressionValue(inner.e2).asLong;
+            const innerIndex = scalarOperand!size_t(inner.e2);
             auto destination = Place(pointer.pointerAddress, outer.type)
                 .index(innerIndex);
             if (canAssignThroughTypedTemporary(destination, rhs)) {
@@ -10310,10 +10307,10 @@ unsupportedExpression:
                 auto fieldPlace = Place(nativeClassReceiver.pointerAddress, dot.e1.type)
                     .field(dot.var.isVarDeclaration);
                 const fieldValue = readValue(fieldPlace);
-                const outerIndex = cast(size_t) runExpressionValue(outer.e2).asLong;
+                const outerIndex = scalarOperand!size_t(outer.e2);
                 checkStaticArrayIndexInBounds(fieldValue, outerIndex);
                 const outerElement = AggregateValue.elementAt(fieldValue, outerIndex);
-                const innerIndex = cast(size_t) runExpressionValue(inner.e2).asLong;
+                const innerIndex = scalarOperand!size_t(inner.e2);
                 checkStaticArrayIndexInBounds(outerElement, innerIndex);
                 const value = runExpressionValue(rhs);
                 const updatedField = AggregateValue.withArrayElement(
@@ -10328,10 +10325,10 @@ unsupportedExpression:
             const fieldIndex = structFieldIndex(dot);
             const receiver = runExpressionValue(dot.e1);
             const fieldValue = AggregateValue.fieldAt(receiver, fieldIndex);
-            const outerIndex = cast(size_t) runExpressionValue(outer.e2).asLong;
+            const outerIndex = scalarOperand!size_t(outer.e2);
             checkStaticArrayIndexInBounds(fieldValue, outerIndex);
             const outerElement = AggregateValue.elementAt(fieldValue, outerIndex);
-            const innerIndex = cast(size_t) runExpressionValue(inner.e2).asLong;
+            const innerIndex = scalarOperand!size_t(inner.e2);
             checkStaticArrayIndexInBounds(outerElement, innerIndex);
             const value = runExpressionValue(rhs);
             const updatedField = AggregateValue.withArrayElement(
@@ -10353,11 +10350,11 @@ unsupportedExpression:
 
         const current = readBindingValue(variable);
 
-        const outerIndex = cast(size_t) runExpressionValue(outer.e2).asLong;
+        const outerIndex = scalarOperand!size_t(outer.e2);
         if (isStaticArrayType(outer.e1.type))
             checkStaticArrayIndexInBounds(current, outerIndex);
         const outerElement = AggregateValue.elementAt(current, outerIndex);
-        const innerIndex = cast(size_t) runExpressionValue(inner.e2).asLong;
+        const innerIndex = scalarOperand!size_t(inner.e2);
         if (isStaticArrayType(inner.e1.type))
             checkStaticArrayIndexInBounds(outerElement, innerIndex);
         const value = runExpressionValue(rhs);
@@ -10463,10 +10460,10 @@ unsupportedExpression:
 
         const lower = slice.lwr is null
             ? 0
-            : cast(size_t) runExpressionValue(slice.lwr).asLong;
+            : scalarOperand!size_t(slice.lwr);
         const upper = slice.upr is null
             ? AggregateValue.length(current)
-            : cast(size_t) runExpressionValue(slice.upr).asLong;
+            : scalarOperand!size_t(slice.upr);
 
         checkSliceAssignmentBounds(lower, upper, AggregateValue.length(current));
 
@@ -10553,10 +10550,10 @@ unsupportedExpression:
         const current = runIndexExpression(index);
         const lower = slice.lwr is null
             ? 0
-            : cast(size_t) runExpressionValue(slice.lwr).asLong;
+            : scalarOperand!size_t(slice.lwr);
         const upper = slice.upr is null
             ? AggregateValue.length(current)
-            : cast(size_t) runExpressionValue(slice.upr).asLong;
+            : scalarOperand!size_t(slice.upr);
 
         checkSliceAssignmentBounds(lower, upper, AggregateValue.length(current));
 
@@ -10591,8 +10588,8 @@ unsupportedExpression:
                 slice.e1.op,
             ));
 
-        const lower = cast(size_t) runExpressionValue(slice.lwr).asLong;
-        const upper = cast(size_t) runExpressionValue(slice.upr).asLong;
+        const lower = scalarOperand!size_t(slice.lwr);
+        const upper = scalarOperand!size_t(slice.upr);
 
         // Reject an inverted range before `rhs` is evaluated -- matching
         // compiled D, which raises before any side effect in `rhs` runs --
@@ -10699,10 +10696,10 @@ unsupportedExpression:
 
         const sourceLower = source.lwr is null
             ? 0
-            : cast(size_t) runExpressionValue(source.lwr).asLong;
+            : scalarOperand!size_t(source.lwr);
         const sourceUpper = source.upr is null
             ? length
-            : cast(size_t) runExpressionValue(source.upr).asLong;
+            : scalarOperand!size_t(source.upr);
 
         if (lower < sourceUpper && sourceLower < upper)
             throw new Exception("Range violation");
@@ -10726,10 +10723,10 @@ unsupportedExpression:
 
         const lower = slice.lwr is null
             ? 0
-            : cast(size_t) runExpressionValue(slice.lwr).asLong;
+            : scalarOperand!size_t(slice.lwr);
         const upper = slice.upr is null
             ? AggregateValue.length(current)
-            : cast(size_t) runExpressionValue(slice.upr).asLong;
+            : scalarOperand!size_t(slice.upr);
 
         checkSliceAssignmentBounds(lower, upper, AggregateValue.length(current));
 
@@ -10847,10 +10844,10 @@ unsupportedExpression:
 
         const lower = slice.lwr is null
             ? 0
-            : cast(size_t) runExpressionValue(slice.lwr).asLong;
+            : scalarOperand!size_t(slice.lwr);
         const upper = slice.upr is null
             ? AggregateValue.length(current)
-            : cast(size_t) runExpressionValue(slice.upr).asLong;
+            : scalarOperand!size_t(slice.upr);
 
         checkSliceAssignmentBounds(lower, upper, AggregateValue.length(current));
 
@@ -11183,7 +11180,7 @@ unsupportedExpression:
 
         const current = readBindingValue(variable);
 
-        const arrayIndex = cast(size_t) runExpressionValue(index.e2).asLong;
+        const arrayIndex = scalarOperand!size_t(index.e2);
         const appended = AggregateValue.withAppendedArrayElement(
             AggregateValue.elementAt(current, arrayIndex), runExpressionValue(rhs));
         writeStoredValue(bindingPlace(variable).index(arrayIndex), appended);
@@ -11817,7 +11814,7 @@ unsupportedExpression:
             setLocal(slice.lengthVar, ExpressionResult(AggregateValue.length(source)));
         lower = slice.lwr is null
             ? 0
-            : cast(size_t) runExpressionValue(slice.lwr).asLong;
+            : scalarOperand!size_t(slice.lwr);
 
         if (source.isPointer) {
             if (slice.upr is null) {
@@ -11827,7 +11824,7 @@ unsupportedExpression:
                 );
             }
 
-            const upper = cast(size_t) runExpressionValue(slice.upr).asLong;
+            const upper = scalarOperand!size_t(slice.upr);
             if (lower > upper) {
                 import std.conv: text;
 
@@ -11858,7 +11855,7 @@ unsupportedExpression:
 
         const upper = slice.upr is null
             ? AggregateValue.length(source)
-            : cast(size_t) runExpressionValue(slice.upr).asLong;
+            : scalarOperand!size_t(slice.upr);
 
         if (AggregateValue.isArray(source) && (lower > upper || upper > AggregateValue.length(source)))
             throwRangeError("Range violation");
@@ -11958,10 +11955,10 @@ unsupportedExpression:
 
         lower = slice.lwr is null
             ? 0
-            : cast(size_t) runExpressionValue(slice.lwr).asLong;
+            : scalarOperand!size_t(slice.lwr);
         const upper = slice.upr is null
             ? sourceLength
-            : cast(size_t) runExpressionValue(slice.upr).asLong;
+            : scalarOperand!size_t(slice.upr);
         if (lower > upper || upper > sourceLength)
             throwRangeError("Range violation");
 
@@ -12469,8 +12466,7 @@ unsupportedExpression:
             // `auto`: `Place.index`/`arrayLength` are mutable-qualified.
             auto sourcePlace = projectionPlace(index.e1);
             if (isPointerType(index.e1.type)) {
-                arrayIndex = cast(size_t) cast(ulong)
-                    runExpressionValue(index.e2).asLong;
+                arrayIndex = scalarOperand!size_t(index.e2);
                 if (_evaluatedReferenceArgumentIndices !is null)
                     (*_evaluatedReferenceArgumentIndices)[
                         cast(const(void)*) index.e2
@@ -12481,8 +12477,7 @@ unsupportedExpression:
             const sourceLength = sourcePlace.arrayLength;
             if (index.lengthVar !is null)
                 setLocal(index.lengthVar, ExpressionResult(sourceLength));
-            arrayIndex = cast(size_t) cast(ulong)
-                runExpressionValue(index.e2).asLong;
+            arrayIndex = scalarOperand!size_t(index.e2);
             if (_evaluatedReferenceArgumentIndices !is null)
                 (*_evaluatedReferenceArgumentIndices)[
                     cast(const(void)*) index.e2
@@ -12510,7 +12505,7 @@ unsupportedExpression:
         // size_t.max instead of the intended last-element index.
         const source = runExpressionValue(index.e1);
         if (isPointerType(index.e1.type)) {
-            arrayIndex = cast(size_t) cast(ulong) runExpressionValue(index.e2).asLong;
+            arrayIndex = scalarOperand!size_t(index.e2);
             if (_evaluatedReferenceArgumentIndices !is null)
                 // Keyed by `index.e2` (the index subexpression), not the
                 // outer `IndexExp` itself: `lvalue_place.placeOfLvalue`'s
@@ -12534,7 +12529,7 @@ unsupportedExpression:
             setLocal(index.lengthVar, ExpressionResult(sourceLength));
 
         // matches CTFE, which formats the index as unsigned
-        arrayIndex = cast(size_t) cast(ulong) runExpressionValue(index.e2).asLong;
+        arrayIndex = scalarOperand!size_t(index.e2);
         if (_evaluatedReferenceArgumentIndices !is null)
             // See the `isPointerType` arm above: keyed by `index.e2`, matching
             // `evaluatedIndex`'s lookup key.
@@ -12882,7 +12877,7 @@ unsupportedExpression:
 
         size_t[] lengths;
         foreach (argument; *new_.arguments)
-            lengths ~= cast(size_t) runExpressionValue(argument).asLong;
+            lengths ~= scalarOperand!size_t(argument);
 
         return newArrayValue(new_.type, lengths);
     }
@@ -13720,8 +13715,7 @@ destinationFallback:
         if (!pointer && index.lengthVar !is null)
             setLocal(index.lengthVar, ExpressionResult(length));
 
-        const arrayIndex = cast(size_t) cast(ulong)
-            runExpressionValue(index.e2).asLong;
+        const arrayIndex = scalarOperand!size_t(index.e2);
         if (_evaluatedReferenceArgumentIndices !is null)
             (*_evaluatedReferenceArgumentIndices)[cast(const(void)*) index.e2] =
                 arrayIndex;
@@ -14630,10 +14624,10 @@ destinationFallback:
 
         const lower = slice.lwr is null
             ? 0
-            : cast(size_t) runExpressionValue(slice.lwr).asLong;
+            : scalarOperand!size_t(slice.lwr);
         const upper = slice.upr is null
             ? sourceLength
-            : cast(size_t) runExpressionValue(slice.upr).asLong;
+            : scalarOperand!size_t(slice.upr);
         if (lower > upper || upper > sourceLength)
             throwRangeError("Range violation");
 
