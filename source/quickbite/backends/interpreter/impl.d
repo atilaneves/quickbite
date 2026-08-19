@@ -11450,7 +11450,10 @@ unsupportedExpression:
             import quickbite.backends.interpreter.aggregate_value: AggregateValue;
             import quickbite.backends.interpreter.layout: typeByteSize;
 
-            const value = runExpressionValue(cast_.e1);
+            // Read `cast_.e1` back through its own typed place -- same
+            // single evaluation as the carrier read, routed through
+            // `readStoredValue` instead.
+            const value = constructedExpressionValue(cast_.e1);
             if (AggregateValue.isArray(value) &&
                 AggregateValue.nativeArrayAddress(value) !is null)
                 return ExpressionResult.nativeAggregateValue(
@@ -11491,18 +11494,22 @@ unsupportedExpression:
                 import quickbite.backends.interpreter.aggregate_value:
                     AggregateValue;
 
-                const source = runExpressionValue(cast_.e1);
+                // Read `cast_.e1` back through its own typed place -- same
+                // single evaluation as the carrier read, routed through
+                // `readStoredValue` instead.
+                const source = constructedExpressionValue(cast_.e1);
+                auto sourceAggregate = AggregateValue.native(source);
                 return ExpressionResult.nativeAggregateValue(
                     AggregateValue.slice(
-                        AggregateValue.native(source),
+                        sourceAggregate,
                         cast_.to,
                         0,
-                        AggregateValue.length(AggregateValue.native(source)),
+                        AggregateValue.length(sourceAggregate),
                     ),
                 );
             }
 
-            return runExpressionValue(cast_.e1);
+            return constructedExpressionValue(cast_.e1);
         }
 
         if (type.ty == TY.Tbool)
@@ -11560,7 +11567,10 @@ unsupportedExpression:
         )
             return false;
 
-        const source = runExpressionValue(cast_.e1);
+        // Read `cast_.e1` back through its own typed place -- same single
+        // evaluation as the carrier read, routed through `readStoredValue`
+        // instead.
+        const source = constructedExpressionValue(cast_.e1);
         result = ExpressionResult.nativeAggregateValue(
             AggregateValue.borrowArrayOwner(
                 cast_.to,
