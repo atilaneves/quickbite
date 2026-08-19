@@ -767,6 +767,30 @@ static foreach (backend; Matrix!()) {
 }
 
 static foreach (backend; Matrix!()) {
+    @("floating.multiplicationUsesRuntimeOperands." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            float scaleFloat(float lower, float upper, float factor) {
+                return (upper - lower) * factor;
+            }
+
+            double scaleDouble(double lower, double upper, double factor) {
+                return (upper - lower) * factor;
+            }
+
+            unittest {
+                float factor = 3.0f;
+                double doubleFactor = 3.0;
+
+                assert(scaleFloat(1.0f, 3.0f, factor) == 6.0f);
+                assert(scaleDouble(1.0, 3.0, doubleFactor) == 6.0);
+            }
+        });
+    }
+}
+
+static foreach (backend; Matrix!()) {
     @("floating.evaluatesPow." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {

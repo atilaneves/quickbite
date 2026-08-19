@@ -8331,15 +8331,20 @@ private struct Compiler {
         );
     }
 
-    // Integer multiplication. Pointer arithmetic scales its integer operand
-    // through an 8-byte `cast(long)n * elementSize`, so the 8-byte form is the
-    // one that matters here; the 4-byte form operates on raw bits like
-    // `addInt4`, so signed and unsigned operands share it.
+    // Integer multiplication (float/double below). Pointer arithmetic scales
+    // its integer operand through an 8-byte `cast(long)n * elementSize`, so
+    // the 8-byte form is the one that matters here; the 4-byte form operates
+    // on raw bits like `addInt4`, so signed and unsigned operands share it.
     private Operand compileMultiplyExpression(MulExp multiply) {
         import std.conv: text;
 
         const lhs = compileExpression(multiply.e1);
         const rhs = compileExpression(multiply.e2);
+        if (lhs.type == ScalarType.float_ && rhs.type == ScalarType.float_)
+            return emitBinary(Op.mulFloat, lhs, rhs, ScalarType.float_);
+        if (lhs.type == ScalarType.double_ && rhs.type == ScalarType.double_)
+            return emitBinary(Op.mulDouble, lhs, rhs, ScalarType.double_);
+
         if (isEightByteInteger(lhs.type) &&
             isEightByteInteger(rhs.type))
             return emitBinary(Op.mulInt8, lhs, rhs, lhs.type);
