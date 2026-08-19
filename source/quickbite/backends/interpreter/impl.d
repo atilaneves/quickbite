@@ -2991,11 +2991,15 @@ addAssignExpression:
 
 addExpression:
         if (auto add = expression.isAddExp)
-            return runAddExpression(add);
+            return isPointerArithmeticExpression(add)
+                ? runAddExpression(add)
+                : scalarExpressionValue(add);
 
 minExpression:
         if (auto sub = expression.isMinExp)
-            return runMinExpression(sub);
+            return isPointerArithmeticExpression(sub)
+                ? runMinExpression(sub)
+                : scalarExpressionValue(sub);
 
 mulExpression:
         if (auto mul = expression.isMulExp)
@@ -3533,6 +3537,21 @@ unsupportedExpression:
         if (op == EXP.greaterThan)
             return ExpressionResult(difference > 0);
         return ExpressionResult(difference >= 0);
+    }
+
+    // `+`/`-` mix scalar arithmetic with pointer arithmetic. Detect pointer
+    // arithmetic from the static operand and result types, not the runtime
+    // value: a default-initialized pointer-typed operand (e.g. druntime's
+    // dip1008 Throwable chain-link arithmetic) reads as `Null`, not a
+    // zero-valued `Pointer`.
+    private bool isPointerArithmeticExpression(
+        imported!"dmd.expression".BinExp expression,
+    ) {
+        import quickbite.frontend.dmd.types: isPointerType;
+
+        return isPointerType(expression.e1.type) ||
+            isPointerType(expression.e2.type) ||
+            isPointerType(expression.type);
     }
 
     private ExpressionResult runAddExpression(imported!"dmd.expression".AddExp add) {
