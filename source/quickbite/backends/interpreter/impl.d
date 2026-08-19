@@ -515,41 +515,58 @@ private imported!"quickbite.backends.interpreter.expression_result".ExpressionRe
         : ExpressionResult.functionPointerValue(slot.functionPointerId);
 }
 
-// A thrown or chained exception's own class identity: either a VM-owned
-// class instance's native aggregate storage (an interpreted `throw` of a
-// locally constructed exception), or the borrowed body address of a
-// host-owned exception object whose fields live in `nativeClassOwners`/
-// `nativeExceptionMetadata`, keyed by that same address --
-// `classIdentityAddress` already reads both shapes exactly this way. Keeping
-// the whole `NativeAggregate` here, not just its address, is what keeps a
-// VM-owned exception's GC-owned backing storage reachable for as long as it
-// is still being unwound, chained through a `finally` body, or matched
-// against a catch clause.
-private struct ClassReference {
-    public bool isAggregate;
-    public imported!"quickbite.backends.interpreter.native_aggregate".NativeAggregate aggregate;
-    public void* address;
-}
-
-private ClassReference classReferenceValue(
-    in imported!"quickbite.backends.interpreter.expression_result".ExpressionResult value,
-) {
+// A thrown/chained exception's own class identity and a member-function
+// delegate's receiver are both, at the native layer, either an owned
+// `NativeAggregate` (a locally constructed exception; a struct receiver's
+// own storage) or a bare class body address with no aggregate of its own
+// (a host-owned exception object's identity; a class receiver, whose place
+// address already IS its body address). `nativeAggregateFrom` builds the
+// single `NativeAggregate` representation both shapes settle into: the
+// owned case keeps its storage unchanged, and the address-only case borrows
+// a view sized from `type`'s own layout, so the block's `NativeBlock.
+// Ownership` -- not a separate flag -- records that it may not be
+// reallocated. Retention is unaffected either way: the owned arm keeps
+// exactly the block it already held reachable, and a borrowed block owns
+// nothing to retain.
+private imported!"quickbite.backends.interpreter.native_aggregate".NativeAggregate
+    nativeAggregateFrom(
+        in imported!"quickbite.backends.interpreter.expression_result".ExpressionResult value,
+        imported!"dmd.mtype".Type type,
+    )
+{
     import quickbite.backends.interpreter.aggregate_value: AggregateValue;
     import quickbite.backends.interpreter.native_aggregate: NativeAggregate;
+    import quickbite.backends.interpreter.native_block: NativeBlock;
+    import quickbite.backends.interpreter.layout: classInstanceByteSize;
 
-    return value.isNativeAggregate
-        ? ClassReference(true, AggregateValue.native(value), null)
-        : ClassReference(false, NativeAggregate.init, value.pointerAddress);
+    if (value.isNativeAggregate)
+        return AggregateValue.native(value);
+
+    return NativeAggregate(
+        type,
+        NativeBlock.borrow(
+            value.pointerAddress,
+            classInstanceByteSize(type.toBasetype.isTypeClass.sym),
+        ),
+    );
 }
 
+// The inverse: re-boxes a class-identity/receiver `NativeAggregate` back to
+// `ExpressionResult` for the generic field-read/write code that both
+// exception handling and delegate dispatch share. Dispatches on the
+// aggregate's own type, not a flag: a class body has no separate carrier of
+// its own, so it re-boxes as its bare address; a struct keeps its full
+// native aggregate.
 private imported!"quickbite.backends.interpreter.expression_result".ExpressionResult
-    classReferenceResult(ClassReference reference)
+    expressionResultFrom(
+        imported!"quickbite.backends.interpreter.native_aggregate".NativeAggregate aggregate,
+    )
 {
     import quickbite.backends.interpreter.expression_result: ExpressionResult;
 
-    return reference.isAggregate
-        ? ExpressionResult.nativeAggregateValue(reference.aggregate)
-        : ExpressionResult.pointerValue(reference.address);
+    return aggregate.type.toBasetype.isTypeClass !is null
+        ? ExpressionResult.pointerValue(cast(void*) aggregate.storage.address)
+        : ExpressionResult.nativeAggregateValue(aggregate);
 }
 
 // One root evaluation owns this context, and every nested call borrows it.
@@ -571,7 +588,8 @@ private struct InterpreterExecutionState {
     // Captured host Throwables and their interpreter-visible chain links are
     // created by the native exception bridge and read by later member calls.
     public Throwable[const(void)*] nativeThrowableRoots;
-    public ClassReference[void*] nativeThrowableNext;
+    public imported!"quickbite.backends.interpreter.native_aggregate".
+        NativeAggregate[void*] nativeThrowableNext;
 
     // Writes to guest ABI slots register symbolic interpreted callables and
     // TypeInfos; any later activation that reads the same address must see
@@ -609,14 +627,14 @@ private struct InterpreterExecutionState {
 }
 
 private class InterpretedException: Exception {
-    public ClassReference object;
+    public imported!"quickbite.backends.interpreter.native_aggregate".NativeAggregate object;
 
     public this(
-        in imported!"quickbite.backends.interpreter.expression_result".ExpressionResult object,
+        imported!"quickbite.backends.interpreter.native_aggregate".NativeAggregate object,
         in string message,
     ) {
         super(message);
-        this.object = classReferenceValue(object);
+        this.object = object;
     }
 }
 
@@ -671,7 +689,8 @@ private struct Walker {
         return _executionState.nativeThrowableRoots;
     }
 
-    private @property ref ClassReference[void*] nativeThrowableNext() {
+    private @property ref imported!"quickbite.backends.interpreter.native_aggregate".
+        NativeAggregate[void*] nativeThrowableNext() {
         return _executionState.nativeThrowableNext;
     }
 
@@ -783,7 +802,8 @@ private struct Walker {
     private Place thisValue;
     private void* thisAddress;
     private bool hasThis;
-    private ClassReference pendingFinallyBodyException;
+    private imported!"quickbite.backends.interpreter.native_aggregate".
+        NativeAggregate pendingFinallyBodyException;
     private bool hasPendingFinallyBodyException;
 
     private bool returned;
@@ -870,9 +890,9 @@ private struct Walker {
             returned = false;
             loopControl = LoopControl.none;
             loopControlLabel = null;
-            // `const` cannot round-trip a `ClassReference` either, for the
-            // same reason as `savedRefReturn` above: its aggregate arm holds
-            // a `Type` class reference.
+            // `const` cannot round-trip a `NativeAggregate` either, for the
+            // same reason as `savedRefReturn` above: it holds a `Type` class
+            // reference.
             auto savedPendingFinallyBodyException = pendingFinallyBodyException;
             const savedHasPendingFinallyBodyException =
                 hasPendingFinallyBodyException;
@@ -892,10 +912,12 @@ private struct Walker {
                 if (finalException is null)
                     throw exception;
                 if (auto bodyInterpreted = cast(InterpretedException) bodyException) {
-                    bodyInterpreted.object = classReferenceValue(chainExceptionObject(
-                        classReferenceResult(bodyInterpreted.object),
-                        classReferenceResult(finalException.object),
-                    ));
+                    auto bodyType = bodyInterpreted.object.type;
+                    const chained = chainExceptionObject(
+                        expressionResultFrom(bodyInterpreted.object),
+                        finalException.object,
+                    );
+                    bodyInterpreted.object = nativeAggregateFrom(chained, bodyType);
                     throw bodyInterpreted;
                 }
                 throw finalException;
@@ -1070,11 +1092,12 @@ private struct Walker {
             if (interpreted is null)
                 throw exception;
 
-            auto catch_ = matchingCatch(tryCatch, classReferenceResult(interpreted.object));
+            const objectValue = expressionResultFrom(interpreted.object);
+            auto catch_ = matchingCatch(tryCatch, objectValue);
             if (catch_ is null)
                 throw exception;
 
-            bindCatchVariable(catch_, classReferenceResult(interpreted.object));
+            bindCatchVariable(catch_, objectValue);
             runStatement(catch_.handler);
         }
     }
@@ -2042,25 +2065,26 @@ private struct Walker {
         const object = constructedExpressionValue(expression);
         if (dynamicClass(object) is null)
             throw new Exception("Unsupported throw expression.");
+        auto objectAggregate = nativeAggregateFrom(object, expression.type);
         if (hasPendingFinallyBodyException) {
             const chained = chainExceptionObject(
-                classReferenceResult(pendingFinallyBodyException),
-                object,
+                expressionResultFrom(pendingFinallyBodyException),
+                objectAggregate,
             );
             throw new InterpretedException(
-                chained,
+                nativeAggregateFrom(chained, pendingFinallyBodyException.type),
                 exceptionObjectMessage(chained),
             );
         }
 
-        throw new InterpretedException(object, exceptionObjectMessage(object));
+        throw new InterpretedException(objectAggregate, exceptionObjectMessage(object));
     }
 
     private void throwNativeException(
         imported!"quickbite.backends.interpreter.native_call_adapter".NativeCallException exception,
     ) {
         rootNativeException(exception);
-        const object = nativeExceptionObject(exception);
+        auto object = nativeExceptionObject(exception);
         throw new InterpretedException(object, exception.msg);
     }
 
@@ -2096,23 +2120,25 @@ private struct Walker {
     // identity. Interpreter-visible fields live in a native aggregate keyed
     // by that address, while `.next` stays address-keyed because the host link
     // is runtime-owned storage rather than a guest-layout object body.
-    private ExpressionResult nativeExceptionObject(
+    private imported!"quickbite.backends.interpreter.native_aggregate".NativeAggregate
+    nativeExceptionObject(
         imported!"quickbite.backends.interpreter.native_call_adapter".NativeCallException exception,
     ) {
-        const object = nativeExceptionBaseObject(
+        auto object = nativeExceptionBaseObject(
             exception.msg,
             exception.className,
             exception.nativeThrowableObjectPointer,
         );
         if (exception.chainedNext !is null) {
-            const next = nativeExceptionObject(exception.chainedNext);
-            nativeThrowableNext[classIdentityAddress(object)] = classReferenceValue(next);
+            auto next = nativeExceptionObject(exception.chainedNext);
+            nativeThrowableNext[classIdentityAddress(expressionResultFrom(object))] = next;
         }
 
         return object;
     }
 
-    private ExpressionResult nativeExceptionBaseObject(
+    private imported!"quickbite.backends.interpreter.native_aggregate".NativeAggregate
+    nativeExceptionBaseObject(
         in string message,
         in string className,
         in const(void)* nativeObjectPointer = null,
@@ -2158,13 +2184,13 @@ private struct Walker {
             const address = AggregateValue.nativeClassBodyAddress(metadata);
             nativeClassTypes[address] = class_.type;
             nativeClassOwners[address] = metadata.nativeAggregate;
-            return metadata;
+            return metadata.nativeAggregate;
         }
 
         auto address = cast(void*) nativeObjectPointer;
         nativeClassTypes[address] = class_.type;
         nativeExceptionMetadata[address] = metadata.nativeAggregate;
-        return ExpressionResult.pointerValue(address);
+        return nativeAggregateFrom(ExpressionResult.pointerValue(address), class_.type);
     }
 
     private void hydrateNativeExceptionMetadata(
@@ -2245,12 +2271,15 @@ private struct Walker {
             : "";
     }
 
-    private ExpressionResult chainExceptionObject(in ExpressionResult thrown, in ExpressionResult next) {
+    private ExpressionResult chainExceptionObject(
+        in ExpressionResult thrown,
+        imported!"quickbite.backends.interpreter.native_aggregate".NativeAggregate next,
+    ) {
         if (!classHasFieldNamed(thrown, "_nextInChainPtr"))
             return thrown;
 
-        const chained = withClassFieldNamed(thrown, "_nextInChainPtr", next);
-        nativeThrowableNext[classIdentityAddress(chained)] = classReferenceValue(next);
+        const chained = withClassFieldNamed(thrown, "_nextInChainPtr", expressionResultFrom(next));
+        nativeThrowableNext[classIdentityAddress(chained)] = next;
         return chained;
     }
 
@@ -5314,7 +5343,7 @@ unsupportedExpression:
             if (delegate_.e1 is null)
                 throw new Exception("Unsupported eval expression: delegate_");
 
-            runtime.receiver = delegateReceiverValue(runExpressionValue(delegate_.e1));
+            runtime.receiver = nativeAggregateFrom(runExpressionValue(delegate_.e1), delegate_.e1.type);
             runtime.hasReceiver = true;
         }
 
@@ -5336,7 +5365,7 @@ unsupportedExpression:
         runtime.contextPointer = null;
         runtime.capturedAddresses = closureCapturedAddresses(literal.fd);
         if (literal.fd.isNested && hasThis) {
-            runtime.receiver = delegateReceiverValue(receiverValue(thisValue));
+            runtime.receiver = nativeAggregateFrom(receiverValue(thisValue), thisValue.type);
             runtime.hasReceiver = true;
         }
 
@@ -6641,7 +6670,7 @@ unsupportedExpression:
     }
 
     private ExpressionResult delegateReceiver(RuntimeDelegate runtime) {
-        return delegateReceiverResult(runtime.receiver);
+        return expressionResultFrom(runtime.receiver);
     }
 
     private ExpressionResult runDelegatePointerExpression(
@@ -7253,7 +7282,7 @@ unsupportedExpression:
             if (classHasType(memberReceiver, "Throwable")) {
                 const body = classIdentityAddress(memberReceiver);
                 if (auto next = body in nativeThrowableNext)
-                    return classReferenceResult(*next);
+                    return expressionResultFrom(*next);
 
                 if (classHasFieldNamed(memberReceiver, "_nextInChainPtr"))
                     return classFieldNamed(
@@ -12937,7 +12966,7 @@ unsupportedExpression:
 
         auto native = new RangeError;
         native.msg = message;
-        const object = nativeExceptionBaseObject(
+        auto object = nativeExceptionBaseObject(
             message,
             native.classinfo.name,
             cast(void*) native,
@@ -15934,48 +15963,21 @@ private bool isMonitorOperation(
     return name == "_d_monitorenter" || name == "_d_monitorexit";
 }
 
-// A member-function delegate's receiver: either a struct receiver's own
-// native aggregate storage (owned or borrowed, per whichever producer built
-// it -- `runDelegateExpression`'s general expression read for `&x.method`
-// makes a fresh owned copy, `runFunctionLiteralDeclaration`'s `receiverValue`
-// borrows the enclosing activation's live `this` for a captured nested
-// literal), or -- for a class receiver, whose carrier is a bare body-address
-// pointer with no type of its own -- that address alone. Keeping the whole
-// `NativeAggregate` here, not just its address, is what keeps an owned
-// struct copy's backing storage GC-reachable for as long as the delegate
-// that captured it can still be called.
-private struct DelegateReceiver {
-    public bool isAggregate;
-    public imported!"quickbite.backends.interpreter.native_aggregate".NativeAggregate aggregate;
-    public void* address;
-}
-
-private DelegateReceiver delegateReceiverValue(
-    in imported!"quickbite.backends.interpreter.expression_result".ExpressionResult value,
-) {
-    import quickbite.backends.interpreter.aggregate_value: AggregateValue;
-    import quickbite.backends.interpreter.native_aggregate: NativeAggregate;
-
-    return value.isNativeAggregate
-        ? DelegateReceiver(true, AggregateValue.native(value), null)
-        : DelegateReceiver(false, NativeAggregate.init, value.pointerAddress);
-}
-
-private imported!"quickbite.backends.interpreter.expression_result".ExpressionResult
-    delegateReceiverResult(DelegateReceiver receiver)
-{
-    import quickbite.backends.interpreter.expression_result: ExpressionResult;
-
-    return receiver.isAggregate
-        ? ExpressionResult.nativeAggregateValue(receiver.aggregate)
-        : ExpressionResult.pointerValue(receiver.address);
-}
-
 private struct RuntimeDelegate {
     public imported!"dmd.func".FuncDeclaration function_;
     public size_t functionPointerId;
     public void* contextPointer;
-    public DelegateReceiver receiver;
+    // A struct receiver's own native aggregate storage (owned or borrowed,
+    // per whichever producer built it -- `runDelegateExpression`'s general
+    // expression read for `&x.method` makes a fresh owned copy,
+    // `runFunctionLiteralDeclaration`'s `receiverValue` borrows the
+    // enclosing activation's live `this` for a captured nested literal); or,
+    // for a class receiver, a borrowed view of its bare body address
+    // (`nativeAggregateFrom`). Keeping the whole `NativeAggregate` here, not
+    // just its address, is what keeps an owned struct copy's backing storage
+    // GC-reachable for as long as the delegate that captured it can still be
+    // called.
+    public imported!"quickbite.backends.interpreter.native_aggregate".NativeAggregate receiver;
     public bool hasReceiver;
 
     // The enclosing activation's own frame address for each of
