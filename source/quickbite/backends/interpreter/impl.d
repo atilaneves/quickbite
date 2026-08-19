@@ -4508,8 +4508,7 @@ unsupportedExpression:
             // direct address-taking operand.  Evaluate that call once and
             // compose its element address from the returned typed slice.
             if (auto call = array.isCallExp) {
-                const source = runExpressionValue(call);
-                const arrayValue = source;
+                const arrayValue = runExpressionValue(call);
                 if (AggregateValue.isArray(arrayValue))
                     return ExpressionResult.pointerValue(
                         AggregateValue.elementAddress(
@@ -4532,8 +4531,6 @@ unsupportedExpression:
                             placeOfLvalue;
                         import quickbite.backends.interpreter.place:
                             Place;
-                        import quickbite.backends.interpreter.place_value:
-                            readValue;
 
                         Place resolveInnerPlace() {
                             return placeOfLvalue(
@@ -4546,15 +4543,15 @@ unsupportedExpression:
                                 // part of the interpreter's general storage
                                 // machinery. Here it only binds the `$` length
                                 // variable belonging to the index being walked.
+                                // `base` is already an addressable Place, so
+                                // its length reads directly off the header
+                                // bytes -- no whole-value read needed just to
+                                // discard everything but the count.
                                 (chainIndex, base) @trusted {
                                     if (chainIndex.lengthVar !is null)
                                         setLocal(
                                             chainIndex.lengthVar,
-                                            ExpressionResult(
-                                                AggregateValue.length(
-                                                    AggregateValue.native(readValue(base)),
-                                                ),
-                                            ),
+                                            ExpressionResult(base.arrayLength),
                                         );
                                 },
                             );
@@ -4632,7 +4629,6 @@ unsupportedExpression:
                     ) {
                         import quickbite.backends.interpreter.lvalue_place:
                             placeOfLvalue, UnsupportedLvalueShapeException;
-                        import quickbite.backends.interpreter.place_value: readValue;
 
                         // `placeOfLvalue` refuses a receiver shape it does
                         // not support (e.g. a `CallExp` base,
@@ -4675,14 +4671,17 @@ unsupportedExpression:
                                     // class already performs (`index.lengthVar`
                                     // a few lines below), called here only to
                                     // make `$` visible to the chain index
-                                    // subexpression it names.
+                                    // subexpression it names. `base` is
+                                    // already an addressable Place, so its
+                                    // length reads directly off the header
+                                    // bytes -- no whole-value read needed
+                                    // just to discard everything but the
+                                    // count.
                                     (chainIndex, base) @trusted {
                                         if (chainIndex.lengthVar !is null)
                                             setLocal(
                                                 chainIndex.lengthVar,
-                                                ExpressionResult(AggregateValue.length(
-                                                    AggregateValue.native(readValue(base)),
-                                                )),
+                                                ExpressionResult(base.arrayLength),
                                             );
                                     },
                                 );
@@ -4719,12 +4718,11 @@ unsupportedExpression:
                 // the receiver rooted while its typed element address is
                 // composed, so neither expression is evaluated a second
                 // time.
-                const source = runExpressionValue(index.e1);
                 // A non-ref dynamic-array call returns the interpreter's
                 // one-element result carrier.  Its target is still the one
                 // evaluated slice value, not an addressable pointer into the
                 // guest array.
-                const arrayValue = source;
+                const arrayValue = runExpressionValue(index.e1);
                 if (index.lengthVar !is null) {
                     const sourceLength = AggregateValue.length(AggregateValue.native(arrayValue));
                     setLocal(index.lengthVar, ExpressionResult(sourceLength));
@@ -4884,15 +4882,19 @@ unsupportedExpression:
                     // call/index. Keep that result's storage alive until
                     // the enclosing expression stores or discards the
                     // composed address.
+                    import quickbite.backends.interpreter.place: Place;
+
                     auto aggregate = AggregateValue.native(arrayValue);
                     retainTemporaryPointerOwner(aggregate.storage);
-                    auto elementAddress = AggregateValue.elementAddress(
-                        arrayValue,
-                        cast(size_t) outerOffset,
-                    );
+                    // Compose straight from the already-resolved native
+                    // owner instead of a second `AggregateValue.elementAddress`
+                    // call, which would only re-derive the same owner from
+                    // `arrayValue` again.
+                    auto elementAddress = Place(aggregate.address, aggregate.type)
+                        .index(cast(size_t) outerOffset)
+                        .address;
                     if (selfAddress)
                         return ExpressionResult.pointerValue(elementAddress);
-                    import quickbite.backends.interpreter.place: Place;
 
                     return ExpressionResult.pointerValue(
                         Place(elementAddress, array.type)
