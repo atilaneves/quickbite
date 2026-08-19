@@ -1242,23 +1242,12 @@ static foreach (backend; Matrix!()) {
     }
 }
 
-// `int[3] row = arr[0];` where `arr` is `int[3][]` (a dynamic array of
-// heap-boxed static-array rows, `elementIsArray`'s representation: each row
-// is its own heap block addressed through a 16-byte slice descriptor).
-// `tryDynamicArrayIndex` materialises `arr[0]` as that row's own 16-byte
-// descriptor (pointer + length), needed as-is for further chained indexing
-// (`arr[0][j]`); `compileStaticArrayValueInto`'s generic `Tsarray`-typed-
-// source fallback used to block-copy those raw descriptor bytes straight
-// into `row`'s inline frame slot instead of the row's actual content -- a
-// silent wrong-answer bug (confirmed: read `947234800` instead of `1`), not
-// a diagnostic. Fixed by detecting this exact shape first and dereferencing
-// through the row's own heap pointer (the same `indexLoad` mechanism
-// `loadDynamicArrayElement` itself uses to read one element out of a
-// descriptor) rather than copying the descriptor's raw bytes. This shape is
-// not module-specific: a local `T[N][]` hits the identical
-// `tryDynamicArrayIndex` code path and was equally wrong before this fix,
-// simply unexercised by any prior fixture (see the local counterpart
-// below).
+// `int[3] row = arr[0];` where `arr` is `int[3][]`: D copies the *values*
+// of the indexed row into `row`, so `row[i]` must equal `arr[0][i]` and not
+// some other value derived from where or how the row is stored. This pins
+// static-array-typed assignment through one level of dynamic-array
+// indexing, at module (dataseg) scope, checking two different row indices
+// so a wrong per-row offset would be caught.
 static foreach (backend; Matrix!(
     Omit!(Ctfe, Because.inexpressible,
         "CTFE cannot read dataseg (__gshared/static) storage"),
@@ -1310,28 +1299,15 @@ static foreach (backend; Matrix!()) {
     }
 }
 
-// Finding 4 (Fable pre-PR review), the sibling shape
-// `localStaticArrayOfArraysRowValueRead` right above does NOT cover: `m` here
-// is a genuinely INLINE nested static array (`long[2][3]`, no dynamic-array
-// level at all -- unlike `arr: int[3][]` above, whose ROWS are heap-boxed
-// behind their own 16-byte slice descriptors, this VM's representation for
-// `T[N][]`). `compileStaticArrayValueInto`'s `IndexExp` branch (added by the
-// same fix that made the sibling shape above work) used to gate only on
-// `tryDynamicArrayIndex` resolving `m[0]` at all, not on `m` itself actually
-// being a dynamic array of boxed rows -- and `tryDynamicArrayIndex` DOES
-// resolve it, through `dynamicArrayDescriptorOrNull`'s separate, ungated
-// `staticArrayOffsetOf` branch (matches any `Tsarray` local at all), which
-// built a slice-descriptor VIEW over `m`'s raw inline bytes and wrongly
-// tagged it `elementIsArray` (`m`'s own element type, `long[2]`, is itself
-// an array type) -- as if each row were its own heap-boxed descriptor to
-// dereference, when the bytes are actually `m`'s own raw, un-boxed `long[2]`
-// values. `emitIndexLoad` then dereferenced those raw bytes as a bogus
-// pointer: SystemLinker gives the correct row, Bytecode dumped core. Now
-// fixed by additionally gating that branch on `index.e1.type` (`m`'s own
-// type) actually being a genuine `Tarray`, so this inline shape instead
-// falls through to the generic block-copy path below it -- which already
-// correctly compiles a plain `IndexExp` read of a nested static-array
-// element -- rather than ever reaching the boxed-row fast path at all.
+// `long[2] row = m[0];` where `m` is `long[2][3]`, a genuinely inline
+// nested static array with no dynamic-array level at all -- unlike
+// `arr: int[3][]` above, `m`'s rows are not separately stored values, they
+// are inline bytes within `m` itself. D still copies row `m[0]`'s *values*
+// into `row`, exactly as for the dynamic-array-of-rows case above, even
+// though the two shapes are laid out differently in memory. This pins that
+// distinction: indexing one level into an inline static array of static
+// arrays must produce a correct value copy of the row, not data derived
+// from treating it like the other shape.
 static foreach (backend; Matrix!()) {
     @("dynamicArray.inlineNestedStaticArrayRowValueReadIsNotBoxedRow." ~
         backend.stringof)
@@ -3554,11 +3530,10 @@ static foreach (backend; Matrix!()) {
     }
 }
 
-// `a[] + scalar` broadcasts the scalar into an element-wise operand;
-// interpreter.md documents the interpreter's own arrayOp interception as an
-// exemption that retires once static-array element-wise ops interpret
-// end-to-end over native layout, and that hand-rolled path does not yet
-// support a scalar operand. SystemLinker is the oracle.
+// The Interpreter does not yet support a scalar operand in element-wise
+// array operations (`a[] + scalar` and its compound-assign form); see
+// interpreter.md §8 for the retirement condition. SystemLinker is the
+// oracle.
 static foreach (backend; Matrix!(
     Omit!(Interpreter, Because.refusal,
         "AggregateValue.length needs a native aggregate."),

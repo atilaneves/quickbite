@@ -3030,8 +3030,14 @@ private struct Compiler {
         const lhs = integerOperationOperand(original, operationType);
 
         // `PostExp.e2` is always the literal `1`; `post.op` (`plusPlus` vs
-        // `minusMinus`) decides whether we add or subtract it.
-        const increment = compileExpression(post.e2);
+        // `minusMinus`) decides whether we add or subtract it. Widen it to
+        // `operationType` the same way `lhs` above is widened:
+        // `addInt4`/`subInt4`/`addInt8`/`subInt8` read a full-width operand,
+        // and a sub-int increment constant otherwise sits in a narrower slot
+        // than that, leaking whatever bytes follow it in the frame.
+        const increment = integerOperationOperand(
+            compileExpression(post.e2), operationType,
+        );
         const eightByte = isEightByteInteger(operationType);
         const stepOp = post.op == EXP.minusMinus
             ? (eightByte ? Op.subInt8 : Op.subInt4)
