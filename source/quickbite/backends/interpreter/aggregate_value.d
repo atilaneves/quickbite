@@ -144,21 +144,6 @@ public struct AggregateValue {
         return ExpressionResult.nativeAggregateValue(aggregate);
     }
 
-    public static imported!"quickbite.backends.interpreter.expression_result".ExpressionResult reconstructArray(
-        imported!"dmd.mtype".Type type,
-        in imported!"quickbite.backends.interpreter.expression_result".ExpressionResult[] elements,
-    ) @safe {
-        import quickbite.backends.interpreter.place: Place;
-        import quickbite.backends.interpreter.place_value: writeValue;
-        import quickbite.backends.interpreter.expression_result: ExpressionResult;
-
-        auto aggregate = allocateArray(type, elements.length);
-        auto destination = Place(aggregate.address, type);
-        foreach (index, element; elements)
-            writeValue(destination.index(index), element);
-        return ExpressionResult.nativeAggregateValue(aggregate);
-    }
-
     // Allocate the reference slot and body as one native owner. The caller
     // keeps it native while it initializes the body and records its identity.
     public static NativeAggregate allocateClass(

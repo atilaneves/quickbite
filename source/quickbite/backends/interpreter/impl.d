@@ -169,16 +169,16 @@ private string formattedDisplay(
 
 
 private imported!"quickbite.backends.interpreter.expression_result".ExpressionResult characterArrayValue(
+    ref Walker walker,
     imported!"dmd.mtype".Type type,
     in string characters,
 ) {
-    import quickbite.backends.interpreter.aggregate_value: AggregateValue;
     import quickbite.backends.interpreter.expression_result: ExpressionResult;
 
     ExpressionResult[] elements;
     foreach (character; characters)
         elements ~= ExpressionResult(character);
-    return AggregateValue.reconstructArray(type, elements);
+    return walker.reconstructStoredArray(type, elements);
 }
 
 
@@ -2076,7 +2076,7 @@ private struct Walker {
             metadata = AggregateValue.withClassFieldNamed(
                 metadata,
                 "msg",
-                characterArrayValue(messageType, message),
+                characterArrayValue(this, messageType, message),
             );
         }
 
@@ -8426,6 +8426,7 @@ unsupportedExpression:
         if (declarationName(dot.var) == "name")
             if (auto typeid_ = dot.e1.isTypeidExp)
                 return characterArrayValue(
+                    this,
                     dot.type,
                     typeInfoName(typeidObjectType(typeid_)),
                 );
@@ -8433,7 +8434,7 @@ unsupportedExpression:
         if (declarationName(dot.var) == "name")
             if (auto symbol = dot.e1.isSymOffExp)
                 if (auto type = symbolOffsetTypeInfoType(symbol))
-                    return characterArrayValue(dot.type, typeInfoName(type));
+                    return characterArrayValue(this, dot.type, typeInfoName(type));
 
         if (isClassInfoNamePointerMember(dot))
             return runClassInfoNameOwnerExpression(dot.e1, dot.type);
@@ -8463,7 +8464,7 @@ unsupportedExpression:
             return delegateProperty(receiver, declarationName(dot.var));
 
         if (receiver.isTypeName && declarationName(dot.var) == "name")
-            return characterArrayValue(dot.type, receiver.asTypeNameString);
+            return characterArrayValue(this, dot.type, receiver.asTypeNameString);
 
         // `ClassInfo.m_flags`: the class-level facts a collector consults,
         // chief among them whether the object body holds any indirection and
@@ -8614,14 +8615,14 @@ unsupportedExpression:
         auto owner = classInfoNameOwnerExpression(ownerExpression);
         const receiver = runExpressionValue(owner);
         if (dynamicClass(receiver) !is null)
-            return characterArrayValue(resultType, dynamicClassName(receiver));
+            return characterArrayValue(this, resultType, dynamicClassName(receiver));
 
         // A native class reference is its body pointer. Its static class type
         // still supplies the ClassInfo name needed by this interpreter-only
         // property path; the pointer remains the storage authority.
         if (receiver.isPointer && owner.type.toBasetype.isTypeClass !is null)
             if (auto dynamicType = receiver.pointerAddress in nativeClassTypes)
-                return characterArrayValue(resultType, typeInfoName(*dynamicType));
+                return characterArrayValue(this, resultType, typeInfoName(*dynamicType));
 
         throw new Exception("Unsupported interpreter field read.");
     }
@@ -8706,7 +8707,7 @@ unsupportedExpression:
         import quickbite.frontend.dmd.types: isCharacterArrayType;
 
         return isCharacterArrayType(typeid_.type)
-            ? characterArrayValue(typeid_.type, name)
+            ? characterArrayValue(this, typeid_.type, name)
             : ExpressionResult.typeName(name);
     }
 
@@ -9554,7 +9555,7 @@ unsupportedExpression:
             return value;
 
         if (value.isTypeName && isCharacterArrayType(type))
-            return characterArrayValue(type, value.asTypeNameString);
+            return characterArrayValue(this, type, value.asTypeNameString);
 
         // `void[]` denotes raw bytes, so coercing an aggregate to it is a
         // reinterpretation of that aggregate's own storage -- exactly what
