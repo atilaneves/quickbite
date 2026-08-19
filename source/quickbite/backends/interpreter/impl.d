@@ -13773,6 +13773,7 @@ destinationFallback:
         imported!"dmd.expression".Expression expression,
         imported!"quickbite.backends.interpreter.place".Place destination,
     ) {
+        import quickbite.backends.interpreter.place: Place;
         import quickbite.frontend.dmd.types: isPointerType;
 
         auto pointer = expression.isPtrExp;
@@ -13787,7 +13788,15 @@ destinationFallback:
         if (source.address is null)
             return false;
 
-        copyPlaceValue(source, destination);
+        // `e1`'s own pointee type is the dereference's declared type, but an
+        // implicit qualification-only conversion (e.g. `void*` read through
+        // a `const(void*)` context) retypes this PtrExp in place without
+        // wrapping it in a cast node, so `expression.type` can carry a
+        // stricter qualifier than `e1`'s pointee. That qualifier is already
+        // verified compatible with `destination` above; copy at that type
+        // rather than `e1`'s, or `copyFrom`'s exact-base-type check rejects
+        // a same-layout, differently-qualified pointer.
+        copyPlaceValue(Place(source.address, expression.type), destination);
         return true;
     }
 
