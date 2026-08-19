@@ -2747,11 +2747,23 @@ private struct Compiler {
         // instead of hand-rolled append machinery. `CatDcharAssignExp`
         // (`concatenateDcharAssign`) is a distinct EXP tag excluded by these
         // checks; see `compileDcharAppend` for why it stays un-lowered.
-        if (auto append = expression.isCatElemAssignExp)
+        if (auto append = expression.isCatElemAssignExp) {
+            if (append.lowering is null)
+                throw new Exception(text(
+                    "Unsupported append in bytecode core: ",
+                    expressionChars(append),
+                ));
             return compileExpression(append.lowering);
+        }
 
-        if (auto concatenate = expression.isCatAssignExp)
+        if (auto concatenate = expression.isCatAssignExp) {
+            if (concatenate.lowering is null)
+                throw new Exception(text(
+                    "Unsupported concatenation assignment in bytecode core: ",
+                    expressionChars(concatenate),
+                ));
             return compileExpression(concatenate.lowering);
+        }
 
         if (auto dcharAppend = expression.isCatDcharAssignExp)
             return compileDcharAppend(dcharAppend);
@@ -10537,16 +10549,18 @@ private struct Compiler {
         // above, DMD leaves `equal.lowering` null here -- a static array of
         // byte-comparable elements is compared directly by bytes -- so this
         // is never shadowed by it the way the nested case would be.
+        // `arrayNestingDepth`/`innermostArrayElementSize` both stop at zero
+        // depth for a `Tsarray` outer type (its rows have no `Tarray`
+        // descriptor to unwrap), so `emitNestedArrayEqual` reduces to the
+        // same length-then-bytes compare `emitSliceEqual` did here, except
+        // at any row width -- `int[3][2]`'s 12-byte rows included, which
+        // `emitSliceEqual`'s fixed 1/2/4/8-byte family rejects.
         if (equal.e1.type.toBasetype.ty == TY.Tsarray &&
             equal.e2.type.toBasetype.ty == TY.Tsarray)
         {
-            const left = dynamicArrayDescriptor(equal.e1);
-            const right = dynamicArrayDescriptor(equal.e2);
-            const offset = allocateBytes(1, 1);
-            emitSliceEqual(
-                offset, left.offset, right.offset,
-                dynamicArrayElementSize(equal.e1.type),
-            );
+            const left = dynamicArrayDescriptor(equal.e1).offset;
+            const right = dynamicArrayDescriptor(equal.e2).offset;
+            const offset = emitNestedArrayEqual(left, right, equal.e1.type);
             if (equal.op == EXP.notEqual)
                 _code ~= Instruction(Op.notBool, offset, offset);
             return Operand(offset, ScalarType.bool_);

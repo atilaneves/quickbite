@@ -3267,6 +3267,42 @@ static foreach (backend; Matrix!()) {
     }
 }
 
+// `int[3][2] == int[3][2]`: two full static-array rows, 12 bytes each --
+// wider than the fixed 1/2/4/8-byte element widths a plain byte compare
+// handles directly. DMD leaves `equal.lowering` null for this shape (a
+// static array of byte-comparable elements needs no `__equals` lowering),
+// so the bytecode core must compare the raw row bytes itself at this width
+// too.
+static foreach (backend; Matrix!()) {
+    @("staticArray.nestedStaticArrayEqualityComparesAnyRowWidth." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            int seed(int value) {
+                return value;
+            }
+
+            unittest {
+                int[3][2] a;
+                a[0] = [seed(1), seed(2), seed(3)];
+                a[1] = [seed(4), seed(5), seed(6)];
+
+                int[3][2] b;
+                b[0] = [seed(1), seed(2), seed(3)];
+                b[1] = [seed(4), seed(5), seed(6)];
+
+                assert(a == b);
+                assert(!(a != b));
+
+                b[1][2] = seed(99);
+                assert(a != b);
+                assert(!(a == b));
+            }
+        });
+    }
+}
+
 // A runtime index past a static array's compile-time-known dimension is
 // bounds checked exactly like a dynamic array's runtime index: compiled
 // code raises druntime's `ArrayIndexError` text. `Ctfe`'s own bounds check
