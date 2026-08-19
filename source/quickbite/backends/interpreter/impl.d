@@ -3976,7 +3976,7 @@ unsupportedExpression:
                         (*call.f.parameters)[index],
                     )
                     ? runRefArgumentExpression(argument, evaluated, native)
-                    : runExpressionValue(argument);
+                    : constructedExpressionValue(argument);
                 if (
                     index < call.f.parameters.length &&
                     (*call.f.parameters)[index].type.toBasetype.isTypeClass !is null
@@ -4121,7 +4121,7 @@ unsupportedExpression:
                         (*function_.parameters)[index],
                     )
                     ? runRefArgumentExpression(argument, evaluated)
-                    : runExpressionValue(argument);
+                    : constructedExpressionValue(argument);
                 if (
                     index < function_.parameters.length &&
                     (*function_.parameters)[index].type.toBasetype.isTypeClass !is null
@@ -9369,7 +9369,7 @@ unsupportedExpression:
                         (*function_.parameters)[index],
                     )
                     ? runRefArgumentExpression(argument, evaluated, false)
-                    : runExpressionValue(argument);
+                    : constructedExpressionValue(argument);
                 if (
                     index < function_.parameters.length &&
                     (*function_.parameters)[index].type.toBasetype.isTypeClass !is null
@@ -9495,7 +9495,7 @@ unsupportedExpression:
                         (*call.f.parameters)[index],
                     )
                     ? runRefArgumentExpression(argument, evaluated, native)
-                    : runExpressionValue(argument);
+                    : constructedExpressionValue(argument);
                 argumentExpressions[index] = argument;
                 evaluatedArguments[index] = evaluated;
             }
