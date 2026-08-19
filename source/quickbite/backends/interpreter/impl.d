@@ -2998,13 +2998,13 @@ addAssignExpression:
 addExpression:
         if (auto add = expression.isAddExp)
             return isPointerArithmeticExpression(add)
-                ? runAddExpression(add)
+                ? constructedExpressionValue(add)
                 : scalarExpressionValue(add);
 
 minExpression:
         if (auto sub = expression.isMinExp)
             return isPointerArithmeticExpression(sub)
-                ? runMinExpression(sub)
+                ? constructedExpressionValue(sub)
                 : scalarExpressionValue(sub);
 
 mulExpression:
@@ -3101,15 +3101,15 @@ scalarCompoundAssignExpression:
 
 bitOrExpression:
         if (auto bitOr = expression.isOrExp)
-            return runIntegerBinaryExpression(bitOr, "|");
+            return scalarExpressionValue(bitOr);
 
 bitAndExpression:
         if (auto bitAnd = expression.isAndExp)
-            return runIntegerBinaryExpression(bitAnd, "&");
+            return scalarExpressionValue(bitAnd);
 
 bitXorExpression:
         if (auto bitXor = expression.isXorExp)
-            return runIntegerBinaryExpression(bitXor, "^");
+            return scalarExpressionValue(bitXor);
 
 commaExpression:
         if (auto comma = expression.isCommaExp) {
@@ -3481,33 +3481,24 @@ unsupportedExpression:
         if (hasScalarComparisonOperands(comparison))
             return ExpressionResult(scalarComparison(comparison));
 
-        const leftValue = runExpressionValue(comparison.e1);
-        const rightValue = runExpressionValue(comparison.e2);
-
-        // A default-initialized pointer-typed operand (e.g. a GC pool
-        // boundary pointer that has never been assigned) reads as `Null`,
-        // not a zero-valued `Pointer`; the static operand type still marks
-        // this as a pointer comparison. See `runAddExpression`.
-        import quickbite.frontend.dmd.types: isPointerType;
-
-        const leftIsPointer = leftValue.isPointer ||
-            (leftValue == ExpressionResult.null_ && isPointerType(comparison.e1.type));
-        const rightIsPointer = rightValue.isPointer ||
-            (rightValue == ExpressionResult.null_ && isPointerType(comparison.e2.type));
-
-        if (leftIsPointer && rightIsPointer)
-            return runPointerComparison(comparison.op, leftValue, rightValue);
-
-        const left = leftValue.asReal;
-        const right = rightValue.asReal;
+        // D defines `<`/`<=`/`>`/`>=` only for arithmetic types and
+        // pointers; DMD's semantic pass lowers array and `opCmp` comparisons
+        // to `__cmp`/method calls before this point. Every operand reaching
+        // here is therefore a pointer. Read both through their own typed
+        // places rather than the carrier: a default-initialized pointer then
+        // reads as its real null address instead of needing a separate
+        // carrier tag to recognise.
+        const left = pointerOperandPlace(comparison.e1).deref.address;
+        const right = pointerOperandPlace(comparison.e2).deref.address;
+        const difference = pointerAddressDifference(left, right);
 
         if (comparison.op == EXP.lessThan)
-            return ExpressionResult(left < right);
+            return ExpressionResult(difference < 0);
         if (comparison.op == EXP.lessOrEqual)
-            return ExpressionResult(left <= right);
+            return ExpressionResult(difference <= 0);
         if (comparison.op == EXP.greaterThan)
-            return ExpressionResult(left > right);
-        return ExpressionResult(left >= right);
+            return ExpressionResult(difference > 0);
+        return ExpressionResult(difference >= 0);
     }
 
     // These operations have scalar results only. Construct the result in the
@@ -3529,24 +3520,23 @@ unsupportedExpression:
         return readStoredValue(destination.place);
     }
 
-    // Pointer relations compare their raw host addresses. The caller has
-    // already established that both results are pointer-shaped.
-    private ExpressionResult runPointerComparison(
-        in imported!"dmd.tokens".EXP op,
-        in ExpressionResult left,
-        in ExpressionResult right,
+    // A general fallback for call sites whose remaining operand kind is not
+    // fixed to one family (e.g. a conditional expression's arms, or pointer
+    // arithmetic's mixed pointer/integer operands): construct through the
+    // full `runExpression` pipeline, which already tries the typed
+    // construction arms before falling back to the carrier, then read the
+    // typed result back.
+    private ExpressionResult constructedExpressionValue(
+        imported!"dmd.expression".Expression expression,
     ) {
-        import dmd.tokens: EXP;
+        import quickbite.backends.interpreter.place: Place;
 
-        const difference = left.pointerOffsetDifference(right);
-
-        if (op == EXP.lessThan)
-            return ExpressionResult(difference < 0);
-        if (op == EXP.lessOrEqual)
-            return ExpressionResult(difference <= 0);
-        if (op == EXP.greaterThan)
-            return ExpressionResult(difference > 0);
-        return ExpressionResult(difference >= 0);
+        auto destination = ConstructionDestination(Place(
+            _activationFrame.temporaryAddress(expression),
+            expression.type,
+        ));
+        runExpression(expression, destination);
+        return readStoredValue(destination.place);
     }
 
     // `+`/`-` mix scalar arithmetic with pointer arithmetic. Detect pointer
@@ -3562,78 +3552,6 @@ unsupportedExpression:
         return isPointerType(expression.e1.type) ||
             isPointerType(expression.e2.type) ||
             isPointerType(expression.type);
-    }
-
-    private ExpressionResult runAddExpression(imported!"dmd.expression".AddExp add) {
-        import quickbite.frontend.dmd.types: isPointerType;
-
-        const left = runExpressionValue(add.e1);
-        const right = runExpressionValue(add.e2);
-
-        // A default-initialized pointer-typed operand (e.g. druntime's
-        // dip1008 Throwable chain-link arithmetic on its own default-null
-        // `_nextInChainPtr`) reads as `Null`, not a zero-valued `Pointer`;
-        // the static operand type still marks it as pointer arithmetic.
-        const leftIsPointer = left.isPointer ||
-            (left == ExpressionResult.null_ && isPointerType(add.e1.type));
-        const rightIsPointer = right.isPointer ||
-            (right == ExpressionResult.null_ && isPointerType(add.e2.type));
-
-        if (leftIsPointer) {
-            const offset = leftIsPointer
-                ? right.asLong
-                : pointerElementOffset(add.type, right.asLong);
-            return left.pointerOffsetBy(
-                offset,
-            );
-        }
-
-        if (rightIsPointer) {
-            const offset = rightIsPointer
-                ? left.asLong
-                : pointerElementOffset(add.type, left.asLong);
-            return right.pointerOffsetBy(
-                offset,
-            );
-        }
-
-        return left + right;
-    }
-
-    private ExpressionResult runMinExpression(imported!"dmd.expression".MinExp sub) {
-        import quickbite.frontend.dmd.types: isPointerType;
-
-        const left = runExpressionValue(sub.e1);
-        const right = runExpressionValue(sub.e2);
-
-        // See `runAddExpression`: a default-null pointer operand reads as
-        // `Null`, not a zero-valued `Pointer`.
-        const leftIsPointer = left.isPointer ||
-            (left == ExpressionResult.null_ && isPointerType(sub.e1.type));
-        const rightIsPointer = right.isPointer ||
-            (right == ExpressionResult.null_ && isPointerType(sub.e2.type));
-
-        // DMD lowers `p - q` to `(p - q) / elementSize`; return the byte
-        // difference so the lowered division yields the element difference
-        if (leftIsPointer && rightIsPointer) {
-            const scale = leftIsPointer && rightIsPointer
-                ? 1
-                : pointerElementSize(sub.e1.type);
-            return ExpressionResult(
-                left.pointerOffsetDifference(right) * scale,
-            );
-        }
-
-        if (leftIsPointer) {
-            const offset = leftIsPointer
-                ? right.asLong
-                : pointerElementOffset(sub.type, right.asLong);
-            return left.pointerOffsetBy(
-                -offset,
-            );
-        }
-
-        return left - right;
     }
 
     // DMD semantic scales pointer arithmetic operands to byte offsets
@@ -5458,6 +5376,10 @@ unsupportedExpression:
         return offset;
     }
 
+    // A conditional expression's arms are not fixed to one type family: an
+    // arm can be an associative array (among other aggregate kinds) whose
+    // value the typed-place write path does not yet support. Keep both arms
+    // on the carrier here rather than routing through a typed destination.
     private ExpressionResult runConditionalExpression(
         imported!"dmd.expression".CondExp conditional,
     ) {
@@ -8234,18 +8156,6 @@ unsupportedExpression:
             default:
                 throw new Exception("Unsupported eval compound assignment.");
         }
-    }
-
-    private ExpressionResult runIntegerBinaryExpression(
-        imported!"dmd.expression".BinExp expression,
-        in string operator,
-    ) {
-        return runIntegerBinaryValue(
-            expression,
-            runExpressionValue(expression.e1),
-            runExpressionValue(expression.e2),
-            operator,
-        );
     }
 
     private ExpressionResult runIntegerBinaryValue(
