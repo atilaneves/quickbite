@@ -14237,6 +14237,18 @@ destinationFallback:
 
         import quickbite.backends.interpreter.place: Place;
 
+        // A void-typed operand has no truth value to construct: D allows
+        // `cond && voidCall();` as sugar for `if (cond) voidCall();`, and
+        // DMD's own arm-temporary destructor guard (`flag && edtor`, see
+        // `expressionsem.d`) reuses the same `&&` node with the temporary's
+        // void-returning destructor call as its right operand. Either way
+        // the caller only ever discards this operand's boolean result, so
+        // run it for effect instead of constructing it into a typed place.
+        if (expression.type.toBasetype.ty == TY.Tvoid) {
+            executeForEffectImpl(expression);
+            return true;
+        }
+
         auto destination = ConstructionDestination(Place(
             _activationFrame.temporaryAddress(expression),
             expression.type,
