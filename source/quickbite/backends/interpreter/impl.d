@@ -885,12 +885,8 @@ private struct Walker {
             if (return_.exp !is null) {
                 if (assignToRefReturn)
                     writeLocation(return_.exp, refReturnAssignedValue);
-                else if (_returnDestination !is null) {
-                    constructReturnValue(return_.exp, *_returnDestination);
-                }
-                else {
+                else
                     setReturnValue(return_.exp);
-                }
             }
             returned = true;
             return;
@@ -3931,15 +3927,23 @@ unsupportedExpression:
         return addressOfExpression(expression, EXP.address);
     }
 
-    // The one place a `return` statement's result enters `_returnValue`.
+    // The one place a `return` statement's result leaves the function body.
     // `addressOfRefReturn` mode wants the returned lvalue's address, not its
-    // value. Otherwise the expression is evaluated and, for a class return,
-    // rooted against its own storage (`rootedNativeClassValue`) so the
-    // caller sees the same owning allocation the callee constructed rather
-    // than a bare body pointer a later collection could reclaim.
+    // value, so that always uses the carrier. A caller-provided destination
+    // takes the expression's value directly, constructing it in place rather
+    // than routing it through `_returnValue`. Otherwise the expression is
+    // evaluated into the carrier and, for a class return, rooted against its
+    // own storage (`rootedNativeClassValue`) so the caller sees the same
+    // owning allocation the callee constructed rather than a bare body
+    // pointer a later collection could reclaim.
     private void setReturnValue(imported!"dmd.expression".Expression expression) {
         if (addressOfRefReturn) {
             _returnValue = refReturnAddress(expression);
+            return;
+        }
+
+        if (_returnDestination !is null) {
+            constructReturnValue(expression, *_returnDestination);
             return;
         }
 
@@ -3957,9 +3961,12 @@ unsupportedExpression:
     }
 
     // The value a completed call left in its own return channel, read once
-    // the child's function body has finished running.
+    // the child's function body has finished running. A destination-routed
+    // call already constructed its result directly into the caller's own
+    // place, so there is nothing left for the carrier to hold; the caller
+    // reads its result from that place instead of from here.
     private ExpressionResult callResult() const {
-        return _returnValue;
+        return _returnDestination !is null ? ExpressionResult.void_ : _returnValue;
     }
 
     private ExpressionResult refReturningCallAddress(
@@ -7098,8 +7105,6 @@ unsupportedExpression:
             arguments,
             captureLocals,
         );
-        if (constructionDestination !is null)
-            return ExpressionResult.void_;
         return child.callResult;
     }
 
@@ -7350,8 +7355,6 @@ unsupportedExpression:
             return receiverValue(child.thisValue);
         }
 
-        if (constructionDestination !is null)
-            return ExpressionResult.void_;
         return child.callResult;
     }
 
