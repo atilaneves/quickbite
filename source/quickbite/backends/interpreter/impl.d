@@ -30,7 +30,8 @@ public class Interpreter: imported!"quickbite.backends".TreeNodeBackend {
     // end of an execution and a surviving reference loses the identity that
     // makes a virtual call dispatch to the original object.
     private imported!"dmd.mtype".Type[void*] _nativeClassTypes;
-    private ExpressionResult[void*] _nativeClassOwners;
+    private imported!"quickbite.backends.interpreter.native_aggregate".
+        NativeAggregate[void*] _nativeClassOwners;
     // A function-local struct instance stored in such a global keeps working
     // across the boundary too: its hidden context field names the same
     // enclosing-activation chain the module table's bytes already anchor, so
@@ -526,10 +527,10 @@ private struct InterpreterExecutionState {
     // Object-address metadata is installed at allocation or native ingress
     // and remains authoritative for every alias in every later activation.
     public imported!"dmd.mtype".Type[void*] nativeClassTypes;
-    public imported!"quickbite.backends.interpreter.expression_result".
-        ExpressionResult[void*] nativeClassOwners;
-    public imported!"quickbite.backends.interpreter.expression_result".
-        ExpressionResult[void*] nativeExceptionMetadata;
+    public imported!"quickbite.backends.interpreter.native_aggregate".
+        NativeAggregate[void*] nativeClassOwners;
+    public imported!"quickbite.backends.interpreter.native_aggregate".
+        NativeAggregate[void*] nativeExceptionMetadata;
 
     // A struct declared inside a function reads that function's locals through
     // its hidden context field, and its methods can run long after the
@@ -645,11 +646,13 @@ private struct Walker {
         return _executionState.nestedContextFrames;
     }
 
-    private @property ref ExpressionResult[void*] nativeClassOwners() {
+    private @property ref imported!"quickbite.backends.interpreter.native_aggregate".
+        NativeAggregate[void*] nativeClassOwners() {
         return _executionState.nativeClassOwners;
     }
 
-    private @property ref ExpressionResult[void*] nativeExceptionMetadata() {
+    private @property ref imported!"quickbite.backends.interpreter.native_aggregate".
+        NativeAggregate[void*] nativeExceptionMetadata() {
         return _executionState.nativeExceptionMetadata;
     }
 
@@ -2088,13 +2091,13 @@ private struct Walker {
         if (nativeObjectPointer is null) {
             const address = AggregateValue.nativeClassBodyAddress(metadata);
             nativeClassTypes[address] = class_.type;
-            nativeClassOwners[address] = metadata;
+            nativeClassOwners[address] = metadata.nativeAggregate;
             return metadata;
         }
 
         auto address = cast(void*) nativeObjectPointer;
         nativeClassTypes[address] = class_.type;
-        nativeExceptionMetadata[address] = metadata;
+        nativeExceptionMetadata[address] = metadata.nativeAggregate;
         return ExpressionResult.pointerValue(address);
     }
 
@@ -2119,7 +2122,8 @@ private struct Walker {
         }
     }
 
-    private ExpressionResult* classMetadata(in ExpressionResult object) {
+    private imported!"quickbite.backends.interpreter.native_aggregate".NativeAggregate*
+    classMetadata(in ExpressionResult object) {
         if (object.isNativeAggregate)
             return null;
         const address = classIdentityAddress(object);
@@ -2134,7 +2138,10 @@ private struct Walker {
         if (object.isNativeAggregate)
             return AggregateValue.hasClassFieldNamed(object, name);
         if (auto metadata = classMetadata(object))
-            return AggregateValue.hasClassFieldNamed(*metadata, name);
+            return AggregateValue.hasClassFieldNamed(
+                ExpressionResult.nativeAggregateValue(*metadata),
+                name,
+            );
         return false;
     }
 
@@ -2145,7 +2152,7 @@ private struct Walker {
             );
         if (auto metadata = classMetadata(object))
             return readStoredValue(
-                AggregateValue.classFieldNamed(AggregateValue.native(*metadata), name),
+                AggregateValue.classFieldNamed(*metadata, name),
             );
         throw new Exception("Class field metadata is unavailable.");
     }
@@ -2160,9 +2167,7 @@ private struct Walker {
                 AggregateValue.withClassFieldNamed(AggregateValue.native(object), name, field),
             );
         if (auto metadata = classMetadata(object)) {
-            *metadata = ExpressionResult.nativeAggregateValue(
-                AggregateValue.withClassFieldNamed(AggregateValue.native(*metadata), name, field),
-            );
+            *metadata = AggregateValue.withClassFieldNamed(*metadata, name, field);
             return object;
         }
         throw new Exception("Class field metadata is unavailable.");
@@ -8564,7 +8569,7 @@ unsupportedExpression:
                 auto bodyType = dot.e1.type;
                 if (auto metadata = target.pointerAddress in nativeExceptionMetadata) {
                     bodyAddress = AggregateValue.nativeClassBodyAddress(*metadata);
-                    bodyType = AggregateValue.native(*metadata).type;
+                    bodyType = (*metadata).type;
                 }
                 auto fieldPlace = Place(bodyAddress, bodyType)
                     .field(dot.var.isVarDeclaration);
@@ -8578,7 +8583,7 @@ unsupportedExpression:
                     if (address is null)
                         return ExpressionResult.null_;
                     if (auto object = address in nativeClassOwners)
-                        return *object;
+                        return ExpressionResult.nativeAggregateValue(*object);
                     return ExpressionResult.pointerValue(address);
                 }
                 // A live delegate value has no native ABI function address
@@ -9217,7 +9222,7 @@ unsupportedExpression:
                 auto bodyType = dot.e1.type;
                 if (auto metadata = bodyAddress in nativeExceptionMetadata) {
                     bodyAddress = AggregateValue.nativeClassBodyAddress(*metadata);
-                    bodyType = AggregateValue.native(*metadata).type;
+                    bodyType = (*metadata).type;
                 }
                 auto fieldPlace = Place(bodyAddress, bodyType)
                     .field(field);
@@ -9844,7 +9849,7 @@ unsupportedExpression:
                     auto bodyType = dot.e1.type;
                     if (auto metadata = bodyAddress in nativeExceptionMetadata) {
                         bodyAddress = AggregateValue.nativeClassBodyAddress(*metadata);
-                        bodyType = AggregateValue.native(*metadata).type;
+                        bodyType = (*metadata).type;
                     }
                     auto fieldPlace = Place(bodyAddress, bodyType)
                         .field(dot.var.isVarDeclaration);
@@ -10193,7 +10198,7 @@ unsupportedExpression:
                     auto bodyType = dot.e1.type;
                     if (auto metadata = bodyAddress in nativeExceptionMetadata) {
                         bodyAddress = AggregateValue.nativeClassBodyAddress(*metadata);
-                        bodyType = AggregateValue.native(*metadata).type;
+                        bodyType = (*metadata).type;
                     }
                     auto fieldPlace = Place(bodyAddress, bodyType)
                         .field(dot.var.isVarDeclaration);
@@ -12960,7 +12965,7 @@ unsupportedExpression:
             auto object = AggregateValue.allocateClass(type);
             auto body = AggregateValue.nativeClassBodyAddress(object);
             const objectValue = ExpressionResult.nativeAggregateValue(object);
-            nativeClassOwners[body] = objectValue;
+            nativeClassOwners[body] = object;
             initializeNativeClassBody(this, type, object);
             destination.storeReference(body);
             if (new_.member is null)
@@ -12986,7 +12991,7 @@ unsupportedExpression:
                 nativeClassOwners[body] = applyThrowableConstructor(
                     objectValue,
                     arguments.values,
-                );
+                ).nativeAggregate;
                 return true;
             }
 
@@ -13409,7 +13414,7 @@ unsupportedExpression:
 
         auto object = AggregateValue.allocateClass(allocationType);
         const objectValue = ExpressionResult.nativeAggregateValue(object);
-        nativeClassOwners[AggregateValue.nativeClassBodyAddress(object)] = objectValue;
+        nativeClassOwners[AggregateValue.nativeClassBodyAddress(object)] = object;
         initializeNativeClassBody(this, allocationType, object);
         if (new_.member is null)
             return objectValue;
