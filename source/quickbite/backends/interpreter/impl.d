@@ -2999,27 +2999,27 @@ minExpression:
 
 mulExpression:
         if (auto mul = expression.isMulExp)
-            return scalarBinaryExpressionValue(mul);
+            return scalarExpressionValue(mul);
 
 divExpression:
         if (auto div = expression.isDivExp)
-            return scalarBinaryExpressionValue(div);
+            return scalarExpressionValue(div);
 
 modExpression:
         if (auto mod = expression.isModExp)
-            return scalarBinaryExpressionValue(mod);
+            return scalarExpressionValue(mod);
 
 leftShiftExpression:
         if (auto leftShift = expression.isShlExp)
-            return runIntegerBinaryExpression(leftShift, "<<");
+            return scalarExpressionValue(leftShift);
 
 rightShiftExpression:
         if (auto rightShift = expression.isShrExp)
-            return runIntegerBinaryExpression(rightShift, ">>");
+            return scalarExpressionValue(rightShift);
 
 unsignedRightShiftExpression:
         if (auto unsignedRightShift = expression.isUshrExp)
-            return runIntegerBinaryExpression(unsignedRightShift, ">>>");
+            return scalarExpressionValue(unsignedRightShift);
 
 negExpression:
         if (auto neg = expression.isNegExp)
@@ -3027,7 +3027,7 @@ negExpression:
 
 complementExpression:
         if (auto complement = expression.isComExp)
-            return runIntegerComplementExpression(complement);
+            return scalarExpressionValue(complement);
 
 powExpression:
         if (auto pow = expression.isPowExp)
@@ -3499,7 +3499,7 @@ unsupportedExpression:
     // These operations have scalar results only. Construct the result in the
     // expression's typed activation slot so both operands and the result stay
     // outside the value carrier.
-    private ExpressionResult scalarBinaryExpressionValue(
+    private ExpressionResult scalarExpressionValue(
         imported!"dmd.expression".Expression expression,
     ) {
         import quickbite.backends.interpreter.place: Place;
@@ -3510,7 +3510,7 @@ unsupportedExpression:
         ));
         assert(
             constructScalarExpressionInto(expression, destination.place),
-            "binary expression did not construct into its scalar destination",
+            "expression did not construct into its scalar destination",
         );
         return readStoredValue(destination.place);
     }
@@ -8112,18 +8112,6 @@ unsupportedExpression:
         }
 
         return castScalarResult(result, backendCastTarget(pow.type));
-    }
-
-    private ExpressionResult runIntegerComplementExpression(
-        imported!"dmd.expression".ComExp complement,
-    ) {
-        import quickbite.backends.interpreter.runtime_casts:
-            backendCastTarget = castTarget;
-
-        return castScalarResult(
-            ExpressionResult(~runExpressionValue(complement.e1).asLong),
-            backendCastTarget(complement.type),
-        );
     }
 
     private ExpressionResult runIntegerBinaryExpression(
@@ -13858,7 +13846,7 @@ destinationFallback:
         imported!"quickbite.backends.interpreter.place".Place destination,
     ) {
         import dmd.tokens: EXP;
-        import std.traits: isFloatingPoint, isIntegral;
+        import std.traits: Unsigned, isFloatingPoint, isIntegral;
 
         if (auto integer = expression.isIntegerExp) {
             destination.storeNativeScalar(cast(T) integer.getInteger);
@@ -13954,7 +13942,12 @@ destinationFallback:
                     case leftShift: destination.storeNativeScalar(left << right); return true;
                     case rightShift: destination.storeNativeScalar(left >> right); return true;
                     case unsignedRightShift:
-                        destination.storeNativeScalar(cast(T) (cast(ulong) left >> right));
+                        // A cast straight to ulong would sign-extend a
+                        // negative signed T before shifting. Reinterpret at
+                        // T's own width first so the vacated bits zero-fill.
+                        destination.storeNativeScalar(
+                            cast(T) (cast(Unsigned!T) left >> right),
+                        );
                         return true;
                     case or: destination.storeNativeScalar(left | right); return true;
                     case and: destination.storeNativeScalar(left & right); return true;
