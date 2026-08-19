@@ -13945,6 +13945,17 @@ destinationFallback:
                 return true;
             }
             if (auto binary = expression.isBinExp) {
+                // Only these ops are handled below; every other BinExp
+                // subclass (e.g. CommaExp, produced by druntime's array
+                // append/idup machinery) must fall through unevaluated
+                // rather than have its operands constructed here.
+                switch (expression.op) with (EXP) {
+                    case add, min, mul, div, mod, leftShift, rightShift,
+                         unsignedRightShift, or, and, xor:
+                        break;
+                    default:
+                        return false;
+                }
                 const left = scalarOperand!T(binary.e1);
                 const right = scalarOperand!T(binary.e2);
                 switch (expression.op) with (EXP) {
@@ -13972,7 +13983,7 @@ destinationFallback:
                     case or: destination.storeNativeScalar(left | right); return true;
                     case and: destination.storeNativeScalar(left & right); return true;
                     case xor: destination.storeNativeScalar(left ^ right); return true;
-                    default: return false;
+                    default: assert(0, "unreachable: filtered above");
                 }
             }
         } else static if (isFloatingPoint!T) {
@@ -13981,6 +13992,15 @@ destinationFallback:
                 return true;
             }
             if (auto binary = expression.isBinExp) {
+                // See the integral binary arm above: dispatch on the op
+                // before touching operands so unhandled BinExp subclasses
+                // (e.g. CommaExp) fall through untouched.
+                switch (expression.op) with (EXP) {
+                    case add, min, mul, div:
+                        break;
+                    default:
+                        return false;
+                }
                 const left = scalarOperand!T(binary.e1);
                 const right = scalarOperand!T(binary.e2);
                 switch (expression.op) with (EXP) {
@@ -13988,7 +14008,7 @@ destinationFallback:
                     case min: destination.storeNativeScalar(left - right); return true;
                     case mul: destination.storeNativeScalar(left * right); return true;
                     case div: destination.storeNativeScalar(left / right); return true;
-                    default: return false;
+                    default: assert(0, "unreachable: filtered above");
                 }
             }
         } else static if (is(T == ifloat) || is(T == idouble) || is(T == ireal)) {
@@ -14051,6 +14071,15 @@ destinationFallback:
         }
 
         if (auto binary = expression.isBinExp) {
+            // See constructScalar's integral binary arm: dispatch on the op
+            // before touching operands so unhandled BinExp subclasses (e.g.
+            // CommaExp) fall through untouched.
+            switch (expression.op) with (EXP) {
+                case add, min, mul, div:
+                    break;
+                default:
+                    return false;
+            }
             const left = complexOperand!T(binary.e1);
             const right = complexOperand!T(binary.e2);
             switch (expression.op) with (EXP) {
@@ -14058,7 +14087,7 @@ destinationFallback:
                 case min: destination.storeNativeScalar(left - right); return true;
                 case mul: destination.storeNativeScalar(left * right); return true;
                 case div: destination.storeNativeScalar(left / right); return true;
-                default: return false;
+                default: assert(0, "unreachable: filtered above");
             }
         }
 
