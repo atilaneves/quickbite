@@ -12592,7 +12592,14 @@ unsupportedExpression:
             child.runningCalledFunction = true;
             child.currentFunction = new_.member;
             child._activationFrame = FrameBlock.allocate(cachedFrameLayout(new_.member));
-            child.thisValue = borrowedAggregateValue(Place(body, type));
+            // A class `this` is its body address carried as a pointer value,
+            // matching every other class receiver (`runMemberFunction`'s
+            // `memberReceiver`, this function's own carrier-returning
+            // sibling below). `body` is already the dereferenced body
+            // address, so wrapping it as a native aggregate here would make
+            // `nativeClassBodyAddress` (which expects a reference-slot
+            // address) dereference it a second time into a wild address.
+            child.thisValue = ExpressionResult.pointerValue(body);
             child.hasThis = true;
             forkExecutionStateInto(child);
             scope(exit) child.retireActivationFrameMetadata;
