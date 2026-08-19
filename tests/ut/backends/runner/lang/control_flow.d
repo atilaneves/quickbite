@@ -325,6 +325,34 @@ static foreach (backend; Matrix!()) {
 }
 
 static foreach (backend; Matrix!()) {
+    @("function.capturingLambdaCalledThroughAliasParameterInNestedFunction." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            void callThroughNested(alias Func)() {
+                void inner() {
+                    Func();
+                }
+                inner;
+            }
+
+            void outer() @safe {
+                uint captured = 42u;
+                callThroughNested!({
+                    if (captured != 42u)
+                        throw new Exception("bad value");
+                });
+            }
+
+            unittest {
+                outer;
+            }
+        });
+    }
+}
+
+static foreach (backend; Matrix!()) {
     @("function.voidFunction." ~ backend.stringof)
     @Tags(backend.stringof)
     unittest {
