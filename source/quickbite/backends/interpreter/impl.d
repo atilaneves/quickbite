@@ -5662,6 +5662,7 @@ unsupportedExpression:
         auto arguments = callArguments.values;
         auto argumentExpressions = callArguments.expressions;
         auto evaluatedArguments = callArguments.references;
+        auto argumentPlaces = new Place[arguments.length];
         if (call.arguments !is null) {
             foreach (index, argument; *call.arguments) {
                 auto parameter = call.f is null ||
@@ -5670,6 +5671,7 @@ unsupportedExpression:
                     ? null
                     : (*call.f.parameters)[index];
                 EvaluatedReferenceArgument evaluated;
+                bool hasArgumentPlace;
                 if (parameter !is null && parameterIsLazy(parameter))
                     // The lazy argument is captured as an expression below;
                     // this aligned entry is never bound or evaluated.
@@ -5686,8 +5688,16 @@ unsupportedExpression:
                         evaluated,
                         isStdConvText(call.f),
                     );
-                else
-                    arguments[index] = runExpressionValue(argument);
+                else {
+                    auto argumentDestination = ConstructionDestination(Place(
+                        _activationFrame.temporaryAddress(argument),
+                        argument.type,
+                    ));
+                    runExpression(argument, argumentDestination);
+                    argumentPlaces[index] = argumentDestination.place;
+                    hasArgumentPlace = true;
+                    arguments[index] = readStoredValue(argumentDestination.place);
+                }
                 if (
                     parameter !is null &&
                     parameter.type.toBasetype.isTypeClass !is null
@@ -5696,6 +5706,8 @@ unsupportedExpression:
                         argument,
                         arguments[index],
                     );
+                if (hasArgumentPlace)
+                    writeStoredValue(argumentPlaces[index], arguments[index]);
                 argumentExpressions[index] = argument;
                 evaluatedArguments[index] = evaluated;
             }
@@ -5935,6 +5947,7 @@ unsupportedExpression:
                     evaluatedArguments,
                     hasReceiverPointerAddress ? &receiverPointerAddress : null,
                     constructionDestination,
+                    argumentPlaces,
                 );
             }
         }
@@ -6001,6 +6014,7 @@ unsupportedExpression:
                     evaluatedArguments,
                     null,
                     constructionDestination,
+                    argumentPlaces,
                 );
 
             return runFunction(
@@ -6011,6 +6025,7 @@ unsupportedExpression:
                 evaluatedArguments,
                 null,
                 constructionDestination,
+                argumentPlaces,
             );
         }
 
@@ -6024,6 +6039,7 @@ unsupportedExpression:
                     evaluatedArguments,
                     null,
                     constructionDestination,
+                    argumentPlaces,
                 );
 
         if (auto function_ = functionPointerExpressionFunction(call.e1)) {
@@ -6051,6 +6067,7 @@ unsupportedExpression:
                     evaluatedArguments,
                     null,
                     constructionDestination,
+                    argumentPlaces,
                 );
 
             return runFunction(
@@ -6061,6 +6078,7 @@ unsupportedExpression:
                 evaluatedArguments,
                 null,
                 constructionDestination,
+                argumentPlaces,
             );
         }
 
@@ -6100,6 +6118,7 @@ unsupportedExpression:
                 evaluatedArguments,
                 null,
                 constructionDestination,
+                argumentPlaces,
             );
         }
 
@@ -7027,6 +7046,7 @@ unsupportedExpression:
         in EvaluatedReferenceArgument[] evaluatedArguments = null,
         in void*[VarDeclaration] closureAddresses = null,
         ConstructionDestination* constructionDestination = null,
+        imported!"quickbite.backends.interpreter.place".Place[] argumentPlaces = null,
     ) {
         Walker child;
         child.runningCalledFunction = true;
@@ -7044,6 +7064,7 @@ unsupportedExpression:
             argumentExpressions,
             _activationFrame,
             evaluatedArguments,
+            argumentPlaces,
         );
 
         try {
@@ -7108,6 +7129,7 @@ unsupportedExpression:
         // itself in `get(holder, evaluations).slot`).
         const(ExpressionResult)* precomputedReceiverPointerAddress = null,
         ConstructionDestination* constructionDestination = null,
+        imported!"quickbite.backends.interpreter.place".Place[] argumentPlaces = null,
     ) {
         const memberReceiver = receiver;
 
@@ -7170,6 +7192,7 @@ unsupportedExpression:
             argumentExpressions,
             _activationFrame,
             evaluatedArguments,
+            argumentPlaces,
         );
         child.bindThisReferenceAddress(function_, child.thisValue);
         if (
@@ -7521,6 +7544,7 @@ unsupportedExpression:
         imported!"dmd.expression".Expression[] argumentExpressions = null,
         FrameBlock callerFrame = FrameBlock.init,
         in EvaluatedReferenceArgument[] evaluatedArguments = null,
+        imported!"quickbite.backends.interpreter.place".Place[] argumentPlaces = null,
     ) {
         if (arguments.length == 0) {
             if (function_.parameters !is null && function_.parameters.length != 0)
@@ -7579,7 +7603,10 @@ unsupportedExpression:
                 continue;
             }
 
-            setLocal(parameter, arguments[index]);
+            if (index < argumentPlaces.length)
+                copyPlaceValue(argumentPlaces[index], bindingPlace(parameter));
+            else
+                setLocal(parameter, arguments[index]);
         }
     }
 
