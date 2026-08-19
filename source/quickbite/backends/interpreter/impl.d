@@ -8117,6 +8117,54 @@ unsupportedExpression:
             return readStoredValue(destination);
         }
 
+        // A dereferenced native pointer (`*p += v`) has no storage-owned
+        // Place: `hasDirectWriteProjectionPlace` never accepts a `PtrExp`.
+        // `pointerOperandPlace` evaluates `pointer.e1` exactly once,
+        // matching `runPostIncrementExpression`'s identical `PtrExp` arm;
+        // reuse the resulting place for the old value, the write, and the
+        // result, instead of the fallback below, which re-evaluates
+        // `pointer.e1` in the initial read, `writeLocation`'s own `PtrExp`
+        // arm, and the closing read.
+        if (auto pointer = assign.e1.isPtrExp) {
+            import quickbite.backends.interpreter.place: Place;
+
+            auto destination = Place(
+                pointerOperandPlace(pointer.e1).deref.address,
+                assign.e1.type.toBasetype,
+            );
+            const left = readStoredValue(destination);
+            const right = runExpressionValue(assign.e2);
+            const value = compoundAssignedValue(assign, left, right);
+            writeStoredValue(destination, value);
+            return readStoredValue(destination);
+        }
+
+        // The pointer-index sibling of the above (`p[i] += v`, or `(*q)[i]
+        // += v` once `*q` is itself pointer-typed):
+        // `hasDirectWriteProjectionPlace`'s `IndexExp` arm excludes a
+        // pointer-typed `e1` outright, so this also has no storage-owned
+        // Place. Resolve the pointer once, then the index once, in the
+        // same order the read path (`runIndexExpression`) already
+        // evaluates them.
+        if (auto index = assign.e1.isIndexExp) {
+            import quickbite.backends.interpreter.place: Place;
+            import quickbite.frontend.dmd.types: isPointerType;
+
+            if (isPointerType(index.e1.type)) {
+                auto pointerPlace = pointerOperandPlace(index.e1);
+                const arrayIndex = scalarOperand!size_t(index.e2);
+                auto destination = Place(
+                    pointerPlace.index(arrayIndex).address,
+                    assign.e1.type.toBasetype,
+                );
+                const left = readStoredValue(destination);
+                const right = runExpressionValue(assign.e2);
+                const value = compoundAssignedValue(assign, left, right);
+                writeStoredValue(destination, value);
+                return readStoredValue(destination);
+            }
+        }
+
         const left = runExpressionValue(assign.e1);
         const right = runExpressionValue(assign.e2);
         const value = compoundAssignedValue(assign, left, right);

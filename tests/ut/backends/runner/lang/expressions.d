@@ -15662,3 +15662,83 @@ static foreach (backend; Matrix!(
         });
     }
 }
+
+// D's compound assignment through a dereferenced, side-effecting
+// pointer-returning call (`*p() += v`) evaluates `p()` exactly once, the
+// same evaluation-order guarantee
+// `struct.methodCallThroughReturnedPointerEvaluatesReceiverOnce` already
+// pins for a plain method-call receiver. `hasDirectWriteProjectionPlace`
+// never accepts a `PtrExp` target, so `runCompoundAssignExpression`'s slow
+// arm handles this case. SystemLinker is the oracle.
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.diverges,
+        "Ctfe runs the unittest body through DMD's own CTFE interpreter, " ~
+        "which cannot read the mutable module-scope variable `calls` at " ~
+        "compile time"),
+    Omit!(LLVMJit, Because.unconfirmed,
+        "asserts `target == 11` against a stale `1`; root cause not " ~
+        "investigated, independent of the Interpreter-only fix this " ~
+        "fixture targets"),
+)) {
+    @("pointer.compoundAssignThroughDereferencedCallEvaluatesReceiverOnce." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            int target = 10;
+            int calls;
+            int* sideEffectingPointerReturn() {
+                calls++;
+                return &target;
+            }
+            unittest {
+                *sideEffectingPointerReturn() += 1;
+                assert(calls == 1);
+                assert(target == 11);
+            }
+        });
+    }
+}
+
+// The pointer-index sibling of the fixture above: D's compound assignment
+// through a pointer-typed index target (`(*q)[i] += v`) evaluates the index
+// expression exactly once, the same evaluation-order guarantee
+// `struct.methodCallThroughIndexedReceiverEvaluatesIndexOnce` already pins
+// for a plain method-call receiver. `hasDirectWriteProjectionPlace`'s
+// `IndexExp` arm excludes a pointer-typed `e1` outright, so this also
+// reaches the slow arm. SystemLinker is the oracle.
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.diverges,
+        "Ctfe runs the unittest body through DMD's own CTFE interpreter, " ~
+        "which cannot read the mutable module-scope variable `calls` at " ~
+        "compile time"),
+    Omit!(Bytecode, Because.refusal,
+        "Unsupported expression in bytecode core: & arr"),
+    Omit!(LLVMJit, Because.unconfirmed,
+        "asserts `arr[1] == 12` against a stale `13`; root cause not " ~
+        "investigated, independent of the Interpreter-only fix this " ~
+        "fixture targets"),
+)) {
+    @("pointer.compoundAssignThroughPointerIndexEvaluatesIndexOnce." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            int[4] arr = [10, 11, 12, 13];
+            int* p;
+            int** q;
+            int calls;
+            int sideEffectingIndex() {
+                calls++;
+                return 1;
+            }
+            unittest {
+                p = arr.ptr;
+                q = &p;
+                (*q)[sideEffectingIndex()] += 1;
+                assert(calls == 1);
+                assert(arr[1] == 12);
+            }
+        });
+    }
+}
