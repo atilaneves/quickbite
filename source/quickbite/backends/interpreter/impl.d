@@ -14347,7 +14347,22 @@ destinationFallback:
                 return true;
             }
 
-            if (hasArrayProjectionPlace(cast_.e1)) {
+            // A dereferenced array-typed operand (druntime's `(*p).ptr`
+            // growth-hook idiom, `p: void[]*`) may legitimately answer a
+            // null pointer for an empty slice -- its backing address is
+            // still meaningful and distinct from "no value". Storing that
+            // address through this typed `Place` and reading it back
+            // collapses a null pointer to the untyped
+            // `ExpressionResult.null_`, the same conversion every other
+            // pointer-typed place read applies, indistinguishable here from
+            // a real absence. `pointerCastValue`'s own `PtrExp` bypass avoids
+            // exactly that collapse by wrapping the address directly in
+            // `ExpressionResult.pointerValue` regardless of nullness, so
+            // decline this shape and let it answer instead.
+            if (
+                hasArrayProjectionPlace(cast_.e1) &&
+                cast_.e1.isPtrExp is null
+            ) {
                 destination.storeReference(projectionPlace(cast_.e1).sliceDataPointer);
                 return true;
             }
