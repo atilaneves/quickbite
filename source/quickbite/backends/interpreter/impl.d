@@ -6128,7 +6128,7 @@ unsupportedExpression:
         }
 
         if (auto variable = lazyCallVariable(call))
-            return runLazyArgument(variable);
+            return runLazyArgument(variable, constructionDestination);
 
         const callee = runExpressionValue(call.e1);
         if (callee.isNativeDelegate)
@@ -6148,6 +6148,7 @@ unsupportedExpression:
                 arguments,
                 argumentExpressions,
                 evaluatedArguments,
+                constructionDestination,
             );
 
         if (callee.isFunctionPointer) {
@@ -6475,6 +6476,7 @@ unsupportedExpression:
         in ExpressionResult[] arguments,
         imported!"dmd.expression".Expression[] argumentExpressions,
         in EvaluatedReferenceArgument[] evaluatedArguments = null,
+        ConstructionDestination* constructionDestination = null,
     ) {
         auto runtime = callee.functionPointerId in _executionState.delegates;
         if (runtime is null)
@@ -6500,6 +6502,8 @@ unsupportedExpression:
                 rootedArguments,
                 argumentExpressions,
                 evaluatedArguments,
+                null,
+                constructionDestination,
             );
 
         return runFunction(
@@ -6509,6 +6513,7 @@ unsupportedExpression:
             false,
             evaluatedArguments,
             runtime.capturedAddresses,
+            constructionDestination,
         );
     }
 
@@ -7832,7 +7837,10 @@ unsupportedExpression:
         _lazyArgumentMapsBorrowed = false;
     }
 
-    private ExpressionResult runLazyArgument(VarDeclaration variable) {
+    private ExpressionResult runLazyArgument(
+        VarDeclaration variable,
+        ConstructionDestination* constructionDestination = null,
+    ) {
         auto expression = variable in lazyArgumentExpressions;
         if (expression is null)
             throw new Exception("Unsupported eval call.");
@@ -7846,12 +7854,28 @@ unsupportedExpression:
             _activationFrame = savedFrame;
 
         _activationFrame = *capturedFrame;
-        return runLazyArgumentExpression(*expression);
+        return runLazyArgumentExpression(*expression, constructionDestination);
     }
 
-    private ExpressionResult runLazyArgumentExpression(Expression expression) {
+    private ExpressionResult runLazyArgumentExpression(
+        Expression expression,
+        ConstructionDestination* constructionDestination = null,
+    ) {
         if (auto function_ = functionPointerExpressionFunction(expression))
-            return runFunction(function_, [], [], true);
+            return runFunction(
+                function_,
+                [],
+                [],
+                true,
+                null,
+                null,
+                constructionDestination,
+            );
+
+        if (constructionDestination !is null) {
+            runExpression(expression, *constructionDestination);
+            return ExpressionResult.void_;
+        }
 
         return runExpressionValue(expression);
     }
