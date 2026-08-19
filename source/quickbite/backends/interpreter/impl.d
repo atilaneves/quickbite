@@ -3689,7 +3689,6 @@ unsupportedExpression:
                 if (auto field = dot.var.isVarDeclaration) {
                     const receiverPointer = addressOfExpression(innerDot, op);
                     if (receiverPointer.isPointer) {
-                        import quickbite.backends.interpreter.layout: fieldByteOffset;
                         import quickbite.backends.interpreter.place: Place;
 
                         // `&parent.child.x` first yields the address of the
@@ -3701,15 +3700,15 @@ unsupportedExpression:
                                     .deref.field(field).address,
                             );
 
-                        return receiverPointer.pointerOffsetBy(
-                            cast(long) fieldByteOffset(field),
+                        return ExpressionResult.pointerValue(
+                            Place(receiverPointer.pointerAddress, innerDot.type)
+                                .field(field)
+                                .address,
                         );
                     }
                 }
 
             if (auto index = dot.e1.isIndexExp) {
-                import quickbite.backends.interpreter.layout: fieldByteOffset;
-
                 if (auto field = dot.var.isVarDeclaration) {
                     // `$` inside `index.e2` (a `DollarExp`) is bound to
                     // `index.lengthVar`; the ordinary eager path binds it
@@ -3735,10 +3734,15 @@ unsupportedExpression:
                             );
                     const elementIndex = scalarOperand!long(index.e2);
                     const elementPointer = arrayPointer(index.e1, elementIndex, op);
-                    if (elementPointer.isPointer)
-                        return elementPointer.pointerOffsetBy(
-                            cast(long) fieldByteOffset(field),
+                    if (elementPointer.isPointer) {
+                        import quickbite.backends.interpreter.place: Place;
+
+                        return ExpressionResult.pointerValue(
+                            Place(elementPointer.pointerAddress, dot.e1.type)
+                                .field(field)
+                                .address,
                         );
+                    }
                 }
             }
 
@@ -4429,13 +4433,11 @@ unsupportedExpression:
                 ExpressionResult(AggregateValue.length(readValue(receiverPlace))),
             );
         const outerOffset = scalarOperand!size_t(index.e2);
-        const pointer = ExpressionResult.pointerValue(
-            receiverPlace.index(outerOffset).address,
-        );
+        auto elementPlace = receiverPlace.index(outerOffset);
         if (selfAddress)
-            return pointer;
+            return ExpressionResult.pointerValue(elementPlace.address);
         return ExpressionResult.pointerValue(
-            Place(cast(void*) pointer.pointerAddress, expression.type)
+            Place(elementPlace.address, expression.type)
                 .index(cast(size_t) offset)
                 .address,
         );
@@ -4564,15 +4566,11 @@ unsupportedExpression:
                                 );
 
                             return mapIndexOutOfBounds(delegate ExpressionResult() {
-                                const pointer = ExpressionResult.pointerValue(
-                                    resolveInnerPlace()
-                                        .index(elementOffset)
-                                        .address,
-                                );
+                                auto elementPlace = resolveInnerPlace().index(elementOffset);
                                 if (selfAddress)
-                                    return pointer;
+                                    return ExpressionResult.pointerValue(elementPlace.address);
                                 return ExpressionResult.pointerValue(
-                                    Place(cast(void*) pointer.pointerAddress, array.type)
+                                    Place(elementPlace.address, array.type)
                                         .index(cast(size_t) offset)
                                         .address,
                                 );
@@ -4799,14 +4797,12 @@ unsupportedExpression:
                                     (expression) @system =>
                                         scalarOperand!size_t(expression),
                                 );
-                                const pointer = ExpressionResult.pointerValue(
-                                    fieldPlace.index(cast(size_t) outerOffset).address,
-                                );
+                                auto elementPlace = fieldPlace.index(cast(size_t) outerOffset);
                                 if (selfAddress)
-                                    return pointer;
+                                    return ExpressionResult.pointerValue(elementPlace.address);
                                 // Same hazard as the `VarExp` arm above.
                                 return ExpressionResult.pointerValue(
-                                    Place(cast(void*) pointer.pointerAddress, array.type)
+                                    Place(elementPlace.address, array.type)
                                         .index(cast(size_t) offset)
                                         .address,
                                 );
@@ -6283,12 +6279,16 @@ unsupportedExpression:
         }
 
         if (auto pointer = argument.isPtrExp) {
-            const address = runExpressionValue(pointer.e1);
-            if (address.isPointer) {
-                evaluated.address = address.pointerAddress;
+            const address = pointerOperandPlace(pointer.e1).deref.address;
+            if (address !is null) {
+                evaluated.address = cast(void*) address;
                 if (!materializeValue)
                     return ExpressionResult.void_;
-                return loadNativePointerElement(pointer.e1.type, address, 0);
+                return loadNativePointerElement(
+                    pointer.e1.type,
+                    ExpressionResult.pointerValue(cast(void*) address),
+                    0,
+                );
             }
         }
 
@@ -6312,12 +6312,12 @@ unsupportedExpression:
             import quickbite.backends.interpreter.layout: typeByteSize;
 
             if (isPointerType(index.e1.type)) {
-                const pointer_ = runExpressionValue(index.e1);
-                if (pointer_.isPointer) {
+                const pointerAddress = pointerOperandPlace(index.e1).deref.address;
+                if (pointerAddress !is null) {
                     const elementIndex = scalarOperand!size_t(index.e2);
                     auto elementType = index.e1.type.toBasetype.nextOf.toBasetype;
                     evaluated.address = nativeElementAddress(
-                        pointer_.pointerAddress,
+                        cast(void*) pointerAddress,
                         elementIndex,
                         typeByteSize(elementType),
                     );
@@ -6325,7 +6325,7 @@ unsupportedExpression:
                         return ExpressionResult.void_;
                     return loadNativePointerElement(
                         index.e1.type,
-                        pointer_,
+                        ExpressionResult.pointerValue(cast(void*) pointerAddress),
                         elementIndex,
                     );
                 }
