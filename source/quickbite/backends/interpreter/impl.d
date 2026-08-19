@@ -10585,18 +10585,21 @@ unsupportedExpression:
     // separate typed storage. This single construction covers an array-copy
     // RHS and a scalar or nested-array broadcast; the existing native slice
     // paths then copy its completed elements into their resolved targets.
+    // The out `place` parameter exposes exactly where the RHS landed, so a
+    // caller that goes on to index its elements can read them straight out
+    // of this typed storage instead of re-deriving a place from the
+    // returned value a second time.
     private ExpressionResult constructSliceAssignmentRhs(
         imported!"dmd.expression".Expression rhs,
+        out imported!"quickbite.backends.interpreter.place".Place place,
     ) {
         import quickbite.backends.interpreter.place: Place;
 
         assert(rhs !is null && rhs.type !is null);
-        auto temporary = ConstructionDestination(Place(
-            _activationFrame.temporaryAddress(rhs),
-            rhs.type,
-        ));
+        place = Place(_activationFrame.temporaryAddress(rhs), rhs.type);
+        auto temporary = ConstructionDestination(place);
         runExpression(rhs, temporary);
-        return readStoredValue(temporary.place);
+        return readStoredValue(place);
     }
 
     private ExpressionResult runSliceAssignExpression(
@@ -10664,7 +10667,8 @@ unsupportedExpression:
         );
 
         const block = isBlockSliceAssignment(slice, rhs);
-        const value = constructSliceAssignmentRhs(rhs);
+        imported!"quickbite.backends.interpreter.place".Place rhsPlace;
+        const value = constructSliceAssignmentRhs(rhs, rhsPlace);
 
         // A fill assignment (`a[] = scalar;`) evaluates `rhs` to a single
         // element-typed value, not an array to index into -- only the copy
@@ -10675,7 +10679,7 @@ unsupportedExpression:
         // `value.isArray` distinguishes the remaining two: a genuine array
         // copy vs. a scalar-element fill, which must reuse `value` itself at
         // every position instead of indexing into it. Each element read
-        // (from either the untouched tail of `current` or a literal `value`)
+        // (from either the untouched tail of `current` or `rhsPlace`)
         // routes through `readStoredValue` so a delegate/function-pointer/
         // symbolic-TypeInfo element keeps its out-of-band identity instead
         // of decoding as all-zero native bytes.
@@ -10685,9 +10689,7 @@ unsupportedExpression:
                 ? readStoredValue(AggregateValue.elementAt(currentAggregate, index))
                 : block ? copyArrayValue(value, variable.type.toBasetype.nextOf)
                 : AggregateValue.isArray(value)
-                    ? readStoredValue(
-                        AggregateValue.elementAt(AggregateValue.native(value), index - lower),
-                    )
+                    ? readStoredArrayElement(rhsPlace, index - lower)
                     : value;
 
         auto destination = bindingPlace(variable);
@@ -10712,8 +10714,8 @@ unsupportedExpression:
     // element is a byte of raw storage, because `void` names no value the
     // place codec could store. Assigning between `void[]` slices is a byte
     // copy in D -- their bounds and assignment length are measured in bytes
-    // -- so retyping the destination place to `ubyte` stores exactly the byte
-    // `AggregateValue.elementAt` read from the source.
+    // -- so retyping the destination place to `ubyte` stores exactly the
+    // byte its counterpart `readStoredArrayElement` reads as a raw byte too.
     private void writeStoredArrayElement(
         imported!"quickbite.backends.interpreter.place".Place element,
         in ExpressionResult value,
@@ -10727,6 +10729,26 @@ unsupportedExpression:
             return;
         }
         writeStoredValue(element, value);
+    }
+
+    // Reading one element of an array whose element type is `void`: the same
+    // retyping as `writeStoredArrayElement`'s write side, so a `void[]`
+    // slice-assignment RHS decodes as the raw byte its destination expects,
+    // rather than failing the place codec, which has no case for `void`
+    // itself.
+    private ExpressionResult readStoredArrayElement(
+        imported!"quickbite.backends.interpreter.place".Place array,
+        in size_t index,
+    ) {
+        import dmd.astenums: TY;
+        import dmd.mtype: Type;
+        import quickbite.backends.interpreter.place: Place;
+
+        auto element = array.index(index);
+        auto darray = array.type.toBasetype.isTypeDArray;
+        if (darray !is null && darray.next.toBasetype.ty == TY.Tvoid)
+            element = Place(element.address, Type.tuns8);
+        return readStoredValue(element);
     }
 
     // An indexed array-of-arrays element is already an independently
@@ -10753,14 +10775,13 @@ unsupportedExpression:
         checkSliceAssignmentBounds(lower, upper, AggregateValue.length(currentAggregate));
 
         const block = isBlockSliceAssignment(slice, rhs);
-        const value = constructSliceAssignmentRhs(rhs);
+        imported!"quickbite.backends.interpreter.place".Place rhsPlace;
+        const value = constructSliceAssignmentRhs(rhs, rhsPlace);
         foreach (elementIndex; lower .. upper) {
             const element = block
                 ? copyArrayValue(value, index.type.toBasetype.nextOf)
                 : AggregateValue.isArray(value)
-                    ? readStoredValue(
-                        AggregateValue.elementAt(AggregateValue.native(value), elementIndex - lower),
-                    )
+                    ? readStoredArrayElement(rhsPlace, elementIndex - lower)
                     : value;
             AggregateValue.withArrayElement(currentAggregate, elementIndex, element);
         }
@@ -10803,7 +10824,8 @@ unsupportedExpression:
             ));
 
         const block = isBlockSliceAssignment(slice, rhs);
-        const value = constructSliceAssignmentRhs(rhs);
+        imported!"quickbite.backends.interpreter.place".Place rhsPlace;
+        const value = constructSliceAssignmentRhs(rhs, rhsPlace);
 
         // An empty range writes nothing, so the pointer's provenance never
         // matters — a zero-length assignment through a null pointer is a no-op
@@ -10824,7 +10846,7 @@ unsupportedExpression:
             return block
                 ? copyArrayValue(value, slice.type.toBasetype.nextOf)
                 : AggregateValue.isArray(value)
-                    ? readStoredValue(AggregateValue.elementAt(AggregateValue.native(value), index))
+                    ? readStoredArrayElement(rhsPlace, index)
                     : value;
         }
 
@@ -10928,7 +10950,8 @@ unsupportedExpression:
         checkSliceAssignmentBounds(lower, upper, current.arrayLength);
 
         const block = isBlockSliceAssignment(slice, rhs);
-        const value = constructSliceAssignmentRhs(rhs);
+        imported!"quickbite.backends.interpreter.place".Place rhsPlace;
+        const value = constructSliceAssignmentRhs(rhs, rhsPlace);
 
         // A fill assignment (`s.field[] = scalar;` or `s.field[a .. b] =
         // scalar;`) evaluates `rhs` to a single element-typed value, not an
@@ -10940,9 +10963,7 @@ unsupportedExpression:
             const element = block
                 ? copyArrayValue(value, slice.type.toBasetype.nextOf)
                 : AggregateValue.isArray(value)
-                    ? readStoredValue(
-                        AggregateValue.elementAt(AggregateValue.native(value), index - lower),
-                    )
+                    ? readStoredArrayElement(rhsPlace, index - lower)
                     : value;
             writeStoredArrayElement(current.index(index), element);
         }
@@ -11045,7 +11066,8 @@ unsupportedExpression:
         checkSliceAssignmentBounds(lower, upper, AggregateValue.length(currentAggregate));
 
         const block = isBlockSliceAssignment(slice, rhs);
-        const value = constructSliceAssignmentRhs(rhs);
+        imported!"quickbite.backends.interpreter.place".Place rhsPlace;
+        const value = constructSliceAssignmentRhs(rhs, rhsPlace);
 
         // A fill assignment (`(cast(T[]) view)[] = scalar;`) evaluates `rhs`
         // to a single element-typed value, not an array to index into --
@@ -11056,9 +11078,7 @@ unsupportedExpression:
             const element = block
                 ? copyArrayValue(value, slice.type.toBasetype.nextOf)
                 : AggregateValue.isArray(value)
-                    ? readStoredValue(
-                        AggregateValue.elementAt(AggregateValue.native(value), index - lower),
-                    )
+                    ? readStoredArrayElement(rhsPlace, index - lower)
                     : value;
             AggregateValue.withArrayElement(currentAggregate, index, element);
         }
