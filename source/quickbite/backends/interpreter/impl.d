@@ -3554,18 +3554,6 @@ unsupportedExpression:
             isPointerType(expression.type);
     }
 
-    // DMD semantic scales pointer arithmetic operands to byte offsets
-    private long pointerElementOffset(
-        imported!"dmd.mtype".Type pointerType,
-        in long byteOffset,
-    ) {
-        const elementSize = pointerElementSize(pointerType);
-        if (byteOffset % elementSize != 0)
-            throw new Exception("Unsupported pointer arithmetic offset.");
-
-        return byteOffset / elementSize;
-    }
-
     private long pointerElementSize(imported!"dmd.mtype".Type pointerType) {
         import quickbite.backends.interpreter.layout: typeByteSize;
 
@@ -8134,14 +8122,20 @@ unsupportedExpression:
         import dmd.tokens: EXP;
 
         switch (assignment.op) {
+            // DMD's own `scaleFactor` already folds `p += n`/`p -= n`'s
+            // element delta into a byte offset scaled by the pointee's size
+            // at the frontend level (`dcast.d`'s `scaleFactor`, invoked from
+            // `BinAssignExp` semantic for a pointer lhs and integral rhs);
+            // `pointerOffsetBy` adds its argument as raw bytes, so `right`
+            // needs no further scaling here.
             case EXP.addAssign:
                 if (left.isPointer)
-                    return left.pointerOffsetBy(
-                        pointerElementOffset(assignment.e1.type, right.asLong),
-                    );
+                    return left.pointerOffsetBy(right.asLong);
                 return left + right;
 
             case EXP.minAssign:
+                if (left.isPointer)
+                    return left.pointerOffsetBy(-right.asLong);
                 return left - right;
 
             case EXP.mulAssign:

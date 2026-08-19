@@ -15538,3 +15538,127 @@ static foreach (backend; Matrix!()) {
         });
     }
 }
+
+// D's pointer compound assignment (`p += n`/`p -= n`) moves the pointer by
+// `n` elements of its pointee type, the same scaling plain `p + n` pointer
+// arithmetic and `p++`/`p--` already apply -- not by `n` bytes. SystemLinker
+// is the oracle.
+static foreach (backend; Matrix!()) {
+    @("pointer.addAssignAdvancesByElement." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            int probe(int value) {
+                return value;
+            }
+
+            unittest {
+                int first = probe(10);
+                int[] arr = [first, first + 1, first + 2, first + 3];
+                auto p = arr.ptr;
+                auto a = *p;
+                p += 1;
+                auto b = *p;
+                assert(a == 10);
+                assert(b == 11);
+            }
+        });
+    }
+
+    @("pointer.addAssignAdvancesByMultipleElements." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            int probe(int value) {
+                return value;
+            }
+
+            unittest {
+                int first = probe(10);
+                int[] arr = [first, first + 1, first + 2, first + 3];
+                auto p = arr.ptr;
+                auto a = *p;
+                p += 2;
+                auto b = *p;
+                assert(a == 10);
+                assert(b == 12);
+            }
+        });
+    }
+
+    // A struct field's `DotVarExp` compound-assignment arm.
+    @("pointer.structFieldAddAssignAdvancesByElement." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct Holder {
+                int* p;
+            }
+
+            int probe(int value) {
+                return value;
+            }
+
+            unittest {
+                int first = probe(10);
+                int[] arr = [first, first + 1, first + 2, first + 3];
+                auto holder = Holder(arr.ptr);
+                auto a = *holder.p;
+                holder.p += 1;
+                auto b = *holder.p;
+                assert(a == 10);
+                assert(b == 11);
+            }
+        });
+    }
+
+    // An array element's `IndexExp` compound-assignment arm, where the
+    // array's own elements are pointers.
+    @("pointer.arrayElementAddAssignAdvancesByElement." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            int probe(int value) {
+                return value;
+            }
+
+            unittest {
+                int first = probe(10);
+                int[] arr = [first, first + 1, first + 2, first + 3];
+                int*[1] arr2 = [arr.ptr];
+                auto a = *arr2[0];
+                arr2[0] += 1;
+                auto b = *arr2[0];
+                assert(a == 10);
+                assert(b == 11);
+            }
+        });
+    }
+}
+
+// The bytecode core does not yet implement pointer `-=`.
+static foreach (backend; Matrix!(
+    Omit!(Bytecode, Because.refusal,
+        "Unsupported compound assignment in bytecode core: p -= 4L"),
+)) {
+    @("pointer.subAssignAdvancesByElement." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            int probe(int value) {
+                return value;
+            }
+
+            unittest {
+                int first = probe(10);
+                int[] arr = [first, first + 1, first + 2, first + 3];
+                auto p = &arr[3];
+                auto a = *p;
+                p -= 1;
+                auto b = *p;
+                assert(a == 13);
+                assert(b == 12);
+            }
+        });
+    }
+}
