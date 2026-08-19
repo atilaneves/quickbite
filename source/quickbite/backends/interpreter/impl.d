@@ -13356,11 +13356,21 @@ unsupportedExpression:
             // type to pass the same check before committing to this arm, so
             // an unsupported source falls through to the fallback path that
             // already reinterprets pointer and class references as scalars.
+            //
+            // `target` must come from `cast_.to`, not `place.type`: they
+            // normally agree, but DMD's `.im` property lowering
+            // (`typesem.d`'s `TypeBasic.dotExp`) builds a `CastExp` whose
+            // `.to` is the true cast target (the imaginary component type)
+            // and then overwrites `.type` back to the matching real type so
+            // the property reads as a real, not an imaginary, value. Casting
+            // by `place.type` there would extract the real part instead of
+            // the imaginary part.
             CastTarget target;
             CastTarget sourceTarget;
             if (
+                cast_.to !is null &&
                 cast_.e1.type !is null &&
-                tryCastTarget(place.type, target) &&
+                tryCastTarget(cast_.to, target) &&
                 tryCastTarget(cast_.e1.type, sourceTarget)
             ) {
                 auto source = Place(
