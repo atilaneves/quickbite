@@ -515,6 +515,43 @@ private imported!"quickbite.backends.interpreter.expression_result".ExpressionRe
         : ExpressionResult.functionPointerValue(slot.functionPointerId);
 }
 
+// A thrown or chained exception's own class identity: either a VM-owned
+// class instance's native aggregate storage (an interpreted `throw` of a
+// locally constructed exception), or the borrowed body address of a
+// host-owned exception object whose fields live in `nativeClassOwners`/
+// `nativeExceptionMetadata`, keyed by that same address --
+// `classIdentityAddress` already reads both shapes exactly this way. Keeping
+// the whole `NativeAggregate` here, not just its address, is what keeps a
+// VM-owned exception's GC-owned backing storage reachable for as long as it
+// is still being unwound, chained through a `finally` body, or matched
+// against a catch clause.
+private struct ClassReference {
+    public bool isAggregate;
+    public imported!"quickbite.backends.interpreter.native_aggregate".NativeAggregate aggregate;
+    public void* address;
+}
+
+private ClassReference classReferenceValue(
+    in imported!"quickbite.backends.interpreter.expression_result".ExpressionResult value,
+) {
+    import quickbite.backends.interpreter.aggregate_value: AggregateValue;
+    import quickbite.backends.interpreter.native_aggregate: NativeAggregate;
+
+    return value.isNativeAggregate
+        ? ClassReference(true, AggregateValue.native(value), null)
+        : ClassReference(false, NativeAggregate.init, value.pointerAddress);
+}
+
+private imported!"quickbite.backends.interpreter.expression_result".ExpressionResult
+    classReferenceResult(ClassReference reference)
+{
+    import quickbite.backends.interpreter.expression_result: ExpressionResult;
+
+    return reference.isAggregate
+        ? ExpressionResult.nativeAggregateValue(reference.aggregate)
+        : ExpressionResult.pointerValue(reference.address);
+}
+
 // One root evaluation owns this context, and every nested call borrows it.
 // Callable identities are monotonic, but address-keyed slot metadata follows
 // storage lifetime: writes replace it and copies, moves, and clears relocate or
@@ -534,8 +571,7 @@ private struct InterpreterExecutionState {
     // Captured host Throwables and their interpreter-visible chain links are
     // created by the native exception bridge and read by later member calls.
     public Throwable[const(void)*] nativeThrowableRoots;
-    public imported!"quickbite.backends.interpreter.expression_result".
-        ExpressionResult[void*] nativeThrowableNext;
+    public ClassReference[void*] nativeThrowableNext;
 
     // Writes to guest ABI slots register symbolic interpreted callables and
     // TypeInfos; any later activation that reads the same address must see
@@ -573,14 +609,14 @@ private struct InterpreterExecutionState {
 }
 
 private class InterpretedException: Exception {
-    public imported!"quickbite.backends.interpreter.expression_result".ExpressionResult object;
+    public ClassReference object;
 
     public this(
         in imported!"quickbite.backends.interpreter.expression_result".ExpressionResult object,
         in string message,
     ) {
         super(message);
-        this.object = object;
+        this.object = classReferenceValue(object);
     }
 }
 
@@ -635,7 +671,7 @@ private struct Walker {
         return _executionState.nativeThrowableRoots;
     }
 
-    private @property ref ExpressionResult[void*] nativeThrowableNext() {
+    private @property ref ClassReference[void*] nativeThrowableNext() {
         return _executionState.nativeThrowableNext;
     }
 
@@ -747,7 +783,7 @@ private struct Walker {
     private Place thisValue;
     private void* thisAddress;
     private bool hasThis;
-    private ExpressionResult pendingFinallyBodyException;
+    private ClassReference pendingFinallyBodyException;
     private bool hasPendingFinallyBodyException;
 
     private bool returned;
@@ -834,7 +870,10 @@ private struct Walker {
             returned = false;
             loopControl = LoopControl.none;
             loopControlLabel = null;
-            const savedPendingFinallyBodyException = pendingFinallyBodyException;
+            // `const` cannot round-trip a `ClassReference` either, for the
+            // same reason as `savedRefReturn` above: its aggregate arm holds
+            // a `Type` class reference.
+            auto savedPendingFinallyBodyException = pendingFinallyBodyException;
             const savedHasPendingFinallyBodyException =
                 hasPendingFinallyBodyException;
             if (auto bodyInterpreted = cast(InterpretedException) bodyException) {
@@ -853,10 +892,10 @@ private struct Walker {
                 if (finalException is null)
                     throw exception;
                 if (auto bodyInterpreted = cast(InterpretedException) bodyException) {
-                    bodyInterpreted.object = chainExceptionObject(
-                        bodyInterpreted.object,
-                        finalException.object,
-                    );
+                    bodyInterpreted.object = classReferenceValue(chainExceptionObject(
+                        classReferenceResult(bodyInterpreted.object),
+                        classReferenceResult(finalException.object),
+                    ));
                     throw bodyInterpreted;
                 }
                 throw finalException;
@@ -1031,11 +1070,11 @@ private struct Walker {
             if (interpreted is null)
                 throw exception;
 
-            auto catch_ = matchingCatch(tryCatch, interpreted.object);
+            auto catch_ = matchingCatch(tryCatch, classReferenceResult(interpreted.object));
             if (catch_ is null)
                 throw exception;
 
-            bindCatchVariable(catch_, interpreted.object);
+            bindCatchVariable(catch_, classReferenceResult(interpreted.object));
             runStatement(catch_.handler);
         }
     }
@@ -2005,7 +2044,7 @@ private struct Walker {
             throw new Exception("Unsupported throw expression.");
         if (hasPendingFinallyBodyException) {
             const chained = chainExceptionObject(
-                pendingFinallyBodyException,
+                classReferenceResult(pendingFinallyBodyException),
                 object,
             );
             throw new InterpretedException(
@@ -2067,7 +2106,7 @@ private struct Walker {
         );
         if (exception.chainedNext !is null) {
             const next = nativeExceptionObject(exception.chainedNext);
-            nativeThrowableNext[classIdentityAddress(object)] = next;
+            nativeThrowableNext[classIdentityAddress(object)] = classReferenceValue(next);
         }
 
         return object;
@@ -2211,7 +2250,7 @@ private struct Walker {
             return thrown;
 
         const chained = withClassFieldNamed(thrown, "_nextInChainPtr", next);
-        nativeThrowableNext[classIdentityAddress(chained)] = next;
+        nativeThrowableNext[classIdentityAddress(chained)] = classReferenceValue(next);
         return chained;
     }
 
@@ -7214,7 +7253,7 @@ unsupportedExpression:
             if (classHasType(memberReceiver, "Throwable")) {
                 const body = classIdentityAddress(memberReceiver);
                 if (auto next = body in nativeThrowableNext)
-                    return *next;
+                    return classReferenceResult(*next);
 
                 if (classHasFieldNamed(memberReceiver, "_nextInChainPtr"))
                     return classFieldNamed(
