@@ -14728,9 +14728,23 @@ destinationFallback:
         }
 
         if (auto pointer = post.e1.isPtrExp) {
-            const target = runExpressionValue(pointer.e1);
-            const oldValue = readPointerTarget(pointer.e1, target);
-            writePointerTarget(pointer.e1, target, oldValue + delta);
+            // Construct the pointer operand in its own typed place rather
+            // than reading it through the carrier: `pointerOperandPlace`
+            // evaluates `pointer.e1` exactly once, matching
+            // `readPointerTarget`/`writePointerTarget`'s own single-read
+            // contract, and `.deref.address` is the identical address
+            // `nativeElementAddress(..., 0, ...)` those composed. Pair it
+            // with `post.e1.type.toBasetype` -- the same pointee type
+            // `loadNativePointerElement` resolved -- so an enum-typed
+            // pointee still reads/writes as its base scalar here.
+            import quickbite.backends.interpreter.place: Place;
+
+            auto target = Place(
+                pointerOperandPlace(pointer.e1).deref.address,
+                post.e1.type.toBasetype,
+            );
+            const oldValue = readStoredValue(target);
+            writeStoredValue(target, oldValue + delta);
             return oldValue;
         }
 
