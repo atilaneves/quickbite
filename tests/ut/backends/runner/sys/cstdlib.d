@@ -20,6 +20,7 @@ private void shouldFailNoSource
 // CTFE should stay pure: no host libc calls.
 static foreach (backend; AliasSeq!(Ctfe)) {
     @("malloc.noSource." ~ backend.stringof)
+    @Tags(backend.stringof)
     unittest {
         enum source = q{
             unittest {
@@ -39,6 +40,7 @@ static foreach (backend; AliasSeq!(Ctfe)) {
     }
 
     @("free.noSource." ~ backend.stringof)
+    @Tags(backend.stringof)
     unittest {
         enum source = q{
             unittest {
@@ -64,6 +66,7 @@ enum atoiSource = q{
 // CTFE cannot call host libc; the Interpreter marshals the char array.
 static foreach (backend; AliasSeq!(Ctfe)) {
     @("atoi.noSource." ~ backend.stringof)
+    @Tags(backend.stringof)
     unittest {
         shouldFailNoSource!(backend, "atoi", atoiSource);
     }
@@ -116,6 +119,7 @@ enum strtolSource = q{
 // parameter back and dereferences the native char pointer.
 static foreach (backend; AliasSeq!(Ctfe)) {
     @("strtol.noSource." ~ backend.stringof)
+    @Tags(backend.stringof)
     unittest {
         shouldFailNoSource!(backend, "strtol", strtolSource);
     }
@@ -156,6 +160,7 @@ enum ldivSource = q{
 // CTFE rejects div: DMD CTFE has no host libc struct-return support.
 static foreach (backend; AliasSeq!(Ctfe)) {
     @("div.noSource." ~ backend.stringof)
+    @Tags(backend.stringof)
     unittest {
         shouldFailNoSource!(backend, "div", divSource);
     }
@@ -167,6 +172,7 @@ static foreach (backend; Matrix!(
     Omit!(LLVMJit, Because.unconfirmed),
 )) {
     @("free.null.voidReturn." ~ backend.stringof)
+    @Tags(backend.stringof)
     unittest {
         enum source = q{
             unittest {
@@ -263,6 +269,7 @@ static foreach (backend; Matrix!(
 // Bytecode has its own real free.null.voidReturn row above.
 static foreach (backend; AliasSeq!(IR)) {
     @("free.null.voidReturn." ~ backend.stringof)
+    @Tags(backend.stringof)
     unittest {
         enum source = q{
             unittest {
@@ -282,6 +289,7 @@ static foreach (backend; AliasSeq!(IR)) {
 // incremental PR, while the IR backend remains pinned at the malloc leaf.
 static foreach (backend; AliasSeq!(IR)) {
     @("malloc.pointerReturn.nativeMemory." ~ backend.stringof)
+    @Tags(backend.stringof)
     unittest {
         enum source = q{
             unittest {
@@ -311,6 +319,7 @@ static foreach (backend; Matrix!(
     Omit!(LLVMJit, Because.unconfirmed),
 )) {
     @("malloc.pointerReturn.nativeMemory." ~ backend.stringof)
+    @Tags(backend.stringof)
     unittest {
         enum source = q{
             unittest {
@@ -372,11 +381,13 @@ enum reallocNullSource = q{
 static foreach (backend; AliasSeq!(IR)) {
 
     @("calloc.multiArg.zeroedNativeMemory." ~ backend.stringof)
+    @Tags(backend.stringof)
     unittest {
         shouldFailNoSource!(backend, "calloc", callocZeroedSource);
     }
 
     @("realloc.null.pointerArgPointerReturn." ~ backend.stringof)
+    @Tags(backend.stringof)
     unittest {
         shouldFailNoSource!(backend, "realloc", reallocNullSource);
     }
@@ -439,6 +450,7 @@ enum reallocGrowSource = q{
 static foreach (backend; AliasSeq!(IR)) {
 
     @("realloc.grow.preservesNativeMemory." ~ backend.stringof)
+    @Tags(backend.stringof)
     unittest {
         shouldFailNoSource!(backend, "malloc", reallocGrowSource);
     }
@@ -515,11 +527,13 @@ static foreach (backend; Matrix!(
 static foreach (backend; AliasSeq!(IR)) {
 
     @("div.structReturn." ~ backend.stringof)
+    @Tags(backend.stringof)
     unittest {
         shouldFailNoSource!(backend, "div", divSource);
     }
 
     @("ldiv.structReturn.longArgs." ~ backend.stringof)
+    @Tags(backend.stringof)
     unittest {
         shouldFailNoSource!(backend, "ldiv", ldivSource);
     }
@@ -626,6 +640,7 @@ enum strtodSource = q{
 // CTFE cannot call host libc; each fixture reaches the body-less leaf.
 static foreach (backend; AliasSeq!(Ctfe)) {
     @("abs.noSource." ~ backend.stringof)
+    @Tags(backend.stringof)
     unittest {
         shouldFailNoSource!(backend, "abs", absSource);
     }
@@ -644,6 +659,7 @@ static foreach (backend; Matrix!(
 
 static foreach (backend; AliasSeq!(Ctfe)) {
     @("labs.noSource." ~ backend.stringof)
+    @Tags(backend.stringof)
     unittest {
         shouldFailNoSource!(backend, "labs", labsSource);
     }
@@ -662,6 +678,7 @@ static foreach (backend; Matrix!(
 
 static foreach (backend; AliasSeq!(Ctfe)) {
     @("ctype.toupperTolower.noSource." ~ backend.stringof)
+    @Tags(backend.stringof)
     unittest {
         shouldFailNoSource!(backend, "toupper", ctypeSource);
     }
@@ -680,6 +697,7 @@ static foreach (backend; Matrix!(
 
 static foreach (backend; AliasSeq!(Ctfe)) {
     @("atof.floatReturn.noSource." ~ backend.stringof)
+    @Tags(backend.stringof)
     unittest {
         shouldFailNoSource!(backend, "atof", atofSource);
     }
@@ -698,6 +716,7 @@ static foreach (backend; Matrix!(
 
 static foreach (backend; AliasSeq!(Ctfe)) {
     @("strtod.floatReturn.endptr.noSource." ~ backend.stringof)
+    @Tags(backend.stringof)
     unittest {
         shouldFailNoSource!(backend, "strtod", strtodSource);
     }

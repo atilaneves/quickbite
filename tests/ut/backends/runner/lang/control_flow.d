@@ -377,6 +377,7 @@ static foreach (backend; Matrix!()) {
 static foreach (backend; AliasSeq!(Ctfe)) {
     @("function.structMethodReturnDoesNotSkipCallerStatements." ~
         backend.stringof)
+    @Tags(backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
             struct Worker {

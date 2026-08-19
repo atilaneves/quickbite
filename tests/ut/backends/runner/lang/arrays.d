@@ -2103,6 +2103,7 @@ static foreach (backend; Matrix!()) {
 static foreach (backend; AliasSeq!(Ctfe)) {
     @("dynamicArray.overlappingSliceAssignmentIsRejectedAtCtfe." ~
         backend.stringof)
+    @Tags(backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
             int seed(int value) {
@@ -2161,6 +2162,7 @@ static foreach (backend; Matrix!(
 
 static foreach (backend; AliasSeq!(Ctfe, Interpreter)) {
     @("dynamicArray.sliceIndexPastLengthDiagnostic." ~ backend.stringof)
+    @Tags(backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
             int value(int seed) {
@@ -2213,6 +2215,7 @@ static foreach (backend; Matrix!(
 
 static foreach (backend; AliasSeq!(Ctfe, Interpreter)) {
     @("dynamicArray.indexPastLengthDiagnostic." ~ backend.stringof)
+    @Tags(backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
             int value(int seed) {
@@ -2263,6 +2266,7 @@ static foreach (backend; Matrix!(
 static foreach (backend; AliasSeq!(Ctfe, Interpreter)) {
     @("dynamicArray.fieldOfIndexedElementPastLengthDiagnostic." ~
         backend.stringof)
+    @Tags(backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
             struct Pair {
@@ -3116,6 +3120,7 @@ static foreach (backend; Matrix!()) {
 static foreach (backend; AliasSeq!(Ctfe)) {
     @("staticArray.overlappingSubSliceAssignmentIsRejectedAtCtfe." ~
         backend.stringof)
+    @Tags(backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
             int seed(int value) {
@@ -3209,6 +3214,7 @@ static foreach (backend; Matrix!(
 static foreach (backend; AliasSeq!(Ctfe)) {
     @("staticArray.partialSliceAssignmentPastLengthThrowsRangeError." ~
         backend.stringof)
+    @Tags(backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
             int seed(int value) {
@@ -3303,6 +3309,7 @@ static foreach (backend; Matrix!(
 static foreach (backend; AliasSeq!(Ctfe)) {
     @("staticArray.elementWriteWithRuntimeIndexOutOfBoundsDiagnostic." ~
         backend.stringof)
+    @Tags(backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
             int seed(int value) {
@@ -3349,6 +3356,7 @@ static foreach (backend; Matrix!(
 static foreach (backend; AliasSeq!(Ctfe, Interpreter)) {
     @("staticArray.nestedElementReadWithRuntimeOuterIndexOutOfBoundsDiagnostic." ~
         backend.stringof)
+    @Tags(backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
             int seed(int value) {
@@ -3392,6 +3400,7 @@ static foreach (backend; Matrix!(
 static foreach (backend; AliasSeq!(Ctfe)) {
     @("staticArray.nestedElementWriteWithRuntimeOuterIndexOutOfBoundsDiagnostic." ~
         backend.stringof)
+    @Tags(backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
             int seed(int value) {
@@ -3438,6 +3447,7 @@ static foreach (backend; Matrix!(
 static foreach (backend; AliasSeq!(Ctfe, Interpreter)) {
     @("staticArray.nestedElementReadWithRuntimeInnerIndexOutOfBoundsDiagnostic." ~
         backend.stringof)
+    @Tags(backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
             int seed(int value) {
@@ -3482,6 +3492,7 @@ static foreach (backend; Matrix!(
 static foreach (backend; AliasSeq!(Ctfe)) {
     @("staticArray.nestedElementWriteWithRuntimeInnerIndexOutOfBoundsDiagnostic." ~
         backend.stringof)
+    @Tags(backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
             int seed(int value) {
@@ -3802,6 +3813,7 @@ static foreach (backend; Matrix!(
 static foreach (backend; AliasSeq!(Ctfe)) {
     @("pointer.sliceWithReversedRuntimeBoundsThrowsRangeError." ~
         backend.stringof)
+    @Tags(backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
             size_t runtimeBound(size_t value) {
@@ -3827,6 +3839,7 @@ static foreach (backend; AliasSeq!(Ctfe)) {
 
 static foreach (backend; AliasSeq!(Ctfe)) {
     @("pointer.slicePastAllocatedBlockDiagnostic." ~ backend.stringof)
+    @Tags(backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
             int seed(int value) {
@@ -4370,6 +4383,7 @@ static foreach (backend; Matrix!(
 // dynamic array, so pin that divergence separately from compiled D.
 static foreach (backend; AliasSeq!(Bytecode)) {
     @("dynamicArray.shrinkPreservesBackingAddress." ~ backend.stringof)
+    @Tags(backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
             unittest {
@@ -5158,6 +5172,7 @@ static foreach (backend; Matrix!(
 static foreach (backend; AliasSeq!(Ctfe)) {
     @("dynamicArray.stringSubSliceWithInvertedRuntimeBoundsThrows." ~
         backend.stringof)
+    @Tags(backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
             int seed(int value) {
@@ -5177,6 +5192,7 @@ static foreach (backend; AliasSeq!(Ctfe)) {
 static foreach (backend; AliasSeq!(Interpreter)) {
     @("dynamicArray.stringSubSliceWithInvertedRuntimeBoundsThrows." ~
         backend.stringof)
+    @Tags(backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
             int seed(int value) {
@@ -5224,6 +5240,7 @@ static foreach (backend; Matrix!(
 static foreach (backend; AliasSeq!(Ctfe)) {
     @("dynamicArray.subSliceWithInvertedRuntimeBoundsThrows." ~
         backend.stringof)
+    @Tags(backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
             int seed(int value) {
@@ -5243,6 +5260,7 @@ static foreach (backend; AliasSeq!(Ctfe)) {
 static foreach (backend; AliasSeq!(Interpreter)) {
     @("dynamicArray.subSliceWithInvertedRuntimeBoundsThrows." ~
         backend.stringof)
+    @Tags(backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
             int seed(int value) {
@@ -6017,6 +6035,7 @@ static foreach (backend; Matrix!(
 static foreach (backend; AliasSeq!(Ctfe)) {
     @("dynamicArray.nestedDynamicArrayFieldElementOutOfBoundsIndexThrows." ~
         backend.stringof)
+    @Tags(backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
             struct Outer { int[][] matrixField; int tag; }
@@ -6416,6 +6435,7 @@ static foreach (backend; Matrix!(
 // distinct allocations holding equal elements identical.
 static foreach (backend; AliasSeq!(Ctfe, Interpreter)) {
     @("dynamicArray.equalContentsAreNotIdentical." ~ backend.stringof)
+    @Tags(backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
             unittest {
@@ -6480,6 +6500,7 @@ static foreach (backend; Matrix!(
 // keeps that distinction, so only the Interpreter is pinned here.
 static foreach (backend; AliasSeq!(Interpreter)) {
     @("dynamicArray.emptyInteriorSliceIsNotNull." ~ backend.stringof)
+    @Tags(backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
             unittest {
@@ -6519,6 +6540,7 @@ static foreach (backend; Matrix!(
 // so two identical literals never share an address on Bytecode.
 static foreach (backend; AliasSeq!(Bytecode)) {
     @("stringLiteral.identicalLiteralsAreIdentical." ~ backend.stringof)
+    @Tags(backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
             unittest {

@@ -187,6 +187,7 @@ static foreach (backend; Matrix!(Plus!(IR))) {
 // interpretation backends) rather than the SystemLinker oracle below.
 static foreach (backend; AliasSeq!(Ctfe, Interpreter, IR)) {
     @("logicalAndCallShortCircuitFailureMessage.1." ~ backend.stringof)
+    @Tags(backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
             bool isReady() {

@@ -12,6 +12,7 @@ import ut.backends;
 // code with -checkaction=context) reports "boom" directly.
 static foreach (backend; AliasSeq!(Ctfe)) {
     @("exception.uncaughtThrowReportsMessage." ~ backend.stringof)
+    @Tags(backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
             unittest {
@@ -42,6 +43,7 @@ static foreach (backend; Matrix!(
 // Ctfe diverges: see exception.uncaughtThrowReportsMessage above.
 static foreach (backend; AliasSeq!(Ctfe)) {
     @("exception.uncaughtThrowPreservesExceptionMessage." ~ backend.stringof)
+    @Tags(backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
             unittest {
@@ -73,6 +75,7 @@ static foreach (backend; Matrix!(
 // _d_unittest hook message "unittest failure".
 static foreach (backend; AliasSeq!(Ctfe)) {
     @("exception.catchExceptionDoesNotCatchAssertFailure." ~ backend.stringof)
+    @Tags(backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
             unittest {

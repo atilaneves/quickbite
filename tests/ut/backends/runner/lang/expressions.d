@@ -800,6 +800,7 @@ static foreach (backend; AliasSeq!(Ctfe)) {
         "assert formatter uses sprintf",
     )
     @("floating.intToFloatCastUsesFloatPrecision." ~ backend.stringof)
+    @Tags(backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
             unittest {
@@ -1824,6 +1825,7 @@ static foreach (backend; Matrix!()) {
 
 static foreach (backend; AliasSeq!(Ctfe)) {
     @("typeid.typeNameReturnsIdentifier." ~ backend.stringof)
+    @Tags(backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
             class Widget {}
@@ -2296,6 +2298,7 @@ static foreach (backend; Matrix!()) {
 
 static foreach (backend; AliasSeq!(Ctfe)) {
     @("delegate.ptrPropertyIsRejectedAtCtfe." ~ backend.stringof)
+    @Tags(backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
             int runtimeSeed(int seed) {
@@ -2370,6 +2373,7 @@ static foreach (backend; Matrix!(
 
 static foreach (backend; AliasSeq!(Ctfe)) {
     @("delegate.funcptrPropertyIsRejectedAtCtfe." ~ backend.stringof)
+    @Tags(backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
             int runtimeSeed(int seed) {
@@ -7246,6 +7250,7 @@ static foreach (backend; Matrix!(
 static foreach (backend; AliasSeq!(Ctfe)) {
     @("pointer.staticArrayPointerSurvivesWholeArrayAssignment.ctfeDivergence." ~
         backend.stringof)
+    @Tags(backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
             int one() {
@@ -15315,6 +15320,7 @@ static foreach (backend; Matrix!(
 // other null-class-dereference site in the backend.
 static foreach (backend; AliasSeq!(Ctfe)) {
     @("classField.nullClassinfoNameDiagnostic." ~ backend.stringof)
+    @Tags(backend.stringof)
     unittest {
         runBackendSourceFixtureTests!backend(q{
             class C {}
