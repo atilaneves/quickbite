@@ -535,6 +535,85 @@ unittest {
 }
 
 
+// A body-less dependency-image function whose address is taken (`&f`) and
+// called through a function-pointer variable, rather than named directly at
+// the call site: the guest program never resolves the callee statically, so
+// the call goes through the indirect-call path instead of the direct-call
+// argument staging the fixture above exercises. `ref` still names the
+// caller's own storage in that path. `Interpreter` is left out of this one
+// fixture's rows: it declines this call shape outright ("Unsupported
+// interpreter call arguments"), a pre-existing gap in a different backend's
+// own dispatch, not the argument-marshalling behaviour under test here.
+private alias IndirectRefDependencyImageBackends = AliasSeq!(Bytecode, LLVMJit);
+static foreach (backend; IndirectRefDependencyImageBackends) {
+@("dependencyImage.externCRefParameterThroughFunctionPointerWritesBack." ~
+    backend.stringof)
+@Tags(backend.stringof)
+unittest {
+    import quickbite.frontend.compiler: parseSnippetWithCheckActionContext;
+    import std.path: buildPath;
+
+    const sandbox = immutable Sandbox();
+    with(sandbox) {
+        const importPath = "imports";
+        const moduleName =
+            "dep_image_ref_fnptr_fixture_" ~ backend.stringof;
+        const depPath = buildPath(importPath, moduleName ~ ".d");
+        writeFile(depPath, q{
+            module dep_image_ref_fnptr_fixture;
+
+            extern(C) void dependencyMutateInt(ref int value) {
+                value = 42;
+            }
+        }.uniqueDepModule("dep_image_ref_fnptr_fixture", backend.stringof));
+
+        const imagePath = buildSharedLibrary(
+            sandbox,
+            moduleName,
+            [depPath],
+        );
+
+        writeFile(depPath, q{
+            module dep_image_ref_fnptr_fixture;
+
+            extern(C) void dependencyMutateInt(ref int value);
+        }.uniqueDepModule("dep_image_ref_fnptr_fixture", backend.stringof));
+
+        auto moduleResult = parseSnippetWithCheckActionContext(
+            q{
+                import dep_image_ref_fnptr_fixture;
+
+                unittest {
+                    auto fn = &dependencyMutateInt;
+
+                    int value = 1;
+                    fn(value);
+
+                    assert(value == 42);
+                }
+            }.uniqueDepModule("dep_image_ref_fnptr_fixture", backend.stringof),
+            [inSandboxPath(importPath)],
+        );
+
+        const oracle = (new SystemLinker(
+            [imagePath],
+            [inSandboxPath(importPath)],
+        )).runTests(moduleResult.module_);
+        oracle.length.should == 1;
+        oracle[0].passed.should == true;
+
+        const actual = runDependencyImage!backend(
+            [imagePath],
+            [inSandboxPath(importPath)],
+            moduleResult.module_,
+        );
+        actual.length.should == 1;
+        actual[0].passed.should == true;
+    }
+}
+}
+
+
 private struct CtorOrderingFixture {
     string[] imagePaths;
     string[] importPaths;

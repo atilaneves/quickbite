@@ -596,3 +596,21 @@
   element's `byteWidth` already equals `sliceDescriptorSize` by
   definition, so the special case never needed to exist even before the
   `Tsarray` fix.
+
+- A native leaf reached through a function pointer (`&f` where `f.fbody is
+  null`, called via `Op.callIndirect`) builds its argument area as an
+  ordinary VM parameter frame (`ParameterLayout`), not a direct native
+  call's own uniform-stride staging area. `ParameterLayout` stores a
+  `ref`/`out`/`auto ref` argument's slot as the referenced variable's
+  ADDRESS, not its value -- unlike a direct native call's staging slot,
+  which `tryCompileNativeCall` always fills with the argument's copied-in
+  VALUE regardless of reference-ness. `native_call.d`'s
+  `prepareNativeInvocation` read every indirect argument's address the
+  same way as a direct one (the slot's own location), so a `ref`
+  parameter's callee received the address of the frame slot holding the
+  pointer, not the pointee -- one indirection short of the guest variable,
+  silently leaving the caller's storage unwritten rather than crashing.
+  Fixed by recording each indirect native target's `ParameterLayout
+  .isReference` alongside its offsets (`NativeCall.argumentIsReference`,
+  `program.d`) and following the slot's own pointer value for a marked
+  argument instead of treating the slot as the storage.

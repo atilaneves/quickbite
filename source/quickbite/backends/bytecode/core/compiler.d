@@ -580,6 +580,7 @@ private struct Compiler {
             noReceiverOffset,
             null,
             layout.offsets.dup,
+            layout.isReference.dup,
         );
         return nativeIndex;
     }

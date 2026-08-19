@@ -117,12 +117,24 @@ private bool prepareNativeInvocation(
         auto type = index < fixedCount
             ? signature.parameterList[index].type.toBasetype
             : native.argumentTypes[index].toBasetype;
-        const argumentOffset = native.argumentOffsets.length != 0
+        const isIndirect = native.argumentOffsets.length != 0;
+        const argumentOffset = isIndirect
             ? argumentArea + native.argumentOffsets[index]
             : argumentArea + index * nativeArgumentSlotSize;
+        auto slotAddress = frameAddress(stack, argumentOffset);
+        // An indirect call's argument area is the ordinary VM parameter
+        // frame, where a `ref`/`out`/`auto ref` slot holds the referenced
+        // variable's ADDRESS rather than its value (`NativeCall
+        // .argumentIsReference`'s own comment, `program.d`). Follow that
+        // address instead of handing the bridge the slot's own location, or
+        // the callee receives a pointer to the frame slot rather than to the
+        // guest variable it names -- one indirection too many.
+        const isReferenceArgument = isIndirect &&
+            index < native.argumentIsReference.length &&
+            native.argumentIsReference[index];
         invocation.arguments[index] = TypedAddress(
             type,
-            frameAddress(stack, argumentOffset),
+            isReferenceArgument ? referencedAddress(slotAddress) : slotAddress,
         );
     }
 
@@ -189,4 +201,11 @@ private void* frameAddress(ubyte[] stack, in size_t offset) @trusted {
 // pointer.
 private const(void)* loadPointer(in void* address) @trusted {
     return *cast(const(void*)*) address;
+}
+
+// @trusted: the slot holds the address of the caller's own variable, laid
+// out by the same VM parameter-frame convention every VM-compiled `ref`
+// argument already uses.
+private void* referencedAddress(void* address) @trusted {
+    return *cast(void**) address;
 }

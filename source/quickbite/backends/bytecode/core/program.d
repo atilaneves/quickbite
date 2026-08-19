@@ -996,6 +996,13 @@ package(quickbite.backends.bytecode) struct NativeCall {
     // ordinary VM typed-frame parameter layout, not a native argument area,
     // so its per-argument addresses are computed differently.
     ushort[] argumentOffsets;
+    // Parallel to `argumentOffsets`, empty for a direct call. Marks which
+    // indirect argument slots are `ref`/`out`/`auto ref` per
+    // `ParameterLayout.isReference`: that layout stores such a slot as the
+    // referenced variable's ADDRESS, not its value, unlike every other
+    // parameter slot, so `prepareNativeInvocation` must follow the address
+    // rather than treat the slot itself as the argument's storage.
+    bool[] argumentIsReference;
 }
 
 package(quickbite.backends.bytecode) struct VirtualFunction {
