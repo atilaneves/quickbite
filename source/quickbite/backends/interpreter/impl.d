@@ -3746,7 +3746,7 @@ unsupportedExpression:
                             setLocal(
                                 index.lengthVar,
                                 ExpressionResult(AggregateValue.length(
-                                    AggregateValue.native(runExpressionValue(receiverVar)),
+                                    AggregateValue.native(constructedExpressionValue(receiverVar)),
                                 )),
                             );
                     const elementIndex = scalarOperand!long(index.e2);
@@ -3778,7 +3778,7 @@ unsupportedExpression:
             // type; native objects such as a caught Throwable need not have
             // been allocated by the Interpreter or entered in its dynamic-type
             // registry for their inherited field layout to be addressable.
-            auto nativeClassReceiver = runExpressionValue(dot.e1);
+            auto nativeClassReceiver = constructedExpressionValue(dot.e1);
             if (
                 nativeClassReceiver.isNativeAggregate &&
                 dot.e1.type.toBasetype.isTypeClass !is null
@@ -4059,7 +4059,7 @@ unsupportedExpression:
             ? readStoredValue(
                 Place(receiverAddress.pointerAddress, receiverExpression.type),
             )
-            : runExpressionValue(receiverExpression);
+            : constructedExpressionValue(receiverExpression);
         queueConstructedReceiverDestructor(receiverExpression);
     }
 
@@ -4510,7 +4510,7 @@ unsupportedExpression:
             // direct address-taking operand.  Evaluate that call once and
             // compose its element address from the returned typed slice.
             if (auto call = array.isCallExp) {
-                const arrayValue = runExpressionValue(call);
+                const arrayValue = constructedExpressionValue(call);
                 if (AggregateValue.isArray(arrayValue))
                     return ExpressionResult.pointerValue(
                         AggregateValue.elementAddress(
@@ -4724,7 +4724,7 @@ unsupportedExpression:
                 // one-element result carrier.  Its target is still the one
                 // evaluated slice value, not an addressable pointer into the
                 // guest array.
-                const arrayValue = runExpressionValue(index.e1);
+                const arrayValue = constructedExpressionValue(index.e1);
                 if (index.lengthVar !is null) {
                     const sourceLength = AggregateValue.length(AggregateValue.native(arrayValue));
                     setLocal(index.lengthVar, ExpressionResult(sourceLength));
@@ -4973,7 +4973,7 @@ unsupportedExpression:
                     throw exception;
                 }
 
-                const value = runExpressionValue(array);
+                const value = constructedExpressionValue(array);
                 return ExpressionResult.pointerValue(
                     AggregateValue.elementAddress(value, cast(size_t) offset),
                 );
@@ -5844,9 +5844,9 @@ unsupportedExpression:
                     ? readValue(
                         Place(receiverPointerAddress.pointerAddress, dot.e1.type),
                     )
-                    : runExpressionValue(dot.e1);
+                    : constructedExpressionValue(dot.e1);
             } else
-                receiver = runExpressionValue(dot.e1);
+                receiver = constructedExpressionValue(dot.e1);
 
             // When `call` is itself the constructor about to run against
             // this receiver, hold its premature arming until that call
@@ -8517,7 +8517,7 @@ unsupportedExpression:
                     );
 
 
-        const receiver = runExpressionValue(dot.e1);
+        const receiver = constructedExpressionValue(dot.e1);
         if (receiver == ExpressionResult.null_)
             throw new Exception(text(
                 "class `",
@@ -8709,7 +8709,7 @@ unsupportedExpression:
     private ExpressionResult runDotIdentifierExpression(
         imported!"dmd.expression".DotIdExp dot,
     ) {
-        const receiver = runExpressionValue(dot.e1);
+        const receiver = constructedExpressionValue(dot.e1);
         const name = dot.ident is null ? "" : dot.ident.toString;
         if (name == "re")
             return receiver.complexRealPart;
@@ -8792,7 +8792,7 @@ unsupportedExpression:
         if (staticArray is null)
             throw new Exception("Unsupported interpreter vector expression.");
 
-        const value = runExpressionValue(vector.e1);
+        const value = constructedExpressionValue(vector.e1);
         const length = staticArrayLength(staticArray);
 
         ExpressionResult[] elements;
@@ -8814,7 +8814,7 @@ unsupportedExpression:
         import quickbite.backends.interpreter.aggregate_value: AggregateValue;
         import quickbite.backends.interpreter.native_aggregate: NativeAggregate;
 
-        const vector = runExpressionValue(vectorArray.e1);
+        const vector = constructedExpressionValue(vectorArray.e1);
         auto native = AggregateValue.native(vector);
         return ExpressionResult.nativeAggregateValue(NativeAggregate(
             vectorArray.type,
@@ -9559,7 +9559,7 @@ unsupportedExpression:
         imported!"dmd.expression".ArrayLengthExp target,
         in ExpressionResult value,
     ) {
-        const current = runExpressionValue(target.e1);
+        const current = constructedExpressionValue(target.e1);
         const newLength = cast(size_t) value.asLong;
         writeLocation(
             target.e1,
@@ -9827,7 +9827,7 @@ unsupportedExpression:
 
         if (auto dot = index.e1.isDotVarExp) {
             if (receiverClassType(dot.e1) !is null) {
-                const receiver = runExpressionValue(dot.e1);
+                const receiver = constructedExpressionValue(dot.e1);
                 // A class local exposes its object-body pointer. Resolve the
                 // field's `Place` directly through that pointer and write
                 // the updated array back through it.
@@ -10180,7 +10180,7 @@ unsupportedExpression:
             // unsupported. Checked via the STATIC receiver type, matching
             // `writeLocation`'s own class-field dispatch.
             if (receiverClassType(dot.e1) !is null) {
-                const receiver = runExpressionValue(dot.e1);
+                const receiver = constructedExpressionValue(dot.e1);
                 const nativeClassReceiver = receiver.isPointer
                     ? receiver
                     : receiver.isNativeAggregate
@@ -10481,7 +10481,7 @@ unsupportedExpression:
                 import quickbite.backends.interpreter.place: Place;
                 import quickbite.backends.interpreter.place_value: readValue;
 
-                const receiver = runExpressionValue(dot.e1);
+                const receiver = constructedExpressionValue(dot.e1);
                 const nativeClassReceiver = receiver.isPointer
                     ? receiver
                     : receiver.isNativeAggregate
@@ -11072,7 +11072,7 @@ unsupportedExpression:
         imported!"dmd.expression".SliceExp slice,
         imported!"dmd.expression".Expression rhs,
     ) {
-        const current = runExpressionValue(slice.e1);
+        const current = constructedExpressionValue(slice.e1);
         auto currentAggregate = AggregateValue.native(current);
 
         const lower = slice.lwr is null
@@ -11627,7 +11627,7 @@ unsupportedExpression:
         import quickbite.backends.interpreter.runtime_casts:
             backendCastTarget = castTarget;
 
-        const value = runExpressionValue(cast_.e1);
+        const value = constructedExpressionValue(cast_.e1);
         if (value.isPointer)
             return ExpressionResult(true);
         if (value == ExpressionResult.null_)
@@ -11777,7 +11777,7 @@ unsupportedExpression:
                             );
                     }
 
-            const value = runExpressionValue(cast_.e1);
+            const value = constructedExpressionValue(cast_.e1);
             if (value.isNativeAggregate) {
                 import quickbite.backends.interpreter.aggregate_value: AggregateValue;
 
@@ -11814,7 +11814,7 @@ unsupportedExpression:
                 : ExpressionResult.pointerValue(cast(void*) address);
         }
 
-        const value = runExpressionValue(cast_.e1);
+        const value = constructedExpressionValue(cast_.e1);
         if (value == ExpressionResult.null_)
             return value;
         if (value.isPointer)
@@ -11843,7 +11843,7 @@ unsupportedExpression:
                 auto source = element is null ? array.basis : element;
                 auto literal = source.isFuncExp;
                 auto value = literal is null
-                    ? runExpressionValue(source)
+                    ? constructedExpressionValue(source)
                     : runFunctionLiteralDeclaration(literal);
                 writeStoredValue(destination.index(index), value);
             }
@@ -12788,7 +12788,7 @@ unsupportedExpression:
         // Evaluating e2 first left lengthVar holding a stale (or default
         // zero) length, so `arr[$ - 1]` on a just-grown array underflowed to
         // size_t.max instead of the intended last-element index.
-        const source = runExpressionValue(index.e1);
+        const source = constructedExpressionValue(index.e1);
         if (isPointerType(index.e1.type)) {
             arrayIndex = scalarOperand!size_t(index.e2);
             if (_evaluatedReferenceArgumentIndices !is null)
@@ -13193,7 +13193,7 @@ unsupportedExpression:
             if (new_.arguments.length != 1)
                 throw new Exception(text("Unsupported eval expression: ", new_.op));
 
-            value = runExpressionValue((*new_.arguments)[0]);
+            value = constructedExpressionValue((*new_.arguments)[0]);
         }
 
         return allocateNativePointer(targetType, value);
@@ -13296,7 +13296,7 @@ unsupportedExpression:
                 structVal = withStoredStructField(structVal,
                     targetType,
                     index,
-                    runExpressionValue(argument),
+                    constructedExpressionValue(argument),
                 );
             }
         }
@@ -15106,7 +15106,7 @@ destinationFallback:
 
             // Reuse the ordinary VarExp read path so post-increment observes
             // the binding's authoritative native storage.
-            const oldValue = runExpressionValue(post.e1);
+            const oldValue = constructedExpressionValue(post.e1);
             writeLocation(post.e1, incrementedValue(oldValue, post.e1.type, delta));
             return oldValue;
         }
@@ -15126,7 +15126,7 @@ destinationFallback:
                 return oldValue;
             }
 
-            const oldValue = runExpressionValue(post.e1);
+            const oldValue = constructedExpressionValue(post.e1);
             writeLocation(post.e1, incrementedValue(oldValue, post.e1.type, delta));
             return oldValue;
         }
@@ -15146,7 +15146,7 @@ destinationFallback:
                 return oldValue;
             }
 
-            const oldValue = runExpressionValue(post.e1);
+            const oldValue = constructedExpressionValue(post.e1);
             writeLocation(post.e1, incrementedValue(oldValue, post.e1.type, delta));
             return oldValue;
         }
