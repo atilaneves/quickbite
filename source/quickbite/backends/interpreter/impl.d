@@ -6833,25 +6833,20 @@ unsupportedExpression:
         if (variable is null)
             throw new Exception("Unsupported eval call.");
 
-        const current = readBindingValue(variable);
+        auto destination = bindingPlace(variable);
 
         const lower = slice.lwr is null
             ? 0
             : scalarOperand!size_t(slice.lwr);
         const upper = slice.upr is null
-            ? AggregateValue.length(current)
+            ? destination.arrayLength
             : scalarOperand!size_t(slice.upr);
         if (upper - lower != elements.length)
             throw new Exception("Unsupported eval call.");
 
-        ExpressionResult[] updated;
-        foreach (index; 0 .. AggregateValue.length(current))
-            updated ~= index >= lower && index < upper
-                ? elements[index - lower]
-                : AggregateValue.elementAt(current, index);
-
-        setLocal(variable, reconstructStoredArray(variable.type, updated));
-        clearUninitializedBindingAddress(bindingPlace(variable).address);
+        foreach (index; lower .. upper)
+            writeStoredArrayElement(destination.index(index), elements[index - lower]);
+        clearUninitializedBindingAddress(destination.address);
         return readBindingValue(variable);
     }
 
@@ -10658,16 +10653,16 @@ unsupportedExpression:
         imported!"dmd.expression".DotVarExp dot,
         imported!"dmd.expression".Expression rhs,
     ) {
-        const current = fieldSliceStorage(dot);
+        auto current = fieldSliceStorage(dot);
 
         const lower = slice.lwr is null
             ? 0
             : scalarOperand!size_t(slice.lwr);
         const upper = slice.upr is null
-            ? AggregateValue.length(current)
+            ? current.arrayLength
             : scalarOperand!size_t(slice.upr);
 
-        checkSliceAssignmentBounds(lower, upper, AggregateValue.length(current));
+        checkSliceAssignmentBounds(lower, upper, current.arrayLength);
 
         const block = isBlockSliceAssignment(slice, rhs);
         const value = constructSliceAssignmentRhs(rhs);
@@ -10684,7 +10679,7 @@ unsupportedExpression:
                 : AggregateValue.isArray(value)
                     ? AggregateValue.elementAt(value, index - lower)
                     : value;
-            AggregateValue.withArrayElement(current, index, element);
+            writeStoredArrayElement(current.index(index), element);
         }
 
         // A dynamic-array field's data pointer denotes the same bytes a
@@ -10696,7 +10691,9 @@ unsupportedExpression:
         // for it.
         if (lower == 0)
             recordCopiedClassIdentity(
-                cast(void*) AggregateValue.nativeArrayAddress(current),
+                current.type.toBasetype.isTypeDArray !is null
+                    ? cast(void*) current.sliceDataPointer
+                    : null,
                 value,
             );
 
@@ -10704,36 +10701,37 @@ unsupportedExpression:
     }
 
     // The array storage a struct field's own slice assignment must land in,
-    // as an aggregate its caller can index through. D gives an array field
-    // two different storage shapes, and a value read out of the field is a
-    // faithful handle on that storage for only one of them:
+    // as a place its caller can index through. D gives an array field two
+    // different storage shapes, and either one composes directly to a
+    // `Place` over the field's own bytes:
     //
     // - A dynamic-array field's own bytes are a `{ length, ptr }` header,
-    //   and its elements live wherever `ptr` points. Reading the field
-    //   copies those header bytes (`place_value.readValue`'s
-    //   `AggregateValue.copyFromAddress`), and the copy still holds the
-    //   field's real data pointer, so indexing through it -- which
-    //   dereferences that pointer -- reaches the field's own elements.
+    //   and its elements live wherever `ptr` points. `Place.index` on that
+    //   header place follows the stored `ptr`, so indexing through it
+    //   reaches the field's own elements regardless of whether the
+    //   receiver struct itself was addressable.
     //
-    // - A static-array field's own bytes ARE its elements. The same read
-    //   therefore yields a detached copy of the data, and every write
-    //   through it is discarded with that copy. Its storage has to be
-    //   composed from the receiver's own address instead, which is what the
-    //   arm below does; only that address names the bytes the struct holds.
-    private ExpressionResult fieldSliceStorage(
+    // - A static-array field's own bytes ARE its elements. Its storage has
+    //   to be composed from the receiver's own address instead, which is
+    //   what the arm below does; only that address names the bytes the
+    //   struct holds.
+    private imported!"quickbite.backends.interpreter.place".Place fieldSliceStorage(
         imported!"dmd.expression".DotVarExp dot,
     ) {
-        import quickbite.backends.interpreter.layout: declaredType, typeByteSize;
-        import quickbite.backends.interpreter.native_aggregate: NativeAggregate;
-        import quickbite.backends.interpreter.native_block: NativeBlock;
+        import quickbite.backends.interpreter.layout: declaredType;
         import quickbite.backends.interpreter.place: Place;
         import quickbite.frontend.dmd.types: isStaticArrayType;
         import dmd.tokens: EXP;
         import std.conv: text;
 
         auto field = dot.var.isVarDeclaration;
-        if (field is null || !isStaticArrayType(declaredType(field)))
-            return AggregateValue.fieldAt(runExpressionValue(dot.e1), structFieldIndex(dot));
+        if (field is null || !isStaticArrayType(declaredType(field))) {
+            if (field is null)
+                throw new Exception("Unsupported interpreter field access.");
+
+            auto aggregate = AggregateValue.native(runExpressionValue(dot.e1));
+            return Place(aggregate.address, aggregate.type).field(field);
+        }
 
         const receiver = addressOfExpression(dot.e1, EXP.address);
         if (!receiver.isPointer)
@@ -10750,21 +10748,11 @@ unsupportedExpression:
         if (dot.e1.type.toBasetype.isTypeClass !is null)
             receiverPlace = receiverPlace.deref;
 
-        // `NativeBlock.borrow`'s precondition is that the bytes stay live
-        // for as long as any handle derived from the block can reach them.
-        // They are the receiver's own field bytes, and the receiver is an
-        // lvalue that outlives this assignment -- a frame slot, a dataseg
-        // block, or a class body reached through a live reference -- so
-        // nothing here can outlive them. Borrowing rather than copying is
-        // the whole point: the assignment must land in those exact bytes.
-        auto fieldType = declaredType(field);
-        return ExpressionResult.nativeAggregateValue(NativeAggregate(
-            fieldType,
-            NativeBlock.borrow(
-                receiverPlace.field(field).address,
-                typeByteSize(fieldType),
-            ),
-        ));
+        // The receiver is an lvalue that outlives this assignment -- a
+        // frame slot, a dataseg block, or a class body reached through a
+        // live reference -- so this place, composed straight over its own
+        // field bytes, is exactly the assignment's real target.
+        return receiverPlace.field(field);
     }
 
     // A slice assignment through a cast (`(cast(char[]) view)[] = "foo"`):
