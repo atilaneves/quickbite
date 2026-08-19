@@ -13332,8 +13332,22 @@ unsupportedExpression:
             import quickbite.backends.interpreter.runtime_casts:
                 CastTarget, castTarget, castValue, tryCastTarget;
 
+            // `castValue` below only converts between the scalar kinds
+            // `CastTarget` enumerates. A destination type passing
+            // `tryCastTarget` says nothing about the source: casts such as
+            // `cast(size_t) somePointerOrClassRef` (e.g. inside druntime's
+            // `emplace`) have a scalar destination but a pointer or class
+            // source, which `castValue` cannot handle. Require the source
+            // type to pass the same check before committing to this arm, so
+            // an unsupported source falls through to the fallback path that
+            // already reinterprets pointer and class references as scalars.
             CastTarget target;
-            if (tryCastTarget(place.type, target)) {
+            CastTarget sourceTarget;
+            if (
+                cast_.e1.type !is null &&
+                tryCastTarget(place.type, target) &&
+                tryCastTarget(cast_.e1.type, sourceTarget)
+            ) {
                 auto source = Place(
                     _activationFrame.temporaryAddress(cast_.e1),
                     cast_.e1.type,
