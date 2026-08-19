@@ -8200,7 +8200,7 @@ unsupportedExpression:
         ) {
             auto destination = directWriteProjectionPlace(assign.e1);
             const left = readStoredValue(destination);
-            const right = runExpressionValue(assign.e2);
+            const right = constructedExpressionValue(assign.e2);
             const value = compoundAssignedValue(assign, left, right);
             writeStoredValue(
                 destination,
@@ -8226,7 +8226,7 @@ unsupportedExpression:
                 assign.e1.type.toBasetype,
             );
             const left = readStoredValue(destination);
-            const right = runExpressionValue(assign.e2);
+            const right = constructedExpressionValue(assign.e2);
             const value = compoundAssignedValue(assign, left, right);
             writeStoredValue(destination, value);
             return readStoredValue(destination);
@@ -8251,18 +8251,18 @@ unsupportedExpression:
                     assign.e1.type.toBasetype,
                 );
                 const left = readStoredValue(destination);
-                const right = runExpressionValue(assign.e2);
+                const right = constructedExpressionValue(assign.e2);
                 const value = compoundAssignedValue(assign, left, right);
                 writeStoredValue(destination, value);
                 return readStoredValue(destination);
             }
         }
 
-        const left = runExpressionValue(assign.e1);
-        const right = runExpressionValue(assign.e2);
+        const left = constructedExpressionValue(assign.e1);
+        const right = constructedExpressionValue(assign.e2);
         const value = compoundAssignedValue(assign, left, right);
         writeLocation(assign.e1, value);
-        return runExpressionValue(assign.e1);
+        return constructedExpressionValue(assign.e1);
     }
 
     private ExpressionResult compoundAssignedValue(
@@ -8949,7 +8949,7 @@ unsupportedExpression:
         // `FuncExp`; construct its callable before writing the destination.
         auto literal = assign.e2.isFuncExp;
         auto value = literal is null
-            ? runExpressionValue(assign.e2)
+            ? constructedExpressionValue(assign.e2)
             : runFunctionLiteralDeclaration(literal);
         if (auto target = assign.e1.isVarExp)
             if (auto variable = target.var.isVarDeclaration)
@@ -9024,7 +9024,7 @@ unsupportedExpression:
         // mutable AST node even though this helper does not modify it.
         auto literal = rhs.isFuncExp;
         const value = literal is null
-            ? runExpressionValue(rhs)
+            ? constructedExpressionValue(rhs)
             : runFunctionLiteralDeclaration(literal);
         writeStoredValue(
             destination,
@@ -10099,7 +10099,7 @@ unsupportedExpression:
                 .index(arrayIndex);
             if (canAssignThroughTypedTemporary(destination, rhs))
                 return assignThroughTypedTemporary(destination, rhs);
-            const value = runExpressionValue(rhs);
+            const value = constructedExpressionValue(rhs);
             writeStoredValue(destination, storageValue(index.type, value));
             return value;
         }
@@ -10127,7 +10127,7 @@ unsupportedExpression:
                 }
                 auto literal = rhs.isFuncExp;
                 const value = literal is null
-                    ? runExpressionValue(rhs)
+                    ? constructedExpressionValue(rhs)
                     : runFunctionLiteralDeclaration(literal);
                 storeNativePointerElement(
                     index.e1.type,
@@ -10159,7 +10159,7 @@ unsupportedExpression:
                     clearUninitializedBindingAddress(cast(void*) address);
                     return value;
                 }
-                const value = runExpressionValue(rhs);
+                const value = constructedExpressionValue(rhs);
                 writeStoredValue(destination, value);
                 return value;
             }
@@ -10206,7 +10206,7 @@ unsupportedExpression:
                     auto destination = fieldPlace.index(arrayIndex);
                     if (canAssignThroughTypedTemporary(destination, rhs))
                         return assignThroughTypedTemporary(destination, rhs);
-                    const value = runExpressionValue(rhs);
+                    const value = constructedExpressionValue(rhs);
                     writeStoredValue(destination, value);
                     return value;
                 }
@@ -10285,7 +10285,7 @@ unsupportedExpression:
         // construct its callable before writing the destination.
         auto literal = rhs.isFuncExp;
         const value = literal is null
-            ? runExpressionValue(rhs)
+            ? constructedExpressionValue(rhs)
             : runFunctionLiteralDeclaration(literal);
 
         const isLiveDelegate = isDelegateElement && value != ExpressionResult.null_;
@@ -10441,7 +10441,7 @@ unsupportedExpression:
                 clearUninitializedBindingAddress(cast(void*) address);
                 return value;
             }
-            const value = runExpressionValue(rhs);
+            const value = constructedExpressionValue(rhs);
             writeStoredValue(destination, value);
             return value;
         }
@@ -10508,7 +10508,7 @@ unsupportedExpression:
                 auto destination = fieldPlace.index(outerIndex).index(innerIndex);
                 if (canAssignThroughTypedTemporary(destination, rhs))
                     return assignThroughTypedTemporary(destination, rhs);
-                const value = runExpressionValue(rhs);
+                const value = constructedExpressionValue(rhs);
                 writeStoredValue(destination, value);
                 return value;
             }
@@ -10566,7 +10566,7 @@ unsupportedExpression:
             clearUninitializedBindingAddress(bindingPlace(variable).address);
             return value;
         }
-        const value = runExpressionValue(rhs);
+        const value = constructedExpressionValue(rhs);
         writeStoredValue(destination, storageValue(inner.type, value));
         clearUninitializedBindingAddress(bindingPlace(variable).address);
         return value;
@@ -11158,7 +11158,7 @@ unsupportedExpression:
             throw new Exception(text("Unsupported eval expression: ", assign.op));
         }
 
-        const lengthValue = runExpressionValue(assign.e2);
+        const lengthValue = constructedExpressionValue(assign.e2);
 
         auto var = arrayLength.e1.isVarExp;
         if (var is null) {
