@@ -11183,7 +11183,16 @@ private struct Compiler {
 
         // `call.arguments` is null, not merely empty, for a no-argument call.
         const argumentCount = call.arguments is null ? 0 : call.arguments.length;
-        const argumentArea = allocateNativeArgumentArea(argumentCount);
+        auto callArgumentTypes = new Type[argumentCount];
+        foreach (index; 0 .. argumentCount)
+            callArgumentTypes[index] = (*call.arguments)[index].type.toBasetype;
+        uint argumentAreaSize;
+        // `auto`, not `const`: `emitNativeCall` stores this array into
+        // `NativeCall.argumentOffsets`, a mutable field.
+        auto argumentSlotOffsets =
+            nativeArgumentOffsets(callArgumentTypes, argumentAreaSize);
+        const argumentArea =
+            allocateBytes(argumentAreaSize, nativeArgumentSlotSize);
         auto argumentTypes = new Type[argumentCount];
         NativeRefArgumentWriteback[] writebacks;
         // The return-type list above is the only compile-time gate on the
@@ -11201,7 +11210,7 @@ private struct Compiler {
         foreach (index; 0 .. argumentCount) {
             auto argument = (*call.arguments)[index];
             const slot = cast(ushort)
-                (argumentArea + index * nativeArgumentSlotSize);
+                (argumentArea + argumentSlotOffsets[index]);
             argumentTypes[index] = argument.type.toBasetype;
 
             if (index < parameterList.length) {
@@ -11290,7 +11299,7 @@ private struct Compiler {
         }
 
         auto result = emitNativeCall(
-            function_, argumentTypes, argumentArea,
+            function_, argumentTypes, argumentArea, argumentSlotOffsets,
             noReceiverOffset, null, nativeStructReceiverOffset,
             nativeStructReceiverType,
         );
@@ -11350,7 +11359,6 @@ private struct Compiler {
         // receiver expression with side effects.
         const receiver = compileTypeidExpression(dot.e1.isTypeidExp);
         const argumentCount = call.arguments is null ? 0 : call.arguments.length;
-        const argumentArea = allocateNativeArgumentArea(argumentCount);
         auto argumentTypes = new Type[argumentCount];
         foreach (index; 0 .. argumentCount) {
             auto argument = (*call.arguments)[index];
@@ -11363,17 +11371,27 @@ private struct Compiler {
                 return null;
 
             argumentTypes[index] = argument.type.toBasetype;
-            emitCallArgument(
-                cast(ushort) (argumentArea + index * nativeArgumentSlotSize),
-                false,
-                argument,
-            );
         }
+
+        uint argumentAreaSize;
+        // `auto`, not `const`: `emitNativeCall` stores this array into
+        // `NativeCall.argumentOffsets`, a mutable field.
+        auto argumentSlotOffsets =
+            nativeArgumentOffsets(argumentTypes, argumentAreaSize);
+        const argumentArea =
+            allocateBytes(argumentAreaSize, nativeArgumentSlotSize);
+        foreach (index; 0 .. argumentCount)
+            emitCallArgument(
+                cast(ushort) (argumentArea + argumentSlotOffsets[index]),
+                false,
+                (*call.arguments)[index],
+            );
 
         return emitNativeCall(
             function_,
             argumentTypes,
             argumentArea,
+            argumentSlotOffsets,
             receiver.offset,
             receiverType,
         );
@@ -11406,25 +11424,46 @@ private struct Compiler {
         _code ~= Instruction(Op.loadDataPointer, slot, cast(ushort) blockIndex);
     }
 
-    // A native call's argument area is N contiguous fixed-stride slots (see
-    // `nativeArgumentSlotSize` in program.d), one per argument, regardless of
-    // each argument's own width: argument `index` always lives at
-    // `argumentArea + index * nativeArgumentSlotSize`.
-    private ushort allocateNativeArgumentArea(in size_t argumentCount)
-        @safe pure
-    {
-        return allocateBytes(
-            cast(uint) (argumentCount * nativeArgumentSlotSize),
-            nativeArgumentSlotSize,
-        );
+    // A direct native call's own per-argument layout: argument `index`'s
+    // byte offset relative to the call's argument area, packed back to back
+    // in argument order. Each argument gets at least `nativeArgumentSlotSize`
+    // bytes, and its own `typeFacts` byte width when that is wider (a struct
+    // or static array), so a wide aggregate cannot spill into the next
+    // argument's own slot the way a fixed `nativeArgumentSlotSize` stride
+    // would. `argumentAreaSize` receives the total byte count to reserve for
+    // the whole area. `tryCompileNativeCall` and `tryCompileNativeTypeInfoCall`
+    // are this function's only two callers, so it is the one place a direct
+    // call's argument layout is computed; both `emitCallArgument`'s slot
+    // addressing and `NativeCall.argumentOffsets` (read by
+    // `native_call.d`'s `prepareNativeInvocation`) use its result rather
+    // than re-deriving offsets of their own.
+    private ushort[] nativeArgumentOffsets(
+        Type[] argumentTypes,
+        out uint argumentAreaSize,
+    ) {
+        import std.algorithm.comparison: max;
+
+        auto offsets = new ushort[argumentTypes.length];
+        uint offset = 0;
+        foreach (index, type; argumentTypes) {
+            const facts = typeFacts(type);
+            const alignment = facts.alignment == 0 ? 1 : facts.alignment;
+            offset = (offset + alignment - 1) & ~(alignment - 1);
+            offsets[index] = cast(ushort) offset;
+            offset += max(nativeArgumentSlotSize, facts.byteWidth);
+        }
+        argumentAreaSize = offset;
+        return offsets;
     }
 
     // Emit the native-call table entry and instruction shared by every native
-    // libc call shape: the argument bytes already live at `argumentArea`.
+    // libc call shape: the argument bytes already live at `argumentArea`, at
+    // the offsets `argumentOffsets` records.
     private Operand* emitNativeCall(
         FuncDeclaration function_,
         Type[] argumentTypes,
         in ushort argumentArea,
+        ushort[] argumentOffsets,
         in ushort nativeClassReceiverOffset = noReceiverOffset,
         imported!"dmd.mtype".TypeClass nativeClassReceiverType = null,
         in ushort nativeStructReceiverOffset = noReceiverOffset,
@@ -11472,6 +11511,7 @@ private struct Compiler {
                 nativeClassReceiverType,
                 nativeStructReceiverOffset,
                 nativeStructReceiverType,
+                argumentOffsets,
             );
         _code ~= Instruction(
             Op.nativeCall,

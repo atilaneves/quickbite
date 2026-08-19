@@ -140,13 +140,15 @@ package(quickbite.backends.bytecode) size_t sliceDescriptorLengthOffset(
     return base;
 }
 
-// A native (libc) call's argument area is N contiguous slots of this
-// stride, one per argument, laid out at
-// `argumentArea + index * nativeArgumentSlotSize` regardless of each
-// argument's own width, so `native_call.d` can locate argument `index`
-// without knowing the widths of the arguments before it. The stride
-// accommodates the widest bridge value, currently a two-word dynamic-array
-// descriptor.
+// The minimum width of one direct native-call argument's own staging slot:
+// wide enough for the widest ordinary (non-aggregate) bridge value, a
+// two-word dynamic-array descriptor. A direct call's compile-time layout
+// reserves each argument at least this many bytes, and more when the
+// argument's own byte width exceeds it (a struct or static array), so no
+// argument's bytes can overflow into a neighbour's slot.
+// `NativeCall.argumentOffsets` carries the resulting per-argument offsets;
+// nothing derives an argument's address from its index and this stride
+// alone.
 package(quickbite.backends.bytecode) enum nativeArgumentSlotSize =
     sliceDescriptorSize;
 
@@ -986,22 +988,31 @@ package(quickbite.backends.bytecode) struct NativeCall {
     // block as its hidden `this` argument.
     ushort nativeStructReceiverOffset = noReceiverOffset;
     imported!"dmd.mtype".TypeStruct nativeStructReceiverType;
-    // Empty for a direct call (`tryCompileNativeCall`'s own registrations):
-    // each argument then sits at the uniform `index * nativeArgumentSlotSize`
-    // stride `prepareNativeInvocation` assumes. A native-leaf function
-    // reached through a function-pointer value instead carries its callee's
-    // real dense parameter-frame offsets here (`ParameterLayout.offsets`,
-    // the same layout `Op.call`/`Op.callIndirect` already placed the
-    // argument bytes at) -- the argument area an indirect call builds is the
+    // Every argument's own byte offset within the call's argument area,
+    // relative to the area's base -- always populated, direct call or
+    // indirect. A direct call (`tryCompileNativeCall`'s own registrations)
+    // packs each argument's own staging slot back to back, sized to at
+    // least `nativeArgumentSlotSize` and wider when the argument's own byte
+    // width needs it, so a struct or static array wider than one slot
+    // cannot overflow into its neighbour. A native-leaf function reached
+    // through a function-pointer value instead carries its callee's real
+    // dense parameter-frame offsets here (`ParameterLayout.offsets`, the
+    // same layout `Op.call`/`Op.callIndirect` already placed the argument
+    // bytes at) -- the argument area an indirect call builds is the
     // ordinary VM typed-frame parameter layout, not a native argument area,
-    // so its per-argument addresses are computed differently.
+    // so these offsets come from a different source even though
+    // `prepareNativeInvocation` reads both the same way.
     ushort[] argumentOffsets;
-    // Parallel to `argumentOffsets`, empty for a direct call. Marks which
-    // indirect argument slots are `ref`/`out`/`auto ref` per
-    // `ParameterLayout.isReference`: that layout stores such a slot as the
-    // referenced variable's ADDRESS, not its value, unlike every other
-    // parameter slot, so `prepareNativeInvocation` must follow the address
-    // rather than treat the slot itself as the argument's storage.
+    // Parallel to `argumentOffsets`, empty for a direct call: a direct call
+    // always stages a `ref`/`out` argument's current VALUE into its own
+    // slot (`tryCompileNativeCall`'s write-back copies the slot's post-call
+    // bytes back out afterward), so `prepareNativeInvocation` never needs
+    // to follow an address for one. Marks which INDIRECT argument slots are
+    // `ref`/`out`/`auto ref` per `ParameterLayout.isReference`: that layout
+    // stores such a slot as the referenced variable's ADDRESS, not its
+    // value, unlike every other parameter slot, so `prepareNativeInvocation`
+    // must follow the address rather than treat the slot itself as the
+    // argument's storage.
     bool[] argumentIsReference;
 }
 

@@ -614,6 +614,283 @@ unittest {
 }
 
 
+// A by-value struct wider than one native-call argument slot, followed by a
+// plain scalar argument: the struct's own bytes must stay intact once the
+// scalar argument that comes after it is staged.
+static foreach (backend; DependencyImageBackends) {
+@("dependencyImage.externCWideStructByValueArgumentComputesCorrectSum." ~
+    backend.stringof)
+@Tags(backend.stringof)
+unittest {
+    import quickbite.frontend.compiler: parseSnippetWithCheckActionContext;
+    import std.path: buildPath;
+
+    const sandbox = immutable Sandbox();
+    with(sandbox) {
+        const importPath = "imports";
+        const moduleName =
+            "dep_image_wide_struct_value_fixture_" ~ backend.stringof;
+        const depPath = buildPath(importPath, moduleName ~ ".d");
+        writeFile(depPath, q{
+            module dep_image_wide_struct_value_fixture;
+
+            struct Wide {
+                long first;
+                long second;
+                long third;
+            }
+
+            extern(C) long dependencySumWideStructAndExtra(
+                Wide value, long extra,
+            ) {
+                return value.first + value.second + value.third + extra;
+            }
+        }.uniqueDepModule(
+            "dep_image_wide_struct_value_fixture", backend.stringof,
+        ));
+
+        const imagePath = buildSharedLibrary(
+            sandbox,
+            moduleName,
+            [depPath],
+        );
+
+        writeFile(depPath, q{
+            module dep_image_wide_struct_value_fixture;
+
+            struct Wide {
+                long first;
+                long second;
+                long third;
+            }
+
+            extern(C) long dependencySumWideStructAndExtra(
+                Wide value, long extra,
+            );
+        }.uniqueDepModule(
+            "dep_image_wide_struct_value_fixture", backend.stringof,
+        ));
+
+        auto moduleResult = parseSnippetWithCheckActionContext(
+            q{
+                import dep_image_wide_struct_value_fixture;
+
+                unittest {
+                    Wide value;
+                    value.first = 1;
+                    value.second = 2;
+                    value.third = 3;
+                    long extra = 100;
+
+                    assert(
+                        dependencySumWideStructAndExtra(value, extra) == 106,
+                    );
+                }
+            }.uniqueDepModule(
+                "dep_image_wide_struct_value_fixture", backend.stringof,
+            ),
+            [inSandboxPath(importPath)],
+        );
+
+        const oracle = (new SystemLinker(
+            [imagePath],
+            [inSandboxPath(importPath)],
+        )).runTests(moduleResult.module_);
+        oracle.length.should == 1;
+        oracle[0].passed.should == true;
+
+        const actual = runDependencyImage!backend(
+            [imagePath],
+            [inSandboxPath(importPath)],
+            moduleResult.module_,
+        );
+        actual.length.should == 1;
+        actual[0].passed.should == true;
+    }
+}
+}
+
+
+// The static-array analogue of the wide-struct fixture above, through a `ref`
+// parameter: the callee's own return value shares the native-call argument
+// area's bump-allocated layout with the array's own trailing bytes once the
+// array exceeds one argument slot, so every mutated element must still be
+// visible afterward, not just the ones that fit in the first slot.
+static foreach (backend; DependencyImageBackends) {
+@("dependencyImage.externCRefWideStaticArrayParameterWritesBackAllElements." ~
+    backend.stringof)
+@Tags(backend.stringof)
+unittest {
+    import quickbite.frontend.compiler: parseSnippetWithCheckActionContext;
+    import std.path: buildPath;
+
+    const sandbox = immutable Sandbox();
+    with(sandbox) {
+        const importPath = "imports";
+        const moduleName =
+            "dep_image_ref_wide_array_fixture_" ~ backend.stringof;
+        const depPath = buildPath(importPath, moduleName ~ ".d");
+        writeFile(depPath, q{
+            module dep_image_ref_wide_array_fixture;
+
+            extern(C) long dependencyMutateWideStaticArrayAndReturn(
+                ref long[3] values,
+            ) {
+                values[0] = 10;
+                values[1] = 20;
+                values[2] = 30;
+                return 999;
+            }
+        }.uniqueDepModule(
+            "dep_image_ref_wide_array_fixture", backend.stringof,
+        ));
+
+        const imagePath = buildSharedLibrary(
+            sandbox,
+            moduleName,
+            [depPath],
+        );
+
+        writeFile(depPath, q{
+            module dep_image_ref_wide_array_fixture;
+
+            extern(C) long dependencyMutateWideStaticArrayAndReturn(
+                ref long[3] values,
+            );
+        }.uniqueDepModule(
+            "dep_image_ref_wide_array_fixture", backend.stringof,
+        ));
+
+        auto moduleResult = parseSnippetWithCheckActionContext(
+            q{
+                import dep_image_ref_wide_array_fixture;
+
+                unittest {
+                    long[3] values = [1, 2, 3];
+                    const result =
+                        dependencyMutateWideStaticArrayAndReturn(values);
+
+                    assert(result == 999);
+                    assert(values == [10, 20, 30]);
+                }
+            }.uniqueDepModule(
+                "dep_image_ref_wide_array_fixture", backend.stringof,
+            ),
+            [inSandboxPath(importPath)],
+        );
+
+        const oracle = (new SystemLinker(
+            [imagePath],
+            [inSandboxPath(importPath)],
+        )).runTests(moduleResult.module_);
+        oracle.length.should == 1;
+        oracle[0].passed.should == true;
+
+        const actual = runDependencyImage!backend(
+            [imagePath],
+            [inSandboxPath(importPath)],
+            moduleResult.module_,
+        );
+        actual.length.should == 1;
+        actual[0].passed.should == true;
+    }
+}
+}
+
+
+// The function-pointer analogue of `externCRefStructParameterWritesBack`
+// above: a `ref` struct argument passed through an indirect call still names
+// the caller's own storage, whether the callee is resolved statically or
+// reached through a function-pointer value.
+static foreach (backend; IndirectRefDependencyImageBackends) {
+@("dependencyImage.externCRefStructParameterThroughFunctionPointerWritesBack."
+    ~ backend.stringof)
+@Tags(backend.stringof)
+unittest {
+    import quickbite.frontend.compiler: parseSnippetWithCheckActionContext;
+    import std.path: buildPath;
+
+    const sandbox = immutable Sandbox();
+    with(sandbox) {
+        const importPath = "imports";
+        const moduleName =
+            "dep_image_ref_struct_fnptr_fixture_" ~ backend.stringof;
+        const depPath = buildPath(importPath, moduleName ~ ".d");
+        writeFile(depPath, q{
+            module dep_image_ref_struct_fnptr_fixture;
+
+            struct Payload {
+                int first;
+                int second;
+            }
+
+            extern(C) void dependencyMutateStructPointer(ref Payload value) {
+                value.first = 11;
+                value.second = 22;
+            }
+        }.uniqueDepModule(
+            "dep_image_ref_struct_fnptr_fixture", backend.stringof,
+        ));
+
+        const imagePath = buildSharedLibrary(
+            sandbox,
+            moduleName,
+            [depPath],
+        );
+
+        writeFile(depPath, q{
+            module dep_image_ref_struct_fnptr_fixture;
+
+            struct Payload {
+                int first;
+                int second;
+            }
+
+            extern(C) void dependencyMutateStructPointer(ref Payload value);
+        }.uniqueDepModule(
+            "dep_image_ref_struct_fnptr_fixture", backend.stringof,
+        ));
+
+        auto moduleResult = parseSnippetWithCheckActionContext(
+            q{
+                import dep_image_ref_struct_fnptr_fixture;
+
+                unittest {
+                    auto fn = &dependencyMutateStructPointer;
+
+                    Payload value;
+                    value.first = 1;
+                    value.second = 2;
+                    fn(value);
+
+                    assert(value.first == 11);
+                    assert(value.second == 22);
+                }
+            }.uniqueDepModule(
+                "dep_image_ref_struct_fnptr_fixture", backend.stringof,
+            ),
+            [inSandboxPath(importPath)],
+        );
+
+        const oracle = (new SystemLinker(
+            [imagePath],
+            [inSandboxPath(importPath)],
+        )).runTests(moduleResult.module_);
+        oracle.length.should == 1;
+        oracle[0].passed.should == true;
+
+        const actual = runDependencyImage!backend(
+            [imagePath],
+            [inSandboxPath(importPath)],
+            moduleResult.module_,
+        );
+        actual.length.should == 1;
+        actual[0].passed.should == true;
+    }
+}
+}
+
+
 private struct CtorOrderingFixture {
     string[] imagePaths;
     string[] importPaths;

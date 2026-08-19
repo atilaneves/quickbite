@@ -66,7 +66,6 @@ private bool prepareNativeInvocation(
 ) {
     import dmd.astenums: TY;
     import dmd.mtype: TypeFunction;
-    import quickbite.backends.bytecode.core.program: nativeArgumentSlotSize;
     import quickbite.ffi.ffi: TypedAddress, resolveCallable;
 
     if (native.function_ is null)
@@ -102,14 +101,14 @@ private bool prepareNativeInvocation(
 
     const fixedCount = signature.parameterList.length;
     invocation.arguments.length = native.argumentTypes.length;
-    // `argumentOffsets` is empty for an ordinary direct call: each argument
-    // then sits at the uniform `index * nativeArgumentSlotSize` stride
-    // `allocateNativeArgumentArea` laid out. A native-leaf function reached
-    // through a function-pointer value instead carries its callee's own
+    // `argumentOffsets` locates every argument, direct call or indirect: a
+    // direct call's own per-argument staging layout
+    // (`nativeArgumentOffsets`, `compiler.d`), or, for a native-leaf
+    // function reached through a function-pointer value, its callee's own
     // dense VM parameter-frame offsets (`ParameterLayout.offsets`) -- the
     // caller built an ordinary typed-frame argument area for the indirect
-    // call, not a native one, so each argument's address is computed
-    // differently.
+    // call, not a native one, but the offsets stored here already account
+    // for that.
     foreach (index; 0 .. native.argumentTypes.length) {
         // The declared parameter is the bridge's authority for a fixed
         // argument; only a C variadic tail is typed by the call site, which
@@ -117,19 +116,19 @@ private bool prepareNativeInvocation(
         auto type = index < fixedCount
             ? signature.parameterList[index].type.toBasetype
             : native.argumentTypes[index].toBasetype;
-        const isIndirect = native.argumentOffsets.length != 0;
-        const argumentOffset = isIndirect
-            ? argumentArea + native.argumentOffsets[index]
-            : argumentArea + index * nativeArgumentSlotSize;
-        auto slotAddress = frameAddress(stack, argumentOffset);
+        auto slotAddress =
+            frameAddress(stack, argumentArea + native.argumentOffsets[index]);
         // An indirect call's argument area is the ordinary VM parameter
         // frame, where a `ref`/`out`/`auto ref` slot holds the referenced
         // variable's ADDRESS rather than its value (`NativeCall
         // .argumentIsReference`'s own comment, `program.d`). Follow that
         // address instead of handing the bridge the slot's own location, or
         // the callee receives a pointer to the frame slot rather than to the
-        // guest variable it names -- one indirection too many.
-        const isReferenceArgument = isIndirect &&
+        // guest variable it names -- one indirection too many. A direct
+        // call leaves `argumentIsReference` empty (it always stages a
+        // `ref`/`out` argument's VALUE, never an address), so this is
+        // always false for one.
+        const isReferenceArgument =
             index < native.argumentIsReference.length &&
             native.argumentIsReference[index];
         invocation.arguments[index] = TypedAddress(

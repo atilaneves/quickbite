@@ -1644,7 +1644,9 @@ package(quickbite.backends.bytecode) RunResult run(
                 // `argumentOffsets` are this call's own dense typed-frame
                 // argument layout (the same one a VM-targeted call below
                 // would copy verbatim into the callee's frame), not
-                // `Op.nativeCall`'s uniformly strided one.
+                // `Op.nativeCall`'s own per-argument staging layout -- both
+                // are `NativeCall.argumentOffsets` entries, just built by
+                // different compile-time paths.
                 if (program.functions[calleeIndex].nativeCallIndex !=
                     noNativeCallIndex)
                 {
