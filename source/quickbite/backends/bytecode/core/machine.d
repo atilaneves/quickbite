@@ -1894,8 +1894,28 @@ package(quickbite.backends.bytecode) RunResult run(
 
             const handler = selected.handler;
             const clause = selected.clause;
-            if (clause.objectOffset != noCatchObjectField)
-                throw error;
+            // The bounds check raised a genuine, natively-laid-out
+            // `RangeError` instance -- hand its own pointer to the guest
+            // catch rather than a VM-synthesised lookalike, so native code
+            // the guest passes it to (e.g. `_d_print_throwable`) sees the
+            // same object compiled D would have passed.
+            if (clause.objectOffset != noCatchObjectField) {
+                stack[
+                    handler.base + clause.objectOffset
+                    .. handler.base + clause.objectOffset + size_t.sizeof
+                ] = scalarBytes(cast(size_t) cast(void*) error)[];
+                writeSliceDescriptorPointer(
+                    stack,
+                    handler.base + clause.messageOffset,
+                    cast(size_t) error.msg.ptr,
+                    error.msg.length,
+                );
+                stack[
+                    handler.base + clause.nextMessageOffset
+                    .. handler.base + clause.nextMessageOffset
+                        + sliceDescriptorSize
+                ] = 0;
+            }
             frames.length = handler.frameDepth;
             functionIndex = handler.functionIndex;
             base = handler.base;
