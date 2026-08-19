@@ -6442,18 +6442,37 @@ private struct Compiler {
     // The frame index (an absolute `stack[]` slot, offset by `capturedOffset`)
     // of a captured variable declared in `owner`'s own frame, read or written
     // from the function currently being compiled.
-    //
-    // A call site always hands a callee its own live frame as that callee's
-    // received context (`compileCall`'s `Op.frameBaseIndex`), matching real D:
-    // a nested function's context is its immediate enclosing function's frame,
-    // never a further ancestor's. So the current function's own received
-    // context (`_nestedContextOffset`) is exactly one hop -- its immediate
-    // enclosing function's frame -- which is `owner` only for a single level
-    // of nesting. When `owner` sits further up, each intermediate ancestor's
-    // own received context is a further hop: it lives at that ancestor's own
-    // `nestedContextOffset` within the frame just reached, and that frame is
-    // still live on the stack as the current call's (transitive) caller.
     private ushort capturedFrameIndex(in FuncDeclaration owner, in ushort capturedOffset) {
+        const contextBase = enclosingFrameBase(owner);
+        const sourceIndex =
+            allocateBytes(cast(uint) size_t.sizeof, size_t.sizeof);
+        const offsetConstant = compileSizeConstant(capturedOffset);
+        _code ~= Instruction(
+            Op.addInt8, sourceIndex, contextBase, offsetConstant,
+        );
+        return sourceIndex;
+    }
+
+    // A slot holding enclosing function `owner`'s live frame base index,
+    // reached from the function currently being compiled.
+    //
+    // A call site hands a callee its LEXICAL parent's live frame as that
+    // callee's received context (`compileCall`'s nested-context hand-off) --
+    // the caller's own frame exactly when the caller is that parent --
+    // matching real D: a nested function's context is its immediate lexically
+    // enclosing function's frame, never its physical caller's. So the current
+    // function's own received context (`_nestedContextOffset`) is exactly one
+    // hop -- its immediate enclosing function's frame -- which is `owner`
+    // only for a single level of nesting. When `owner` sits further up, each
+    // intermediate ancestor's own received context is a further hop: it lives
+    // at that ancestor's own `nestedContextOffset` within the frame just
+    // reached. The hops hold however the callee was physically reached, as
+    // long as every hand-off on the way relayed a lexical-parent frame.
+    // `compileCall`'s direct-call hand-off does; delegate creation
+    // (`delegateContextOffset`) and callers whose own context is
+    // `this`-derived still hand the creator's frame, so a walk relayed
+    // through those can still misresolve.
+    private ushort enclosingFrameBase(in FuncDeclaration owner) {
         import std.conv: text;
 
         ushort contextBase =
@@ -6489,7 +6508,7 @@ private struct Compiler {
                 // cannot forward a further hop; this shape is not modelled.
                 if (!ancestorLayout.hasNestedContext)
                     throw new Exception(text(
-                        "Unsupported multi-level captured-variable access ",
+                        "Unsupported multi-level nested-frame walk ",
                         "in bytecode core: `",
                         ancestor.ident is null ? "" : ancestor.ident.toString,
                         "` has no relayable nested-function context",
@@ -6513,13 +6532,7 @@ private struct Compiler {
                 );
             }
         }
-        const sourceIndex =
-            allocateBytes(cast(uint) size_t.sizeof, size_t.sizeof);
-        const offsetConstant = compileSizeConstant(capturedOffset);
-        _code ~= Instruction(
-            Op.addInt8, sourceIndex, contextBase, offsetConstant,
-        );
-        return sourceIndex;
+        return contextBase;
     }
 
     private void emitNullClassReferenceCheck(
@@ -11086,9 +11099,24 @@ private struct Compiler {
         if (layout.hasNestedContext) {
             const context = cast(ushort)
                 (argumentArea + layout.nestedContextOffset);
-            _code ~= Instruction(Op.frameBaseIndex, context);
             const one = compileSizeConstant(1);
-            _code ~= Instruction(Op.addInt8, context, context, one);
+            // A nested callee's context is its lexically enclosing function's
+            // frame -- the caller's own frame only when the caller IS that
+            // function. A callee declared in an enclosing function (a
+            // template-alias lambda invoked from a sibling nested function,
+            // say) instead receives that ancestor's frame, found by the same
+            // received-context walk captured-variable access uses; handing it
+            // the caller's own frame would make it resolve captured-variable
+            // offsets against the wrong frame.
+            auto parent = enclosingMethodOf(function_);
+            if (parent is null || parent is _currentFunction ||
+                _nestedContextOffset == ushort.max) {
+                _code ~= Instruction(Op.frameBaseIndex, context);
+                _code ~= Instruction(Op.addInt8, context, context, one);
+            } else
+                _code ~= Instruction(
+                    Op.addInt8, context, enclosingFrameBase(parent), one,
+                );
         }
 
         size_t nextArgumentIndex;
