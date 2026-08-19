@@ -9,7 +9,7 @@ import quickbite.backends.interpreter.place: Place, placeAt;
 import quickbite.backends.interpreter.layout:
     fieldByteOffset, structFields, typeByteSize, classInstanceByteSize;
 import quickbite.backends.interpreter.native_block: NativeBlock;
-import quickbite.backends.interpreter.native_scalar: writeScalar;
+import quickbite.backends.interpreter.native_scalar: writeNativeScalar;
 import quickbite.backends.interpreter.aggregate_value: AggregateValue;
 import quickbite.backends.interpreter.expression_result: ExpressionResult;
 import dmd.mtype: Type;
@@ -20,14 +20,14 @@ private:
 
 // An enum-typed place must read back as an `ExpressionResult.enumValue`
 // qualified with the member's own name (`Colour.green`), not the plain integral
-// `ExpressionResult` that `native_scalar.readScalar` alone would give.
+// `ExpressionResult` that `native_scalar.readNativeScalar` alone would give.
 @("place_value.readValue.enumMemberValueReadsBackTaggedWithItsQualifiedName")
 unittest {
     auto type = enumTypeOf(q{ enum Colour : int { red, green, blue } }, "Colour");
     auto block = NativeBlock.allocate(typeByteSize(type), NativeBlock.Scan.no);
     auto root = placeAt(block, type);
 
-    writeScalar(type, block.bytes, ExpressionResult(1));
+    writeNativeScalar(type, block.bytes, 1);
 
     readValue(root).should == ExpressionResult.enumValue("Colour.green", 1);
 }
@@ -42,16 +42,16 @@ unittest {
     auto block = NativeBlock.allocate(typeByteSize(type), NativeBlock.Scan.no);
     auto root = placeAt(block, type);
 
-    writeScalar(type, block.bytes, ExpressionResult(5));
+    writeNativeScalar(type, block.bytes, 5);
 
     readValue(root).should == ExpressionResult.enumValue("cast(Colour)5", 5);
 }
 
 
 // `writeValue` already stores an enum's underlying bits correctly (its
-// `isNativeScalarType` arm goes through `native_scalar.writeScalar` ->
-// `scalarLong` -> `ExpressionResult.asLong`'s `EnumValue` arm); this pins the full
-// round trip through the now enum-aware `readValue`.
+// `isNativeScalarType` arm goes through `Place.storeNativeScalar` ->
+// `native_scalar.writeNativeScalar`); this pins the full round trip
+// through the now enum-aware `readValue`.
 @("place_value.writeValue.readValue.enumValueRoundTrips")
 unittest {
     auto type = enumTypeOf(q{ enum Colour : int { red, green, blue } }, "Colour");
@@ -67,9 +67,10 @@ unittest {
 
 
 // Cross-checks `readValue`'s field composition against an entirely
-// independent path: `native_scalar.writeScalar` writes straight into `P.y`'s
-// own bytes at `layout.fieldByteOffset`, never going through `Place`/
-// `writeValue` at all, and `readValue` must still see it at the same field.
+// independent path: `native_scalar.writeNativeScalar` writes straight into
+// `P.y`'s own bytes at `layout.fieldByteOffset`, never going through
+// `Place`/`writeValue` at all, and `readValue` must still see it at the
+// same field.
 @("place_value.readValue.reflectsScalarWrittenDirectlyViaNativeScalarAtFieldOffset")
 unittest {
     auto type = structTypeOf(q{ struct P { int x; long y; } }, "P");
@@ -83,7 +84,7 @@ unittest {
     writtenY = writtenY * 11 + 3;
 
     const offset = fieldByteOffset(yField);
-    writeScalar(yField.type, block.bytes[offset .. offset + typeByteSize(yField.type)], ExpressionResult(writtenY));
+    writeNativeScalar(yField.type, block.bytes[offset .. offset + typeByteSize(yField.type)], writtenY);
 
     readValue(AggregateValue.fieldAt(AggregateValue.native(readValue(root)), 1))
         .asLong.should == writtenY;
@@ -136,9 +137,9 @@ unittest {
     int third = 9;
     third = third * 2 + 3;
 
-    writeScalar(sliceType.nextOf, elementsArray.element(0), ExpressionResult(first));
-    writeScalar(sliceType.nextOf, elementsArray.element(1), ExpressionResult(second));
-    writeScalar(sliceType.nextOf, elementsArray.element(2), ExpressionResult(third));
+    writeNativeScalar(sliceType.nextOf, elementsArray.element(0), first);
+    writeNativeScalar(sliceType.nextOf, elementsArray.element(1), second);
+    writeNativeScalar(sliceType.nextOf, elementsArray.element(2), third);
 
     auto headerBlock = NativeBlock.allocate(NativeArray.sliceHeaderByteLength, NativeBlock.Scan.conservative);
     elementsArray.writeSliceHeader(headerBlock, 0);
@@ -409,7 +410,7 @@ unittest {
     auto pointee = NativeBlock.allocate(int.sizeof, NativeBlock.Scan.no);
     int writtenPointee = 9;
     writtenPointee = writtenPointee * 3 + 2;
-    writeScalar(pointerType.nextOf, pointee.bytes, ExpressionResult(writtenPointee));
+    writeNativeScalar(pointerType.nextOf, pointee.bytes, writtenPointee);
 
     writeValue(root, ExpressionResult.pointerValue(pointee.address));
 
