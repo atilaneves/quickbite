@@ -111,13 +111,33 @@ public class Interpreter: imported!"quickbite.backends".TreeNodeBackend {
             ensureFunctionBodySemantic(function_);
             auto layout = cachedFrameLayout(function_);
             walker._activationFrame = FrameBlock.allocate(layout);
+
+            // A top-level `return expr;` inside `function_.fbody` reaches
+            // `setReturnValue`, which always constructs into a destination:
+            // give the whole run one, typed by the function's own return
+            // type, the same way a nested call receives its caller's.
+            import quickbite.backends.interpreter.layout:
+                typeByteSize, typeHasPointers;
+            import quickbite.backends.interpreter.native_block: NativeBlock;
+            import quickbite.backends.interpreter.place: Place;
+
+            auto returnType = function_.type.toBasetype.isTypeFunction.next;
+            auto returnBlock = NativeBlock.allocate(
+                typeByteSize(returnType),
+                typeHasPointers(returnType)
+                    ? NativeBlock.Scan.conservative
+                    : NativeBlock.Scan.no,
+            );
+            auto rootDestination = ConstructionDestination(Place(returnBlock.address, returnType));
+            walker._returnDestination = &rootDestination;
+
             walker.runStatement(function_.fbody);
             final switch (mode) with (ExecutionMode) {
             case regular:
             case unitTest:
                 return EvalResult("");
             case formatted:
-                return EvalResult(formattedDisplay(walker._returnValue));
+                return EvalResult(formattedDisplay(walker.readStoredValue(rootDestination.place)));
             }
         } catch (Exception exception) {
             // The interpreter's own message, verbatim: rewriting it through
@@ -767,11 +787,6 @@ private struct Walker {
     private size_t[const(void)*] _syntheticDollarValues;
     // `= void` is state attached to the authoritative binding address.
     private UninitializedBindings* uninitializedBindingAddresses;
-    // A non-`ref` return's value, when no `_returnDestination` construction
-    // place was supplied. A `ref` return's lvalue lives in `_refReturnPlace`
-    // instead; statement execution never routes a `ref` return through this
-    // carrier.
-    private ExpressionResult _returnValue;
     // A `ref` return's lvalue: an existing binding's address and type,
     // named directly (`addressOfRefReturn` mode). Empty (`Place.init`)
     // outside that mode.
@@ -779,6 +794,7 @@ private struct Walker {
     // An interpreted non-void call constructs directly into its caller's
     // fresh storage. This pointer is valid only while the synchronous child
     // activation runs; recursive calls use their own activation and pointer.
+    // A void call (outside `addressOfRefReturn` mode) has none.
     private ConstructionDestination* _returnDestination;
     private bool runningCalledFunction;
     private bool inUnitTest;
@@ -2341,19 +2357,20 @@ private struct Walker {
 
         // A delegating constructor (`this(...)` forwarding to another
         // constructor, as std.stdio.File's string constructor does): run the
-        // target constructor on the current receiver and adopt the
-        // constructed value.
+        // target constructor directly into this constructor's own receiver
+        // storage, so its writes land in `thisValue` without a round trip
+        // through a carrier.
         if (function_.isConstructorFunction) {
-            thisValue = receiverPlaceFrom(
-                runMemberFunction(
-                    function_,
-                    null,
-                    receiverCarrier,
-                    arguments,
-                    argumentExpressions,
-                    evaluatedArguments,
-                ),
-                thisValue.type,
+            auto destination = ConstructionDestination(thisValue);
+            runMemberFunction(
+                function_,
+                null,
+                receiverCarrier,
+                arguments,
+                argumentExpressions,
+                evaluatedArguments,
+                null,
+                &destination,
             );
             return receiverValue(thisValue);
         }
@@ -2636,6 +2653,18 @@ private struct Walker {
         loopControlLabel = null;
     }
 
+    // This function's callers reach it for a value in a wider range of
+    // static shapes than `constructedExpressionValue`'s own ~30 call sites
+    // ever pass through construction: an unsized dereferenced-function-
+    // pointer type, a void-typed call kept only for a side effect, and (found
+    // empirically, via the full gate) at least one `constructInto` arm that
+    // answers a shape it was never exercised against with a wrong value
+    // rather than declining it (`constructPointerExpressionInto`'s `CastExp`
+    // branch, a `*p`-shaped pointer operand). Routing every caller through
+    // `constructedExpressionValue` is therefore not byte-identical without
+    // also auditing or extending `constructInto`'s own coverage, which is
+    // explicitly out of scope for this flip (`constructInto` is consumed
+    // here, not extended). This keeps the walk-only entry.
     private ExpressionResult runExpressionValue(imported!"dmd.expression".Expression expression) {
         const full = beginFullExpression;
         scope(exit) endFullExpression(full);
@@ -2643,10 +2672,11 @@ private struct Walker {
         return runExpressionImpl(expression);
     }
 
-    // Construct an rvalue in caller-owned typed storage. The carrier walk is
-    // still used only for expression families that have no construction arm;
-    // it is not the recursive evaluator's contract. Keep this fallback local
-    // until the remaining aggregate and callback paths are migrated.
+    // Construct an rvalue in caller-owned typed storage. `runExpressionImpl`'s
+    // per-arm dispatch is used only as a bridge for expression kinds
+    // `constructInto`/`constructScalarExpressionInto` do not yet construct
+    // directly; each bridged arm retires once its own construction arm
+    // lands.
     private void runExpression(
         imported!"dmd.expression".Expression expression,
         ref ConstructionDestination destination,
@@ -3987,44 +4017,25 @@ unsupportedExpression:
 
     // The one place a `return` statement's result leaves the function body.
     // `addressOfRefReturn` mode wants the returned lvalue itself, named as a
-    // place, not its value. A caller-provided destination takes the
-    // expression's value directly, constructing it in place rather than
-    // routing it through `_returnValue`. Otherwise the expression is
-    // evaluated into the carrier and, for a class return, rooted against its
-    // own storage (`rootedNativeClassValue`) so the caller sees the same
-    // owning allocation the callee constructed rather than a bare body
-    // pointer a later collection could reclaim.
-    private void setReturnValue(imported!"dmd.expression".Expression expression) {
+    // place, not its value. Otherwise the caller's construction destination
+    // takes the expression's value directly, constructing it in place; for a
+    // class return, `constructReturnValue` roots the constructed value
+    // against its own storage so the caller sees the same owning allocation
+    // the callee constructed rather than a bare body pointer a later
+    // collection could reclaim. A void call has no destination and never
+    // reaches here with a real `expression` (a void function body has no
+    // `return expression;`).
+    private void setReturnValue(imported!"dmd.expression".Expression expression)
+    in (
+        addressOfRefReturn || _returnDestination !is null,
+        "setReturnValue: a non-ref return needs a construction destination",
+    ) {
         if (addressOfRefReturn) {
             _refReturnPlace = refReturnPlace(expression);
             return;
         }
 
-        if (_returnDestination !is null) {
-            constructReturnValue(expression, *_returnDestination);
-            return;
-        }
-
-        _returnValue = runExpressionValue(expression);
-        if (expression.type.toBasetype.isTypeClass !is null)
-            _returnValue = rootedNativeClassValue(expression, _returnValue);
-    }
-
-    // A fresh child activation's return channel starts empty: no return
-    // statement has run yet, so there is no value for a caller reading
-    // `callResult` before the child's body executes (e.g. a `void` function,
-    // or an exception unwinding out of the body) to see.
-    private void seedReturnChannel() {
-        _returnValue = ExpressionResult(false);
-    }
-
-    // The value a completed call left in its own return channel, read once
-    // the child's function body has finished running. A destination-routed
-    // call already constructed its result directly into the caller's own
-    // place, so there is nothing left for the carrier to hold; the caller
-    // reads its result from that place instead of from here.
-    private ExpressionResult callResult() const {
-        return _returnDestination !is null ? ExpressionResult.void_ : _returnValue;
+        constructReturnValue(expression, *_returnDestination);
     }
 
     private ExpressionResult refReturningCallAddress(
@@ -4114,7 +4125,6 @@ unsupportedExpression:
         auto layout = cachedFrameLayout(call.f);
         child._activationFrame = FrameBlock.allocate(layout);
         child.addressOfRefReturn = true;
-        child.seedReturnChannel;
         forkExecutionStateInto(child);
         scope(exit) child.retireActivationFrameMetadata;
         bindCapturedReferenceSlots(call.f, child);
@@ -4261,7 +4271,6 @@ unsupportedExpression:
         auto layout = cachedFrameLayout(function_);
         child._activationFrame = FrameBlock.allocate(layout);
         child.addressOfRefReturn = true;
-        child.seedReturnChannel;
         forkExecutionStateInto(child);
         scope(exit) child.retireActivationFrameMetadata;
         bindCapturedReferenceSlots(function_, child);
@@ -6557,13 +6566,38 @@ unsupportedExpression:
                 argumentBuffers[index],
                 parameterType,
             ));
-        const result = runDelegateCall(
+
+        // A void-returning callback has no destination to construct into
+        // (decision 7); a non-void one needs a real typed temporary, sized
+        // by its own declared return type, or the interpreted delegate's
+        // return has nowhere to land.
+        if (returnType.ty == TY.Tvoid) {
+            runDelegateCall(
+                ExpressionResult.functionPointerValue(callback.functionPointerId),
+                arguments,
+                new Expression[](arguments.length),
+            );
+            return;
+        }
+
+        import quickbite.backends.interpreter.layout: typeByteSize, typeHasPointers;
+        import quickbite.backends.interpreter.native_block: NativeBlock;
+
+        auto resultBlock = NativeBlock.allocate(
+            typeByteSize(returnType),
+            typeHasPointers(returnType)
+                ? NativeBlock.Scan.conservative
+                : NativeBlock.Scan.no,
+        );
+        auto destination = ConstructionDestination(Place(resultBlock.address, returnType));
+        runDelegateCall(
             ExpressionResult.functionPointerValue(callback.functionPointerId),
             arguments,
             new Expression[](arguments.length),
+            null,
+            &destination,
         );
-        if (returnType.ty == TY.Tvoid)
-            return;
+        const result = readStoredValue(destination.place);
 
         resultBuffer[] = 0;
         writeValue(Place(resultBuffer.ptr, returnType), result);
@@ -6719,11 +6753,28 @@ unsupportedExpression:
         if (body is null)
             throw new Exception("Unsupported eval call.");
 
+        // Every `opApply` delegate follows the same early-exit convention:
+        // its declared return type (always `int`, by that convention) names
+        // one activation-owned typed slot, reused for each element's result.
+        import quickbite.backends.interpreter.layout: typeByteSize, typeHasPointers;
+        import quickbite.backends.interpreter.native_block: NativeBlock;
+        import quickbite.backends.interpreter.place: Place;
+
+        auto resultType = body.type.toBasetype.isTypeFunction.next;
+        auto resultBlock = NativeBlock.allocate(
+            typeByteSize(resultType),
+            typeHasPointers(resultType)
+                ? NativeBlock.Scan.conservative
+                : NativeBlock.Scan.no,
+        );
+
         foreach (value; stringForeachApplyElements(
             function_.ident.toString,
             runExpressionValue((*call.arguments)[0]),
         )) {
-            const result = runFunction(body, [value], [null]);
+            auto destination = ConstructionDestination(Place(resultBlock.address, resultType));
+            runFunction(body, [value], [null], false, null, null, &destination);
+            const result = readStoredValue(destination.place);
             if (result != ExpressionResult.void_ && result.asLong != 0)
                 return result;
         }
@@ -7198,7 +7249,6 @@ unsupportedExpression:
         child.currentFunction = function_;
         auto layout = cachedFrameLayout(function_);
         child._activationFrame = FrameBlock.allocate(layout);
-        child.seedReturnChannel;
         child._returnDestination = constructionDestination;
         forkExecutionStateInto(child);
         scope(exit) child.retireActivationFrameMetadata;
@@ -7231,7 +7281,10 @@ unsupportedExpression:
             arguments,
             captureLocals,
         );
-        return child.callResult;
+        // A construction-destination call already wrote its result directly
+        // into the caller's own place; a void call has nothing to report.
+        // Either way there is nothing left to hand back through here.
+        return ExpressionResult.void_;
     }
 
     // DMD keeps a member function's hidden `this` declaration separate from
@@ -7297,7 +7350,6 @@ unsupportedExpression:
         child.currentFunction = function_;
         auto layout = cachedFrameLayout(function_);
         child._activationFrame = FrameBlock.allocate(layout);
-        child.seedReturnChannel;
         child._returnDestination = constructionDestination;
         forkExecutionStateInto(child);
         scope(exit) child.retireActivationFrameMetadata;
@@ -7483,7 +7535,10 @@ unsupportedExpression:
             return receiverValue(child.thisValue);
         }
 
-        return child.callResult;
+        // A construction-destination call already wrote its result directly
+        // into the caller's own place; a void call has nothing to report.
+        // Either way there is nothing left to hand back through here.
+        return ExpressionResult.void_;
     }
 
     private void mergeFunctionState(
@@ -8103,14 +8158,35 @@ unsupportedExpression:
         // raw field/bitwise comparison is exactly right.
         if (AggregateValue.isStruct(left) && AggregateValue.isStruct(right)) {
             auto structType = AggregateValue.native(left).type.toBasetype.isTypeStruct;
-            if (structType !is null && structType.sym.xeq !is null)
-                return isTruthy(runMemberFunction(
+            if (structType !is null && structType.sym.xeq !is null) {
+                import quickbite.backends.interpreter.layout:
+                    typeByteSize, typeHasPointers;
+                import quickbite.backends.interpreter.native_block: NativeBlock;
+                import quickbite.backends.interpreter.place: Place;
+
+                auto resultType = structType.sym.xeq.type.toBasetype.isTypeFunction.next;
+                auto resultBlock = NativeBlock.allocate(
+                    typeByteSize(resultType),
+                    typeHasPointers(resultType)
+                        ? NativeBlock.Scan.conservative
+                        : NativeBlock.Scan.no,
+                );
+                auto destination = ConstructionDestination(Place(
+                    resultBlock.address,
+                    resultType,
+                ));
+                runMemberFunction(
                     structType.sym.xeq,
                     null,
                     left,
                     [right],
                     null,
-                ));
+                    null,
+                    null,
+                    &destination,
+                );
+                return isTruthy(readStoredValue(destination.place));
+            }
 
             return equalStructValues(left, right);
         }
@@ -9517,7 +9593,6 @@ unsupportedExpression:
         child._activationFrame = FrameBlock.allocate(layout);
         child.assignToRefReturn = true;
         child.refReturnAssignedValue = value;
-        child.seedReturnChannel;
         forkExecutionStateInto(child);
         scope(exit) child.retireActivationFrameMetadata;
         bindCapturedReferenceSlots(function_, child);
@@ -9633,7 +9708,6 @@ unsupportedExpression:
         child._activationFrame = FrameBlock.allocate(layout);
         child.assignToRefReturn = true;
         child.refReturnAssignedValue = value;
-        child.seedReturnChannel;
         forkExecutionStateInto(child);
         scope(exit) child.retireActivationFrameMetadata;
         bindCapturedReferenceSlots(call.f, child);
@@ -13099,6 +13173,12 @@ unsupportedExpression:
             child.currentFunction = new_.member;
             child._activationFrame = FrameBlock.allocate(cachedFrameLayout(new_.member));
             child.bindClassReceiver(body, type);
+            // DMD's constructor semantic appends an implicit `return this;`;
+            // route it into the receiver's own storage (already the
+            // constructed object) and discard it below, same as the
+            // caller's `this` binding it constructs.
+            auto returnDestination = ConstructionDestination(child.thisValue);
+            child._returnDestination = &returnDestination;
             child.hasThis = true;
             forkExecutionStateInto(child);
             scope(exit) child.retireActivationFrameMetadata;
@@ -13161,6 +13241,12 @@ unsupportedExpression:
                 child.currentFunction = new_.member;
                 child._activationFrame = FrameBlock.allocate(cachedFrameLayout(new_.member));
                 child.bindStructReceiver(allocated.place);
+                // DMD's constructor semantic appends an implicit `return
+                // this;`; route it into the receiver's own storage (already
+                // `allocated.place`) and discard it, same as the caller's
+                // `this` binding it constructs.
+                auto returnDestination = ConstructionDestination(child.thisValue);
+                child._returnDestination = &returnDestination;
                 child.hasThis = true;
                 forkExecutionStateInto(child);
                 scope(exit) child.retireActivationFrameMetadata;
@@ -13352,11 +13438,15 @@ unsupportedExpression:
             child.currentFunction = new_.member;
             auto layout = cachedFrameLayout(new_.member);
             child._activationFrame = FrameBlock.allocate(layout);
-            child.seedReturnChannel;
             child.bindStructReceiver(Place(
                 AggregateValue.native(structVal).address,
                 AggregateValue.native(structVal).type,
             ));
+            // DMD's constructor semantic appends an implicit `return this;`;
+            // route it into the receiver's own storage and discard it, same
+            // as `structVal`'s own read-back from `child.thisValue` below.
+            auto returnDestination = ConstructionDestination(child.thisValue);
+            child._returnDestination = &returnDestination;
             child.hasThis = true;
             forkExecutionStateInto(child);
             scope(exit) child.retireActivationFrameMetadata;
@@ -13530,10 +13620,14 @@ unsupportedExpression:
         child.currentFunction = new_.member;
         auto layout = cachedFrameLayout(new_.member);
         child._activationFrame = FrameBlock.allocate(layout);
-        child.seedReturnChannel;
         forkExecutionStateInto(child);
         scope(exit) child.retireActivationFrameMetadata;
         child.bindClassReceiver(AggregateValue.nativeClassBodyAddress(object), allocationType);
+        // DMD's constructor semantic appends an implicit `return this;`;
+        // route it into the receiver's own storage and discard it, same as
+        // `objectValue` returned below.
+        auto returnDestination = ConstructionDestination(child.thisValue);
+        child._returnDestination = &returnDestination;
         child.hasThis = true;
         child.bindFunctionParameters(
             new_.member,
