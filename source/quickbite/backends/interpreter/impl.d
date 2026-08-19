@@ -9634,7 +9634,10 @@ unsupportedExpression:
         // `DotVarExp`, not a `DotVarExp`/`VarExp` directly, so it fell through
         // both arms below. `value` here is already the compound-assignment's
         // computed result (`writeLocation`'s caller resolved it), so only the
-        // write-back composition is needed, not an rhs evaluation.
+        // write-back composition is needed, not an rhs evaluation. `dot.e1`'s
+        // struct receiver also has no addressable `Place`, so the updated
+        // field can only be composed as a whole rebuilt struct value and
+        // written back through `writeLocation`'s own receiver recursion.
         if (auto outer = index.e1.isIndexExp) {
             auto dot = outer.e1.isDotVarExp;
             if (dot is null)
@@ -9687,6 +9690,11 @@ unsupportedExpression:
                 throw new Exception("Class field assignment needs a native address.");
             }
 
+            // A struct receiver here (as opposed to the class branch above)
+            // has no addressable `Place`: `receiver` is a value snapshot
+            // read by `runExpressionValue`, so the updated element can only
+            // be composed as a whole rebuilt struct value and written back
+            // through `writeLocation`'s own receiver recursion.
             const fieldIndex = structFieldIndex(dot);
             const receiver = runExpressionValue(dot.e1);
             const updatedArray = AggregateValue.withArrayElement(
@@ -9999,8 +10007,11 @@ unsupportedExpression:
                     if (index.lengthVar !is null)
                         setLocal(index.lengthVar, ExpressionResult(AggregateValue.length(source)));
                     const arrayIndex = scalarOperand!size_t(index.e2);
+                    auto destination = fieldPlace.index(arrayIndex);
+                    if (canAssignThroughTypedTemporary(destination, rhs))
+                        return assignThroughTypedTemporary(destination, rhs);
                     const value = runExpressionValue(rhs);
-                    writeStoredValue(fieldPlace.index(arrayIndex), value);
+                    writeStoredValue(destination, value);
                     return value;
                 }
                 throw new Exception("Class field assignment needs a native address.");
@@ -10013,6 +10024,13 @@ unsupportedExpression:
             // the same `$` binding. Evaluating e2 first left lengthVar
             // holding a stale (or default zero) length, so `h.arr[$ - 1] =
             // v` right after growing `h.arr` underflowed to size_t.max.
+            //
+            // A struct receiver here (as opposed to the class branch above)
+            // has no addressable `Place`: `receiver` is a value snapshot
+            // read by `runExpressionValue`, so the updated element can only
+            // be composed as a whole rebuilt struct value and written back
+            // through `writeLocation`'s own receiver recursion, not a typed
+            // temporary copy into a live place.
             const fieldIndex = structFieldIndex(dot);
             const receiver = runExpressionValue(dot.e1);
             const source = AggregateValue.fieldAt(receiver, fieldIndex);
@@ -10040,6 +10058,25 @@ unsupportedExpression:
         if (isStaticArrayType(index.e1.type))
             checkStaticArrayIndexInBounds(current, arrayIndex);
 
+        import dmd.astenums: TY;
+
+        auto elementType = index.e1.type.toBasetype.nextOf;
+        // A live delegate element has no native ABI function address --
+        // `place_value.writeValue`'s Tdelegate arm only ever accepts
+        // `ExpressionResult.null_` -- so it cannot copy through a typed
+        // temporary; it keeps registering the live value out-of-band in
+        // `nativeDelegateSlots`, keyed by the element's own address,
+        // mirroring the append and struct/class-field write sites.
+        const isDelegateElement = elementType !is null
+            && elementType.toBasetype.ty == TY.Tdelegate;
+        auto destination = bindingPlace(variable).index(arrayIndex);
+
+        if (!isDelegateElement && canAssignThroughTypedTemporary(destination, rhs)) {
+            const value = assignThroughTypedTemporary(destination, rhs);
+            clearUninitializedBindingAddress(bindingPlace(variable).address);
+            return value;
+        }
+
         // A fresh closure RHS (`dgs[0] = () => 1;`) is a bare `FuncExp`;
         // construct its callable before writing the destination.
         auto literal = rhs.isFuncExp;
@@ -10047,20 +10084,8 @@ unsupportedExpression:
             ? runExpressionValue(rhs)
             : runFunctionLiteralDeclaration(literal);
 
-        // A live delegate element has no native ABI function address --
-        // `place_value.writeValue`'s Tdelegate arm only ever accepts
-        // `ExpressionResult.null_` -- so substitute null bytes for the write and
-        // register the live value out-of-band in `nativeDelegateSlots`,
-        // keyed by the element's own address, mirroring the append and
-        // struct/class-field write sites.
-        import dmd.astenums: TY;
-
-        auto elementType = index.e1.type.toBasetype.nextOf;
-        const isLiveDelegate = elementType !is null
-            && elementType.toBasetype.ty == TY.Tdelegate
-            && value != ExpressionResult.null_;
+        const isLiveDelegate = isDelegateElement && value != ExpressionResult.null_;
         const storedValue = isLiveDelegate ? ExpressionResult.null_ : value;
-        auto destination = bindingPlace(variable).index(arrayIndex);
         writeStoredValue(destination, storageValue(elementType, storedValue));
         if (isLiveDelegate)
             nativeDelegateSlots[destination.address] = value;
