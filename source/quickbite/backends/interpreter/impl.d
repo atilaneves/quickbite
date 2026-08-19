@@ -704,7 +704,7 @@ private struct Walker {
     // All child walkers share the same table by pointer.
     private ModuleTable* moduleTable;
 
-    private ExpressionResult thisValue;
+    private Place thisValue;
     private void* thisAddress;
     private bool hasThis;
     private ExpressionResult pendingFinallyBodyException;
@@ -2219,9 +2219,13 @@ private struct Walker {
         if (!hasThis)
             throw new Exception("Unsupported eval call.");
 
-        if (dynamicClass(thisValue) !is null && isThrowableConstructor(function_)) {
-            thisValue = applyThrowableConstructor(thisValue, arguments);
-            return thisValue;
+        const receiverCarrier = receiverValue(thisValue);
+        if (dynamicClass(receiverCarrier) !is null && isThrowableConstructor(function_)) {
+            thisValue = receiverPlaceFrom(
+                applyThrowableConstructor(receiverCarrier, arguments),
+                thisValue.type,
+            );
+            return receiverValue(thisValue);
         }
 
         // A delegating constructor (`this(...)` forwarding to another
@@ -2229,15 +2233,18 @@ private struct Walker {
         // target constructor on the current receiver and adopt the
         // constructed value.
         if (function_.isConstructorFunction) {
-            thisValue = runMemberFunction(
-                function_,
-                null,
-                thisValue,
-                arguments,
-                argumentExpressions,
-                evaluatedArguments,
+            thisValue = receiverPlaceFrom(
+                runMemberFunction(
+                    function_,
+                    null,
+                    receiverCarrier,
+                    arguments,
+                    argumentExpressions,
+                    evaluatedArguments,
+                ),
+                thisValue.type,
             );
-            return thisValue;
+            return receiverValue(thisValue);
         }
 
         throw new Exception("Unsupported eval call.");
@@ -3209,14 +3216,14 @@ thisExpression:
         if (expression.isThisExp !is null) {
             if (!hasThis)
                 throw new Exception("Unsupported eval expression: this");
-            return thisValue;
+            return receiverValue(thisValue);
         }
 
 superExpression:
         if (expression.isSuperExp !is null) {
             if (!hasThis)
                 throw new Exception("Unsupported eval expression: super");
-            return thisValue;
+            return receiverValue(thisValue);
         }
 
 typeidExpression:
@@ -3242,23 +3249,27 @@ identifierExpression:
                 return ExpressionResult(false);
 
             // Constructor and member-method `this` is the native body
-            // pointer. Resolve an unqualified class field through that body.
-            if (hasThis && thisValue.isPointer && currentFunction !is null) {
+            // pointer. Resolve an unqualified class field through that body,
+            // straight off `thisValue`'s own place -- `Place.field` derives
+            // the field's offset from `field` itself, not from the place's
+            // recorded type, so no reconstruction is needed here.
+            if (
+                hasThis &&
+                thisValue.type !is null &&
+                thisValue.type.toBasetype.isTypeClass !is null &&
+                currentFunction !is null
+            ) {
                 auto thisParameter = currentFunction.vthis;
                 auto classType = thisParameter is null
                     ? null
                     : thisParameter.type.toBasetype.isTypeClass;
                 if (classType !is null && classType.sym !is null) {
                     import quickbite.backends.interpreter.layout: classFields, fieldName;
-                    import quickbite.backends.interpreter.place: Place;
                     import quickbite.backends.interpreter.place_value: readValue;
 
                     foreach (field; classFields(classType.sym))
                         if (fieldName(field) == name)
-                            return readValue(Place(
-                                thisValue.pointerAddress,
-                                thisParameter.type,
-                            ).field(field));
+                            return readValue(thisValue.field(field));
                 }
             }
         }
@@ -4163,9 +4174,12 @@ unsupportedExpression:
         forkExecutionStateInto(child);
         scope(exit) child.retireActivationFrameMetadata;
         bindCapturedReferenceSlots(function_, child);
-        child.thisValue = receiver;
+        child.thisValue = receiverPlaceFrom(
+            receiver,
+            function_.vthis is null ? null : function_.vthis.type,
+        );
         child.hasThis = true;
-        child.bindThisReferenceAddress(function_, receiver);
+        child.bindThisReferenceAddress(function_, child.thisValue);
         child.bindFunctionParameters(
             function_,
             arguments,
@@ -4240,7 +4254,43 @@ unsupportedExpression:
     // spells out the borrowed-native-aggregate representation, so every
     // struct receiver construction routes through it.
     private void bindStructReceiver(Place place) {
-        thisValue = borrowedAggregateValue(place);
+        thisValue = place;
+    }
+
+    // The place a still-carrier-typed receiver value already names: a
+    // struct receiver's own native aggregate storage, or -- for a class
+    // receiver, whose carrier is a bare body-address pointer with no type
+    // of its own -- `classType` from the surrounding construction context.
+    // A boundary helper for the receiver channel's remaining carrier-typed
+    // producers (a call's returned receiver, a default-initialised struct,
+    // a rebound `this`/`super`), not a receiver-constructing site itself.
+    private Place receiverPlaceFrom(
+        in ExpressionResult value,
+        imported!"dmd.mtype".Type classType,
+    ) {
+        return value.isNativeAggregate
+            ? Place(
+                AggregateValue.native(value).address,
+                AggregateValue.native(value).type,
+            )
+            : Place(value.pointerAddress, classType);
+    }
+
+    // The inverse of `receiverPlaceFrom`, and of `bindClassReceiver`/
+    // `bindStructReceiver`: the receiver carrier a place already names. A
+    // struct receiver reads back as the same borrowed native aggregate its
+    // own binder would construct; a class receiver's place address IS the
+    // body address (no slot to dereference, matching `bindClassReceiver`'s
+    // own invariant). Dispatch on `isTypeStruct`, not `isTypeClass`: a
+    // nested function's captured `this` carries its receiver through
+    // `vthis`, whose declared type DMD gives as an opaque `void*` context
+    // pointer, not the real class -- `isTypeStruct` stays reliable there
+    // (every struct-receiver construction site gates on it explicitly), so
+    // "not a struct" is the correct fallback to the pointer read.
+    private ExpressionResult receiverValue(Place place) {
+        return place.type.toBasetype.isTypeStruct !is null
+            ? borrowedAggregateValue(place)
+            : ExpressionResult.pointerValue(place.address);
     }
 
     // A `ref` foreach variable over an input range may bind to a `front`
@@ -5212,7 +5262,7 @@ unsupportedExpression:
         runtime.contextPointer = ExpressionResult.pointerValue(null);
         runtime.capturedAddresses = closureCapturedAddresses(literal.fd);
         if (literal.fd.isNested && hasThis) {
-            runtime.receiver = thisValue;
+            runtime.receiver = receiverValue(thisValue);
             runtime.hasReceiver = true;
         }
 
@@ -5975,7 +6025,7 @@ unsupportedExpression:
                 return runMemberFunction(
                     call.f,
                     null,
-                    thisValue,
+                    receiverValue(thisValue),
                     arguments,
                     argumentExpressions,
                     evaluatedArguments,
@@ -6025,7 +6075,7 @@ unsupportedExpression:
                 return runMemberFunction(
                     function_,
                     null,
-                    thisValue,
+                    receiverValue(thisValue),
                     arguments,
                     argumentExpressions,
                     evaluatedArguments,
@@ -7028,23 +7078,21 @@ unsupportedExpression:
     }
 
     // DMD keeps a member function's hidden `this` declaration separate from
-    // its ordinary argument list. A native receiver nevertheless already
-    // has an exact guest address; retain it for `ref this` forwarding after
-    // parameter binding (which may clear a stale entry for that declaration).
+    // its ordinary argument list. A receiver already bound onto the
+    // walker's own `thisValue` channel names its address directly, whether
+    // it is a struct's own storage or a class's body address -- no carrier
+    // round-trip needed to recover it. Retain it for `ref this` forwarding
+    // after parameter binding (which may clear a stale entry for that
+    // declaration).
     private void bindThisReferenceAddress(
         FuncDeclaration function_,
-        in ExpressionResult receiver,
+        Place receiver,
     ) {
-        import quickbite.backends.interpreter.aggregate_value: AggregateValue;
-
         auto vthis = function_.vthis;
         if (vthis is null)
             return;
 
-        if (receiver.isNativeAggregate)
-            thisAddress = AggregateValue.native(receiver).address;
-        else if (receiver.isPointer)
-            thisAddress = receiver.pointerAddress;
+        thisAddress = receiver.address;
 
         if (
             thisAddress !is null &&
@@ -7107,16 +7155,22 @@ unsupportedExpression:
         // fields.  When the receiver is already a valid struct (e.g.
         // MapResult created from a StructLiteralExp with elements), use it
         // as-is to preserve any hidden context fields.
+        auto receiverClassType = function_.vthis is null
+            ? null
+            : function_.vthis.type;
         if (
             function_.isConstructorFunction &&
             !AggregateValue.isStruct(receiver)
         ) {
             auto structDecl = function_.constructorStructDeclaration;
-            child.thisValue = structDecl !is null
-                ? defaultValueResult(structDecl.type)
-                : memberReceiver;
+            child.thisValue = receiverPlaceFrom(
+                structDecl !is null
+                    ? defaultValueResult(structDecl.type)
+                    : memberReceiver,
+                receiverClassType,
+            );
         } else {
-            child.thisValue = memberReceiver;
+            child.thisValue = receiverPlaceFrom(memberReceiver, receiverClassType);
         }
         child.hasThis = true;
         child.bindFunctionParameters(
@@ -7140,7 +7194,7 @@ unsupportedExpression:
             // lend it to `this`. A writable receiver instead follows the
             // regular `this` binding below, which preserves DMD's assignment
             // receiver for a following postblit. This path does not return
-            // `child.thisValue` for a later carrier-to-place copy.
+            // `child.thisValue` for the caller to copy from.
             //
             // `constructorStructDeclaration !is null` alone is too broad: it
             // is non-null for any struct member function (DMD's `isThis`
@@ -7162,7 +7216,7 @@ unsupportedExpression:
                     constructionDestination.place,
                 );
             } else {
-                writeStoredValue(constructionDestination.place, child.thisValue);
+                writeStoredValue(constructionDestination.place, receiverValue(child.thisValue));
             }
             child.thisAddress = constructionDestination.place.address;
             if (child._activationFrame.hasReferenceSlot(function_.vthis))
@@ -7231,12 +7285,12 @@ unsupportedExpression:
                         function_.vthis,
                         child.thisAddress,
                     );
-                auto receiverType = child.thisValue.isNativeAggregate
-                    ? AggregateValue.native(child.thisValue).type
-                    : function_.vthis.type;
+                // `child.thisValue` is a place by construction here, so it
+                // always already carries the receiver's real type -- no
+                // fallback to the declared `function_.vthis.type` needed.
                 child.bindStructReceiver(Place(
                     address.pointerAddress,
-                    receiverType,
+                    child.thisValue.type,
                 ));
             }
         }
@@ -7267,7 +7321,7 @@ unsupportedExpression:
                     constructionDestination.markConstructed;
                 return ExpressionResult.void_;
             }
-            return child.thisValue;
+            return receiverValue(child.thisValue);
         }
 
         if (constructionDestination !is null)
@@ -8897,19 +8951,24 @@ unsupportedExpression:
             if (thisAddress !is null) {
                 import quickbite.backends.interpreter.place: Place;
 
-                writeStoredValue(
-                    Place(thisAddress, target.type),
-                    storageValue(target.type, value),
-                );
-                thisValue = value;
+                const stored = storageValue(target.type, value);
+                writeStoredValue(Place(thisAddress, target.type), stored);
+                // The written place is thisAddress itself for a struct
+                // receiver, but the class receiver's own body address for
+                // a class one -- `thisAddress` there is the *slot* the
+                // reference was just written into, one indirection short of
+                // `bindClassReceiver`'s own body-address invariant.
+                thisValue = target.type.toBasetype.isTypeStruct !is null
+                    ? Place(thisAddress, target.type)
+                    : Place(stored.pointerAddress, target.type);
                 return;
             }
-            thisValue = value;
+            thisValue = receiverPlaceFrom(value, target.type);
             return;
         }
 
         if (target.isSuperExp !is null && hasThis) {
-            thisValue = value;
+            thisValue = receiverPlaceFrom(value, target.type);
             return;
         }
 
@@ -9187,9 +9246,12 @@ unsupportedExpression:
         forkExecutionStateInto(child);
         scope(exit) child.retireActivationFrameMetadata;
         bindCapturedReferenceSlots(function_, child);
-        child.thisValue = receiver;
+        child.thisValue = receiverPlaceFrom(
+            receiver,
+            function_.vthis is null ? null : function_.vthis.type,
+        );
         child.hasThis = true;
-        child.bindThisReferenceAddress(function_, receiver);
+        child.bindThisReferenceAddress(function_, child.thisValue);
         child.bindFunctionParameters(
             function_,
             arguments,
@@ -12595,7 +12657,7 @@ unsupportedExpression:
             child.runningCalledFunction = true;
             child.currentFunction = new_.member;
             child._activationFrame = FrameBlock.allocate(cachedFrameLayout(new_.member));
-            child.bindClassReceiver(body);
+            child.bindClassReceiver(body, type);
             child.hasThis = true;
             forkExecutionStateInto(child);
             scope(exit) child.retireActivationFrameMetadata;
@@ -12683,16 +12745,19 @@ unsupportedExpression:
         return true;
     }
 
-    // A class `this` is its body address carried as a pointer value, and
-    // nothing else. `bodyAddress` is already the dereferenced body address
-    // (e.g. `AggregateValue.nativeClassBodyAddress`); wrapping it as a
-    // native aggregate, or storing a pointer to it, would make a later
-    // dereference (`nativeClassBodyAddress` expects a reference-slot
-    // address) read through a wild address. This is the one spot that
-    // spells out the representation, so every class receiver construction
-    // routes through it.
-    private void bindClassReceiver(void* bodyAddress) {
-        thisValue = ExpressionResult.pointerValue(bodyAddress);
+    // A class `this` is its body address, and nothing else. `bodyAddress`
+    // is already the dereferenced body address (e.g.
+    // `AggregateValue.nativeClassBodyAddress`); wrapping it as a native
+    // aggregate, or storing a pointer to it, would make a later dereference
+    // (`nativeClassBodyAddress` expects a reference-slot address) read
+    // through a wild address. This is the one spot that spells out the
+    // representation, so every class receiver construction routes through
+    // it.
+    private void bindClassReceiver(
+        void* bodyAddress,
+        imported!"dmd.mtype".Type classType,
+    ) {
+        thisValue = Place(bodyAddress, classType);
     }
 
     private void constructNewArray(
@@ -12817,14 +12882,17 @@ unsupportedExpression:
             auto layout = cachedFrameLayout(new_.member);
             child._activationFrame = FrameBlock.allocate(layout);
             child._returnValue = ExpressionResult(false);
-            child.thisValue = structVal;
+            child.bindStructReceiver(Place(
+                AggregateValue.native(structVal).address,
+                AggregateValue.native(structVal).type,
+            ));
             child.hasThis = true;
             forkExecutionStateInto(child);
             scope(exit) child.retireActivationFrameMetadata;
             child.bindThisReferenceAddress(new_.member, child.thisValue);
             child.bindFunctionParameters(new_.member, arguments);
             child.runStatement(new_.member.fbody);
-            structVal = child.thisValue;
+            structVal = receiverValue(child.thisValue);
         } else if (new_.arguments !is null) {
             // Aggregate initialiser: assign arguments positionally to fields.
             // `withStoredStructField` (not the raw `AggregateValue.
@@ -12974,7 +13042,7 @@ unsupportedExpression:
         child._returnValue = ExpressionResult(false);
         forkExecutionStateInto(child);
         scope(exit) child.retireActivationFrameMetadata;
-        child.bindClassReceiver(AggregateValue.nativeClassBodyAddress(object));
+        child.bindClassReceiver(AggregateValue.nativeClassBodyAddress(object), allocationType);
         child.hasThis = true;
         child.bindFunctionParameters(new_.member, arguments);
         try {
