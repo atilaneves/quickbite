@@ -36,22 +36,30 @@ public string indexOutOfBoundsMessage(
         : text("array index ", index, " is out of bounds `[0..", length, "]`");
 }
 
-public bool isTruthy(in imported!"quickbite.backends.interpreter.expression_result".ExpressionResult value) {
-    import quickbite.backends.interpreter.expression_result: ExpressionResult;
+// Read a boolean-typed place's truthiness. `eval`'s formatters only ever
+// call this once DMD has fixed the operand's type, the same precondition
+// `Walker.conditionTruthy` (impl.d) relies on for its own scalar switch.
+public bool isTruthy(imported!"quickbite.backends.interpreter.place".Place value) {
+    import dmd.astenums: TY;
 
-    if (value == ExpressionResult.null_)
-        return false;
-
-    if (value.isPointer)
-        return true;
-
-    if (value == ExpressionResult(false))
-        return false;
-
-    if (value == ExpressionResult(true))
-        return true;
-
-    return value.castTo!bool == ExpressionResult(true);
+    with (TY) switch (value.type.toBasetype.ty) {
+        case Tbool: return value.loadNativeScalar!bool;
+        case Tint8: return value.loadNativeScalar!byte != 0;
+        case Tuns8, Tchar: return value.loadNativeScalar!ubyte != 0;
+        case Tint16: return value.loadNativeScalar!short != 0;
+        case Tuns16, Twchar: return value.loadNativeScalar!ushort != 0;
+        case Tint32: return value.loadNativeScalar!int != 0;
+        case Tuns32, Tdchar: return value.loadNativeScalar!uint != 0;
+        case Tint64: return value.loadNativeScalar!long != 0;
+        case Tuns64: return value.loadNativeScalar!ulong != 0;
+        case Tfloat32: return value.loadNativeScalar!float != 0;
+        case Tfloat64: return value.loadNativeScalar!double != 0;
+        case Tfloat80: return value.loadNativeScalar!real != 0;
+        case Tpointer, Tclass, Taarray:
+            return value.deref.address !is null;
+        default:
+            throw new Exception("Unsupported diagnostic operand type.");
+    }
 }
 
 public string thrownExceptionMessage(
@@ -87,10 +95,10 @@ public bool isClassExpression(
     return type !is null && type.ty == TY.Tclass;
 }
 
-public bool isBoolValue(in imported!"quickbite.backends.interpreter.expression_result".ExpressionResult value) {
-    import quickbite.backends.interpreter.expression_result: ExpressionResult;
+public bool isBoolValue(imported!"quickbite.backends.interpreter.place".Place value) {
+    import dmd.astenums: TY;
 
-    return value == ExpressionResult(false) || value == ExpressionResult(true);
+    return value.type.toBasetype.ty == TY.Tbool;
 }
 
 public bool isBoolExpression(
@@ -255,11 +263,10 @@ public string invertedEqualityOperator(in char[] operator) {
 }
 
 public string equalityOperandMessage(
-    in imported!"quickbite.backends.interpreter.expression_result".ExpressionResult value,
+    imported!"quickbite.backends.interpreter.place".Place value,
     in bool useBoolMessage,
     imported!"dmd.expression".Expression expression,
 ) {
-    import quickbite.backends.interpreter.aggregate_value: AggregateValue;
     import quickbite.frontend.dmd.types:
         isCharacterArrayType, isIntegralExpression;
     import std.conv: text;
@@ -268,107 +275,156 @@ public string equalityOperandMessage(
         return text(isTruthy(value));
 
     if (isCharExpression(expression))
-        return text("'", value.asChar, "'");
+        return text("'", value.loadNativeScalar!char, "'");
 
     if (isUnsignedLongExpression(expression))
-        return text(value.asLong);
+        return text(asLongValue(value));
 
     if (isIntegralExpression(expression))
-        return text(value.asLong);
+        return text(asLongValue(value));
 
-    if (AggregateValue.isArray(value) &&
-        isCharacterArrayType(expression.type)) {
-        string characters;
-        foreach (index; 0 .. AggregateValue.elementCount(value))
-            characters ~= AggregateValue.elementAt(value, index).asUtf8Character;
-        return `"` ~ characters ~ `"`;
-    }
+    auto basetype = expression.type.toBasetype;
+    const isArray = basetype.isTypeDArray !is null || basetype.isTypeSArray !is null;
 
-    if (AggregateValue.isArray(value))
-        return nativeArrayText(value, expression.type);
+    if (isArray && isCharacterArrayType(expression.type))
+        return `"` ~ charArrayString(value) ~ `"`;
 
-    return scalarText(value, expression.type);
+    if (isArray)
+        return nativeArrayText(value);
+
+    return scalarText(value);
 }
 
+// The signed-reinterpretation `asLongValue` deliberately mirrors: every
+// integral operand -- signed or unsigned, any width -- prints through the
+// same `long` cast an assert diagnostic has always used here, even though
+// `scalarText`'s own unsigned case (reached only once this function has
+// ruled an operand out as non-integral) prints the true unsigned decimal
+// value instead.
+private long asLongValue(imported!"quickbite.backends.interpreter.place".Place value) {
+    import dmd.astenums: TY;
+
+    with (TY) switch (value.type.toBasetype.ty) {
+        case Tint8: return value.loadNativeScalar!byte;
+        case Tuns8: return value.loadNativeScalar!ubyte;
+        case Tint16: return value.loadNativeScalar!short;
+        case Tuns16: return value.loadNativeScalar!ushort;
+        case Tint32: return value.loadNativeScalar!int;
+        case Tuns32: return value.loadNativeScalar!uint;
+        case Tint64: return value.loadNativeScalar!long;
+        case Tuns64: return cast(long) value.loadNativeScalar!ulong;
+        default:
+            throw new Exception("Expected integer-compatible scalar.");
+    }
+}
 
 private string nativeArrayText(
-    in imported!"quickbite.backends.interpreter.expression_result".ExpressionResult value,
-    imported!"dmd.mtype".Type type,
+    imported!"quickbite.backends.interpreter.place".Place value,
 ) {
-    import quickbite.backends.interpreter.aggregate_value: AggregateValue;
-
-    auto elementType = type.toBasetype.nextOf;
     string result = "[";
-    foreach (index; 0 .. AggregateValue.elementCount(value)) {
+    foreach (index; 0 .. value.arrayLength) {
         if (index)
             result ~= ", ";
-        const element = AggregateValue.elementAt(value, index);
-        result ~= AggregateValue.isArray(element)
-            ? nativeArrayText(element, elementType)
-            : scalarText(element, elementType);
+        auto element = value.index(index);
+        auto elementType = element.type.toBasetype;
+        result ~= elementType.isTypeDArray !is null || elementType.isTypeSArray !is null
+            ? nativeArrayText(element)
+            : scalarText(element);
     }
     return result ~ "]";
 }
 
-
 private string scalarText(
-    in imported!"quickbite.backends.interpreter.expression_result".ExpressionResult value,
-    imported!"dmd.mtype".Type type,
+    imported!"quickbite.backends.interpreter.place".Place value,
 ) {
     import dmd.astenums: TY;
-    import quickbite.backends.interpreter.expression_result: ExpressionResult;
     import std.conv: text;
 
-    if (value == ExpressionResult.null_)
-        return "null";
-    if (value.isEnumScalar)
-        return value.enumName;
-    if (value.isImaginaryScalar)
-        return text(value.imaginaryPart, "i");
-    if (value.isComplexScalar)
-        return text(
-            value.complexRealPart.asReal,
-            "+",
-            value.complexImaginaryPart.asReal,
-            "i",
-        );
-    if (value.isTypeName)
-        return value.asTypeNameString;
-    if (value.isFunctionPointer)
-        return text("<function pointer ", value.functionPointerId, ">");
-    if (value.isPointer)
-        return text(value.pointerAddress);
-    if (value.isNativeDelegate)
-        return text(value.nativeDelegateFuncptr);
-    if (value.isNativeAggregate)
-        return "<native aggregate>";
-
-    switch (type.toBasetype.ty) with (TY) {
+    with (TY) switch (value.type.toBasetype.ty) {
         case Tbool:
-            return text(value == ExpressionResult(true));
+            return text(value.loadNativeScalar!bool);
         case Tchar, Twchar, Tdchar:
-            return value.asUtf8Character;
+            return characterUtf8(value);
         case Tint8, Tint16, Tint32, Tint64:
-            return text(value.asLong);
-        case Tuns8, Tuns16, Tuns32, Tuns64:
-            return text(value.asUnsignedLong);
+            return text(asLongValue(value));
+        case Tuns8:
+            return text(value.loadNativeScalar!ubyte);
+        case Tuns16:
+            return text(value.loadNativeScalar!ushort);
+        case Tuns32:
+            return text(value.loadNativeScalar!uint);
+        case Tuns64:
+            return text(value.loadNativeScalar!ulong);
         case Tfloat32:
-            return text(cast(float) value.asReal);
+            return text(value.loadNativeScalar!float);
         case Tfloat64:
-            return text(cast(double) value.asReal);
+            return text(value.loadNativeScalar!double);
         case Tfloat80:
-            return text(value.asReal);
+            return text(value.loadNativeScalar!real);
+        case Timaginary32:
+            return text(value.loadNativeScalar!ifloat.im, "i");
+        case Timaginary64:
+            return text(value.loadNativeScalar!idouble.im, "i");
+        case Timaginary80:
+            return text(value.loadNativeScalar!ireal.im, "i");
+        case Tcomplex32:
+            const complex32 = value.loadNativeScalar!cfloat;
+            return text(complex32.re, "+", complex32.im, "i");
+        case Tcomplex64:
+            const complex64 = value.loadNativeScalar!cdouble;
+            return text(complex64.re, "+", complex64.im, "i");
+        case Tcomplex80:
+            const complex80 = value.loadNativeScalar!creal;
+            return text(complex80.re, "+", complex80.im, "i");
+        case Tpointer:
+            // A function pointer's native place is a side-tabled handle
+            // (impl.d's `nativeFunctionPointerSlots`), zeroed in native
+            // storage whether it is null or live -- not a formattable
+            // native place.
+            if (value.type.toBasetype.nextOf.toBasetype.ty == Tfunction)
+                throw new Exception("Unsupported diagnostic operand type.");
+            return value.deref.address is null ? "null" : text(value.deref.address);
+        case Tclass:
+            return value.deref.address is null ? "null" : "<native aggregate>";
+        case Tdelegate:
+            // A live delegate's native place is likewise side-tabled
+            // (impl.d's `nativeDelegateSlots`) and zeroed; only the null
+            // delegate -- the all-zero ABI value -- is formattable here.
+            auto delegate_ = value.loadNativeScalar!(void delegate());
+            if (delegate_.funcptr is null && delegate_.ptr is null)
+                return "null";
+            throw new Exception("Unsupported diagnostic operand type.");
         default:
             throw new Exception("Unsupported diagnostic operand type.");
     }
 }
 
+private string characterUtf8(
+    imported!"quickbite.backends.interpreter.place".Place value,
+) {
+    import dmd.astenums: TY;
+    import std.utf: encode;
+
+    with (TY) switch (value.type.toBasetype.ty) {
+        case Tchar:
+            return [value.loadNativeScalar!char].idup;
+        case Twchar:
+            char[4] encoded;
+            const length = encode(encoded, cast(dchar) value.loadNativeScalar!wchar);
+            return encoded[0 .. length].idup;
+        case Tdchar:
+            char[4] encoded;
+            const length = encode(encoded, value.loadNativeScalar!dchar);
+            return encoded[0 .. length].idup;
+        default:
+            throw new Exception("Expected character place.");
+    }
+}
+
 public string assertMessage(
     imported!"dmd.expression".Expression expression,
-    scope imported!"quickbite.backends.interpreter.expression_result".ExpressionResult delegate(imported!"dmd.expression".Expression) eval,
+    scope imported!"quickbite.backends.interpreter.place".Place delegate(imported!"dmd.expression".Expression) eval,
 ) {
-    import quickbite.backends.interpreter.expression_result: ExpressionResult;
-
     if (auto literal = expression.isStringExp)
         return literal.peekString.idup;
 
@@ -383,13 +439,11 @@ public string assertMessage(
 }
 
 private string charArrayString(
-    in imported!"quickbite.backends.interpreter.expression_result".ExpressionResult value,
+    imported!"quickbite.backends.interpreter.place".Place value,
 ) {
-    import quickbite.backends.interpreter.aggregate_value: AggregateValue;
-
     char[] result;
-    foreach (index; 0 .. AggregateValue.elementCount(value))
-        result ~= AggregateValue.elementAt(value, index).asUtf8Character;
+    foreach (index; 0 .. value.arrayLength)
+        result ~= characterUtf8(value.index(index));
     return result.idup;
 }
 
@@ -466,10 +520,9 @@ private string dmdAssertFailBoolMessageFromCall(
 
 public string dmdAssertFailMessage(
     imported!"dmd.expression".Expression expression,
-    scope imported!"quickbite.backends.interpreter.expression_result".ExpressionResult delegate(imported!"dmd.expression".Expression) eval,
+    scope imported!"quickbite.backends.interpreter.place".Place delegate(imported!"dmd.expression".Expression) eval,
 ) {
     import dmd.id: Id;
-    import quickbite.backends.interpreter.expression_result: ExpressionResult;
     import std.conv: text;
 
     auto call = expression.isCallExp;
@@ -500,8 +553,8 @@ public string dmdAssertFailMessage(
         isLogicalNotExpression(right) ||
         isLogicalExpression(left) ||
         isLogicalExpression(right);
-    const leftValue = eval(left);
-    const rightValue = eval(right);
+    auto leftValue = eval(left);
+    auto rightValue = eval(right);
 
     return text(
         equalityOperandMessage(leftValue, useBoolMessage, left),
@@ -515,7 +568,7 @@ public string dmdAssertFailMessage(
 private string dmdAssertFailIdentityMessage(
     imported!"dmd.expression".Expression left,
     imported!"dmd.expression".Expression right,
-    scope imported!"quickbite.backends.interpreter.expression_result".ExpressionResult delegate(imported!"dmd.expression".Expression) eval,
+    scope imported!"quickbite.backends.interpreter.place".Place delegate(imported!"dmd.expression".Expression) eval,
 ) {
     if (auto identity = identityExpression(left)) {
         if (assertExpectedTrue(right))
@@ -539,7 +592,7 @@ private bool assertExpectedTrue(imported!"dmd.expression".Expression expression)
 
 private string identityFailureMessage(
     imported!"dmd.expression".IdentityExp identity,
-    scope imported!"quickbite.backends.interpreter.expression_result".ExpressionResult delegate(imported!"dmd.expression".Expression) eval,
+    scope imported!"quickbite.backends.interpreter.place".Place delegate(imported!"dmd.expression".Expression) eval,
 ) {
     import dmd.tokens: EXP;
     import std.conv: text;
@@ -554,27 +607,26 @@ private string identityFailureMessage(
     );
 }
 
-private string identityOperandMessage(in imported!"quickbite.backends.interpreter.expression_result".ExpressionResult value) {
-    import quickbite.backends.interpreter.expression_result: ExpressionResult;
-    import std.conv: text;
-
-    if (value == ExpressionResult.null_)
-        return "`null`";
-
-    return text(value);
+// `scalarText` already renders a null pointer/class place as `"null"`;
+// wrap only that case in backticks, matching an identity comparison's own
+// diagnostic style.
+private string identityOperandMessage(
+    imported!"quickbite.backends.interpreter.place".Place value,
+) {
+    const text_ = scalarText(value);
+    return text_ == "null" ? "`null`" : text_;
 }
 
 public string equalFailureMessage(
     imported!"dmd.expression".EqualExp equal,
-    scope imported!"quickbite.backends.interpreter.expression_result".ExpressionResult delegate(imported!"dmd.expression".Expression) eval,
+    scope imported!"quickbite.backends.interpreter.place".Place delegate(imported!"dmd.expression".Expression) eval,
 ) {
     import dmd.tokens: EXP;
-    import quickbite.backends.interpreter.expression_result: ExpressionResult;
     import std.conv: text;
 
     const operator = equal.op == EXP.notEqual ? "==" : "!=";
-    const left = eval(equal.e1);
-    const right = eval(equal.e2);
+    auto left = eval(equal.e1);
+    auto right = eval(equal.e2);
     const useBoolMessage =
         isBoolValue(left) ||
         isBoolValue(right) ||
@@ -597,9 +649,8 @@ public string assertFailureMessage(
     imported!"dmd.expression".AssertExp assert_,
     in bool runningCalledFunction,
     in bool inUnitTest,
-    scope imported!"quickbite.backends.interpreter.expression_result".ExpressionResult delegate(imported!"dmd.expression".Expression) eval,
+    scope imported!"quickbite.backends.interpreter.place".Place delegate(imported!"dmd.expression".Expression) eval,
 ) {
-    import quickbite.backends.interpreter.expression_result: ExpressionResult;
     import std.conv: text;
 
     // A literal `assert(false)` directly in a unittest body raises the plain

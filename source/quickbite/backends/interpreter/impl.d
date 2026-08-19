@@ -2552,6 +2552,21 @@ private struct Walker {
         }
     }
 
+    // The typed place an assert-diagnostic operand evaluates into --
+    // `messages.d`'s formatters take this as their `eval` delegate's return
+    // type, so an assert message reads native place bytes directly instead
+    // of the expression carrier.
+    private Place assertOperandPlace(imported!"dmd.expression".Expression expression) {
+        import quickbite.backends.interpreter.place: Place;
+
+        auto destination = ConstructionDestination(Place(
+            _activationFrame.temporaryAddress(expression),
+            expression.type,
+        ));
+        runExpression(expression, destination);
+        return destination.place;
+    }
+
     // A normal interpreted return owns its caller-provided destination. A
     // `finally` body can replace an earlier return, however, so its second
     // return first constructs a fresh typed temporary and then replaces the
@@ -2931,7 +2946,7 @@ assertExpression:
                     assert_,
                     runningCalledFunction,
                     inUnitTest,
-                    &runExpressionValue,
+                    &assertOperandPlace,
                 ));
             return ExpressionResult(true);
         }
