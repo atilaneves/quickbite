@@ -683,3 +683,85 @@ static foreach (backend; Matrix!(Plus!(IR))) {
         });
     }
 }
+
+// D allows a void-typed right operand in `&&`, as sugar for `if (cond)
+// voidCall();`. Pin that the call runs exactly when the condition is
+// true, observed through a `ref` counter.
+static foreach (backend; Matrix!(Plus!(IR))) {
+    @("logicalAndVoidOperandExecutesWhenTrue." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            void bump(ref int calls) {
+                ++calls;
+            }
+
+            unittest {
+                int calls;
+                bool cond = true;
+                cond && bump(calls);
+                assert(calls == 1);
+            }
+        });
+    }
+}
+
+static foreach (backend; Matrix!(Plus!(IR))) {
+    @("logicalAndVoidOperandSkippedWhenFalse." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            void bump(ref int calls) {
+                ++calls;
+            }
+
+            unittest {
+                int calls;
+                bool cond = false;
+                cond && bump(calls);
+                assert(calls == 0);
+            }
+        });
+    }
+}
+
+// D allows a void-typed right operand in `||`, as sugar for `if (!cond)
+// voidCall();`. Pin that the call runs exactly when the condition is
+// false.
+static foreach (backend; Matrix!(Plus!(IR))) {
+    @("logicalOrVoidOperandExecutesWhenFalse." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            void bump(ref int calls) {
+                ++calls;
+            }
+
+            unittest {
+                int calls;
+                bool cond = false;
+                cond || bump(calls);
+                assert(calls == 1);
+            }
+        });
+    }
+}
+
+static foreach (backend; Matrix!(Plus!(IR))) {
+    @("logicalOrVoidOperandSkippedWhenTrue." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            void bump(ref int calls) {
+                ++calls;
+            }
+
+            unittest {
+                int calls;
+                bool cond = true;
+                cond || bump(calls);
+                assert(calls == 0);
+            }
+        });
+    }
+}
