@@ -4226,20 +4226,21 @@ unsupportedExpression:
                 function_.vthis,
                 child.thisAddress,
             );
-        if (function_.vthis.type.toBasetype.isTypeStruct !is null) {
-            import quickbite.backends.interpreter.layout: typeByteSize;
-            import quickbite.backends.interpreter.native_aggregate:
-                NativeAggregate;
-            import quickbite.backends.interpreter.native_block: NativeBlock;
-
-            child.thisValue = ExpressionResult.nativeAggregateValue(NativeAggregate(
+        if (function_.vthis.type.toBasetype.isTypeStruct !is null)
+            child.bindStructReceiver(Place(
+                receiverAddress.pointerAddress,
                 function_.vthis.type,
-                NativeBlock.borrow(
-                    receiverAddress.pointerAddress,
-                    typeByteSize(function_.vthis.type),
-                ),
             ));
-        }
+    }
+
+    // A struct receiver borrows the caller's own storage rather than
+    // copying it: a mutation the callee makes through `this` (`this.field =
+    // ...`, a postblit, a delegating constructor) must land in that exact
+    // place. `place` names the bytes to borrow; this is the one spot that
+    // spells out the borrowed-native-aggregate representation, so every
+    // struct receiver construction routes through it.
+    private void bindStructReceiver(Place place) {
+        thisValue = borrowedAggregateValue(place);
     }
 
     // A `ref` foreach variable over an input range may bind to a `front`
@@ -7169,17 +7170,13 @@ unsupportedExpression:
                     function_.vthis,
                     child.thisAddress,
                 );
-            child.thisValue = borrowedAggregateValue(constructionDestination.place);
+            child.bindStructReceiver(constructionDestination.place);
         } else if (
             function_.vthis !is null &&
             function_.vthis.type.toBasetype.isTypeStruct !is null &&
             isWritableLocation(receiverExpression)
         ) {
             import dmd.tokens: EXP;
-            import quickbite.backends.interpreter.layout: typeByteSize;
-            import quickbite.backends.interpreter.native_aggregate:
-                NativeAggregate;
-            import quickbite.backends.interpreter.native_block: NativeBlock;
 
             // An assign/construct/blit receiver (`(place = value).method()`)
             // already wrote `value` into `place` when `receiver` above was
@@ -7237,12 +7234,9 @@ unsupportedExpression:
                 auto receiverType = child.thisValue.isNativeAggregate
                     ? AggregateValue.native(child.thisValue).type
                     : function_.vthis.type;
-                child.thisValue = ExpressionResult.nativeAggregateValue(NativeAggregate(
+                child.bindStructReceiver(Place(
+                    address.pointerAddress,
                     receiverType,
-                    NativeBlock.borrow(
-                        address.pointerAddress,
-                        typeByteSize(receiverType),
-                    ),
                 ));
             }
         }
@@ -12601,14 +12595,7 @@ unsupportedExpression:
             child.runningCalledFunction = true;
             child.currentFunction = new_.member;
             child._activationFrame = FrameBlock.allocate(cachedFrameLayout(new_.member));
-            // A class `this` is its body address carried as a pointer value,
-            // matching every other class receiver (`runMemberFunction`'s
-            // `memberReceiver`, this function's own carrier-returning
-            // sibling below). `body` is already the dereferenced body
-            // address, so wrapping it as a native aggregate here would make
-            // `nativeClassBodyAddress` (which expects a reference-slot
-            // address) dereference it a second time into a wild address.
-            child.thisValue = ExpressionResult.pointerValue(body);
+            child.bindClassReceiver(body);
             child.hasThis = true;
             forkExecutionStateInto(child);
             scope(exit) child.retireActivationFrameMetadata;
@@ -12655,7 +12642,7 @@ unsupportedExpression:
                 child.runningCalledFunction = true;
                 child.currentFunction = new_.member;
                 child._activationFrame = FrameBlock.allocate(cachedFrameLayout(new_.member));
-                child.thisValue = borrowedAggregateValue(allocated.place);
+                child.bindStructReceiver(allocated.place);
                 child.hasThis = true;
                 forkExecutionStateInto(child);
                 scope(exit) child.retireActivationFrameMetadata;
@@ -12694,6 +12681,18 @@ unsupportedExpression:
             lengths ~= scalarOperand!size_t(argument);
         constructNewArray(destination, lengths);
         return true;
+    }
+
+    // A class `this` is its body address carried as a pointer value, and
+    // nothing else. `bodyAddress` is already the dereferenced body address
+    // (e.g. `AggregateValue.nativeClassBodyAddress`); wrapping it as a
+    // native aggregate, or storing a pointer to it, would make a later
+    // dereference (`nativeClassBodyAddress` expects a reference-slot
+    // address) read through a wild address. This is the one spot that
+    // spells out the representation, so every class receiver construction
+    // routes through it.
+    private void bindClassReceiver(void* bodyAddress) {
+        thisValue = ExpressionResult.pointerValue(bodyAddress);
     }
 
     private void constructNewArray(
@@ -12975,9 +12974,7 @@ unsupportedExpression:
         child._returnValue = ExpressionResult(false);
         forkExecutionStateInto(child);
         scope(exit) child.retireActivationFrameMetadata;
-        child.thisValue = ExpressionResult.pointerValue(
-            AggregateValue.nativeClassBodyAddress(object),
-        );
+        child.bindClassReceiver(AggregateValue.nativeClassBodyAddress(object));
         child.hasThis = true;
         child.bindFunctionParameters(new_.member, arguments);
         try {
