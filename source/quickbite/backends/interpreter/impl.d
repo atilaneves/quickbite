@@ -511,8 +511,7 @@ private struct InterpreterExecutionState {
     // TypeInfos; any later activation that reads the same address must see
     // the entry, including after the writing call returns or throws.
     public size_t[const(void)*] nativeFunctionPointerSlots;
-    public imported!"quickbite.backends.interpreter.expression_result".
-        ExpressionResult[void*] nativeTypeInfoSlots;
+    public string[void*] nativeTypeInfoSlots;
     public imported!"quickbite.backends.interpreter.expression_result".
         ExpressionResult[void*] nativeDelegateSlots;
 
@@ -617,7 +616,7 @@ private struct Walker {
         return _executionState.nativeFunctionPointerSlots;
     }
 
-    private @property ref ExpressionResult[void*] nativeTypeInfoSlots() {
+    private @property ref string[void*] nativeTypeInfoSlots() {
         return _executionState.nativeTypeInfoSlots;
     }
 
@@ -1151,7 +1150,7 @@ private struct Walker {
         size_t[] functionOffsets;
         size_t[] functionValues;
         size_t[] typeInfoOffsets;
-        ExpressionResult[] typeInfoValues;
+        string[] typeInfoValues;
         foreach (offset; 0 .. byteLength) {
             auto address = cast(void*) (cast(ubyte*) oldAddress + offset);
             if (auto value = address in nativeDelegateSlots) {
@@ -1307,7 +1306,7 @@ private struct Walker {
 
         if (place.type.toBasetype.isTypeClass !is null && value.isTypeName) {
             clearStoredMetadata(place.type, place.address);
-            nativeTypeInfoSlots[place.address] = value;
+            nativeTypeInfoSlots[place.address] = value.asTypeNameString;
             clearPlace(place);
             return;
         }
@@ -1383,7 +1382,7 @@ private struct Walker {
                 return ExpressionResult.functionPointerValue(*function_);
         if (place.type.toBasetype.isTypeClass !is null)
             if (auto typeInfo = place.address in nativeTypeInfoSlots)
-                return *typeInfo;
+                return ExpressionResult.typeName(*typeInfo);
 
         const value = readValue(place);
         if (value.isNativeAggregate)
@@ -8436,7 +8435,7 @@ unsupportedExpression:
                                 auto typeInfo = fieldPlace.address
                                     in nativeTypeInfoSlots
                             )
-                                return *typeInfo;
+                                return ExpressionResult.typeName(*typeInfo);
                         }
 
             auto pointerType = field.type.toBasetype.isTypePointer;
@@ -8577,7 +8576,7 @@ unsupportedExpression:
                         auto typeInfo = fieldPlace.address
                             in nativeTypeInfoSlots
                     )
-                        return *typeInfo;
+                        return ExpressionResult.typeName(*typeInfo);
                     auto address = fieldPlace.deref.address;
                     if (address is null)
                         return ExpressionResult.null_;
@@ -8607,7 +8606,7 @@ unsupportedExpression:
                 if (
                     auto typeInfo = fieldPlace.address in nativeTypeInfoSlots
                 )
-                    return *typeInfo;
+                    return ExpressionResult.typeName(*typeInfo);
                 if (auto variableExpression = dot.e1.isVarExp)
                     if (auto variable = variableExpression.var.isVarDeclaration)
                     if (hasBindingPlace(variable)) {
