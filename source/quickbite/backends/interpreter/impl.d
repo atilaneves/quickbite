@@ -13909,12 +13909,12 @@ destinationFallback:
                 // to T after every multiply so each step's truncation
                 // matches the destination type exactly as DMD's own CTFE
                 // evaluator does.
+                T factor = scalarOperand!T(pow.e1);
                 auto exponent = scalarOperand!long(pow.e2);
                 if (exponent < 0)
                     throw new Exception("Unsupported negative integer exponent.");
 
                 T result = 1;
-                T factor = scalarOperand!T(pow.e1);
                 while (exponent != 0) {
                     if ((exponent & 1) != 0)
                         result = cast(T) (result * factor);
