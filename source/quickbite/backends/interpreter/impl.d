@@ -6860,12 +6860,39 @@ unsupportedExpression:
         in imported!"quickbite.backends.interpreter.builtins".AtomicHook hook,
     ) {
         import quickbite.backends.interpreter.builtins: AtomicHook;
+        import quickbite.backends.interpreter.place: Place;
 
         if (call.arguments is null || call.arguments.length == 0)
             throw new Exception("Unsupported eval call.");
 
         auto destinationExpression = (*call.arguments)[0];
-        const destination = runExpressionValue(destinationExpression);
+
+        // Construct the pointer operand in its own typed place rather than
+        // reading it through the carrier, the same construction the
+        // dereferenced post-increment arm uses: `pointerOperandPlace`
+        // evaluates `destinationExpression` exactly once, and
+        // `.deref.address` is the identical address
+        // `nativeElementAddress(..., 0, ...)` `loadNativePointerElement`
+        // composed. The pointee type mirrors that same resolution, so an
+        // enum-typed pointee still reads/writes as its base scalar here.
+        // `aligned` checks a raw address value rather than dereferencing a
+        // pointer, so it never calls this.
+        Place pointerTarget() {
+            return Place(
+                pointerOperandPlace(destinationExpression).deref.address,
+                destinationExpression.type.toBasetype.nextOf.toBasetype,
+            );
+        }
+
+        // Mirrors `storeNativePointerElement`'s own pairing of a target
+        // write with clearing that address's uninitialized-binding flag: a
+        // native pointer can denote a still-void frame binding directly, and
+        // once the atomic write lands, a later aggregate read must use those
+        // frame bytes rather than materializing `.init` over them.
+        void writeTarget(Place target, in ExpressionResult value) {
+            writeStoredValue(target, value);
+            clearUninitializedBindingAddress(target.address);
+        }
 
         ExpressionResult operand() {
             if (call.arguments.length < 2)
@@ -6875,32 +6902,32 @@ unsupportedExpression:
 
         with (AtomicHook) final switch (hook) {
             case aligned:
+                executeForEffectImpl(destinationExpression);
                 return ExpressionResult(true);
 
             case load:
-                return readPointerTarget(destinationExpression, destination);
+                return readStoredValue(pointerTarget);
 
             case store:
-                writePointerTarget(destinationExpression, destination, operand);
+                writeTarget(pointerTarget, operand);
                 return ExpressionResult.void_;
 
             case exchange: {
-                const previous =
-                    readPointerTarget(destinationExpression, destination);
-                writePointerTarget(destinationExpression, destination, operand);
+                auto target = pointerTarget;
+                const previous = readStoredValue(target);
+                writeTarget(target, operand);
                 return previous;
             }
 
             case fetchAdd:
             case fetchSub: {
-                const previous =
-                    readPointerTarget(destinationExpression, destination);
+                auto target = pointerTarget;
+                const previous = readStoredValue(target);
                 const delta = hook == fetchAdd
                     ? operand.asLong
                     : -operand.asLong;
-                writePointerTarget(
-                    destinationExpression,
-                    destination,
+                writeTarget(
+                    target,
                     storageValue(
                         destinationExpression.type.toBasetype.nextOf,
                         ExpressionResult(previous.asLong + delta),
@@ -6909,13 +6936,6 @@ unsupportedExpression:
                 return previous;
             }
         }
-    }
-
-    private ExpressionResult readPointerTarget(
-        imported!"dmd.expression".Expression pointerExpression,
-        in ExpressionResult pointer,
-    ) {
-        return loadNativePointerElement(pointerExpression.type, pointer, 0);
     }
 
     // Struct-array `.dup` is a shallow copy when the element has no copy
@@ -12530,24 +12550,6 @@ unsupportedExpression:
         return false;
     }
 
-    private void writePointerTarget(
-        imported!"dmd.expression".Expression expression,
-        in ExpressionResult pointer,
-        in ExpressionResult value,
-    ) {
-        // A native pointer (e.g. into a malloc'd struct like std.stdio.File's
-        // Impl): write straight into native memory.
-        if (pointer.isPointer) {
-            storeNativePointerElement(expression.type, pointer, 0, value);
-            return;
-        }
-
-        throw new Exception(
-            "quickbite.backends.interpreter.impl.Walker.writePointerTarget: "
-            ~ "data pointers must carry a native binding address",
-        );
-    }
-
     // The single ordered route through data-pointer writes. Direct
     // dereference and compound-assignment/atomic write-back use this gate, so
     // they cannot update different interim authorities.
@@ -14730,9 +14732,9 @@ destinationFallback:
         if (auto pointer = post.e1.isPtrExp) {
             // Construct the pointer operand in its own typed place rather
             // than reading it through the carrier: `pointerOperandPlace`
-            // evaluates `pointer.e1` exactly once, matching
-            // `readPointerTarget`/`writePointerTarget`'s own single-read
-            // contract, and `.deref.address` is the identical address
+            // evaluates `pointer.e1` exactly once, matching the single-read
+            // contract the atomic hooks build their own target place under,
+            // and `.deref.address` is the identical address
             // `nativeElementAddress(..., 0, ...)` those composed. Pair it
             // with `post.e1.type.toBasetype` -- the same pointee type
             // `loadNativePointerElement` resolved -- so an enum-typed
