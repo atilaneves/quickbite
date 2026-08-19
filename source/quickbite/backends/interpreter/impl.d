@@ -5479,10 +5479,10 @@ unsupportedExpression:
             return null;
 
         if (value.isNativeAggregate) {
-            auto type = AggregateValue.native(value).type.toBasetype;
-            return type.isTypeClass is null
+            auto aggregate = AggregateValue.native(value);
+            return aggregate.type.toBasetype.isTypeClass is null
                 ? null
-                : AggregateValue.nativeClassBodyAddress(value);
+                : AggregateValue.nativeClassBodyAddress(aggregate);
         }
         if (value.isPointer)
             return value.pointerAddress;
