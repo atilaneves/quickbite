@@ -70,15 +70,14 @@ Backends:
 - `Ctfe` — DMD's built-in CTFE engine. Correctness reference and
   convenient real-D fixture source; NOT the oracle. Where it diverges
   from `SystemLinker` its behaviour is characterized, not treated as
-  truth (`single-oracle.md`).
+  truth (`AGENTS.md`, Testing).
 - `Interpreter` — tree-walking AST interpreter. Current centre of
   gravity: execute Cerealed completely (`interpreter.md`).
 - `Bytecode` — bytecode VM compiled lazily per function from the
   analysed AST, values in native D layout throughout (`bytecode.md`).
 - `IR` — lower-to-IR interpreter (`ir.md`).
 - `SystemLinker` — DMD codegen + real link + dlopen. The single
-  behaviour oracle for every backend except `Ctfe`
-  (`single-oracle.md`).
+  behaviour oracle for every backend except `Ctfe` (`CONTEXT.md`).
 - `LLVMJit` — in-process ORC JIT over DMD codegen.
 
 ## Plan Index
@@ -97,8 +96,6 @@ Live plans:
 - `ir.md` — IR backend promotion; known semantic divergences listed
   there.
 - `repl.md` — REPL redesign.
-- `single-oracle.md` — the testing constitution: `SystemLinker` is the
-  single oracle; `ct/` vs `rt/` split; promotion rules.
 - `backend-test-modules-order.md` — shared module ordering for backend
   promotion work.
 
@@ -109,10 +106,12 @@ their owning plans and git history.
 
 ## Testing Rules
 
-AGENTS.md and `single-oracle.md` govern. In brief: strict TDD; no test
-additions or behaviour changes without approval; promoting an existing
-oracle-backed matrix test to another backend is pre-approved; language
--surface tests must match compiled-D behaviour with `SystemLinker` as
+AGENTS.md governs, with the testing vocabulary in `CONTEXT.md` and the
+matrix mechanics enforced in `tests/ut/backends/package.d`. In brief:
+strict TDD; no test additions or behaviour changes without approval;
+promoting an existing oracle-backed matrix test to another backend is
+pre-approved; language-surface tests must match compiled-D behaviour with
+`SystemLinker` as
 oracle; backend-specific regression tests are named and scoped as such,
 outside the language-surface matrix.
 

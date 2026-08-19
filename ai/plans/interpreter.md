@@ -270,7 +270,7 @@ The remaining clean-sheet migration is:
 ## 3. Oracle
 
 `SystemLinker` (compiled, linked, executed native D) is the single behaviour
-oracle, per `ai/plans/single-oracle.md` and `AGENTS.md`. Every fixture asserts
+oracle, per `AGENTS.md`. Every fixture asserts
 the same source on `SystemLinker` (passes) and `Interpreter` (red before, green
 after). `Ctfe` is **not** an oracle here and never the definition of correct
 behaviour.

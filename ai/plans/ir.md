@@ -468,7 +468,7 @@ is added when a test requires control flow.
   Add IR-specific tests only for IR-native contracts such as operand typing,
   block/CFG invariants, or explicitly unsupported features.
 - `SystemLinker` (compiled D) is the oracle for language-surface behaviour
-  (`ai/plans/single-oracle.md`); a fixture covered by `Ctfe` is real D and a
+  (`AGENTS.md`, Testing); a fixture covered by `Ctfe` is real D and a
   useful starting point, but where `Ctfe` diverges from `SystemLinker` its
   behaviour is characterized, not treated as truth.
 - Use `ai/plans/backend-test-modules-order.md` to choose post-`eval` targets

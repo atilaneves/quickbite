@@ -6005,7 +6005,7 @@ unittest {
 // values are D's real compiled-code semantics, checked directly in the
 // asserted source rather than diffed against a separately computed oracle
 // result, so `SystemLinker` running the same asserts through the matrix
-// below already serves as the oracle (`ai/plans/single-oracle.md`).
+// below already serves as the oracle (`CONTEXT.md`).
 static foreach (backend; Matrix!(
     Omit!(Ctfe, Because.inexpressible,
         "CTFE cannot call a native dependency image"),

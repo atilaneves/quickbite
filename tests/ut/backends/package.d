@@ -19,7 +19,7 @@ import std.traits: isInstanceOf;
     Every backend that reproduces `SystemLinker`'s behaviour on the
     hermetic language surface, once mature. `Ctfe` is included because a
     fixture written for it is real D, even though it is not itself an
-    oracle (`ai/plans/single-oracle.md`).
+    oracle (`AGENTS.md`, Testing).
 +/
 public alias LangBackends = AliasSeq!(Ctfe, Interpreter, Bytecode, SystemLinker, LLVMJit);
 

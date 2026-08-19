@@ -372,7 +372,7 @@
   `Matrix!(...)` and opt backends out only via `Omit!(B, Because.…, "note")` —
   never hand-roll a shorter `AliasSeq!(Interpreter, SystemLinker)`. That raw form
   is reserved for characterization pins that carry no oracle expectation
-  (`ai/plans/single-oracle.md`), and using it for an oracle-backed test silently
+  (`tests/ut/backends/package.d`), and using it for an oracle-backed test silently
   drops every backend you didn't happen to type — `LLVMJit` especially, which is
   compiled code and usually agrees with the oracle. `Matrix!()` forces the
   question: a backend can only leave the matrix with an explicit reason, so

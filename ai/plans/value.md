@@ -135,7 +135,7 @@ longer imports or aliases it.
 6. The native backend (`SystemLinker`) is the single behaviour oracle in
    the absence of a formal language specification. CTFE is not an oracle;
    where it diverges, its behaviour is characterized, not treated as
-   truth (`ai/plans/single-oracle.md`).
+   truth (`AGENTS.md`, Testing).
 
 7. **Destination-passing evaluation replaces the expression-result
    carrier** (August 2026; supersedes this decision's earlier "a private
@@ -534,9 +534,9 @@ checked fact; do not relearn them.
   evaluates DMD's `defaultInitLiteral` for every new element.
   Native-container call sites must preserve that distinction rather than
   treating `NativeArray.setLength`'s zeroing as guest initialization.
-- A written slice header is a snapshot of `{length, ptr}`; it goes stale
-  when the array reallocates, exactly as a compiled-D slice does. Keeping
-  a header in sync is the call site's problem.
+- Storing a slice copies its current `{length, ptr}`; the stored copy does
+  not track later reallocation of the underlying array, exactly as in
+  compiled D. Keeping it current is the call site's problem.
 - A same-width native-scalar dynamic-array cast is another typed view over
   the source array's existing block, never an element-converted copy. Each
   binding reads and writes those shared bytes through its own element type.

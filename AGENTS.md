@@ -123,13 +123,18 @@ Never delete test code to make tests pass.
 
 Test behaviours, not implementations.
 
-Language-surface tests must match D's compiled-code behaviour, with
-`SystemLinker` as the oracle (`ai/plans/single-oracle.md`). If a backend
-disagrees with `SystemLinker`, the backend or test is wrong. `Ctfe` is not an
-oracle: where it diverges from `SystemLinker`, pin `Ctfe`'s actual behaviour as
-a characterization test (with a comment naming the divergence) rather than
-treating it as truth. `Ctfe` is still a convenient real-D fixture source — a
-fixture written for it is real D — but it never arbitrates correctness.
+Language-surface tests must match D's compiled-code behaviour — including
+assertion-failure and diagnostic text — with `SystemLinker` as the oracle
+(vocabulary in `CONTEXT.md`; matrix mechanics enforced in
+`tests/ut/backends/package.d`). If a backend disagrees with `SystemLinker`,
+the backend or test is wrong. `Ctfe` is not an oracle: where it diverges from
+`SystemLinker`, pin `Ctfe`'s actual behaviour as a characterization test (with
+a comment naming the divergence) rather than treating it as truth. `Ctfe` is
+still a convenient real-D fixture source — a fixture written for it is real D
+— but it never arbitrates correctness.
+
+`tests/ut/backends/runner/lang/` holds the hermetic language surface (no host
+libc/OS); `sys/` holds behaviour that needs the host environment.
 
 Promoting an already-existing backend-matrix test to another backend
 is pre-approved when the test is backed by that oracle.
