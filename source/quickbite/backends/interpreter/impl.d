@@ -510,8 +510,7 @@ private struct InterpreterExecutionState {
     // Writes to guest ABI slots register symbolic interpreted callables and
     // TypeInfos; any later activation that reads the same address must see
     // the entry, including after the writing call returns or throws.
-    public imported!"quickbite.backends.interpreter.expression_result".
-        ExpressionResult[const(void)*] nativeFunctionPointerSlots;
+    public size_t[const(void)*] nativeFunctionPointerSlots;
     public imported!"quickbite.backends.interpreter.expression_result".
         ExpressionResult[void*] nativeTypeInfoSlots;
     public imported!"quickbite.backends.interpreter.expression_result".
@@ -612,7 +611,7 @@ private struct Walker {
         return _executionState.nativeThrowableNext;
     }
 
-    private @property ref ExpressionResult[const(void)*]
+    private @property ref size_t[const(void)*]
         nativeFunctionPointerSlots()
     {
         return _executionState.nativeFunctionPointerSlots;
@@ -1150,7 +1149,7 @@ private struct Walker {
         size_t[] delegateOffsets;
         ExpressionResult[] delegateValues;
         size_t[] functionOffsets;
-        ExpressionResult[] functionValues;
+        size_t[] functionValues;
         size_t[] typeInfoOffsets;
         ExpressionResult[] typeInfoValues;
         foreach (offset; 0 .. byteLength) {
@@ -1327,7 +1326,7 @@ private struct Walker {
             value.isFunctionPointer
         ) {
             clearStoredMetadata(place.type, place.address);
-            nativeFunctionPointerSlots[place.address] = value;
+            nativeFunctionPointerSlots[place.address] = value.functionPointerId;
             place.storeReference(null);
             return;
         }
@@ -1381,7 +1380,7 @@ private struct Walker {
                 auto function_ = cast(const(void)*) place.address
                     in nativeFunctionPointerSlots
             )
-                return *function_;
+                return ExpressionResult.functionPointerValue(*function_);
         if (place.type.toBasetype.isTypeClass !is null)
             if (auto typeInfo = place.address in nativeTypeInfoSlots)
                 return *typeInfo;
@@ -8450,7 +8449,7 @@ unsupportedExpression:
                         if (hasBindingPlace(variable)) {
                             auto fieldPlace = bindingPlace(variable).field(field);
                             if (auto function_ = fieldPlace.address in nativeFunctionPointerSlots)
-                                return *function_;
+                                return ExpressionResult.functionPointerValue(*function_);
                         }
 
             // `handlers[i].action`: a Tdelegate-typed field of a struct
@@ -9198,7 +9197,7 @@ unsupportedExpression:
                         if (auto variable = variableExpression.var.isVarDeclaration)
                         if (hasBindingPlace(variable)) {
                             auto fieldPlace = bindingPlace(variable).field(field);
-                            nativeFunctionPointerSlots[fieldPlace.address] = value;
+                            nativeFunctionPointerSlots[fieldPlace.address] = value.functionPointerId;
                             fieldPlace.storeReference(null);
                             return;
                         }
