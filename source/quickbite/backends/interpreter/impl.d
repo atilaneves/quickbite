@@ -8777,6 +8777,28 @@ unsupportedExpression:
             }
         }
 
+        // A struct or static-array binding is a live typed place too, but
+        // `isDirectProjectionWriteTarget` refuses a struct/static-array
+        // target above, so a whole-aggregate `VarExp` assignment never
+        // reaches `runProjectionAssignExpression`. Resolve it the same way:
+        // construct the RHS into a fresh temporary, then copy or convert
+        // that complete value into the binding's own place. Class bindings
+        // stay on the carrier path below for the same reason as the
+        // projection check above.
+        if (auto target = assign.e1.isVarExp)
+            if (auto variable = target.var.isVarDeclaration)
+                if (
+                    variable.type.toBasetype.isTypeClass is null &&
+                    hasBindingPlace(variable)
+                ) {
+                    auto destination = bindingPlace(variable);
+                    if (canAssignThroughTypedTemporary(destination, assign.e2)) {
+                        const value = assignThroughTypedTemporary(destination, assign.e2);
+                        clearUninitializedBindingAddress(destination.address);
+                        return value;
+                    }
+                }
+
         // A fresh closure RHS (`c.f = (int x) => x + captured;`) is a bare
         // `FuncExp`; construct its callable before writing the destination.
         auto literal = assign.e2.isFuncExp;
