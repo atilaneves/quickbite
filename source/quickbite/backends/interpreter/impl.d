@@ -3668,7 +3668,9 @@ unsupportedExpression:
         // evaluating the dereference first would incorrectly require a
         // separate addressable value for the pointee.
         if (auto pointer = e1.isPtrExp)
-            return runExpressionValue(pointer.e1);
+            return ExpressionResult.pointerValue(
+                pointerOperandPlace(pointer.e1).deref.address,
+            );
 
         // `&field` (also `field.ptr`) of a struct's static-array member: a
         // pointer to the field's first element, exactly what arrayPointer
@@ -3873,7 +3875,7 @@ unsupportedExpression:
         // the address of that dereference is the pointer expression itself.
         if (auto pointer = expression.isPtrExp)
             return Place(
-                runExpressionValue(pointer.e1).pointerAddress,
+                pointerOperandPlace(pointer.e1).deref.address,
                 expression.type,
             );
 
@@ -5779,7 +5781,9 @@ unsupportedExpression:
                 hasReceiverPointerAddress = true;
                 receiver = borrowedAggregateValue(receiverPlace);
             } else if (auto pointerReceiver = dot.e1.isPtrExp) {
-                receiverPointerAddress = runExpressionValue(pointerReceiver.e1);
+                receiverPointerAddress = ExpressionResult.pointerValue(
+                    pointerOperandPlace(pointerReceiver.e1).deref.address,
+                );
                 hasReceiverPointerAddress = true;
                 receiver = dereferencePointerValue(
                     pointerReceiver,
@@ -8850,11 +8854,11 @@ unsupportedExpression:
             if (hasTypedTemporaryRhs(assign.e2)) {
             import quickbite.backends.interpreter.place: Place;
 
-            const address = runExpressionValue(pointer.e1);
-            if (address.isPointer) {
-                auto destination = Place(address.pointerAddress, assign.e1.type);
+            const address = pointerOperandPlace(pointer.e1).deref.address;
+            if (address !is null) {
+                auto destination = Place(cast(void*) address, assign.e1.type);
                 const value = assignThroughTypedTemporary(destination, assign.e2);
-                clearUninitializedBindingAddress(address.pointerAddress);
+                clearUninitializedBindingAddress(cast(void*) address);
                 return value;
             }
         }
@@ -8982,15 +8986,15 @@ unsupportedExpression:
     ) {
         import quickbite.backends.interpreter.place: Place;
 
-        const address = runExpressionValue(pointer.e1);
-        if (!address.isPointer)
+        const address = pointerOperandPlace(pointer.e1).deref.address;
+        if (address is null)
             throw new Exception("Associative-array entry has no native address.");
 
         const value = assignThroughTypedTemporary(
-            Place(address.pointerAddress, pointer.type),
+            Place(cast(void*) address, pointer.type),
             rhs,
         );
-        clearUninitializedBindingAddress(address.pointerAddress);
+        clearUninitializedBindingAddress(cast(void*) address);
         return value;
     }
 
@@ -9291,11 +9295,16 @@ unsupportedExpression:
 
         // `*ptr = value`: update the pointer variable so its target holds value.
         if (auto ptr = target.isPtrExp) {
-            const pointer = runExpressionValue(ptr.e1);
+            const address = pointerOperandPlace(ptr.e1).deref.address;
             // A dereferenced native pointer (e.g. a malloc'd struct like
             // std.stdio.File's Impl): write straight into native memory.
-            if (pointer.isPointer) {
-                storeNativePointerElement(ptr.e1.type, pointer, 0, value);
+            if (address !is null) {
+                storeNativePointerElement(
+                    ptr.e1.type,
+                    ExpressionResult.pointerValue(cast(void*) address),
+                    0,
+                    value,
+                );
                 return;
             }
 
@@ -9744,9 +9753,14 @@ unsupportedExpression:
         }
 
         if (isPointerType(index.e1.type)) {
-            const pointer = runExpressionValue(index.e1);
-            if (pointer.isPointer) {
-                storeNativePointerElement(index.e1.type, pointer, arrayIndex, value);
+            const address = pointerOperandPlace(index.e1).deref.address;
+            if (address !is null) {
+                storeNativePointerElement(
+                    index.e1.type,
+                    ExpressionResult.pointerValue(cast(void*) address),
+                    arrayIndex,
+                    value,
+                );
                 return;
             }
             throw new Exception("Pointer index assignment needs a native address.");
@@ -9759,12 +9773,12 @@ unsupportedExpression:
         // into the pointee's bytes at that address rather than through a
         // binding.
         if (auto derefBase = index.e1.isPtrExp) {
-            const pointer = runExpressionValue(derefBase.e1);
-            if (pointer.isPointer) {
+            const address = pointerOperandPlace(derefBase.e1).deref.address;
+            if (address !is null) {
                 import quickbite.backends.interpreter.place: Place;
 
                 writeStoredValue(
-                    Place(pointer.pointerAddress, index.e1.type).index(arrayIndex),
+                    Place(cast(void*) address, index.e1.type).index(arrayIndex),
                     value,
                 );
                 return;
@@ -10091,16 +10105,16 @@ unsupportedExpression:
         }
 
         if (isPointerType(index.e1.type)) {
-            const pointer = runExpressionValue(index.e1);
+            const address = pointerOperandPlace(index.e1).deref.address;
             const arrayIndex = scalarOperand!size_t(index.e2);
-            if (pointer.isPointer) {
+            if (address !is null) {
                 import quickbite.backends.interpreter.layout: typeByteSize;
                 import quickbite.backends.interpreter.place: Place;
 
                 auto elementType = index.e1.type.toBasetype.nextOf.toBasetype;
                 auto destination = Place(
                     nativeElementAddress(
-                        pointer.pointerAddress,
+                        cast(void*) address,
                         arrayIndex,
                         typeByteSize(elementType),
                     ),
@@ -10108,14 +10122,19 @@ unsupportedExpression:
                 );
                 if (canAssignThroughTypedTemporary(destination, rhs)) {
                     const value = assignThroughTypedTemporary(destination, rhs);
-                    clearUninitializedBindingAddress(pointer.pointerAddress);
+                    clearUninitializedBindingAddress(cast(void*) address);
                     return value;
                 }
                 auto literal = rhs.isFuncExp;
                 const value = literal is null
                     ? runExpressionValue(rhs)
                     : runFunctionLiteralDeclaration(literal);
-                storeNativePointerElement(index.e1.type, pointer, arrayIndex, value);
+                storeNativePointerElement(
+                    index.e1.type,
+                    ExpressionResult.pointerValue(cast(void*) address),
+                    arrayIndex,
+                    value,
+                );
                 return value;
             }
             throw new Exception("Pointer index assignment needs a native address.");
@@ -10128,16 +10147,16 @@ unsupportedExpression:
         // variable/field lvalue; `&(*p)` recovers `p`'s own address
         // (`addressOfExpression`'s identical `PtrExp` arm).
         if (auto derefBase = index.e1.isPtrExp) {
-            const pointer = runExpressionValue(derefBase.e1);
-            if (pointer.isPointer) {
+            const address = pointerOperandPlace(derefBase.e1).deref.address;
+            if (address !is null) {
                 import quickbite.backends.interpreter.place: Place;
 
                 const arrayIndex = scalarOperand!size_t(index.e2);
-                auto destination = Place(pointer.pointerAddress, index.e1.type)
+                auto destination = Place(cast(void*) address, index.e1.type)
                     .index(arrayIndex);
                 if (canAssignThroughTypedTemporary(destination, rhs)) {
                     const value = assignThroughTypedTemporary(destination, rhs);
-                    clearUninitializedBindingAddress(pointer.pointerAddress);
+                    clearUninitializedBindingAddress(cast(void*) address);
                     return value;
                 }
                 const value = runExpressionValue(rhs);
@@ -10410,16 +10429,16 @@ unsupportedExpression:
         if (isPointerType(outer.e1.type)) {
             import quickbite.backends.interpreter.place: Place;
 
-            const pointer = runExpressionValue(outer.e1);
-            if (!pointer.isPointer)
+            const address = pointerOperandPlace(outer.e1).deref.address;
+            if (address is null)
                 throw new Exception("Unsupported interpreter assignment target.");
 
             const innerIndex = scalarOperand!size_t(inner.e2);
-            auto destination = Place(pointer.pointerAddress, outer.type)
+            auto destination = Place(cast(void*) address, outer.type)
                 .index(innerIndex);
             if (canAssignThroughTypedTemporary(destination, rhs)) {
                 const value = assignThroughTypedTemporary(destination, rhs);
-                clearUninitializedBindingAddress(pointer.pointerAddress);
+                clearUninitializedBindingAddress(cast(void*) address);
                 return value;
             }
             const value = runExpressionValue(rhs);
@@ -10799,7 +10818,7 @@ unsupportedExpression:
         import quickbite.backends.interpreter.aggregate_value: AggregateValue;
         import std.conv: text;
 
-        const pointer = runExpressionValue(slice.e1);
+        const address = pointerOperandPlace(slice.e1).deref.address;
         if (slice.lwr is null || slice.upr is null)
             throw new Exception(text(
                 "Unsupported interpreter assignment target: slice of ",
@@ -10850,16 +10869,16 @@ unsupportedExpression:
                     : value;
         }
 
-        if (pointer.isPointer) {
+        if (address !is null) {
             foreach (index; 0 .. upper - lower)
                 storeNativePointerElement(
                     slice.e1.type,
-                    pointer,
+                    ExpressionResult.pointerValue(cast(void*) address),
                     lower + index,
                     elementAt(index),
                 );
             if (lower == 0)
-                recordCopiedClassIdentity(pointer.pointerAddress, value);
+                recordCopiedClassIdentity(cast(void*) address, value);
             return value;
         }
 
