@@ -12770,9 +12770,17 @@ unsupportedExpression:
                 new_.arguments is null ? 0 : new_.arguments.length,
             );
             scope(exit) arguments.release;
+            auto argumentPlaces = new Place[arguments.length];
             if (new_.arguments !is null)
-                foreach (index, argument; *new_.arguments)
-                    arguments.values[index] = runExpressionValue(argument);
+                foreach (index, argument; *new_.arguments) {
+                    auto argumentDestination = ConstructionDestination(Place(
+                        _activationFrame.temporaryAddress(argument),
+                        argument.type,
+                    ));
+                    runExpression(argument, argumentDestination);
+                    argumentPlaces[index] = argumentDestination.place;
+                    arguments.values[index] = readStoredValue(argumentDestination.place);
+                }
 
             if (isThrowableConstructor(new_.member)) {
                 nativeClassOwners[body] = applyThrowableConstructor(
@@ -12794,7 +12802,14 @@ unsupportedExpression:
             child.hasThis = true;
             forkExecutionStateInto(child);
             scope(exit) child.retireActivationFrameMetadata;
-            child.bindFunctionParameters(new_.member, arguments.values);
+            child.bindFunctionParameters(
+                new_.member,
+                arguments.values,
+                null,
+                FrameBlock.init,
+                null,
+                argumentPlaces,
+            );
             try {
                 child.runStatement(new_.member.fbody);
             } catch (InterpretedException exception) {
@@ -12829,9 +12844,17 @@ unsupportedExpression:
                     new_.arguments is null ? 0 : new_.arguments.length,
                 );
                 scope(exit) arguments.release;
+                auto argumentPlaces = new Place[arguments.length];
                 if (new_.arguments !is null)
-                    foreach (index, argument; *new_.arguments)
-                        arguments.values[index] = runExpressionValue(argument);
+                    foreach (index, argument; *new_.arguments) {
+                        auto argumentDestination = ConstructionDestination(Place(
+                            _activationFrame.temporaryAddress(argument),
+                            argument.type,
+                        ));
+                        runExpression(argument, argumentDestination);
+                        argumentPlaces[index] = argumentDestination.place;
+                        arguments.values[index] = readStoredValue(argumentDestination.place);
+                    }
 
                 Walker child;
                 child.runningCalledFunction = true;
@@ -12842,7 +12865,14 @@ unsupportedExpression:
                 forkExecutionStateInto(child);
                 scope(exit) child.retireActivationFrameMetadata;
                 child.bindThisReferenceAddress(new_.member, child.thisValue);
-                child.bindFunctionParameters(new_.member, arguments.values);
+                child.bindFunctionParameters(
+                    new_.member,
+                    arguments.values,
+                    null,
+                    FrameBlock.init,
+                    null,
+                    argumentPlaces,
+                );
                 child.runStatement(new_.member.fbody);
             } else if (new_.arguments is null) {
                 runExpression(type.defaultInitLiteral(Loc.initial), allocated);
