@@ -1187,7 +1187,28 @@ private struct Compiler {
         ));
     }
 
+    // `if (__ctfe) { ctfeOnlyCode } else { runtimeCode }` (and DMD's
+    // semantic rewrite of `if (!__ctfe) runtimeCode else ctfeOnlyCode` into
+    // that same shape, statementsem.d): DMD's own semantic marks the
+    // `__ctfe` branch's scope `ctfeBlock` and, on that basis, skips setting
+    // lowerings such as `~=`'s `_d_arrayappendcTX` call inside it (`arr ~=
+    // e` inside `std.array.array`'s `if (__ctfe)` branch stays an
+    // unlowered `CatElemAssignExp`) -- DMD assumes a compiled, non-CTFE
+    // backend never executes that branch and so never needs it lowered.
+    // The bytecode core is such a backend: `__ctfe` always compiles to the
+    // constant `false` (the `VarExp` case above), so the `if (__ctfe)`
+    // branch is provably dead at bytecode-VM runtime. Skip compiling it
+    // instead of emitting a runtime branch over it, the same dead-code
+    // elimination every compiled backend applies to this idiom; compiling
+    // it would walk into druntime/Phobos statements DMD deliberately left
+    // unlowered for exactly this reason.
     private void compileIfStatement(imported!"dmd.statement".IfStatement if_) {
+        if (if_.isIfCtfeBlock) {
+            if (if_.elsebody !is null)
+                compileNestedStatement(if_.elsebody);
+            return;
+        }
+
         const condition = compileBoolCondition(if_.condition);
         const falseJump = emitJumpIfFalse(condition);
 

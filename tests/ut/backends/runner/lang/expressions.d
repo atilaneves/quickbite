@@ -14354,6 +14354,36 @@ static foreach (backend; Matrix!()) {
     }
 }
 
+// DMD's semantic marks an `if (__ctfe)` block's scope `ctfeBlock` and skips
+// setting lowerings such as `~=`'s `_d_arrayappendcTX` call inside it
+// (`sc.needsCodegen()`, dscope.d), on the assumption that a compiled,
+// non-interpreting backend never executes that branch. A backend that
+// compiles the branch anyway (rather than recognising it as unreachable)
+// walks into an unlowered append and fails to compile it. `__ctfe` reads
+// `false` at runtime for every backend but `Ctfe` (the invariant above), so
+// the `else` branch is the only one that may run here.
+static foreach (backend; Matrix!(
+    Omit!(Ctfe, Because.diverges,
+        "Ctfe runs the unittest body through DMD's own CTFE interpreter, " ~
+        "which legitimately observes __ctfe as true and takes the `if` " ~
+        "branch instead"),
+)) {
+    @("identifier.ifCtfeBlockDoesNotCompileAtRuntime." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            unittest {
+                int[] result;
+                if (__ctfe)
+                    result ~= 1;
+                else
+                    result ~= 2;
+                assert(result == [2]);
+            }
+        });
+    }
+}
+
 // A struct method call whose receiver is an implicit dereference of a
 // pointer-returning call (`p().get()`) must evaluate the side-effecting
 // `p()` operand exactly once, matching real D's evaluation-order guarantee.
