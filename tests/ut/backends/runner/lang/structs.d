@@ -223,6 +223,44 @@ static foreach (backend; Matrix!()) {
     }
 }
 
+// A dynamic-array struct field's delegate elements, written by SUB-SLICE
+// assignment (`s.actions[i .. i + 1] = ...`) rather than an individual
+// index write (`struct.delegateFieldWriteThroughPointerIsCallable` below)
+// or an append (`struct.literalDelegateFieldAppendedToArrayIsCallable`
+// above). Each element write must reach the same out-of-band delegate-slot
+// bookkeeping those other paths use; the field's own array storage has no
+// native-bytes representation for a live (non-null) delegate.
+static foreach (backend; Matrix!(
+    Omit!(Bytecode, Because.refusal,
+        "\"Unsupported expression in bytecode core: &addFirst\""),
+)) {
+    @("struct.delegateArrayFieldSubSliceAssignmentIsCallable." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct S {
+                int delegate()[] actions;
+            }
+
+            unittest {
+                int first = 10;
+                int second = 20;
+                int addFirst() { return first; }
+                int addSecond() { return second; }
+
+                S s;
+                s.actions.length = 2;
+                s.actions[0 .. 1] = &addFirst;
+                s.actions[1 .. 2] = &addSecond;
+
+                assert(s.actions[0]() == 10);
+                assert(s.actions[1]() == 20);
+            }
+        });
+    }
+}
+
 // A delegate-typed field written through a POINTER receiver, both outside
 // a constructor (`p.g = ...`, `p` a plain `S*` local) and from inside the
 // constructor via `this` (`this.f = ...`) when the struct itself was
