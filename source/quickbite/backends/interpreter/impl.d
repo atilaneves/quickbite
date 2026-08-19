@@ -13035,9 +13035,17 @@ unsupportedExpression:
             );
             scope(exit) callArguments.release;
             auto arguments = callArguments.values;
+            auto argumentPlaces = new Place[arguments.length];
             if (new_.arguments !is null)
-                foreach (index, argument; *new_.arguments)
-                    arguments[index] = runExpressionValue(argument);
+                foreach (index, argument; *new_.arguments) {
+                    auto argumentDestination = ConstructionDestination(Place(
+                        _activationFrame.temporaryAddress(argument),
+                        argument.type,
+                    ));
+                    runExpression(argument, argumentDestination);
+                    argumentPlaces[index] = argumentDestination.place;
+                    arguments[index] = readStoredValue(argumentDestination.place);
+                }
 
             Walker child;
             child.runningCalledFunction = true;
@@ -13053,7 +13061,14 @@ unsupportedExpression:
             forkExecutionStateInto(child);
             scope(exit) child.retireActivationFrameMetadata;
             child.bindThisReferenceAddress(new_.member, child.thisValue);
-            child.bindFunctionParameters(new_.member, arguments);
+            child.bindFunctionParameters(
+                new_.member,
+                arguments,
+                null,
+                FrameBlock.init,
+                null,
+                argumentPlaces,
+            );
             child.runStatement(new_.member.fbody);
             structVal = receiverValue(child.thisValue);
         } else if (new_.arguments !is null) {
