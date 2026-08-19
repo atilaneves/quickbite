@@ -13132,7 +13132,12 @@ unsupportedExpression:
         auto argumentExpressions = callArguments.expressions;
         if (new_.arguments !is null)
             foreach (index, argument; *new_.arguments) {
-                arguments[index] = runExpressionValue(argument);
+                auto argumentDestination = ConstructionDestination(Place(
+                    _activationFrame.temporaryAddress(argument),
+                    argument.type,
+                ));
+                runExpression(argument, argumentDestination);
+                arguments[index] = readStoredValue(argumentDestination.place);
                 argumentExpressions[index] = argument;
             }
 
@@ -13175,9 +13180,17 @@ unsupportedExpression:
         );
         scope(exit) callArguments.release;
         auto arguments = callArguments.values;
+        auto argumentPlaces = new Place[arguments.length];
         if (new_.arguments !is null)
-            foreach (index, argument; *new_.arguments)
-                arguments[index] = runExpressionValue(argument);
+            foreach (index, argument; *new_.arguments) {
+                auto argumentDestination = ConstructionDestination(Place(
+                    _activationFrame.temporaryAddress(argument),
+                    argument.type,
+                ));
+                runExpression(argument, argumentDestination);
+                argumentPlaces[index] = argumentDestination.place;
+                arguments[index] = readStoredValue(argumentDestination.place);
+            }
 
         auto object = AggregateValue.allocateClass(allocationType);
         const objectValue = ExpressionResult.nativeAggregateValue(object);
@@ -13207,7 +13220,14 @@ unsupportedExpression:
         scope(exit) child.retireActivationFrameMetadata;
         child.bindClassReceiver(AggregateValue.nativeClassBodyAddress(object), allocationType);
         child.hasThis = true;
-        child.bindFunctionParameters(new_.member, arguments);
+        child.bindFunctionParameters(
+            new_.member,
+            arguments,
+            null,
+            FrameBlock.init,
+            null,
+            argumentPlaces,
+        );
         try {
             child.runStatement(new_.member.fbody);
         } catch (InterpretedException exception) {
