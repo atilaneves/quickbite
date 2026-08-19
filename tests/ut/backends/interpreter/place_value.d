@@ -85,7 +85,8 @@ unittest {
     const offset = fieldByteOffset(yField);
     writeScalar(yField.type, block.bytes[offset .. offset + typeByteSize(yField.type)], ExpressionResult(writtenY));
 
-    AggregateValue.fieldAt(readValue(root), 1).asLong.should == writtenY;
+    readValue(AggregateValue.fieldAt(AggregateValue.native(readValue(root)), 1))
+        .asLong.should == writtenY;
 }
 
 
@@ -145,10 +146,11 @@ unittest {
     auto root = placeAt(headerBlock, sliceType);
 
     auto readBack = readValue(root);
+    auto readBackAggregate = AggregateValue.native(readBack);
     AggregateValue.elementCount(readBack).should == 3;
-    AggregateValue.elementAt(readBack, 0).should == ExpressionResult(first);
-    AggregateValue.elementAt(readBack, 1).should == ExpressionResult(second);
-    AggregateValue.elementAt(readBack, 2).should == ExpressionResult(third);
+    readValue(AggregateValue.elementAt(readBackAggregate, 0)).should == ExpressionResult(first);
+    readValue(AggregateValue.elementAt(readBackAggregate, 1)).should == ExpressionResult(second);
+    readValue(AggregateValue.elementAt(readBackAggregate, 2)).should == ExpressionResult(third);
 }
 
 
@@ -195,14 +197,17 @@ unittest {
 
     auto readBack = readValue(root);
     readBack.isNativeAggregate.should == true;
+    auto readBackAggregate = AggregateValue.native(readBack);
     AggregateValue.elementCount(readBack).should == 2;
 
-    auto readFirst = AggregateValue.elementAt(readBack, 0);
-    AggregateValue.fieldAt(readFirst, 0).should == ExpressionResult(firstX);
-    AggregateValue.fieldAt(readFirst, 1).should == ExpressionResult(firstY);
-    auto readSecond = AggregateValue.elementAt(readBack, 1);
-    AggregateValue.fieldAt(readSecond, 0).should == ExpressionResult(secondX);
-    AggregateValue.fieldAt(readSecond, 1).should == ExpressionResult(secondY);
+    auto readFirst = readValue(AggregateValue.elementAt(readBackAggregate, 0));
+    auto readFirstAggregate = AggregateValue.native(readFirst);
+    readValue(AggregateValue.fieldAt(readFirstAggregate, 0)).should == ExpressionResult(firstX);
+    readValue(AggregateValue.fieldAt(readFirstAggregate, 1)).should == ExpressionResult(firstY);
+    auto readSecond = readValue(AggregateValue.elementAt(readBackAggregate, 1));
+    auto readSecondAggregate = AggregateValue.native(readSecond);
+    readValue(AggregateValue.fieldAt(readSecondAggregate, 0)).should == ExpressionResult(secondX);
+    readValue(AggregateValue.fieldAt(readSecondAggregate, 1)).should == ExpressionResult(secondY);
 }
 
 
@@ -220,7 +225,8 @@ unittest {
 
     writeValue(root.field(fields[0]), ExpressionResult(writtenI));
 
-    AggregateValue.fieldAt(readValue(root), 1).asLong.should == cast(short) writtenI;
+    readValue(AggregateValue.fieldAt(AggregateValue.native(readValue(root)), 1))
+        .asLong.should == cast(short) writtenI;
 }
 
 
@@ -242,8 +248,10 @@ unittest {
 
     writeValue(root.field(fields[1]), ExpressionResult(writtenS));
 
-    AggregateValue.fieldAt(readValue(root), 0).asLong.should == cast(int) cast(ushort) writtenS;
-    AggregateValue.fieldAt(readValue(root), 0).asLong.shouldNotEqual(cast(int) writtenS);
+    readValue(AggregateValue.fieldAt(AggregateValue.native(readValue(root)), 0))
+        .asLong.should == cast(int) cast(ushort) writtenS;
+    readValue(AggregateValue.fieldAt(AggregateValue.native(readValue(root)), 0))
+        .asLong.shouldNotEqual(cast(int) writtenS);
 }
 
 
@@ -650,5 +658,5 @@ unittest {
 
     writeValue(root, ExpressionResult.null_);
 
-    AggregateValue.length(readValue(root)).should == 0;
+    AggregateValue.length(AggregateValue.native(readValue(root))).should == 0;
 }

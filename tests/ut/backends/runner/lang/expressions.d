@@ -4087,6 +4087,39 @@ static foreach (backend; Matrix!()) {
     }
 }
 
+// A whole-slice assignment from an array literal (`actions[] = [&addFirst,
+// &addSecond];`) constructs the right-hand side as its own independent
+// native array, then re-reads each of THAT array's elements while filling
+// `actions`' own range (`runSliceAssignExpression`'s literal-fill loop).
+// That intermediate element read must reach the same out-of-band
+// delegate-slot bookkeeping every other delegate-element path in this file
+// uses; a live delegate has no native-bytes representation to copy.
+static foreach (backend; Matrix!(
+    Omit!(Bytecode, Because.refusal,
+        "\"Unsupported expression in bytecode core: &addFirst\""),
+)) {
+    @("delegate.dynamicArraySliceAssignedFromLiteralIsCallable." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            unittest {
+                int first = 10;
+                int second = 20;
+                int addFirst() { return first; }
+                int addSecond() { return second; }
+
+                int delegate()[] actions;
+                actions.length = 2;
+                actions[] = [&addFirst, &addSecond];
+
+                assert(actions[0]() == 10);
+                assert(actions[1]() == 20);
+            }
+        });
+    }
+}
+
 // The static-array twin: `int delegate()[2] dgs;` default-initializes each
 // element to `null` (DMD's whole-array `NullExp` blit), and each element is
 // then assignable and readable like any other inline aggregate slot.

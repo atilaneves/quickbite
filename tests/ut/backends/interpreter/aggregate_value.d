@@ -5,6 +5,7 @@ import ut;
 import dmd.mtype: Type, TypeDArray;
 import quickbite.backends.interpreter.aggregate_value: AggregateValue;
 import quickbite.backends.interpreter.expression_result: ExpressionResult;
+import quickbite.backends.interpreter.place_value: readValue;
 
 private:
 
@@ -18,6 +19,7 @@ unittest {
         external.ptr,
     );
     AggregateValue.nativeArrayAddress(nativeArray).should == external.ptr;
-    AggregateValue.elementAt(nativeArray, 0).should == ExpressionResult(3);
-    AggregateValue.elementAt(nativeArray, 1).should == ExpressionResult(4);
+    auto aggregate = AggregateValue.native(nativeArray);
+    readValue(AggregateValue.elementAt(aggregate, 0)).should == ExpressionResult(3);
+    readValue(AggregateValue.elementAt(aggregate, 1)).should == ExpressionResult(4);
 }

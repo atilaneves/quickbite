@@ -160,10 +160,12 @@ private string formattedDisplay(
     in imported!"quickbite.backends.interpreter.expression_result".ExpressionResult value,
 ) {
     import quickbite.backends.interpreter.aggregate_value: AggregateValue;
+    import quickbite.backends.interpreter.place_value: readValue;
 
+    auto aggregate = AggregateValue.native(value);
     char[] display;
     foreach (index; 0 .. AggregateValue.elementCount(value))
-        display ~= AggregateValue.elementAt(value, index).asUtf8Character;
+        display ~= readValue(AggregateValue.elementAt(aggregate, index)).asUtf8Character;
     return display.idup;
 }
 
@@ -559,10 +561,12 @@ private string exceptionMessage(
     in imported!"quickbite.backends.interpreter.expression_result".ExpressionResult value,
 ) {
     import quickbite.backends.interpreter.aggregate_value: AggregateValue;
+    import quickbite.backends.interpreter.place_value: readValue;
 
+    auto aggregate = AggregateValue.native(value);
     char[] result;
-    foreach (index; 0 .. AggregateValue.length(value))
-        result ~= AggregateValue.elementAt(value, index).asUtf8Character;
+    foreach (index; 0 .. AggregateValue.length(aggregate))
+        result ~= readValue(AggregateValue.elementAt(aggregate, index)).asUtf8Character;
     return result.idup;
 }
 
@@ -1425,20 +1429,19 @@ private struct Walker {
             fieldPointerType.nextOf.toBasetype.isTypeFunction !is null &&
             fieldValue.isFunctionPointer;
         auto result = AggregateValue.withStructField(
-            receiver,
+            AggregateValue.native(receiver),
             fieldIndex,
             symbolicTypeInfo || liveDelegate || liveFunctionPointer
                 ? ExpressionResult.null_
                 : fieldValue,
         );
         auto source = AggregateValue.native(receiver);
-        auto destination = AggregateValue.native(result);
-        copyStoredMetadata(receiverType, source.address, destination.address);
+        copyStoredMetadata(receiverType, source.address, result.address);
 
-        auto fieldPlace = Place(destination.address, destination.type)
+        auto fieldPlace = Place(result.address, result.type)
             .field(field);
         writeStoredValue(fieldPlace, fieldValue);
-        return result;
+        return ExpressionResult.nativeAggregateValue(result);
     }
 
     private void retainTemporaryPointerOwner(NativeBlock owner) @safe {
@@ -2073,10 +2076,12 @@ private struct Walker {
                     messageType = field.type;
                     break;
                 }
-            metadata = AggregateValue.withClassFieldNamed(
-                metadata,
-                "msg",
-                characterArrayValue(this, messageType, message),
+            metadata = ExpressionResult.nativeAggregateValue(
+                AggregateValue.withClassFieldNamed(
+                    AggregateValue.native(metadata),
+                    "msg",
+                    characterArrayValue(this, messageType, message),
+                ),
             );
         }
 
@@ -2135,9 +2140,13 @@ private struct Walker {
 
     private ExpressionResult classFieldNamed(in ExpressionResult object, in string name) {
         if (object.isNativeAggregate)
-            return AggregateValue.classFieldNamed(object, name);
+            return readStoredValue(
+                AggregateValue.classFieldNamed(AggregateValue.native(object), name),
+            );
         if (auto metadata = classMetadata(object))
-            return AggregateValue.classFieldNamed(*metadata, name);
+            return readStoredValue(
+                AggregateValue.classFieldNamed(AggregateValue.native(*metadata), name),
+            );
         throw new Exception("Class field metadata is unavailable.");
     }
 
@@ -2147,9 +2156,13 @@ private struct Walker {
         in ExpressionResult field,
     ) {
         if (object.isNativeAggregate)
-            return AggregateValue.withClassFieldNamed(object, name, field);
+            return ExpressionResult.nativeAggregateValue(
+                AggregateValue.withClassFieldNamed(AggregateValue.native(object), name, field),
+            );
         if (auto metadata = classMetadata(object)) {
-            *metadata = AggregateValue.withClassFieldNamed(*metadata, name, field);
+            *metadata = ExpressionResult.nativeAggregateValue(
+                AggregateValue.withClassFieldNamed(AggregateValue.native(*metadata), name, field),
+            );
             return object;
         }
         throw new Exception("Class field metadata is unavailable.");
@@ -3168,7 +3181,7 @@ arrayLengthExpression:
                     projectionPlace(arrayLength.e1).arrayLength,
                 );
             return ExpressionResult(
-                AggregateValue.length(runExpressionValue(arrayLength.e1)),
+                AggregateValue.length(AggregateValue.native(runExpressionValue(arrayLength.e1))),
             );
         }
 
@@ -3730,7 +3743,9 @@ unsupportedExpression:
                         if (auto receiverVar = index.e1.isVarExp)
                             setLocal(
                                 index.lengthVar,
-                                ExpressionResult(AggregateValue.length(runExpressionValue(receiverVar))),
+                                ExpressionResult(AggregateValue.length(
+                                    AggregateValue.native(runExpressionValue(receiverVar)),
+                                )),
                             );
                     const elementIndex = scalarOperand!long(index.e2);
                     const elementPointer = arrayPointer(index.e1, elementIndex, op);
@@ -4430,7 +4445,9 @@ unsupportedExpression:
         if (index.lengthVar !is null)
             setLocal(
                 index.lengthVar,
-                ExpressionResult(AggregateValue.length(readValue(receiverPlace))),
+                ExpressionResult(AggregateValue.length(
+                    AggregateValue.native(readValue(receiverPlace)),
+                )),
             );
         const outerOffset = scalarOperand!size_t(index.e2);
         auto elementPlace = receiverPlace.index(outerOffset);
@@ -4534,7 +4551,9 @@ unsupportedExpression:
                                         setLocal(
                                             chainIndex.lengthVar,
                                             ExpressionResult(
-                                                AggregateValue.length(readValue(base)),
+                                                AggregateValue.length(
+                                                    AggregateValue.native(readValue(base)),
+                                                ),
                                             ),
                                         );
                                 },
@@ -4661,7 +4680,9 @@ unsupportedExpression:
                                         if (chainIndex.lengthVar !is null)
                                             setLocal(
                                                 chainIndex.lengthVar,
-                                                ExpressionResult(AggregateValue.length(readValue(base))),
+                                                ExpressionResult(AggregateValue.length(
+                                                    AggregateValue.native(readValue(base)),
+                                                )),
                                             );
                                     },
                                 );
@@ -4705,7 +4726,7 @@ unsupportedExpression:
                 // guest array.
                 const arrayValue = source;
                 if (index.lengthVar !is null) {
-                    const sourceLength = AggregateValue.length(arrayValue);
+                    const sourceLength = AggregateValue.length(AggregateValue.native(arrayValue));
                     setLocal(index.lengthVar, ExpressionResult(sourceLength));
                 }
 
@@ -5095,7 +5116,9 @@ unsupportedExpression:
 
             if (isNativeScalarType(fieldType)) {
                 Place(cell.field(index).ptr, fieldType)
-                    .storeScalar(AggregateValue.fieldAt(structValue, index));
+                    .storeScalar(readStoredValue(
+                        AggregateValue.fieldAt(AggregateValue.native(structValue), index),
+                    ));
                 continue;
             }
 
@@ -5108,7 +5131,9 @@ unsupportedExpression:
                 ))
                     continue;
 
-                const fieldValue = AggregateValue.fieldAt(structValue, index);
+                const fieldValue = readStoredValue(
+                    AggregateValue.fieldAt(AggregateValue.native(structValue), index),
+                );
                 if (!AggregateValue.isArray(fieldValue))
                     continue;
 
@@ -5117,7 +5142,9 @@ unsupportedExpression:
                     writeArrayCellElement(
                         arrayCell,
                         elementIndex,
-                        AggregateValue.elementAt(fieldValue, elementIndex),
+                        readStoredValue(
+                            AggregateValue.elementAt(AggregateValue.native(fieldValue), elementIndex),
+                        ),
                     );
                 continue;
             }
@@ -5131,7 +5158,9 @@ unsupportedExpression:
                 ))
                     continue;
 
-                const fieldValue = AggregateValue.fieldAt(structValue, index);
+                const fieldValue = readStoredValue(
+                    AggregateValue.fieldAt(AggregateValue.native(structValue), index),
+                );
                 if (!AggregateValue.isArray(fieldValue))
                     continue;
 
@@ -5141,7 +5170,9 @@ unsupportedExpression:
                     writeArrayCellElement(
                         arrayCell,
                         elementIndex,
-                        AggregateValue.elementAt(fieldValue, elementIndex),
+                        readStoredValue(
+                            AggregateValue.elementAt(AggregateValue.native(fieldValue), elementIndex),
+                        ),
                     );
                 arrayCell.writeSliceHeader(
                     cell.block,
@@ -5154,7 +5185,9 @@ unsupportedExpression:
             if (nestedStructType is null || nestedStructType.sym.isUnionDeclaration !is null)
                 continue;
 
-            const nestedValue = AggregateValue.fieldAt(structValue, index);
+            const nestedValue = readStoredValue(
+                AggregateValue.fieldAt(AggregateValue.native(structValue), index),
+            );
             if (!AggregateValue.isStruct(nestedValue))
                 continue;
 
@@ -5360,9 +5393,10 @@ unsupportedExpression:
     }
 
     private ExpressionResult[] arrayElements(in ExpressionResult value) {
+        auto aggregate = AggregateValue.native(value);
         ExpressionResult[] elements;
-        foreach (index; 0 .. AggregateValue.length(value))
-            elements ~= AggregateValue.elementAt(value, index);
+        foreach (index; 0 .. AggregateValue.length(aggregate))
+            elements ~= readStoredValue(AggregateValue.elementAt(aggregate, index));
 
         return elements;
     }
@@ -6618,9 +6652,10 @@ unsupportedExpression:
     private ExpressionResult[] decodedUtf8Dchars(in ExpressionResult source) {
         import std.utf: decode;
 
+        auto aggregate = AggregateValue.native(source);
         string encoded;
-        foreach (index; 0 .. AggregateValue.length(source))
-            encoded ~= cast(char) AggregateValue.elementAt(source, index)
+        foreach (index; 0 .. AggregateValue.length(aggregate))
+            encoded ~= cast(char) readStoredValue(AggregateValue.elementAt(aggregate, index))
                 .castTo!long.asLong;
 
         ExpressionResult[] values;
@@ -6634,9 +6669,10 @@ unsupportedExpression:
     private ExpressionResult[] decodedUtf16Dchars(in ExpressionResult source) {
         import std.utf: decode;
 
+        auto aggregate = AggregateValue.native(source);
         wstring encoded;
-        foreach (index; 0 .. AggregateValue.length(source))
-            encoded ~= cast(wchar) AggregateValue.elementAt(source, index)
+        foreach (index; 0 .. AggregateValue.length(aggregate))
+            encoded ~= cast(wchar) readStoredValue(AggregateValue.elementAt(aggregate, index))
                 .castTo!long.asLong;
 
         ExpressionResult[] values;
@@ -6650,12 +6686,13 @@ unsupportedExpression:
     private ExpressionResult[] utf8EncodedDstringChars(in ExpressionResult source) {
         import std.utf: encode;
 
+        auto aggregate = AggregateValue.native(source);
         ExpressionResult[] values;
-        foreach (index; 0 .. AggregateValue.length(source)) {
+        foreach (index; 0 .. AggregateValue.length(aggregate)) {
             char[4] encoded;
             const length = encode(
                 encoded,
-                cast(dchar) AggregateValue.elementAt(source, index)
+                cast(dchar) readStoredValue(AggregateValue.elementAt(aggregate, index))
                     .castTo!long.asLong,
             );
             foreach (unit; encoded[0 .. length])
@@ -6829,13 +6866,15 @@ unsupportedExpression:
 
         const left = runExpressionValue((*call.arguments)[1]);
         const right = runExpressionValue((*call.arguments)[2]);
-        if (AggregateValue.length(left) != AggregateValue.length(right))
+        auto leftAggregate = AggregateValue.native(left);
+        auto rightAggregate = AggregateValue.native(right);
+        if (AggregateValue.length(leftAggregate) != AggregateValue.length(rightAggregate))
             throw new Exception("Unsupported eval call.");
 
         ExpressionResult[] elements;
-        foreach (index; 0 .. AggregateValue.length(left))
-            elements ~= AggregateValue.elementAt(left, index) +
-                AggregateValue.elementAt(right, index);
+        foreach (index; 0 .. AggregateValue.length(leftAggregate))
+            elements ~= readStoredValue(AggregateValue.elementAt(leftAggregate, index)) +
+                readStoredValue(AggregateValue.elementAt(rightAggregate, index));
 
         return writeBackSliceElements(target, elements);
     }
@@ -6978,7 +7017,7 @@ unsupportedExpression:
         if (resultType is null)
             throw new Exception("Struct-array `.dup` needs a dynamic-array result.");
 
-        const length = AggregateValue.length(source);
+        const length = AggregateValue.length(AggregateValue.native(source));
         auto destination = NativeArray.allocate(resultType.next, length);
         const byteLength = length * typeByteSize(resultType.next);
         auto sourceAddress = cast(void*) AggregateValue.nativeArrayAddress(source);
@@ -7381,8 +7420,10 @@ unsupportedExpression:
             auto fieldType = cell.fieldDeclaration(index).type;
 
             if (isNativeScalarType(fieldType)) {
-                value = AggregateValue.withStructField(value, index,
-                    Place(cell.field(index).ptr, fieldType).loadScalar);
+                value = ExpressionResult.nativeAggregateValue(AggregateValue.withStructField(
+                    AggregateValue.native(value), index,
+                    Place(cell.field(index).ptr, fieldType).loadScalar,
+                ));
                 continue;
             }
 
@@ -7395,7 +7436,9 @@ unsupportedExpression:
                 ))
                     continue;
 
-                auto fieldValue = AggregateValue.fieldAt(value, index);
+                auto fieldValue = readStoredValue(
+                    AggregateValue.fieldAt(AggregateValue.native(value), index),
+                );
                 if (!AggregateValue.isArray(fieldValue))
                     continue;
 
@@ -7405,7 +7448,9 @@ unsupportedExpression:
                     if (structType !is null) {
                         auto elementCell = arrayCell.structElement(elementIndex);
                         elementValue = structValueFromCell(
-                            AggregateValue.elementAt(fieldValue, elementIndex),
+                            readStoredValue(
+                                AggregateValue.elementAt(AggregateValue.native(fieldValue), elementIndex),
+                            ),
                             elementCell,
                         );
                     } else
@@ -7413,12 +7458,15 @@ unsupportedExpression:
                             arrayCell.element(elementIndex).ptr,
                             elementType,
                         ).loadScalar;
-                    fieldValue = AggregateValue.withArrayElement(fieldValue,
+                    fieldValue = ExpressionResult.nativeAggregateValue(AggregateValue.withArrayElement(
+                        AggregateValue.native(fieldValue),
                         elementIndex,
                         elementValue,
-                    );
+                    ));
                 }
-                value = AggregateValue.withStructField(value, index, fieldValue);
+                value = ExpressionResult.nativeAggregateValue(
+                    AggregateValue.withStructField(AggregateValue.native(value), index, fieldValue),
+                );
                 continue;
             }
 
@@ -7431,7 +7479,9 @@ unsupportedExpression:
                 ))
                     continue;
 
-                const fieldValue = AggregateValue.fieldAt(value, index);
+                const fieldValue = readStoredValue(
+                    AggregateValue.fieldAt(AggregateValue.native(value), index),
+                );
                 if (!AggregateValue.isArray(fieldValue))
                     continue;
 
@@ -7452,13 +7502,17 @@ unsupportedExpression:
             if (nestedStructType is null || nestedStructType.sym.isUnionDeclaration !is null)
                 continue;
 
-            auto nestedValue = AggregateValue.fieldAt(value, index);
+            auto nestedValue = readStoredValue(
+                AggregateValue.fieldAt(AggregateValue.native(value), index),
+            );
             if (!AggregateValue.isStruct(nestedValue))
                 continue;
 
             auto nestedCell = cell.structField(index);
-            value = AggregateValue.withStructField(value, index,
-                structValueFromCell(nestedValue, nestedCell));
+            value = ExpressionResult.nativeAggregateValue(AggregateValue.withStructField(
+                AggregateValue.native(value), index,
+                structValueFromCell(nestedValue, nestedCell),
+            ));
         }
 
         return value;
@@ -8036,10 +8090,12 @@ unsupportedExpression:
     }
 
     private bool equalArrayValues(in ExpressionResult left, in ExpressionResult right) {
-        if (AggregateValue.length(left) != AggregateValue.length(right))
+        auto leftAggregate = AggregateValue.native(left);
+        auto rightAggregate = AggregateValue.native(right);
+        if (AggregateValue.length(leftAggregate) != AggregateValue.length(rightAggregate))
             return false;
 
-        foreach (index; 0 .. AggregateValue.length(left))
+        foreach (index; 0 .. AggregateValue.length(leftAggregate))
             if (!equalValues(
                 arrayElementForEquality(left, index),
                 arrayElementForEquality(right, index),
@@ -8053,7 +8109,9 @@ unsupportedExpression:
         import quickbite.backends.interpreter.place: Place;
 
         if (!value.isNativeAggregate)
-            return AggregateValue.elementAt(value, index);
+            return readStoredValue(
+                AggregateValue.elementAt(AggregateValue.native(value), index),
+            );
 
         auto aggregate = AggregateValue.native(value);
         return readStoredValue(
@@ -8090,7 +8148,9 @@ unsupportedExpression:
         import quickbite.backends.interpreter.place: Place;
 
         if (!value.isNativeAggregate)
-            return AggregateValue.fieldAt(value, index);
+            return readStoredValue(
+                AggregateValue.fieldAt(AggregateValue.native(value), index),
+            );
 
         auto aggregate = AggregateValue.native(value);
         auto fields = structFields(aggregate.type.toBasetype.isTypeStruct);
@@ -8416,7 +8476,9 @@ unsupportedExpression:
                                             return *delegate_;
                                     }
                                 }
-                            return AggregateValue.fieldAt(elementValue, structFieldIndex(dot));
+                            return readStoredValue(AggregateValue.fieldAt(
+                                AggregateValue.native(elementValue), structFieldIndex(dot),
+                            ));
                         }
         }
 
@@ -8481,7 +8543,7 @@ unsupportedExpression:
             AggregateValue.isArray(receiver) &&
             declarationName(dot.var) == "length"
         )
-            return ExpressionResult(AggregateValue.length(receiver));
+            return ExpressionResult(AggregateValue.length(AggregateValue.native(receiver)));
 
         if (dot.var.isVarDeclaration !is null) {
             const target = receiver.isNativeAggregate && dot.e1.type.toBasetype.isTypeClass !is null
@@ -8546,7 +8608,9 @@ unsupportedExpression:
                                 return *delegate_;
                     }
             }
-            return AggregateValue.fieldAt(target, structFieldIndex(dot));
+            return readStoredValue(AggregateValue.fieldAt(
+                AggregateValue.native(target), structFieldIndex(dot),
+            ));
         }
 
         throw new Exception("Unsupported interpreter field read.");
@@ -9505,9 +9569,11 @@ unsupportedExpression:
         const source = current == ExpressionResult.null_
             ? reconstructStoredArray(type, noElements)
             : current;
-        const oldLength = AggregateValue.length(source);
+        const oldLength = AggregateValue.length(AggregateValue.native(source));
         const previousData = AggregateValue.nativeArrayAddress(source);
-        const resized = AggregateValue.withArrayLength(source, newLength);
+        const resized = ExpressionResult.nativeAggregateValue(
+            AggregateValue.withArrayLength(AggregateValue.native(source), newLength),
+        );
         auto elementType = arrayElementType(type);
         relocatePriorAppendedElementSlots(
             elementType,
@@ -9721,17 +9787,25 @@ unsupportedExpression:
 
             const fieldIndex = structFieldIndex(dot);
             const receiver = runExpressionValue(dot.e1);
-            const fieldValue = AggregateValue.fieldAt(receiver, fieldIndex);
+            const fieldValue = readStoredValue(
+                AggregateValue.fieldAt(AggregateValue.native(receiver), fieldIndex),
+            );
             const outerIndex = scalarOperand!size_t(outer.e2);
             checkStaticArrayIndexInBounds(fieldValue, outerIndex);
-            const outerElement = AggregateValue.elementAt(fieldValue, outerIndex);
-            checkStaticArrayIndexInBounds(outerElement, arrayIndex);
-            const updatedField = AggregateValue.withArrayElement(
-                fieldValue,
-                outerIndex,
-                AggregateValue.withArrayElement(outerElement, arrayIndex, value),
+            const outerElement = readStoredValue(
+                AggregateValue.elementAt(AggregateValue.native(fieldValue), outerIndex),
             );
-            writeLocation(dot.e1, AggregateValue.withStructField(receiver, fieldIndex, updatedField));
+            checkStaticArrayIndexInBounds(outerElement, arrayIndex);
+            const updatedField = ExpressionResult.nativeAggregateValue(AggregateValue.withArrayElement(
+                AggregateValue.native(fieldValue),
+                outerIndex,
+                ExpressionResult.nativeAggregateValue(AggregateValue.withArrayElement(
+                    AggregateValue.native(outerElement), arrayIndex, value,
+                )),
+            ));
+            writeLocation(dot.e1, ExpressionResult.nativeAggregateValue(
+                AggregateValue.withStructField(AggregateValue.native(receiver), fieldIndex, updatedField),
+            ));
             return;
         }
 
@@ -9759,7 +9833,9 @@ unsupportedExpression:
                     auto fieldPlace = Place(bodyAddress, bodyType)
                         .field(dot.var.isVarDeclaration);
                     const source = readValue(fieldPlace);
-                    const updatedArray = AggregateValue.withArrayElement(source, arrayIndex, value);
+                    const updatedArray = ExpressionResult.nativeAggregateValue(
+                        AggregateValue.withArrayElement(AggregateValue.native(source), arrayIndex, value),
+                    );
                     writeValue(fieldPlace, updatedArray);
                     return;
                 }
@@ -9773,9 +9849,15 @@ unsupportedExpression:
             // through `writeLocation`'s own receiver recursion.
             const fieldIndex = structFieldIndex(dot);
             const receiver = runExpressionValue(dot.e1);
-            const updatedArray = AggregateValue.withArrayElement(
-                AggregateValue.fieldAt(receiver, fieldIndex), arrayIndex, value);
-            writeLocation(dot.e1, AggregateValue.withStructField(receiver, fieldIndex, updatedArray));
+            const fieldValue = readStoredValue(
+                AggregateValue.fieldAt(AggregateValue.native(receiver), fieldIndex),
+            );
+            const updatedArray = ExpressionResult.nativeAggregateValue(AggregateValue.withArrayElement(
+                AggregateValue.native(fieldValue), arrayIndex, value,
+            ));
+            writeLocation(dot.e1, ExpressionResult.nativeAggregateValue(
+                AggregateValue.withStructField(AggregateValue.native(receiver), fieldIndex, updatedArray),
+            ));
             return;
         }
 
@@ -9829,11 +9911,11 @@ unsupportedExpression:
             value.isFunctionPointer ||
             (fields[fieldIndex].type.toBasetype.ty == TY.Tdelegate &&
                 value != ExpressionResult.null_);
-        auto updated = AggregateValue.withStructField(
-            receiver,
+        auto updated = ExpressionResult.nativeAggregateValue(AggregateValue.withStructField(
+            AggregateValue.native(receiver),
             fieldIndex,
             symbolicValue ? ExpressionResult.null_ : value,
-        );
+        ));
 
         auto writtenType = fields[fieldIndex].type;
         const writtenScalar = isNativeScalarType(writtenType);
@@ -9883,9 +9965,12 @@ unsupportedExpression:
         } else {
             auto writtenElementType = writtenType.toBasetype.nextOf.toBasetype;
             auto writtenArrayCell = cell.arrayField(fieldIndex);
-            foreach (elementIndex; 0 .. AggregateValue.length(value))
+            auto valueAggregate = AggregateValue.native(value);
+            foreach (elementIndex; 0 .. AggregateValue.length(valueAggregate))
                 Place(writtenArrayCell.element(elementIndex).ptr, writtenElementType)
-                    .storeScalar(AggregateValue.elementAt(value, elementIndex));
+                    .storeScalar(readStoredValue(
+                        AggregateValue.elementAt(valueAggregate, elementIndex),
+                    ));
         }
 
         foreach (siblingIndex, sibling; fields) {
@@ -9893,8 +9978,10 @@ unsupportedExpression:
                 continue;
 
             if (isNativeScalarType(sibling.type)) {
-                updated = AggregateValue.withStructField(updated, siblingIndex,
-                    Place(cell.field(siblingIndex).ptr, sibling.type).loadScalar);
+                updated = ExpressionResult.nativeAggregateValue(AggregateValue.withStructField(
+                    AggregateValue.native(updated), siblingIndex,
+                    Place(cell.field(siblingIndex).ptr, sibling.type).loadScalar,
+                ));
                 continue;
             }
 
@@ -9903,18 +9990,24 @@ unsupportedExpression:
                 if (!isNativeScalarType(siblingElementType))
                     continue;
 
-                auto siblingCurrent = AggregateValue.fieldAt(updated, siblingIndex);
+                auto siblingCurrent = readStoredValue(
+                    AggregateValue.fieldAt(AggregateValue.native(updated), siblingIndex),
+                );
                 if (!AggregateValue.isArray(siblingCurrent))
                     continue;
 
                 auto siblingArrayCell = cell.arrayField(siblingIndex);
-                foreach (elementIndex; 0 .. AggregateValue.length(siblingCurrent))
-                    siblingCurrent = AggregateValue.withArrayElement(siblingCurrent, elementIndex,
+                auto siblingAggregate = AggregateValue.native(siblingCurrent);
+                foreach (elementIndex; 0 .. AggregateValue.length(siblingAggregate))
+                    siblingAggregate = AggregateValue.withArrayElement(siblingAggregate, elementIndex,
                         Place(
                             siblingArrayCell.element(elementIndex).ptr,
                             siblingElementType,
                         ).loadScalar);
-                updated = AggregateValue.withStructField(updated, siblingIndex, siblingCurrent);
+                updated = ExpressionResult.nativeAggregateValue(AggregateValue.withStructField(
+                    AggregateValue.native(updated), siblingIndex,
+                    ExpressionResult.nativeAggregateValue(siblingAggregate),
+                ));
                 continue;
             }
 
@@ -9922,13 +10015,17 @@ unsupportedExpression:
             if (siblingStructType is null || siblingStructType.sym.isUnionDeclaration !is null)
                 continue;
 
-            auto siblingCurrent = AggregateValue.fieldAt(updated, siblingIndex);
+            auto siblingCurrent = readStoredValue(
+                AggregateValue.fieldAt(AggregateValue.native(updated), siblingIndex),
+            );
             if (!AggregateValue.isStruct(siblingCurrent))
                 continue;
 
             auto siblingCell = cell.structField(siblingIndex);
-            updated = AggregateValue.withStructField(updated, siblingIndex,
-                structValueFromCell(siblingCurrent, siblingCell));
+            updated = ExpressionResult.nativeAggregateValue(AggregateValue.withStructField(
+                AggregateValue.native(updated), siblingIndex,
+                structValueFromCell(siblingCurrent, siblingCell),
+            ));
         }
 
         return withUnionStoredField(
@@ -10081,7 +10178,9 @@ unsupportedExpression:
                         .field(dot.var.isVarDeclaration);
                     const source = readStoredValue(fieldPlace);
                     if (index.lengthVar !is null)
-                        setLocal(index.lengthVar, ExpressionResult(AggregateValue.length(source)));
+                        setLocal(index.lengthVar, ExpressionResult(
+                            AggregateValue.length(AggregateValue.native(source)),
+                        ));
                     const arrayIndex = scalarOperand!size_t(index.e2);
                     auto destination = fieldPlace.index(arrayIndex);
                     if (canAssignThroughTypedTemporary(destination, rhs))
@@ -10109,13 +10208,21 @@ unsupportedExpression:
             // temporary copy into a live place.
             const fieldIndex = structFieldIndex(dot);
             const receiver = runExpressionValue(dot.e1);
-            const source = AggregateValue.fieldAt(receiver, fieldIndex);
+            const source = readStoredValue(
+                AggregateValue.fieldAt(AggregateValue.native(receiver), fieldIndex),
+            );
             if (index.lengthVar !is null)
-                setLocal(index.lengthVar, ExpressionResult(AggregateValue.length(source)));
+                setLocal(index.lengthVar, ExpressionResult(
+                    AggregateValue.length(AggregateValue.native(source)),
+                ));
             const arrayIndex = scalarOperand!size_t(index.e2);
             const value = runExpressionValue(rhs);
-            const updatedArray = AggregateValue.withArrayElement(source, arrayIndex, value);
-            writeLocation(dot.e1, AggregateValue.withStructField(receiver, fieldIndex, updatedArray));
+            const updatedArray = ExpressionResult.nativeAggregateValue(AggregateValue.withArrayElement(
+                AggregateValue.native(source), arrayIndex, value,
+            ));
+            writeLocation(dot.e1, ExpressionResult.nativeAggregateValue(
+                AggregateValue.withStructField(AggregateValue.native(receiver), fieldIndex, updatedArray),
+            ));
             return value;
         }
 
@@ -10184,7 +10291,7 @@ unsupportedExpression:
         import quickbite.backends.interpreter.aggregate_value: AggregateValue;
         import quickbite.backends.interpreter.messages: indexOutOfBoundsMessage;
 
-        const length = AggregateValue.length(array);
+        const length = AggregateValue.length(AggregateValue.native(array));
         if (index >= length)
             throwRangeError(indexOutOfBoundsMessage(
                 index,
@@ -10236,6 +10343,7 @@ unsupportedExpression:
         if (!AggregateValue.isArray(arrayValue))
             return;
 
+        auto aggregate = AggregateValue.native(arrayValue);
         foreach (index; 0 .. cell.length) {
             if (index >= AggregateValue.elementCount(arrayValue))
                 continue;
@@ -10245,11 +10353,11 @@ unsupportedExpression:
                 auto elementCell = cell.arrayElement(index);
                 writeStaticArrayCellScalarElements(
                     elementCell,
-                    AggregateValue.elementAt(arrayValue, index),
+                    readStoredValue(AggregateValue.elementAt(aggregate, index)),
                 );
             } else {
                 Place(cell.element(index).ptr, cell.elementType)
-                    .storeScalar(AggregateValue.elementAt(arrayValue, index));
+                    .storeScalar(readStoredValue(AggregateValue.elementAt(aggregate, index)));
             }
         }
     }
@@ -10366,7 +10474,9 @@ unsupportedExpression:
                 const fieldValue = readValue(fieldPlace);
                 const outerIndex = scalarOperand!size_t(outer.e2);
                 checkStaticArrayIndexInBounds(fieldValue, outerIndex);
-                const outerElement = AggregateValue.elementAt(fieldValue, outerIndex);
+                const outerElement = readStoredValue(
+                    AggregateValue.elementAt(AggregateValue.native(fieldValue), outerIndex),
+                );
                 const innerIndex = scalarOperand!size_t(inner.e2);
                 checkStaticArrayIndexInBounds(outerElement, innerIndex);
                 // Both bounds checks already passed against the field's own
@@ -10384,19 +10494,27 @@ unsupportedExpression:
 
             const fieldIndex = structFieldIndex(dot);
             const receiver = runExpressionValue(dot.e1);
-            const fieldValue = AggregateValue.fieldAt(receiver, fieldIndex);
+            const fieldValue = readStoredValue(
+                AggregateValue.fieldAt(AggregateValue.native(receiver), fieldIndex),
+            );
             const outerIndex = scalarOperand!size_t(outer.e2);
             checkStaticArrayIndexInBounds(fieldValue, outerIndex);
-            const outerElement = AggregateValue.elementAt(fieldValue, outerIndex);
+            const outerElement = readStoredValue(
+                AggregateValue.elementAt(AggregateValue.native(fieldValue), outerIndex),
+            );
             const innerIndex = scalarOperand!size_t(inner.e2);
             checkStaticArrayIndexInBounds(outerElement, innerIndex);
             const value = runExpressionValue(rhs);
-            const updatedField = AggregateValue.withArrayElement(
-                fieldValue,
+            const updatedField = ExpressionResult.nativeAggregateValue(AggregateValue.withArrayElement(
+                AggregateValue.native(fieldValue),
                 outerIndex,
-                AggregateValue.withArrayElement(outerElement, innerIndex, value),
-            );
-            writeLocation(dot.e1, AggregateValue.withStructField(receiver, fieldIndex, updatedField));
+                ExpressionResult.nativeAggregateValue(AggregateValue.withArrayElement(
+                    AggregateValue.native(outerElement), innerIndex, value,
+                )),
+            ));
+            writeLocation(dot.e1, ExpressionResult.nativeAggregateValue(
+                AggregateValue.withStructField(AggregateValue.native(receiver), fieldIndex, updatedField),
+            ));
             return value;
         }
 
@@ -10413,7 +10531,9 @@ unsupportedExpression:
         const outerIndex = scalarOperand!size_t(outer.e2);
         if (isStaticArrayType(outer.e1.type))
             checkStaticArrayIndexInBounds(current, outerIndex);
-        const outerElement = AggregateValue.elementAt(current, outerIndex);
+        const outerElement = readStoredValue(
+            AggregateValue.elementAt(AggregateValue.native(current), outerIndex),
+        );
         const innerIndex = scalarOperand!size_t(inner.e2);
         if (isStaticArrayType(inner.e1.type))
             checkStaticArrayIndexInBounds(outerElement, innerIndex);
@@ -10522,22 +10642,23 @@ unsupportedExpression:
             clearUninitializedBindingAddress(bindingPlace(variable).address);
         }
         const current = readBindingValue(variable);
+        auto currentAggregate = AggregateValue.native(current);
 
         const lower = slice.lwr is null
             ? 0
             : scalarOperand!size_t(slice.lwr);
         const upper = slice.upr is null
-            ? AggregateValue.length(current)
+            ? AggregateValue.length(currentAggregate)
             : scalarOperand!size_t(slice.upr);
 
-        checkSliceAssignmentBounds(lower, upper, AggregateValue.length(current));
+        checkSliceAssignmentBounds(lower, upper, AggregateValue.length(currentAggregate));
 
         rejectOverlappingSliceAssignment(
             variable,
             rhs,
             lower,
             upper,
-            AggregateValue.length(current),
+            AggregateValue.length(currentAggregate),
         );
 
         const block = isBlockSliceAssignment(slice, rhs);
@@ -10551,14 +10672,20 @@ unsupportedExpression:
         // `matrix[] = row;`) already takes the `copyArrayValue` branch;
         // `value.isArray` distinguishes the remaining two: a genuine array
         // copy vs. a scalar-element fill, which must reuse `value` itself at
-        // every position instead of indexing into it.
+        // every position instead of indexing into it. Each element read
+        // (from either the untouched tail of `current` or a literal `value`)
+        // routes through `readStoredValue` so a delegate/function-pointer/
+        // symbolic-TypeInfo element keeps its out-of-band identity instead
+        // of decoding as all-zero native bytes.
         ExpressionResult[] elements;
-        foreach (index; 0 .. AggregateValue.length(current))
+        foreach (index; 0 .. AggregateValue.length(currentAggregate))
             elements ~= index < lower || index >= upper
-                ? AggregateValue.elementAt(current, index)
+                ? readStoredValue(AggregateValue.elementAt(currentAggregate, index))
                 : block ? copyArrayValue(value, variable.type.toBasetype.nextOf)
                 : AggregateValue.isArray(value)
-                    ? AggregateValue.elementAt(value, index - lower)
+                    ? readStoredValue(
+                        AggregateValue.elementAt(AggregateValue.native(value), index - lower),
+                    )
                     : value;
 
         auto destination = bindingPlace(variable);
@@ -10613,14 +10740,15 @@ unsupportedExpression:
         import std.conv: text;
 
         const current = runIndexExpression(index);
+        auto currentAggregate = AggregateValue.native(current);
         const lower = slice.lwr is null
             ? 0
             : scalarOperand!size_t(slice.lwr);
         const upper = slice.upr is null
-            ? AggregateValue.length(current)
+            ? AggregateValue.length(currentAggregate)
             : scalarOperand!size_t(slice.upr);
 
-        checkSliceAssignmentBounds(lower, upper, AggregateValue.length(current));
+        checkSliceAssignmentBounds(lower, upper, AggregateValue.length(currentAggregate));
 
         const block = isBlockSliceAssignment(slice, rhs);
         const value = constructSliceAssignmentRhs(rhs);
@@ -10628,9 +10756,11 @@ unsupportedExpression:
             const element = block
                 ? copyArrayValue(value, index.type.toBasetype.nextOf)
                 : AggregateValue.isArray(value)
-                    ? AggregateValue.elementAt(value, elementIndex - lower)
+                    ? readStoredValue(
+                        AggregateValue.elementAt(AggregateValue.native(value), elementIndex - lower),
+                    )
                     : value;
-            AggregateValue.withArrayElement(current, elementIndex, element);
+            AggregateValue.withArrayElement(currentAggregate, elementIndex, element);
         }
         return value;
     }
@@ -10692,7 +10822,7 @@ unsupportedExpression:
             return block
                 ? copyArrayValue(value, slice.type.toBasetype.nextOf)
                 : AggregateValue.isArray(value)
-                    ? AggregateValue.elementAt(value, index)
+                    ? readStoredValue(AggregateValue.elementAt(AggregateValue.native(value), index))
                     : value;
         }
 
@@ -10808,7 +10938,9 @@ unsupportedExpression:
             const element = block
                 ? copyArrayValue(value, slice.type.toBasetype.nextOf)
                 : AggregateValue.isArray(value)
-                    ? AggregateValue.elementAt(value, index - lower)
+                    ? readStoredValue(
+                        AggregateValue.elementAt(AggregateValue.native(value), index - lower),
+                    )
                     : value;
             writeStoredArrayElement(current.index(index), element);
         }
@@ -10899,15 +11031,16 @@ unsupportedExpression:
         imported!"dmd.expression".Expression rhs,
     ) {
         const current = runExpressionValue(slice.e1);
+        auto currentAggregate = AggregateValue.native(current);
 
         const lower = slice.lwr is null
             ? 0
             : scalarOperand!size_t(slice.lwr);
         const upper = slice.upr is null
-            ? AggregateValue.length(current)
+            ? AggregateValue.length(currentAggregate)
             : scalarOperand!size_t(slice.upr);
 
-        checkSliceAssignmentBounds(lower, upper, AggregateValue.length(current));
+        checkSliceAssignmentBounds(lower, upper, AggregateValue.length(currentAggregate));
 
         const block = isBlockSliceAssignment(slice, rhs);
         const value = constructSliceAssignmentRhs(rhs);
@@ -10921,9 +11054,11 @@ unsupportedExpression:
             const element = block
                 ? copyArrayValue(value, slice.type.toBasetype.nextOf)
                 : AggregateValue.isArray(value)
-                    ? AggregateValue.elementAt(value, index - lower)
+                    ? readStoredValue(
+                        AggregateValue.elementAt(AggregateValue.native(value), index - lower),
+                    )
                     : value;
-            AggregateValue.withArrayElement(current, index, element);
+            AggregateValue.withArrayElement(currentAggregate, index, element);
         }
 
         // A cast changes a view's element type, not the storage it denotes,
@@ -10960,11 +11095,12 @@ unsupportedExpression:
     ) {
         import quickbite.backends.interpreter.aggregate_value: AggregateValue;
 
+        auto aggregate = AggregateValue.native(value);
         ExpressionResult[] elements;
-        foreach (index; 0 .. AggregateValue.length(value))
-            elements ~= AggregateValue.elementAt(value, index);
+        foreach (index; 0 .. AggregateValue.length(aggregate))
+            elements ~= readStoredValue(AggregateValue.elementAt(aggregate, index));
 
-        return reconstructStoredArray(AggregateValue.native(value).type, elements);
+        return reconstructStoredArray(aggregate.type, elements);
     }
 
     private ExpressionResult runLoweredAssignExpression(
@@ -11026,9 +11162,10 @@ unsupportedExpression:
         if (!isArrayType(operand.type))
             return nativeAppendElements(resultType, value);
 
+        auto aggregate = AggregateValue.native(value);
         ExpressionResult[] elements;
         foreach (index; 0 .. AggregateValue.elementCount(value))
-            elements ~= AggregateValue.elementAt(value, index);
+            elements ~= readStoredValue(AggregateValue.elementAt(aggregate, index));
 
         return elements;
     }
@@ -11044,10 +11181,10 @@ unsupportedExpression:
         // pair -- neither needs the ref-array-parameter or bounds-check
         // handling the `VarExp`/`IndexExp` arms below exist for.
         if (assign.e1.isDotVarExp !is null || assign.e1.isPtrExp !is null) {
-            const appended = AggregateValue.withAppendedArrayElement(
-                runExpressionValue(assign.e1),
+            const appended = ExpressionResult.nativeAggregateValue(AggregateValue.withAppendedArrayElement(
+                AggregateValue.native(runExpressionValue(assign.e1)),
                 runExpressionValue(assign.e2),
-            );
+            ));
             writeLocation(assign.e1, appended);
             return appended;
         }
@@ -11097,7 +11234,9 @@ unsupportedExpression:
                     && elementType.toBasetype.ty == TY.Tdelegate
                     && rawElement != ExpressionResult.null_;
                 auto element = isLiveDelegate ? ExpressionResult.null_ : rawElement;
-                appended = AggregateValue.withAppendedArrayElement(appended, element);
+                appended = ExpressionResult.nativeAggregateValue(
+                    AggregateValue.withAppendedArrayElement(AggregateValue.native(appended), element),
+                );
                 if (elementType !is null)
                     relocatePriorAppendedElementSlots(
                         elementType,
@@ -11239,8 +11378,12 @@ unsupportedExpression:
         const current = readBindingValue(variable);
 
         const arrayIndex = scalarOperand!size_t(index.e2);
-        const appended = AggregateValue.withAppendedArrayElement(
-            AggregateValue.elementAt(current, arrayIndex), runExpressionValue(rhs));
+        const currentElement = readStoredValue(
+            AggregateValue.elementAt(AggregateValue.native(current), arrayIndex),
+        );
+        const appended = ExpressionResult.nativeAggregateValue(AggregateValue.withAppendedArrayElement(
+            AggregateValue.native(currentElement), runExpressionValue(rhs),
+        ));
         writeStoredValue(bindingPlace(variable).index(arrayIndex), appended);
         clearUninitializedBindingAddress(bindingPlace(variable).address);
         return appended;
@@ -11313,7 +11456,7 @@ unsupportedExpression:
                 return ExpressionResult.nativeAggregateValue(
                     AggregateValue.borrowArrayOwner(
                         cast_.to,
-                        AggregateValue.length(value) * typeByteSize(
+                        AggregateValue.length(AggregateValue.native(value)) * typeByteSize(
                             cast_.e1.type.toBasetype.nextOf,
                         ),
                         AggregateValue.nativeArrayAddress(value),
@@ -11354,7 +11497,7 @@ unsupportedExpression:
                         AggregateValue.native(source),
                         cast_.to,
                         0,
-                        AggregateValue.length(source),
+                        AggregateValue.length(AggregateValue.native(source)),
                     ),
                 );
             }
@@ -11421,7 +11564,7 @@ unsupportedExpression:
         result = ExpressionResult.nativeAggregateValue(
             AggregateValue.borrowArrayOwner(
                 cast_.to,
-                AggregateValue.length(source),
+                AggregateValue.length(AggregateValue.native(source)),
                 AggregateValue.nativeArrayAddress(source),
             ),
         );
@@ -11897,7 +12040,9 @@ unsupportedExpression:
 
         const source = runExpressionValue(slice.e1);
         if (slice.lengthVar !is null)
-            setLocal(slice.lengthVar, ExpressionResult(AggregateValue.length(source)));
+            setLocal(slice.lengthVar, ExpressionResult(
+                AggregateValue.length(AggregateValue.native(source)),
+            ));
         lower = slice.lwr is null
             ? 0
             : scalarOperand!size_t(slice.lwr);
@@ -11940,10 +12085,13 @@ unsupportedExpression:
         }
 
         const upper = slice.upr is null
-            ? AggregateValue.length(source)
+            ? AggregateValue.length(AggregateValue.native(source))
             : scalarOperand!size_t(slice.upr);
 
-        if (AggregateValue.isArray(source) && (lower > upper || upper > AggregateValue.length(source)))
+        if (
+            AggregateValue.isArray(source) &&
+            (lower > upper || upper > AggregateValue.length(AggregateValue.native(source)))
+        )
             throwRangeError("Range violation");
 
         auto nativeAddress = AggregateValue.nativeArrayAddress(source);
@@ -12610,7 +12758,7 @@ unsupportedExpression:
             return loadNativePointerElement(index.e1.type, source, arrayIndex);
         }
 
-        const sourceLength = AggregateValue.length(source);
+        const sourceLength = AggregateValue.length(AggregateValue.native(source));
         if (index.lengthVar !is null)
             setLocal(index.lengthVar, ExpressionResult(sourceLength));
 
@@ -15027,7 +15175,7 @@ private bool isTruthy(in imported!"quickbite.backends.interpreter.expression_res
         auto aggregate = AggregateValue.native(value);
         if (aggregate.type.toBasetype.ty == TY.Tarray)
             return readSliceHeaderBytes(aggregate.storage.bytes).ptr !is null;
-        return AggregateValue.length(value) != 0;
+        return AggregateValue.length(aggregate) != 0;
     }
 
     if (value == ExpressionResult(false))
