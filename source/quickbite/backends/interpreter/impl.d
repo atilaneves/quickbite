@@ -2999,15 +2999,15 @@ minExpression:
 
 mulExpression:
         if (auto mul = expression.isMulExp)
-            return runExpressionValue(mul.e1) * runExpressionValue(mul.e2);
+            return scalarBinaryExpressionValue(mul);
 
 divExpression:
         if (auto div = expression.isDivExp)
-            return runDivExpression(div);
+            return scalarBinaryExpressionValue(div);
 
 modExpression:
         if (auto mod = expression.isModExp)
-            return runModExpression(mod);
+            return scalarBinaryExpressionValue(mod);
 
 leftShiftExpression:
         if (auto leftShift = expression.isShlExp)
@@ -3496,6 +3496,25 @@ unsupportedExpression:
         return ExpressionResult(left >= right);
     }
 
+    // These operations have scalar results only. Construct the result in the
+    // expression's typed activation slot so both operands and the result stay
+    // outside the value carrier.
+    private ExpressionResult scalarBinaryExpressionValue(
+        imported!"dmd.expression".Expression expression,
+    ) {
+        import quickbite.backends.interpreter.place: Place;
+
+        auto destination = ConstructionDestination(Place(
+            _activationFrame.temporaryAddress(expression),
+            expression.type,
+        ));
+        assert(
+            constructScalarExpressionInto(expression, destination.place),
+            "binary expression did not construct into its scalar destination",
+        );
+        return readStoredValue(destination.place);
+    }
+
     // Pointer relations compare their raw host addresses. The caller has
     // already established that both results are pointer-shaped.
     private ExpressionResult runPointerComparison(
@@ -3586,37 +3605,6 @@ unsupportedExpression:
         }
 
         return left - right;
-    }
-
-    private ExpressionResult runDivExpression(DivExp div) {
-        const left = runExpressionValue(div.e1);
-        const right = runExpressionValue(div.e2);
-        rejectIntMinMinusOneOverflow(left, right, "/");
-        return left / right;
-    }
-
-    private ExpressionResult runModExpression(ModExp mod) {
-        const left = runExpressionValue(mod.e1);
-        const right = runExpressionValue(mod.e2);
-        rejectIntMinMinusOneOverflow(left, right, "%");
-        return left % right;
-    }
-
-    private void rejectIntMinMinusOneOverflow(
-        in ExpressionResult left,
-        in ExpressionResult right,
-        in string operator,
-    ) const {
-        import std.conv: text;
-
-        if (left != ExpressionResult(int.min) || right != ExpressionResult(-1))
-            return;
-
-        throw new Exception(text(
-            "integer overflow: `int.min ",
-            operator,
-            " -1`\ncannot compare `__error` at compile time",
-        ));
     }
 
     // DMD semantic scales pointer arithmetic operands to byte offsets
@@ -13955,8 +13943,14 @@ destinationFallback:
                     case add: destination.storeNativeScalar(left + right); return true;
                     case min: destination.storeNativeScalar(left - right); return true;
                     case mul: destination.storeNativeScalar(left * right); return true;
-                    case div: destination.storeNativeScalar(left / right); return true;
-                    case mod: destination.storeNativeScalar(left % right); return true;
+                    case div:
+                        rejectIntMinMinusOneOverflow(left, right, "/");
+                        destination.storeNativeScalar(left / right);
+                        return true;
+                    case mod:
+                        rejectIntMinMinusOneOverflow(left, right, "%");
+                        destination.storeNativeScalar(left % right);
+                        return true;
                     case leftShift: destination.storeNativeScalar(left << right); return true;
                     case rightShift: destination.storeNativeScalar(left >> right); return true;
                     case unsignedRightShift:
@@ -13987,6 +13981,25 @@ destinationFallback:
         }
 
         return false;
+    }
+
+    private void rejectIntMinMinusOneOverflow(T)(
+        in T left,
+        in T right,
+        in string operator,
+    ) const {
+        static if (is(T == int)) {
+            import std.conv: text;
+
+            if (left != int.min || right != -1)
+                return;
+
+            throw new Exception(text(
+                "integer overflow: `int.min ",
+                operator,
+                " -1`\ncannot compare `__error` at compile time",
+            ));
+        }
     }
 
     // A complex expression can combine a complex left operand with an
