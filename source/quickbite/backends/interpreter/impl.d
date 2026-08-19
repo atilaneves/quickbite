@@ -485,6 +485,36 @@ private struct FrameMetadataLifetime {
     public FrameMetadataLifetime* caller;
 }
 
+// `nativeDelegateSlots`' payload: a live delegate is either an opaque
+// native-code {context, funcptr} pair (ffi.md §35.8) or the interpreter's
+// own callable id, looked up again in `_executionState.delegates` for the
+// full `RuntimeDelegate`. The two shapes share one table, keyed by the
+// delegate-typed slot's own address, but never share a representation.
+private struct DelegateSlot {
+    public bool isNative;
+    public const(void)* context;
+    public const(void)* funcptr;
+    public size_t functionPointerId;
+}
+
+private DelegateSlot delegateSlotValue(
+    in imported!"quickbite.backends.interpreter.expression_result".ExpressionResult value,
+) {
+    return value.isNativeDelegate
+        ? DelegateSlot(true, value.nativeDelegateContext, value.nativeDelegateFuncptr, 0)
+        : DelegateSlot(false, null, null, value.functionPointerId);
+}
+
+private imported!"quickbite.backends.interpreter.expression_result".ExpressionResult
+    delegateSlotResult(in DelegateSlot slot)
+{
+    import quickbite.backends.interpreter.expression_result: ExpressionResult;
+
+    return slot.isNative
+        ? ExpressionResult.nativeDelegateValue(slot.context, slot.funcptr)
+        : ExpressionResult.functionPointerValue(slot.functionPointerId);
+}
+
 // One root evaluation owns this context, and every nested call borrows it.
 // Callable identities are monotonic, but address-keyed slot metadata follows
 // storage lifetime: writes replace it and copies, moves, and clears relocate or
@@ -512,8 +542,7 @@ private struct InterpreterExecutionState {
     // the entry, including after the writing call returns or throws.
     public size_t[const(void)*] nativeFunctionPointerSlots;
     public string[void*] nativeTypeInfoSlots;
-    public imported!"quickbite.backends.interpreter.expression_result".
-        ExpressionResult[void*] nativeDelegateSlots;
+    public DelegateSlot[void*] nativeDelegateSlots;
 
     // Function and delegate identities are allocated once per evaluation.
     // Both directions and the next id therefore form one shared registry.
@@ -620,7 +649,7 @@ private struct Walker {
         return _executionState.nativeTypeInfoSlots;
     }
 
-    private @property ref ExpressionResult[void*] nativeDelegateSlots() {
+    private @property ref DelegateSlot[void*] nativeDelegateSlots() {
         return _executionState.nativeDelegateSlots;
     }
 
@@ -1146,7 +1175,7 @@ private struct Walker {
             return;
 
         size_t[] delegateOffsets;
-        ExpressionResult[] delegateValues;
+        DelegateSlot[] delegateValues;
         size_t[] functionOffsets;
         size_t[] functionValues;
         size_t[] typeInfoOffsets;
@@ -1313,7 +1342,7 @@ private struct Walker {
 
         if (place.type.toBasetype.ty == TY.Tdelegate && value != ExpressionResult.null_) {
             clearStoredMetadata(place.type, place.address);
-            nativeDelegateSlots[place.address] = value;
+            nativeDelegateSlots[place.address] = delegateSlotValue(value);
             clearPlace(place);
             return;
         }
@@ -1357,7 +1386,7 @@ private struct Walker {
 
         if (place.type.toBasetype.ty == TY.Tdelegate) {
             if (auto delegate_ = place.address in nativeDelegateSlots) {
-                return *delegate_;
+                return delegateSlotResult(*delegate_);
             } else {
                 const delegate_ = nativeDelegateMetadata(
                     NativeOperand(place.type, place.address),
@@ -5240,13 +5269,13 @@ unsupportedExpression:
         RuntimeDelegate runtime;
         runtime.function_ = delegate_.func;
         runtime.functionPointerId = functionPointer.functionPointerId;
-        runtime.contextPointer = contextPointer;
+        runtime.contextPointer = contextPointer.pointerAddress;
         runtime.capturedAddresses = closureCapturedAddresses(delegate_.func);
         if (isMemberFunction(delegate_.func)) {
             if (delegate_.e1 is null)
                 throw new Exception("Unsupported eval expression: delegate_");
 
-            runtime.receiver = runExpressionValue(delegate_.e1);
+            runtime.receiver = delegateReceiverValue(runExpressionValue(delegate_.e1));
             runtime.hasReceiver = true;
         }
 
@@ -5265,10 +5294,10 @@ unsupportedExpression:
         RuntimeDelegate runtime;
         runtime.function_ = literal.fd;
         runtime.functionPointerId = functionPointer.functionPointerId;
-        runtime.contextPointer = ExpressionResult.pointerValue(null);
+        runtime.contextPointer = null;
         runtime.capturedAddresses = closureCapturedAddresses(literal.fd);
         if (literal.fd.isNested && hasThis) {
-            runtime.receiver = receiverValue(thisValue);
+            runtime.receiver = delegateReceiverValue(receiverValue(thisValue));
             runtime.hasReceiver = true;
         }
 
@@ -6572,8 +6601,8 @@ unsupportedExpression:
         throw new Exception("Unsupported eval call.");
     }
 
-    private ExpressionResult delegateReceiver(in RuntimeDelegate runtime) {
-        return runtime.receiver;
+    private ExpressionResult delegateReceiver(RuntimeDelegate runtime) {
+        return delegateReceiverResult(runtime.receiver);
     }
 
     private ExpressionResult runDelegatePointerExpression(
@@ -7082,7 +7111,7 @@ unsupportedExpression:
         auto elementType = aggregate.type.toBasetype.nextOf;
         if (elementType !is null && elementType.toBasetype.ty == TY.Tdelegate)
             if (auto delegate_ = AggregateValue.elementAddress(array, index) in nativeDelegateSlots)
-                return *delegate_;
+                return delegateSlotResult(*delegate_);
         return readStoredValue(Place(aggregate.address, aggregate.type).index(index));
     }
 
@@ -8482,7 +8511,7 @@ unsupportedExpression:
                                             elementType,
                                         ).field(field);
                                         if (auto delegate_ = fieldPlace.address in nativeDelegateSlots)
-                                            return *delegate_;
+                                            return delegateSlotResult(*delegate_);
                                     }
                                 }
                             return readStoredValue(AggregateValue.fieldAt(
@@ -8592,7 +8621,7 @@ unsupportedExpression:
                 // object body's own storage.
                 if (fieldPlace.type.toBasetype.ty == TY.Tdelegate)
                     if (auto delegate_ = fieldPlace.address in nativeDelegateSlots)
-                        return *delegate_;
+                        return delegateSlotResult(*delegate_);
                 return readValue(fieldPlace);
             }
             if (target.isNativeAggregate) {
@@ -8614,7 +8643,7 @@ unsupportedExpression:
                             .field(field);
                         if (field.type.toBasetype.ty == TY.Tdelegate)
                             if (auto delegate_ = bindingFieldPlace.address in nativeDelegateSlots)
-                                return *delegate_;
+                                return delegateSlotResult(*delegate_);
                     }
             }
             return readStoredValue(AggregateValue.fieldAt(
@@ -8731,7 +8760,7 @@ unsupportedExpression:
             throw new Exception("Unsupported interpreter field read.");
 
         if (name == "ptr")
-            return runtime.contextPointer;
+            return ExpressionResult.pointerValue(runtime.contextPointer);
 
         if (name == "funcptr")
             return ExpressionResult.functionPointerValue(runtime.functionPointerId);
@@ -9179,7 +9208,7 @@ unsupportedExpression:
                         if (auto variable = variableExpression.var.isVarDeclaration)
                         if (hasBindingPlace(variable)) {
                             auto fieldPlace = bindingPlace(variable).field(field);
-                            nativeDelegateSlots[fieldPlace.address] = value;
+                            nativeDelegateSlots[fieldPlace.address] = delegateSlotValue(value);
                             writeValue(fieldPlace, ExpressionResult.null_);
                             return;
                         }
@@ -9232,7 +9261,7 @@ unsupportedExpression:
                 // above does. A class field's address is the object body's
                 // own storage, live for the object's whole lifetime.
                 if (field !is null && field.type.toBasetype.ty == TY.Tdelegate) {
-                    nativeDelegateSlots[fieldPlace.address] = value;
+                    nativeDelegateSlots[fieldPlace.address] = delegateSlotValue(value);
                     writeValue(fieldPlace, ExpressionResult.null_);
                     return;
                 }
@@ -10295,7 +10324,7 @@ unsupportedExpression:
         const storedValue = isLiveDelegate ? ExpressionResult.null_ : value;
         writeStoredValue(destination, storageValue(elementType, storedValue));
         if (isLiveDelegate)
-            nativeDelegateSlots[destination.address] = value;
+            nativeDelegateSlots[destination.address] = delegateSlotValue(value);
         clearUninitializedBindingAddress(bindingPlace(variable).address);
         return value;
     }
@@ -11291,7 +11320,7 @@ unsupportedExpression:
                 if (isLiveDelegate) {
                     nativeDelegateSlots[
                         AggregateValue.elementAddress(appended, index)
-                    ] = rawElement;
+                    ] = delegateSlotValue(rawElement);
                 } else if (elementType !is null && element.isNativeAggregate)
                     // `withAppendedArrayElement`'s native-aggregate arm only
                     // copies `element`'s bytes into the array's own backing
@@ -12853,7 +12882,7 @@ unsupportedExpression:
                             auto delegate_ = bindingPlace(variable).index(arrayIndex).address
                                 in nativeDelegateSlots
                         )
-                            return *delegate_;
+                            return delegateSlotResult(*delegate_);
 
                     return readStoredValue(
                         bindingPlace(variable).index(arrayIndex),
@@ -15866,11 +15895,48 @@ private bool isMonitorOperation(
     return name == "_d_monitorenter" || name == "_d_monitorexit";
 }
 
+// A member-function delegate's receiver: either a struct receiver's own
+// native aggregate storage (owned or borrowed, per whichever producer built
+// it -- `runDelegateExpression`'s general expression read for `&x.method`
+// makes a fresh owned copy, `runFunctionLiteralDeclaration`'s `receiverValue`
+// borrows the enclosing activation's live `this` for a captured nested
+// literal), or -- for a class receiver, whose carrier is a bare body-address
+// pointer with no type of its own -- that address alone. Keeping the whole
+// `NativeAggregate` here, not just its address, is what keeps an owned
+// struct copy's backing storage GC-reachable for as long as the delegate
+// that captured it can still be called.
+private struct DelegateReceiver {
+    public bool isAggregate;
+    public imported!"quickbite.backends.interpreter.native_aggregate".NativeAggregate aggregate;
+    public void* address;
+}
+
+private DelegateReceiver delegateReceiverValue(
+    in imported!"quickbite.backends.interpreter.expression_result".ExpressionResult value,
+) {
+    import quickbite.backends.interpreter.aggregate_value: AggregateValue;
+    import quickbite.backends.interpreter.native_aggregate: NativeAggregate;
+
+    return value.isNativeAggregate
+        ? DelegateReceiver(true, AggregateValue.native(value), null)
+        : DelegateReceiver(false, NativeAggregate.init, value.pointerAddress);
+}
+
+private imported!"quickbite.backends.interpreter.expression_result".ExpressionResult
+    delegateReceiverResult(DelegateReceiver receiver)
+{
+    import quickbite.backends.interpreter.expression_result: ExpressionResult;
+
+    return receiver.isAggregate
+        ? ExpressionResult.nativeAggregateValue(receiver.aggregate)
+        : ExpressionResult.pointerValue(receiver.address);
+}
+
 private struct RuntimeDelegate {
     public imported!"dmd.func".FuncDeclaration function_;
     public size_t functionPointerId;
-    public imported!"quickbite.backends.interpreter.expression_result".ExpressionResult contextPointer;
-    public imported!"quickbite.backends.interpreter.expression_result".ExpressionResult receiver;
+    public void* contextPointer;
+    public DelegateReceiver receiver;
     public bool hasReceiver;
 
     // The enclosing activation's own frame address for each of
