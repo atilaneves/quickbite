@@ -11168,16 +11168,15 @@ private struct Compiler {
         // The return-type list above is the only compile-time gate on the
         // call as a whole. Individual arguments are not similarly gated: a
         // scalar, a string-literal `const(char)*`, a `&local` out parameter,
-        // a pointer local passed by value, and a fixed `ref`/`out` scalar or
-        // dynamic-array parameter each get their own emission below, but any
-        // other shape (a `double`, a `float`, a small int, a by-value
-        // struct, a delegate, a `ref`/`out` struct or static array, ...)
-        // falls through to the plain `emitCallArgument` call at the bottom
-        // of the loop rather than bailing here. `quickbite.ffi.ffi`
-        // validation at the actual native-call boundary is the real gate
-        // for those shapes; a shape it rejects surfaces as the
-        // no-available-source diagnostic at run time, not a compile-time
-        // decline.
+        // a pointer local passed by value, and a fixed `ref`/`out` scalar,
+        // dynamic-array, struct, or static-array parameter each get their
+        // own emission below, but any other shape (a `double`, a `float`, a
+        // small int, a by-value struct, a delegate, ...) falls through to
+        // the plain `emitCallArgument` call at the bottom of the loop rather
+        // than bailing here. `quickbite.ffi.ffi` validation at the actual
+        // native-call boundary is the real gate for those shapes; a shape it
+        // rejects surfaces as the no-available-source diagnostic at run
+        // time, not a compile-time decline.
         foreach (index; 0 .. argumentCount) {
             auto argument = (*call.arguments)[index];
             const slot = cast(ushort)
@@ -11193,7 +11192,10 @@ private struct Compiler {
                         typeFacts(argument.type).representation;
                     if (representation == DeclarationRepresentation.scalar ||
                         representation ==
-                            DeclarationRepresentation.dynamicArray)
+                            DeclarationRepresentation.dynamicArray ||
+                        representation == DeclarationRepresentation.struct_ ||
+                        representation ==
+                            DeclarationRepresentation.staticArray)
                         if (auto place = placeOrNull(argument)) {
                             emitCallArgument(slot, false, argument);
                             writebacks ~= NativeRefArgumentWriteback(
@@ -11271,9 +11273,9 @@ private struct Compiler {
             noReceiverOffset, null, nativeStructReceiverOffset,
             nativeStructReceiverType,
         );
-        foreach (writeback; writebacks)
-            if (typeFacts(writeback.type).representation ==
-                    DeclarationRepresentation.dynamicArray)
+        foreach (writeback; writebacks) {
+            const representation = typeFacts(writeback.type).representation;
+            if (representation == DeclarationRepresentation.dynamicArray)
                 storeDynamicArrayPlace(
                     writeback.place,
                     DynamicArrayLocal(
@@ -11281,6 +11283,15 @@ private struct Compiler {
                         dynamicArrayElementType(writeback.type),
                         arrayElementIsArray(writeback.type),
                     ),
+                );
+            else if (representation == DeclarationRepresentation.struct_ ||
+                    representation == DeclarationRepresentation.staticArray)
+                // Same aggregate `Op.copy` path `storeExpressionIntoPlace`
+                // uses for any other struct/static-array write: the width
+                // comes from `writeback.place.valueType`, not from `value`,
+                // so a plain `ScalarType.void_` operand is enough.
+                storePlace(
+                    writeback.place, Operand(writeback.slot, ScalarType.void_),
                 );
             else
                 storePlace(
@@ -11290,6 +11301,7 @@ private struct Compiler {
                         scalarType(writeback.type.toBasetype),
                     ),
                 );
+        }
         return result;
     }
 

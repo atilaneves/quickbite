@@ -560,8 +560,11 @@
   recording each such argument's own `Place` and staging slot at the
   argument loop, then copying the slot's post-call bytes into that place
   once `emitNativeCall` returns (`NativeRefArgumentWriteback`); a `ref`/
-  `out` struct or static-array parameter still falls through unfixed
-  (declined explicitly, not silently wrong). Beware `bin/qb -l`: it starts
+  `out` struct or static-array parameter gets the same write-back through
+  `storePlace`'s existing aggregate `Op.copy` branch, which already derives
+  its width from `place.valueType` rather than from the stored operand, so
+  widening the argument-loop gate to `struct_`/`staticArray` was enough --
+  no new copy machinery was needed. Beware `bin/qb -l`: it starts
   the REPL after loading, it does not run the loaded file's `unittest`
   blocks, so a script driving it through `-l` alone proves nothing either
   way -- confirm through a real `bin/ut` fixture
