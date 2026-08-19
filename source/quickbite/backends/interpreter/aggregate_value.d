@@ -367,11 +367,9 @@ public struct AggregateValue {
     // (`TypeAArray.dotExp`, typesem.d) before the interpreter sees it, and an
     // AA value itself is a plain pointer handle, never a native aggregate.
     public static size_t length(NativeAggregate aggregate) @safe {
-        import quickbite.backends.interpreter.expression_result: ExpressionResult;
-
         auto type = baseTypeOf(aggregate.type);
         if (type.isTypeSArray !is null || type.isTypeDArray !is null)
-            return elementCount(ExpressionResult.nativeAggregateValue(aggregate));
+            return elementCount(aggregate);
         throw new Exception("AggregateValue.length needs an array aggregate.");
     }
 
@@ -414,15 +412,10 @@ public struct AggregateValue {
         );
     }
 
-    public static size_t elementCount(
-        in imported!"quickbite.backends.interpreter.expression_result".ExpressionResult value,
-    ) @safe {
+    public static size_t elementCount(NativeAggregate aggregate) @safe {
         import quickbite.backends.interpreter.native_array: NativeArray, readSliceHeaderBytes;
         import quickbite.backends.interpreter.layout: staticArrayLength;
 
-        if (!value.isNativeAggregate)
-            throw new Exception("AggregateValue.elementCount needs a native array.");
-        auto aggregate = native(value);
         auto type = baseTypeOf(aggregate.type);
         if (auto staticArray = type.isTypeSArray)
             return staticArrayLength(staticArray);
@@ -431,6 +424,14 @@ public struct AggregateValue {
                 aggregate.storage.bytes[0 .. NativeArray.sliceHeaderByteLength],
             ).length;
         throw new Exception("AggregateValue.elementCount needs an array aggregate.");
+    }
+
+    public static size_t elementCount(
+        in imported!"quickbite.backends.interpreter.expression_result".ExpressionResult value,
+    ) @safe {
+        if (!value.isNativeAggregate)
+            throw new Exception("AggregateValue.elementCount needs a native array.");
+        return elementCount(native(value));
     }
 
     // Resolves the element's own storage without reading through it -- see
@@ -558,11 +559,10 @@ public struct AggregateValue {
         NativeAggregate aggregate,
         in imported!"quickbite.backends.interpreter.expression_result".ExpressionResult element,
     ) {
-        import quickbite.backends.interpreter.expression_result: ExpressionResult;
         import quickbite.backends.interpreter.place: Place;
         import quickbite.backends.interpreter.place_value: writeValue;
 
-        const length = elementCount(ExpressionResult.nativeAggregateValue(aggregate));
+        const length = elementCount(aggregate);
         auto appended = withArrayLength(aggregate, length + 1);
         writeValue(Place(appended.address, appended.type).index(length), element);
         return appended;
@@ -572,7 +572,6 @@ public struct AggregateValue {
         NativeAggregate aggregate,
         in size_t newLength,
     ) {
-        import quickbite.backends.interpreter.expression_result: ExpressionResult;
         import quickbite.backends.interpreter.native_array: NativeArray;
         import quickbite.backends.interpreter.place: Place;
 
@@ -580,7 +579,7 @@ public struct AggregateValue {
         if (slice is null)
             throw new Exception("AggregateValue.withArrayLength needs a dynamic array.");
 
-        const oldLength = elementCount(ExpressionResult.nativeAggregateValue(aggregate));
+        const oldLength = elementCount(aggregate);
         auto array = NativeArray.borrow(
             slice.next,
             cast(void*) Place(aggregate.address, aggregate.type).sliceDataPointer,
