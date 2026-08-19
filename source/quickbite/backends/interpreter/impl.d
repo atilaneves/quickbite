@@ -3043,28 +3043,12 @@ nullExpression:
         }
 
 stringExpression:
-        if (auto string_ = expression.isStringExp) {
-            import quickbite.backends.interpreter.place: Place;
-            import quickbite.backends.interpreter.runtime_string_literals:
-                stringValue;
-
-            NativeBlock pointerStorage;
-            NativeBlock backingStorage;
-            auto destination = Place(
-                _activationFrame.temporaryAddress(expression),
-                expression.type,
-            );
-            stringValue(string_, destination, pointerStorage, backingStorage);
-            if (pointerStorage.address !is null)
-                retainTemporaryPointerOwner(pointerStorage);
-            if (backingStorage.address !is null)
-                retainTemporaryPointerOwner(backingStorage);
-            return readStoredValue(destination);
-        }
+        if (auto string_ = expression.isStringExp)
+            return constructedExpressionValue(string_);
 
 arrayLiteralExpression:
         if (auto array = expression.isArrayLiteralExp)
-            return arrayValue(array);
+            return constructedExpressionValue(array);
 
 assocArrayLiteralExpression:
         // DMD's `AssocArrayLiteralExp::semantic` (`tryLowerAALiteral`,
@@ -3073,7 +3057,7 @@ assocArrayLiteralExpression:
         // on `.lowering`; running that lowered call interprets druntime's own
         // literal construction instead of reconstructing one here.
         if (auto assocArray = expression.isAssocArrayLiteralExp)
-            return runExpressionValue(assocArray.lowering);
+            return constructedExpressionValue(assocArray.lowering);
 
 structLiteralExpression:
         if (auto struct_ = expression.isStructLiteralExp)
@@ -3095,9 +3079,8 @@ assertExpression:
         }
 
 notExpression:
-        if (auto not = expression.isNotExp) {
-            return ExpressionResult(!conditionTruthy(not.e1));
-        }
+        if (auto not = expression.isNotExp)
+            return scalarExpressionValue(not);
 
 logicalExpression:
         if (auto logical = expression.isLogicalExp) {
@@ -11995,33 +11978,6 @@ unsupportedExpression:
             return value;
 
         throw new Exception(text("Unsupported eval expression: ", cast_.op));
-    }
-
-    // An array literal owns its header and backing storage before it evaluates
-    // an element. Each result then writes into its final typed place in DMD's
-    // source order. `writeStoredValue` records live delegate, function, and
-    // TypeInfo metadata at that exact element address.
-    private ExpressionResult arrayValue(
-        imported!"dmd.expression".ArrayLiteralExp array,
-    ) {
-        import quickbite.backends.interpreter.aggregate_value: AggregateValue;
-        import quickbite.backends.interpreter.place: Place;
-
-        const length = array.elements is null ? 0 : (*array.elements).length;
-        auto owner = AggregateValue.allocateArray(array.type, length);
-        auto destination = Place(owner.address, array.type);
-        if (array.elements !is null)
-            // DMD's sparse form: a null element means the value is in `basis`
-            // (see ArrayLiteralExp.getElement).
-            foreach (index, element; *array.elements) {
-                auto source = element is null ? array.basis : element;
-                auto literal = source.isFuncExp;
-                auto value = literal is null
-                    ? constructedExpressionValue(source)
-                    : runFunctionLiteralDeclaration(literal);
-                writeStoredValue(destination.index(index), value);
-            }
-        return ExpressionResult.nativeAggregateValue(owner);
     }
 
     private ExpressionResult reconstructStoredArray(
