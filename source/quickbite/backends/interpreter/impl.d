@@ -1973,7 +1973,7 @@ private struct Walker {
     private void throwInterpretedException(
         imported!"dmd.expression".Expression expression,
     ) {
-        const object = runExpressionValue(expression);
+        const object = constructedExpressionValue(expression);
         if (dynamicClass(object) is null)
             throw new Exception("Unsupported throw expression.");
         if (hasPendingFinallyBodyException) {
@@ -6964,7 +6964,7 @@ unsupportedExpression:
         ExpressionResult operand() {
             if (call.arguments.length < 2)
                 throw new Exception("Unsupported eval call.");
-            return runExpressionValue((*call.arguments)[1]);
+            return constructedExpressionValue((*call.arguments)[1]);
         }
 
         with (AtomicHook) final switch (hook) {
@@ -11039,7 +11039,7 @@ unsupportedExpression:
             if (field is null)
                 throw new Exception("Unsupported interpreter field access.");
 
-            auto aggregate = AggregateValue.native(runExpressionValue(dot.e1));
+            auto aggregate = AggregateValue.native(constructedExpressionValue(dot.e1));
             return Place(aggregate.address, aggregate.type).field(field);
         }
 
