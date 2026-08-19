@@ -3015,17 +3015,8 @@ integerExpression:
         }
 
 realExpression:
-        if (auto real_ = expression.isRealExp) {
-            import quickbite.backends.interpreter.place: Place;
-            import quickbite.backends.interpreter.runtime_values: realValue;
-
-            auto destination = Place(
-                _activationFrame.temporaryAddress(expression),
-                expression.type,
-            );
-            realValue(real_, destination);
-            return readStoredValue(destination);
-        }
+        if (auto real_ = expression.isRealExp)
+            return scalarExpressionValue(real_);
 
 nullExpression:
         if (auto null_ = expression.isNullExp) {
@@ -3084,10 +3075,13 @@ notExpression:
 
 logicalExpression:
         if (auto logical = expression.isLogicalExp) {
-            if (logical.op == EXP.andAnd)
-                return runLogicalAndExpression(logical);
-            if (logical.op == EXP.orOr)
-                return runLogicalOrExpression(logical);
+            if (logical.type.toBasetype.ty == TY.Tvoid) {
+                if (logical.op == EXP.andAnd)
+                    return runLogicalAndExpression(logical);
+                if (logical.op == EXP.orOr)
+                    return runLogicalOrExpression(logical);
+            }
+            return scalarExpressionValue(logical);
         }
 
 castExpression:
@@ -3274,7 +3268,9 @@ declarationExpression:
 
 callExpression:
         if (auto call = expression.isCallExp)
-            return runCallExpression(call);
+            return call.type.toBasetype.ty == TY.Tvoid
+                ? runCallExpression(call, null)
+                : constructedExpressionValue(call);
 
 delegateExpression:
         if (auto delegate_ = expression.isDelegateExp)
@@ -5583,29 +5579,11 @@ unsupportedExpression:
         return null;
     }
 
-    private ExpressionResult runCallExpression(imported!"dmd.expression".CallExp call) {
-        import dmd.astenums: TY;
-        import quickbite.backends.interpreter.place: Place;
-
-        if (call.type.toBasetype.ty == TY.Tvoid)
-            return runCallExpression(call, null);
-
-        auto destination = ConstructionDestination(Place(
-            _activationFrame.temporaryAddress(call),
-            call.type,
-        ));
-        const result = runCallExpression(call, &destination);
-        if (!destination.isConstructed) {
-            writeStoredValue(destination.place, result);
-            destination.markConstructed;
-        }
-        return readStoredValue(destination.place);
-    }
-
-    // A construction caller supplies fresh storage. An ordinary rvalue call
-    // gets a typed activation-owned temporary from the wrapper above. Native
-    // and not-yet-migrated families still return a carrier, which the wrapper
-    // writes into that same storage.
+    // A construction caller supplies fresh storage. An ordinary non-void
+    // rvalue call gets a typed activation-owned temporary from
+    // `constructedExpressionValue` at its call site. Native and
+    // not-yet-migrated families still return a carrier, which that temporary
+    // is then written from.
     private ExpressionResult runCallExpression(
         imported!"dmd.expression".CallExp call,
         ConstructionDestination* constructionDestination,
