@@ -3023,7 +3023,7 @@ unsignedRightShiftExpression:
 
 negExpression:
         if (auto neg = expression.isNegExp)
-            return -runExpressionValue(neg.e1);
+            return scalarExpressionValue(neg);
 
 complementExpression:
         if (auto complement = expression.isComExp)
@@ -3031,7 +3031,7 @@ complementExpression:
 
 powExpression:
         if (auto pow = expression.isPowExp)
-            return runPowExpression(pow);
+            return scalarExpressionValue(pow);
 
 catExpression:
         if (auto cat = expression.isCatExp)
@@ -8090,28 +8090,6 @@ unsupportedExpression:
             default:
                 throw new Exception("Unsupported eval compound assignment.");
         }
-    }
-
-    private ExpressionResult runPowExpression(imported!"dmd.expression".PowExp pow) {
-        import quickbite.backends.interpreter.runtime_casts:
-            backendCastTarget = castTarget;
-
-        const base = runExpressionValue(pow.e1);
-        auto exponent = runExpressionValue(pow.e2).asLong;
-        if (exponent < 0)
-            throw new Exception("Unsupported negative integer exponent.");
-
-        ExpressionResult result = castScalarResult(ExpressionResult(1), backendCastTarget(pow.type));
-        ExpressionResult factor = castScalarResult(base, backendCastTarget(pow.type));
-        while (exponent != 0) {
-            if ((exponent & 1) != 0)
-                result = result * factor;
-            exponent >>= 1;
-            if (exponent != 0)
-                factor = factor * factor;
-        }
-
-        return castScalarResult(result, backendCastTarget(pow.type));
     }
 
     private ExpressionResult runIntegerBinaryExpression(
@@ -13924,6 +13902,29 @@ destinationFallback:
                 destination.storeNativeScalar(~scalarOperand!T(complement.e1));
                 return true;
             }
+            if (auto pow = expression.isPowExp) {
+                // PowExp is itself a BinExp, so this must run before the
+                // generic isBinExp arm below or that arm's `default: return
+                // false` would shadow it. Square-and-multiply, casting back
+                // to T after every multiply so each step's truncation
+                // matches the destination type exactly as DMD's own CTFE
+                // evaluator does.
+                auto exponent = scalarOperand!long(pow.e2);
+                if (exponent < 0)
+                    throw new Exception("Unsupported negative integer exponent.");
+
+                T result = 1;
+                T factor = scalarOperand!T(pow.e1);
+                while (exponent != 0) {
+                    if ((exponent & 1) != 0)
+                        result = cast(T) (result * factor);
+                    exponent >>= 1;
+                    if (exponent != 0)
+                        factor = cast(T) (factor * factor);
+                }
+                destination.storeNativeScalar(result);
+                return true;
+            }
             if (auto binary = expression.isBinExp) {
                 const left = scalarOperand!T(binary.e1);
                 const right = scalarOperand!T(binary.e2);
@@ -13971,6 +13972,16 @@ destinationFallback:
                     default: return false;
                 }
             }
+        } else static if (is(T == ifloat) || is(T == idouble) || is(T == ireal)) {
+            // isFloatingPoint discounts imaginary types, so they need their
+            // own branch. Negation is the only scalar imaginary operator
+            // reaching this function: imaginary arithmetic ends up complex
+            // or real and is constructed by constructComplex or the
+            // isFloatingPoint branch above instead.
+            if (auto neg = expression.isNegExp) {
+                destination.storeNativeScalar(-scalarOperand!T(neg.e1));
+                return true;
+            }
         }
 
         return false;
@@ -14012,6 +14023,11 @@ destinationFallback:
             destination.storeNativeScalar(
                 directWriteProjectionPlace(expression).loadNativeScalar!T,
             );
+            return true;
+        }
+
+        if (auto neg = expression.isNegExp) {
+            destination.storeNativeScalar(-complexOperand!T(neg.e1));
             return true;
         }
 
