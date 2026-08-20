@@ -275,6 +275,10 @@ private struct EvaluatedReferenceArgument {
     public size_t[const(void)*] indices;
     public void* address;
     public imported!"dmd.expression".Expression selectedLvalue;
+    // The typed activation temporary an rvalue argument was constructed
+    // into -- the synthetic reference slot copies from it at native layout
+    // instead of from the carrier.
+    public imported!"quickbite.backends.interpreter.place".Place valuePlace;
 }
 
 // One call owns its evaluated values, source expressions, and `ref`/`out`
@@ -6697,7 +6701,15 @@ unsupportedExpression:
         scope(exit)
             _evaluatedReferenceArgumentIndices = previous;
 
-        return constructedExpressionValue(argument);
+        import quickbite.backends.interpreter.place: Place;
+
+        auto destination = ConstructionDestination(Place(
+            _activationFrame.temporaryAddress(argument),
+            argument.type,
+        ));
+        runExpression(argument, destination);
+        evaluated.valuePlace = destination.place;
+        return readStoredValue(destination.place);
     }
 
     // Run an interpreted delegate that native code called back into through the
@@ -7989,13 +8001,32 @@ unsupportedExpression:
                         : null,
                     callerFrame,
                 );
-                if (!bound)
-                    bindSyntheticReferenceSlot(parameter, arguments[index]);
+                if (!bound) {
+                    if (
+                        index < evaluatedArguments.length &&
+                        evaluatedArguments[index].valuePlace.address !is null
+                    )
+                        bindSyntheticReferenceSlot(
+                            parameter,
+                            evaluatedArguments[index].valuePlace,
+                        );
+                    else
+                        bindSyntheticReferenceSlot(parameter, arguments[index]);
+                }
                 continue;
             }
 
             if (parameterIsReference) {
-                bindSyntheticReferenceSlot(parameter, arguments[index]);
+                if (
+                    index < evaluatedArguments.length &&
+                    evaluatedArguments[index].valuePlace.address !is null
+                )
+                    bindSyntheticReferenceSlot(
+                        parameter,
+                        evaluatedArguments[index].valuePlace,
+                    );
+                else
+                    bindSyntheticReferenceSlot(parameter, arguments[index]);
                 continue;
             }
 
@@ -8014,23 +8045,45 @@ unsupportedExpression:
         VarDeclaration parameter,
         in ExpressionResult value,
     ) {
-        import quickbite.backends.interpreter.layout:
-            typeByteSize, typeHasPointers;
-        import quickbite.backends.interpreter.native_block: NativeBlock;
         import quickbite.backends.interpreter.place: Place;
 
-        auto block = NativeBlock.allocate(
-            typeByteSize(parameter.type),
-            typeHasPointers(parameter.type)
-                ? NativeBlock.Scan.conservative
-                : NativeBlock.Scan.no,
-        );
+        auto block = allocateSyntheticReferenceSlotBlock(parameter);
         writeStoredValue(
             Place(block.address, parameter.type),
             storageValue(parameter.type, value),
         );
         retainTemporaryPointerOwner(block);
         _activationFrame.setReferenceSlot(parameter, block.address);
+    }
+
+    // The rvalue argument's bytes already sit in a typed activation
+    // temporary (`runRefArgumentExpression`'s construction); copy them
+    // place-to-place at native layout instead of round-tripping through the
+    // carrier.
+    private void bindSyntheticReferenceSlot(
+        VarDeclaration parameter,
+        in imported!"quickbite.backends.interpreter.place".Place source,
+    ) {
+        import quickbite.backends.interpreter.place: Place;
+
+        auto block = allocateSyntheticReferenceSlotBlock(parameter);
+        copyPlaceValue(cast(Place) source, Place(block.address, parameter.type));
+        retainTemporaryPointerOwner(block);
+        _activationFrame.setReferenceSlot(parameter, block.address);
+    }
+
+    private imported!"quickbite.backends.interpreter.native_block".NativeBlock
+        allocateSyntheticReferenceSlotBlock(VarDeclaration parameter) {
+        import quickbite.backends.interpreter.layout:
+            typeByteSize, typeHasPointers;
+        import quickbite.backends.interpreter.native_block: NativeBlock;
+
+        return NativeBlock.allocate(
+            typeByteSize(parameter.type),
+            typeHasPointers(parameter.type)
+                ? NativeBlock.Scan.conservative
+                : NativeBlock.Scan.no,
+        );
     }
 
     // Compose the caller lvalue once and store its address in this
