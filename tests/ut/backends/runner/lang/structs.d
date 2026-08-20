@@ -5025,3 +5025,68 @@ static foreach (backend; Matrix!()) {
         });
     }
 }
+
+// A struct field initialised inside an outer struct literal follows D's
+// copy/move rules for that argument: an lvalue argument is copied into the
+// field (postblit runs once, and both the source and the field are
+// destroyed), while an rvalue argument - a function return or a direct
+// constructor call - is moved into the field (no postblit, and only the
+// field is destroyed; the temporary is not destroyed a second time).
+static foreach (backend; Matrix!()) {
+    @("struct.fieldInitializerCopyOrMoveRunsPostblitAndDtors." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            struct Tracker {
+                int* postblits;
+                int* dtors;
+
+                this(this) {
+                    ++*postblits;
+                }
+
+                ~this() {
+                    ++*dtors;
+                }
+            }
+
+            struct Outer {
+                int tag;
+                Tracker tracker;
+            }
+
+            Tracker make(int* postblits, int* dtors) {
+                return Tracker(postblits, dtors);
+            }
+
+            unittest {
+                int postblits = 0;
+                int dtors = 0;
+
+                {
+                    Tracker source = Tracker(&postblits, &dtors);
+                    Outer copied = Outer(1, source);
+
+                    assert(postblits == 1);
+                    assert(dtors == 0);
+                }
+
+                assert(dtors == 2);
+
+                postblits = 0;
+                dtors = 0;
+
+                {
+                    Outer moved = Outer(2, make(&postblits, &dtors));
+                    Outer constructed = Outer(3, Tracker(&postblits, &dtors));
+
+                    assert(postblits == 0);
+                    assert(dtors == 0);
+                }
+
+                assert(dtors == 2);
+            }
+        });
+    }
+}

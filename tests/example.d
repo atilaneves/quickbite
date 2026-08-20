@@ -1456,3 +1456,54 @@ unittest {
 
     assert(matches(place, expected));
 }
+
+struct LifetimeTracker {
+    int* postblits;
+    int* dtors;
+
+    this(this) {
+        ++*postblits;
+    }
+
+    ~this() {
+        ++*dtors;
+    }
+}
+
+struct TrackerHolder {
+    int tag;
+    LifetimeTracker tracker;
+}
+
+LifetimeTracker makeTracker(int* postblits, int* dtors) {
+    return LifetimeTracker(postblits, dtors);
+}
+
+unittest {
+    int postblits = 0;
+    int dtors = 0;
+
+    {
+        LifetimeTracker source = LifetimeTracker(&postblits, &dtors);
+        TrackerHolder copied = TrackerHolder(1, source);
+
+        assert(postblits == 1);
+        assert(dtors == 0);
+    }
+
+    assert(dtors == 2);
+
+    postblits = 0;
+    dtors = 0;
+
+    {
+        TrackerHolder moved = TrackerHolder(2, makeTracker(&postblits, &dtors));
+        TrackerHolder constructed =
+            TrackerHolder(3, LifetimeTracker(&postblits, &dtors));
+
+        assert(postblits == 0);
+        assert(dtors == 0);
+    }
+
+    assert(dtors == 2);
+}
