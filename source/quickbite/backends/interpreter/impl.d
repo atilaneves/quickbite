@@ -6244,6 +6244,7 @@ unsupportedExpression:
                             constructionDestination is null
                                 ? null
                                 : constructionDestination.place.address,
+                            argumentPlaces,
                         ))
                     {
                         if (
@@ -6383,6 +6384,7 @@ unsupportedExpression:
                 call,
                 arguments,
                 argumentExpressions,
+                argumentPlaces,
             );
 
         if (calleeSlot.functionPointerId in _executionState.delegates)
@@ -6841,6 +6843,7 @@ unsupportedExpression:
         imported!"dmd.expression".CallExp call,
         in ExpressionResult[] arguments,
         imported!"dmd.expression".Expression[] argumentExpressions,
+        imported!"quickbite.backends.interpreter.place".Place[] argumentPlaces = null,
     ) {
         import quickbite.backends.interpreter.native_call_adapter:
             InterpreterInboundTrampolineSession, NativeCallException,
@@ -6861,6 +6864,7 @@ unsupportedExpression:
             null,
             nativeArguments.operands,
             durableInboundSession,
+            argumentPlaces,
         );
 
         try {
@@ -13498,6 +13502,7 @@ unsupportedExpression:
         out imported!"quickbite.backends.interpreter.native_call_adapter".NativeCallResult result,
         void* receiverAddress = null,
         void* resultAddress = null,
+        imported!"quickbite.backends.interpreter.place".Place[] argumentPlaces = null,
     ) {
         import quickbite.backends.interpreter.native_call_adapter:
             InterpreterInboundTrampolineSession, NativeCallRequest,
@@ -13543,6 +13548,7 @@ unsupportedExpression:
             evaluatedArguments,
             nativeArguments.operands,
             durableInboundSession,
+            argumentPlaces,
         );
         auto request = NativeCallRequest(
             declaration: function_,
@@ -13571,6 +13577,7 @@ unsupportedExpression:
         imported!"quickbite.backends.interpreter.native_call_adapter".NativeOperand[] operands,
         imported!"quickbite.backends.interpreter.native_call_adapter".
             InterpreterInboundTrampolineSession* callbackSession,
+        imported!"quickbite.backends.interpreter.place".Place[] argumentPlaces = null,
     ) {
         import quickbite.backends.interpreter.layout: typeByteSize, typeHasPointers;
         import quickbite.backends.interpreter.native_block: NativeBlock;
@@ -13685,8 +13692,17 @@ unsupportedExpression:
                     ? NativeBlock.Scan.conservative
                     : NativeBlock.Scan.no,
             );
-            writeValue(Place(temporary.address, argumentTypes[index]),
-                arguments[index]);
+            if (
+                index < argumentPlaces.length &&
+                argumentPlaces[index].address !is null
+            )
+                copyPlaceValue(
+                    argumentPlaces[index],
+                    Place(temporary.address, argumentTypes[index]),
+                );
+            else
+                writeValue(Place(temporary.address, argumentTypes[index]),
+                    arguments[index]);
             operands[index] = NativeOperand(
                 argumentTypes[index],
                 temporary.address,
