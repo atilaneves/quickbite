@@ -9427,6 +9427,53 @@ unsupportedExpression:
                 return;
             }
 
+            // A `this`/`super`-rooted receiver chain (`this.field = v`, or a
+            // deeper `this.inner.field = v`) is bound to this activation's
+            // own receiver storage for its whole lifetime -- `projectionPlace`
+            // composes that chain's live address the same way it composes a
+            // true local's own storage (`hasProjectionPlace`'s `ThisExp`/
+            // `SuperExp` base case). The direct-write predicate pair
+            // deliberately has no base case of its own for an unindexed
+            // whole-field write, so compose the field's place directly here
+            // instead of reading a snapshot and writing it back through this
+            // function's own recursion below.
+            if (isThisRootedProjection(dot.e1) && hasProjectionPlace(dot.e1)) {
+                writeStoredValue(
+                    projectionPlace(dot),
+                    storageValue(target.type, value),
+                );
+                clearProjectionRootUninitialized(dot);
+                return;
+            }
+
+            // A ref-returning call's receiver (`f().field = v` where `f`
+            // returns `ref S`) names a live struct lvalue, not a temporary --
+            // the same lvalue `writeIndexLocation`/`runIndexAssignExpression`'s
+            // sibling `index.e1.isCallExp` arms already resolve through
+            // `refReturningCallAddress` for the index-is-call shape. A class
+            // receiver keeps the existing native-object path below (it also
+            // performs dynamic-object metadata handling this arm does not
+            // replace).
+            if (auto call = dot.e1.isCallExp)
+                if (
+                    call.f !is null &&
+                    returnsRef(call.f) &&
+                    dot.e1.type.toBasetype.isTypeStruct !is null
+                ) {
+                    import dmd.tokens: EXP;
+                    import quickbite.backends.interpreter.place: Place;
+
+                    const address = refReturningCallAddress(call, EXP.address);
+                    if (address.isPointer) {
+                        writeStoredValue(
+                            Place(address.pointerAddress, dot.e1.type)
+                                .field(dot.var.isVarDeclaration),
+                            storageValue(target.type, value),
+                        );
+                        return;
+                    }
+                }
+
             const receiver = runExpressionValue(dot.e1);
             if (receiver.isNativeAggregate) {
                 import dmd.astenums: TY;
@@ -9540,6 +9587,22 @@ unsupportedExpression:
                 return;
             }
 
+            // Whatever remains here has no addressable place this activation
+            // can compose in place: a plain (non-ref) call result or a
+            // literal receiver is a genuine rvalue -- DMD itself makes
+            // `f().field = v` a compile error for a non-ref `f` returning a
+            // struct by value, so this shape is reachable only through an
+            // already-lowered AST, not user-written code with observable
+            // aliasing to preserve. A captured-variable receiver has live
+            // storage but no static predicate resolves it yet (the frame/
+            // dataseg-scoped `hasBindingPlace` does not see a closure's
+            // cross-activation captures) -- separate follow-on work.
+            // A whole-struct-typed target through a `VarExp`-rooted receiver
+            // (`local.inner = v`) also lands here even though `local` itself
+            // has a place: `isDirectProjectionWriteTarget` excludes
+            // struct/static-array-typed targets outright, and reworking that
+            // exclusion is a separate change from wiring up the two
+            // previously-unaddressable receiver shapes above.
             const fieldIndex = structFieldIndex(dot);
             auto unionType = receiverStructType(dot.e1);
             const updated = unionType !is null && unionType.sym.isUnionDeclaration !is null
@@ -9594,6 +9657,27 @@ unsupportedExpression:
         throw new Exception(
             text("Unsupported interpreter assignment target: ", target.op),
         );
+    }
+
+    // Whether `expression`'s receiver chain terminates at a bare
+    // `this`/`super`, as opposed to a true local/dataseg binding
+    // (`VarExp`) or an addressable symbol base -- `hasProjectionPlace`
+    // accepts both roots, but only a `this`/`super` root identifies the
+    // shape `writeLocation`'s `DotVarExp` arm wires directly through
+    // `projectionPlace` here; a `VarExp`-rooted struct-typed target keeps
+    // its existing path unchanged.
+    private bool isThisRootedProjection(
+        imported!"dmd.expression".Expression expression,
+    ) {
+        if (expression is null)
+            return false;
+        if (expression.isThisExp !is null || expression.isSuperExp !is null)
+            return true;
+        if (auto dot = expression.isDotVarExp)
+            return isThisRootedProjection(dot.e1);
+        if (auto cast_ = expression.isCastExp)
+            return isThisRootedProjection(cast_.e1);
+        return false;
     }
 
     // Assignment through a ref-returning call (`f(i) = v`, `obj.slot() = v`):
