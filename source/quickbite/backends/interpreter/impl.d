@@ -1169,25 +1169,12 @@ private struct Walker {
                 "`.",
             ));
 
-        import dmd.astenums: TY;
-
-        if (variable.type.toBasetype.ty == TY.Tdelegate) {
-            writeStoredValue(bindingPlace(variable), value);
-            return;
-        }
-
-        if (value.isFunctionPointer) {
-            writeStoredValue(bindingPlace(variable), value);
-            return;
-        }
-
-        if (
-            variable.type.toBasetype.isTypeClass !is null &&
-            value.isTypeName
-        ) {
-            writeStoredValue(bindingPlace(variable), value);
-            return;
-        }
+        // A delegate, function-pointer, or symbolic-classinfo value is never
+        // `isNativeAggregate`, so `writeStoredValue`'s aggregate-metadata
+        // `consumeMetadata` argument is never read on this write; the
+        // general call below (with `consumeMetadata = true`) is already
+        // identical for these three value kinds, so they need no dedicated
+        // branch here.
 
         if (
             variable.type.toBasetype.isTypeClass !is null &&
@@ -1411,6 +1398,10 @@ private struct Walker {
 
         import dmd.astenums: TY;
 
+        // Still reached: `runClassInfoExpression`/`runTypeidExpression` fall
+        // back to this display-name form for a guest-only class with no
+        // resolvable host `TypeInfo_Class` symbol, and that result reaches
+        // this write through the ordinary assignment/construction paths.
         if (place.type.toBasetype.isTypeClass !is null && value.isTypeName) {
             clearStoredMetadata(place.type, place.address);
             nativeTypeInfoSlots[place.address] = value.asTypeNameString;
@@ -1418,6 +1409,9 @@ private struct Walker {
             return;
         }
 
+        // Still reached: `constructInto`'s `DelegateExp` arm passes
+        // `runDelegateExpression`'s result straight here to land in
+        // `nativeDelegateSlots`.
         if (place.type.toBasetype.ty == TY.Tdelegate && value != ExpressionResult.null_) {
             clearStoredMetadata(place.type, place.address);
             nativeDelegateSlots[place.address] = delegateSlotValue(value);
@@ -1426,6 +1420,9 @@ private struct Walker {
         }
 
         auto pointerType = place.type.toBasetype.isTypePointer;
+        // Still reached: `constructInto`'s function-typed `SymOffExp` arm
+        // passes `functionPointerValue`'s result straight here to land in
+        // `nativeFunctionPointerSlots`.
         if (
             pointerType !is null &&
             pointerType.nextOf.toBasetype.isTypeFunction !is null &&
@@ -1462,6 +1459,11 @@ private struct Walker {
 
         import dmd.astenums: TY;
 
+        // Still reached: this is the general "read a delegate-typed place"
+        // path; `runCallExpression`'s callee dispatch and `equalDelegateValues`
+        // derive their `DelegateSlot` from evaluating the callee/operand
+        // expression, which bottoms out here for a plain variable or field
+        // read.
         if (place.type.toBasetype.ty == TY.Tdelegate) {
             if (auto delegate_ = place.address in nativeDelegateSlots) {
                 return delegateSlotResult(*delegate_);
@@ -1478,6 +1480,8 @@ private struct Walker {
             }
         }
         auto pointerType = place.type.toBasetype.isTypePointer;
+        // Still reached: the general "read a function-pointer-typed place"
+        // path, mirroring the delegate arm above.
         if (
             pointerType !is null &&
             pointerType.nextOf.toBasetype.isTypeFunction !is null
@@ -1487,6 +1491,10 @@ private struct Walker {
                     in nativeFunctionPointerSlots
             )
                 return ExpressionResult.functionPointerValue(*function_);
+        // Still reached: `.name`/`m_flags` field reads, `equalOperands`'s
+        // symbolic-identity compare, and `classCastValue`'s `TypeInfo_Class`
+        // narrowing all read a class-typed place generically and rely on
+        // this reconstructing the registered display name.
         if (place.type.toBasetype.isTypeClass !is null)
             if (auto typeInfo = place.address in nativeTypeInfoSlots)
                 return ExpressionResult.typeName(*typeInfo);
