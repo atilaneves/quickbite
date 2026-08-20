@@ -184,17 +184,12 @@ unittest {
     int secondY = 4;
     secondY = secondY * 3 + 4;
 
-    const firstPoint = AggregateValue.reconstructStruct(
-        sliceType.nextOf,
-        [ExpressionResult(firstX), ExpressionResult(firstY)],
-    );
-    const secondPoint = AggregateValue.reconstructStruct(
-        sliceType.nextOf,
-        [ExpressionResult(secondX), ExpressionResult(secondY)],
-    );
+    auto pointFields = structFields(sliceType.nextOf.isTypeStruct);
 
-    writeValue(root.index(0), firstPoint);
-    writeValue(root.index(1), secondPoint);
+    writeValue(root.index(0).field(pointFields[0]), ExpressionResult(firstX));
+    writeValue(root.index(0).field(pointFields[1]), ExpressionResult(firstY));
+    writeValue(root.index(1).field(pointFields[0]), ExpressionResult(secondX));
+    writeValue(root.index(1).field(pointFields[1]), ExpressionResult(secondY));
 
     auto readBack = readValue(root);
     readBack.isNativeAggregate.should == true;

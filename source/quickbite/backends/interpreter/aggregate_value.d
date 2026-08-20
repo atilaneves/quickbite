@@ -114,36 +114,6 @@ public struct AggregateValue {
             : NativeAggregate(type, header, retained);
     }
 
-    // Compatibility adapter for the aggregate-value unit test. Production
-    // struct construction writes fields into their final typed places through
-    // `Walker.constructStructLiteral` and never uses this field snapshot.
-    public static imported!"quickbite.backends.interpreter.expression_result".ExpressionResult reconstructStruct(
-        imported!"dmd.mtype".Type type,
-        in imported!"quickbite.backends.interpreter.expression_result".ExpressionResult[] fields,
-    ) @safe {
-        import quickbite.backends.interpreter.layout: structFields;
-        import quickbite.backends.interpreter.place: placeAt;
-        import quickbite.backends.interpreter.place_value: writeValue;
-        import quickbite.backends.interpreter.expression_result: ExpressionResult;
-        import std.conv: text;
-
-        auto structType = baseTypeOf(type).isTypeStruct;
-        if (structType is null || fields.length != structFields(structType).length)
-            throw new Exception(text(
-                "AggregateValue.reconstructStruct field count mismatch: expected ",
-                structType is null ? 0 : structFields(structType).length,
-                ", got ",
-                fields.length,
-                ".",
-            ));
-
-        auto aggregate = NativeAggregate.allocate(type);
-        auto destination = placeAt(aggregate.storage, type);
-        foreach (index, field; structFields(structType))
-            writeValue(destination.field(field), fields[index]);
-        return ExpressionResult.nativeAggregateValue(aggregate);
-    }
-
     // Allocate the reference slot and body as one native owner. The caller
     // keeps it native while it initializes the body and records its identity.
     public static NativeAggregate allocateClass(
@@ -166,18 +136,6 @@ public struct AggregateValue {
         );
         Place(reference.address, type).storeReference(body.address);
         return NativeAggregate(type, reference, body);
-    }
-
-    public static imported!"quickbite.backends.interpreter.expression_result".ExpressionResult reconstructNativeArray(
-        imported!"dmd.mtype".Type type,
-        in imported!"quickbite.backends.interpreter.expression_result".ExpressionResult[] elements,
-        const(void)* address,
-    ) @safe {
-        import quickbite.backends.interpreter.expression_result: ExpressionResult;
-
-        return ExpressionResult.nativeAggregateValue(
-            borrowArrayOwner(type, elements.length, address),
-        );
     }
 
     // An untyped view of an aggregate's own storage: the slice denotes the
