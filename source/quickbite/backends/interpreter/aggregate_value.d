@@ -333,14 +333,18 @@ public struct AggregateValue {
         throw new Exception("AggregateValue.length needs an array aggregate.");
     }
 
+    public static size_t fieldCount(NativeAggregate aggregate) @safe {
+        import quickbite.backends.interpreter.layout: structFields;
+
+        return structFields(baseTypeOf(aggregate.type).isTypeStruct).length;
+    }
+
     public static size_t fieldCount(
         in imported!"quickbite.backends.interpreter.expression_result".ExpressionResult value,
     ) @safe {
-        import quickbite.backends.interpreter.layout: structFields;
-
         if (!value.isNativeAggregate)
             throw new Exception("AggregateValue.fieldCount needs a native struct.");
-        return structFields(baseTypeOf(native(value).type).isTypeStruct).length;
+        return fieldCount(native(value));
     }
 
     // Resolves the field's own storage without reading through it, so a

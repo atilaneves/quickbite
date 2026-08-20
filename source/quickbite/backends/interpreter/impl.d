@@ -694,6 +694,7 @@ private struct Walker {
     import dmd.statement: Statement;
     import quickbite.backends.interpreter.frame_block: FrameBlock;
     import quickbite.backends.interpreter.frame_layout: cachedFrameLayout;
+    import quickbite.backends.interpreter.native_aggregate: NativeAggregate;
     import quickbite.backends.interpreter.native_array: NativeArray;
     import quickbite.backends.interpreter.native_block: NativeBlock;
     import quickbite.backends.interpreter.native_struct: NativeStruct;
@@ -5642,8 +5643,20 @@ unsupportedExpression:
     // since two references to the very same closure activation always share
     // one id.
     private bool carrierIdentity(imported!"dmd.expression".IdentityExp identity) {
-        const left = runExpressionValue(identity.e1);
-        const right = runExpressionValue(identity.e2);
+        import quickbite.backends.interpreter.place: Place;
+
+        auto leftTemporary = ConstructionDestination(Place(
+            _activationFrame.temporaryAddress(identity.e1),
+            identity.e1.type,
+        ));
+        runExpression(identity.e1, leftTemporary);
+        const left = readStoredValue(leftTemporary.place);
+        auto rightTemporary = ConstructionDestination(Place(
+            _activationFrame.temporaryAddress(identity.e2),
+            identity.e2.type,
+        ));
+        runExpression(identity.e2, rightTemporary);
+        const right = readStoredValue(rightTemporary.place);
 
         const aggregateValues =
             AggregateValue.isStruct(left) && AggregateValue.isStruct(right) ||
@@ -6471,15 +6484,19 @@ unsupportedExpression:
     // detached by-value snapshot here would allocate and then be discarded
     // when `runMemberFunction` rebinds `this` to the same address.
     private ExpressionResult borrowedAggregateValue(Place place) {
-        import quickbite.backends.interpreter.layout: typeByteSize;
-        import quickbite.backends.interpreter.native_aggregate:
-            NativeAggregate;
-        import quickbite.backends.interpreter.native_block: NativeBlock;
+        return ExpressionResult.nativeAggregateValue(borrowedAggregate(place));
+    }
 
-        return ExpressionResult.nativeAggregateValue(NativeAggregate(
+    // A no-copy `NativeAggregate` view of an already-materialized place --
+    // for a caller that only wants the native aggregate itself, not the
+    // expression carrier `borrowedAggregateValue` wraps it in.
+    private NativeAggregate borrowedAggregate(Place place) {
+        import quickbite.backends.interpreter.layout: typeByteSize;
+
+        return NativeAggregate(
             place.type,
             NativeBlock.borrow(place.address, typeByteSize(place.type)),
-        ));
+        );
     }
 
     // Evaluate a reference argument's lvalue operands exactly once. When the
@@ -8233,21 +8250,47 @@ unsupportedExpression:
     // already-evaluated carrier value.
     private bool equalOperands(imported!"dmd.expression".EqualExp equal) {
         import dmd.astenums: TY;
+        import quickbite.backends.interpreter.place: Place;
 
         const ty = equal.e1.type.toBasetype.ty;
 
         if (ty == TY.Tsarray || ty == TY.Tarray) {
-            const left = runExpressionValue(equal.e1);
-            const right = runExpressionValue(equal.e2);
-            return equalArrayValues(left, right);
+            // Only an address and native-layout aggregate view are needed
+            // here (`equalArrayValues`'s own recursion), so the temporary is
+            // read straight from its place, skipping the expression-carrier
+            // wrap/unwrap `readStoredValue`/`AggregateValue.native` would add.
+            auto leftTemporary = ConstructionDestination(Place(
+                _activationFrame.temporaryAddress(equal.e1),
+                equal.e1.type,
+            ));
+            runExpression(equal.e1, leftTemporary);
+            auto rightTemporary = ConstructionDestination(Place(
+                _activationFrame.temporaryAddress(equal.e2),
+                equal.e2.type,
+            ));
+            runExpression(equal.e2, rightTemporary);
+            return equalArrayValues(
+                borrowedAggregate(leftTemporary.place),
+                borrowedAggregate(rightTemporary.place),
+            );
         }
 
         if (ty == TY.Tdelegate) {
             // A delegate's identity depends on the runtime closure registry
             // (`_executionState.delegates`, keyed by a per-evaluation id),
             // not a native-layout slot read; see `equalDelegateValues`.
-            const left = runExpressionValue(equal.e1);
-            const right = runExpressionValue(equal.e2);
+            auto leftTemporary = ConstructionDestination(Place(
+                _activationFrame.temporaryAddress(equal.e1),
+                equal.e1.type,
+            ));
+            runExpression(equal.e1, leftTemporary);
+            const left = readStoredValue(leftTemporary.place);
+            auto rightTemporary = ConstructionDestination(Place(
+                _activationFrame.temporaryAddress(equal.e2),
+                equal.e2.type,
+            ));
+            runExpression(equal.e2, rightTemporary);
+            const right = readStoredValue(rightTemporary.place);
             return equalDelegateValues(left, right);
         }
 
@@ -8255,8 +8298,18 @@ unsupportedExpression:
         // null)` pair `opOverloadEqual` leaves untyped: `equalValues`'s own
         // numeric-widening comparison (and, for the latter, its raw
         // fallback) still answers these directly off the carrier.
-        const left = runExpressionValue(equal.e1);
-        const right = runExpressionValue(equal.e2);
+        auto leftTemporary = ConstructionDestination(Place(
+            _activationFrame.temporaryAddress(equal.e1),
+            equal.e1.type,
+        ));
+        runExpression(equal.e1, leftTemporary);
+        const left = readStoredValue(leftTemporary.place);
+        auto rightTemporary = ConstructionDestination(Place(
+            _activationFrame.temporaryAddress(equal.e2),
+            equal.e2.type,
+        ));
+        runExpression(equal.e2, rightTemporary);
+        const right = readStoredValue(rightTemporary.place);
         return equalValues(left, right);
     }
 
@@ -8275,7 +8328,7 @@ unsupportedExpression:
             return left.asReal == right.asReal;
 
         if (AggregateValue.isArray(left) && AggregateValue.isArray(right))
-            return equalArrayValues(left, right);
+            return equalArrayValues(AggregateValue.native(left), AggregateValue.native(right));
 
         // DMD attaches an array comparison's `object.__equals` rewrite as
         // `EqualExp.lowering` rather than replacing the AST node itself
@@ -8328,7 +8381,7 @@ unsupportedExpression:
                 return isTruthy(readStoredValue(destination.place));
             }
 
-            return equalStructValues(left, right);
+            return equalStructValues(AggregateValue.native(left), AggregateValue.native(right));
         }
 
         // `EqualExp::semantic` (expressionsem.d) always lowers `aa1 == aa2`
@@ -8423,13 +8476,11 @@ unsupportedExpression:
         return true;
     }
 
-    private bool equalArrayValues(in ExpressionResult left, in ExpressionResult right) {
-        auto leftAggregate = AggregateValue.native(left);
-        auto rightAggregate = AggregateValue.native(right);
-        if (AggregateValue.length(leftAggregate) != AggregateValue.length(rightAggregate))
+    private bool equalArrayValues(NativeAggregate left, NativeAggregate right) {
+        if (AggregateValue.length(left) != AggregateValue.length(right))
             return false;
 
-        foreach (index; 0 .. AggregateValue.length(leftAggregate))
+        foreach (index; 0 .. AggregateValue.length(left))
             if (!equalValues(
                 arrayElementForEquality(left, index),
                 arrayElementForEquality(right, index),
@@ -8439,18 +8490,8 @@ unsupportedExpression:
         return true;
     }
 
-    private ExpressionResult arrayElementForEquality(in ExpressionResult value, in size_t index) {
-        import quickbite.backends.interpreter.place: Place;
-
-        if (!value.isNativeAggregate)
-            return readStoredValue(
-                AggregateValue.elementAt(AggregateValue.native(value), index),
-            );
-
-        auto aggregate = AggregateValue.native(value);
-        return readStoredValue(
-            Place(aggregate.address, aggregate.type).index(index),
-        );
+    private ExpressionResult arrayElementForEquality(NativeAggregate aggregate, in size_t index) {
+        return readStoredValue(AggregateValue.elementAt(aggregate, index));
     }
 
     // Recurse field-by-field through `equalValues` (mirroring
@@ -8458,7 +8499,7 @@ unsupportedExpression:
     // ExpressionResult` compare (the `left == right` fallback above), so
     // each field gets the same numeric-scalar coercion a top-level `==`
     // already applies.
-    private bool equalStructValues(in ExpressionResult left, in ExpressionResult right) {
+    private bool equalStructValues(NativeAggregate left, NativeAggregate right) {
         const count = AggregateValue.fieldCount(left);
         if (count != AggregateValue.fieldCount(right))
             return false;
@@ -8473,20 +8514,8 @@ unsupportedExpression:
         return true;
     }
 
-    private ExpressionResult structFieldForEquality(in ExpressionResult value, in size_t index) {
-        import quickbite.backends.interpreter.layout: structFields;
-        import quickbite.backends.interpreter.place: Place;
-
-        if (!value.isNativeAggregate)
-            return readStoredValue(
-                AggregateValue.fieldAt(AggregateValue.native(value), index),
-            );
-
-        auto aggregate = AggregateValue.native(value);
-        auto fields = structFields(aggregate.type.toBasetype.isTypeStruct);
-        return readStoredValue(
-            Place(aggregate.address, aggregate.type).field(fields[index]),
-        );
+    private ExpressionResult structFieldForEquality(NativeAggregate aggregate, in size_t index) {
+        return readStoredValue(AggregateValue.fieldAt(aggregate, index));
     }
 
     private bool isScalarCompoundAssignExpression(
