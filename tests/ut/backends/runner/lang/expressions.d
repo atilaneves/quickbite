@@ -15737,13 +15737,14 @@ static foreach (backend; Matrix!()) {
 // storage size on this target) needs the same bitwise check every other
 // scalar width gets, not a narrower one. SystemLinker is the oracle: `is`
 // on floating operands is a raw bit-pattern comparison (`real.nan is
-// real.nan` is `true`; `-0.0L is 0.0L` is `false`, unlike `==`).
-// Interpreter answers `==`-style value equality for `is` on `real`
-// instead (treats `real.nan is real.nan` as false, `-0.0L is 0.0L` as
-// true) -- a separate, pre-existing gap, unconfirmed against this fixture.
+// real.nan` is `true`; `-0.0L is 0.0L` is `false`, unlike `==`). Interpreter
+// answers `==`-style value equality for `is` on `real` instead (treats
+// `real.nan is real.nan` as false, `-0.0L is 0.0L` as true) -- a separate,
+// pre-existing gap (#518); see the Interpreter characterization pin below.
 static foreach (backend; Matrix!(
-    Omit!(Interpreter, Because.unconfirmed,
-        "is on real answers ==-style value equality, not bit identity"),
+    Omit!(Interpreter, Because.diverges,
+        "is on real answers ==-style value equality, not bit identity " ~
+        "(#518); see the Interpreter characterization pin below"),
 )) {
     @("identityComparisonMatchesForRealOperands." ~ backend.stringof)
     @Tags(backend.stringof)
@@ -15774,17 +15775,54 @@ static foreach (backend; Matrix!(
     }
 }
 
+// Interpreter's own `is` on `real` answers `==`-style value equality
+// instead of a bitwise compare (#518): ordinary values agree with the
+// oracle above, but `real.nan is real.nan` comes back false (NaN is never
+// value-equal to itself) and `-0.0L is 0.0L` comes back true (signed zero
+// compares value-equal). This pins Interpreter's actual divergence;
+// SystemLinker is the language-surface oracle above.
+static foreach (backend; AliasSeq!(Interpreter)) {
+    @("identityComparisonMatchesForRealOperands." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            real realFrom(real seed) {
+                return seed;
+            }
+
+            bool identicalReal(T)(T value, T expected) {
+                return value is expected;
+            }
+
+            bool distinctReal(T)(T value, T expected) {
+                return value !is expected;
+            }
+
+            unittest {
+                real base = 1.5L;
+
+                assert(identicalReal(realFrom(base), realFrom(base)));
+                assert(distinctReal(realFrom(base), realFrom(base + 1.0L)));
+
+                assert(!identicalReal(realFrom(real.nan), realFrom(real.nan)));
+                assert(!distinctReal(realFrom(-0.0L), realFrom(0.0L)));
+            }
+        });
+    }
+}
+
 // `cdouble is cdouble`: complex-number `==` is not yet supported in
 // bytecode core at all (a pre-existing, separate gap from this fixture's
-// own concern), so `is` -- which needs the same operand -- has nothing to
-// build on. SystemLinker is the oracle. Interpreter cannot construct a
-// `cdouble` value at all yet (a separate, pre-existing gap), so it is
-// unconfirmed for this fixture too.
+// own concern, #516), so `is` -- which needs the same operand -- has
+// nothing to build on. SystemLinker is the oracle. Interpreter cannot
+// construct a `cdouble` value at all yet (#519), a separate, pre-existing
+// gap: it throws before reaching the `is` comparison this fixture is
+// actually about.
 static foreach (backend; Matrix!(
     Omit!(Bytecode, Because.refusal,
         "Unsupported identity comparison width in bytecode core: value is expected"),
-    Omit!(Interpreter, Because.unconfirmed,
-        "cannot construct a cdouble value (Unsupported binary rhs type)"),
+    Omit!(Interpreter, Because.refusal,
+        "Unsupported binary rhs type."),
 )) {
     @("identityComparisonMatchesForComplexOperands." ~ backend.stringof)
     @Tags(backend.stringof)
