@@ -259,9 +259,28 @@ private string scalarText(
             return text(value.loadNativeScalar!real);
         case Tpointer, Tclass, Taarray:
             return value.deref.address is null ? "null" : text(value.deref.address);
+        case Timaginary32, Timaginary64, Timaginary80,
+            Tcomplex32, Tcomplex64, Tcomplex80:
+            return imaginaryOrComplexText(value);
         default:
             return "<native aggregate>";
     }
+}
+
+// `place_value.readValue` already decodes an imaginary or complex place into
+// its `ExpressionResult` category; std.conv.text's rendering only needs that
+// category's parts, not a second native-layout reader.
+private string imaginaryOrComplexText(
+    imported!"quickbite.backends.interpreter.place".Place value,
+) {
+    import quickbite.backends.interpreter.place_value: readValue;
+    import std.conv: text;
+
+    auto decoded = readValue(value);
+    if (decoded.isImaginaryScalar)
+        return text(decoded.imaginaryPart, "i");
+
+    return text(decoded.complexRealPart.asReal, "+", decoded.complexImaginaryPart.asReal, "i");
 }
 
 private string characterText(
