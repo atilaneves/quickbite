@@ -15631,3 +15631,176 @@ static foreach (backend; Matrix!()) {
         });
     }
 }
+
+// `notEqual` calls `&constHolder.thing`/`&holder.thing` (a `const(Thing)*`
+// and a mutable `Thing*`, `Thing` a class) with `auto ref V value, auto ref
+// E expected` parameters: bound to these rvalue addresses, `value` and
+// `expected` become plain by-value locals of types `V`/`E` inside
+// `notEqual`. Forwarding them on to `isEqual`'s own `auto ref V value, auto
+// ref E expected` is a different case: `value`/`expected` are themselves
+// named parameters, hence lvalues, so `isEqual`'s template parameters
+// deduce the same two pointer types but bind to them *by reference*
+// instead. `isEqual`'s `value == expected` still needs one common
+// comparison type, so DMD implicitly widens the mutable side's qualifier
+// -- inserting an unwritten `cast(const(Thing)*)expected` node -- before
+// the comparison runs. No cast appears anywhere in this source; forwarding
+// a mismatched-qualifier pointer pair through a second `auto ref` template
+// layer is enough for DMD to synthesise one on its own.
+static foreach (backend; Matrix!()) {
+    @("notEqualForwardsMismatchedQualifierClassPointerPair." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            class Thing {
+                int value;
+            }
+
+            struct Holder {
+                Thing thing;
+            }
+
+            bool isEqual(V, E)(auto ref V value, auto ref E expected) {
+                return value == expected;
+            }
+
+            bool notEqual(V, E)(auto ref V value, auto ref E expected) {
+                return !isEqual(value, expected);
+            }
+
+            unittest {
+                auto holder = Holder(new Thing);
+                const constHolder = holder;
+
+                assert(notEqual(&constHolder.thing, &holder.thing));
+            }
+        });
+    }
+}
+
+// `identical`/`distinct` compare their generic `T` parameters with `is`/
+// `!is`. D has no user-overridable identity operator, so the comparison
+// stays a bitwise check of the operand's own width -- a `byte`, `short`,
+// or `int` instantiation needs that check at its own 1/2/4-byte width, not
+// a fixed 8 bytes. SystemLinker is the oracle.
+static foreach (backend; Matrix!()) {
+    @("identityComparisonMatchesAtEveryNarrowScalarWidth." ~
+        backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            byte byteFrom(int seed) {
+                return cast(byte) seed;
+            }
+
+            short shortFrom(int seed) {
+                return cast(short) seed;
+            }
+
+            int intFrom(int seed) {
+                return seed;
+            }
+
+            long longFrom(int seed) {
+                return seed;
+            }
+
+            bool identical(T)(T value, T expected) {
+                return value is expected;
+            }
+
+            bool distinct(T)(T value, T expected) {
+                return value !is expected;
+            }
+
+            unittest {
+                int base = 5;
+
+                assert(identical(byteFrom(base), byteFrom(base)));
+                assert(distinct(byteFrom(base), byteFrom(base + 1)));
+
+                assert(identical(shortFrom(base * 100), shortFrom(base * 100)));
+                assert(distinct(shortFrom(base * 100), shortFrom(base * 100 + 1)));
+
+                assert(identical(intFrom(base * 20000), intFrom(base * 20000)));
+                assert(distinct(intFrom(base * 20000), intFrom(base * 20000 + 1)));
+
+                assert(identical(longFrom(base * 20000), longFrom(base * 20000)));
+                assert(distinct(longFrom(base * 20000), longFrom(base * 20000 + 1)));
+            }
+        });
+    }
+}
+
+// `identicalReal`/`distinctReal` compare their generic `T` parameters with
+// `is`/`!is`. `real`'s own width (80-bit payload padded out to a wider
+// storage size on this target) needs the same bitwise check every other
+// scalar width gets, not a narrower one. SystemLinker is the oracle: `is`
+// on floating operands is a raw bit-pattern comparison (`real.nan is
+// real.nan` is `true`; `-0.0L is 0.0L` is `false`, unlike `==`).
+// Interpreter answers `==`-style value equality for `is` on `real`
+// instead (treats `real.nan is real.nan` as false, `-0.0L is 0.0L` as
+// true) -- a separate, pre-existing gap, unconfirmed against this fixture.
+static foreach (backend; Matrix!(
+    Omit!(Interpreter, Because.unconfirmed,
+        "is on real answers ==-style value equality, not bit identity"),
+)) {
+    @("identityComparisonMatchesForRealOperands." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            real realFrom(real seed) {
+                return seed;
+            }
+
+            bool identicalReal(T)(T value, T expected) {
+                return value is expected;
+            }
+
+            bool distinctReal(T)(T value, T expected) {
+                return value !is expected;
+            }
+
+            unittest {
+                real base = 1.5L;
+
+                assert(identicalReal(realFrom(base), realFrom(base)));
+                assert(distinctReal(realFrom(base), realFrom(base + 1.0L)));
+
+                assert(identicalReal(realFrom(real.nan), realFrom(real.nan)));
+                assert(distinctReal(realFrom(-0.0L), realFrom(0.0L)));
+            }
+        });
+    }
+}
+
+// `cdouble is cdouble`: complex-number `==` is not yet supported in
+// bytecode core at all (a pre-existing, separate gap from this fixture's
+// own concern), so `is` -- which needs the same operand -- has nothing to
+// build on. SystemLinker is the oracle. Interpreter cannot construct a
+// `cdouble` value at all yet (a separate, pre-existing gap), so it is
+// unconfirmed for this fixture too.
+static foreach (backend; Matrix!(
+    Omit!(Bytecode, Because.refusal,
+        "Unsupported identity comparison width in bytecode core: value is expected"),
+    Omit!(Interpreter, Because.unconfirmed,
+        "cannot construct a cdouble value (Unsupported binary rhs type)"),
+)) {
+    @("identityComparisonMatchesForComplexOperands." ~ backend.stringof)
+    @Tags(backend.stringof)
+    unittest {
+        runBackendSourceFixtureTests!backend(q{
+            cdouble complexFrom(double re, double im) {
+                return cast(cdouble) re + im * 1.0i;
+            }
+
+            bool identicalComplex(T)(T value, T expected) {
+                return value is expected;
+            }
+
+            unittest {
+                assert(identicalComplex(complexFrom(1.0, 2.0), complexFrom(1.0, 2.0)));
+            }
+        });
+    }
+}

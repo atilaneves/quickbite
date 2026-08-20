@@ -650,3 +650,15 @@
   scoped to the call sites that existed when it was removed, not to the
   helper itself; re-add it (rather than special-case the new call site) as
   soon as another caller needs the same expression shape.
+
+- Re-trace every symptom in a multi-symptom bug independently, even when a
+  diagnosis says they share one root cause. Issue #508's pointer-cast throw
+  and struct-equality silent wrong answer did not: only the first was a
+  ref-parameter metadata gap; the second was `compileIdentityExpression`'s
+  unrelated hardcoded 8-byte width.
+
+- dub's `dflags` silently drops a bare `-debug=name` (warns, does not add
+  it); `debugVersions` in `dub.sdl` is the right knob, but reggae does not
+  translate it into a dmd flag either. An unguarded `debug { }` block, gated
+  only by the ambient `-debug` the `unittest` build type already passes, is
+  the reliable way to add a temporary trace.
